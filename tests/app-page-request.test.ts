@@ -763,6 +763,12 @@ describe("app page request helpers", () => {
       new URLSearchParams("from=feed"),
     );
     expect(renderInterceptResponse).toHaveBeenCalledTimes(1);
+    // The response carries the same params for the client's useParams().
+    expect(renderInterceptResponse).toHaveBeenCalledWith(
+      sourceRoute,
+      { type: "intercept-element" },
+      { locale: "en", tab: "recent", id: "123", catchAll: ["photos", "123"] },
+    );
   });
 
   it("returns intercept opts when the source route is the current route", async () => {

@@ -927,12 +927,11 @@ describe("analyzeConfig", () => {
       `export default {
         cacheHandler: "./cache-handler.js",
         cacheHandlers: { default: "./handler.js" },
-        cacheLife: { blog: { revalidate: 60 } },
         reactCompiler: true,
         modularizeImports: {},
         typedRoutes: true,
         compiler: { relay: { src: "./" }, styledComponents: true, emotion: true },
-        experimental: { dynamicIO: true, cacheLife: {}, reactCompiler: true },
+        experimental: { dynamicIO: true, reactCompiler: true },
       };`,
     );
 
@@ -940,8 +939,6 @@ describe("analyzeConfig", () => {
     const status = (name: string) => items.find((i) => i.name === name)?.status;
     expect(status("cacheHandler")).toBe("unsupported");
     expect(status("cacheHandlers")).toBe("unsupported");
-    expect(status("cacheLife")).toBe("unsupported");
-    expect(status("experimental.cacheLife")).toBe("unsupported");
     expect(status("compiler.relay")).toBe("unsupported");
     expect(status("experimental.dynamicIO")).toBe("unsupported");
     // Ignored, but the app still works — it only loses an optimization or type check.
@@ -967,11 +964,13 @@ describe("analyzeConfig", () => {
         generateBuildId: async () => "build",
         deploymentId: "dpl_1",
         cacheMaxMemorySize: 0,
+        cacheLife: { blog: { revalidate: 60 } },
         reactMaxHeadersLength: 1000,
         turbopack: { resolveAlias: {} },
         instrumentationClientInject: ["./lib/rum.ts"],
         compiler: { removeConsole: true, define: {} },
         experimental: {
+          cacheLife: {},
           optimizePackageImports: ["my-lib"],
           staleTimes: { dynamic: 30 },
           turbo: { resolveAlias: {} },
@@ -990,6 +989,8 @@ describe("analyzeConfig", () => {
     expect(status("deploymentId")).toBe("supported");
     expect(status("compiler.removeConsole")).toBe("supported");
     expect(status("cacheMaxMemorySize")).toBe("supported");
+    expect(status("cacheLife")).toBe("supported");
+    expect(status("experimental.cacheLife")).toBe("supported");
     expect(status("reactMaxHeadersLength")).toBe("supported");
     expect(status("turbopack")).toBe("partial");
     expect(status("experimental.turbo")).toBe("partial");

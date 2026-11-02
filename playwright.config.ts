@@ -114,6 +114,7 @@ const projectServers = {
       "app-router-prod/prefetched-shell-async-metadata.spec.ts",
       "app-router-prod/soft-nav-rsc-cache.spec.ts",
       "app-router-prod/rsc-miss-document.spec.ts",
+      "app-router-prod/image-local-patterns.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
       "app-router/tsconfig-exact-path.spec.ts",
@@ -165,6 +166,20 @@ const projectServers = {
     testDir: "./tests/e2e/app-router-bfcache",
     use: { baseURL: "http://localhost:4183" },
     server: appRouterBfcacheServer,
+  },
+  // The same BFCache specs against a production build, where Links prefetch
+  // and the client runs minified React.
+  "app-router-bfcache-prod": {
+    testDir: "./tests/e2e/app-router-bfcache",
+    use: { baseURL: "http://localhost:4238" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4238",
+      cwd: "./tests/fixtures/app-bfcache",
+      port: 4238,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
   },
   "catch-error": {
     testDir: "./tests/e2e/catch-error",

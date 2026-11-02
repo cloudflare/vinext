@@ -19,7 +19,11 @@ import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
 } from "./headers.js";
-import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
+import {
+  cloneRequestWithHeaders,
+  cloneRequestWithUrl,
+  stripRequestUrlFragment,
+} from "./request-pipeline.js";
 import { validateCdnRequest } from "./cache-control.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { isSrvxAbsoluteFormTarget } from "./srvx-request-target.js";
@@ -133,7 +137,9 @@ export default {
     // Nitro's Node server takes request.url's origin from an absolute-form
     // request target, which `vinext start` 404s before routing.
     if (isSrvxAbsoluteFormTarget(request)) return Promise.resolve(notFoundResponse());
-    const handle = () => handleSingleStageRequest(request, env, ctx);
+    // Node hosts such as srvx keep a fragment sent on the request line.
+    const strippedRequest = stripRequestUrlFragment(request);
+    const handle = () => handleSingleStageRequest(strippedRequest, env, ctx);
     return ctx && typeof ctx.waitUntil === "function"
       ? runWithExecutionContext(ctx as ExecutionContextLike, handle)
       : handle();

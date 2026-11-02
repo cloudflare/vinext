@@ -22,6 +22,7 @@ import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { applyCdnResponseHeaders, SERVER_ACTION_CACHE_CONTROL } from "./cache-control.js";
 import {
   ACTION_FORWARDED_HEADER,
   ACTION_REDIRECT_HEADER,
@@ -43,7 +44,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
-import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
+import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -71,8 +72,12 @@ import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-err
 import { hasDigest } from "./app-rsc-errors.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
-import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
+import {
+  markAppRscResponseConfigHeadersApplied,
+  markStreamedActionRedirectResponse,
+} from "./app-rsc-response-finalizer.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
+import { logRequestError } from "./request-error-log.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -1153,7 +1158,10 @@ function createRejectedActionResult(error: unknown): Promise<never> {
  */
 function logRejectedActionResult(error: unknown): void {
   if (process.env.NODE_ENV === "production" || hasDigest(error)) {
-    console.error("[vinext] Server action error:", error);
+    // The render reports the result unless it's a thrown string, which isn't
+    // reported, so VINEXT_QUIET doesn't silence it.
+    if (typeof error === "string") console.error("[vinext] Server action error:", error);
+    else logRequestError("[vinext] Server action error:", error);
   }
 }
 
@@ -1179,7 +1187,7 @@ function createServerActionErrorResponse(
   },
 ): Response {
   options.getAndClearPendingCookies();
-  console.error("[vinext] Server action error:", error);
+  logRequestError("[vinext] Server action error:", error);
   options.reportRequestError(
     error,
     {
@@ -1373,7 +1381,7 @@ export async function handleProgressiveServerActionRequest(
         actionFailedWithError =
           getActionHttpFallbackStatus(error) === null && !isServerActionNotFoundError(error, null);
         if (actionFailedWithError) {
-          console.error("[vinext] Server action error:", error);
+          logRequestError("[vinext] Server action error:", error);
           options.reportRequestError(
             error,
             {
@@ -1429,7 +1437,7 @@ export async function handleProgressiveServerActionRequest(
         options.clearRequestContext();
         const headers = new Headers();
         mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders);
-        headers.set("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate");
+        headers.set("Cache-Control", SERVER_ACTION_CACHE_CONTROL);
         for (const cookie of actionPendingCookies) headers.append("Set-Cookie", cookie);
         if (actionDraftCookie) headers.append("Set-Cookie", actionDraftCookie);
         return internalServerErrorResponse(
@@ -1503,7 +1511,7 @@ export async function handleProgressiveServerActionRequest(
 
     getAndClearActionRevalidationKind();
     options.getAndClearPendingCookies();
-    console.error("[vinext] Server action payload parsing error:", error);
+    logRequestError("[vinext] Server action payload parsing error:", error);
     options.reportRequestError(
       error,
       {
@@ -1776,6 +1784,9 @@ export async function handleServerActionRscRequest<
       applyEdgeRuntimeHeader(redirectHeaders, options.isEdgeRuntime);
       mergeActionRedirectSourceHeaders(redirectHeaders, options.sourceConfigHeaders ?? null);
       mergeActionRedirectSourceHeaders(redirectHeaders, options.middlewareHeaders);
+      // As in Next.js, the action's policy replaces the source path's, and
+      // only a streamed target's own policy replaces it in turn.
+      applyCdnResponseHeaders(redirectHeaders, { cacheControl: SERVER_ACTION_CACHE_CONTROL });
       applyRscCompatibilityIdHeader(redirectHeaders);
       // Prefix basePath onto the redirect target. The client-side handler in
       // app-browser-entry reads ACTION_REDIRECT_HEADER and calls
@@ -1862,11 +1873,13 @@ export async function handleServerActionRscRequest<
         ? 200
         : 303;
 
-      return markAppRscResponseConfigHeadersApplied(
-        createServerActionRscResponse(
-          targetResponse.body,
-          { status: redirectResponseStatus, headers: redirectHeaders },
-          options.clearRequestContext,
+      return markStreamedActionRedirectResponse(
+        markAppRscResponseConfigHeadersApplied(
+          createServerActionRscResponse(
+            targetResponse.body,
+            { status: redirectResponseStatus, headers: redirectHeaders },
+            options.clearRequestContext,
+          ),
         ),
       );
     }

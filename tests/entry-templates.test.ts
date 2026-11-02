@@ -1454,6 +1454,44 @@ describe("App Router generated manifest construction", () => {
     expect(routeEntry).toContain("interceptNotFoundTreePositions: [2]");
   });
 
+  it("emits positional error modules for named slots", () => {
+    const route = {
+      ...minimalAppRoutes[0],
+      parallelSlots: [
+        {
+          id: "slot:modal:/",
+          key: "modal@modal",
+          name: "modal",
+          ownerDir: "/tmp/test/app/@modal",
+          ownerTreePath: "/",
+          ownerTreePosition: 0,
+          hasPage: true,
+          pagePath: "/tmp/test/app/@modal/nested/page.tsx",
+          defaultPath: null,
+          layoutPath: null,
+          configLayoutPaths: [],
+          configLayoutTreePositions: [],
+          loadingPath: null,
+          errorPath: "/tmp/test/app/@modal/error.tsx",
+          errorPaths: ["/tmp/test/app/@modal/error.tsx", "/tmp/test/app/@modal/nested/error.tsx"],
+          errorTreePositions: [0, 1],
+          interceptingRoutes: [],
+          layoutIndex: 0,
+          routeSegments: ["nested"],
+        },
+      ],
+    } satisfies AppRoute;
+
+    const manifest = buildAppRscManifestCode({ routes: [route] });
+    const imports = manifest.imports.join("\n");
+    const routeEntry = manifest.routeEntries[0];
+
+    expect(imports).toContain("/tmp/test/app/@modal/nested/error.tsx");
+    expect(routeEntry).toContain("errors: [null, null]");
+    expect(routeEntry).toContain("__loadErrors: [load_");
+    expect(routeEntry).toContain("errorTreePositions: [0,1]");
+  });
+
   it("derives route-miss root boundaries when the app has no root page", () => {
     const routes = [
       {
@@ -2072,6 +2110,46 @@ describe("App Router entry templates", () => {
     }
   });
 
+  it("serializes a slot's pattern params for the request stage's useParams()", () => {
+    const code = generateAppRequestRscEntry("/tmp/test/app", [
+      {
+        ...minimalAppRoutes[0],
+        isDynamic: true,
+        params: ["teamID"],
+        pattern: "/:teamID/sub/folder",
+        parallelSlots: [
+          {
+            key: "slot@app/[teamID]/@slot",
+            name: "slot",
+            ownerDir: "/tmp/test/app/[teamID]",
+            ownerTreePath: "/[teamID]",
+            hasPage: true,
+            pagePath: "/tmp/test/app/[teamID]/@slot/[...catchAll]/page.tsx",
+            defaultPath: null,
+            layoutPath: null,
+            loadingPath: null,
+            errorPath: null,
+            interceptingRoutes: [],
+            layoutIndex: 0,
+            routeSegments: ["[...catchAll]"],
+            slotParamNames: ["teamID", "catchAll"],
+            slotPatternParts: [":teamID", ":catchAll+"],
+          },
+        ],
+      },
+    ]);
+    const serializedRoutes = code.match(/^const __routes = (.+);$/m)?.[1];
+    const [route] = JSON.parse(serializedRoutes!) as Array<{ slots: Record<string, unknown> }>;
+
+    expect(route.slots["slot@app/[teamID]/@slot"]).toMatchObject({
+      __loadDefault: null,
+      __loadPage: true,
+      slotParamNames: ["teamID", "catchAll"],
+      slotPatternParts: [":teamID", ":catchAll+"],
+    });
+    expect(code).not.toContain("/tmp/test/app/[teamID]/@slot/[...catchAll]/page.tsx");
+  });
+
   it("reads MDX exports for plain and compound MDX page extensions", () => {
     // The decoded-pathname list reads MDX segment config only when the build
     // loads the MDX reader, which `page.mdx` files need as much as `.mdx` ones.
@@ -2256,7 +2334,13 @@ describe("App Router entry templates", () => {
       ),
     ).toHaveLength(2);
     expect(code).toContain("const route = routes[intercept.sourceRouteIndex]");
-    expect(code).toContain("intercept.sourceMatchedParams");
+    expect(code).toContain("params: pickParams(route, intercept.sourceMatchedParams)");
+    expect(code).toContain(
+      "const authorizationRoute = routes[intercept.authorizationSourceRouteIndex]",
+    );
+    expect(code).toContain(
+      "authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams)",
+    );
   });
 
   it("installs server globals before App Router user modules are imported", () => {

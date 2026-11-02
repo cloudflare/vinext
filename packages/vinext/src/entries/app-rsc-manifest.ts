@@ -234,6 +234,9 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
         imports.getLazyLoaderVar(loadingPath);
       }
       if (slot.errorPath) imports.getLazyLoaderVar(slot.errorPath);
+      for (const errorPath of slot.errorPaths ?? []) {
+        imports.getLazyLoaderVar(errorPath);
+      }
       if (slot.notFoundPath) imports.getLazyLoaderVar(slot.notFoundPath);
       for (const notFoundPath of slot.notFoundPaths ?? []) {
         imports.getLazyLoaderVar(notFoundPath);
@@ -414,6 +417,9 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         loadingTreePositions: ${JSON.stringify(slot.loadingTreePositions ?? [])},
         error: null,
         __loadError: ${slot.errorPath ? imports.getLazyLoaderVar(slot.errorPath) : "null"},
+        errors: ${moduleArray(slot.errorPaths?.length ?? 0)},
+        __loadErrors: ${lazyLoaderArray(slot.errorPaths ?? [], imports)},
+        errorTreePositions: ${JSON.stringify(slot.errorTreePositions ?? [])},
         notFound: null,
         __loadNotFound: ${slot.notFoundPath ? imports.getLazyLoaderVar(slot.notFoundPath) : "null"},
         notFoundTreePosition: ${slot.notFoundTreePosition ?? "null"},

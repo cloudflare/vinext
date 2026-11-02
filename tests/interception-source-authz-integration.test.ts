@@ -8,6 +8,7 @@ import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/interception-source-authz");
 const GUARDED_MARKER = "SECRET-FEED-CONTENT";
 const GUARDED_OWNER_MARKER = "SECRET-VAULT-CONTENT";
+const GUARDED_MEMBER_MARKER = "SECRET-MEMBER-CONTENT";
 
 type StartedServer = {
   baseUrl: string;
@@ -212,5 +213,51 @@ describe.each([
   it("does not authorize and render different interception source paths", async () => {
     if (!server) throw new Error("Interception authorization fixture server did not start");
     await expectInterceptionSourceAuthorization(server.baseUrl);
+  }, 30_000);
+
+  // next.config.mjs serves /login instead of /members/[id] from a plain-array
+  // (afterFiles) rewrite unless the passcode cookie is present. A direct request
+  // to a dynamic route takes afterFiles rules before the route is accepted, so
+  // the same rule must refuse the member page as an interception source.
+  it("applies afterFiles rewrites to a dynamic interception source", async () => {
+    if (!server) throw new Error("Interception authorization fixture server did not start");
+    const { baseUrl } = server;
+    const passcode = { Cookie: "passcode=letmein" };
+
+    const anonymousDirect = await fetch(`${baseUrl}/members/7`);
+    const anonymousDirectBody = await anonymousDirect.text();
+    expect(anonymousDirect.status).toBe(200);
+    expect(anonymousDirectBody).toContain("LOGIN-PAGE");
+    expect(anonymousDirectBody).not.toContain(GUARDED_MEMBER_MARKER);
+
+    const memberDirect = await fetch(`${baseUrl}/members/7`, { headers: passcode });
+    expect(memberDirect.status).toBe(200);
+    expect(await memberDirect.text()).toContain(GUARDED_MEMBER_MARKER);
+
+    const anonymous = await fetch(`${baseUrl}/photos/1`, {
+      headers: interceptionHeaders("/members/7"),
+    });
+    const anonymousBody = await anonymous.text();
+    expect({
+      status: anonymous.status,
+      exposedGuardedContent: anonymousBody.includes(GUARDED_MEMBER_MARKER),
+    }).toEqual({
+      status: 404,
+      exposedGuardedContent: false,
+    });
+
+    const member = await fetch(`${baseUrl}/photos/1`, {
+      headers: { ...interceptionHeaders("/members/7"), ...passcode },
+    });
+    const memberBody = await member.text();
+    expect({
+      status: member.status,
+      rendersSource: memberBody.includes(GUARDED_MEMBER_MARKER),
+      rendersModal: memberBody.includes("MEMBERS-PHOTO-MODAL"),
+    }).toEqual({
+      status: 200,
+      rendersSource: true,
+      rendersModal: true,
+    });
   }, 30_000);
 });

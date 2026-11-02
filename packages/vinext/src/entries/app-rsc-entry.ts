@@ -374,6 +374,13 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
         {
           id: slot.id ?? null,
           name: slot.name,
+          // useParams() merges an active slot's pattern params, so the request
+          // stage composes them too. It never loads slot modules: a marker
+          // stands in for each lazy loader.
+          __loadPage: slot.pagePath ? true : null,
+          __loadDefault: slot.defaultPath ? true : null,
+          slotPatternParts: slot.slotPatternParts ?? null,
+          slotParamNames: slot.slotParamNames ?? null,
           intercepts: slot.interceptingRoutes.map((intercept) => ({
             id: intercept.id ?? null,
             targetPattern: intercept.targetPattern,
@@ -549,6 +556,7 @@ export const __imageAllowedWidths = ${JSON.stringify([
   ])};
 export const __imageConfig = ${JSON.stringify({
     qualities: config?.imageConfig?.qualities,
+    localPatterns: config?.imageConfig?.localPatterns,
     dangerouslyAllowSVG: config?.imageConfig?.dangerouslyAllowSVG,
     dangerouslyAllowLocalIP: config?.imageConfig?.dangerouslyAllowLocalIP,
     contentDispositionType: config?.imageConfig?.contentDispositionType,
@@ -621,17 +629,21 @@ const __requestHandler = createAppRscRequestHandler({
     const intercept = __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId);
     if (!intercept) return null;
     const route = __routes[intercept.sourceRouteIndex];
-    if (!route) return null;
-    const params = Object.create(null);
-    for (const name of route.params) {
-      if (Object.prototype.hasOwnProperty.call(intercept.sourceMatchedParams, name)) {
-        params[name] = intercept.sourceMatchedParams[name];
+    const authorizationRoute = __routes[intercept.authorizationSourceRouteIndex];
+    if (!route || !authorizationRoute) return null;
+    const pickParams = (targetRoute, source) => {
+      const params = Object.create(null);
+      for (const name of targetRoute.params) {
+        if (Object.prototype.hasOwnProperty.call(source, name)) params[name] = source[name];
       }
-    }
+      return params;
+    };
     return {
+      authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams),
+      authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
       route,
-      params,
+      params: pickParams(route, intercept.sourceMatchedParams),
     };
   },
   ${
@@ -768,6 +780,7 @@ export function generateRscEntry(
   ];
   const imageConfig = {
     qualities: config?.imageConfig?.qualities,
+    localPatterns: config?.imageConfig?.localPatterns,
     dangerouslyAllowSVG: config?.imageConfig?.dangerouslyAllowSVG,
     dangerouslyAllowLocalIP: config?.imageConfig?.dangerouslyAllowLocalIP,
     contentDispositionType: config?.imageConfig?.contentDispositionType,
@@ -1551,7 +1564,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       getSourceRoute(sourceRouteIndex) {
         return routes[sourceRouteIndex];
       },
-      hasCustomGlobalError: ${globalErrorVar ? `Boolean(${globalErrorVar}?.default)` : "false"},
       hasAnyGenerateStaticParams: __generateStaticParams.length > 0,
       hasGenerateStaticParams: __staticGeneration.hasGenerateStaticParams,
       hasPageDefaultExport: !!PageComponent,
@@ -2046,17 +2058,21 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     const intercept = findIntercept(pathname, sourcePathname, interceptionId);
     if (!intercept) return null;
     const route = routes[intercept.sourceRouteIndex];
-    if (!route) return null;
-    const params = Object.create(null);
-    for (const name of route.params) {
-      if (Object.prototype.hasOwnProperty.call(intercept.sourceMatchedParams, name)) {
-        params[name] = intercept.sourceMatchedParams[name];
+    const authorizationRoute = routes[intercept.authorizationSourceRouteIndex];
+    if (!route || !authorizationRoute) return null;
+    const pickParams = (targetRoute, source) => {
+      const params = Object.create(null);
+      for (const name of targetRoute.params) {
+        if (Object.prototype.hasOwnProperty.call(source, name)) params[name] = source[name];
       }
-    }
+      return params;
+    };
     return {
+      authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams),
+      authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
       route,
-      params,
+      params: pickParams(route, intercept.sourceMatchedParams),
     };
   },
   ${

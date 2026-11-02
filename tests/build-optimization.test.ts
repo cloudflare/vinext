@@ -5014,6 +5014,79 @@ export default function Page() { return null; }
     expect(() => parseAst(result!)).not.toThrow();
   });
 
+  it("does not treat class field keys as references to same-named helpers", () => {
+    const code = `
+import { Component } from 'react';
+import { loader, query } from '../lib/db';
+
+async function getPosts() {
+  return query('select id, title from posts');
+}
+
+export async function getServerSideProps() {
+  return { props: { posts: await getPosts(), extra: await loader() } };
+}
+
+export default class PostsPage extends Component {
+  getPosts = () => this.props.posts;
+  static query;
+  accessor loader = null;
+  render() { return this.getPosts(); }
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("../lib/db");
+    expect(result).not.toContain("async function getPosts");
+    expect(result).toContain("getPosts = () => this.props.posts");
+    expect(result).toContain("static query;");
+    expect(result).toContain("accessor loader = null;");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper referenced from a computed class field key", () => {
+    const code = `
+import { query } from '../lib/db';
+
+function getPosts() { return query('posts'); }
+
+export async function getServerSideProps() {
+  return { props: { posts: await getPosts() } };
+}
+
+export default class PostsPage {
+  [getPosts] = true;
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("../lib/db");
+    expect(result).toContain("function getPosts()");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("does not treat meta properties or import attribute keys as references", () => {
+    const code = `
+import data from './data.json' with { type: 'json' };
+import { meta, target, type } from '../lib/server-helpers';
+
+export async function getServerSideProps() {
+  return { props: { value: meta() + target() + type(data) } };
+}
+
+export default function Page() {
+  return import.meta.url + String(function f() { return new.target; });
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("server-helpers");
+    expect(result).not.toContain("data.json");
+    expect(result).toContain("import.meta.url");
+    expect(result).toContain("new.target");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
   it("partially prunes object destructuring dependencies", () => {
     // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
     const code = `

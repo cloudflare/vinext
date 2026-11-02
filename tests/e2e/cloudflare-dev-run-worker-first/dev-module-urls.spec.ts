@@ -7,7 +7,9 @@
  *
  * See https://github.com/cloudflare/vinext/issues/4005.
  */
+import path from "node:path";
 import { expect, test } from "@playwright/test";
+import { toSlash } from "pathslash";
 
 test("loads, styles, and hydrates a page", async ({ page }) => {
   const failed: string[] = [];
@@ -76,4 +78,30 @@ test("keeps sending unreferenced project files and routes to the Worker", async 
 
   const route = await request.get("/api/hello");
   expect(route.status()).toBe(200);
+});
+
+test("refuses cross-site requests for module URLs", async ({ request }) => {
+  const fixtureDir = toSlash(path.resolve(process.cwd(), "tests/fixtures/cf-app-basic"));
+  const moduleUrls = [
+    "/app/dev-module-urls/badge.tsx",
+    "/app/dev-module-urls/styles.css",
+    "/@vite/client",
+    `/@fs/${fixtureDir.replace(/^\//, "")}/package.json`,
+  ];
+  for (const url of moduleUrls) {
+    const res = await request.get(url);
+    expect(res.status(), url).toBe(200);
+  }
+
+  const crossSiteHeaders: Record<string, string>[] = [
+    { origin: "http://evil.example" },
+    { origin: "null" },
+    { "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors" },
+  ];
+  for (const headers of crossSiteHeaders) {
+    for (const url of [...moduleUrls, "/"]) {
+      const res = await request.get(url, { headers });
+      expect(res.status(), `${url} ${JSON.stringify(headers)}`).toBe(403);
+    }
+  }
 });

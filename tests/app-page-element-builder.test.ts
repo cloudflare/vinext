@@ -35,9 +35,10 @@ import {
   buildPageElements,
   resolveInterceptedSlotIdentitySegments,
   resolveInterceptedSlotSegments,
-  resolveAppPageNavigationParams,
+  resolveSiblingInterceptSegmentKeys,
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
+import { resolveAppPageNavigationParams } from "../packages/vinext/src/server/app-page-navigation-params.js";
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
 import {
@@ -1545,6 +1546,83 @@ describe("buildPageElements", () => {
     expect(
       await buildIdentity("feed", "a", "42", null, "graph-interception:/feed->/album/:slug"),
     ).not.toBe(first);
+  });
+
+  it("keys a sibling intercept's segment levels by the intercepting route's segments", () => {
+    const photo = JSON.stringify(["(.)", "photo"]);
+    const layout = createSyntheticPageModule(() => null);
+    expect(
+      resolveSiblingInterceptSegmentKeys(
+        ["gallery", "(.)photo", "[id]"],
+        ["gallery"],
+        null,
+        {},
+        {
+          id: "1",
+        },
+      ),
+    ).toEqual(["gallery", photo, "id|1|d"]);
+    // A dynamic marker segment keys per value, as in Next.js.
+    expect(
+      resolveSiblingInterceptSegmentKeys(["shots", "(.)[id]"], ["shots"], null, {}, { id: "2" }),
+    ).toEqual(["shots", JSON.stringify(["(.)", "id|2|d"])]);
+    // The levels stop above the intercepting route's first layout or boundary,
+    // which render inside its page element.
+    expect(
+      resolveSiblingInterceptSegmentKeys(
+        ["gallery", "(.)photo", "[id]"],
+        ["gallery"],
+        { interceptLayouts: [layout], interceptLayoutSegments: [["photo"]] },
+        {},
+        { id: "1" },
+      ),
+    ).toEqual(["gallery"]);
+    expect(
+      resolveSiblingInterceptSegmentKeys(
+        ["gallery", "(.)photo", "[id]"],
+        ["gallery"],
+        { interceptLoadingTreePositions: [2] },
+        {},
+        { id: "1" },
+      ),
+    ).toEqual(["gallery", photo]);
+  });
+
+  it("keys a sibling intercept's levels above the marker by the rendered route's params", () => {
+    // The rendered /teams/a route's spine keeps its own value, even when the
+    // intercepted URL binds the same param name to another one.
+    expect(
+      resolveSiblingInterceptSegmentKeys(
+        ["teams", "[team]", "(.)[member]"],
+        ["teams", "[team]"],
+        null,
+        { team: "a" },
+        { team: "b", member: "m1" },
+      ),
+    ).toEqual(["teams", "team|a|d", JSON.stringify(["(.)", "member|m1|d"])]);
+  });
+
+  it("keeps route template keys when the rendered route is not the marker's parent", () => {
+    // A deeper source, e.g. /gallery/photo/2 intercepting /gallery/photo/3.
+    expect(
+      resolveSiblingInterceptSegmentKeys(
+        ["gallery", "(.)photo", "[id]"],
+        ["gallery", "photo", "[id]"],
+        null,
+        { id: "2" },
+        { id: "3" },
+      ),
+    ).toBeNull();
+    // A sibling route group that does not own the marker.
+    expect(
+      resolveSiblingInterceptSegmentKeys(
+        ["(shop)", "gallery", "(.)photo", "[id]"],
+        ["(site)", "gallery"],
+        null,
+        {},
+        { id: "1" },
+      ),
+    ).toBeNull();
   });
 
   it("keeps interception context out of the error payload route ID", async () => {
