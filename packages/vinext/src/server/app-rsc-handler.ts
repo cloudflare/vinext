@@ -149,6 +149,7 @@ import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
+  hasUrlParserDotSegment,
   normalizeTrailingSlash,
   normalizeTrailingSlashPathname,
   resolvePublicFileRoute,
@@ -363,13 +364,6 @@ function readCacheabilityRequestProjection(
     };
   }
   return parsedCacheabilityRequestProjection.manifest;
-}
-
-function hasUrlParserDotSegment(pathname: string): boolean {
-  return pathname.split("/").some((segment) => {
-    const decodedDots = segment.replaceAll(/%2e/gi, ".");
-    return decodedDots === "." || decodedDots === "..";
-  });
 }
 
 type RunAppMiddlewareOptions = {
