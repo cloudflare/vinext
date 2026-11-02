@@ -24,6 +24,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
+  setOptimisticStateKeyRebinder,
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
@@ -447,9 +448,10 @@ export function createOptimisticRouteElements(
   // by a param the two URLs bind differently key by the target's value, so the
   // optimistic segments don't replace the learned URL's retained entry. A
   // level without a layout keeps its key on a retention boundary inside the
-  // learned tree, which this doesn't rebind.
+  // learned tree, which rebinds it with the same function.
   const reify = createAppPageSegmentStateKeyRebinder(template.params, params);
   if (reify === null) return elements;
+  setOptimisticStateKeyRebinder(elements, reify);
 
   const metadata = AppElementsWire.readMetadata(template.elements);
   const identities = metadata.bfcacheSegmentIdentities;
