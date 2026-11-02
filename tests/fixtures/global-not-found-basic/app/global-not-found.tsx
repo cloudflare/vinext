@@ -19,6 +19,7 @@ export default function GlobalNotFound() {
     <html data-global-not-found="true">
       <body>
         <h1 id="global-error-title">global-not-found</h1>
+        <a href="/">home</a>
       </body>
     </html>
   );
