@@ -11,8 +11,8 @@ type ManifestChunk = { file: string; imports?: string[] };
 
 /** The `src` of each `<script type="module" async>` in a document's `<head>`. */
 function headModuleScripts(html: string): string[] {
-  const head = html.slice(0, html.indexOf("<body"));
-  return (head.match(/<script\b[^>]*>/g) ?? [])
+  const head = html.slice(0, html.search(/<body/i));
+  return (head.match(/<script\b[^>]*>/gi) ?? [])
     .filter((tag) => tag.includes('type="module"') && /\basync\b/.test(tag))
     .map((tag) => tag.match(/\bsrc="([^"]+)"/)![1]!);
 }
