@@ -230,6 +230,22 @@ describe("CSS media-query syntax preservation in production build", () => {
     30_000,
   );
 
+  it("keeps a matching cssTarget set by a later plugin's post-ordered config hook", async () => {
+    const later: Plugin = {
+      name: "test:later-browser-target",
+      enforce: "post",
+      config: {
+        order: "post",
+        handler: () => ({ build: { target: "chrome120", cssTarget: "chrome120" } }),
+      },
+    };
+    expect(await resolveTargets({ plugins: [vinext({ disableAppRouter: true }), later] })).toEqual({
+      top: "chrome120",
+      client: "chrome120",
+      ssr: "chrome120",
+    });
+  }, 30_000);
+
   it("keeps per-environment cssTarget values as declared", async () => {
     expect(
       await resolveTargets({
@@ -253,6 +269,31 @@ describe("CSS media-query syntax preservation in production build", () => {
         // Every engine here supports range syntax, so the minifier may use it.
         build: {
           cssTarget: ["chrome120", "edge120", "firefox121", "safari17.2"],
+          outDir: path.join(outDir, "client"),
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+
+      expect(await findBuiltCss(path.join(outDir, "client"))).toMatch(/width\s*<=\s*768px/);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
+
+  it("minifies with an environment's cssTarget that matches its build.target", async () => {
+    const tmpDir = await makeFixture();
+    const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-css-mq-build-"));
+    try {
+      // This build copies the client environment's `build` to the top level,
+      // which is what Vite's CSS plugin minifies with.
+      await build({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ disableAppRouter: true })],
+        logLevel: "silent",
+        environments: { client: { build: { target: "chrome120", cssTarget: "chrome120" } } },
+        build: {
           outDir: path.join(outDir, "client"),
           rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
