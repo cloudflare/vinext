@@ -188,7 +188,7 @@ import type {
 } from "../routing/browser-route-manifest.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
-import { addBasePathToPathname, stripBasePath } from "../utils/base-path.js";
+import { restoreBasePath, stripBasePath } from "../utils/base-path.js";
 import {
   createDevOnCaughtError,
   createOnUncaughtError,
@@ -681,7 +681,7 @@ function resolvePersistedRefreshInterceptions(
     if (isPrimaryRefreshInterception) continue;
 
     const targetUrl = new URL(targetPathname, refreshUrl);
-    targetUrl.pathname = addBasePathToPathname(targetUrl.pathname, __basePath);
+    targetUrl.pathname = restoreBasePath(targetUrl.pathname, __basePath);
     targetUrl.search = refreshUrl.search;
     resolved.push({
       interception: match,

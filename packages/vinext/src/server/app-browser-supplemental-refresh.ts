@@ -11,7 +11,7 @@ import {
 import type { AppRouterState } from "./app-browser-state.js";
 import { isNestedBfcacheSlotSegmentIdFor } from "./bfcache-identity.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
-import { addBasePathToPathname, removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
+import { removeTrailingSlash, restoreBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizePath } from "./normalize-path.js";
 
 const SUPPLEMENTAL_REFRESH_TIMEOUT_MS = 10_000;
@@ -286,7 +286,7 @@ export function resolvePersistedSourcePageRefreshes(options: {
     ) {
       continue;
     }
-    const pathname = addBasePathToPathname(activeRoutePath, options.basePath);
+    const pathname = restoreBasePath(activeRoutePath, options.basePath);
     if (sourceUrlsByPathname.has(pathname)) continue;
     const sourceUrl = new URL(pathname, options.refreshUrl);
     sourceUrl.search = options.refreshUrl.search;

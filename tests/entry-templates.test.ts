@@ -2981,8 +2981,10 @@ describe("Pages Router entry template", () => {
       );
 
       expect(code).toContain("export function normalizeDataRequest(request)");
+      // The Worker request stage strips basePath before calling it, so it must
+      // not strip it again.
       expect(code).toContain(
-        "vinextConfig.basePath,\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize",
+        'buildId,\n    "",\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize',
       );
       expect(code).toContain("export const hasMiddleware = true");
       expect(code).toContain('"skipProxyUrlNormalize":true');

@@ -223,11 +223,14 @@ export const vinextConfig = ${vinextConfigJson};
 export const publicFiles = new Set(${JSON.stringify(publicFiles)});
 export const clientBuildFiles = new Set(__pagesClientAssets.clientBuildFiles ?? []);
 
+// The Worker request stage strips basePath before calling this, so the data
+// path must not lose it again: with basePath "/docs", "/docs/docs/_next/data/..."
+// is the page path "/docs/_next/data/...", not a data request.
 export function normalizeDataRequest(request) {
   return __normalizePagesDataRequest(
     request,
     buildId,
-    vinextConfig.basePath,
+    "",
     __shouldAddTrailingSlashToPagesDataPath(
       hasMiddleware,
       vinextConfig.trailingSlash,
@@ -590,11 +593,14 @@ export const buildId = ${buildIdJson};
 // Per-build capability used by Worker entries to authorize remote path
 // discovery. It is never included in responses or exposed to user modules.
 export const prerenderSecret = ${JSON.stringify(prerenderSecret ?? null)};
+// The Worker request stage strips basePath before calling this, so the data
+// path must not lose it again: with basePath "/docs", "/docs/docs/_next/data/..."
+// is the page path "/docs/_next/data/...", not a data request.
 export function normalizeDataRequest(request) {
   return __normalizePagesDataRequest(
     request,
     buildId,
-    vinextConfig.basePath,
+    "",
     __shouldAddTrailingSlashToPagesDataPath(
       hasMiddleware,
       vinextConfig.trailingSlash,

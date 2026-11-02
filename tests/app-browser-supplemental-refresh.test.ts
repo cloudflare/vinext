@@ -64,6 +64,20 @@ describe("parallel route supplemental refreshes", () => {
     ).toEqual(["/docs/nested-revalidate/drawer", "/docs/nested-revalidate?view=current"]);
   });
 
+  it("keeps a route segment that repeats the basePath when adding it back", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        activeRoutePaths: ["/docs/guide"],
+        basePath: "/docs",
+        refreshUrl: new URL("https://example.com/docs/docs/guide/modal"),
+        state: {
+          previousNextUrl: null,
+          slotBindings: [],
+        },
+      }),
+    ).toEqual(["/docs/docs/guide"]);
+  });
+
   it("uses the traversed-to history entry instead of routes from the page being left", () => {
     expect(
       resolvePersistedSourcePageRefreshes({
