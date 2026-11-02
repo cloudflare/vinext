@@ -339,6 +339,35 @@ describe("handleImageOptimization source size limit", () => {
     }
   });
 
+  it("sends a buffered source at the length read, not the one declared", async () => {
+    for (const [bytes, transform] of [
+      [ANIMATED_GIF, transformImage],
+      [STATIC_PNG, async () => Promise.reject(new Error("unsupported"))],
+    ] as const) {
+      for (const contentLength of ["3", "999"]) {
+        const response = await handleImageOptimization(imageRequest, {
+          fetchAsset: async () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(bytes);
+                  controller.close();
+                },
+              }),
+              {
+                status: 200,
+                headers: { "Content-Type": "image/png", "Content-Length": contentLength },
+              },
+            ),
+          transformImage: transform,
+        });
+        expect(response.status).toBe(200);
+        expect(response.headers.get("Content-Length")).toBe(String(bytes.byteLength));
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+      }
+    }
+  });
+
   it("uses images.maximumResponseBody as the limit", async () => {
     const response = await handleImageOptimization(
       imageRequest,

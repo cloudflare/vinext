@@ -659,6 +659,8 @@ function createPassthroughImageResponse(
 ): Response {
   const headers = new Headers(source.headers);
   setImageResponseHeaders(headers, cacheControl, config);
+  // A buffered source is sent at the length read, whatever it declared.
+  if (body instanceof Uint8Array) headers.set("Content-Length", String(body.byteLength));
   return new Response(body, { status: 200, headers });
 }
 
