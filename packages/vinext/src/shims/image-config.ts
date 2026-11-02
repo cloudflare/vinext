@@ -137,7 +137,8 @@ const localPathnameRegexCache = new Map<string, RegExp>();
  * picomatch (`makeRe(pathname, { dot: true })`) does for typical patterns:
  *   - a `**` segment matches zero or more whole segments;
  *   - any other `*` run matches characters within one segment, and at least
- *     one when it is the whole last segment.
+ *     one when it is the whole last segment;
+ *   - a last segment ending in `*` also matches one trailing slash.
  * Other picomatch syntax (braces, `?`, classes) is matched literally.
  */
 function localPathnameGlobToRegex(pattern: string): RegExp {
@@ -162,6 +163,7 @@ function localPathnameGlobToRegex(pattern: string): RegExp {
             .split(/\*+/)
             .map((literal) => literal.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
             .join("[^/]*");
+    if (isLast && segment.endsWith("*")) regexStr += "/?";
   }
   regexStr += "$";
   const re = new RegExp(regexStr);
