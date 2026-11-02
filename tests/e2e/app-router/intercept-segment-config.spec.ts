@@ -62,4 +62,22 @@ test.describe("intercept segment config", () => {
       await expect(page.locator("#intercept-config-owner")).toHaveText(`${area} owner`);
     });
   }
+
+  for (const [area, cookie] of [
+    ["same-route-static", "v"],
+    ["same-route-error", "v"],
+    ["same-route-intercept-static", "undefined"],
+  ]) {
+    test(`takes ${area} interception's config from its own loader tree`, async ({ page }) => {
+      await openWithCookie(page, `${area}/1`);
+      await expect(page.locator("#intercept-config-full")).toHaveText(`${area} full 1`);
+
+      await page.click("#intercept-config-next");
+
+      await expect(page.locator("#intercept-config-intercepted")).toHaveText(
+        `${area} intercept 2 cookie=${cookie}`,
+      );
+      await expect(page).toHaveURL(`${ROOT}/${area}/2`);
+    });
+  }
 });
