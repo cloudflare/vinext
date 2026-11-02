@@ -1872,19 +1872,6 @@ export function buildAppPageElements<
       .sort((left, right) => left - right);
     for (let index = branchTreePositions.length - 1; index >= 0; index--) {
       const treePosition = branchTreePositions[index];
-      const nestedBfcacheSegment = nestedBfcacheSegments.find(
-        (segment) => segment.treePosition === treePosition,
-      );
-      if (nestedBfcacheSegment) {
-        slotElement = (
-          <BfcacheSegmentBoundary
-            id={nestedBfcacheSegment.id}
-            stateKey={nestedBfcacheSegment.stateKey}
-          >
-            {slotElement}
-          </BfcacheSegmentBoundary>
-        );
-      }
       const loadingComponents = prefetchSlotLoadingEntry
         ? []
         : (branchLoadings.get(treePosition) ?? []);
@@ -1943,6 +1930,23 @@ export function buildAppPageElements<
           >
             {slotElement}
           </ErrorBoundary>
+        );
+      }
+
+      // Like Next.js's, each entry of a level holds its own copy of the
+      // loading, access and error boundaries of the segment above it, so an
+      // error caught in one entry leaves the hidden entries mounted.
+      const nestedBfcacheSegment = nestedBfcacheSegments.find(
+        (segment) => segment.treePosition === treePosition,
+      );
+      if (nestedBfcacheSegment) {
+        slotElement = (
+          <BfcacheSegmentBoundary
+            id={nestedBfcacheSegment.id}
+            stateKey={nestedBfcacheSegment.stateKey}
+          >
+            {slotElement}
+          </BfcacheSegmentBoundary>
         );
       }
 

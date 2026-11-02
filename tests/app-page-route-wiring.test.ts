@@ -3260,6 +3260,83 @@ describe("app page route wiring helpers", () => {
     }
   });
 
+  it("gives each slot BFCache entry its own copy of the boundaries of the segment above it", () => {
+    // Like Next.js's per-entry boundaries, an error caught in one entry of a
+    // level leaves that level's hidden entries mounted.
+    function SlotError() {
+      return createElement("p", null, "slot error");
+    }
+    function PhotosError() {
+      return createElement("p", null, "photos error");
+    }
+    function PhotoError() {
+      return createElement("p", null, "photo error");
+    }
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(value) {
+        return Promise.resolve(value);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: [],
+        slots: {
+          modal: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: -1,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/photos/1",
+      rootNotFoundModule: null,
+      slotOverrides: {
+        modal: {
+          branchSegments: ["photos", "[id]"],
+          errorModules: [{ default: SlotError }, { default: PhotosError }, { default: PhotoError }],
+          errorTreePositions: [0, 1, 2],
+          identitySegments: toSemanticSegments(["(.)photos", "[id]"]),
+          pageModule: { default: SlotPage },
+          params: { id: "1" },
+          routeSegments: ["photos", "[id]"],
+        },
+      },
+    });
+
+    const spine: string[] = [];
+    findElement(elements[AppElementsWire.encodeSlotId("modal", "/")], (element) => {
+      const typeName = getElementTypeName(element.type);
+      if (typeName === "BfcacheSegmentBoundary") {
+        spine.push(`entry ${String(element.props.stateKey)}`);
+      } else if (typeName === "ErrorBoundary") {
+        spine.push(`error ${getElementTypeName(element.props.fallback)}`);
+      }
+      return false;
+    });
+    expect(spine).toEqual([
+      `entry ${JSON.stringify(["(.)", "photos"])}`,
+      "error SlotError",
+      "entry id|1|d",
+      "error PhotosError",
+      "entry __PAGE__",
+      "error PhotoError",
+    ]);
+  });
+
   it("retains matching intercepted layouts with marker-bearing branch segments", () => {
     function PhotosLayout(props: { children?: ReactNode }) {
       return createElement("section", { "data-photos-layout": true }, props.children);

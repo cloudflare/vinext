@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { disableDevErrorOverlay, waitForAppRouterHydration } from "../helpers";
 
 // Runs against the dedicated app-bfcache fixture (cacheComponents: true), in dev
 // (app-router-bfcache) and as a production build (app-router-bfcache-prod).
@@ -1038,5 +1038,43 @@ test.describe("BFCache Activity effects", () => {
     await expect(effectCount(page, "panel-main:a")).toHaveText("Count: 2");
     await expect(effectCount(page, "panel:a")).toHaveText("Count: 2");
     await expect(page.locator("#panel-a-more-status:visible")).toHaveText("idle");
+  });
+
+  test("keeps a slot's hidden entries when one entry's error boundary catches", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/panels/b`);
+    await waitForAppRouterHydration(page);
+    const panelsOpen = ["shell#1", "panels-layout#1"];
+    await incrementEffect(page, "panel:b", 3);
+    await clickEffectsLink(page, "/panels/a", "Panels a");
+    await expectEffects(
+      page,
+      [
+        ...setupEffects(panelsOpen, true),
+        ...setupEffects(["panel-main:b#1", "panel:b#1"], true),
+        "cleanup panel-main:b#1",
+        "cleanup panel:b#1",
+        ...setupEffects(["panel-main:a#1", "panel:a#1"], true),
+      ],
+      [...panelsOpen, "panel-main:a#1", "panel:a#1"],
+    );
+
+    // The slot's error.tsx catches inside panel a's entry, so panel b's
+    // hidden entry stays mounted.
+    await page.locator('[data-testid="throw-panel:a"]:visible').click();
+    await expect(page.getByTestId("panel-slot-error")).toBeVisible();
+    await disableDevErrorOverlay(page);
+    await expectEffects(page, ["cleanup panel:a#1"], [...panelsOpen, "panel-main:a#1"]);
+    await expectHiddenEffectState(page, "panel:b", "Count: 3");
+
+    await clickEffectsLink(page, "/panels/b", "Panels b");
+    await expectEffects(
+      page,
+      ["cleanup panel-main:a#1", "setup panel-main:b#1", "setup panel:b#1"],
+      [...panelsOpen, "panel-main:b#1", "panel:b#1"],
+    );
+    await expect(effectCount(page, "panel:b")).toHaveText("Count: 3");
+    await expect(page.getByTestId("panel-slot-error")).toBeHidden();
   });
 });
