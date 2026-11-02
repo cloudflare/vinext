@@ -201,51 +201,37 @@ describe("app route handler policy helpers", () => {
 
   it("maps special route handler digests to typed redirect and status results", () => {
     expect(
-      resolveAppRouteHandlerSpecialError(
-        { digest: "NEXT_REDIRECT;replace;%2Ftarget%3Fok%3D1;308" },
-        "https://example.com/source",
-      ),
+      resolveAppRouteHandlerSpecialError({
+        digest: "NEXT_REDIRECT;replace;%2Ftarget%3Fok%3D1;308",
+      }),
     ).toEqual({
       kind: "redirect",
-      location: "https://example.com/target?ok=1",
+      location: "/target?ok=1",
       statusCode: 308,
     });
 
     expect(
       resolveAppRouteHandlerSpecialError(
         { digest: "NEXT_REDIRECT;replace;%2Ftarget%3Fok%3D1;308" },
-        "https://example.com/source",
         { isAction: true },
       ),
     ).toEqual({
       kind: "redirect",
-      location: "https://example.com/target?ok=1",
+      location: "/target?ok=1",
       statusCode: 303,
     });
 
-    expect(
-      resolveAppRouteHandlerSpecialError(
-        { digest: "NEXT_NOT_FOUND" },
-        "https://example.com/source",
-      ),
-    ).toEqual({
+    expect(resolveAppRouteHandlerSpecialError({ digest: "NEXT_NOT_FOUND" })).toEqual({
       kind: "status",
       statusCode: 404,
     });
 
-    expect(
-      resolveAppRouteHandlerSpecialError(
-        { digest: "NEXT_HTTP_ERROR_FALLBACK;401" },
-        "https://example.com/source",
-      ),
-    ).toEqual({
+    expect(resolveAppRouteHandlerSpecialError({ digest: "NEXT_HTTP_ERROR_FALLBACK;401" })).toEqual({
       kind: "status",
       statusCode: 401,
     });
 
-    expect(resolveAppRouteHandlerSpecialError(new Error("no digest"), "https://example.com")).toBe(
-      null,
-    );
+    expect(resolveAppRouteHandlerSpecialError(new Error("no digest"))).toBe(null);
   });
 
   it("classifies possible app-route action requests like Next.js", () => {

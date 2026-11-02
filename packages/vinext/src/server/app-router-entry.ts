@@ -46,6 +46,7 @@ import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-uti
 import { resolveClientBuildFile } from "./client-build-files.js";
 import {
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
@@ -109,14 +110,14 @@ export default {
     ctx?: ExecutionContextLike & VinextRequestStageContext,
   ): Promise<Response> {
     const handleFetch = async () => {
-      await __ensureInstrumentation();
+      await __ensureInstrumentation(ctx);
       const url = new URL(request.url);
       return traceFrameworkRequest({
         callback: async () =>
           applyCdnResponseIdentityHeaders(await handleRequest(request, env, ctx), request),
         getStatus: (response) => response?.status,
         headers: request.headers,
-        isRsc: url.pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1",
+        isRsc: request.headers.get(RSC_HEADER) === "1",
         method: request.method,
         target: url.pathname + url.search,
       });
@@ -147,7 +148,7 @@ async function handleRequest(
   let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
   if (readinessResponse) {
-    if (readinessResponse.status === 204) await __ensureHybridPagesApplication();
+    if (readinessResponse.status === 204) await __ensureHybridPagesApplication(ctx);
     return (await validateCdnRequest(request)) ?? readinessResponse;
   }
   let finalizeCacheabilityResponse:
@@ -173,7 +174,7 @@ async function handleRequest(
       const probeUrl = new URL(request.url);
       if (probeUrl.searchParams.has(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM)) {
         probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
-        request = new Request(probeUrl, request);
+        request = cloneRequestWithUrl(request, probeUrl.href);
       }
     }
   }

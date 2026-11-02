@@ -1,10 +1,10 @@
-import { parseAst, type ESTree } from "vite";
+import type { ESTree } from "vite";
 import MagicString from "magic-string";
 import { findAstBindingScope, walkAstScopes } from "./ast-scope.js";
-import { getAstName } from "./ast-utils.js";
+import { getAstName, parseProgram } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
-type ParsedAst = ReturnType<typeof parseAst>;
+type ParsedAst = ESTree.Program;
 type ASTNode = ParsedAst["body"][number]["parent"];
 // Vite's AST type is a large discriminated union whose node-specific fields
 // are not exposed after generic traversal. Runtime checks below narrow each
@@ -175,13 +175,19 @@ function isReferenceIdentifier(node: PositionedNode, parent?: PositionedNode): b
     return false;
   }
   if (
-    (parent.type === "Property" || parent.type === "MethodDefinition") &&
+    (parent.type === "Property" ||
+      parent.type === "MethodDefinition" ||
+      parent.type === "PropertyDefinition" ||
+      parent.type === "AccessorProperty" ||
+      parent.type === "ImportAttribute") &&
     parent.key === node &&
     !parent.computed &&
     !(parent.type === "Property" && parent.shorthand)
   ) {
     return false;
   }
+  // `import.meta` and `new.target` are syntax, not reads of `meta` or `target`.
+  if (parent.type === "MetaProperty") return false;
   if (
     (parent.type === "LabeledStatement" ||
       parent.type === "BreakStatement" ||
@@ -412,7 +418,7 @@ export function validatePageExports(code: string): void {
   if (!hasExportAllCandidate(code)) return;
   let ast: ParsedAst;
   try {
-    ast = parseAst(code);
+    ast = parseProgram(code);
   } catch {
     return;
   }
@@ -443,7 +449,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
 
   let ast: ParsedAst;
   try {
-    ast = parseAst(code);
+    ast = parseProgram(code);
   } catch {
     return null;
   }

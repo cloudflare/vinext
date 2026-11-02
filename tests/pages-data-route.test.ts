@@ -5,6 +5,7 @@ import {
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
   encodeUrlParserIgnoredCharacters,
+  nextDataMiddlewareMatchPathname,
   normalizePagesDataRequest,
   shouldAddTrailingSlashToPagesDataPath,
   normalizeNextDataPagePathname,
@@ -90,6 +91,22 @@ describe("pages-data-route", () => {
       expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/.json`, BUILD_ID)).toBeNull();
     });
 
+    it("returns null when stripping `.json` leaves a dot segment", () => {
+      for (const page of [
+        "blog/...json",
+        "blog/..json",
+        "...json",
+        "blog/%2E%2e.json",
+        "blog/.%2e.json",
+      ]) {
+        expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/${page}`, BUILD_ID), page).toBeNull();
+      }
+      expect(nextDataMiddlewareMatchPathname("/_next/data/stale-id/dashboard/...json")).toBeNull();
+      expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/blog/....json`, BUILD_ID)).toEqual({
+        pagePathname: "/blog/...",
+      });
+    });
+
     it("returns null for non-_next/data paths", () => {
       expect(parseNextDataPathname("/about", BUILD_ID)).toBeNull();
       expect(parseNextDataPathname("/_next/static/x.json", BUILD_ID)).toBeNull();
@@ -152,6 +169,15 @@ describe("pages-data-route", () => {
       expect(result.notFoundResponse).toBeNull();
     });
 
+    it("preserves basePath for a page whose first segment equals it", () => {
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/root/_next/data/${buildId}/root/about.json`);
+      const result = normalizePagesDataRequest(req, buildId, "/root");
+
+      expect(result.normalizedPathname).toBe("/root/about");
+      expect(result.request.url).toBe("http://localhost/root/root/about");
+    });
+
     it("applies trailingSlash after preserving basePath for middleware", () => {
       const buildId = "abc123";
       const req = new Request(`http://localhost/root/_next/data/${buildId}/about.json?x=1`);
@@ -170,6 +196,17 @@ describe("pages-data-route", () => {
       expect(result.isDataReq).toBe(true);
       expect(result.normalizedPathname).toBe("/about");
       expect(result.request.url).toBe("http://localhost/about?x=1");
+    });
+
+    it("keeps Workers cf metadata on the normalized request", () => {
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/_next/data/${buildId}/about.json`);
+      const cf = { country: "AU" };
+      Object.defineProperty(req, "cf", { value: cf, enumerable: true });
+      const result = normalizePagesDataRequest(req, buildId);
+
+      expect(result.request.url).toBe("http://localhost/about");
+      expect(Reflect.get(result.request, "cf")).toBe(cf);
     });
   });
 

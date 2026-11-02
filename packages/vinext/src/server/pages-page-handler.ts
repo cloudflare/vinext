@@ -29,10 +29,14 @@ import {
   mergePagesNotFoundSourceHeaders,
   resolvePagesPageData,
   resolvePagesStatusPageRenderPath,
+  setPagesResponseHeader,
 } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
-import { renderPagesPageResponse } from "./pages-page-response.js";
+import {
+  applyPagesPrerenderRevalidateHeader,
+  renderPagesPageResponse,
+} from "./pages-page-response.js";
 import { tracePagesDocumentStream, traceFindPageComponents } from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
@@ -43,6 +47,7 @@ import {
   applyCdnResponseHeaders,
   hasExplicitNonCacheableResponsePolicy,
   hasCdnResponsePolicy,
+  isCdnResponsePolicyHeader,
   shouldUseNextDeployCacheControl,
 } from "./cache-control.js";
 import {
@@ -56,7 +61,7 @@ import {
   isrGet,
   isrSet,
   pagesIsrCacheKey,
-  coalesceOnDemandRevalidation,
+  coalesceOnDemandResponse,
   triggerBackgroundRegeneration,
   PRERENDER_REVALIDATE_HEADER,
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
@@ -73,7 +78,7 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { ensureFetchPatch } from "vinext/shims/fetch-cache";
+import { ensureFetchPatch, setCurrentFetchDraftMode } from "vinext/shims/fetch-cache";
 import {
   beginRouteCacheability,
   isRouteCacheabilityIdentityProbe,
@@ -96,6 +101,7 @@ import {
   hasPagesGetInitialProps,
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
+import { logRequestError } from "./request-error-log.js";
 
 export async function renderTracedPagesPageResponse(
   options: Parameters<typeof renderPagesPageResponse>[0],
@@ -191,11 +197,19 @@ function stripPagesNotFoundFramingHeaders(response: Response): Response {
   });
 }
 
+type PagesNotFoundResHeaders = Record<string, string | number | boolean | string[]>;
+
+/**
+ * `notFoundResHeaders` is the getServerSideProps res as it stands after the
+ * 404 render: the middleware and next.config headers, the handler's writes,
+ * then any write from the 404 render's own user code.
+ */
 function applyPagesErrorCachePolicy(
   response: Response,
   revalidateSeconds: number | false | undefined,
   expireSeconds: number | undefined,
   cacheTagPathname: string,
+  notFoundResHeaders: PagesNotFoundResHeaders | undefined,
 ): Response {
   const headers = new Headers(response.headers);
   recordRouteCacheability(
@@ -210,9 +224,20 @@ function applyPagesErrorCachePolicy(
   // The source route's notFound lifetime controls the outgoing response, not
   // the inner error page's lifetime. Preview and nonce-bearing responses are
   // excluded by the caller, and explicit no-store responses stay untouched.
-  // Reapply the source policy through the adapter so this replacement does not
-  // need to inspect adapter-owned header names.
-  if (revalidateSeconds === undefined) {
+  if (revalidateSeconds === undefined && notFoundResHeaders?.["cache-control"]) {
+    // Next.js pages-handler.ts only applies the getServerSideProps
+    // `revalidate: 0` default when `!res.getHeader('Cache-Control')` (the raw
+    // value, so `[]` counts as set), then renders the 404 on that same res and
+    // keeps a value already there. So the res policy is the one the visitor
+    // gets, not the inner 404 page's.
+    const policyHeaderNames = Array.from(headers.keys()).filter(isCdnResponsePolicyHeader);
+    for (const name of policyHeaderNames) headers.delete(name);
+    for (const [name, value] of Object.entries(notFoundResHeaders)) {
+      if (isCdnResponsePolicyHeader(name)) setPagesResponseHeader(headers, name, value);
+    }
+  } else if (revalidateSeconds === undefined) {
+    // Reapply the source policy through the adapter so this replacement does
+    // not need to inspect adapter-owned header names.
     applyCdnResponseHeaders(headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
   } else {
     applyCdnResponseHeaders(headers, {
@@ -339,7 +364,7 @@ export type CreatePagesPageHandlerOptions = {
   getFontStyles: () => string[];
   /** Combined font preloads. */
   getFontPreloads: () => Array<{ href: string; type: string }>;
-  /** `renderToReadableStream` from `react-dom/server.edge`. */
+  /** `renderToReadableStream` from `react-dom/server`. */
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
   /** `safeJsonStringify` from `vinext/html`. */
   safeJsonStringify: (value: unknown) => string;
@@ -658,17 +683,20 @@ export function createPagesPageHandler(
     });
     const isCacheabilityProbe = isRouteCacheabilityProbe();
     const isTopLevelPageRoute = !isRouteMissErrorRender && options?.__forcedRoute === undefined;
+    // A page or custom `_app` getInitialProps runs on every request with the
+    // live req/res, like getServerSideProps. Error renders keep their own
+    // policy from applyPagesErrorCachePolicy.
+    const isInitialPropsRender =
+      isTopLevelPageRoute &&
+      !isStaticPropsRoute &&
+      pagesReadiness.gssp !== true &&
+      (pagesReadiness.gip === true || pagesReadiness.appGip === true);
     if (isTopLevelPageRoute) {
       beginRouteCacheability("pages-page", route.pattern);
       if (isRouteCacheabilityIdentityProbe()) {
         return new Response(null, { status: 204 });
       }
-      if (
-        pagesReadiness.gssp !== true &&
-        pagesReadiness.gip !== true &&
-        !(pagesReadiness.appGip === true && !isStaticPropsRoute) &&
-        !isStaticPropsRoute
-      ) {
+      if (pagesReadiness.gssp !== true && !isInitialPropsRender && !isStaticPropsRoute) {
         // Automatic Static Optimization is the Pages Router equivalent of a
         // `getStaticProps` page with no revalidation window. It has no origin
         // ISR entry to copy policy from, so carry Next.js's static policy into
@@ -691,8 +719,8 @@ export function createPagesPageHandler(
       isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER));
     if (shouldCoalesceOnDemand) {
       const cacheKey = pageIsrCacheKey("pages", routeUrl.split("?")[0]);
-      const snapshot = await coalesceOnDemandRevalidation(cacheKey, async () => {
-        const response = await renderPage(
+      return coalesceOnDemandResponse(cacheKey, request.method, () =>
+        renderPage(
           request,
           url,
           manifest,
@@ -702,22 +730,8 @@ export function createPagesPageHandler(
             __skipOnDemandCoalesce: true,
           },
           initialResponseHeaders,
-        );
-        return {
-          body:
-            request.method === "HEAD" || response.status === 204 || response.status === 304
-              ? null
-              : new Uint8Array(await response.arrayBuffer()),
-          headers: [...response.headers.entries()] as Array<[string, string]>,
-          status: response.status,
-          statusText: response.statusText,
-        };
-      });
-      return new Response(snapshot.body?.slice() ?? null, {
-        headers: snapshot.headers,
-        status: snapshot.status,
-        statusText: snapshot.statusText,
-      });
+        ),
+      );
     }
     const routePattern = patternToNextFormat(route.pattern);
     const renderStatusCode =
@@ -757,6 +771,11 @@ export function createPagesPageHandler(
       : routerAsPathSource;
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
+      // Like Next.js's per-request IncrementalCache, an authorized on-demand
+      // revalidation makes unstable_cache skip its read in getStaticProps.
+      isOnDemandRevalidate: isOnDemandRevalidateRequest(
+        request.headers.get(PRERENDER_REVALIDATE_HEADER),
+      ),
     });
 
     // The req/res `_app`, the page data and `_document` share for this render.
@@ -773,7 +792,7 @@ export function createPagesPageHandler(
       resolveSentResponse = resolve;
     });
     const reportSsrError = async (e: unknown) => {
-      console.error("[vinext] SSR error:", e);
+      logRequestError("[vinext] SSR error:", e);
       await reportRequestError(
         e,
         {
@@ -834,6 +853,7 @@ export function createPagesPageHandler(
             })
           : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
         const previewData = preview.data;
+        setCurrentFetchDraftMode(previewData !== false);
         const pagesNextData = {
           ...pagesReadiness,
           ...(previewData === false ? {} : { isPreview: true as const }),
@@ -930,8 +950,11 @@ export function createPagesPageHandler(
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
+        // A getServerSideProps notFound render takes its policy from the
+        // final res state in applyPagesErrorCachePolicy, which already holds
+        // the middleware and next.config headers, so it is not restamped.
         const browserCacheControl =
-          isStaticPropsRoute && !scriptNonce
+          isStaticPropsRoute && !scriptNonce && !options?.__notFoundSourceHeaders
             ? (initialResponseHeaders ?? middlewareHeaders)?.get("Cache-Control")
             : null;
         const withBrowserPolicy = (response: Response): Response => {
@@ -1056,6 +1079,7 @@ export function createPagesPageHandler(
               : undefined,
             documentReqRes: render.documentReqRes,
             gsspRes: render.gsspRes,
+            isInitialPropsRender,
             isrCacheKey: pageIsrCacheKey,
             isrCachePathname,
             expireSeconds: render.expireSeconds,
@@ -1247,6 +1271,13 @@ export function createPagesPageHandler(
           } else if (pageDataResult.cacheState) {
             notFoundResponse = withPagesCacheState(notFoundResponse, pageDataResult.cacheState);
           }
+          // Whichever 404 rendered, the build records the source route's lifetime.
+          if (pageDataResult.revalidateSeconds !== undefined) {
+            applyPagesPrerenderRevalidateHeader(
+              notFoundResponse.headers,
+              pageDataResult.revalidateSeconds,
+            );
+          }
           return finalizePagesPreviewResponse(withBrowserPolicy(notFoundResponse), preview);
         }
         if (pageDataResult.kind === "response") {
@@ -1262,6 +1293,8 @@ export function createPagesPageHandler(
               errorPageRevalidateSeconds,
               errorPageExpireSeconds,
               errorResponseCachePathname,
+              // A cached /404 runs no user code, so the source res is final.
+              options?.__notFoundSourceHeaders,
             );
           }
           return finalizePagesPreviewResponse(withBrowserPolicy(response), preview);
@@ -1317,6 +1350,7 @@ export function createPagesPageHandler(
         // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
         if (isDataReq) {
           const headers = new Headers();
+          let resHasCacheControl = false;
           if (gsspRes && typeof gsspRes.getHeaders === "function") {
             const gsspHeaders = gsspRes.getHeaders();
             for (const k of Object.keys(gsspHeaders)) {
@@ -1328,13 +1362,25 @@ export function createPagesPageHandler(
                 headers.set(k, Array.isArray(v) ? v.join(", ") : String(v));
               }
             }
+            resHasCacheControl = headers.has("Cache-Control");
+          } else if (isInitialPropsRender && documentReqRes) {
+            // getInitialProps ran on the document res, which also starts from
+            // the middleware and next.config headers. Keep its cache policy so
+            // the default below only fills a missing one, as in Next.js.
+            const resHeaders = documentReqRes.res.getHeaders();
+            for (const [name, value] of Object.entries(resHeaders)) {
+              if (isCdnResponsePolicyHeader(name)) setPagesResponseHeader(headers, name, value);
+            }
+            // Next.js checks the raw value (`!res.getHeader('Cache-Control')`),
+            // so `[]` counts as set while `""` does not.
+            resHasCacheControl = Boolean(resHeaders["cache-control"]);
           }
           if (hasCdnResponsePolicy(headers)) markRouteCacheabilityExplicitResponsePolicy();
-          if (gsspRes) {
-            // Default Cache-Control for gSSP-driven _next/data responses —
-            // skip when gSSP already set one via res.setHeader. Fixes #1461.
-            if (!headers.has("Cache-Control"))
-              headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
+          if (gsspRes || isInitialPropsRender) {
+            // Default Cache-Control for gSSP- and getInitialProps-driven
+            // _next/data responses — skip when the res already has one.
+            // Fixes #1461.
+            if (!resHasCacheControl) headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
           } else if (isStaticPropsRoute) {
             if (isrRevalidateSeconds !== null) {
               applyCdnResponseHeaders(headers, {
@@ -1393,6 +1439,11 @@ export function createPagesPageHandler(
             errorPageRevalidateSeconds,
             errorPageExpireSeconds,
             errorResponseCachePathname,
+            // The 404 render ran `_app` and `_document` on this res, which
+            // started from the source res, so a later write there wins.
+            options?.__notFoundSourceHeaders
+              ? (documentReqRes?.res.getHeaders() ?? options.__notFoundSourceHeaders)
+              : undefined,
           );
         }
         return finalizePagesPreviewResponse(withBrowserPolicy(pageResponse), preview);

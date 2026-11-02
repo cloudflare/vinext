@@ -26,8 +26,8 @@ const EMPTY_MIDDLEWARE_REQUEST_CONTEXT: RequestContext = {
   host: "",
 };
 
-const UNSAFE_MATCHER_PATTERN = Symbol("unsafe matcher pattern");
-type CompiledMatcherPattern = RegExp | typeof UNSAFE_MATCHER_PATTERN;
+const INVALID_MATCHER_PATTERN = Symbol("invalid matcher pattern");
+type CompiledMatcherPattern = RegExp | typeof INVALID_MATCHER_PATTERN;
 
 const _mwPatternCache = new Map<string, CompiledMatcherPattern>();
 
@@ -130,18 +130,18 @@ function matchMatcherPattern(
   if (localeContext?.kind === "next-data") {
     return matchNextDataPattern(pathname, pattern, i18nConfig, true);
   }
-  if (!i18nConfig) return matchPattern(pathname, pattern);
+  if (!i18nConfig) return matchRequestPattern(pathname, pattern);
 
   if (localeContext) {
     if (localeContext.kind === "internal") return false;
-    return matchPattern(
+    return matchRequestPattern(
       localeContext.kind === "literal" ? stripFirstPathSegment(pathname) : pathname,
       pattern,
     );
   }
 
   const localeStrippedPathname = stripLocalePrefix(pathname, i18nConfig);
-  return matchPattern(localeStrippedPathname ?? pathname, pattern);
+  return matchRequestPattern(localeStrippedPathname ?? pathname, pattern);
 }
 
 function matchObjectMatcher(
@@ -161,7 +161,26 @@ function matchObjectMatcher(
     localeContext?.kind === "defaulted"
       ? `/${localeContext.defaultLocale}${pathname === "/" ? "" : pathname}`
       : pathname;
-  return matchPattern(matchPathname, matcher.source);
+  return matchRequestPattern(matchPathname, matcher.source);
+}
+
+const APP_ROUTE_TRANSPORT_SUFFIX = "\\.rsc|\\.segments/.+\\.segment\\.rsc";
+const APP_ROUTE_TRANSPORT_SUFFIX_RE = /(?:\.rsc|\.segments\/.+\.segment\.rsc)$/;
+
+/**
+ * Next.js compiles every matcher with optional App Router transport suffixes,
+ * so a matcher for `/about` runs middleware for `/about.rsc` too. Middleware
+ * still sees the path as requested.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/analysis/get-page-static-info.ts
+ */
+function matchRequestPattern(pathname: string, source: string): boolean {
+  if (matchPattern(pathname, source)) return true;
+  if (!APP_ROUTE_TRANSPORT_SUFFIX_RE.test(pathname)) return false;
+  const transportSource =
+    source === "/"
+      ? `/(/?index(?:${APP_ROUTE_TRANSPORT_SUFFIX}))?`
+      : `${source}{(${APP_ROUTE_TRANSPORT_SUFFIX})}?`;
+  return matchPattern(pathname, transportSource);
 }
 
 function matchNextDataPattern(
@@ -170,16 +189,16 @@ function matchNextDataPattern(
   i18nConfig: NextI18nConfig | null | undefined,
   localized: boolean,
 ): boolean {
-  // An invalid or unsafe source runs middleware for every path, as elsewhere.
-  if (compiledPattern(source) === UNSAFE_MATCHER_PATTERN) return true;
+  // An invalid source runs middleware for every path, as elsewhere.
+  if (compiledPattern(source) === INVALID_MATCHER_PATTERN) return true;
   return matchPattern(pathname, nextDataMatcherSource(source, i18nConfig, localized));
 }
 
 /**
  * The source Next.js compiles for a matcher: an optional `_next/data/<buildId>`
  * prefix, an internal locale segment under i18n, and an optional data suffix.
- * Next.js also accepts App Router transport suffixes, which end in `.rsc` and
- * so can never match a `.json` data URL.
+ * Its App Router transport suffixes end in `.rsc`, so they can never match a
+ * `.json` data URL.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/analysis/get-page-static-info.ts
  */
 function nextDataMatcherSource(
@@ -223,7 +242,7 @@ export function matchPattern(pathname: string, pattern: string): boolean {
     return false;
   }
   const compiled = compiledPattern(pattern);
-  if (compiled === UNSAFE_MATCHER_PATTERN) return true;
+  if (compiled === INVALID_MATCHER_PATTERN) return true;
   return compiled.test(pathname);
 }
 
@@ -240,11 +259,10 @@ function compileMatcherPattern(pattern: string): CompiledMatcherPattern {
   const result = compileMiddlewareMatcherPattern(pattern);
   if (result.regexp) return result.regexp;
 
-  const problem = result.kind === "unsafe" ? "potentially unsafe" : "invalid";
   console.warn(
-    `[vinext] Rejecting ${problem} middleware matcher: ${pattern}\n` +
+    `[vinext] Rejecting invalid middleware matcher: ${pattern}\n` +
       `  ${result.error}.\n` +
       `  Middleware will run for all paths to avoid bypassing request guards.`,
   );
-  return UNSAFE_MATCHER_PATTERN;
+  return INVALID_MATCHER_PATTERN;
 }

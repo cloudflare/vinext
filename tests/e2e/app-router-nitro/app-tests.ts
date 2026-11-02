@@ -1,4 +1,4 @@
-import { test, expect, type APIResponse, type Page } from "@playwright/test";
+import { test, expect, type APIResponse, type Browser, type Page } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
 // Tests shared by the dev and preview specs for examples/app-router-nitro.
@@ -16,6 +16,28 @@ async function markDocument(page: Page): Promise<void> {
 
 async function expectSameDocument(page: Page): Promise<void> {
   expect(await page.evaluate(() => Reflect.get(window, "__nitroE2eDocument"))).toBe(true);
+}
+
+async function visitAccount(
+  browser: Browser,
+  baseURL: string | undefined,
+  session: string | null,
+): Promise<{ user: string | null; cacheControl: string | undefined }> {
+  const context = await browser.newContext({ baseURL });
+  try {
+    if (session) {
+      await context.addCookies([{ name: "session", value: session, url: baseURL! }]);
+    }
+    const page = await context.newPage();
+    const response = await page.goto("/account");
+    expect(response?.status()).toBe(200);
+    return {
+      user: await page.getByTestId("account-user").textContent(),
+      cacheControl: response?.headers()["cache-control"],
+    };
+  } finally {
+    await context.close();
+  }
 }
 
 function setCookieValues(response: APIResponse, name: string): string[] {
@@ -47,6 +69,16 @@ export function defineNitroAppTests(): void {
     const response = await page.goto("/about");
     expect(response?.status()).toBe(200);
     await expect(page.locator("h1")).toHaveText("About");
+  });
+
+  // As in Next.js, reading cookies() makes a page dynamic even when it exports
+  // `revalidate`, so one visitor's render is never served to another.
+  test("renders a revalidate page that reads cookies per visitor", async ({ browser, baseURL }) => {
+    for (const session of ["alice", null, "bob"]) {
+      const { user, cacheControl } = await visitAccount(browser, baseURL, session);
+      expect(user).toBe(`Signed in as: ${session ?? "anonymous"}`);
+      expect(cacheControl).toContain("no-store");
+    }
   });
 
   test("navigates on the client with Link and useRouter", async ({ page }) => {

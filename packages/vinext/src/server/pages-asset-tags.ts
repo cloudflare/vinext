@@ -10,7 +10,10 @@
  */
 
 import { createNonceAttribute } from "./html.js";
-import { assetServingUrlFromBaseAnchored } from "../utils/manifest-paths.js";
+import {
+  assetServingUrlFromBaseAnchored,
+  SSR_MANIFEST_SHARED_CHUNKS_KEY,
+} from "../utils/manifest-paths.js";
 import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 import { getPagesClientAssets } from "./pages-client-assets.js";
 
@@ -75,7 +78,14 @@ function findModuleKey(manifest: Record<string, unknown>, moduleId: string): str
   return matchedKey;
 }
 
+/**
+ * Fallback for when no build-time `sharedChunks` list is registered. Prefers
+ * the chunk-name based list the build writes into the SSR manifest; the file
+ * name scan only matches `[name]-[hash]` names, not hash-only ones.
+ */
 export function getSharedChunkFiles(manifest: Record<string, string[]>): string[] {
+  const recorded = manifest[SSR_MANIFEST_SHARED_CHUNKS_KEY];
+  if (recorded) return recorded;
   const cached = sharedChunkFiles.get(manifest);
   if (cached) return cached;
 
@@ -328,11 +338,12 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         }
       }
 
-      // Shared runtime files are build-wide; scan and deduplicate them once.
-      const sharedFiles =
-        m === runtimeAssets.ssrManifest && runtimeAssets.sharedChunks
-          ? runtimeAssets.sharedChunks
-          : getSharedChunkFiles(m);
+      // Shared runtime files are build-wide. The registered list comes from
+      // the client build manifest's chunk names, so it also applies when the
+      // caller supplies its own copy of that build's SSR manifest (the Node
+      // production server reads one from disk). Only scan file names when no
+      // build metadata was registered.
+      const sharedFiles = runtimeAssets.sharedChunks ?? getSharedChunkFiles(m);
       for (const file of sharedFiles) allFiles.push(file);
     } else {
       // No specific modules — include all assets from manifest.

@@ -23,7 +23,7 @@ import {
   type MiddlewareLocaleMatchContext,
 } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
-import { processMiddlewareHeaders } from "./request-pipeline.js";
+import { dropEmptyMiddlewareSetCookie, processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
 import { isOpenRedirectShaped } from "./open-redirect.js";
 import {
@@ -37,6 +37,7 @@ import { nextDataMiddlewareMatchPathname } from "./pages-data-route.js";
 import { reportRequestError } from "./instrumentation.js";
 import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
 import { frameworkTracer } from "./tracer.js";
+import { logRequestError } from "./request-error-log.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -260,6 +261,7 @@ function collectMiddlewareHeaders(response: Response): Headers {
       responseHeaders.append(key, value);
     }
   }
+  dropEmptyMiddlewareSetCookie(responseHeaders);
   return responseHeaders;
 }
 
@@ -284,8 +286,18 @@ function resolveMiddlewarePathname(request: Request): string | Response {
   }
 }
 
+/** The same path and query on another origin. */
+function withOrigin(url: URL, origin: string): URL {
+  const result = new URL(origin);
+  if (result.origin === url.origin) return url;
+  result.pathname = url.pathname;
+  result.search = url.search;
+  return result;
+}
+
 function createNextRequest(
   request: Request,
+  url: URL,
   i18nConfig?: NextI18nConfig | null,
   basePath?: string,
   trailingSlash?: boolean,
@@ -293,7 +305,6 @@ function createNextRequest(
   requestBodyAlreadyIsolated = false,
   skipTrailingSlashRedirect = false,
 ): NextRequest {
-  const url = new URL(request.url);
   // Middleware gets an isolated body branch; downstream routing keeps owning
   // the original request body.
   let mwRequest =
@@ -310,7 +321,7 @@ function createNextRequest(
     basePath && hadBasePath && !hasBasePath(requestPathname, basePath)
       ? addBasePathToPathname(requestPathname, basePath)
       : requestPathname;
-  if (mwPathname !== url.pathname) {
+  if (mwPathname !== url.pathname || url.href !== request.url) {
     const mwUrl = new URL(url);
     mwUrl.pathname = mwPathname;
     mwRequest = new Request(mwUrl, mwRequest);
@@ -326,10 +337,14 @@ function createNextRequest(
       }
     : undefined;
 
+  // On the server's own origin the URL no longer names the host the client
+  // asked for, which still decides the i18n domain locale.
+  const requestUrl = new URL(request.url);
+  const requestHost = requestUrl.origin === url.origin ? undefined : requestUrl.host;
   const nextRequest =
     mwRequest instanceof NextRequest && (!mwRequest.body || mwRequest.bodyUsed)
       ? mwRequest
-      : new NextRequest(mwRequest, nextConfig ? { nextConfig } : undefined);
+      : new NextRequest(mwRequest, nextConfig ? { nextConfig, requestHost } : undefined);
   if (mwRequest !== request && mwRequest.body && !mwRequest.bodyUsed && !mwRequest.body.locked) {
     void mwRequest.body.cancel().catch(() => {});
   }
@@ -530,8 +545,17 @@ async function executeMiddlewareModule(
 
   options.onMatch?.();
 
+  // Middleware sees, and its redirects and rewrites are resolved against, the
+  // server's own origin. The Node server supplies it because its request URL
+  // carries the client's Host header, which must not decide whether a rewrite
+  // to another host is external (Next.js uses its configured hostname here).
+  const middlewareUrl = withOrigin(
+    requestUrl,
+    getRequestExecutionContext()?.middlewareOrigin ?? requestUrl.origin,
+  );
   const nextRequest = createNextRequest(
     options.request,
+    middlewareUrl,
     options.i18nConfig,
     options.basePath,
     options.trailingSlash,
@@ -570,8 +594,11 @@ async function executeMiddlewareModule(
     if (isDevelopmentNavigationSignal && e instanceof Error) {
       e.message = `Next.js navigation API is not allowed to be used in ${options.isProxy ? "Proxy" : "Middleware"}.`;
     }
-    console.error("[vinext] Middleware error:", e);
-    if (!isDevelopmentNavigationSignal) {
+    if (isDevelopmentNavigationSignal) {
+      // Not reported, so VINEXT_QUIET doesn't silence it.
+      console.error("[vinext] Middleware error:", e);
+    } else {
+      logRequestError("[vinext] Middleware error:", e);
       await reportProxyError(options, e);
     }
     const waitUntilPromises = drainFetchEvent(fetchEvent);
@@ -599,7 +626,7 @@ async function executeMiddlewareModule(
       // Make same-host Location relative for parity with Next.js, which only
       // emits absolute URLs for cross-origin redirects:
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
-      const relativeLocation = relativizeLocation(location, options.request.url);
+      const relativeLocation = relativizeLocation(location, middlewareUrl.href);
 
       // Normalize trailing slash on middleware redirect Locations that came
       // from a plain `new URL(...)` rather than `request.nextUrl`. NextURL
@@ -610,8 +637,8 @@ async function executeMiddlewareModule(
       let normalizedLocation = relativeLocation;
       if (options.trailingSlash !== undefined && !options.skipTrailingSlashRedirect) {
         try {
-          const loc = new URL(relativeLocation, options.request.url);
-          if (loc.origin === new URL(options.request.url).origin) {
+          const loc = new URL(relativeLocation, middlewareUrl);
+          if (loc.origin === middlewareUrl.origin) {
             // Use the same plain add/strip rule as NextURL._applyTrailingSlash /
             // Next.js's formatNextPathnameInfo — no exemptions for /api, file
             // extensions, etc. Only root is exempt.
@@ -626,7 +653,7 @@ async function executeMiddlewareModule(
             }
             if (normalized !== null) {
               loc.pathname = normalized;
-              normalizedLocation = relativizeLocation(loc.toString(), options.request.url);
+              normalizedLocation = relativizeLocation(loc.toString(), middlewareUrl.href);
             }
           }
         } catch {
@@ -682,9 +709,8 @@ async function executeMiddlewareModule(
     let rewritePath: string;
     let rewriteHadBasePath: boolean | undefined;
     try {
-      const rewriteParsed = new URL(rewriteUrl, options.request.url);
-      const requestOrigin = new URL(options.request.url).origin;
-      if (rewriteParsed.origin === requestOrigin) {
+      const rewriteParsed = new URL(rewriteUrl, middlewareUrl);
+      if (rewriteParsed.origin === middlewareUrl.origin) {
         // Middleware constructs the rewrite-target URL itself (e.g. by
         // modifying `request.nextUrl` or by passing a fresh path). Whatever
         // search params that URL carries IS the final query — vinext must not

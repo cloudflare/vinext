@@ -1,5 +1,6 @@
 /**
- * Blog posts are Markdown files in `content/blog/`. The file name is the URL slug
+ * Blog posts are Markdown files in `content/blog/`, or MDX files when a post needs HTML
+ * such as tables, which `.md` files can't render. The file name is the URL slug
  * (`content/blog/vinext-1-0.md` → `/blog/vinext-1-0`), and each file starts with
  * YAML frontmatter:
  *
@@ -44,7 +45,7 @@ type PostModule = {
   readingMinutes: number;
 };
 
-const modules = import.meta.glob<PostModule>("../../content/blog/*.md", { eager: true });
+const modules = import.meta.glob<PostModule>("../../content/blog/*.{md,mdx}", { eager: true });
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const FRONTMATTER_KEYS = new Set([
@@ -119,7 +120,7 @@ const allPosts = Object.entries(modules)
   .map(([file, module]): BlogPost => {
     const frontmatter = module.frontmatter;
     if (!frontmatter) throw new Error(`${file} is missing YAML frontmatter`);
-    const slug = file.slice(file.lastIndexOf("/") + 1, -".md".length);
+    const slug = file.slice(file.lastIndexOf("/") + 1, file.lastIndexOf("."));
     if (!SLUG_PATTERN.test(slug)) {
       throw new Error(`${file} must be named with lowercase words separated by hyphens`);
     }

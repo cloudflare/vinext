@@ -20,6 +20,8 @@ export type CloudflareInitOptions = {
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
   legacyWrangler?: boolean;
+  /** Proceed even though the root Wrangler config belongs to another Worker. */
+  ignoreWranglerConfig?: boolean;
   prerender?: boolean;
   /** Worker name for generated config, instead of one derived from package.json. */
   name?: string;
@@ -278,6 +280,12 @@ export async function resolveInitOptions(
     undefined,
     '--legacy-wrangler-cloudflare-init expects true or false when using the "--legacy-wrangler-cloudflare-init=value" form.',
   );
+  const ignoreWranglerConfig = parseBooleanArg(
+    args,
+    "--ignore-wrangler-config",
+    undefined,
+    '--ignore-wrangler-config expects true or false when using the "--ignore-wrangler-config=value" form.',
+  );
   const name = parseNameArg(args);
   const platform =
     legacyWrangler && !parsePlatformArg(args)
@@ -287,6 +295,14 @@ export async function resolveInitOptions(
   const explicitWarmCdnCache = parseWarmCdnCacheArg(args);
   if (legacyWrangler && platform !== "cloudflare") {
     throw new Error("--legacy-wrangler-cloudflare-init requires --platform=cloudflare.");
+  }
+  if (ignoreWranglerConfig && platform !== "cloudflare") {
+    throw new Error("--ignore-wrangler-config requires --platform=cloudflare.");
+  }
+  if (ignoreWranglerConfig && legacyWrangler) {
+    throw new Error(
+      "--ignore-wrangler-config cannot be combined with --legacy-wrangler-cloudflare-init.",
+    );
   }
   if (name && platform !== "cloudflare") {
     throw new Error("--name requires --platform=cloudflare.");
@@ -327,6 +343,7 @@ export async function resolveInitOptions(
             ...platformOptions,
             warmCdnCache,
             ...(legacyWrangler ? { legacyWrangler } : {}),
+            ...(ignoreWranglerConfig ? { ignoreWranglerConfig } : {}),
             ...(prerender ? { prerender: true } : {}),
             ...(name ? { name } : {}),
           }

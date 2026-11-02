@@ -100,3 +100,29 @@ export function collapseDuplicateBase(file: string, base: string): string {
     ? normalizedFile.slice(normalizedBase.length + 1)
     : normalizedFile;
 }
+
+// Chunks every Pages Router document loads: the `framework` and `vinext`
+// manualChunks groups (see createClientManualChunks) plus the Pages client
+// entry, named `vinext-client-entry` in hybrid builds. Pages-only builds name
+// that entry `index`, so the build also matches its facade module (see
+// augmentSsrManifestFromBundle). The App Router browser entry is not a Pages
+// document chunk.
+const SHARED_CHUNK_NAMES = new Set(["framework", "vinext", "vinext-client-entry"]);
+
+/**
+ * Whether a Rolldown chunk belongs to the shared Pages Router runtime, judged
+ * by its exact chunk name rather than its emitted file name so user-configured
+ * or hash-only `chunkFileNames` keep their modulepreload/script tags.
+ */
+export function isSharedClientChunkName(name: string | undefined): boolean {
+  return name !== undefined && SHARED_CHUNK_NAMES.has(name);
+}
+
+/**
+ * Reserved `ssr-manifest.json` key listing the shared runtime chunk files.
+ * Consumers that pass the on-disk manifest straight to `renderPage()` (the
+ * legacy two-call Pages build) have no registered build metadata, and file
+ * names alone can't identify these chunks. The `\0` prefix keeps it from
+ * matching any module id.
+ */
+export const SSR_MANIFEST_SHARED_CHUNKS_KEY = "\0vinext:shared-chunks";

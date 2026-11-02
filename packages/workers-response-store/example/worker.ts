@@ -16,6 +16,8 @@ type FixtureRevalidatorOptions = {
   cacheTags?: string[];
   delayMs?: number;
   fail?: boolean;
+  /** Date the response from when regeneration started. */
+  generatedAt?: boolean;
   failOnce?: boolean;
 };
 
@@ -34,6 +36,14 @@ function json(value: unknown, status = 200): Response {
     status,
     headers: { "Cache-Control": "no-store" },
   });
+}
+
+// Live E2E retries responses without this header: the edge failed those
+// requests before this Worker ran.
+function markFixtureResponse(response: Response): Response {
+  const marked = new Response(response.body, response);
+  marked.headers.set("X-Response-Store-Fixture", "1");
+  return marked;
 }
 
 function cacheRequest(request: Request, prefix: string): Request {
@@ -69,6 +79,8 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
     if (value) headers.set(name, value);
   }
   if (age) headers.set("Age", age);
+  const generatedAt = request.headers.get("X-Generated-At");
+  if (generatedAt) headers.set("X-Workers-Response-Store-Generated-At", generatedAt);
   if (cloudflareCacheControl) {
     headers.set("Cloudflare-CDN-Cache-Control", cloudflareCacheControl);
   }
@@ -127,6 +139,17 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
     coalesce: request.headers.get("X-Coalesce") === "1",
     revalidator,
     purgeExisting: request.headers.get("X-Purge-Existing") === "1",
+    ...(request.headers.has("X-Replaces-Revision")
+      ? { replacesRevision: Number(request.headers.get("X-Replaces-Revision")) }
+      : {}),
+    ...(request.headers.has("X-Replaces-Tag-Expiration")
+      ? {
+          replacesTagExpiration: JSON.parse(request.headers.get("X-Replaces-Tag-Expiration")!) as {
+            tags: string[];
+            expiration: number;
+          },
+        }
+      : {}),
     ...(request.headers.get("X-Expiry-Behavior") === "miss"
       ? { expiryBehavior: "miss" as const }
       : {}),
@@ -149,6 +172,7 @@ const responseStoreOptions = {
     const cacheKey = requestUrl.pathname + requestUrl.search;
     activeRegenerationRequests.add(cacheKey);
 
+    const startedAt = Date.now();
     try {
       const options = (input.args[0] ?? {}) as FixtureRevalidatorOptions;
       if (options.delayMs) {
@@ -180,6 +204,9 @@ const responseStoreOptions = {
       if (options.cacheTags?.length) {
         headers.set("Cache-Tag", options.cacheTags.join(","));
       }
+      if (options.generatedAt) {
+        headers.set("X-Workers-Response-Store-Generated-At", String(startedAt));
+      }
 
       return new Response(body, { headers });
     } finally {
@@ -201,62 +228,66 @@ function storeForRequest(request: Request): WorkersResponseStore {
 export const { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding } =
   responseStore.entrypoints;
 
+async function route(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const store = storeForRequest(request);
+
+  try {
+    if (request.method === "GET" && url.pathname === "/") {
+      return json({
+        name: "workers-response-store",
+        status: "ready",
+        backing: ["Workers Cache", "R2", "SQLite Durable Object"],
+        api: ["fetch", "put", "refresh", "invalidate", "purge"],
+        deployment: "single-worker",
+        revalidator: "ResponseStoreRevalidator.regenerate",
+      });
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/cache")) {
+      return await store.fetch(cacheRequest(request, "/cache"));
+    }
+
+    if (request.method === "PUT" && url.pathname.startsWith("/admin/put")) {
+      return await handlePut(request, store);
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/refresh") {
+      const options = (await request.json()) as ResponseStoreRefreshOptions;
+      return json(await store.refresh(options));
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/invalidate") {
+      const options = (await request.json()) as ResponseStoreInvalidateOptions;
+      return json(await store.invalidate(options));
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/purge") {
+      const options = (await request.json()) as ResponseStorePurgeOptions;
+      return json(await store.purge(options));
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/tag-expiration") {
+      const { tags } = (await request.json()) as { tags: string[] };
+      return json({ expiration: await store.getTagExpiration(tags) });
+    }
+
+    if (request.method === "GET" && url.pathname === "/admin/stats") {
+      return json({ activeRegenerationCount, maxConcurrentRegenerations, regenerationCount });
+    }
+
+    if (request.method === "GET" && url.pathname === "/admin/active-regenerations") {
+      return json([...activeRegenerationRequests]);
+    }
+
+    return new Response("Not found", { status: 404 });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 500);
+  }
+}
+
 export default {
   async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const store = storeForRequest(request);
-
-    try {
-      if (request.method === "GET" && url.pathname === "/") {
-        return json({
-          name: "workers-response-store",
-          status: "ready",
-          backing: ["Workers Cache", "R2", "SQLite Durable Object"],
-          api: ["fetch", "put", "refresh", "invalidate", "purge"],
-          deployment: "single-worker",
-          revalidator: "ResponseStoreRevalidator.regenerate",
-        });
-      }
-
-      if (request.method === "GET" && url.pathname.startsWith("/cache")) {
-        return store.fetch(cacheRequest(request, "/cache"));
-      }
-
-      if (request.method === "PUT" && url.pathname.startsWith("/admin/put")) {
-        return handlePut(request, store);
-      }
-
-      if (request.method === "POST" && url.pathname === "/admin/refresh") {
-        const options = (await request.json()) as ResponseStoreRefreshOptions;
-        return json(await store.refresh(options));
-      }
-
-      if (request.method === "POST" && url.pathname === "/admin/invalidate") {
-        const options = (await request.json()) as ResponseStoreInvalidateOptions;
-        return json(await store.invalidate(options));
-      }
-
-      if (request.method === "POST" && url.pathname === "/admin/purge") {
-        const options = (await request.json()) as ResponseStorePurgeOptions;
-        return json(await store.purge(options));
-      }
-
-      if (request.method === "POST" && url.pathname === "/admin/tag-expiration") {
-        const { tags } = (await request.json()) as { tags: string[] };
-        return json({ expiration: await store.getTagExpiration(tags) });
-      }
-
-      if (request.method === "GET" && url.pathname === "/admin/stats") {
-        return json({ activeRegenerationCount, maxConcurrentRegenerations, regenerationCount });
-      }
-
-      if (request.method === "GET" && url.pathname === "/admin/active-regenerations") {
-        return json([...activeRegenerationRequests]);
-      }
-
-      return new Response("Not found", { status: 404 });
-    } catch (error) {
-      return json({ error: error instanceof Error ? error.message : String(error) }, 500);
-    }
+    return markFixtureResponse(await route(request));
   },
 } satisfies ExportedHandler<WorkersResponseStoreEnv>;

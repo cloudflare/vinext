@@ -166,4 +166,36 @@ test.describe("app dir - workers", () => {
     expect(postRequests).toEqual([]);
     void consoleErrors;
   });
+
+  // vinext addition: a "use cache" import is compiled like it is for Client
+  // Components (and like Next.js compiles it in the browser graph): the
+  // worker receives references, not the cache function bodies.
+  test("should import cache functions in web workers as references", async ({
+    page,
+    consoleErrors,
+  }) => {
+    const workerScripts: Promise<string>[] = [];
+    const postRequests: string[] = [];
+    page.on("response", (response) => {
+      if (new URL(response.url()).pathname.includes("/_next/static/workers/")) {
+        workerScripts.push(response.text());
+      }
+    });
+    page.on("request", (request) => {
+      if (request.method() === "POST") postRequests.push(request.url());
+    });
+
+    await page.goto("/use-cache");
+    await expect(page.locator("#worker-state")).toHaveText("default");
+
+    await page.locator("button").click();
+
+    await expect(page.locator("#worker-state")).toHaveText("use-cache-worker.ts:function:error");
+    expect(workerScripts.length).toBeGreaterThan(0);
+    for (const script of await Promise.all(workerScripts)) {
+      expect(script).not.toContain("use-cache-body");
+    }
+    expect(postRequests).toEqual([]);
+    void consoleErrors;
+  });
 });

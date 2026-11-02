@@ -914,10 +914,15 @@ describe("prerenderApp — special errors that escape the shell", () => {
     expect(route).toMatchObject({ responseStatus: 307, headers: { location: "" } });
   });
 
-  it("still fails a 404 that isn't its page's special error", async () => {
+  // An unmatched rewrite destination's 404 carries no-store, as a dynamic
+  // render does, but without the page's marker it stays an error.
+  it.each([
+    "s-maxage=60, stale-while-revalidate",
+    "private, no-cache, no-store, max-age=0, must-revalidate",
+  ])("still fails a 404 that isn't its page's special error (%s)", async (cacheControl) => {
     const { html, route, rsc } = await prerenderSpecialErrorPage((res) => {
       res.statusCode = 404;
-      res.setHeader("cache-control", "s-maxage=60, stale-while-revalidate");
+      res.setHeader("cache-control", cacheControl);
       res.end(boundaryDocument);
     });
 
@@ -1409,6 +1414,13 @@ describe("prerenderApp — default mode (app-basic)", () => {
 
   afterAll(() => {
     fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  // As in Next.js, whose build fails on a prerender error, a page that throws
+  // is not stored, even when an error.tsx catches the error (#4394).
+  it("does not store a page whose render error an error.tsx catches", () => {
+    expect(findRoute(results, "/error-server-test")).toMatchObject({ status: "skipped" });
+    expect(fs.existsSync(path.join(outDir, "error-server-test.html"))).toBe(false);
   });
 
   // ── Static routes with explicit config ────────────────────────────────────

@@ -1,4 +1,4 @@
-import type { RouteManifest } from "../routing/app-route-graph.js";
+import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import {
   matchRoutePattern,
   matchRoutePatternPrefix,
@@ -12,7 +12,7 @@ type ResolveManifestNavigationInterceptionContextOptions = {
   basePath: string;
   currentMatchedPathname?: string | null;
   currentPathname: string;
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   targetPathname: string;
 };
 

@@ -7,7 +7,6 @@ import {
   headersContextFromRequest,
   markDynamicUsage,
   runWithHeadersContext,
-  runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 import {
   isBailoutToCSRError,
@@ -144,17 +143,6 @@ describe("candidate render useSearchParams() gate", () => {
       markDynamicUsage();
       expect(consumeDynamicUsage()).toBe(true);
       const render = startGatedRender();
-      expect(render.gate.decision).toBe("real");
-      await render.settle();
-    });
-  });
-
-  it("sees dynamic usage inside an isolated scope", async () => {
-    await inRequest(async () => {
-      const render = startGatedRender();
-      await runWithIsolatedDynamicUsage(async () => {
-        markDynamicUsage();
-      });
       expect(render.gate.decision).toBe("real");
       await render.settle();
     });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
 import { renderAppPageCacheArtifacts } from "../packages/vinext/src/server/app-page-cache-render.js";
 import { hasQueryInvariantRenderProof } from "../packages/vinext/src/server/cache-proof.js";
@@ -240,6 +240,50 @@ describe("renderAppPageCacheArtifacts", () => {
       status: 307,
       usedDynamicApi: false,
     });
+    expect(new TextDecoder().decode(result.rscData)).toBe("page-flight-with-digest");
+  });
+
+  it("stores a special error's document that slot boundaries caught it in", async () => {
+    const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+    const renderShellSpecialError = vi.fn(
+      async (error: unknown, caughtDocument?: { html: string; linkHeader?: string }) =>
+        error === notFoundError && caughtDocument
+          ? { headers: {}, html: caughtDocument.html, status: 404 }
+          : null,
+    );
+    const result = await renderAppPageCacheArtifacts({
+      captureRscData: true,
+      cleanPathname: "/team/missing",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          if (options?.sideStream && options.capturedRscDataRef) {
+            options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+          }
+          return {
+            htmlStream: createStream(["<html>caught</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData: null,
+            caughtShellError: notFoundError,
+          };
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      renderShellSpecialError,
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      route: { pattern: "/team/[id]", routeSegments: [] },
+    });
+
+    expect(renderShellSpecialError).toHaveBeenCalledWith(notFoundError, {
+      html: "<html>caught</html>",
+      linkHeader: "",
+    });
+    expect(result).toMatchObject({ html: "<html>caught</html>", status: 404 });
     expect(new TextDecoder().decode(result.rscData)).toBe("page-flight-with-digest");
   });
 

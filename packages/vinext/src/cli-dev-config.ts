@@ -52,7 +52,7 @@ export type DevServerCliOptions = {
 };
 
 export function applyDevServerDefaults(server: ServerOptions, options: DevServerCliOptions): void {
-  server.port = options.port ?? server.port ?? 3000;
+  if (options.port !== undefined) server.port = options.port;
   server.host = options.hostname ?? server.host ?? "localhost";
 }
 
@@ -160,7 +160,7 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
     if (server.config.server.middlewareMode || process.env.VINEXT_NO_DEV_LOCK === "1") {
       return listenServer(port, isRestart);
     }
-    const configuredPort = port ?? server.config.server.port ?? 3000;
+    const configuredPort = port ?? server.config.server.port;
     const hostname = normalizeDevServerHostname(server.config.server.host);
     const displayHostname = hostname === "0.0.0.0" ? "localhost" : hostname;
     const restartingLock = activeDevServerLocks.get(root);
@@ -202,7 +202,7 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
   };
   server.httpServer?.on("listening", () => {
     if (!activeLock) return;
-    const port = server.config.server.port ?? 3000;
+    const port = server.config.server.port;
     const hostname = normalizeDevServerHostname(server.config.server.host);
     const displayHostname = hostname === "0.0.0.0" ? "localhost" : hostname;
     const lock = activeLock;

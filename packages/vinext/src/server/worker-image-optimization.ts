@@ -4,7 +4,6 @@
  * (packages/next/src/server/image-optimizer.ts), so middleware that denies or
  * redirects a direct request also denies the optimizer.
  */
-import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isNextStaticPath } from "../utils/asset-prefix.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import {
@@ -16,7 +15,6 @@ import {
 } from "./image-optimization.js";
 import { VINEXT_PRERENDER_SPECIAL_ERROR_HEADER } from "./headers.js";
 import type { VinextAssetFetcher } from "./multi-stage.js";
-import { normalizePath } from "./normalize-path.js";
 import { attachRequestCfMetadata, cloneRequestWithUrl } from "./request-pipeline.js";
 import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
 import { createStaticAssetRequest, mergeHeaders } from "./worker-utils.js";
@@ -54,6 +52,27 @@ function cancelResponseBody(response: Response): void {
 }
 
 /**
+ * Return the pathname of the `_next/static` file a source's decoded pathname
+ * names, or null. Next.js matches the decoded pathname against its
+ * `.next/static` files literally, so a `.`, `..` or empty segment names no
+ * file. The asset binding decodes each segment once, so each segment is
+ * encoded once from the name checked here. Parsing the decoded pathname as a
+ * URL again would resolve a segment that decoded to `%2E%2E` as `..`, outside
+ * `_next/static`.
+ */
+function resolveNextStaticFile(
+  decodedPathname: string,
+  options: WorkerImageSourceOptions,
+): string | null {
+  if (!isNextStaticPath(decodedPathname, options.basePath, options.assetPathPrefix)) return null;
+  const segments = decodedPathname.split("/").slice(1);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return null;
+  }
+  return "/" + segments.map(encodeURIComponent).join("/");
+}
+
+/**
  * Fetch a local image source. Build output is fetched from the asset binding,
  * which serves it before the Worker and its middleware. Any other source is
  * served only when the application pipeline selects a public file for it.
@@ -64,16 +83,16 @@ export async function fetchWorkerImageSource(
   options: WorkerImageSourceOptions,
 ): Promise<Response> {
   const sourceUrl = new URL(imageUrl, request.url);
-  let sourcePathname: string;
+  let decodedPathname: string;
   try {
-    sourcePathname = normalizePath(normalizePathnameForRouteMatchStrict(sourceUrl.pathname));
+    decodedPathname = decodeURIComponent(sourceUrl.pathname);
   } catch {
     return invalidImageSourceResponse();
   }
 
-  const buildAssetPath = isNextStaticPath(sourcePathname, options.basePath, options.assetPathPrefix)
-    ? sourcePathname
-    : resolveClientBuildFile(sourceUrl.pathname, options.basePath, options.clientBuildFiles);
+  const buildAssetPath =
+    resolveNextStaticFile(decodedPathname, options) ??
+    resolveClientBuildFile(sourceUrl.pathname, options.basePath, options.clientBuildFiles);
   if (buildAssetPath !== null) {
     return options.assets.fetch(new Request(new URL(buildAssetPath, request.url)));
   }
@@ -115,8 +134,8 @@ export function fetchSignalledPublicFile(
 
 /**
  * Serve the App Router image endpoint once the request handler admitted it
- * through middleware and rewrites. Middleware's response headers are sent with
- * the image, as Next.js does.
+ * through middleware and rewrites. Config and middleware response headers are
+ * sent with the image, as Next.js does.
  */
 export async function serveWorkerImageOptimization(
   request: Request,
@@ -145,5 +164,22 @@ export async function serveWorkerImageOptimization(
   });
   const cookies = signal.middlewareHeaders.getSetCookie();
   if (cookies.length > 0) middlewareHeaders["set-cookie"] = cookies;
-  return mergeHeaders(response, middlewareHeaders);
+  const merged = mergeHeaders(response, middlewareHeaders);
+  if (response.status < 400) return merged;
+  // Next.js sets config and middleware headers before the image handler, so
+  // only an image replaces their Content-Type and Content-Encoding.
+  const errorHeaders = new Headers(merged.headers);
+  let replaced = false;
+  for (const name of ["content-type", "content-encoding"]) {
+    const value = signal.middlewareHeaders.get(name);
+    if (value === null) continue;
+    errorHeaders.set(name, value);
+    replaced = true;
+  }
+  if (!replaced) return merged;
+  return new Response(merged.body, {
+    headers: errorHeaders,
+    status: merged.status,
+    statusText: merged.statusText,
+  });
 }

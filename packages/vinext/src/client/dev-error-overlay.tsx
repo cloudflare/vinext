@@ -13,6 +13,7 @@
 import { Fragment, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
+import type { InitialDevServerErrorPayload } from "../server/dev-initial-server-error.js";
 import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../utils/dev-error-recovery-event.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import {
@@ -41,6 +42,7 @@ const VITE_ERROR_HANDLER_DATA_KEY = "__vinext_vite_error_handler__";
 const REACT_REFRESH_RECOVERY_RETRY_DELAY_MS = 16;
 
 let reactRoot: Root | null = null;
+let overlayHost: HTMLElement | null = null;
 let installed = false;
 
 type ReactRefreshWindow = Window &
@@ -74,12 +76,17 @@ export function installDevErrorOverlay(): void {
 
   window.addEventListener("error", (event: ErrorEvent) => {
     const err = event.error;
+    // Like Next.js, ignore events without a thrown value: no script failed.
+    // Chromium's benign "ResizeObserver loop completed with undelivered
+    // notifications." and cross-origin "Script error." both have
+    // `error === null`.
+    if (!err) return;
     if (isNavigationSignalError(err)) return;
     if (err instanceof Error) {
       if (alreadyReported(err)) return;
       reportDevError(err, { source: "window-error" });
-    } else if (event.message) {
-      reportDevError(new Error(event.message), { source: "window-error" });
+    } else {
+      reportDevError(event.message ? new Error(event.message) : err, { source: "window-error" });
     }
   });
 
@@ -146,6 +153,29 @@ function tryInstallReactRefreshErrorRecovery(): boolean {
   return true;
 }
 
+// An error the browser's render threw again is reported already, once for
+// each React report of the same error.
+export function selectUnreportedInitialDevServerErrors(
+  payloads: readonly InitialDevServerErrorPayload[],
+  reported: readonly ReportedError[],
+): InitialDevServerErrorPayload[] {
+  const rethrownErrors = reported.filter(
+    (error) =>
+      error.source === "caught" || error.source === "uncaught" || error.source === "window-error",
+  );
+  // A thrown value that isn't an Error has no name, or is reported as a plain
+  // Error once the browser coerces it.
+  return payloads.filter((payload) => {
+    const rethrownIndex = rethrownErrors.findIndex(
+      (error) =>
+        error.message === payload.message && (error.name || "Error") === (payload.name || "Error"),
+    );
+    if (rethrownIndex === -1) return true;
+    rethrownErrors.splice(rethrownIndex, 1);
+    return false;
+  });
+}
+
 export function reportInitialDevServerErrors(): void {
   if (typeof window === "undefined") return;
 
@@ -154,7 +184,10 @@ export function reportInitialDevServerErrors(): void {
 
   window.__VINEXT_INITIAL_DEV_ERRORS__ = [];
 
-  for (const payload of errors) {
+  for (const payload of selectUnreportedInitialDevServerErrors(
+    errors,
+    getOverlaySnapshot().errors,
+  )) {
     const error = new Error(payload.message);
     if (payload.name) {
       error.name = payload.name;
@@ -256,6 +289,7 @@ function reportDevError(
   ensureMounted();
   const id = reportToOverlay({
     source: options.source,
+    name: error instanceof Error ? error.name : undefined,
     message,
     stack,
     ignoredStackFrames: undefined,
@@ -344,8 +378,16 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function ensureMounted(): void {
-  if (reactRoot) return;
+  if (reactRoot) {
+    // Client-rendering an error document clears the body, the host included.
+    const host = overlayHost;
+    if (host && !host.isConnected) {
+      (document.body ?? document.documentElement).appendChild(host);
+    }
+    return;
+  }
   const node = createDevErrorOverlayMountNode(document);
+  overlayHost = document.getElementById(DEV_ERROR_OVERLAY_HOST_ID);
   reactRoot = createRoot(node);
   reactRoot.render(<DevErrorOverlayApp />);
 }

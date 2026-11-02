@@ -76,6 +76,25 @@ test.describe("Cloudflare Workers image endpoint behind middleware", () => {
     });
   }
 
+  // Next.js looks a `_next/static` source up under `.next/static` by its once
+  // decoded name, literally, so a segment that decodes to `%2E%2E` or a decoded
+  // `..` segment names no file there.
+  test("does not resolve an encoded dot segment out of _next/static", async ({ request }) => {
+    for (const source of [
+      "/_next/static/%252E%252E/%252E%252E/protected/private.png",
+      "/_next/static/%252e%252E/.%252E/protected/private.png",
+      "/_next/static/%252E./%252e%252e/protected/private.png",
+      "/_next/static/a%2F..%2F..%2Fprotected%2Fprivate.png",
+    ]) {
+      const image = await request.get(endpointImagePath("/_next/image", source), {
+        headers: { Accept: "image/webp" },
+      });
+      expect(image.status(), source).toBe(400);
+      expect(await image.text(), source).toBe(INVALID_IMAGE);
+      expect(image.headers()["content-type"] ?? "", source).not.toContain("image/");
+    }
+  });
+
   test("serves an admitted source with middleware's response headers", async ({ request }) => {
     const image = await request.get(endpointImagePath("/_next/image", "/vinext-image.png"), {
       headers: { Accept: "image/webp" },

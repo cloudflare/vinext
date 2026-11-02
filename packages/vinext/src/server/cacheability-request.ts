@@ -17,10 +17,12 @@ import {
   readCdnResponsePolicyHeaderName,
 } from "./cache-control.js";
 import {
+  NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
+  VINEXT_STALE_TIME_PENDING_HEADER,
 } from "./headers.js";
 import { isVinextRscVaryField } from "./app-rsc-vary.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
@@ -604,26 +606,42 @@ function responseWithCachePolicy(
   body: BodyInit | null,
   outcome: RouteCacheabilityOutcome | null,
   browserCacheControl?: string,
-  completedStatus?: Pick<RouteCacheabilityOutcome, "headers" | "status">,
+  completedRender?: Pick<RouteCacheabilityOutcome, "headers" | "staleTimeSeconds" | "status">,
 ): Response {
   const headers = new Headers(response.headers);
   if (typeof body === "string") headers.delete("Content-Length");
   // The response already carries middleware's headers, which win over the
   // render's, as on a fresh render or an ISR replay.
-  for (const [name, value] of Object.entries(completedStatus?.headers ?? {})) {
+  for (const [name, value] of Object.entries(completedRender?.headers ?? {})) {
     if (!headers.has(name)) headers.set(name, value);
   }
+  const cacheControl = outcome?.cacheable === true ? outcome.cacheControl : undefined;
   applyCdnResponseHeaders(
     headers,
-    outcome?.cacheable === true && outcome.cacheControl
-      ? { cacheControl: outcome.cacheControl, tags: outcome.tags, browserCacheControl }
+    cacheControl
+      ? { cacheControl, tags: outcome?.tags, browserCacheControl }
       : { cacheControl: NO_STORE_CACHE_CONTROL, browserCacheControl },
   );
-  const status = completedStatus?.status ?? response.status;
+  if (cacheControl && completedRender) {
+    // The stored response carries its completed render's client stale time,
+    // as an ISR replay does, in place of the live stream's pending marker.
+    // Middleware's value wins, as on a replay.
+    headers.delete(VINEXT_STALE_TIME_PENDING_HEADER);
+    if (
+      completedRender.staleTimeSeconds !== undefined &&
+      !headers.has(NEXT_ROUTER_STALE_TIME_HEADER)
+    ) {
+      headers.set(
+        NEXT_ROUTER_STALE_TIME_HEADER,
+        String(Math.floor(completedRender.staleTimeSeconds)),
+      );
+    }
+  }
+  const status = completedRender?.status ?? response.status;
   // A completed status replaces a streamed 200 only for a page's special
   // error, and the request stage sends its 401, 403 or 404 to a Link's
   // segment prefetch as a 200.
-  const completed = completedStatus?.status;
+  const completed = completedRender?.status;
   if (completed === 401 || completed === 403 || completed === 404) {
     headers.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(completed));
   }
@@ -929,8 +947,8 @@ async function finalizeWorkerCacheabilityAdmission(
       : captured.body,
     outcome,
     browserCacheControl,
-    // The body is complete, so the response can take the status its render
-    // resolved, as Next.js sends a buffered cache entry.
+    // The body is complete, so the response can take the status and stale
+    // time its render resolved, as Next.js sends a buffered cache entry.
     rendererOutcome ?? undefined,
   );
 }

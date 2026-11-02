@@ -116,7 +116,7 @@ describe('"use client" page component: usePathname() SSR (issue #688)', () => {
     );
     expect(html).toContain(".rsc.push(");
     expect(html).toContain(".done=true");
-    expect(html).toMatch(/<link rel="modulepreload" nonce="vinext-test-nonce" href="[^"]+"/);
+    expect(html).toMatch(/<link rel="modulepreload"[^>]* nonce="vinext-test-nonce" href="[^"]+"/);
 
     const scriptTags = [...html.matchAll(/<script\b[^>]*>/g)].map((match) => match[0]);
     expect(scriptTags.length).toBeGreaterThan(0);

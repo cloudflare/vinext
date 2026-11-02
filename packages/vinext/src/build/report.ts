@@ -26,7 +26,6 @@ import type { ESTree } from "vite";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import { findDir } from "../utils/project.js";
-import type { LayoutBuildClassification } from "./layout-classification-types.js";
 import type { PrerenderResult } from "./prerender.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -627,55 +626,6 @@ function propertyName(key: PropertyKey): string | null {
   if (key.type === "Identifier") return key.name;
   if (key.type === "Literal" && typeof key.value === "string") return key.value;
   return null;
-}
-
-// ─── Layout segment config classification ────────────────────────────────────
-
-/**
- * Classifies a layout file by its segment config exports (`dynamic`, `revalidate`).
- *
- * Returns a tagged `LayoutBuildClassification` carrying both the decision and
- * the specific segment-config field that produced it. `{ kind: "absent" }`
- * means no segment config is present and the caller should defer to the next
- * layer (module graph analysis).
- *
- * Unlike page classification, positive `revalidate` values are not meaningful
- * for layout skip decisions — ISR is a page-level concept. Only the extremes
- * (`revalidate = 0` → dynamic, `revalidate = Infinity` → static) are decisive.
- */
-export function classifyLayoutSegmentConfig(code: string): LayoutBuildClassification {
-  const program = parseRouteModule(code);
-  const dynamicValue = program ? extractExportConstStringFromProgram(program, "dynamic") : null;
-  if (dynamicValue === "force-dynamic") {
-    return {
-      kind: "dynamic",
-      reason: { layer: "segment-config", key: "dynamic", value: "force-dynamic" },
-    };
-  }
-  if (dynamicValue === "force-static" || dynamicValue === "error") {
-    return {
-      kind: "static",
-      reason: { layer: "segment-config", key: "dynamic", value: dynamicValue },
-    };
-  }
-
-  const revalidateValue = program
-    ? extractExportConstNumberFromProgram(program, "revalidate")
-    : null;
-  if (revalidateValue === Infinity) {
-    return {
-      kind: "static",
-      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
-    };
-  }
-  if (revalidateValue === 0) {
-    return {
-      kind: "dynamic",
-      reason: { layer: "segment-config", key: "revalidate", value: 0 },
-    };
-  }
-
-  return { kind: "absent" };
 }
 
 // ─── Route classification ─────────────────────────────────────────────────────

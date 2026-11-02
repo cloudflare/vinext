@@ -1,0 +1,93 @@
+import http from "node:http";
+import { test, expect } from "@playwright/test";
+
+// tests/fixtures/pages-router-nitro built with `vite build` and served by
+// Nitro's Node server.
+
+test.describe("Pages Router on Nitro (node server)", () => {
+  test("renders a page", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("h1")).toHaveText("Pages Router on Nitro");
+  });
+
+  test("runs proxy before serving a public file", async ({ request }) => {
+    const response = await request.get("/hello.txt");
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("text/plain");
+    expect(response.headers()["x-vinext-proxy"]).toBe("active");
+    expect(await response.text()).toBe("Hello from public/\n");
+  });
+
+  // Nitro's Node server keeps a `#fragment` sent on the request line; Next.js
+  // drops it before proxy runs.
+  test("drops a request-line fragment before proxy", async ({ baseURL }) => {
+    const port = new URL(baseURL!).port;
+    const body = await new Promise<string>((resolve, reject) => {
+      http
+        .get({ host: "localhost", port, path: "/proxy-request-url?q=1#planted" }, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => (text += chunk));
+          res.on("end", () => resolve(text));
+        })
+        .on("error", reject);
+    });
+    expect(JSON.parse(body)).toEqual({
+      url: `http://localhost:${port}/proxy-request-url?q=1`,
+      hash: "",
+    });
+  });
+
+  test("lets proxy answer a request for a public file", async ({ request }) => {
+    const response = await request.get("/blocked.txt");
+    expect(response.status()).toBe(403);
+    expect(await response.json()).toEqual({ proxy: true });
+  });
+
+  // h3 resolves these to /blocked.txt before Nitro's static handler looks
+  // them up.
+  test("runs proxy for an encoded path to a public file", async ({ request }) => {
+    for (const path of ["/blocked.txt%5C", "/blocked%09.txt", "/x%5C..%5Cblocked.txt"]) {
+      const response = await request.get(path);
+      expect(response.status(), path).toBe(404);
+      expect(response.headers()["x-vinext-proxy"], path).toBe("active");
+    }
+  });
+
+  test("serves a public file that a rewrite resolves to", async ({ request }) => {
+    const response = await request.get("/rewrite-to-public");
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("text/plain");
+    expect(response.headers()["x-vinext-proxy"]).toBe("active");
+    expect(await response.text()).toBe("Hello from public/\n");
+  });
+
+  test("answers HEAD for a public file that a rewrite resolves to", async ({ request }) => {
+    const response = await request.head("/rewrite-to-public");
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-length"]).toBe("19");
+    expect(await response.text()).toBe("");
+  });
+
+  // The image endpoint fetches `/_next/static` sources without proxy. h3
+  // decodes these sources again and resolves them to /blocked.png.
+  test("doesn't serve a public image that proxy guards from the image endpoint", async ({
+    request,
+  }) => {
+    for (const url of [
+      "/blocked.png",
+      "/_next/static/..%5C..%5Cblocked.png",
+      "/_next/static/.%09./.%09./blocked.png",
+    ]) {
+      const response = await request.get(`/_next/image?url=${encodeURIComponent(url)}&w=64&q=75`);
+      expect(response.status(), url).toBe(400);
+    }
+  });
+
+  test("serves a public image from the image endpoint", async ({ request }) => {
+    const response = await request.get("/_next/image?url=%2Fpixel.png&w=64&q=75");
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toBe("image/png");
+    expect((await response.body()).subarray(1, 4).toString()).toBe("PNG");
+  });
+});

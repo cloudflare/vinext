@@ -210,6 +210,73 @@ describe("recursive image source parity", () => {
   });
 });
 
+// Real Next.js 16 answers 400 for a source whose dot segments resolve to a
+// protocol-relative pathname, and serves one that stays on a single-slash path.
+describe("dot-segment image source parity", () => {
+  it("rejects a source that resolves to a protocol-relative pathname", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const parse = (source: string) => {
+      const requestUrl = new URL("http://vinext.test/_next/image");
+      requestUrl.searchParams.set("url", source);
+      requestUrl.searchParams.set("w", "64");
+      requestUrl.searchParams.set("q", "75");
+      return parseImageParams(requestUrl);
+    };
+    for (const source of ["/a/..//evil.com", "/a/%2e%2e//evil.com", "/a/..\\/evil.com"]) {
+      expect(parse(source), source).toBeNull();
+    }
+    expect(parse("/a/../heart.png")).not.toBeNull();
+  });
+});
+
+// Verified against Next.js 16.2.7 `next start`: validateParams answers 400
+// (`"url" parameter is not allowed`) for a local source outside
+// `images.localPatterns`, matching the resolved URL, and an unset list allows
+// any local path without a query string.
+describe("images.localPatterns parity", () => {
+  const parse = async (source: string, options?: Record<string, unknown>) => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const requestUrl = new URL("http://vinext.test/_next/image");
+    requestUrl.searchParams.set("url", source);
+    requestUrl.searchParams.set("w", "64");
+    requestUrl.searchParams.set("q", "75");
+    return parseImageParams(requestUrl, undefined, undefined, options);
+  };
+
+  it("serves only local sources a configured pattern matches", async () => {
+    const options = {
+      localPatterns: [
+        { pathname: "/photos/**", search: "" },
+        { pathname: "/_next/static/media/**", search: "" },
+      ],
+    };
+    expect(await parse("/photos/team.png", options)).not.toBeNull();
+    expect(await parse("/photos/team.png?", options)).not.toBeNull();
+    expect(await parse("/_next/static/media/hero.0a1b2c3d.png", options)).not.toBeNull();
+    for (const source of [
+      "/downloads/poster.png",
+      "/photos/team.png?v=2",
+      "/photos/../downloads/poster.png",
+    ]) {
+      expect(await parse(source, options), source).toBeNull();
+    }
+  });
+
+  it("rejects a query string on any local source when unset", async () => {
+    expect(await parse("/downloads/poster.png")).not.toBeNull();
+    expect(await parse("/photos/../downloads/poster.png")).not.toBeNull();
+    expect(await parse("/downloads/poster.png?v=2")).toBeNull();
+  });
+
+  it("is not enforced by the dev server", async () => {
+    const localPatterns = [{ pathname: "/photos/**", search: "" }];
+    expect(await parse("/app/hero.png", { isDev: true, localPatterns })).not.toBeNull();
+    expect(await parse("/app/hero.png?v=2", { isDev: true })).not.toBeNull();
+  });
+});
+
 runLocalImageUrlParitySuite("app");
 runLocalImageUrlParitySuite("pages");
 

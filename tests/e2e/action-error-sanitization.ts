@@ -5,8 +5,9 @@ import { waitForAppRouterHydration } from "./helpers";
 // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/actions/app-action.test.ts
 // Reproduced against next@16.2.7 build/start: a production action error
 // reaches the browser as React's generic message, never the thrown value.
+// Since React 19.3 (bundled by next@16.4.1) that message is minified error #441.
 export const GENERIC_RSC_ERROR =
-  "Error: An error occurred in the Server Components render. The specific message is omitted in production builds to avoid leaking sensitive details. A digest property is included on this error instance which may provide additional details about the nature of the error.";
+  "Error: Minified React error #441; visit https://react.dev/errors/441 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.";
 
 const SENSITIVE_DETAILS = /s3cret|10\.0\.0\.5|DB_CONNECTION_FAILED|connectionString|actions\.ts/;
 

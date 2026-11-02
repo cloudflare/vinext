@@ -26,6 +26,7 @@ import {
   toClientRewrites,
   type ClientRewrites,
 } from "../packages/vinext/src/client/client-rewrites.js";
+import { hashRoutePatternParts } from "../packages/vinext/src/routing/hashed-route-patterns.js";
 import {
   resolveHybridClientRewriteHref,
   resolveHybridClientRouteOwner,
@@ -35,14 +36,16 @@ const APP_BASE = "http://localhost/";
 
 type WindowState = {
   app: VinextLinkPrefetchRoute[];
+  handlers?: VinextLinkPrefetchRoute[];
   locales?: string[];
   pages: VinextPagesLinkPrefetchRoute[];
   rewrites?: ClientRewrites;
 };
 
-function installWindow({ app, locales, pages, rewrites }: WindowState): void {
+function installWindow({ app, handlers, locales, pages, rewrites }: WindowState): void {
   (globalThis as any).window = {
     location: { href: APP_BASE, origin: "http://localhost" },
+    __VINEXT_APP_ROUTE_HANDLERS__: handlers,
     __VINEXT_LINK_PREFETCH_ROUTES__: app,
     __VINEXT_LOCALES__: locales,
     __VINEXT_PAGES_LINK_PREFETCH_ROUTES__: pages,
@@ -78,11 +81,11 @@ const pagesRoute = (patternParts: string[], isDynamic = true): VinextPagesLinkPr
   patternParts,
 });
 
-const documentRoute = (patternParts: string[], isDynamic = true): VinextLinkPrefetchRoute => ({
+const routeHandler = (patternParts: string[], isDynamic = true): VinextLinkPrefetchRoute => ({
   canPrefetchLoadingShell: false,
   documentOnly: true,
   isDynamic,
-  patternParts,
+  patternParts: hashRoutePatternParts(patternParts),
 });
 
 describe("resolveHybridClientRouteOwner", () => {
@@ -117,12 +120,37 @@ describe("resolveHybridClientRouteOwner", () => {
 
   it("returns document ownership for App route handlers and Pages API routes", () => {
     installWindow({
-      app: [documentRoute(["app-api"], false)],
-      pages: [{ ...pagesRoute(["api", ":slug"]), documentOnly: true }],
+      app: [],
+      handlers: [routeHandler(["app-api"], false)],
+      pages: [pagesRoute([":slug"])],
     });
 
     expect(resolveHybridClientRouteOwner("/app-api", "")).toBe("document");
+    expect(resolveHybridClientRouteOwner("/app-api/", "")).toBe("document");
+    expect(resolveHybridClientRouteOwner("/api", "")).toBe("document");
     expect(resolveHybridClientRouteOwner("/api/test", "")).toBe("document");
+    expect(resolveHybridClientRouteOwner("/other", "")).toBe("pages");
+  });
+
+  it("matches hashed route handler segments against the decoded URL", () => {
+    installWindow({ app: [], handlers: [routeHandler(["café", ":id"])], pages: [] });
+
+    expect(resolveHybridClientRouteOwner("/caf%C3%A9/1", "")).toBe("document");
+    expect(resolveHybridClientRouteOwner("/cafe/1", "")).toBeNull();
+  });
+
+  it("lets a route handler beat a less specific route in either router", () => {
+    installWindow({
+      app: [appRoute(["docs", ":slug"]), appRoute(["blog", "intro"], false)],
+      handlers: [routeHandler(["docs", "private"], false), routeHandler(["blog", ":slug"])],
+      pages: [pagesRoute([":slug"])],
+    });
+
+    expect(resolveHybridClientRouteOwner("/docs/private", "")).toBe("document");
+    expect(resolveHybridClientRouteOwner("/docs/intro", "")).toBe("app");
+    expect(resolveHybridClientRouteOwner("/blog/intro", "")).toBe("app");
+    expect(resolveHybridClientRouteOwner("/blog/rss", "")).toBe("document");
+    expect(resolveHybridClientRouteOwner("/about", "")).toBe("pages");
   });
 
   it("keeps locale-prefixed App pages distinct from unprefixed Pages API routes", () => {
@@ -132,7 +160,7 @@ describe("resolveHybridClientRouteOwner", () => {
     installWindow({
       app: [appRoute([":locale", "api", "status"])],
       locales: ["en", "fr"],
-      pages: [{ ...pagesRoute(["api", "status"], false), documentOnly: true }],
+      pages: [],
     });
 
     expect(resolveHybridClientRouteOwner("/fr/api/status", "")).toBe("app");
@@ -151,13 +179,18 @@ describe("resolveHybridClientRouteOwner", () => {
 
   it("applies document ownership only after choosing the most specific route", () => {
     installWindow({
-      app: [appRoute(["api", "settings"], false)],
-      pages: [{ ...pagesRoute(["api", ":slug"]), documentOnly: true }],
+      app: [appRoute(["api", "settings"], false), appRoute(["api", ":slug"])],
+      handlers: [routeHandler(["api", "status"], false)],
+      pages: [],
     });
     expect(resolveHybridClientRouteOwner("/api/settings", "")).toBe("app");
+    expect(resolveHybridClientRouteOwner("/api/status", "")).toBe("document");
+    // A Pages API route may outrank the dynamic App route.
+    expect(resolveHybridClientRouteOwner("/api/other", "")).toBe("document");
 
     installWindow({
-      app: [documentRoute(["docs", ":slug"])],
+      app: [],
+      handlers: [routeHandler(["docs", ":slug"])],
       pages: [pagesRoute(["docs", "settings"], false)],
     });
     expect(resolveHybridClientRouteOwner("/docs/settings", "")).toBe("pages");
@@ -232,6 +265,53 @@ describe("resolveHybridClientRouteOwner", () => {
       });
 
       expect(resolveHybridClientRewriteHref("/source", "")).toBe("/app-destination");
+    },
+  );
+
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "leaves %s rewrites of a Pages API URL that may be served to the document request",
+    (rewritePhase) => {
+      const rewrite = [{ source: "/api/test", destination: "/app-destination" }];
+      installWindow({
+        app: [appRoute(["app-destination"], false)],
+        pages: [],
+        rewrites: {
+          beforeFiles: rewritePhase === "beforeFiles" ? rewrite : [],
+          afterFiles: rewritePhase === "afterFiles" ? rewrite : [],
+          fallback: rewritePhase === "fallback" ? rewrite : [],
+        },
+      });
+
+      // Only beforeFiles rewrites run before Pages API routes on the server.
+      const rewritesFirst = rewritePhase === "beforeFiles";
+      expect(resolveHybridClientRouteOwner("/api/test", "")).toBe(
+        rewritesFirst ? "app" : "document",
+      );
+      expect(resolveHybridClientRewriteHref("/api/test", "")).toBe(
+        rewritesFirst ? "/app-destination" : null,
+      );
+    },
+  );
+
+  it.each(["afterFiles", "fallback"] as const)(
+    "stops %s rewrite chains at a Pages API URL that may be served",
+    (rewritePhase) => {
+      const rewrite = [
+        { source: "/source", destination: "/api/test" },
+        { source: "/api/test", destination: "/app-destination" },
+      ];
+      installWindow({
+        app: [appRoute(["app-destination"], false)],
+        pages: [],
+        rewrites: {
+          beforeFiles: [],
+          afterFiles: rewritePhase === "afterFiles" ? rewrite : [],
+          fallback: rewritePhase === "fallback" ? rewrite : [],
+        },
+      });
+
+      expect(resolveHybridClientRouteOwner("/source", "")).toBe("document");
+      expect(resolveHybridClientRewriteHref("/source", "")).toBe("/api/test");
     },
   );
 

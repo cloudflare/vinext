@@ -1,7 +1,9 @@
 import type { RenderObservation } from "../server/cache-proof.js";
+import { shareIsolatePromise } from "../server/isolate-shared-promise.js";
 import {
   readCacheControlNumberField,
   readCacheControlRevalidateField,
+  readCacheTimestamp,
 } from "../utils/cache-control-metadata.js";
 
 export type CacheHandlerValue = {
@@ -201,9 +203,18 @@ function readPositiveNumberField(
   return typeof value === "number" && value > 0 ? value : undefined;
 }
 
+/**
+ * When a revalidated tag's entries turn stale and when they expire, like
+ * Next.js's tags manifest (server/lib/incremental-cache/tags-manifest.external.ts).
+ */
+type TagManifestEntry = {
+  stale?: number;
+  expired?: number;
+};
+
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
-  private tagRevalidatedAt = new Map<string, number>();
+  private tagsManifest = new Map<string, TagManifestEntry>();
   private readonly maxMemoryCacheSize: number;
   private currentMemoryCacheSize = 0;
 
@@ -243,24 +254,23 @@ export class MemoryCacheHandler implements CacheHandler {
     const entry = this.store.get(key);
     if (!entry) return null;
 
+    const now = Date.now();
+    let hasStaleTag = false;
     for (const tag of entry.tags) {
-      const revalidatedAt = this.tagRevalidatedAt.get(tag);
-      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
+      if (this.isTagExpired(tag, entry.lastModified, now)) {
         this.deleteEntry(key);
         return null;
       }
+      hasStaleTag ||= this.isTagStale(tag, entry.lastModified);
     }
 
     for (const tag of readStringArrayField(ctx, "softTags")) {
-      const revalidatedAt = this.tagRevalidatedAt.get(tag);
-      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
-        return null;
-      }
+      if (this.isTagExpired(tag, entry.lastModified, now)) return null;
+      hasStaleTag ||= this.isTagStale(tag, entry.lastModified);
     }
 
     this.touchEntry(key, entry);
 
-    const now = Date.now();
     if (entry.expireAt !== null && now > entry.expireAt) {
       return {
         lastModified: entry.lastModified,
@@ -274,6 +284,7 @@ export class MemoryCacheHandler implements CacheHandler {
     const requestedRevalidateAt =
       requestedRevalidate === undefined ? null : entry.lastModified + requestedRevalidate * 1000;
     const isStale =
+      hasStaleTag ||
       (entry.revalidateAt !== null && now > entry.revalidateAt) ||
       (requestedRevalidateAt !== null && now > requestedRevalidateAt);
 
@@ -319,7 +330,7 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return;
 
-    const now = Date.now();
+    const now = readCacheTimestamp(ctx, Date.now());
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
@@ -362,15 +373,36 @@ export class MemoryCacheHandler implements CacheHandler {
     this.evictLeastRecentlyUsed();
   }
 
-  async revalidateTag(tags: string | string[]): Promise<void> {
+  async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     // Invalidation is lazy, so a marker is the only thing keeping older
     // entries from being served. Like Next.js's tags manifest, markers are
     // never evicted: dropping one would revive every older entry it covers.
     for (const tag of tagList) {
-      this.tagRevalidatedAt.set(tag, now);
+      const existing = this.tagsManifest.get(tag) ?? {};
+      if (durations) {
+        // A cacheLife profile serves older entries stale while they
+        // revalidate, until its expire time passes.
+        this.tagsManifest.set(tag, {
+          ...existing,
+          stale: now,
+          ...(durations.expire === undefined ? {} : { expired: now + durations.expire * 1000 }),
+        });
+      } else {
+        this.tagsManifest.set(tag, { ...existing, expired: now });
+      }
     }
+  }
+
+  private isTagExpired(tag: string, lastModified: number, now: number): boolean {
+    const expired = this.tagsManifest.get(tag)?.expired;
+    return expired !== undefined && expired <= now && expired >= lastModified;
+  }
+
+  private isTagStale(tag: string, lastModified: number): boolean {
+    const stale = this.tagsManifest.get(tag)?.stale;
+    return stale !== undefined && stale > lastModified;
   }
 
   resetRequestCache(): void {}
@@ -389,20 +421,22 @@ class LazyDataCacheHandler implements CacheHandler {
   constructor(private readonly load: () => Promise<void>) {}
 
   private resolve(): Promise<CacheHandler> {
-    return (this.resolved ??= this.load().then(() => {
-      const registered = globalHandlers[HANDLER_KEY];
-      if (registered && registered !== this) {
-        this.loadedHandler = registered;
-        return registered;
-      }
+    return (this.resolved ??= shareIsolatePromise(
+      this.load().then(() => {
+        const registered = globalHandlers[HANDLER_KEY];
+        if (registered && registered !== this) {
+          this.loadedHandler = registered;
+          return registered;
+        }
 
-      const fallback = new MemoryCacheHandler();
-      globalHandlers[HANDLER_KEY] = fallback;
-      globalHandlers[CONFIGURED_HANDLER_KEY] = fallback;
-      delete globalHandlers[LAZY_HANDLER_KEY];
-      this.loadedHandler = fallback;
-      return fallback;
-    }));
+        const fallback = new MemoryCacheHandler();
+        globalHandlers[HANDLER_KEY] = fallback;
+        globalHandlers[CONFIGURED_HANDLER_KEY] = fallback;
+        delete globalHandlers[LAZY_HANDLER_KEY];
+        this.loadedHandler = fallback;
+        return fallback;
+      }),
+    ));
   }
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {

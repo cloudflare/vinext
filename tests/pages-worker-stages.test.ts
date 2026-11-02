@@ -87,6 +87,7 @@ describe("Pages Worker response stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/page",
+        sharedAcrossHosts: false,
         stagedHeaders: null,
       },
       dispatchRequestStage,
@@ -131,10 +132,11 @@ describe("Pages Worker response stage", () => {
       { headers: { [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-a" } },
     );
 
+    const ctx = { waitUntil: vi.fn() };
     const response = await handleResponseStage(
       request,
       { binding: "value" },
-      undefined,
+      ctx,
       {
         buildId: "test-build",
         cacheability: {
@@ -154,7 +156,7 @@ describe("Pages Worker response stage", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get(VINEXT_PRERENDER_READINESS_HEADER)).toBe("1");
-    expect(stages.ensureInstrumentation).toHaveBeenCalledOnce();
+    expect(stages.ensureInstrumentation).toHaveBeenCalledExactlyOnceWith(ctx);
     expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
     expect(validateRequest).toHaveBeenCalledWith(request);
     expect(stages.renderPage).not.toHaveBeenCalled();
@@ -183,6 +185,7 @@ describe("Pages Worker response stage", () => {
         requestHost: "example.com",
         renderOptions: { isDataReq: true },
         resolvedUrl: "/rewritten?slug=one",
+        sharedAcrossHosts: false,
         stagedHeaders: null,
       },
       dispatchRequestStage,
@@ -227,6 +230,7 @@ describe("Pages Worker response stage", () => {
           requestHost: "example.com",
           renderOptions: null,
           resolvedUrl: "/posts/one",
+          sharedAcrossHosts: false,
           stagedHeaders: null,
         },
         dispatchRequestStage,
@@ -265,6 +269,7 @@ describe("Pages Worker response stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/page",
+        sharedAcrossHosts: false,
         stagedHeaders: null,
       },
       dispatchRequestStage,
@@ -302,6 +307,7 @@ describe("Pages Worker response stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/page",
+        sharedAcrossHosts: false,
         stagedHeaders: [],
       },
       dispatchRequestStage,
@@ -332,6 +338,7 @@ describe("Pages Worker response stage", () => {
           requestHost: "example.com",
           renderOptions: { isDataReq: true },
           resolvedUrl: "/page",
+          sharedAcrossHosts: false,
           stagedHeaders: null,
         },
         dispatchRequestStage,
@@ -388,6 +395,7 @@ describe("Pages Worker response stage", () => {
         requestHost: "example.com",
         renderOptions: { isDataReq: true },
         resolvedUrl: "/page",
+        sharedAcrossHosts: false,
         stagedHeaders: [
           ["set-cookie", "middleware=one; Path=/"],
           ["set-cookie", "config=two; Path=/"],
@@ -401,6 +409,72 @@ describe("Pages Worker response stage", () => {
     expect(response.headers.getSetCookie()).toEqual([]);
     await expect(response.json()).resolves.toEqual({ pageProps: { cached: true } });
   });
+
+  // A page the build found static can still run a getInitialProps that reads
+  // the request, host included, so an entry every host shares cannot store it.
+  it.each([
+    [false, "public, s-maxage=60"],
+    [true, "no-store, must-revalidate"],
+  ])(
+    "admits an explicitly public getInitialProps render when shared across hosts is %s",
+    async (sharedAcrossHosts, cacheControl) => {
+      const adapter: CdnCacheAdapter = {
+        buildResponseHeaders: ({ cacheControl }) => ({ "CDN-Cache-Control": cacheControl }),
+        ownsBackgroundRevalidation: false,
+        requiresCompletedResponseAdmission: true,
+        responsePolicy: {
+          isHeader: (name) => name.toLowerCase() === "cdn-cache-control",
+          readCacheControl: (headers) => headers.get("CDN-Cache-Control"),
+          readCacheControlHeaderName: (headers) =>
+            headers.has("CDN-Cache-Control") ? "CDN-Cache-Control" : null,
+          hasExplicitNonCacheablePolicy: () => false,
+        },
+        async get() {
+          return null;
+        },
+        async revalidateTag() {},
+        async set() {},
+      };
+      stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
+      stages.getRuntimePageDataKind.mockReturnValue("initial");
+      stages.renderPage.mockImplementation(async (...args: unknown[]) => {
+        const context = args[3] as Record<PropertyKey, unknown>;
+        const state = context[CACHEABILITY_REQUEST_STATE] as RouteCacheabilityState;
+        state.route = { kind: "pages-page", pattern: "/page" };
+        state.outcome = { cacheable: false };
+        state.explicitResponseCachePolicy = true;
+        return new Response("host: tenant-a.example", {
+          headers: { "CDN-Cache-Control": "public, s-maxage=60" },
+        });
+      });
+
+      const response = await handleResponseStage(
+        new Request("https://example.com/page"),
+        undefined,
+        undefined,
+        {
+          buildId: "test-build",
+          cacheability: {
+            policyHeaders: null,
+            probeMode: null,
+            resolvedRoutePathname: "/page",
+          },
+          kind: "pages-page",
+          protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+          requestHost: "example.com",
+          renderOptions: null,
+          resolvedUrl: "/page",
+          sharedAcrossHosts,
+          stagedHeaders: null,
+        },
+        dispatchRequestStage,
+        { cache: "shared" },
+      );
+
+      expect(response.headers.get("CDN-Cache-Control")).toBe(cacheControl);
+      await expect(response.text()).resolves.toBe("host: tenant-a.example");
+    },
+  );
 
   it("dispatches a Pages API with its resolved URL and no outer composition", async () => {
     const request = new Request("https://example.com/original");
@@ -502,6 +576,7 @@ describe("Pages Worker response stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/gssp",
+        sharedAcrossHosts: false,
         stagedHeaders: [
           ["cache-control", "public, s-maxage=60"],
           ["x-config-variant", "preview"],
@@ -543,6 +618,7 @@ describe("Pages Worker response stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/gssp",
+        sharedAcrossHosts: false,
         stagedHeaders: [
           ["content-length", "999"],
           ["set-cookie", "middleware=one; Path=/"],
@@ -732,6 +808,7 @@ describe("Pages Worker response stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/page",
+        sharedAcrossHosts: false,
         stagedHeaders: null,
       },
       dispatchRequestStage,
@@ -756,6 +833,7 @@ describe("Pages Worker response stage", () => {
         renderOptions: null,
         requestHost: "first.example",
         resolvedUrl: "/page",
+        sharedAcrossHosts: false,
         stagedHeaders: null,
       },
       dispatchRequestStage,
@@ -786,6 +864,7 @@ describe("Pages Worker response stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/page",
+        sharedAcrossHosts: false,
         stagedHeaders,
       },
       dispatchRequestStage,

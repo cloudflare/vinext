@@ -33,6 +33,7 @@
  */
 
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
+import { shareIsolatePromise } from "./isolate-shared-promise.js";
 
 type LazyModuleThunk = () => Promise<unknown>;
 type LazyModuleLoaderArray = readonly (LazyModuleThunk | null | undefined)[];
@@ -46,6 +47,14 @@ type LazyLoadableIntercept = {
   __loadInterceptLayouts?: LazyModuleLoaderArray | null;
   interceptLoadings?: readonly unknown[] | null;
   __loadInterceptLoadings?: LazyModuleLoaderArray | null;
+  interceptNotFounds?: readonly unknown[] | null;
+  __loadInterceptNotFounds?: LazyModuleLoaderArray | null;
+  interceptForbiddens?: readonly unknown[] | null;
+  __loadInterceptForbiddens?: LazyModuleLoaderArray | null;
+  interceptUnauthorizeds?: readonly unknown[] | null;
+  __loadInterceptUnauthorizeds?: LazyModuleLoaderArray | null;
+  interceptErrors?: readonly unknown[] | null;
+  __loadInterceptErrors?: LazyModuleLoaderArray | null;
   __loadState?: {
     page?: unknown;
     pageLoading?: Promise<unknown> | null;
@@ -63,7 +72,9 @@ type LazyLoadableSlot = {
   loading?: unknown;
   loadings?: readonly unknown[];
   error?: unknown;
+  errors?: readonly unknown[];
   notFound?: unknown;
+  notFounds?: readonly unknown[];
   __loadPage?: LazyModuleThunk | null;
   __loadDefault?: LazyModuleThunk | null;
   __loadLayout?: LazyModuleThunk | null;
@@ -71,7 +82,9 @@ type LazyLoadableSlot = {
   __loadLoading?: LazyModuleThunk | null;
   __loadLoadings?: LazyModuleLoaderArray | null;
   __loadError?: LazyModuleThunk | null;
+  __loadErrors?: LazyModuleLoaderArray | null;
   __loadNotFound?: LazyModuleThunk | null;
+  __loadNotFounds?: LazyModuleLoaderArray | null;
   /** Hydrated only after an intercept matches, not with the slot's base modules. */
   intercepts?: LazyLoadableIntercept[];
 };
@@ -87,6 +100,9 @@ export type LazyLoadableRoute = {
   notFounds?: unknown[];
   forbiddens?: unknown[];
   unauthorizeds?: unknown[];
+  segmentNotFounds?: unknown[];
+  segmentForbiddens?: unknown[];
+  segmentUnauthorizeds?: unknown[];
   loading?: unknown;
   error?: unknown;
   notFound?: unknown;
@@ -106,6 +122,9 @@ export type LazyLoadableRoute = {
   __loadNotFounds?: LazyModuleLoaderArray | null;
   __loadForbiddens?: LazyModuleLoaderArray | null;
   __loadUnauthorizeds?: LazyModuleLoaderArray | null;
+  __loadSegmentNotFounds?: LazyModuleLoaderArray | null;
+  __loadSegmentForbiddens?: LazyModuleLoaderArray | null;
+  __loadSegmentUnauthorizeds?: LazyModuleLoaderArray | null;
   __loadLoading?: LazyModuleThunk | null;
   __loadError?: LazyModuleThunk | null;
   __loadNotFound?: LazyModuleThunk | null;
@@ -176,19 +195,21 @@ async function hydrateInterceptModule(
 
   const loading =
     loadState?.[loadingField] ??
-    runOutsideRequestScopes(loader)
-      .then((module) => {
-        intercept[field] = module;
-        if (loadState) {
-          loadState[field] = module;
-          loadState[loadingField] = null;
-        }
-        return module;
-      })
-      .catch((error: unknown) => {
-        if (loadState) loadState[loadingField] = null;
-        throw error;
-      });
+    shareIsolatePromise(
+      runOutsideRequestScopes(loader)
+        .then((module) => {
+          intercept[field] = module;
+          if (loadState) {
+            loadState[field] = module;
+            loadState[loadingField] = null;
+          }
+          return module;
+        })
+        .catch((error: unknown) => {
+          if (loadState) loadState[loadingField] = null;
+          throw error;
+        }),
+    );
   if (loadState) loadState[loadingField] = loading;
   // Each matched interception is a request-local clone that shares only
   // `__loadState`. A concurrent caller can therefore observe the in-flight
@@ -216,17 +237,23 @@ export function loadAppInterceptLayouts(
   const loads: Promise<unknown>[] = [];
   pushArrayLoads(loads, intercept.interceptLayouts, intercept.__loadInterceptLayouts);
   pushArrayLoads(loads, intercept.interceptLoadings, intercept.__loadInterceptLoadings);
+  pushArrayLoads(loads, intercept.interceptNotFounds, intercept.__loadInterceptNotFounds);
+  pushArrayLoads(loads, intercept.interceptForbiddens, intercept.__loadInterceptForbiddens);
+  pushArrayLoads(loads, intercept.interceptUnauthorizeds, intercept.__loadInterceptUnauthorizeds);
+  pushArrayLoads(loads, intercept.interceptErrors, intercept.__loadInterceptErrors);
   if (loads.length === 0) return Promise.resolve(intercept.interceptLayouts ?? []);
 
-  const loading = Promise.all(loads)
-    .then(() => {
-      if (loadState) loadState.interceptLayoutsLoading = null;
-      return intercept.interceptLayouts ?? [];
-    })
-    .catch((error: unknown) => {
-      if (loadState) loadState.interceptLayoutsLoading = null;
-      throw error;
-    });
+  const loading = shareIsolatePromise(
+    Promise.all(loads)
+      .then(() => {
+        if (loadState) loadState.interceptLayoutsLoading = null;
+        return intercept.interceptLayouts ?? [];
+      })
+      .catch((error: unknown) => {
+        if (loadState) loadState.interceptLayoutsLoading = null;
+        throw error;
+      }),
+  );
   if (loadState) loadState.interceptLayoutsLoading = loading;
   return loading;
 }
@@ -262,6 +289,9 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   pushArrayLoads(loads, route.notFounds, route.__loadNotFounds);
   pushArrayLoads(loads, route.forbiddens, route.__loadForbiddens);
   pushArrayLoads(loads, route.unauthorizeds, route.__loadUnauthorizeds);
+  pushArrayLoads(loads, route.segmentNotFounds, route.__loadSegmentNotFounds);
+  pushArrayLoads(loads, route.segmentForbiddens, route.__loadSegmentForbiddens);
+  pushArrayLoads(loads, route.segmentUnauthorizeds, route.__loadSegmentUnauthorizeds);
 
   for (const slot of Object.values(route.slots ?? {})) {
     pushFieldLoad(loads, slot as Record<string, unknown>, "page", slot.__loadPage);
@@ -271,7 +301,9 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
     pushFieldLoad(loads, slot as Record<string, unknown>, "loading", slot.__loadLoading);
     pushArrayLoads(loads, slot.loadings, slot.__loadLoadings);
     pushFieldLoad(loads, slot as Record<string, unknown>, "error", slot.__loadError);
+    pushArrayLoads(loads, slot.errors, slot.__loadErrors);
     pushFieldLoad(loads, slot as Record<string, unknown>, "notFound", slot.__loadNotFound);
+    pushArrayLoads(loads, slot.notFounds, slot.__loadNotFounds);
   }
 
   if (loads.length === 0) {
@@ -279,22 +311,24 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
     return route;
   }
 
-  const loading = Promise.all(loads)
-    .then(() => {
-      route.__loaded = true;
-      route.__loading = null;
-      return route;
-    })
-    .catch((error: unknown) => {
-      // A rejected dynamic import() must not be cached: clearing `__loading`
-      // (and leaving `__loaded` false) lets the next request retry instead of
-      // wedging the route into a permanent failure for the isolate's lifetime.
-      // Re-throw so the current request still observes the error. This mirrors
-      // the eager model, where a module-eval failure is retried per isolate
-      // rather than stuck on a stored rejected promise.
-      route.__loading = null;
-      throw error;
-    });
+  const loading = shareIsolatePromise(
+    Promise.all(loads)
+      .then(() => {
+        route.__loaded = true;
+        route.__loading = null;
+        return route;
+      })
+      .catch((error: unknown) => {
+        // A rejected dynamic import() must not be cached: clearing `__loading`
+        // (and leaving `__loaded` false) lets the next request retry instead of
+        // wedging the route into a permanent failure for the isolate's lifetime.
+        // Re-throw so the current request still observes the error. This mirrors
+        // the eager model, where a module-eval failure is retried per isolate
+        // rather than stuck on a stored rejected promise.
+        route.__loading = null;
+        throw error;
+      }),
+  );
 
   route.__loading = loading;
   return loading;

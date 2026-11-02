@@ -16,9 +16,13 @@ import {
   applyResponseStagePolicyHeaders,
   stripInheritedResponseStageCookies,
 } from "./response-stage-policy.js";
-import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
+import {
+  beginRouteCacheability,
+  markRouteCacheabilityDynamic,
+} from "vinext/shims/cacheability-classification";
 import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-context";
 import { validateCdnRequest } from "./cache-control.js";
+import type { RuntimePagesDataKind } from "./pages-route-data-kind.js";
 import { createWorkerPrerenderReadinessResponse } from "./worker-prerender-discovery.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -88,7 +92,7 @@ export async function renderPagesResponse(
     return new Response("Invalid vinext Pages response stage", { status: 400 });
   }
 
-  await pagesEntry.__ensureInstrumentation?.();
+  await pagesEntry.__ensureInstrumentation?.(platformCtx);
   registerConfiguredImageOptimizer(env);
   const renderHeaders = new Headers(stagedHeaders ?? props.stagedHeaders ?? []);
   // A request-stage Content-Length describes neither the page nor API body.
@@ -117,6 +121,12 @@ export async function renderPagesResponse(
   } else if (props.kind === "pages-page" && dispatchOptions.regeneratesStoredEntry === true) {
     ctx = { ...ctx, isStoredEntryRegeneration: true };
   }
+  let runtimeDataKind: RuntimePagesDataKind | undefined;
+  const runtimeDataKindIsRequestTime = (): boolean => {
+    if (props.kind !== "pages-page") return false;
+    runtimeDataKind ??= pagesEntry.getRuntimePageDataKind(props.resolvedUrl, request);
+    return runtimeDataKind === "server" || runtimeDataKind === "initial";
+  };
   const render = async (cacheabilityContext: ExecutionContextLike): Promise<Response> => {
     if (props.kind === "pages-prerender-discovery") {
       const readinessResponse = createWorkerPrerenderReadinessResponse(
@@ -156,6 +166,17 @@ export async function renderPagesResponse(
     if (typeof pagesEntry.renderPage !== "function") {
       return new Response("This page could not be found", { status: 404 });
     }
+    if (props.sharedAcrossHosts && runtimeDataKindIsRequestTime()) {
+      // The build keeps the host in the key of a page that names getInitialProps,
+      // or under a custom _app that does. One an imported wrapper attaches is only
+      // seen here, after the key was chosen, and it can read the host this entry
+      // is shared across, so the render isn't stored. It counts as dynamic, as
+      // Next.js counts a getInitialProps page, so a Workers Cache probe of
+      // the shared dispatch classifies it as one too.
+      void runWithExecutionContext(cacheabilityContext, () =>
+        markRouteCacheabilityDynamic("getInitialProps render shares a cache entry across hosts"),
+      );
+    }
     return stripStreamedHtmlContentLength(
       await pagesEntry.renderPage(
         request,
@@ -188,11 +209,10 @@ export async function renderPagesResponse(
   );
   if (props.kind !== "pages-page") return response;
 
-  const runtimeDataKind = pagesEntry.getRuntimePageDataKind(props.resolvedUrl, request);
   const headers = new Headers(response.headers);
   headers.set(
     PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER,
-    runtimeDataKind === "server" || runtimeDataKind === "initial" ? "request-time" : "static",
+    runtimeDataKindIsRequestTime() ? "request-time" : "static",
   );
   return preserveFullyBufferedBodyMetadata(
     response,

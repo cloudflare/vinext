@@ -1,4 +1,7 @@
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import {
+  mergeMiddlewareResponseHeadersOntoResponse,
+  type MiddlewareResponseMergeOptions,
+} from "./middleware-response-headers.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -9,13 +12,14 @@ export type RouteHandlerMiddlewareContext = {
 export function applyRouteHandlerMiddlewareContext(
   response: Response,
   middlewareContext: RouteHandlerMiddlewareContext,
+  options: MiddlewareResponseMergeOptions = {},
 ): Response {
   if (!middlewareContext.headers && middlewareContext.status == null) {
     return response;
   }
 
   const responseHeaders = new Headers(response.headers);
-  mergeMiddlewareResponseHeaders(responseHeaders, middlewareContext.headers);
+  mergeMiddlewareResponseHeadersOntoResponse(responseHeaders, middlewareContext.headers, options);
 
   return new Response(response.body, {
     status: middlewareContext.status ?? response.status,

@@ -17,6 +17,7 @@
  * as-is (no transformation) with security headers applied.
  */
 
+import { hasLocalMatch, type LocalPattern } from "./image-local-patterns.js";
 import { assetPrefixPathname, ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { badRequestResponse } from "./http-error-responses.js";
@@ -62,11 +63,22 @@ export type ImageConfig = {
   /** Allowed fixed-image widths. Defaults to Next.js image sizes. */
   imageSizes?: number[];
   /**
-   * Allowed output qualities. When unset, any quality from 1-100 is permitted
-   * (matches Next.js: an unset `images.qualities` is not restricted to a single
-   * value). When set, only the listed qualities are accepted.
+   * Allowed output qualities. When set, only the listed qualities are
+   * accepted, as in Next.js. When unset, any quality from 1-100 is accepted.
+   *
+   * Intentional divergence from Next.js 16, which defaults this to `[75]`:
+   * vinext keeps the Next.js 14/15 behaviour for an unset list so apps that
+   * adopt vinext from those versions and pass `quality={N}` keep working
+   * instead of getting 400s. Apps opt into Next.js 16's strict list by
+   * configuring `images.qualities`.
    */
   qualities?: number[];
+  /**
+   * Local sources the endpoint may serve, resolved like Next.js: an app list
+   * gains the static-import pattern, and an unset list becomes
+   * DEFAULT_LOCAL_PATTERNS when checked.
+   */
+  localPatterns?: LocalPattern[];
   /** Allow SVG through the image optimization endpoint. Default: false. */
   dangerouslyAllowSVG?: boolean;
   /**
@@ -103,6 +115,8 @@ const DEV_BLUR_QUALITY = 70;
 
 export type ParseImageParamsOptions = {
   isDev?: boolean;
+  /** `images.localPatterns`; DEFAULT_LOCAL_PATTERNS when unset. */
+  localPatterns?: LocalPattern[];
 };
 
 export function resolveDevImageRedirect(
@@ -128,7 +142,7 @@ export function resolveDevImageRedirect(
 const IMAGE_OPTIMIZATION_SIGNAL = Symbol.for("vinext.image-optimization-signal");
 
 export type ImageOptimizationSignal = {
-  /** Middleware response headers to send with the image. */
+  /** next.config and middleware response headers to send with the image. */
   middlewareHeaders: Headers;
   /** The request headers after middleware's overrides, when it set any. */
   requestHeaders: Headers | null;
@@ -268,6 +282,12 @@ export function invalidImageSourceResponse(): Response {
 const RECURSIVE_IMAGE_URL_RE = /\/_(?:next|vinext)\/image(?:$|\/)/;
 
 /**
+ * Next.js applies this when `images.localPatterns` is unset: every local path,
+ * but no query string.
+ */
+export const DEFAULT_LOCAL_PATTERNS: LocalPattern[] = [{ pathname: "**", search: "" }];
+
+/**
  * Parse and validate image optimization query parameters.
  * Returns null if the request is malformed.
  *
@@ -307,7 +327,9 @@ export function parseImageParams(
   if (width <= 0 || (!allowedWidths.includes(width) && !isDevBlurWidth)) return null;
   if (quality < 1 || quality > 100) return null;
   // Only enforce the quality allowlist when `images.qualities` is configured.
-  // Matches Next.js: an unset `qualities` permits any quality from 1-100.
+  // Deliberately generous when unset: Next.js 16 defaults the list to [75],
+  // but vinext accepts any quality 1-100 like Next.js 14/15 so apps migrating
+  // from those versions don't break (see ImageConfig.qualities).
   if (allowedQualities && !allowedQualities.includes(quality) && !isDevBlurQuality) {
     return null;
   }
@@ -330,10 +352,25 @@ export function parseImageParams(
     if (resolved.origin !== base) {
       return null;
     }
+    // A dot segment can resolve to a protocol-relative pathname without
+    // changing the origin ("/a/..//evil.com" -> "//evil.com"), which a host
+    // would send as an off-site redirect.
+    if (resolved.pathname.startsWith("//")) {
+      return null;
+    }
     // Hosts fetch a local source through the application, so a source that is
     // itself the image endpoint would recurse. Next.js rejects it the same way
     // (`"url" parameter cannot be recursive` in validateParams).
     if (RECURSIVE_IMAGE_URL_RE.test(decodeURIComponent(resolved.pathname))) {
+      return null;
+    }
+    // Next.js then requires a match in `images.localPatterns` (`"url"
+    // parameter is not allowed`). Dev skips it: Vite serves statically
+    // imported images from their source paths, which no pattern names.
+    if (
+      !options.isDev &&
+      !hasLocalMatch(options.localPatterns ?? DEFAULT_LOCAL_PATTERNS, resolved)
+    ) {
       return null;
     }
   } catch {
@@ -359,6 +396,12 @@ export function negotiateImageFormat(acceptHeader: string | null): string {
  * Optimized images are immutable because the URL encodes the transform params.
  */
 export const IMAGE_CACHE_CONTROL = "public, max-age=31536000, immutable";
+
+/**
+ * Next.js's Cache-Control for an image whose source can change at its URL
+ * (anything but a hashed build asset), at the default `images.minimumCacheTTL`.
+ */
+export const MUTABLE_IMAGE_SOURCE_CACHE_CONTROL = "public, max-age=14400, must-revalidate";
 
 /**
  * Content-Security-Policy for image optimization responses.
@@ -478,7 +521,9 @@ export async function handleImageOptimization(
   imageConfig?: ImageConfig,
 ): Promise<Response> {
   const url = new URL(request.url);
-  const params = parseImageParams(url, allowedWidths, imageConfig?.qualities);
+  const params = parseImageParams(url, allowedWidths, imageConfig?.qualities, {
+    localPatterns: imageConfig?.localPatterns,
+  });
 
   if (!params) {
     return badRequestResponse();

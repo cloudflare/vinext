@@ -1,12 +1,17 @@
 import type { ESTree, Plugin } from "vite";
-import { parseAst } from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { hasTrailingComma } from "../utils/has-trailing-comma.js";
 import { relativeToRoot, relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
 import { isForeignNodeModule } from "../utils/package-name.js";
 import { stripViteModuleQuery } from "../utils/path.js";
-import { collectBindingNames, forEachAstChild, stringLiteralValue, walkAst } from "./ast-utils.js";
+import {
+  collectBindingNames,
+  forEachAstChild,
+  parseProgram,
+  stringLiteralValue,
+  walkAst,
+} from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type TransformResult = {
@@ -361,7 +366,7 @@ function formatNodeLocation(code: string, node: ESTree.Node): string {
   return `:${line}:${column}`;
 }
 
-function toManifestModuleId(root: string, resolvedId: string): string | null {
+export function toManifestModuleId(root: string, resolvedId: string): string | null {
   const cleaned = cleanResolvedId(resolvedId);
   if (!path.isAbsolute(cleaned)) return cleaned.replace(/^\/+/, "");
 
@@ -465,16 +470,16 @@ export async function transformNextDynamicPreloadMetadata(
 ): Promise<TransformResult | null> {
   if (!code.includes("next/dynamic")) return null;
 
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    // `parseAst` is Vite's bundled oxc parser in plain-JS mode — it does NOT
+    // `parseProgram` runs Vite's bundled oxc parser in plain-JS mode — it does NOT
     // accept JSX or TS syntax. This is correct ONLY because the plugin runs as a
     // normal (non-`enforce`) transform, i.e. AFTER Vite's built-in JSX/TS strip,
     // so `code` here is already plain JS. If this plugin is ever given
-    // `enforce: "pre"` it would receive raw `.tsx` source, `parseAst` would
+    // `enforce: "pre"` it would receive raw `.tsx` source, `parseProgram` would
     // throw, and (because we swallow the error below) the feature would silently
     // no-op for every JSX/TS file. Keep it unenforced — see the plugin factory.
-    ast = parseAst(code);
+    ast = parseProgram(code);
   } catch (error) {
     // Distinguish "no dynamic() calls" (the common early return below) from a
     // genuine parse failure. If this fires for valid source, the ordering
@@ -536,7 +541,7 @@ export function createDynamicPreloadMetadataPlugin(
   return {
     name: "vinext:dynamic-preload-metadata",
     // Intentionally NOT `enforce: "pre"`: the transform must run after Vite's
-    // built-in JSX/TS stripping so `parseAst` (plain-JS oxc) can parse the code.
+    // built-in JSX/TS stripping so `parseProgram` (plain-JS oxc) can parse the code.
     // See the parse note in `transformNextDynamicPreloadMetadata`.
     configResolved(config) {
       root = config.root;

@@ -39,6 +39,26 @@ describe("worker image imports", () => {
     expect(result?.code).toContain(toSlash(imagePath));
   });
 
+  it("adds metadata to dynamic image imports with escaped specifiers", async () => {
+    const imagePath = path.resolve(import.meta.dirname, "fixtures/app-basic/app/icon.png");
+    const plugin = createWorkerImageImportsPlugin();
+    const resolve = vi.fn().mockResolvedValue({ id: imagePath });
+    const transform = hookHandler(plugin.transform) as unknown as (
+      this: { resolve: typeof resolve },
+      code: string,
+      id: string,
+    ) => Promise<{ code: string } | null>;
+
+    const result = await transform.call(
+      { resolve },
+      "export const load = () => import('./ic\\u006fn.png');",
+      path.resolve(import.meta.dirname, "fixture/image.worker.ts"),
+    );
+
+    expect(resolve).toHaveBeenCalledWith("./icon.png", expect.any(String), { skipSelf: true });
+    expect(result?.code).toContain("vinext-worker-image-meta:");
+  });
+
   it("versions only emitted static and dynamic worker chunk edges", () => {
     const plugin = createWorkerImageImportsPlugin({ deploymentId: "worker-dpl" });
     const renderChunk = hookHandler(plugin.renderChunk) as unknown as (

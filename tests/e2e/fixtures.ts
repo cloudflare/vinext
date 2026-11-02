@@ -17,6 +17,10 @@ const IGNORED_ERROR_PATTERNS = [
   // React's development-only "Invalid hook call" warning when testing hooks
   // outside component context (expected in some test scenarios)
   /Invalid hook call.*mismatching versions/,
+  // React 19.3's development Flight client reports once when a page's CSP
+  // blocks eval(). CSP tests serve a strict script-src on purpose and still
+  // assert that no Content Security Policy violation occurs.
+  /^eval\(\) is not supported in this environment\./,
 ];
 
 /**

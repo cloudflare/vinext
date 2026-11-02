@@ -32,6 +32,23 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
     stopFixtureDevServer(server?.process);
   });
 
+  test("hints every script with the CSP nonce on first and later requests", async ({ request }) => {
+    // plugin-rsc hints a client component's scripts without the nonce, which
+    // the fixture's `script-src 'nonce-…'` policy blocks.
+    for (const route of ["/dynamic-preload", "/top-level-await"]) {
+      for (const pass of ["first", "second"]) {
+        const response = await request.get(`${BASE_URL}${route}`);
+        expect(response.status()).toBe(200);
+        const preloads = (await response.text()).match(/<link\b[^>]*\brel="modulepreload"[^>]*>/g);
+        expect(preloads?.length, `${route} (${pass})`).toBeGreaterThan(1);
+        expect(
+          preloads!.filter((tag) => !tag.includes('nonce="vinext-test-nonce"')),
+          `${route} (${pass})`,
+        ).toEqual([]);
+      }
+    }
+  });
+
   test("preloads dynamic assets with the CSP nonce in a pure App Worker", async ({
     page,
     consoleErrors,
@@ -63,6 +80,37 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
 
     await page.click('[data-testid="dynamic-count"]');
     await expect(page.locator('[data-testid="dynamic-count"]')).toHaveText("Dynamic count: 1");
+
+    void consoleErrors;
+  });
+
+  test("renders a client component that awaits at its top level", async ({
+    page,
+    request,
+    consoleErrors,
+  }) => {
+    // The build streams this component: its load runs through the SSR
+    // entry's wrapped client reference loader.
+    const stylesheets = (html: string) =>
+      (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).map(
+        (tag) => tag.match(/\bhref="([^"]+)"/)![1],
+      );
+    const documents: string[] = [];
+    for (let index = 0; index < 2; index++) {
+      const response = await request.get(`${BASE_URL}/top-level-await`);
+      expect(response.status()).toBe(200);
+      const html = await response.text();
+      expect(html).toContain('data-testid="top-level-await-panel"');
+      // A component that fails on the server leaves a client-rendered
+      // boundary (`<!--$!-->`) carrying the error digest.
+      expect(html).not.toContain("<!--$!-->");
+      documents.push(html);
+    }
+    expect(stylesheets(documents[0]!)).toHaveLength(1);
+    expect(stylesheets(documents[1]!)).toEqual(stylesheets(documents[0]!));
+
+    await page.goto(`${BASE_URL}/top-level-await`);
+    await expect(page.getByTestId("top-level-await-panel")).toHaveCSS("color", "rgb(0, 128, 0)");
 
     void consoleErrors;
   });

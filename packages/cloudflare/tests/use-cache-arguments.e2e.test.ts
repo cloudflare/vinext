@@ -4,7 +4,7 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { Miniflare } from "miniflare";
 import { createBuilder, type PluginOption } from "vite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../../vinext/src/index.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../..");

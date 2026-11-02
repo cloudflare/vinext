@@ -121,6 +121,64 @@ test.describe("Dev error overlay", () => {
     );
   });
 
+  test("surfaces an error that only the HTML render throws", async ({ page }) => {
+    // The shell error sends the `__next_error__` document, and the browser
+    // renders the page without the error, so only the document carries it.
+    const response = await page.goto(`${BASE}/dev-overlay-ssr-only-throw`);
+    expect(response?.status()).toBe(500);
+    await expect(page.getByTestId("ssr-only-throw-content")).toBeVisible();
+
+    const dialog = page.getByTestId("vinext-dev-error-overlay");
+    const indicator = page.getByTestId("vinext-dev-error-indicator");
+    await expect(dialog.or(indicator).first()).toBeVisible({ timeout: 10_000 });
+    if ((await dialog.count()) === 0) await indicator.click();
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText(
+      "ssr-only render failure",
+    );
+
+    // Client-rendering the error document clears the body, which detaches the
+    // host of an overlay mounted before it commits. Removing the host stands
+    // in for that: the next error attaches it again.
+    await page.evaluate(() => {
+      document.getElementById("__vinext_dev_error_overlay_root")?.remove();
+      setTimeout(() => {
+        throw new Error("error after the body was cleared");
+      });
+    });
+    await expect(page.locator("#__vinext_dev_error_overlay_root")).toBeAttached();
+    await expect(page.getByTestId("vinext-dev-error-pagination")).toBeVisible();
+  });
+
+  test("reports an error the browser's render throws again once", async ({ page }) => {
+    // The client page throws in the HTML render and again in the browser,
+    // where global-error.tsx catches it.
+    const response = await page.goto(`${BASE}/nextjs-compat/global-error-ssr`);
+    expect(response?.status()).toBe(500);
+    await page.waitForLoadState("networkidle");
+    await expect(page.locator('[data-testid="global-error-message"]')).toHaveText(
+      "client page error",
+    );
+
+    const dialog = page.getByTestId("vinext-dev-error-overlay");
+    const indicator = page.getByTestId("vinext-dev-error-indicator");
+    await expect(dialog.or(indicator).first()).toBeVisible({ timeout: 10_000 });
+    if ((await dialog.count()) === 0) await indicator.click();
+    // Once the document's copy of the error has been replayed, the overlay
+    // shows only the browser's own report.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { __VINEXT_INITIAL_DEV_ERRORS__?: unknown[] })
+              .__VINEXT_INITIAL_DEV_ERRORS__?.length,
+        ),
+      )
+      .toBe(0);
+    await expect(page.getByTestId("vinext-dev-error-title")).toContainText("Runtime Error");
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText("client page error");
+    await expect(page.getByTestId("vinext-dev-error-pagination")).toBeHidden();
+  });
+
   test("surfaces global script errors via window.onerror", async ({ page }) => {
     await page.goto(`${BASE}/dev-overlay-test`);
     await expect(page.getByTestId("dev-overlay-content")).toBeVisible();
@@ -131,6 +189,55 @@ test.describe("Dev error overlay", () => {
     await expect(page.getByTestId("vinext-dev-error-message")).toContainText(
       "uncaught timer error",
     );
+  });
+
+  // Next.js only reports window "error" events that carry an `error` value:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/next-devtools/userspace/app/errors/use-error-handler.ts
+  test("ignores window error events without an error value (ResizeObserver loop)", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      const messages: string[] = [];
+      (window as unknown as { __nullErrorMessages: string[] }).__nullErrorMessages = messages;
+      window.addEventListener("error", (event) => {
+        if (event.error === null) messages.push(event.message);
+      });
+    });
+    await page.goto(`${BASE}/dev-overlay-test`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByTestId("trigger-resize-observer-loop").click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { __nullErrorMessages: string[] }).__nullErrorMessages,
+        ),
+      )
+      .toContainEqual(expect.stringContaining("ResizeObserver loop"));
+
+    // The browser event has already been dispatched to every listener. A real
+    // error reported afterwards must be the only entry in the overlay.
+    await page.evaluate(() => {
+      setTimeout(() => {
+        throw new Error("real error after resize loop");
+      }, 0);
+    });
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText(
+      "real error after resize loop",
+    );
+    await expect(page.getByTestId("vinext-dev-error-pagination")).toBeHidden();
+  });
+
+  // Next.js coerces non-Error values before reporting uncaught errors in dev:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/react-client-callbacks/error-boundary-callbacks.ts
+  test("surfaces a falsy value that reaches the implicit root error boundary", async ({ page }) => {
+    await page.goto(`${BASE}/dev-overlay-global-error-throw-undefined`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByTestId("trigger-global-error-throw-undefined").click();
+
+    await expect(page.getByTestId("vinext-dev-error-title")).toHaveText("Unhandled Script Error");
+    await expect(page.getByTestId("vinext-dev-error-message")).toHaveText("undefined");
   });
 
   test("surfaces unhandled promise rejections", async ({ page }) => {

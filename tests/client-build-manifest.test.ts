@@ -13,7 +13,9 @@ import {
   buildNextClientBuildManifestContent,
   buildNextClientSsgManifestContent,
   emitNextClientRuntimeManifests,
+  getPagesManifestPage,
 } from "../packages/vinext/src/build/next-client-runtime-manifests.js";
+import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import type { ClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
 import {
   findClientEntryFileFromVinextManifest,
@@ -22,7 +24,10 @@ import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
 } from "../packages/vinext/src/utils/client-entry-manifest.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
-import type { HasCondition } from "../packages/vinext/src/config/next-config.js";
+import type {
+  HasCondition,
+  ResolvedNextConfig,
+} from "../packages/vinext/src/config/next-config.js";
 
 describe("client build manifest helpers", () => {
   let tmpDir: string;
@@ -135,6 +140,81 @@ describe("client build manifest helpers", () => {
     );
   });
 
+  it("finds hash-only client entries by manifest source and chunk name", async () => {
+    const manifestPath = path.join(clientDir, ".vite", "manifest.json");
+    await fsp.writeFile(
+      manifestPath,
+      JSON.stringify({
+        "virtual:vinext-app-browser-entry": {
+          file: "_next/static/chunks/Cq1x9Ab2.js",
+          name: "index",
+          src: "virtual:vinext-app-browser-entry",
+          isEntry: true,
+        },
+        "entry-b": {
+          file: "_next/static/chunks/Df3k8Lm0.js",
+          name: "vinext-client-entry",
+          isEntry: true,
+        },
+      }),
+    );
+
+    const manifest = readClientBuildManifest(manifestPath)!;
+
+    expect(manifest["virtual:vinext-app-browser-entry"]).toMatchObject({
+      name: "index",
+      src: "virtual:vinext-app-browser-entry",
+    });
+    expect(findPagesClientEntryFileFromManifest(manifest, "/")).toBe(
+      "_next/static/chunks/Df3k8Lm0.js",
+    );
+    expect(
+      findClientEntryFileFromManifest({ app: manifest["virtual:vinext-app-browser-entry"] }, "/"),
+    ).toBe("_next/static/chunks/Cq1x9Ab2.js");
+  });
+
+  it("prefers any entry's manifest identity over another entry's file name", () => {
+    const manifest = {
+      "virtual:vinext-app-browser-entry": {
+        file: "_next/static/chunks/vinext-client-entry/index-Cq1x9Ab2.js",
+        name: "index",
+        src: "virtual:vinext-app-browser-entry",
+        isEntry: true,
+      },
+      "virtual:vinext-client-entry": {
+        file: "_next/static/chunks/vinext-client-entry/index-Df3k8Lm0.js",
+        name: "index",
+        src: "virtual:vinext-client-entry",
+        isEntry: true,
+      },
+    };
+
+    expect(findPagesClientEntryFileFromManifest(manifest, "/")).toBe(
+      "_next/static/chunks/vinext-client-entry/index-Df3k8Lm0.js",
+    );
+  });
+
+  it("does not let entries whose names contain a marker shadow vinext's entry", () => {
+    const manifest = {
+      "src/vinext-client-entry-debug.ts": {
+        file: "_next/static/chunks/Ab12Cd34.js",
+        name: "vinext-client-entry-debug",
+        src: "src/vinext-client-entry-debug.ts",
+        isEntry: true,
+      },
+      "virtual:vinext-client-entry": {
+        file: "_next/static/chunks/Df3k8Lm0.js",
+        name: "index",
+        src: "virtual:vinext-client-entry",
+        isEntry: true,
+      },
+    };
+
+    expect(findPagesClientEntryFileFromManifest(manifest, "/")).toBe(
+      "_next/static/chunks/Df3k8Lm0.js",
+    );
+  });
+
   it("reads vinext's entry manifest for hashed client entry names", async () => {
     await fsp.writeFile(
       path.join(clientDir, VINEXT_CLIENT_ENTRY_MANIFEST),
@@ -205,6 +285,7 @@ describe("client build manifest helpers", () => {
         ],
         fallback: [],
       },
+      pages: ["/hello"],
     });
 
     const buildManifest = await fsp.readFile(
@@ -214,6 +295,7 @@ describe("client build manifest helpers", () => {
     expect(buildManifest).toContain("self.__BUILD_MANIFEST = ");
     expect(buildManifest).toContain("__BUILD_MANIFEST_CB");
     expect(buildManifest).toContain('"requiresServerEvaluation":true');
+    expect(buildManifest).toContain('"sortedPages":["/_app","/_error","/hello"]');
     expect(buildManifest).not.toContain("emitted-header-target-canary");
     expect(buildManifest).not.toContain("emitted-header-secret-canary");
     expect(buildManifest).not.toContain("emitted-protocol-relative-canary");
@@ -226,7 +308,7 @@ describe("client build manifest helpers", () => {
   });
 
   it("publishes only client-safe rewrites in the Next.js runtime build manifest", () => {
-    const content = buildNextClientBuildManifestContent({
+    const rewrites: ResolvedNextConfig["rewrites"] = {
       beforeFiles: [
         {
           source: "/query/:path*",
@@ -273,7 +355,8 @@ describe("client build manifest helpers", () => {
           missing: [{ type: "cookie", key: "seen" }],
         },
       ],
-    });
+    };
+    const content = buildNextClientBuildManifestContent(rewrites, []);
 
     const serializedManifest = content.slice(
       "self.__BUILD_MANIFEST = ".length,
@@ -306,7 +389,7 @@ describe("client build manifest helpers", () => {
         ],
         fallback: [{ source: "/only-without-cookie", requiresServerEvaluation: true }],
       },
-      sortedPages: [],
+      sortedPages: ["/_app", "/_error"],
     });
     expect(content).not.toContain("header-target-canary");
     expect(content).not.toContain("header-secret-canary");
@@ -316,6 +399,70 @@ describe("client build manifest helpers", () => {
     expect(content).not.toContain("future-target-canary");
     expect(content).not.toContain("future-secret-canary");
     expect(content).not.toContain('"missing"');
+  });
+
+  // Next.js lists every `pages/` page and API route plus `/_app` and `/_error`
+  // in `getSortedRoutes` order, from packages/next/src/shared/lib/turbopack/manifest-loader.ts
+  // (`writeClientBuildManifest`). App Router-only builds still list `/_app` and `/_error`.
+  it("lists Pages routes in Next.js route-priority order in the runtime build manifest", () => {
+    const readSortedPages = (content: string): string[] =>
+      (
+        JSON.parse(
+          content.slice(
+            "self.__BUILD_MANIFEST = ".length,
+            content.indexOf(";self.__BUILD_MANIFEST_CB"),
+          ),
+        ) as { sortedPages: string[] }
+      ).sortedPages;
+    const noRewrites = { beforeFiles: [], afterFiles: [], fallback: [] };
+
+    expect(
+      readSortedPages(
+        buildNextClientBuildManifestContent(noRewrites, [
+          "/hello",
+          "/[slug]",
+          "/",
+          "/blog/[...rest]",
+          "/404",
+          "/500",
+          "/api/[id]",
+          "/api/x",
+        ]),
+      ),
+    ).toEqual([
+      "/",
+      "/404",
+      "/500",
+      "/_app",
+      "/_error",
+      "/api/x",
+      "/api/[id]",
+      "/blog/[...rest]",
+      "/hello",
+      "/[slug]",
+    ]);
+    expect(readSortedPages(buildNextClientBuildManifestContent(noRewrites, []))).toEqual([
+      "/_app",
+      "/_error",
+    ]);
+  });
+
+  // Ported from Next.js: packages/next/src/build/route-discovery.ts (`getPageFromPath`).
+  // Real Next.js 16 lists `pages/caf%C3%A9.js` as "/caf%C3%A9" (no decoding).
+  it("derives Next.js page keys from raw pages/ file paths", () => {
+    const pagesDir = path.join(tmpDir, "pages");
+    const matcher = createValidFileMatcher(["page.tsx", "tsx", "ts"]);
+    const pageFor = (...segments: string[]) =>
+      getPagesManifestPage(pagesDir, path.join(pagesDir, ...segments), matcher);
+
+    expect(pageFor("index.tsx")).toBe("/");
+    expect(pageFor("index", "index.tsx")).toBe("/index");
+    expect(pageFor("blog", "index.page.tsx")).toBe("/blog");
+    expect(pageFor("posts", "[id].tsx")).toBe("/posts/[id]");
+    expect(pageFor("docs", "[[...slug]].tsx")).toBe("/docs/[[...slug]]");
+    expect(pageFor("api", "users", "[uid].ts")).toBe("/api/users/[uid]");
+    expect(pageFor("caf%C3%A9.tsx")).toBe("/caf%C3%A9");
+    expect(pageFor("a b.tsx")).toBe("/a b");
   });
 
   it("prefers the Pages client entry over the App browser entry in on-disk fallback lookup", async () => {
@@ -424,6 +571,76 @@ describe("computeClientRuntimeMetadata", () => {
     });
   });
 
+  it("collects shared Pages chunks by chunk name for hash-only file names", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-client-entry": {
+          file: "_next/static/chunks/Df3k8Lm0.js",
+          name: "vinext-client-entry",
+          src: "virtual:vinext-client-entry",
+          isEntry: true,
+          imports: ["_framework.js", "_vinext.js"],
+        },
+        "_framework.js": { file: "_next/static/chunks/Fr4m3w0k.js", name: "framework" },
+        "_vinext.js": {
+          file: "_next/static/chunks/V1n3xt00.js",
+          name: "vinext",
+          css: ["_next/static/css/V1n3xt00.css"],
+        },
+        "pages/about.tsx": { file: "_next/static/chunks/Ab0ut000.js", name: "about" },
+      }),
+    );
+
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/docs/",
+      assetPrefix: "",
+      includeClientEntry: "pages-client-entry",
+    });
+
+    expect(result.clientEntryFile).toBe("docs/_next/static/chunks/Df3k8Lm0.js");
+    expect(result.sharedChunks).toEqual([
+      "docs/_next/static/chunks/Df3k8Lm0.js",
+      "docs/_next/static/chunks/Fr4m3w0k.js",
+      "docs/_next/static/chunks/V1n3xt00.js",
+    ]);
+  });
+
+  it("collects the Pages client entry's whole static import graph as shared chunks", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-client-entry": {
+          file: "_next/static/chunks/entry.js",
+          src: "virtual:vinext-client-entry",
+          isEntry: true,
+          imports: ["_runtime.js"],
+          dynamicImports: ["pages/about.tsx"],
+        },
+        "_runtime.js": {
+          file: "_next/static/chunks/runtime.js",
+          name: "rolldown-runtime",
+          imports: ["_helpers.js"],
+        },
+        "_helpers.js": { file: "_next/static/chunks/helpers.js" },
+        "pages/about.tsx": { file: "_next/static/chunks/about.js", isDynamicEntry: true },
+      }),
+    );
+
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+      includeClientEntry: "pages-client-entry",
+    });
+
+    expect(result.sharedChunks).toEqual([
+      "_next/static/chunks/runtime.js",
+      "_next/static/chunks/helpers.js",
+    ]);
+  });
+
   it("computes App Router bootstrap module preinitialization from the browser entry imports", async () => {
     await fsp.writeFile(
       path.join(clientDir, ".vite", "manifest.json"),
@@ -482,6 +699,105 @@ describe("computeClientRuntimeMetadata", () => {
         assetPrefix: "/cdn",
       }).appBootstrapPreinitModules,
     ).toEqual(["/cdn/_next/static/shared.js", "/cdn/_next/static/runtime.js"]);
+  });
+
+  it("finds the App Router RouteManifest chunk, with the asset prefix", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-app-browser-entry": {
+          file: "_next/static/app-entry.js",
+          isEntry: true,
+          dynamicImports: ["virtual:vinext-app-route-manifest"],
+        },
+        "virtual:vinext-app-route-manifest": {
+          file: "_next/static/route-manifest.js",
+          isDynamicEntry: true,
+        },
+      }),
+    );
+    await fsp.writeFile(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({
+        appBrowserEntry: "_next/static/app-entry.js",
+        appRouteManifest: "_next/static/route-manifest.js",
+      }),
+    );
+
+    const routeManifestModule = (assetBase: string, assetPrefix: string) =>
+      computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix }).appRouteManifestModule;
+    expect(routeManifestModule("/", "")).toBe("/_next/static/route-manifest.js");
+    expect(routeManifestModule("/docs/", "")).toBe("/docs/_next/static/route-manifest.js");
+    expect(routeManifestModule("/docs/", "https://cdn.example.com/assets")).toBe(
+      "https://cdn.example.com/assets/_next/static/route-manifest.js",
+    );
+  });
+
+  it("finds the App Router client reference chunks, with the asset prefix", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-app-browser-entry": {
+          file: "_next/static/app-entry.js",
+          isEntry: true,
+        },
+      }),
+    );
+    await fsp.writeFile(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({
+        appBrowserEntry: "_next/static/app-entry.js",
+        appClientReferenceChunks: {
+          references: { aaa: 0 },
+          modules: [
+            {
+              file: "_next/static/m.js",
+              imports: ["_next/static/d.js"],
+              css: ["_next/static/a.css"],
+            },
+          ],
+        },
+      }),
+    );
+
+    const referenceChunks = (assetBase: string, assetPrefix: string) =>
+      computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix }).appClientReferenceChunks;
+    expect(referenceChunks("/", "")).toEqual({
+      references: { aaa: 0 },
+      modules: [
+        {
+          file: "/_next/static/m.js",
+          imports: ["/_next/static/d.js"],
+          css: ["/_next/static/a.css"],
+        },
+      ],
+    });
+    expect(referenceChunks("/docs/", "")!.modules[0]!.file).toBe("/docs/_next/static/m.js");
+    expect(referenceChunks("/docs/", "/cdn")!.modules[0]!.imports).toEqual([
+      "/cdn/_next/static/d.js",
+    ]);
+    expect(referenceChunks("/docs/", "https://cdn.example.com/assets")!.modules[0]!.css).toEqual([
+      "https://cdn.example.com/assets/_next/static/a.css",
+    ]);
+  });
+
+  it("finds the client reference chunks without a Vite build manifest", async () => {
+    await fsp.rm(path.join(clientDir, ".vite", "manifest.json"), { force: true });
+    await fsp.writeFile(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({
+        appBrowserEntry: "_next/static/app-entry.js",
+        appClientReferenceChunks: {
+          references: { aaa: 0 },
+          modules: [{ file: "_next/static/m.js", imports: [], css: [] }],
+        },
+      }),
+    );
+
+    expect(
+      computeClientRuntimeMetadata({ clientDir, assetBase: "/", assetPrefix: "" })
+        .appClientReferenceChunks?.modules[0]!.file,
+    ).toBe("/_next/static/m.js");
   });
 
   it("applies base path to all paths", async () => {

@@ -16,7 +16,10 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import {
+  mergeMiddlewareResponseHeadersOntoResponse,
+  type MiddlewareResponseMergeOptions,
+} from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
@@ -55,7 +58,7 @@ function hasMiddlewareHeader(headers: Headers): boolean {
 export function applyRouteHandlerMiddlewareContext(
   response: Response,
   middlewareContext: RouteHandlerMiddlewareContext,
-  options: { appendResponseLink?: boolean } = {},
+  options: MiddlewareResponseMergeOptions & { appendResponseLink?: boolean } = {},
 ): Response {
   const responseLink = options.appendResponseLink ? response.headers.get("link") : null;
   if (!middlewareContext.headers && middlewareContext.status == null) {
@@ -64,7 +67,7 @@ export function applyRouteHandlerMiddlewareContext(
   }
 
   const responseHeaders = new Headers(response.headers);
-  mergeMiddlewareResponseHeaders(responseHeaders, middlewareContext.headers);
+  mergeMiddlewareResponseHeadersOntoResponse(responseHeaders, middlewareContext.headers, options);
   if (responseLink && middlewareContext.headers?.get("link")) {
     responseHeaders.append("link", responseLink);
   }

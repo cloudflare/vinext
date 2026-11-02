@@ -1,9 +1,9 @@
 import { createRequire } from "node:module";
 import path from "pathslash";
 import { pathToFileURL } from "node:url";
-import { parseAst, type Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
-import { SCRIPT_MODULE_ID_RE, walkAst } from "./ast-utils.js";
+import { parseProgram, SCRIPT_MODULE_ID_RE, walkAst } from "./ast-utils.js";
 
 type NextSwcModule = {
   loadBindings(): Promise<unknown>;
@@ -27,9 +27,9 @@ function hasStyledJsxTag(source: string, id: string): boolean {
   const cleanId = stripViteModuleQuery(id);
   const extension = path.extname(cleanId);
   const lang = extension === ".ts" || extension === ".mts" || extension === ".cts" ? "ts" : "tsx";
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(source, { lang });
+    ast = parseProgram(source, { lang });
   } catch {
     return false;
   }

@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vite-plus";
 
 // This isolated E2E fixture is not a workspace package, so resolve the plugin
 // from source while its runtime dependencies come from the temporary node_modules link.

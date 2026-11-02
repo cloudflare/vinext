@@ -19,7 +19,11 @@ import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
 } from "./headers.js";
-import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
+import {
+  cloneRequestWithHeaders,
+  cloneRequestWithUrl,
+  stripRequestUrlFragment,
+} from "./request-pipeline.js";
 import { validateCdnRequest } from "./cache-control.js";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 
@@ -55,8 +59,8 @@ async function handleSingleStageRequest(
   if (readinessResponse) {
     if (readinessResponse.status === 204) {
       await Promise.all([
-        ensureRequestStageInstrumentation(),
-        ensureResponseStageInstrumentation(),
+        ensureRequestStageInstrumentation(ctx),
+        ensureResponseStageInstrumentation(ctx),
       ]);
     }
     return (await validateCdnRequest(request)) ?? readinessResponse;
@@ -128,7 +132,9 @@ export default {
     env?: PagesWorkerEnv,
     ctx?: PagesWorkerExecutionContext,
   ): Promise<Response> {
-    const handle = () => handleSingleStageRequest(request, env, ctx);
+    // Node hosts such as srvx keep a fragment sent on the request line.
+    const strippedRequest = stripRequestUrlFragment(request);
+    const handle = () => handleSingleStageRequest(strippedRequest, env, ctx);
     return ctx && typeof ctx.waitUntil === "function"
       ? runWithExecutionContext(ctx as ExecutionContextLike, handle)
       : handle();

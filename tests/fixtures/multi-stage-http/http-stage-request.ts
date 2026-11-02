@@ -62,6 +62,9 @@ const gatewayFetch = async (transportRequest: Request): Promise<Response> => {
       }),
       headers: internalStageHeaders(),
       method: "POST",
+      // The response stage's own redirect (e.g. a route handler's redirect())
+      // belongs to the client, not to this internal hop.
+      redirect: "manual",
     });
     return response;
   };

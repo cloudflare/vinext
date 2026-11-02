@@ -4,9 +4,11 @@
  * provides directive transforms and aggregates independently owned server
  * reference claims.
  */
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
-import { describe, expect, it } from "vite-plus/test";
+import { createHash, createHmac } from "node:crypto";
+import { afterAll, describe, expect, it, vi } from "vite-plus/test";
 import { parseAst, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES } from "./helpers.js";
@@ -45,7 +47,20 @@ const fileCacheCode = [
 
 const SECURE_CACHE_EXPORT_RE = /^\$\$vinext_cache_[0-9a-f]{64}$/;
 
-async function configurePluginRsc(plugins: Plugin[]) {
+// The generated-key cache lives under the project root; keep it out of the
+// checked-in fixture.
+const keyCacheRoots: string[] = [];
+function createKeyCacheRoot(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-use-cache-key-"));
+  keyCacheRoots.push(root);
+  return root;
+}
+const defaultKeyCacheRoot = createKeyCacheRoot();
+afterAll(() => {
+  for (const root of keyCacheRoots) fs.rmSync(root, { recursive: true, force: true });
+});
+
+async function configurePluginRsc(plugins: Plugin[], keyCacheRoot = defaultKeyCacheRoot) {
   const minimal = plugins.find((plugin) => plugin.name === "rsc:minimal")!;
   const configResolved = unwrapHook(minimal.configResolved)!;
   configResolved.call(minimal, {
@@ -58,7 +73,11 @@ async function configurePluginRsc(plugins: Plugin[]) {
   const useCachePlugin = plugins.find(
     (plugin) => plugin.name === "vinext:server-function-directives",
   )!;
-  unwrapHook(useCachePlugin.configResolved)!.call(useCachePlugin, { plugins });
+  unwrapHook(useCachePlugin.configResolved)!.call(useCachePlugin, {
+    plugins,
+    root: keyCacheRoot,
+    command: "build",
+  });
   // oxlint-disable-next-line typescript/no-explicit-any
   return (minimal as any).api.manager;
 }
@@ -72,9 +91,9 @@ async function configureVinext(plugins: Plugin[]) {
   );
 }
 
-async function transformRsc(source: string): Promise<string> {
+async function transformRsc(source: string, keyCacheRoot?: string): Promise<string> {
   const plugins = await getPlugins();
-  await configurePluginRsc(plugins);
+  await configurePluginRsc(plugins, keyCacheRoot);
   const plugin = plugins.find(
     (candidate) => candidate.name === "vinext:server-function-directives",
   )!;
@@ -319,6 +338,51 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result!.code).not.toContain(`${expectedKey}#$$hoist_0_getData`);
   });
 
+  it("keys reference names on NEXT_SERVER_ACTIONS_ENCRYPTION_KEY, else a cached generated key", async () => {
+    // Each call configures a fresh plugin instance, i.e. a separate build.
+    const buildSecureExportName = async (keyCacheRoot: string) => {
+      const code = await transformRsc(inlineCacheCode, keyCacheRoot);
+      return code.match(/\$\$vinext_cache_[0-9a-f]{64}/)![0];
+    };
+    const key = Buffer.alloc(32, 7).toString("base64");
+
+    vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "");
+    try {
+      // Without a key, builds sharing a project reuse its cached generated
+      // key, while another project's names can't be derived from them.
+      const project = createKeyCacheRoot();
+      const generated = await buildSecureExportName(project);
+      expect(await buildSecureExportName(project)).toBe(generated);
+      expect(await buildSecureExportName(createKeyCacheRoot())).not.toBe(generated);
+
+      // Ported from Next.js: crates/next-custom-transforms/src/transforms/server_actions.rs
+      // (hash_salt is NEXT_SERVER_ACTIONS_ENCRYPTION_KEY). A pinned key makes
+      // rebuilds of identical source emit identical names, derived under a
+      // label rather than from the raw key.
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", key);
+      const keyed = await buildSecureExportName(createKeyCacheRoot());
+      expect(await buildSecureExportName(createKeyCacheRoot())).toBe(keyed);
+      const relativeImportId = (await configurePluginRsc(await getPlugins())).toRelativeId(
+        moduleId,
+      );
+      const referenceSecret = createHmac("sha256", key)
+        .update("vinext use cache reference")
+        .digest();
+      expect(keyed).toBe(
+        `$$vinext_cache_${createHmac("sha256", referenceSecret)
+          .update(relativeImportId)
+          .update("\0")
+          .update("$$hoist_0_getData")
+          .digest("hex")}`,
+      );
+
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", Buffer.alloc(32, 8).toString("base64"));
+      expect(await buildSecureExportName(project)).not.toBe(keyed);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("removes its claim when the directive is removed", async () => {
     const plugins = await getPlugins();
     const manager = await configurePluginRsc(plugins);
@@ -488,6 +552,28 @@ describe("plugin-rsc inline use-cache references", () => {
       moduleId,
     );
     expect(result!.code).toContain("registerCachedFunction($$import_getData");
+  });
+
+  it("compiles cache modules shipped inside node_modules", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives:node-modules",
+    )!;
+    const packageId = path.join(APP_FIXTURE_DIR, "node_modules", "my-pkg", "index.js");
+    const { filter } = plugin.transform as {
+      filter: { id: { include: RegExp; exclude: RegExp }; code: string };
+    };
+    expect(filter.id.include.test(packageId)).toBe(true);
+    expect(filter.id.include.test(moduleId)).toBe(false);
+    expect(filter.id.exclude.test(packageId)).toBe(false);
+    expect(filter.code).toBe("use cache");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      fileCacheCode,
+      packageId,
+    );
+    expect(result!.code).toContain("registerCachedFunction(getData");
   });
 
   it("accepts configured cache kinds containing punctuation", async () => {
@@ -976,6 +1062,30 @@ describe("plugin-rsc inline use-cache references", () => {
       `"use cache";\nexport { generateMetadata } from "./metadata.js";`,
     );
     expect(code).toContain('"acceptsSecondArgument":true');
+  });
+
+  it("records the arity of file-level cached const functions exported by name", async () => {
+    const code = await transformRsc(
+      [
+        `"use cache";`,
+        `const getRandomValue = async () => Math.random();`,
+        `const getValue = async (previousState, formData) => formData;`,
+        `async function reassigned() {}`,
+        `reassigned = async (previousState, formData) => formData;`,
+        `export { getRandomValue, getValue as aliased, reassigned };`,
+      ].join("\n"),
+    );
+    const options = getCacheWrapperOptionsByName(code);
+    expect(options.getRandomValue).toMatchObject({
+      argumentCount: 0,
+      acceptsSecondArgument: false,
+    });
+    expect(options.aliased).toMatchObject({ argumentCount: 2, acceptsSecondArgument: true });
+    // A function declaration is a mutable binding, so its arity stays unknown.
+    expect(options.reassigned).toEqual(
+      expect.not.objectContaining({ argumentCount: expect.anything() }),
+    );
+    expect(options.reassigned).toMatchObject({ acceptsSecondArgument: true });
   });
 
   it("records when a cached function omits the second argument", async () => {

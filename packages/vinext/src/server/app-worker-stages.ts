@@ -6,15 +6,17 @@ import {
   cacheabilityRoutePathname,
   type CacheabilityManifest,
 } from "./cacheability-manifest.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
-import type {
-  VinextResponseStageCacheability,
-  VinextResponseStageDispatchOptions,
-  VinextResponseStageTransport,
+import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  VINEXT_CACHE_IDENTITY_ORIGIN,
+  withCacheIdentityOrigin,
+  type VinextResponseStageCacheability,
+  type VinextResponseStageDispatchOptions,
+  type VinextResponseStageTransport,
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 11;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 13;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -86,7 +88,7 @@ type AppMetadataWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   routePathname: string;
 };
 
-type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
+export type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   kind: "hybrid-pages";
   allowRscDocumentFallback: boolean;
   appRouteMatch: {
@@ -103,6 +105,12 @@ type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   resourceKind: "api" | "page";
   requestUrl: string;
   resolvedUrl: string;
+  /**
+   * The shared cache entry answers every host, as Next.js keys a static page
+   * by its path, so a getInitialProps render of a page without
+   * getStaticProps, which reads the request, is not stored.
+   */
+  sharedAcrossHosts: boolean;
 };
 
 export type AppWorkerResponseStageProps =
@@ -130,16 +138,51 @@ export function prepareSharedAppPageDispatch(
     : request;
 }
 
+type SharedAppCacheIdentity = NonNullable<VinextResponseStageDispatchOptions["cacheIdentity"]>;
+
+/** App Router dispatches whose shared cache entry every host can reuse. */
+export type SharedAppCacheIdentityProps = Exclude<
+  AppWorkerResponseStageProps,
+  { kind: "app-full-request" | "hybrid-pages" }
+>;
+
+function sharedAppCacheIdentity(
+  requestUrl: string,
+  init: { headers: Headers; method: string },
+  props: SharedAppCacheIdentityProps,
+): SharedAppCacheIdentity {
+  // Next.js keys its response cache by pathname, so the identity names one
+  // origin for every host. Admission refuses a render that read the host.
+  return {
+    props: { ...props, requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN },
+    request: new Request(withCacheIdentityOrigin(requestUrl), init),
+  };
+}
+
+/**
+ * Build the cache identity of a shared App Router dispatch: the dispatched
+ * request and props under the cache identity origin.
+ */
+export function createSharedAppCacheIdentity(
+  request: Request,
+  props: SharedAppCacheIdentityProps,
+): SharedAppCacheIdentity {
+  return sharedAppCacheIdentity(
+    request.url,
+    { headers: new Headers(request.headers), method: request.method },
+    props,
+  );
+}
+
 /**
  * Build the query-free cache identity of a shared App page dispatch. The user
- * query leaves both the URL and `resolvedUrl`; the `.rsc` suffix, an RSC
- * request's validated `_rsc`, and the render mode stay because they select the
- * representation. HTML identities also drop the RSC selector headers.
+ * query leaves both the URL and `resolvedUrl`; an RSC request's validated
+ * `_rsc` and the render mode stay because they select the representation. HTML identities also drop the RSC selector headers.
  */
 export function createSharedAppPageCacheIdentity(
   request: Request,
   props: AppMatchedWorkerResponseStageProps,
-): NonNullable<VinextResponseStageDispatchOptions["cacheIdentity"]> {
+): SharedAppCacheIdentity {
   const queryFree = withoutAppPageDispatchQuery(request.url, props);
   const headers = new Headers(request.headers);
   if (!props.isRscRequest) {
@@ -149,8 +192,70 @@ export function createSharedAppPageCacheIdentity(
     for (const name of VINEXT_RSC_VARY_HEADER.split(",")) headers.delete(name.trim());
   }
   return {
-    props: queryFree.props,
-    request: new Request(queryFree.url, { headers, method: request.method }),
+    ...sharedAppCacheIdentity(queryFree.url, { headers, method: request.method }, queryFree.props),
+    queryFree: true,
+  };
+}
+
+/**
+ * Build the query-free cache identity of a shared Route Handler or metadata
+ * route dispatch. Next.js keys a route handler by its pathname: the query and
+ * the RSC selectors pick no representation of a handler's response, and a
+ * handler that reads the request's URL or headers is dynamic, so admission
+ * refuses its response. Keeping them in the identity would only let a client
+ * store one entry per query or selector value. The method, path and route
+ * props stay; the selector headers and the props derived from them leave.
+ */
+export function createSharedAppRouteCacheIdentity(
+  request: Request,
+  props: AppMatchedWorkerResponseStageProps | AppMetadataWorkerResponseStageProps,
+): SharedAppCacheIdentity {
+  const url = new URL(request.url);
+  url.search = "";
+  const headers = new Headers(request.headers);
+  for (const name of VINEXT_RSC_VARY_HEADER.split(",")) headers.delete(name.trim());
+  const searchIndex = props.resolvedUrl.indexOf("?");
+  return {
+    ...sharedAppCacheIdentity(
+      url.toString(),
+      { headers, method: request.method },
+      {
+        ...props,
+        ...(props.kind === "app-metadata"
+          ? {}
+          : { interceptionContext: null, interceptionId: null }),
+        isRscRequest: false,
+        mountedSlotsHeader: null,
+        renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
+        resolvedUrl:
+          searchIndex === -1 ? props.resolvedUrl : props.resolvedUrl.slice(0, searchIndex),
+      },
+    ),
+    queryFree: true,
+  };
+}
+
+/**
+ * Build the cache identity of a shared hybrid Pages page dispatch: the
+ * dispatched request and props under `origin`, so every host that names it
+ * shares one entry.
+ */
+export function createSharedHybridPagesCacheIdentity(
+  request: Request,
+  props: HybridPagesWorkerResponseStageProps,
+  origin: string,
+): SharedAppCacheIdentity {
+  return {
+    props: {
+      ...props,
+      requestOrigin: origin,
+      requestUrl: withCacheIdentityOrigin(props.requestUrl, origin),
+    },
+    regenerateFromDispatch: true,
+    request: new Request(withCacheIdentityOrigin(request.url, origin), {
+      headers: new Headers(request.headers),
+      method: request.method,
+    }),
   };
 }
 
@@ -264,7 +369,8 @@ export function isAppWorkerResponseStageProps(
       (hybrid.resourceKind === "api" || hybrid.resourceKind === "page") &&
       typeof hybrid.requestUrl === "string" &&
       typeof hybrid.resolvedUrl === "string" &&
-      hybrid.resolvedUrl.startsWith("/")
+      hybrid.resolvedUrl.startsWith("/") &&
+      typeof hybrid.sharedAcrossHosts === "boolean"
     );
   }
   if (props.kind === "app-metadata" || props.kind === "app-not-found") {

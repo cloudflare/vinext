@@ -11,14 +11,15 @@
  *     parameter, or destructured binding)
  *   - Preserves computed property access `console[prop]()`
  *
- * Uses Vite's `parseAst` (OXC/acorn) for parsing and `MagicString` for
+ * Uses Vite's bundled oxc parser and `MagicString` for
  * surgical source replacement. Returns `null` when no changes are made.
  */
-import { parseAst } from "vite";
+import type { ESTree } from "vite";
+import { parseProgram } from "./ast-utils.js";
 import MagicString from "magic-string";
 import { magicStringTransformResult } from "./transform-result.js";
 
-type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+type ASTNode = ESTree.Program["body"][number]["parent"];
 type BindingNode = Extract<ASTNode, { type: string }>;
 
 type RemoveConsoleConfig = boolean | { exclude: string[] };
@@ -56,9 +57,9 @@ export function removeConsoleCalls(
   const consoleMatch = code.match(/\bconsole\b/);
   if (!consoleMatch) return null;
 
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code);
+    ast = parseProgram(code);
   } catch {
     // If parsing fails (shouldn't happen post-transform), bail out
     return null;

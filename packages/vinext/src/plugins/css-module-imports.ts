@@ -1,7 +1,9 @@
 import type { Plugin } from "vite";
-import { parseAst } from "vite";
 import MagicString from "magic-string";
 import {
+  hasImportAttributes,
+  LEADING_TRIVIA_RE,
+  parseModuleRecord,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   type ScriptParserLanguage,
@@ -12,21 +14,6 @@ const CSS_MODULE_RE = /\.module\.(?:css|scss|sass)$/i;
 const CSS_MODULE_HINT_RE = /\.module\.(?:css|scss|sass)/i;
 const MDX_RE = /\.mdx$/i;
 
-type AstImportSpecifier = {
-  type?: string;
-  start?: number;
-  end?: number;
-  local?: { name?: unknown };
-};
-
-type AstImportDeclaration = {
-  type?: string;
-  importKind?: string;
-  source?: { value?: unknown };
-  specifiers?: AstImportSpecifier[];
-  attributes?: unknown[];
-};
-
 export function rewriteCssModuleNamespaceImports(
   code: string,
   lang: ScriptParserLanguage = "js",
@@ -34,30 +21,27 @@ export function rewriteCssModuleNamespaceImports(
   code: string;
   map: ReturnType<MagicString["generateMap"]>;
 } | null {
-  let ast: ReturnType<typeof parseAst>;
-  try {
-    ast = parseAst(code, { lang });
-  } catch {
-    return null;
-  }
+  const record = parseModuleRecord(code, lang);
+  if (!record) return null;
 
   let output: MagicString | null = null;
-  for (const statement of ast.body as AstImportDeclaration[]) {
-    if (statement.type !== "ImportDeclaration") continue;
-    if (statement.importKind === "type") continue;
-    if (typeof statement.source?.value !== "string") continue;
-    if (!CSS_MODULE_RE.test(statement.source.value)) continue;
-    if (statement.attributes && statement.attributes.length > 0) continue;
-    if (statement.specifiers?.length !== 1) continue;
+  for (const statement of record.staticImports) {
+    if (!CSS_MODULE_RE.test(statement.moduleRequest.value)) continue;
+    if (hasImportAttributes(code, statement.moduleRequest.end, statement.end)) continue;
+    if (statement.entries.length !== 1) continue;
 
-    const specifier = statement.specifiers[0];
-    if (specifier.type !== "ImportNamespaceSpecifier") continue;
-    if (typeof specifier.start !== "number" || typeof specifier.end !== "number") continue;
+    const [entry] = statement.entries;
+    if (entry.isType || entry.importName.kind !== "NamespaceObject") continue;
 
-    if (typeof specifier.local?.name !== "string") continue;
+    // The record only spans the local name, so find the `*` after `import`.
+    const afterImport = statement.start + "import".length;
+    const starIndex =
+      afterImport +
+      (LEADING_TRIVIA_RE.exec(code.slice(afterImport, entry.localName.start))?.[0].length ?? 0);
+    if (code[starIndex] !== "*") continue;
 
     output ??= new MagicString(code);
-    output.overwrite(specifier.start, specifier.end, specifier.local.name);
+    output.overwrite(starIndex, entry.localName.end, entry.localName.value);
   }
 
   if (!output) return null;

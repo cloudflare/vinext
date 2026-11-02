@@ -3,7 +3,7 @@
 // the temporary node_modules link used while the fixture runs.
 import { cloudflare } from "../../../../fixtures/cf-app-basic/node_modules/@cloudflare/vite-plugin/dist/index.mjs";
 import vinext from "../../../../../packages/vinext/src/index.js";
-import { defineConfig } from "vite";
+import { defineConfig } from "vite-plus";
 
 export default defineConfig({
   plugins: [

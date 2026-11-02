@@ -238,6 +238,28 @@ function rewriteNextSpecifiers(source, absolutePath, relativePath) {
   return rewritten;
 }
 
+// Partial backport of https://github.com/vercel/next.js/pull/98597 (first
+// published in next@16.5.0-canary.23). Older releases inline ImageProps into
+// Image during declaration emit, dropping the props' @deprecated tags. Only the
+// named reference is backported: upstream also turned ImageProps into an
+// interface, which loses the implicit index signature and breaks
+// `props as Record<string, unknown>` in user code. The rewrite becomes a no-op
+// once the pinned Next.js already ships the named reference.
+function backportImageComponent(source) {
+  const fixedImport = "import type { ImageProps } from '../shared/lib/get-img-props';";
+  const fixedImage =
+    "export declare const Image: React.ForwardRefExoticComponent<ImageProps & React.RefAttributes<HTMLImageElement | null>>;";
+  if (source.includes(fixedImport) && source.includes(fixedImage)) return source;
+  const legacyImport =
+    "import type { OnLoadingComplete, PlaceholderValue } from '../shared/lib/get-img-props';";
+  const legacyImage =
+    /^export declare const Image: React\.ForwardRefExoticComponent<Omit<[\s\S]*?\n\} & React\.RefAttributes<HTMLImageElement \| null>>;$/m;
+  if (!source.includes(legacyImport) || !legacyImage.test(source)) {
+    throw new Error("Unrecognized Image declaration in image-component.d.ts");
+  }
+  return source.replace(legacyImport, fixedImport).replace(legacyImage, fixedImage);
+}
+
 function renderVendoredFiles() {
   const files = new Map();
   for (const absolutePath of collectDeclarationClosure()) {
@@ -260,6 +282,9 @@ function renderVendoredFiles() {
         /import type webpack from (['"][^'"]+['"]);/,
         "import type { webpack } from $1;",
       );
+    }
+    if (relativePath === "dist/client/image-component.d.ts") {
+      rewritten = backportImageComponent(rewritten);
     }
     if (
       relativePath === "dist/styled-jsx/types/css.d.ts" ||
