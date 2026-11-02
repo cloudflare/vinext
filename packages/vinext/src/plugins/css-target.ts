@@ -48,17 +48,17 @@ const DEFAULT_CSS_TARGET = ["chrome111", "edge111", "firefox114", "safari15"];
  * Vite merges config by concatenating arrays, and the CSS minifier keeps the
  * oldest version of each browser, so a pin merged onto a chosen target would
  * stop an app from ever raising it. Instead nothing is set while config hooks
- * run, so the app and every plugin hook see and merge plain Vite values.
+ * run, so the app and every plugin hook see and merge plain Vite values. The
+ * post-ordered `config` and `configEnvironment` hooks only note where a target
+ * was set, and the pin is applied once config is resolved.
  *
- * Its post-ordered hooks only note where a target was set: `config` for the top
- * level, and `configEnvironment` for each environment. `configEnvironment` runs
- * after every `config` hook, once Vite has folded the top-level `build` into
- * each environment.
- * The pin is applied once config is resolved.
+ * Both the top-level `build`, which Vite's CSS plugin minifies with (a copy of
+ * the environment's in per-environment builds), and every environment's `build`
+ * are checked.
  */
 export function createCssTargetPlugin(): Plugin {
   let topLevelConfigured = false;
-  const environmentTargets = new Map<string, CssTarget>();
+  const configuredEnvironments = new Set<string>();
 
   return {
     name: "vinext:css-target",
@@ -67,40 +67,22 @@ export function createCssTargetPlugin(): Plugin {
       order: "post",
       handler(config) {
         topLevelConfigured = config.build?.cssTarget !== undefined;
-        environmentTargets.clear();
+        configuredEnvironments.clear();
       },
     },
     configEnvironment: {
       order: "post",
       handler(name, config) {
-        const target = config.build?.cssTarget;
-        if (target !== undefined) environmentTargets.set(name, target);
+        if (config.build?.cssTarget !== undefined) configuredEnvironments.add(name);
       },
     },
     configResolved: {
       // Before normal and post-ordered configResolved hooks read the target.
       order: "pre",
       handler(config) {
-        const environments = Object.entries(config.environments);
-        // Per-environment and legacy builds replace the top-level `build`,
-        // which Vite's CSS plugin minifies with, by a copy of one environment's.
-        const copiedFrom = environments.find(([, environment]) =>
-          isShallowCopy(config.build, environment.build),
-        );
-        for (const [name, environment] of environments) {
-          pinUnsetCssTarget(environment.build, environmentTargets.has(name));
-        }
-        if (copiedFrom) {
-          (config.build as { cssTarget: CssTarget }).cssTarget = copiedFrom[1].build.cssTarget;
-        } else {
-          // A scalar set at the top level by a later `config` hook reaches
-          // every environment as the same value.
-          const targets = environments.map(([name]) => environmentTargets.get(name));
-          const configured =
-            topLevelConfigured ||
-            (targets.length > 0 &&
-              targets.every((target) => target !== undefined && target === targets[0]));
-          pinUnsetCssTarget(config.build, configured);
+        pinUnsetCssTarget(config.build, topLevelConfigured);
+        for (const [name, environment] of Object.entries(config.environments)) {
+          pinUnsetCssTarget(environment.build, configuredEnvironments.has(name));
         }
       },
     },
@@ -108,17 +90,8 @@ export function createCssTargetPlugin(): Plugin {
 }
 
 function pinUnsetCssTarget(build: { cssTarget: CssTarget; target: unknown }, configured: boolean) {
-  // Vite resolves an unset `cssTarget` to the very value of `target`, while a
-  // target array set by an even later hook is a separate value.
+  // Vite resolves an unset `cssTarget` to the very value of `target`. A target
+  // array set by a hook that runs after the ones above is a separate value.
   if (configured || build.cssTarget !== build.target) return;
   build.cssTarget = [...DEFAULT_CSS_TARGET];
-}
-
-function isShallowCopy(a: object, b: object): boolean {
-  const keys = Object.keys(a);
-  return (
-    a !== b &&
-    keys.length === Object.keys(b).length &&
-    keys.every((key) => (a as Record<string, unknown>)[key] === (b as Record<string, unknown>)[key])
-  );
 }
