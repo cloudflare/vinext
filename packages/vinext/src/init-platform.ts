@@ -334,6 +334,47 @@ export async function resolveInitOptions(
       ? await resolveInitWarmCdnCache(args, options)
       : false;
 
+  const isInteractive =
+    options.isInteractive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  if (platform === "cloudflare" && platformOptions && !isInteractive) {
+    const defaults = [
+      ...(!legacyWrangler && !parsePlatformArg(args)
+        ? ["Platform: Cloudflare (override with --platform=node)"]
+        : []),
+      ...(!parseCdnCacheArg(args) &&
+      !parseResponseStoreModeArg(args) &&
+      parseDataCacheArg(args) !== "kv"
+        ? [
+            "CDN cache: none (override with --cdn-cache=response-store, workers-cache, static-assets, or data-cache)",
+          ]
+        : []),
+      ...(platformOptions.cdnCache === "response-store" && !parseResponseStoreModeArg(args)
+        ? [
+            "Response Store mode: service binding (override with --response-store-mode=self-contained)",
+          ]
+        : []),
+      ...((platformOptions.cdnCache === "workers-cache" ||
+        platformOptions.cdnCache === "static-assets") &&
+      !parseDataCacheArg(args)
+        ? ["Data cache: none (override with --data-cache=kv)"]
+        : []),
+      ...(!parseImageOptimizationArg(args)
+        ? ["Image optimization: none (override with --image-optimization=cloudflare-images)"]
+        : []),
+      ...(platformOptions.cdnCache !== "static-assets" && explicitPrerender === undefined
+        ? ["Pre-rendering: off (override with --prerender)"]
+        : []),
+      ...(supportsWarmCdnCache && explicitWarmCdnCache === undefined
+        ? ["Cache pre-warm during deploy: off (override with --warm-cache)"]
+        : []),
+    ];
+    if (defaults.length > 0) {
+      (options.output ?? process.stdout).write(
+        `  Used defaults for the choices not passed as flags:\n${defaults.map((line) => `    ${line}\n`).join("")}\n`,
+      );
+    }
+  }
+
   return {
     platform,
     prerender,
@@ -483,6 +524,22 @@ export async function resolveCloudflareInitOptions(
     };
   }
 
+  const isInteractive =
+    options.isInteractive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  // Nobody can answer a prompt without a terminal, so each choice without a
+  // flag falls back to the option that needs no extra Cloudflare resources.
+  if (!isInteractive) {
+    const cdnCache = explicitCdnCache ?? (explicitDataCache === "kv" ? "data-cache" : "none");
+    return {
+      dataCache: cdnCache === "data-cache" ? "kv" : (explicitDataCache ?? "none"),
+      cdnCache,
+      imageOptimization: explicitImageOptimization ?? "none",
+      ...(cdnCache === "response-store"
+        ? { responseStoreMode: explicitResponseStoreMode ?? "service-binding" }
+        : {}),
+    };
+  }
+
   const env = options.env ?? process.env;
   if (isAgentEnvironment(env)) {
     throw new Error(
@@ -492,21 +549,6 @@ export async function resolveCloudflareInitOptions(
 
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
-  const isInteractive =
-    options.isInteractive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
-  if (!isInteractive) {
-    const cdnCache = explicitCdnCache ?? (explicitDataCache === "kv" ? "data-cache" : "none");
-    return {
-      dataCache:
-        cdnCache === "response-store" || cdnCache === "none" ? "none" : (explicitDataCache ?? "kv"),
-      cdnCache,
-      imageOptimization: explicitImageOptimization ?? "cloudflare-images",
-      ...(cdnCache === "response-store"
-        ? { responseStoreMode: explicitResponseStoreMode ?? "service-binding" }
-        : {}),
-    };
-  }
-
   const readline = options.question ? undefined : createInterface({ input, output });
   const question = options.question ?? ((prompt: string) => readline!.question(prompt));
   try {

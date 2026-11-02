@@ -72,19 +72,34 @@ describe("Cloudflare init choices", () => {
     );
   });
 
-  it("defaults to no cache and Cloudflare Images", async () => {
+  it.each([{}, { CODEX_THREAD_ID: "test" }])(
+    "defaults to no cache and no image optimization without a TTY (env: %o)",
+    async (env) => {
+      await expect(
+        resolveCloudflareInitOptions([], { env, isInteractive: false }),
+      ).resolves.toEqual({
+        dataCache: "none",
+        cdnCache: "none",
+        imageOptimization: "none",
+      });
+    },
+  );
+
+  it("defaults the data cache a CDN cache prompt would ask for to none without a TTY", async () => {
     await expect(
-      resolveCloudflareInitOptions([], { env: {}, isInteractive: false }),
-    ).resolves.toEqual({
-      dataCache: "none",
-      cdnCache: "none",
-      imageOptimization: "cloudflare-images",
-    });
+      resolveCloudflareInitOptions(["--cdn-cache=workers-cache"], {
+        env: { CODEX_THREAD_ID: "test" },
+        isInteractive: false,
+      }),
+    ).resolves.toEqual({ dataCache: "none", cdnCache: "workers-cache", imageOptimization: "none" });
+    await expect(
+      resolveCloudflareInitOptions(["--cdn-cache=data-cache"], { env: {}, isInteractive: false }),
+    ).resolves.toEqual({ dataCache: "kv", cdnCache: "data-cache", imageOptimization: "none" });
   });
 
-  it("tells agents to ask and rerun with public Cloudflare flags", async () => {
+  it("tells agents with a TTY to ask and rerun with public Cloudflare flags", async () => {
     await expect(
-      resolveCloudflareInitOptions([], { env: { CODEX_THREAD_ID: "test" } }),
+      resolveCloudflareInitOptions([], { env: { CODEX_THREAD_ID: "test" }, isInteractive: true }),
     ).rejects.toThrow(
       "--cdn-cache=..., --response-store-mode=..., --data-cache=..., and --image-optimization=...",
     );
@@ -122,6 +137,7 @@ describe("Cloudflare init choices", () => {
     await expect(
       resolveCloudflareInitOptions(["--data-cache=kv", "--image-optimization=none"], {
         env: { CODEX_THREAD_ID: "test" },
+        isInteractive: true,
       }),
     ).rejects.toThrow(
       "--cdn-cache=..., --response-store-mode=..., --data-cache=..., and --image-optimization=...",
@@ -562,17 +578,69 @@ describe("resolveInitOptions", () => {
     },
   );
 
-  it("defaults Cloudflare init to no cache", async () => {
-    await expect(resolveInitOptions([], { env: {}, isInteractive: false })).resolves.toEqual({
+  it("defaults Cloudflare init to no cache and names each default without a TTY", async () => {
+    const output = new PassThrough();
+    await expect(
+      resolveInitOptions([], { env: {}, isInteractive: false, output }),
+    ).resolves.toEqual({
       platform: "cloudflare",
       prerender: false,
       cloudflare: {
         dataCache: "none",
         cdnCache: "none",
-        imageOptimization: "cloudflare-images",
+        imageOptimization: "none",
         warmCdnCache: false,
       },
     });
+    expect(output.read()?.toString()).toBe(
+      "  Used defaults for the choices not passed as flags:\n" +
+        "    Platform: Cloudflare (override with --platform=node)\n" +
+        "    CDN cache: none (override with --cdn-cache=response-store, workers-cache, static-assets, or data-cache)\n" +
+        "    Image optimization: none (override with --image-optimization=cloudflare-images)\n" +
+        "    Pre-rendering: off (override with --prerender)\n\n",
+    );
+  });
+
+  it("names only the defaults of choices a CDN cache flag leaves open", async () => {
+    const output = new PassThrough();
+    await resolveInitOptions(["--platform=cloudflare", "--cdn-cache=response-store"], {
+      env: { CODEX_THREAD_ID: "test" },
+      isInteractive: false,
+      output,
+    });
+    expect(output.read()?.toString()).toBe(
+      "  Used defaults for the choices not passed as flags:\n" +
+        "    Response Store mode: service binding (override with --response-store-mode=self-contained)\n" +
+        "    Image optimization: none (override with --image-optimization=cloudflare-images)\n" +
+        "    Pre-rendering: off (override with --prerender)\n" +
+        "    Cache pre-warm during deploy: off (override with --warm-cache)\n\n",
+    );
+
+    const workersCache = new PassThrough();
+    await resolveInitOptions(
+      ["--platform=cloudflare", "--cdn-cache=workers-cache", "--data-cache=none"],
+      { env: {}, isInteractive: false, output: workersCache },
+    );
+    expect(workersCache.read()?.toString()).toBe(
+      "  Used defaults for the choices not passed as flags:\n" +
+        "    Image optimization: none (override with --image-optimization=cloudflare-images)\n" +
+        "    Pre-rendering: off (override with --prerender)\n" +
+        "    Cache pre-warm during deploy: off (override with --warm-cache)\n\n",
+    );
+  });
+
+  it("prints no defaults note when every choice is passed as a flag", async () => {
+    const output = new PassThrough();
+    await resolveInitOptions(
+      [
+        "--platform=cloudflare",
+        "--cdn-cache=static-assets",
+        "--data-cache=none",
+        "--image-optimization=none",
+      ],
+      { env: {}, isInteractive: false, output },
+    );
+    expect(output.read()).toBeNull();
   });
 
   it("shares the full Cloudflare init option selection flow", async () => {
