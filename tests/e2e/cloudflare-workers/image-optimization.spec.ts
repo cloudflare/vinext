@@ -47,6 +47,9 @@ test.describe("Cloudflare Workers /_next/image formats it does not optimize", ()
   for (const [source, contentType] of [
     ["/vinext-icon.ico", "image/x-icon"],
     ["/vinext-animated.gif", "image/gif"],
+    // Workers static assets serve ICNS without an image type; Next.js types
+    // a source by its bytes.
+    ["/vinext-icon.icns", "image/x-icns"],
   ] as const) {
     test(`serves ${source} as-is instead of transforming it`, async ({ request }) => {
       const original = Buffer.from(await (await request.get(source)).body());

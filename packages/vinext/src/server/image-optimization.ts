@@ -465,6 +465,83 @@ function imageMediaType(contentType: string | null): string {
 }
 
 /**
+ * Next.js's image signatures (`detectContentType` in
+ * packages/next/src/server/image-optimizer.ts); a null byte matches any value.
+ */
+const IMAGE_SIGNATURES: ReadonlyArray<readonly [string, ReadonlyArray<number | null>]> = [
+  ["image/jpeg", [0xff, 0xd8, 0xff]],
+  ["image/png", [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
+  ["image/gif", [0x47, 0x49, 0x46, 0x38]],
+  ["image/webp", [0x52, 0x49, 0x46, 0x46, null, null, null, null, 0x57, 0x45, 0x42, 0x50]],
+  ["image/svg+xml", [0x3c, 0x3f, 0x78, 0x6d, 0x6c]],
+  ["image/svg+xml", [0x3c, 0x73, 0x76, 0x67]],
+  ["image/avif", [null, null, null, null, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]],
+  ["image/x-icon", [0x00, 0x00, 0x01, 0x00]],
+  ["image/x-icns", [0x69, 0x63, 0x6e, 0x73]],
+  ["image/tiff", [0x49, 0x49, 0x2a, 0x00]],
+  ["image/bmp", [0x42, 0x4d]],
+  ["image/jxl", [0xff, 0x0a]],
+  ["image/jxl", [0x00, 0x00, 0x00, 0x0c, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a]],
+  ["image/heic", [null, null, null, null, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]],
+];
+const IMAGE_SIGNATURE_LENGTH = 12;
+
+/** The image type Next.js detects from a source's first bytes, or null. */
+export function sniffImageContentType(bytes: Uint8Array): string | null {
+  for (const [type, signature] of IMAGE_SIGNATURES) {
+    if (signature.every((byte, i) => byte === null || bytes[i] === byte)) return type;
+  }
+  return null;
+}
+
+/**
+ * Label a source that arrives without an image Content-Type by its first
+ * bytes, as Next.js types every source. Workers static assets have no type for
+ * some formats Next.js serves, such as ICNS.
+ */
+async function withSniffedImageContentType(source: Response): Promise<Response> {
+  if (
+    !source.ok ||
+    !source.body ||
+    imageMediaType(source.headers.get("Content-Type")).startsWith("image/")
+  ) {
+    return source;
+  }
+  const reader = source.body.getReader();
+  const head: Uint8Array[] = [];
+  let length = 0;
+  while (length < IMAGE_SIGNATURE_LENGTH) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    head.push(value);
+    length += value.byteLength;
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of head) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      if (bytes.byteLength > 0) controller.enqueue(bytes);
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  const headers = new Headers(source.headers);
+  const type = sniffImageContentType(bytes);
+  if (type !== null) headers.set("Content-Type", type);
+  return new Response(body, { status: source.status, statusText: source.statusText, headers });
+}
+
+/**
  * Check if a Content-Type header value is a safe image type.
  * Returns false for SVG (unless dangerouslyAllowSVG is true), HTML, or any non-image type.
  */
@@ -649,7 +726,7 @@ export async function handleImageOptimization(
   const { imageUrl, width, quality } = params;
 
   // Fetch source image
-  const source = await handlers.fetchAsset(imageUrl, request);
+  const source = await withSniffedImageContentType(await handlers.fetchAsset(imageUrl, request));
   if (!source.ok || !source.body) {
     return invalidImageSourceResponse();
   }
@@ -748,7 +825,9 @@ export async function handleImageOptimization(
     );
   } catch (e) {
     console.error("[vinext] Image fallback error, refetching source image:", e);
-    const refetchedSource = await handlers.fetchAsset(imageUrl, request);
+    const refetchedSource = await withSniffedImageContentType(
+      await handlers.fetchAsset(imageUrl, request),
+    );
     if (!refetchedSource.ok || !refetchedSource.body) {
       return invalidImageSourceResponse();
     }

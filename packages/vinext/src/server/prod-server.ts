@@ -764,18 +764,24 @@ function staticCacheLookupPath(pathname: string): string | null {
 /**
  * Give a Node image passthrough Next.js's image Cache-Control instead of the
  * public-file default: a hashed build asset keeps its immutable default, and
- * any other source is revalidated after `images.minimumCacheTTL`, or the
- * file's own max-age when that is longer.
+ * any other source is revalidated after `images.minimumCacheTTL`, or after the
+ * max-age a direct request for it gets (from middleware or `headers()`, else
+ * the public-file default) when that is longer.
  */
 function withImageSourceCacheControl(
   headers: Record<string, string>,
   sourcePath: string,
   config: ImageConfig | undefined,
+  sourceCacheControl: string | null,
 ): Record<string, string> {
   if (sourcePath.includes(`/${ASSET_PREFIX_URL_DIR}/`)) return headers;
   return {
     ...headers,
-    "Cache-Control": sourceImageCacheControl(sourcePath, staticFileCacheControl(false), config),
+    "Cache-Control": sourceImageCacheControl(
+      sourcePath,
+      sourceCacheControl ?? staticFileCacheControl(false),
+      config,
+    ),
   };
 }
 
@@ -2052,7 +2058,10 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       "Content-Disposition":
         imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
     };
-    const serveSource = (sourcePath: string): Promise<boolean> =>
+    const serveSource = (
+      sourcePath: string,
+      sourceCacheControl: string | null = null,
+    ): Promise<boolean> =>
       tryServeStatic(
         req,
         res,
@@ -2060,7 +2069,12 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         sourcePath,
         false,
         staticCache,
-        withImageSourceCacheControl(imageSecurityHeaders, sourcePath, imageConfig),
+        withImageSourceCacheControl(
+          imageSecurityHeaders,
+          sourcePath,
+          imageConfig,
+          sourceCacheControl,
+        ),
         undefined,
         IMAGE_REPRESENTATION_HEADERS,
       );
@@ -2111,7 +2125,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           sendUnsafeContentType();
           return;
         }
-        if (await serveSource(sourcePath)) return;
+        if (await serveSource(sourcePath, sourceResponse.headers.get("Cache-Control"))) return;
       }
     }
     sendBadRequest(INVALID_IMAGE_SOURCE_MESSAGE);
@@ -2777,7 +2791,10 @@ async function createPagesRouterRequestHandler(
 
       // The public file the pipeline serves for an anonymous GET of an image
       // source, or null when middleware, a redirect, or a route answers it.
-      const resolvePublicImageSource = async (sourceUrl: URL): Promise<string | null> => {
+      /** The public file a source resolves to, with the Cache-Control staged for it. */
+      const resolvePublicImageSource = async (
+        sourceUrl: URL,
+      ): Promise<{ path: string; cacheControl: string | null } | null> => {
         const rawSourcePathname = sourceUrl.pathname;
         if (
           getRepeatedSlashRedirect(rawSourcePathname) ||
@@ -2789,7 +2806,7 @@ async function createPagesRouterRequestHandler(
         const sourceHadBasePath = !basePath || hasBasePath(sourceRequestPathname, basePath);
         const strippedSourcePathname = stripBasePath(sourceRequestPathname, basePath);
         if (isNextDataPathname(strippedSourcePathname)) return null;
-        let sourcePath: string | null = null;
+        let source: { path: string; cacheControl: string | null } | null = null;
         const result = await runPagesRequest(
           new Request(new URL(strippedSourcePathname + sourceUrl.search, sourceUrl), {
             signal: webRequest.signal,
@@ -2815,7 +2832,7 @@ async function createPagesRouterRequestHandler(
             handleApi: null,
             serveFilesystemRoute: async (
               candidate,
-              _stagedHeaders,
+              stagedHeaders,
               phase,
               _resolvedUrl,
               _request,
@@ -2836,7 +2853,10 @@ async function createPagesRouterRequestHandler(
               if (lookupPath === null || lookupPath === "/" || !staticCache.lookup(lookupPath)) {
                 return false;
               }
-              sourcePath = candidate;
+              source = {
+                path: candidate,
+                cacheControl: readHeaderCaseInsensitive(stagedHeaders, "cache-control") ?? null,
+              };
               // An empty response lets the pipeline apply middleware's status.
               return new Response(null);
             },
@@ -2844,7 +2864,7 @@ async function createPagesRouterRequestHandler(
         );
         if (result.type !== "response") return null;
         cancelResponseBody(result.response);
-        return isImageSourceBodyStatus(result.response.status) ? sourcePath : null;
+        return isImageSourceBodyStatus(result.response.status) ? source : null;
       };
 
       // ── Delegate steps 3–11 to the shared Pages Router pipeline ──
@@ -2973,7 +2993,10 @@ async function createPagesRouterRequestHandler(
               "Content-Disposition":
                 pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
             };
-            const serveSource = (sourcePath: string): Promise<boolean> =>
+            const serveSource = (
+              sourcePath: string,
+              sourceCacheControl: string | null = null,
+            ): Promise<boolean> =>
               tryServeStatic(
                 req,
                 res,
@@ -2981,7 +3004,12 @@ async function createPagesRouterRequestHandler(
                 sourcePath,
                 false,
                 staticCache,
-                withImageSourceCacheControl(imageSecurityHeaders, sourcePath, pagesImageConfig),
+                withImageSourceCacheControl(
+                  imageSecurityHeaders,
+                  sourcePath,
+                  pagesImageConfig,
+                  sourceCacheControl,
+                ),
                 undefined,
                 IMAGE_REPRESENTATION_HEADERS,
               );
@@ -3010,16 +3038,16 @@ async function createPagesRouterRequestHandler(
             // Any other source goes through the pipeline as a GET without the
             // caller's headers, like Next.js' fetchInternalImage, so middleware
             // admits it. Only a public file that pipeline selects is served.
-            const sourcePath =
+            const source =
               sourcePathname !== null ? await resolvePublicImageSource(sourceUrl) : null;
             if (webRequest.signal.aborted) return true;
-            if (sourcePath !== null) {
+            if (source !== null) {
               // Middleware can rewrite the source to a file of another type.
-              if (!isSafeSourcePath(staticCacheLookupPath(sourcePath) ?? sourcePath)) {
+              if (!isSafeSourcePath(staticCacheLookupPath(source.path) ?? source.path)) {
                 sendUnsafeContentType();
                 return true;
               }
-              if (await serveSource(sourcePath)) return true;
+              if (await serveSource(source.path, source.cacheControl)) return true;
             }
             res.writeHead(400);
             res.end(INVALID_IMAGE_SOURCE_MESSAGE);

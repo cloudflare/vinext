@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import { isAnimatedImage } from "../packages/vinext/src/server/image-animation.js";
-import { handleImageOptimization } from "../packages/vinext/src/server/image-optimization.js";
+import {
+  handleImageOptimization,
+  sniffImageContentType,
+} from "../packages/vinext/src/server/image-optimization.js";
 
 // Ported from Next.js: packages/next/src/server/image-optimizer.ts
 // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/image-optimizer.ts
@@ -338,5 +341,63 @@ describe("handleImageOptimization source size limit", () => {
     expect(await response.text()).toBe(TOO_LARGE);
     expect(cancelled).toBe(true);
     expect(enqueued).toBeLessThanOrEqual(52);
+  });
+});
+
+describe("handleImageOptimization source without an image Content-Type", () => {
+  const ICNS = new Uint8Array([0x69, 0x63, 0x6e, 0x73, 0, 0, 0, 8]);
+  const imageRequest = (source: string) =>
+    new Request(`http://localhost/_next/image?url=${encodeURIComponent(source)}&w=640&q=75`);
+  // Split the bytes so the signature spans chunks.
+  const chunked = (bytes: Uint8Array) =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, 2));
+        controller.enqueue(bytes.slice(2));
+        controller.close();
+      },
+    });
+
+  it("detects types by Next.js's signatures", () => {
+    const bytes = (...values: number[]) => new Uint8Array(values);
+    expect(sniffImageContentType(ICNS)).toBe("image/x-icns");
+    expect(sniffImageContentType(bytes(0, 0, 1, 0))).toBe("image/x-icon");
+    expect(sniffImageContentType(bytes(0x42, 0x4d))).toBe("image/bmp");
+    expect(sniffImageContentType(bytes(0xff, 0x0a))).toBe("image/jxl");
+    expect(
+      sniffImageContentType(bytes(0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63)),
+    ).toBe("image/heic");
+    expect(sniffImageContentType(new TextEncoder().encode("<svg xmlns"))).toBe("image/svg+xml");
+    expect(sniffImageContentType(new TextEncoder().encode("<!DOCTYPE html>"))).toBeNull();
+    expect(sniffImageContentType(new Uint8Array())).toBeNull();
+  });
+
+  for (const contentType of [null, "application/octet-stream"]) {
+    it(`serves an ICNS source typed ${contentType} as-is`, async () => {
+      const response = await handleImageOptimization(imageRequest("/icon.icns"), {
+        fetchAsset: async () => {
+          const response = new Response(chunked(ICNS), { status: 200 });
+          if (contentType === null) response.headers.delete("Content-Type");
+          else response.headers.set("Content-Type", contentType);
+          return response;
+        },
+        transformImage: async () => new Response("transformed"),
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("image/x-icns");
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(ICNS);
+    });
+  }
+
+  it("still rejects a source whose bytes are not an allowed image", async () => {
+    for (const body of ["<!DOCTYPE html><p>page</p>", "<svg onload=alert(1)></svg>"]) {
+      const response = await handleImageOptimization(imageRequest("/page"), {
+        fetchAsset: async () =>
+          new Response(body, { status: 200, headers: { "Content-Type": "text/html" } }),
+      });
+      expect(response.status, body).toBe(400);
+      expect(await response.text()).toBe('"url" parameter is valid but image type is not allowed');
+    }
   });
 });

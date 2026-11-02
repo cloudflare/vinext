@@ -278,6 +278,12 @@ const nextConfig = {
         has: [{ type: "query", key: "config-cache-control" }],
         headers: [{ key: "Cache-Control", value: "public, max-age=60" }],
       })),
+      // Used by Playwright: pages-router-prod/image-bypass-types.spec.ts. Like
+      // Next.js, /_next/image keeps a source max-age above minimumCacheTTL.
+      {
+        source: "/vinext-image.jxl",
+        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
+      },
       {
         source: "/storage-policy/short-browser",
         headers: [{ key: "Cache-Control", value: "public, max-age=1" }],
