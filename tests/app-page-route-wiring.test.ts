@@ -996,6 +996,62 @@ describe("app page route wiring helpers", () => {
     }
   });
 
+  it("keeps a sibling intercept's segment levels down to its page element", () => {
+    const previousCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    try {
+      const photoKeys = ["gallery", JSON.stringify(["(.)", "photo"]), "id|1|d"];
+      const elements = buildAppPageElements({
+        element: null,
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        renderElementWithMetadataOutlet: () => createElement(PageProbe),
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["gallery"],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/gallery",
+        rootNotFoundModule: null,
+        semanticPageIdentity: {
+          boundSegmentKey: JSON.stringify(["gallery", "photo", "id|1|d"]),
+          interceptionGraphId: "interception:/gallery->/gallery/photo/:id",
+          sourceBoundSegmentKey: JSON.stringify(["gallery"]),
+          sourceRouteGraphId: "route:/gallery",
+        },
+        siblingInterceptSegmentKeys: photoKeys,
+        sourcePageSegments: ["gallery", "(.)photo", "[id]"],
+      });
+
+      // The intercepting route's levels follow its own segments, so its
+      // "gallery" entry is the one /gallery renders into.
+      expect(collectBfcacheSpine(elements["route:/gallery"])).toEqual([
+        "layout:/",
+        `list ${segmentKey(photoKeys.slice(0, 1))}`,
+        `list ${segmentKey(photoKeys.slice(0, 2))}`,
+        `list ${segmentKey(photoKeys)}`,
+        "list page:/gallery",
+        "page:/gallery",
+      ]);
+    } finally {
+      if (previousCacheComponents === undefined) {
+        delete process.env.__NEXT_CACHE_COMPONENTS;
+      } else {
+        process.env.__NEXT_CACHE_COMPONENTS = previousCacheComponents;
+      }
+    }
+  });
+
   it("keys a loading shell's segment levels like the full render", () => {
     const previousCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
     process.env.__NEXT_CACHE_COMPONENTS = "true";

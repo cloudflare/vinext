@@ -42,6 +42,7 @@ import {
   isAppPageRouteGroupSegment,
   resolveAppPagePatternStateKey,
   resolveAppPageRouteStateKey,
+  resolveAppPageSemanticSegmentStateKey,
   type AppPageSemanticSegment,
 } from "./app-page-segment-state.js";
 import {
@@ -1053,6 +1054,15 @@ export async function buildPageElements<
       routePath,
       semanticPageIdentity,
       semanticInterceptionTargetRouteId: opts?.interceptTargetRouteGraphId ?? null,
+      siblingInterceptSegmentKeys: isSiblingIntercept
+        ? resolveSiblingInterceptSegmentKeys(
+            sourcePageSegments,
+            route.routeSegments,
+            opts,
+            params,
+            effectiveParams,
+          )
+        : null,
       sourcePageSegments,
       rootNotFoundModule: rootNotFoundModule ?? null,
       rootForbiddenModule: rootForbiddenModule ?? null,
@@ -1130,6 +1140,66 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
   }
 
   return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+/**
+ * The state key of each segment a sibling intercept's levels retain, from the
+ * app root down to the segment its element renders, so its Activity lists key
+ * like Next.js's for the intercepting route: the marker segment carries its
+ * marker, and a dynamic marker segment keys per value. The intercepting
+ * route's own layouts and boundaries render inside its page element, so the
+ * levels stop above the first of them.
+ */
+export function resolveSiblingInterceptSegmentKeys(
+  sourcePageSegments: readonly string[] | null | undefined,
+  routeSegments: readonly string[] | null | undefined,
+  opts: AppPageInterceptOptions | null | undefined,
+  routeParams: AppPageParams,
+  interceptParams: AppPageParams,
+): readonly string[] | null {
+  if (!sourcePageSegments || !routeSegments) return null;
+  const markerIndex = sourcePageSegments.findIndex((segment) =>
+    APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.some(({ prefix }) => segment.startsWith(prefix)),
+  );
+  if (markerIndex < 0) return null;
+  // The levels above the marker are the rendered route's own spine. Only key
+  // them by the intercepting route when that spine is exactly the marker's
+  // parent directory; any other source keeps its route template keys.
+  if (
+    routeSegments.length !== markerIndex ||
+    routeSegments.some((segment, index) => segment !== sourcePageSegments[index])
+  ) {
+    return null;
+  }
+  // Intercept tree positions count from the directory that owns the marker.
+  const branchTreePositions = [
+    ...(opts?.interceptLayouts ?? []).flatMap((layoutModule, index) =>
+      layoutModule?.default ? [opts?.interceptLayoutSegments?.[index]?.length ?? 0] : [],
+    ),
+    ...(opts?.interceptLoadingTreePositions ?? []),
+    ...(opts?.interceptNotFoundTreePositions ?? []),
+    ...(opts?.interceptForbiddenTreePositions ?? []),
+    ...(opts?.interceptUnauthorizedTreePositions ?? []),
+    ...(opts?.interceptErrorTreePositions ?? []),
+  ];
+  const segmentCount = Math.max(
+    markerIndex,
+    Math.min(sourcePageSegments.length, markerIndex + Math.min(...branchTreePositions) - 1),
+  );
+  return sourcePageSegments.slice(0, segmentCount).map((segment, index) => {
+    const marker =
+      index === markerIndex
+        ? APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.find(({ prefix }) => segment.startsWith(prefix))
+        : undefined;
+    return resolveAppPageSemanticSegmentStateKey(
+      {
+        marker: marker?.prefix ?? null,
+        paramSource: "route",
+        segment: marker ? segment.slice(marker.prefix.length) : segment,
+      },
+      index < markerIndex ? routeParams : interceptParams,
+    );
+  });
 }
 
 export const APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS = [

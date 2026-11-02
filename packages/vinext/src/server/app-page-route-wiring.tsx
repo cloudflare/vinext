@@ -416,6 +416,12 @@ type BuildAppPageElementsOptions<
     sourceRouteGraphId: string;
   }> | null;
   semanticInterceptionTargetRouteId?: string | null;
+  /**
+   * A sibling intercept's segment state keys, app root first, down to the
+   * segment its page element renders. Its BFCache segment levels follow these
+   * rather than the source route's segments.
+   */
+  siblingInterceptSegmentKeys?: readonly string[] | null;
   sourcePageSegments?: readonly string[] | null;
 };
 
@@ -2221,23 +2227,27 @@ export function buildAppPageElements<
   // without a layout still retains each child segment separately: /chat/a and
   // /chat/b are two entries in the chat level's list, and one entry, "chat", in
   // the parent layout's. Without those levels the parent's list would hold one
-  // entry per leaf and evict sooner. Interceptions and synthetic children-slot
-  // routes render children that their route segments don't describe, so they
-  // keep a single list per layout.
+  // entry per leaf and evict sooner. A sibling intercept rendered on the route
+  // that owns its marker follows the intercepting route's segments down to its
+  // page element, so /photo/1 shares the "feed" entry with /feed. Other
+  // interceptions and synthetic children-slot routes render children that
+  // their route segments don't describe, so they keep a single list per layout.
   const firstLayoutWithElementTreePosition = layoutEntries.find(
     (entry) => getDefaultExport(entry.layoutModule) !== null,
   )?.treePosition;
+  const siblingInterceptSegmentKeys = options.siblingInterceptSegmentKeys ?? null;
   const keepsSegmentLevelLists =
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
     firstLayoutWithElementTreePosition !== undefined &&
     !options.route.childrenSlot &&
-    options.semanticPageIdentity === undefined;
+    (options.semanticPageIdentity === undefined || siblingInterceptSegmentKeys !== null);
+  const spineSegmentCount = siblingInterceptSegmentKeys?.length ?? routeSegments.length;
   const spineTreePositions = keepsSegmentLevelLists
     ? Array.from(
         new Set([
           ...orderedTreePositions,
           ...Array.from(
-            { length: Math.max(0, routeSegments.length - firstLayoutWithElementTreePosition) },
+            { length: Math.max(0, spineSegmentCount - firstLayoutWithElementTreePosition) },
             (_, offset) => firstLayoutWithElementTreePosition + 1 + offset,
           ),
         ]),
@@ -2259,7 +2269,7 @@ export function buildAppPageElements<
         )
       : undefined;
   let childSegmentElementId = firstLayoutBelowShell?.id ?? pageElementId;
-  let childSegmentTreePosition = firstLayoutBelowShell?.treePosition ?? routeSegments.length + 1;
+  let childSegmentTreePosition = firstLayoutBelowShell?.treePosition ?? spineSegmentCount + 1;
   // Retains the children of the segment at treePosition, keyed by the child
   // element when it's the next segment down, else by the child segment.
   const retainChildSegment = (treePosition: number, children: ReactNode): ReactNode =>
@@ -2268,7 +2278,9 @@ export function buildAppPageElements<
     ) : (
       <BfcacheChildrenBoundary
         stateKey={createBfcacheChildSegmentStateKey(
-          resolveAppPageTemplateStateKey(routeSegments, treePosition, options.matchedParams),
+          siblingInterceptSegmentKeys
+            ? JSON.stringify(siblingInterceptSegmentKeys.slice(0, treePosition + 1))
+            : resolveAppPageTemplateStateKey(routeSegments, treePosition, options.matchedParams),
         )}
       >
         {children}
