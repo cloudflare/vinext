@@ -154,6 +154,44 @@ describe("addEslintIgnores", () => {
     );
   });
 
+  it("edits only a global ignore list", () => {
+    const files = [
+      "export default [",
+      "  {",
+      "    files: [",
+      "      '.next/**',",
+      "    ],",
+      "  },",
+      "];",
+    ];
+    expect(addEslintIgnores(files.join("\n"), ["dist/**"])).toBe(undefined);
+    // Entries elsewhere in the config do not count as ignored.
+    const source = [
+      "// Build output: 'dist/**'",
+      "export default [",
+      "  { files: ['dist/**'], rules: {} },",
+      "  globalIgnores([",
+      "    '.next/**',",
+      "    'out/**',",
+      "  ]),",
+      "];",
+    ].join("\r\n");
+    expect(addEslintIgnores(source, ["dist/**"])).toBe(
+      [
+        "// Build output: 'dist/**'",
+        "export default [",
+        "  { files: ['dist/**'], rules: {} },",
+        "  globalIgnores([",
+        "    '.next/**',",
+        "    'out/**',",
+        "    // vinext build output:",
+        "    'dist/**',",
+        "  ]),",
+        "];",
+      ].join("\r\n"),
+    );
+  });
+
   it("leaves a config without eslint-config-next's default ignores to the user", () => {
     expect(addEslintIgnores("export default [{ ignores: ['out/**'] }];", ["dist/**"])).toBe(
       undefined,

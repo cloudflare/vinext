@@ -656,32 +656,51 @@ function eslintIgnoreEntries(platform: InitPlatform, legacyWrangler: boolean): s
   ];
 }
 
+// The opening of a global ignore list: `globalIgnores([` or an `ignores: [`
+// that is the first key of its object.
+const ESLINT_IGNORE_LISTS = /globalIgnores\(\s*\[|\{\s*ignores:\s*\[/g;
+
 /**
- * Add `entries` to the ignore list that create-next-app copies from
+ * Add `entries` to the global ignore list that create-next-app copies from
  * eslint-config-next's defaults (`".next/**"`, `"out/**"`, ...). Returns the
  * updated source, or undefined when the config has no such list.
  */
 export function addEslintIgnores(source: string, entries: string[]): string | undefined {
+  const lists: Array<{ start: number; closing: number }> = [];
+  for (const open of source.matchAll(ESLINT_IGNORE_LISTS)) {
+    const start = open.index + open[0].length;
+    const closing = source.indexOf("]", start);
+    if (closing === -1) continue;
+    // `ignores` only applies globally when it is the object's only key.
+    if (open[0].startsWith("{") && !/^\s*,?\s*\}/.test(source.slice(closing + 1))) continue;
+    lists.push({ start, closing });
+  }
   const missing = entries.filter(
-    (entry) => !source.includes(`"${entry}"`) && !source.includes(`'${entry}'`),
+    (entry) =>
+      !lists.some(({ start, closing }) => {
+        const list = source.slice(start, closing);
+        return list.includes(`"${entry}"`) || list.includes(`'${entry}'`);
+      }),
   );
   if (missing.length === 0) return source;
-  const defaults = /^([ \t]*)(["'])\.next\/\*\*\2,[ \t]*$/m.exec(source);
-  if (!defaults) return undefined;
-  const [, indent, quote] = defaults;
-  const closing = source.indexOf("]", defaults.index);
-  if (closing === -1) return undefined;
-  const closingLineStart = source.lastIndexOf("\n", closing) + 1;
-  const beforeClosing = source.slice(0, closingLineStart).trimEnd();
-  if (source.slice(closingLineStart, closing).trim() !== "" || !beforeClosing.endsWith(",")) {
-    return undefined;
+  for (const { start, closing } of lists) {
+    const defaults = /^([ \t]*)(["'])\.next\/\*\*\2,[ \t]*\r?$/m.exec(source.slice(start, closing));
+    if (!defaults) continue;
+    const [, indent, quote] = defaults;
+    const closingLineStart = source.lastIndexOf("\n", closing) + 1;
+    const beforeClosing = source.slice(0, closingLineStart).trimEnd();
+    if (source.slice(closingLineStart, closing).trim() !== "" || !beforeClosing.endsWith(",")) {
+      return undefined;
+    }
+    const newline = source.includes("\r\n") ? "\r\n" : "\n";
+    const lines = missing.map((entry) => `${indent}${quote}${entry}${quote},${newline}`).join("");
+    return (
+      source.slice(0, closingLineStart) +
+      `${indent}// vinext build output:${newline}${lines}` +
+      source.slice(closingLineStart)
+    );
   }
-  const lines = missing.map((entry) => `${indent}${quote}${entry}${quote},\n`).join("");
-  return (
-    source.slice(0, closingLineStart) +
-    `${indent}// vinext build output:\n${lines}` +
-    source.slice(closingLineStart)
-  );
+  return undefined;
 }
 
 /**
@@ -698,9 +717,6 @@ export function updateEslintIgnores(
   if (!file) return undefined;
   const configPath = path.join(root, file);
   const source = fs.readFileSync(configPath, "utf-8");
-  // A config that loads .gitignore (`includeIgnoreFile` from @eslint/compat)
-  // already ignores what init adds there.
-  if (source.includes("includeIgnoreFile")) return undefined;
   const entries = eslintIgnoreEntries(platform, legacyWrangler);
   const updated = addEslintIgnores(source, entries);
   if (updated === undefined) return { file, entries, updated: false };
@@ -1221,7 +1237,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     );
   } else if (eslintIgnores) {
     console.log(
-      `    ${terminalStyle.yellow("!")} ESLint does not read .gitignore; add ${eslintIgnores.entries.map((entry) => JSON.stringify(entry)).join(", ")} to the ignores in ${eslintIgnores.file}`,
+      `    ${terminalStyle.yellow("!")} ESLint does not read .gitignore by default; make sure the ignores in ${eslintIgnores.file} include ${eslintIgnores.entries.map((entry) => JSON.stringify(entry)).join(", ")}`,
     );
   }
   if (hasCssModules) {
