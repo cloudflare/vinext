@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import { resolveTrustedForwardedHost } from "./proxy-trust.js";
 
 /** srvx, which serves Nitro's Node presets, exposes the Node request it wraps. */
 type SrvxNodeRequest = Request & {
@@ -20,16 +21,17 @@ export function isSrvxAbsoluteFormTarget(request: Request): boolean {
   // srvx 0.11 writes the pathname h3 decodes (one with a `%`) back into
   // req.url, dropping the target's authority. For an origin-form target it
   // builds an http(s) URL on the Host header (`_invalid_` when malformed);
-  // later versions keep req.url and may use a trusted X-Forwarded-Host.
+  // later versions keep req.url and may use an X-Forwarded-Host, which
+  // vinext accepts only from `VINEXT_TRUSTED_HOSTS`.
   if (!URL.canParse(request.url)) return false;
   const url = new URL(request.url);
   if (url.protocol !== "http:" && url.protocol !== "https:") return true;
   const host = req.headers.host || req.headers[":authority"];
   if (!host || typeof host !== "string" || url.hostname === "_invalid_") return false;
-  const forwardedHost = req.headers["x-forwarded-host"];
-  const names = [host, ...(typeof forwardedHost === "string" ? forwardedHost.split(",") : [])];
+  const forwardedHost = resolveTrustedForwardedHost(request.headers);
+  const names = forwardedHost === undefined ? [host] : [host, forwardedHost];
   return !names.some((name) => {
-    const origin = `${url.protocol}//${name.trim()}`;
+    const origin = `${url.protocol}//${name}`;
     return URL.canParse(origin) && new URL(origin).host === url.host;
   });
 }

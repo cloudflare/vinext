@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
+import { trustedHosts } from "../packages/vinext/src/server/proxy-trust.js";
 import { isSrvxAbsoluteFormTarget } from "../packages/vinext/src/server/srvx-request-target.js";
 
 function srvxRequest(url: string, rawTarget: string, headers: Record<string, string>): Request {
-  return Object.assign(new Request(url), {
+  return Object.assign(new Request(url, { headers }), {
     runtime: { node: { req: { url: rawTarget, headers } } },
   });
 }
@@ -30,6 +31,11 @@ describe("isSrvxAbsoluteFormTarget", () => {
       const request = srvxRequest(url, "/x", { host: "shop.example" });
       expect(isSrvxAbsoluteFormTarget(request), url).toBe(true);
     }
+    const forwarded = srvxRequest("https://other.example/x", "/x", {
+      host: "shop.example",
+      "x-forwarded-host": "other.example",
+    });
+    expect(isSrvxAbsoluteFormTarget(forwarded)).toBe(true);
   });
 
   it("accepts the origins srvx builds for an origin-form target", () => {
@@ -38,14 +44,23 @@ describe("isSrvxAbsoluteFormTarget", () => {
       ["http://_invalid_/x", { host: "shop.example/x" }],
       ["http://127.0.0.1:3000/x", {}],
       ["http://127.0.0.1:3000/x", { host: "" }],
-      // A trusted X-Forwarded-Host (srvx 0.12 and later).
-      [
-        "http://public.example/x",
-        { host: "shop.example", "x-forwarded-host": "a, public.example" },
-      ],
     ];
     for (const [url, headers] of cases) {
       expect(isSrvxAbsoluteFormTarget(srvxRequest(url, "/x", headers)), url).toBe(false);
+    }
+  });
+
+  // srvx 0.12 and later can build request.url on X-Forwarded-Host.
+  it("accepts an X-Forwarded-Host from VINEXT_TRUSTED_HOSTS", () => {
+    trustedHosts.add("public.example");
+    try {
+      const request = srvxRequest("http://public.example/x", "/x", {
+        host: "shop.example",
+        "x-forwarded-host": "public.example",
+      });
+      expect(isSrvxAbsoluteFormTarget(request)).toBe(false);
+    } finally {
+      trustedHosts.delete("public.example");
     }
   });
 });

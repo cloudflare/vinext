@@ -29,5 +29,14 @@ test.describe("App Router on Nitro (node server)", () => {
         body: "This page could not be found",
       });
     }
+
+    // X-Forwarded-Host names the target's host only when VINEXT_TRUSTED_HOSTS lists it.
+    const forwarded = await getWithHost(baseURL!, "https://other.example/%61", host, {
+      "x-forwarded-host": "other.example",
+    });
+    expect({ status: forwarded.status, body: forwarded.body }).toEqual({
+      status: 404,
+      body: "This page could not be found",
+    });
   });
 });

@@ -161,6 +161,8 @@ export default defineConfig({
 
 Follow the [Nitro deployment guide](https://v3.nitro.build/deploy) for host-specific presets and output. On Cloudflare, prefer vinext's native integration for direct bindings, caching, image optimization, and the one-command deployment workflow.
 
+On Nitro's Node presets, vinext answers a request target that is not origin-form, such as `GET https://other.example/`, with a 404, as `vinext start` does. If you enable Nitro's `trustProxy` server option so that `X-Forwarded-Host` sets the host of `request.url`, also list those hosts in [`VINEXT_TRUSTED_HOSTS`](#behind-a-reverse-proxy). Otherwise vinext answers 404 to a request whose forwarded host differs from its `Host` header.
+
 ### Middleware and static files
 
 In Next.js, middleware runs for every path its `matcher` matches, including files in `public/`. On presets where Nitro's own server serves the static output, such as `node-server` and `bun`, vinext runs requests for `public/` files through middleware and then serves the file from Nitro's output, so rewrites to public files work too. As in Next.js, `public/docs/index.html` is served only at `/docs/index.html`, not at `/docs`. As on Cloudflare Workers, middleware does not run for the `/_next/static` build output, which Nitro serves directly.
