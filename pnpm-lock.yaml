@@ -2161,6 +2161,8 @@ importers:
 
   tests/fixtures/hybrid-redirecting-app-404: {}
 
+  tests/fixtures/hybrid-redirecting-app-404-route: {}
+
   tests/fixtures/hybrid-throwing-pages-404: {}
 
   tests/fixtures/init-css-modules:

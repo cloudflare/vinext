@@ -1486,6 +1486,22 @@ describe("prerender — the 404 page is rendered without routing", () => {
     });
   }, 120_000);
 
+  it("keeps the Pages Router's 404 page when only an app/404 page wrote a /404", async () => {
+    await withHybridBuild("hybrid-redirecting-app-404-route", async (root, prerender) => {
+      const result = await prerender();
+
+      expect((result?.routes ?? []).filter((r) => r.route === "/404")).toEqual([
+        expect.objectContaining({ status: "rendered", router: "app" }),
+        expect.objectContaining({ status: "rendered", router: "pages" }),
+      ]);
+      const html = fs.readFileSync(
+        path.join(root, "dist", "server", "prerendered-routes", "404.html"),
+        "utf-8",
+      );
+      expect(html).toContain("pages error");
+    });
+  }, 120_000);
+
   it("fails a hybrid build on a pages/404 that throws behind a rewrite of /404", async () => {
     await withHybridBuild("hybrid-throwing-pages-404", async (_root, prerender) => {
       const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});

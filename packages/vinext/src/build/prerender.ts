@@ -193,6 +193,14 @@ export type PrerenderResult = {
   outputFiles?: string[];
 };
 
+export type PrerenderAppResult = PrerenderResult & {
+  /**
+   * Whether the not-found render wrote 404.html. An ordinary `app/404` page
+   * also records a rendered `/404`, so the routes can't tell.
+   */
+  notFoundWritten: boolean;
+};
+
 export type PrerenderRouteResult =
   | {
       /** The route's file-system pattern, e.g. `/blog/:slug`. */
@@ -1444,7 +1452,7 @@ export async function prerenderApp({
   serverDir = path.dirname(rscBundlePath),
   buildOutDir = path.dirname(serverDir),
   ...options
-}: PrerenderAppOptionsInternal): Promise<PrerenderResult> {
+}: PrerenderAppOptionsInternal): Promise<PrerenderAppResult> {
   const manifestDir = options.manifestDir ?? outDir;
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   const onProgress = options.onProgress;
@@ -2284,6 +2292,7 @@ export async function prerenderApp({
     // prerender endpoint renders the root not-found page (or the default
     // Next.js 404) without routing, so no route, middleware or rewrite can
     // answer for it. Write it to 404.html for static deployment.
+    let notFoundWritten = false;
     try {
       const notFoundRequest = new Request(`http://localhost${VINEXT_PRERENDER_NOT_FOUND_PATH}`);
       const notFoundRes = await runWithHeadersContext(
@@ -2306,6 +2315,7 @@ export async function prerenderApp({
           revalidate: false,
           router: "app",
         });
+        notFoundWritten = true;
       }
     } catch (e) {
       // No custom 404. When the render-worker pool is active, a transport
@@ -2326,6 +2336,7 @@ export async function prerenderApp({
     return {
       routes: results,
       ...(outputFiles.length > 0 ? { outputFiles } : {}),
+      notFoundWritten,
     };
   } finally {
     try {

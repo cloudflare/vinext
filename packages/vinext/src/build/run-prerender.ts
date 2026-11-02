@@ -314,9 +314,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
       allRoutes.push(...result.routes);
       if (result.outputFiles) allOutputFiles.push(...result.outputFiles);
-      appWroteNotFound = result.routes.some(
-        (route) => route.route === "/404" && route.status === "rendered",
-      );
+      appWroteNotFound = result.notFoundWritten;
     }
 
     // ── Pages Router phase ────────────────────────────────────────────────────
