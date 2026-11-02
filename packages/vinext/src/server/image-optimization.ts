@@ -61,9 +61,14 @@ export type ImageConfig = {
   /** Allowed fixed-image widths. Defaults to Next.js image sizes. */
   imageSizes?: number[];
   /**
-   * Allowed output qualities. When unset, any quality from 1-100 is permitted
-   * (matches Next.js: an unset `images.qualities` is not restricted to a single
-   * value). When set, only the listed qualities are accepted.
+   * Allowed output qualities. When set, only the listed qualities are
+   * accepted, as in Next.js. When unset, any quality from 1-100 is accepted.
+   *
+   * Intentional divergence from Next.js 16, which defaults this to `[75]`:
+   * vinext keeps the Next.js 14/15 behaviour for an unset list so apps that
+   * adopt vinext from those versions and pass `quality={N}` keep working
+   * instead of getting 400s. Apps opt into Next.js 16's strict list by
+   * configuring `images.qualities`.
    */
   qualities?: number[];
   /**
@@ -314,7 +319,9 @@ export function parseImageParams(
   if (width <= 0 || (!allowedWidths.includes(width) && !isDevBlurWidth)) return null;
   if (quality < 1 || quality > 100) return null;
   // Only enforce the quality allowlist when `images.qualities` is configured.
-  // Matches Next.js: an unset `qualities` permits any quality from 1-100.
+  // Deliberately generous when unset: Next.js 16 defaults the list to [75],
+  // but vinext accepts any quality 1-100 like Next.js 14/15 so apps migrating
+  // from those versions don't break (see ImageConfig.qualities).
   if (allowedQualities && !allowedQualities.includes(quality) && !isDevBlurQuality) {
     return null;
   }

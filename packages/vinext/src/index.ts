@@ -3217,9 +3217,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             JSON.stringify(deviceSizes),
           );
           defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(JSON.stringify(imageSizes));
-          // Emit the configured qualities allowlist, or `null` when unset so the
-          // runtime permits any quality 1-100 (matches Next.js: an unset
-          // `images.qualities` is not restricted to a single value).
+          // Emit the configured qualities allowlist, or `null` when unset. With a
+          // list, the default loader rounds `quality` to the closest entry like
+          // Next.js. When unset, vinext deliberately keeps the Next.js 14/15
+          // behaviour (any quality 1-100, the prop used as written) rather than
+          // Next.js 16's `[75]` default, so migrating apps don't break.
           defines["process.env.__VINEXT_IMAGE_QUALITIES"] = JSON.stringify(
             JSON.stringify(nextConfig.images?.qualities ?? null),
           );
