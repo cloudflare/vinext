@@ -400,6 +400,15 @@ export const IMAGE_CACHE_CONTROL = "public, max-age=31536000, immutable";
  */
 export const MUTABLE_IMAGE_SOURCE_CACHE_CONTROL = "public, max-age=14400, must-revalidate";
 
+/** Next.js's default `images.minimumCacheTTL`, in seconds. */
+const DEFAULT_MINIMUM_CACHE_TTL = 14400;
+
+/**
+ * Next.js's default `images.maximumResponseBody`: the most it reads of a
+ * source before answering 413.
+ */
+const MAXIMUM_SOURCE_BODY_BYTES = 50_000_000;
+
 /**
  * Content-Security-Policy for image optimization responses.
  * Blocks script execution and framing to prevent XSS via SVG or other
@@ -519,27 +528,81 @@ function setImageResponseHeaders(
   setCacheStateHeaders(headers, IMAGE_RESPONSE_CACHE_STATE);
 }
 
+/** The `s-maxage` or `max-age` of a Cache-Control value, like Next.js' getMaxAge. */
+function cacheControlMaxAge(cacheControl: string | null): number {
+  const directives = new Map<string, string | undefined>();
+  for (const directive of cacheControl?.split(",") ?? []) {
+    const [key, value] = directive.trim().split("=", 2);
+    directives.set(key.toLowerCase(), value?.toLowerCase());
+  }
+  let age = directives.get("s-maxage") || directives.get("max-age") || "";
+  if (age.startsWith('"') && age.endsWith('"')) age = age.slice(1, -1);
+  const seconds = Number.parseInt(age, 10);
+  return Number.isNaN(seconds) ? 0 : seconds;
+}
+
 /**
- * Next.js's Cache-Control for a source it serves as-is, as the Node server's
- * passthrough sends it: a hashed build asset stays immutable, and any other
- * source is revalidated after the default `images.minimumCacheTTL`.
+ * Next.js's Cache-Control for a source it serves as-is: a hashed build asset
+ * stays immutable, and any other source is revalidated after the larger of
+ * the default `images.minimumCacheTTL` and the source's own max-age. Next.js
+ * ignores the source's max-age when it falls back after a failed transform,
+ * so that fallback passes null.
  */
-function sourceImageCacheControl(imageUrl: string): string {
+function sourceImageCacheControl(imageUrl: string, upstreamCacheControl: string | null): string {
   const { pathname } = new URL(imageUrl, "http://localhost");
-  return pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`)
-    ? IMAGE_CACHE_CONTROL
-    : MUTABLE_IMAGE_SOURCE_CACHE_CONTROL;
+  if (pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`)) return IMAGE_CACHE_CONTROL;
+  const maxAge = Math.max(DEFAULT_MINIMUM_CACHE_TTL, cacheControlMaxAge(upstreamCacheControl));
+  return `public, max-age=${maxAge}, must-revalidate`;
 }
 
 function createPassthroughImageResponse(
   source: Response,
   body: BodyInit | null,
-  imageUrl: string,
+  cacheControl: string,
   config?: ImageConfig,
 ): Response {
   const headers = new Headers(source.headers);
-  setImageResponseHeaders(headers, sourceImageCacheControl(imageUrl), config);
+  setImageResponseHeaders(headers, cacheControl, config);
   return new Response(body, { status: 200, headers });
+}
+
+/** Next.js's 413 for a source larger than `images.maximumResponseBody`. */
+function sourceTooLargeResponse(): Response {
+  return new Response('"url" parameter is valid but internal response is invalid', {
+    status: 413,
+  });
+}
+
+/** Read a source body, or return null once it exceeds `limit` bytes. */
+async function readBoundedBody(
+  body: ReadableStream<Uint8Array>,
+  declaredLength: string | null,
+  limit: number,
+): Promise<Uint8Array<ArrayBuffer> | null> {
+  if (declaredLength !== null && Number(declaredLength) > limit) {
+    await body.cancel();
+    return null;
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    length += value.byteLength;
+    if (length > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 /**
@@ -600,8 +663,14 @@ export async function handleImageOptimization(
   // Like Next.js, serve a format it does not optimize as-is, SVG included
   // once dangerouslyAllowSVG admitted it above.
   const sourceMediaType = imageMediaType(sourceContentType);
+  const sourceCacheControl = sourceImageCacheControl(imageUrl, source.headers.get("Cache-Control"));
   if (BYPASS_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
-    const response = createPassthroughImageResponse(source, source.body, imageUrl, imageConfig);
+    const response = createPassthroughImageResponse(
+      source,
+      source.body,
+      sourceCacheControl,
+      imageConfig,
+    );
     // Next.js labels an ICO by its detected type, `image/x-icon`, where
     // Workers static assets use the registered `image/vnd.microsoft.icon`.
     if (sourceMediaType === "image/vnd.microsoft.icon") {
@@ -616,11 +685,22 @@ export async function handleImageOptimization(
     try {
       let body = source.body;
       // Next.js serves an animated image as-is rather than flattening it to
-      // one frame, which takes reading the whole source.
+      // one frame, which takes reading the whole source, up to the size
+      // Next.js reads at most.
       if (ANIMATABLE_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
-        sourceBytes = new Uint8Array(await source.arrayBuffer());
+        sourceBytes = await readBoundedBody(
+          source.body,
+          source.headers.get("Content-Length"),
+          MAXIMUM_SOURCE_BODY_BYTES,
+        );
+        if (sourceBytes === null) return sourceTooLargeResponse();
         if (isAnimatedImage(sourceBytes)) {
-          return createPassthroughImageResponse(source, sourceBytes, imageUrl, imageConfig);
+          return createPassthroughImageResponse(
+            source,
+            sourceBytes,
+            sourceCacheControl,
+            imageConfig,
+          );
         }
         body = new Blob([sourceBytes]).stream();
       }
@@ -644,12 +724,17 @@ export async function handleImageOptimization(
     }
   }
 
-  // Fallback: serve original image with cache headers
+  // Fallback: serve original image with cache headers. Without an optimizer
+  // the source is served as-is; after a failed transform Next.js keeps it
+  // for the minimum TTL only.
+  const fallbackCacheControl = handlers.transformImage
+    ? sourceImageCacheControl(imageUrl, null)
+    : sourceCacheControl;
   try {
     return createPassthroughImageResponse(
       source,
       sourceBytes ?? source.body,
-      imageUrl,
+      fallbackCacheControl,
       imageConfig,
     );
   } catch (e) {
@@ -667,7 +752,7 @@ export async function handleImageOptimization(
     return createPassthroughImageResponse(
       refetchedSource,
       refetchedSource.body,
-      imageUrl,
+      fallbackCacheControl,
       imageConfig,
     );
   }

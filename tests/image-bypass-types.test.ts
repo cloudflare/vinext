@@ -202,3 +202,108 @@ describe("handleImageOptimization formats Next.js does not optimize", () => {
     expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
   });
 });
+
+describe("handleImageOptimization passthrough Cache-Control", () => {
+  const imageRequest = (source: string) =>
+    new Request(`http://localhost/_next/image?url=${encodeURIComponent(source)}&w=640&q=75`);
+  const source = (contentType: string, cacheControl: string, body: BodyInit = "source") => ({
+    fetchAsset: async () =>
+      new Response(body, {
+        status: 200,
+        headers: { "Content-Type": contentType, "Cache-Control": cacheControl },
+      }),
+  });
+
+  // Next.js sends max(images.minimumCacheTTL, the source's s-maxage or max-age).
+  it("keeps a source max-age longer than the minimum TTL", async () => {
+    for (const [cacheControl, expected] of [
+      ["public, max-age=86400", "public, max-age=86400, must-revalidate"],
+      ["public, max-age=60, s-maxage=90000", "public, max-age=90000, must-revalidate"],
+      ['public, max-age="172800"', "public, max-age=172800, must-revalidate"],
+      ["public, max-age=0, must-revalidate", "public, max-age=14400, must-revalidate"],
+    ] as const) {
+      const bypass = await handleImageOptimization(
+        imageRequest("/favicon.ico"),
+        source("image/x-icon", cacheControl),
+      );
+      expect(bypass.headers.get("Cache-Control"), cacheControl).toBe(expected);
+      const unoptimized = await handleImageOptimization(
+        imageRequest("/image.jpg"),
+        source("image/jpeg", cacheControl),
+      );
+      expect(unoptimized.headers.get("Cache-Control"), cacheControl).toBe(expected);
+    }
+  });
+
+  it("keeps an animated source's max-age", async () => {
+    const response = await handleImageOptimization(imageRequest("/animated.gif"), {
+      ...source("image/gif", "public, max-age=86400", ANIMATED_GIF),
+      transformImage: async () => new Response("transformed"),
+    });
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=86400, must-revalidate");
+  });
+
+  it("uses only the minimum TTL after a failed transform", async () => {
+    const response = await handleImageOptimization(imageRequest("/image.jpg"), {
+      ...source("image/jpeg", "public, max-age=86400"),
+      transformImage: async () => {
+        throw new Error("unsupported");
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
+  });
+});
+
+describe("handleImageOptimization source size limit", () => {
+  // Next.js reads at most `images.maximumResponseBody` (50 MB by default) of a
+  // source and answers 413 past it.
+  const TOO_LARGE = '"url" parameter is valid but internal response is invalid';
+  const transformImage = async () => new Response("transformed");
+  const imageRequest = new Request("http://localhost/_next/image?url=%2Fbig.png&w=640&q=75");
+
+  it("rejects a source that declares more than the limit without reading it", async () => {
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(new Uint8Array(1));
+      },
+    });
+    const response = await handleImageOptimization(imageRequest, {
+      fetchAsset: async () =>
+        new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "image/png", "Content-Length": "50000001" },
+        }),
+      transformImage,
+    });
+    expect(response.status).toBe(413);
+    expect(await response.text()).toBe(TOO_LARGE);
+    expect(pulled).toBeLessThanOrEqual(1);
+  });
+
+  it("stops reading a source once it exceeds the limit", async () => {
+    const chunk = new Uint8Array(1_000_000);
+    let enqueued = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        enqueued += 1;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = await handleImageOptimization(imageRequest, {
+      fetchAsset: async () =>
+        new Response(body, { status: 200, headers: { "Content-Type": "image/png" } }),
+      transformImage,
+    });
+    expect(response.status).toBe(413);
+    expect(await response.text()).toBe(TOO_LARGE);
+    expect(cancelled).toBe(true);
+    expect(enqueued).toBeLessThanOrEqual(52);
+  });
+});
