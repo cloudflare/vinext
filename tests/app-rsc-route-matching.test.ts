@@ -1,10 +1,18 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   createAppRscRouteMatcher,
   SIBLING_PAGE_INTERCEPT_SLOT_KEY,
 } from "../packages/vinext/src/server/app-rsc-route-matching.js";
+import {
+  addPregeneratedConcretePath,
+  clearPregeneratedConcretePaths,
+} from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 
 describe("App RSC route matching", () => {
+  afterEach(() => {
+    clearPregeneratedConcretePaths();
+  });
+
   it("matches app routes through the shared route trie", () => {
     const matcher = createAppRscRouteMatcher([
       route("/", []),
@@ -164,6 +172,9 @@ describe("App RSC route matching", () => {
       ],
       ["/a", "/café", "/blog/new", "/solo/only", "/files/new"],
     );
+    for (const pathname of ["/a", "/café", "/blog/new", "/solo/only", "/files/new"]) {
+      addPregeneratedConcretePath(pathname, pathname);
+    }
     const pattern = (pathname: string) => matcher.matchRequestRoute(pathname)?.route.pattern;
     // Next.js answers a rewrite destination like a direct request to it.
     expect(matcher.matchRoute("/%61")?.route.pattern).toBe("/a");
@@ -216,6 +227,65 @@ describe("App RSC route matching", () => {
     });
   });
 
+  it("renders the dynamic sibling for another spelling of a page without a recorded prerender", () => {
+    // Next.js 16.2.7: a page that reads cookies() or searchParams has no
+    // prerender, so `/%61dmin` beside `/[slug]` renders `/[slug]`, and
+    // middleware that compared the pathname with `/admin` never saw `/admin`.
+    // A rewrite destination is routed the same way.
+    const matcher = createAppRscRouteMatcher(
+      [
+        route("/admin", ["admin"]),
+        route("/café", ["café"]),
+        route("/:slug", [":slug"]),
+        route("/blog/new", ["blog", "new"]),
+        route("/blog/:slug", ["blog", ":slug"]),
+        route("/docs/admin/billing", ["docs", "admin", "billing"]),
+        route("/docs/:path+", ["docs", ":path+"]),
+        route("/q&a", ["q&a"]),
+        route("/a b", ["a b"]),
+      ],
+      ["/admin", "/café", "/blog/new", "/docs/admin/billing", "/q&a", "/a b"],
+    );
+
+    for (const pathname of ["/%61dmin", "/admi%6E", "/%61%64%6d%69%6e", "/%61dmin?page=2"]) {
+      for (const match of [matcher.matchRequestRoute(pathname), matcher.matchRoute(pathname)]) {
+        expect(match).toMatchObject({
+          route: { pattern: "/:slug" },
+          params: { slug: "admin" },
+        });
+      }
+    }
+    expect(matcher.matchRequestRoute("/blog/%6Eew")).toMatchObject({
+      route: { pattern: "/blog/:slug" },
+      params: { slug: "new" },
+    });
+    for (const pathname of ["/docs/%61dmin/billing", "/docs/admin/%62illing"]) {
+      expect(matcher.matchRequestRoute(pathname)).toMatchObject({
+        route: { pattern: "/docs/:path+" },
+        params: { path: ["admin", "billing"] },
+      });
+    }
+
+    // The exact spelling a browser sends for `/café` is the page's own
+    // pathname, not another spelling of it, so it needs no prerender.
+    expect(matcher.matchRequestRoute("/caf%C3%A9")?.route.pattern).toBe("/café");
+    expect(matcher.matchRoute("/caf%C3%A9")?.route.pattern).toBe("/café");
+    expect(matcher.matchRequestRoute("/a%20b")?.route.pattern).toBe("/a b");
+    expect(matcher.matchRequestRoute("/q&a")?.route.pattern).toBe("/q&a");
+    for (const pathname of ["/caf%c3%a9", "/%63af%C3%A9", "/caf%C3%a9", "/q%26a", "/a%20%62"]) {
+      expect(matcher.matchRequestRoute(pathname)?.route.pattern).toBe("/:slug");
+      expect(matcher.matchRoute(pathname)?.route.pattern).toBe("/:slug");
+    }
+
+    // A recorded prerender is the response Next.js answers from.
+    addPregeneratedConcretePath("/admin", "/admin");
+    addPregeneratedConcretePath("/café", "/café");
+    expect(matcher.matchRequestRoute("/%61dmin")?.route.pattern).toBe("/admin");
+    expect(matcher.matchRoute("/%61dmin")?.route.pattern).toBe("/admin");
+    expect(matcher.matchRequestRoute("/caf%c3%a9")?.route.pattern).toBe("/café");
+    expect(matcher.matchRequestRoute("/blog/%6Eew")?.route.pattern).toBe("/blog/:slug");
+  });
+
   it("keeps a static interception source gate raw when a direct request decodes", () => {
     const matcher = createAppRscRouteMatcher(
       [
@@ -236,6 +306,7 @@ describe("App RSC route matching", () => {
       ],
       ["/admin"],
     );
+    addPregeneratedConcretePath("/admin", "/admin");
 
     expect(matcher.matchRequestRoute("/%61dmin")?.route.pattern).toBe("/admin");
     expect(matcher.findIntercept("/photos/1", "/admin")).not.toBeNull();
@@ -265,6 +336,7 @@ describe("App RSC route matching", () => {
       ],
       ["/admin"],
     );
+    addPregeneratedConcretePath("/admin", "/admin");
 
     expect(matcher.matchRequestRoute("/%61dmin")?.route.pattern).toBe("/admin");
     expect(matcher.findIntercept("/photos/1", "/%61dmin")).toMatchObject({ sourceRouteIndex: 1 });

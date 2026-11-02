@@ -249,14 +249,15 @@ test.describe("App Router ISR", () => {
     expect(cc).toContain("stale-while-revalidate");
   });
 
-  // An encoded spelling of a static sibling answers with that prerendered
-  // page, as Next.js serves it from the entry cached under the decoded path.
-  test("answers an encoded static route spelling with the static route", async ({ request }) => {
+  // Next.js answers an encoded spelling of a static sibling from the entry its
+  // prerender cached under the decoded path. Without a recorded prerender the
+  // raw match renders, and never under the static sibling's entry.
+  test("answers an encoded static route spelling with the raw match", async ({ request }) => {
     await resetIsrPath(request, "/route-cache-identity/about");
 
     const encoded = await request.get(`${baseUrl()}/route-cache-identity/%61bout`);
     expect(encoded.status()).toBe(200);
-    expect(await encoded.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
+    expect(await encoded.text()).toMatch(/CACHE_IDENTITY_CATCH_ALL:(?:<!-- -->)?about/);
 
     const literal = await waitForCacheHit(request, "/route-cache-identity/about");
     expect(await literal.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
