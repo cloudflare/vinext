@@ -501,6 +501,73 @@ describe("handleImageOptimization source size limit", () => {
   });
 });
 
+describe("handleImageOptimization fallback after the optimizer rejects early", () => {
+  const imageRequest = new Request("http://localhost/_next/image?url=%2Fbig.png&w=640&q=75");
+  const bytes = new Uint8Array(158);
+  bytes.set(STATIC_PNG);
+  const rejectUnread = async () => Promise.reject(new Error("unsupported"));
+
+  function source(contentLength: string | null) {
+    const fetched = { cancelled: [] as boolean[] };
+    return {
+      fetched,
+      fetchAsset: async () => {
+        const index = fetched.cancelled.push(false) - 1;
+        let offset = 0;
+        const body = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (offset >= bytes.byteLength) return controller.close();
+            controller.enqueue(bytes.slice(offset, offset + 64));
+            offset += 64;
+          },
+          cancel() {
+            fetched.cancelled[index] = true;
+          },
+        });
+        const headers = new Headers({ "Content-Type": "image/png" });
+        if (contentLength !== null) headers.set("Content-Length", contentLength);
+        return new Response(body, { status: 200, headers });
+      },
+    };
+  }
+
+  it("cancels the source detection read before fetching it again", async () => {
+    const { fetched, fetchAsset } = source(null);
+    const response = await handleImageOptimization(imageRequest, {
+      fetchAsset,
+      transformImage: rejectUnread,
+    });
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+    expect(fetched.cancelled).toEqual([true, false]);
+  });
+
+  it("keeps the source fetched again within images.maximumResponseBody", async () => {
+    // The first fetch declares no length, so detection reads within the limit.
+    let fetches = 0;
+    const declared = source("158");
+    const undeclared = source(null);
+    const response = await handleImageOptimization(
+      imageRequest,
+      {
+        fetchAsset: () => (fetches++ === 0 ? undeclared : declared).fetchAsset(),
+        transformImage: rejectUnread,
+      },
+      undefined,
+      { maximumResponseBody: 80 },
+    );
+    expect(response.status).toBe(413);
+
+    const streamed = await handleImageOptimization(
+      imageRequest,
+      { fetchAsset: source(null).fetchAsset, transformImage: rejectUnread },
+      undefined,
+      { maximumResponseBody: 80 },
+    );
+    await expect(streamed.arrayBuffer()).rejects.toThrow();
+  });
+});
+
 describe("handleImageOptimization animation detection memory", () => {
   // Deep equality is slow on megabytes; compare them natively.
   const sameBytes = (actual: Uint8Array | null, expected: Uint8Array) =>

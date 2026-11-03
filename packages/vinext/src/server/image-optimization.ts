@@ -666,6 +666,11 @@ function createPassthroughImageResponse(
   return new Response(body, { status: 200, headers });
 }
 
+/** Whether a source's Content-Length is more than `limit` bytes. */
+function declaresMoreThan(source: Response, limit: number): boolean {
+  return Number(source.headers.get("Content-Length") ?? Number.NaN) > limit;
+}
+
 /** Next.js's 413 for a source larger than `images.maximumResponseBody`. */
 function sourceTooLargeResponse(): Response {
   return new Response('"url" parameter is valid but internal response is invalid', {
@@ -754,6 +759,7 @@ export async function handleImageOptimization(
   }
 
   // Transform if handler provided, otherwise serve original
+  const limit = imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY;
   let reader: ImageSourceReader | null = null;
   if (handlers.transformImage) {
     try {
@@ -761,8 +767,7 @@ export async function handleImageOptimization(
       // Next.js serves an animated image as-is rather than flattening it to
       // one frame, and answers 413 past the most it reads of a source.
       if (ANIMATABLE_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
-        const limit = imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY;
-        if (Number(source.headers.get("Content-Length") ?? Number.NaN) > limit) {
+        if (declaresMoreThan(source, limit)) {
           source.body.cancel().catch(() => {});
           return sourceTooLargeResponse();
         }
@@ -831,6 +836,7 @@ export async function handleImageOptimization(
     );
   } catch (e) {
     console.error("[vinext] Image fallback error, refetching source image:", e);
+    reader?.cancel();
     const refetchedSource = await withSniffedImageContentType(
       await handlers.fetchAsset(imageUrl, request),
     );
@@ -843,12 +849,16 @@ export async function handleImageOptimization(
       return imageTypeNotAllowedResponse();
     }
 
-    return createPassthroughImageResponse(
-      refetchedSource,
-      refetchedSource.body,
-      fallbackCacheControl,
-      imageConfig,
-    );
+    // A source that was bound for the optimizer stays within the limit.
+    let body: ReadableStream<Uint8Array> = refetchedSource.body;
+    if (reader) {
+      if (declaresMoreThan(refetchedSource, limit)) {
+        body.cancel().catch(() => {});
+        return sourceTooLargeResponse();
+      }
+      body = new ImageSourceReader(body, limit).body()!;
+    }
+    return createPassthroughImageResponse(refetchedSource, body, fallbackCacheControl, imageConfig);
   }
 }
 
