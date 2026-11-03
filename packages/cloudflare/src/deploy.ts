@@ -2212,6 +2212,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
       "--name is not supported for cloudflare.config.ts projects. Set `name` in cloudflare.config.ts instead.",
     );
   }
+  if (deploymentTool === "cf" && options.config) {
+    throw new Error(
+      "--config is not supported for cloudflare.config.ts projects. cf always uses cloudflare.config.ts in the project root; select a mode with --env instead.",
+    );
+  }
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);
   // Undefined keeps Vite's default vite.config.* lookup in the root.
   const viteConfigFile = options.viteConfig ? path.resolve(root, options.viteConfig) : undefined;

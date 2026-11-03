@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
-import { deploy, parseDeployArgs } from "./deploy.js";
+import { deploy, parseDeployArgs, resolveDeploymentTool } from "./deploy.js";
 import { printDeployHelp, printPreviewsDeployHelp } from "./deploy-help.js";
 import { parsePreviewsDeployArgs } from "./previews-deploy.js";
 
@@ -12,7 +12,7 @@ const rawArgs = process.argv.slice(3);
 
 function printHelp(commandName?: string): void {
   if (commandName === "deploy") {
-    printDeployHelp();
+    printDeployHelp(resolveDeploymentTool(process.cwd()));
     return;
   }
   if (commandName === "previews") {
