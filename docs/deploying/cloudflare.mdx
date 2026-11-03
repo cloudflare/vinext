@@ -50,7 +50,7 @@ Init also asks whether to prerender all static routes, and, for `response-store`
 
 ### Run init without prompts
 
-Init prompts only in an interactive terminal. In agents and CI, pass every choice as a flag, so the result does not depend on prompts or on what init does without a terminal. Agents should ask the user for each choice instead of picking one. This command sets up Cloudflare with no cache and no image optimization:
+In an interactive terminal, init prompts for each choice. Agents and CI must pass all three flags: `--cdn-cache`, `--data-cache`, and `--image-optimization`. In an agent session, init errors out without them. Agents should ask the user for each choice instead of picking one. This command sets up Cloudflare with no cache and no image optimization:
 
 <PackageManagerCommand
   commands={{

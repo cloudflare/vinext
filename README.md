@@ -141,8 +141,8 @@ wrapper compatibility steps.
 
 `vinext init` prompts for a deployment target, defaulting to Cloudflare. Agents must ask the
 user which target they want, then pass `--platform=cloudflare` or `--platform=node`.
-For Cloudflare, agents and CI should also pass the cache and image choices with
-`--cdn-cache`, `--data-cache`, and `--image-optimization`; see
+For Cloudflare, agents and CI must also pass `--cdn-cache`, `--data-cache`, and
+`--image-optimization`; see
 [Run init without prompts](https://vinext.dev/docs/deploying/cloudflare#run-init-without-prompts).
 
 Other options: `--port <port>` (default: 3001), `--skip-check`, `--force`.

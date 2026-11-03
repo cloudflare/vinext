@@ -42,7 +42,7 @@ See [references/compatibility.md](references/compatibility.md) for supported/uns
 
 ## Phase 2: Automated Migration (Recommended)
 
-Ask the user which deployment target they want (Cloudflare Workers or Node), then pass it with `--platform`. For Cloudflare, also ask for the cache and image choices below and pass every one as a flag. `vinext init` prompts only in an interactive terminal, so agents and CI must not rely on its prompts or on what it does without a terminal. Do not pick a choice for the user.
+Ask the user which deployment target they want (Cloudflare Workers or Node), then pass it with `--platform`. For Cloudflare, also ask for the cache and image choices below. `vinext init` prompts for them only in an interactive terminal: agents and CI must pass all three of `--cdn-cache`, `--data-cache`, and `--image-optimization`, and in an agent session init errors out without them. Do not pick a choice for the user.
 
 ```bash
 npx vinext init --platform=node
