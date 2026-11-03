@@ -791,51 +791,35 @@ describe("paired performance benchmarks", () => {
 
   it("accepts dispatched main artifacts after main advances", () => {
     const workflowSha = "c".repeat(40);
-    const repositoryRoot = join(import.meta.dirname, "..");
-    // In a shallow CI checkout, fetching main without a depth downloads its
-    // whole history, which can outlast the timeout. Fetch only its tip there;
-    // the validator's own fetch then finds it, and a full clone stays full.
-    const shallow =
-      execFileSync("git", ["rev-parse", "--is-shallow-repository"], {
-        cwd: repositoryRoot,
-        encoding: "utf8",
-      }).trim() === "true";
-    execFileSync(
-      "git",
-      ["fetch", "--no-tags", ...(shallow ? ["--depth=1"] : []), "origin", "main"],
-      {
-        cwd: repositoryRoot,
-      },
-    );
-    const commitSha = execFileSync("git", ["rev-parse", "origin/main"], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-    }).trim();
-    const measuredAt = execFileSync("git", ["show", "-s", "--format=%cI", commitSha], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-    }).trim();
+    // The validator fetches main from a disposable repository's local origin,
+    // so it reaches neither the network nor this checkout's history.
+    const { gitDir, commitSha, measuredAt } = createAdvancedMainRepository();
     const payload = mainPerformancePayload({
       commitSha,
       measuredAt,
       benchmarks: [performanceBenchmark("vinext", false)],
     });
 
-    validatePerformancePayload(payload, "workflow_dispatch", {
-      "repos/cloudflare/vinext/actions/runs/123": sourceRun(
-        "workflow_dispatch",
-        workflowSha,
-        "main",
-      ),
-      [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${workflowSha}`]:
-        githubFile(
-          JSON.stringify({
-            scenarios: [performanceScenario([{ id: "vinext", label: "vinext" }])],
-          }),
+    validatePerformancePayload(
+      payload,
+      "workflow_dispatch",
+      {
+        "repos/cloudflare/vinext/actions/runs/123": sourceRun(
+          "workflow_dispatch",
+          workflowSha,
+          "main",
         ),
-      [`repos/cloudflare/vinext/git/commits/${commitSha}`]: commit(measuredAt),
-    });
-  }, 15_000);
+        [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${workflowSha}`]:
+          githubFile(
+            JSON.stringify({
+              scenarios: [performanceScenario([{ id: "vinext", label: "vinext" }])],
+            }),
+          ),
+        [`repos/cloudflare/vinext/git/commits/${commitSha}`]: commit(measuredAt),
+      },
+      { GIT_DIR: gitDir },
+    );
+  });
 
   it("rejects dispatched artifacts from workflow refs outside main", () => {
     const workflowSha = "c".repeat(40);
@@ -1047,10 +1031,33 @@ describe("paired performance benchmarks", () => {
   });
 });
 
+// A repository whose local origin's main has advanced one commit past the
+// returned commit.
+function createAdvancedMainRepository() {
+  const directory = mkdtempSync(join(tmpdir(), "vinext-perf-main-"));
+  const origin = join(directory, "origin.git");
+  const git = (args: string[]) =>
+    execFileSync(
+      "git",
+      ["-c", "user.name=vinext", "-c", "user.email=vinext@example.com", ...args],
+      { cwd: directory, encoding: "utf8" },
+    ).trim();
+  git(["init", "--quiet", "--bare", origin]);
+  git(["init", "--quiet"]);
+  git(["commit", "--quiet", "--allow-empty", "--no-gpg-sign", "-m", "measured"]);
+  const commitSha = git(["rev-parse", "HEAD"]);
+  const measuredAt = git(["show", "-s", "--format=%cI", commitSha]);
+  git(["commit", "--quiet", "--allow-empty", "--no-gpg-sign", "-m", "advanced"]);
+  git(["remote", "add", "origin", origin]);
+  git(["push", "--quiet", "origin", "HEAD:refs/heads/main"]);
+  return { gitDir: join(directory, ".git"), commitSha, measuredAt };
+}
+
 function validatePerformancePayload(
   payload: Record<string, unknown>,
   sourceEvent: string,
   githubResponses: Record<string, unknown>,
+  env: Record<string, string> = {},
 ) {
   const directory = mkdtempSync(join(tmpdir(), "vinext-perf-validator-"));
   const payloadPath = join(directory, "results.json");
@@ -1121,6 +1128,7 @@ process.stdout.write(JSON.stringify(response));
         MOCK_GH_RESPONSES: responsesPath,
         MOCK_GH_REQUESTS: requestsPath,
         MOCK_TREE_JQ: nextjsBenchmarkInputTreeJq,
+        ...env,
       },
       encoding: "utf8",
     },
