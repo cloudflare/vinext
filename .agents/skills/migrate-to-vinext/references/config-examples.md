@@ -189,7 +189,7 @@ Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET
 | Flag                         | Description                              |
 | ---------------------------- | ---------------------------------------- |
 | `--preview`                  | Deploy to preview environment            |
-| `--name <name>`              | Override worker name                     |
+| `--name <name>`              | Override worker name (Wrangler only)     |
 | `--skip-build`               | Skip build step (deploy existing output) |
 | `--dry-run`                  | Generate config without deploying        |
 | `--warm-cache`               | Warm discovered routes before promotion  |

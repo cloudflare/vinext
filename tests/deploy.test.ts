@@ -248,6 +248,16 @@ describe("deploy environment validation", () => {
     );
   });
 
+  it("rejects a Wrangler config path for typed Cloudflare config projects", async () => {
+    await expect(
+      deploy({
+        root: path.resolve("examples/static-assets-cache"),
+        config: "wrangler.jsonc",
+        dryRun: true,
+      }),
+    ).rejects.toThrow("--config is not supported for cloudflare.config.ts projects.");
+  });
+
   it("rejects invalid environment names before project side effects", async () => {
     writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
     const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
@@ -1002,8 +1012,20 @@ describe("parseDeployArgs", () => {
     expect(parsed.verbose).toBe(true);
   });
 
+  it("offers the Wrangler-only --name and --config flags only for Wrangler config projects", () => {
+    const wranglerHelp = formatDeployHelp("wrangler");
+    expect(wranglerHelp).toContain("--name <name>");
+    expect(wranglerHelp).toContain("--config <path>");
+    expect(wranglerHelp).toContain("deploy --name my-app");
+
+    const cfHelp = formatDeployHelp("cf");
+    expect(cfHelp).toContain("--vite-config <path>");
+    expect(cfHelp).not.toMatch(/\s--name\b/);
+    expect(cfHelp).not.toMatch(/\s--config\b/);
+  });
+
   it("documents verbose Wrangler output and no-progress probe timeouts", () => {
-    const help = formatDeployHelp();
+    const help = formatDeployHelp("cf");
     expect(help).toContain("--verbose");
     expect(help).toContain("Abort when cacheability probing makes no progress");
     expect(help).toContain("--traffic-aware-warm-cache");
@@ -1175,7 +1197,7 @@ describe("parseDeployArgs", () => {
         expect(warn).toHaveBeenCalledWith(
           "[vinext] --warm-cache-include-fallbacks is deprecated and has no effect.",
         );
-        expect(formatDeployHelp()).not.toContain("include-fallbacks");
+        expect(formatDeployHelp("cf")).not.toContain("include-fallbacks");
       } finally {
         warn.mockRestore();
       }
@@ -1202,7 +1224,7 @@ describe("parseDeployArgs", () => {
   it("parses the general no-promote flag and keeps the warmup-specific alias", () => {
     expect(parseDeployArgs(["--no-promote"]).warmCdnPromote).toBe(false);
     expect(parseDeployArgs(["--warm-cache-no-promote"]).warmCdnPromote).toBe(false);
-    expect(formatDeployHelp()).toContain("--no-promote");
+    expect(formatDeployHelp("cf")).toContain("--no-promote");
   });
 
   it("allows the CDN warmup promotion delay to be set to zero", () => {
