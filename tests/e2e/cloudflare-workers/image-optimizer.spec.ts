@@ -34,7 +34,6 @@ test.describe("Cloudflare Workers /_next/image optimizes still images", () => {
   for (const [source, why] of [
     ["/image-still.jpg", "a format detection skips"],
     ["/image-still.webp", "a still WebP, read to its end"],
-    ["/image-still-trailing-text.png", "a PNG decided at its first IDAT, ~300 KB before its end"],
     ["/image-still-large.gif", "a GIF read past 1 MiB, so fetched again"],
   ] as const) {
     test(`transforms ${source}: ${why}`, async ({ request }) => {
@@ -54,6 +53,26 @@ test.describe("Cloudflare Workers /_next/image optimizes still images", () => {
       expect(response.headers()["x-content-type-options"]).toBe("nosniff");
     });
   }
+
+  // Detection decides at the PNG's first IDAT, 54 bytes in. Its pixel data, in
+  // 97 uncompressed IDAT chunks, mostly streams in after that, so the bytes
+  // detection kept must reach the optimizer followed by the rest of the
+  // source. A compact copy of the same pixels, read whole, must transform to
+  // the same image.
+  test("transforms a PNG streamed on past where detection decided", async ({ request }) => {
+    const transform = async (source: string) => {
+      const response = await request.get(imagePath(source), {
+        headers: { Accept: "image/webp,*/*" },
+        maxRedirects: 0,
+      });
+      expect(response.status(), source).toBe(200);
+      expect(response.headers()["content-type"], source).toBe("image/webp");
+      return Buffer.from(await response.body());
+    };
+    const streamed = await transform("/image-still-stored.png");
+    expect(webpWidth(streamed)).toBe(64);
+    expect(streamed.equals(await transform("/image-still-compact.png"))).toBe(true);
+  });
 });
 
 test.describe("Cloudflare Workers /_next/image serves animated images as-is", () => {
