@@ -470,6 +470,11 @@ const nextConfig: NextConfig = {
 
   async headers() {
     return [
+      // Used by Playwright: app-router-prod/image-source-cache-control.spec.ts
+      {
+        source: "/image-source-cache-policy.png",
+        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
+      },
       // Used by Vitest: app-router-production-server.test.ts
       {
         source: "/action-cache-control/config-policy",

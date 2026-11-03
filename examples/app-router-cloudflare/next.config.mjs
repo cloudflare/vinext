@@ -9,4 +9,14 @@ export default {
       { pathname: "/vinext-image.png", search: "?redirect" },
     ],
   },
+  async headers() {
+    return [
+      // /_next/image keeps a source max-age above minimumCacheTTL, as Next.js
+      // does. Coverage: tests/e2e/cloudflare-workers/image-optimization.spec.ts
+      {
+        source: "/vinext-icon.icns",
+        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
+      },
+    ];
+  },
 };

@@ -12,12 +12,21 @@ export default {
       { pathname: "/vinext-image.png", search: "?redirect" },
       { pathname: "/_next/static/**", search: "?members-only" },
     ],
+    // Serve SVG sources as-is, with the image endpoint's security headers.
+    // Coverage: tests/e2e/cloudflare-pages-router/image-bypass-types.spec.ts
+    dangerouslyAllowSVG: true,
   },
   async headers() {
     return [
       {
         source: "/about",
         headers: [{ key: "X-Page-Header", value: "about-page" }],
+      },
+      // /_next/image keeps a source max-age above minimumCacheTTL, as Next.js does.
+      // Coverage: tests/e2e/cloudflare-pages-router/image-bypass-types.spec.ts
+      {
+        source: "/vinext-icon.ico",
+        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
       },
       {
         source: "/headers-before-middleware-rewrite",
