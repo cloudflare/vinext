@@ -518,10 +518,13 @@ export function createPagesPageHandler(
     const originalRequestPathAndSearch = originalRequestUrl.pathname + originalRequestUrl.search;
     let dataRequestPathname: string | null = null;
     let dataRequestSearch = "";
+    // Every caller passes the request without its basePath. Stripping it again
+    // would turn the page path "/docs/_next/data/..." (basePath "/docs") into a
+    // data request.
     const initialDataNorm = normalizePagesDataRequest(
       request,
       buildId,
-      vinextConfig.basePath,
+      "",
       hasMiddleware && vinextConfig.trailingSlash,
     );
 

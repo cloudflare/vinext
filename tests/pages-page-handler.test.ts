@@ -628,6 +628,35 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(body).toHaveProperty("pageProps");
   });
 
+  it("renders a page whose basePath-free path starts with the basePath and /_next/data", async () => {
+    // /docs/docs/_next/data/... under basePath "/docs" reaches the handler as
+    // the page path /docs/_next/data/..., not as a data request for /about.
+    const docsRoute = makeRoute("/docs/[...slug]");
+    const matchedUrls: string[] = [];
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [makeRoute("/about"), docsRoute],
+        matchRoute: (url, r) => {
+          const p = url.split("?")[0];
+          matchedUrls.push(p);
+          const route = p.startsWith("/docs/") ? docsRoute : r.find((rt) => rt.pattern === p);
+          return route ? { route, params: {} } : null;
+        },
+        vinextConfig: {
+          basePath: "/docs",
+          assetPrefix: "",
+          trailingSlash: false,
+          disableOptimizedLoading: true,
+        },
+      }),
+    );
+    const pageUrl = "/docs/_next/data/test-build-id/about.json";
+    const res = await handler(makeRequest(pageUrl), pageUrl, null, null, null);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(matchedUrls).toEqual([pageUrl]);
+  });
+
   it("preserves staged Set-Cookie values separately on Pages data responses", async () => {
     const stagedHeaders = new Headers();
     stagedHeaders.append("Set-Cookie", "middleware=one; Path=/");

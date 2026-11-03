@@ -661,6 +661,8 @@ type RenderPagesFallbackOptions = {
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
+  /** The basePath `request.url` still carries, removed before the page renders. */
+  requestBasePath?: string;
   /** The shared cache entry answers every host; a request-time render is not stored. */
   sharedAcrossHosts?: boolean;
   url: URL;
@@ -2479,6 +2481,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               pathname: pagesRouteUrl,
               pagesDataRequest,
               request,
+              requestBasePath: hadBasePath ? options.basePath : "",
               url,
             }),
           )) ?? null)
