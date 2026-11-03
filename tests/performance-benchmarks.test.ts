@@ -1048,8 +1048,10 @@ function createAdvancedMainRepository() {
   const commitSha = git(["rev-parse", "HEAD"]);
   const measuredAt = git(["show", "-s", "--format=%cI", commitSha]);
   git(["commit", "--quiet", "--allow-empty", "--no-gpg-sign", "-m", "advanced"]);
+  // Push by path before naming the remote so only the origin has main; the
+  // validator's fetch must create refs/remotes/origin/main itself.
+  git(["push", "--quiet", origin, "HEAD:refs/heads/main"]);
   git(["remote", "add", "origin", origin]);
-  git(["push", "--quiet", "origin", "HEAD:refs/heads/main"]);
   return { gitDir: join(directory, ".git"), commitSha, measuredAt };
 }
 
