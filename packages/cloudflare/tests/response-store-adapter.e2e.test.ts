@@ -10,7 +10,10 @@ import {
   type Request as MiniflareRequest,
 } from "miniflare";
 import { afterEach, beforeEach, describe, test } from "vite-plus/test";
-import { createRscRequestUrl } from "vinext/internal/server/app-rsc-cache-busting";
+import {
+  createRscRequestHeaders,
+  createRscRequestUrl,
+} from "vinext/internal/server/app-rsc-cache-busting";
 import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "vinext/internal/server/headers";
 
 const root = path.resolve(import.meta.dirname, "../../..");
@@ -759,6 +762,66 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(prefetch.headers.get("x-vinext-cache"), "HIT");
     assert.equal(prefetch.headers.get(VINEXT_SPECIAL_ERROR_STATUS_HEADER), null);
     assert.match(await prefetch.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
+  });
+
+  // A Link's search-param prefetch of a static route renders the page with an
+  // empty query, as Next.js's static prefetch of a page segment never varies on
+  // search params (vary-path.ts). So every query shares the page's own entry.
+  test("serves a static page's dynamic-shell prefetch from its navigation entry", async () => {
+    const pathname = "/static-default";
+    const prefetch = async (search: string, nextUrl: string) => {
+      const headers = createRscRequestHeaders({
+        nextUrl,
+        prefetchRouterState: { pathAndSearch: nextUrl, routeId: "route:/" },
+        renderMode: "prefetch-dynamic-shell",
+      });
+      headers.set("Next-Router-Segment-Prefetch", "1");
+      return request(await createRscRequestUrl(`${pathname}${search}`, headers), {
+        headers: Object.fromEntries(headers),
+      });
+    };
+
+    const fill = await prefetch("?tab=1", "/");
+    assert.equal(fill.status, 200);
+    const fillBody = await fill.text();
+    assert.match(fillBody, /static-default-render-id/);
+    await waitForResponseEntries(pathname, 2);
+
+    for (const [search, nextUrl] of [
+      ["?tab=1", "/"],
+      ["?tab=2", "/cached/local"],
+    ] as const) {
+      const hit = await prefetch(search, nextUrl);
+      assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await hit.text(), fillBody);
+    }
+    const navigation = await request(`${pathname}?_rsc=`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    assert.equal(navigation.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await navigation.text(), fillBody);
+  });
+
+  // Next.js answers a pre-PPR prefetch with no loading boundary with only the
+  // router state and runs no layout (walkTreeWithFlightRouterState()), so a
+  // static route's shell runs none either.
+  test("runs no layout for a static page's loading-shell prefetch without a loading boundary", async () => {
+    const pathname = "/static-default";
+    const headers = createRscRequestHeaders({
+      nextUrl: "/",
+      prefetchRouterState: { pathAndSearch: "/", routeId: "route:/" },
+      renderMode: "prefetch-loading-shell",
+    });
+    headers.set("Next-Router-Segment-Prefetch", "1");
+    const response = await request(await createRscRequestUrl(pathname, headers), {
+      headers: Object.fromEntries(headers),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    assert.match(body, /route:\/static-default/);
+    assert.doesNotMatch(body, /"lang":"en"/);
+    assert.doesNotMatch(body, /Demo deployments/);
+    assert.doesNotMatch(body, /static-default-render-id/);
   });
 
   // An html-limited bot blocks on metadata, so generateMetadata()'s notFound()

@@ -79,6 +79,7 @@ import type {
   AppPrerenderStaticParamsMap,
 } from "./app-prerender-endpoints.js";
 import {
+  canonicalizeDynamicShellRscRequestHeaders,
   canonicalizeLoadingShellRscRequestHeaders,
   canonicalizePrewarmableRscRequestHeaders,
   createCanonicalRscRequestUrl,
@@ -1449,6 +1450,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             props.kind === "app-page"
               ? prepareSharedAppPageDispatch(stageRequest, cache)
               : stageRequest;
+          let dispatchProps = props;
           let canonicalRsc: { headers: Headers; navigation: boolean } | null = null;
           if (
             cache === "shared" &&
@@ -1467,14 +1469,27 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
                 ? canonicalizePrewarmableRscRequestHeaders(headers)
                 : props.renderMode === "prefetch-loading-shell" && props.canUseCanonicalLoadingShell
                   ? canonicalizeLoadingShellRscRequestHeaders(headers)
-                  : false;
+                  : props.renderMode === "prefetch-dynamic-shell"
+                    ? canonicalizeDynamicShellRscRequestHeaders(headers)
+                    : false;
             if (canonicalized) {
-              canonicalRsc = { headers, navigation: props.renderMode === "navigation" };
+              const navigation = props.renderMode !== "prefetch-loading-shell";
+              canonicalRsc = { headers, navigation };
               dispatchRequest = cloneRequestWithHeaders(dispatchRequest, headers);
+              // A search-param shell is the query-free page's navigation, so
+              // it's dispatched as one and shares that page's entry.
+              if (props.renderMode === "prefetch-dynamic-shell") {
+                const queryFree = withoutAppPageDispatchQuery(dispatchRequest.url, {
+                  ...props,
+                  renderMode: "navigation",
+                });
+                dispatchRequest = cloneRequestWithUrl(dispatchRequest, queryFree.url);
+                dispatchProps = queryFree.props;
+              }
             }
           }
           let stageProps: AppWorkerResponseStageProps = {
-            ...props,
+            ...dispatchProps,
             cacheability: {
               ...props.cacheability,
               policyHeaders: responseStagePolicy,
