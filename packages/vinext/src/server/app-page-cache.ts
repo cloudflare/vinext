@@ -686,8 +686,9 @@ export async function readAppPageCacheResponse(
               "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
           );
         }
-        // And, as in `next build`, one whose render reported an error throws it,
-        // unless the render turned dynamic, as a PPR regeneration's may.
+        // And, as in `next build`, one whose render reported an error throws it.
+        // A render that turned dynamic, as a PPR regeneration's may, is excused
+        // whichever boundary failed, as the build's own check excuses it.
         // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
         // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
         if (revalidatedPage.reportedError && !revalidatedPage.usedDynamicApi) {

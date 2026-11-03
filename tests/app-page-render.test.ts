@@ -3966,56 +3966,114 @@ describe("ISR storage of a page's special error", () => {
 });
 
 // Next.js renders an ISR page at runtime as it does in `next build`, so a render
-// that reports an error, even one a Suspense boundary caught, throws: the
-// request gets a 500 and nothing is stored.
+// that reports an error, even one a Suspense boundary caught, throws: Next
+// answers with a 500 and stores nothing. vinext streams a live miss, so it
+// keeps its 200, but stores nothing either.
 // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
 // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
 describe("runtime ISR renders that report an error", () => {
-  const suspendedFailure = (
-    options: { onError?: (error: unknown, ...rest: unknown[]) => unknown } | undefined,
-  ) => {
-    let sent = false;
-    return new ReadableStream<Uint8Array>({
-      pull(controller) {
-        if (sent) {
-          // A Suspense boundary's error, after the response started.
-          options?.onError?.(new Error("suspended failure"), undefined, undefined);
-          controller.close();
-          return;
-        }
-        controller.enqueue(new TextEncoder().encode("flight-data"));
-        sent = true;
-      },
+  const encoder = new TextEncoder();
+  type SsrOptions = {
+    capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+    onSsrError?: (error: unknown) => unknown;
+    sideStream?: ReadableStream<Uint8Array>;
+  };
+
+  // A render whose error, if it reports one, comes from a Suspense boundary
+  // after the shell: only once the test calls `release()`. Its document closes
+  // once it has read the whole Flight stream, as handleSsr's does.
+  const lateRender = (reportsError: "flight" | "document" | false = "flight") => {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
     });
+    const renderToReadableStream = (
+      _element: unknown,
+      options?: { onError?: (error: unknown, ...rest: unknown[]) => unknown },
+    ) =>
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue(encoder.encode("flight-data"));
+          await released;
+          if (reportsError === "flight") {
+            options?.onError?.(new Error("suspended failure"), undefined, undefined);
+          }
+          controller.close();
+        },
+      });
+    const loadSsrHandler = vi.fn(async () => ({
+      async handleSsr(
+        rscStream: ReadableStream<Uint8Array>,
+        _navContext: unknown,
+        _fontData: unknown,
+        options?: SsrOptions,
+      ) {
+        if (options?.capturedRscDataRef && options.sideStream) {
+          options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+        }
+        const flight = new Response(rscStream).arrayBuffer();
+        return new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(encoder.encode("<html>"));
+            await flight;
+            // A client component's server-only error, inside Suspense.
+            if (reportsError === "document") options?.onSsrError?.(new Error("client failure"));
+            controller.enqueue(encoder.encode("page</html>"));
+            controller.close();
+          },
+        });
+      },
+    }));
+    return { loadSsrHandler, release, renderToReadableStream };
   };
 
   for (const isRscRequest of [false, true]) {
     it(`streams a live miss but never stores it (${isRscRequest ? "RSC" : "HTML"})`, async () => {
-      const common = createCommonOptions();
+      const render = async (reportsError: boolean) => {
+        const common = createCommonOptions();
+        const late = lateRender(reportsError && "flight");
+        const response = await renderAppPageLifecycle({
+          ...common.options,
+          isProduction: true,
+          isRscRequest,
+          loadSsrHandler: late.loadSsrHandler,
+          renderToReadableStream: late.renderToReadableStream,
+          revalidateSeconds: 60,
+        });
+        late.release();
+        await response.arrayBuffer();
+        await Promise.all(common.waitUntilPromises);
+        return { isrSet: common.isrSet, response };
+      };
 
-      const response = await renderAppPageLifecycle({
-        ...common.options,
-        isProduction: true,
-        isRscRequest,
-        renderToReadableStream(_element, options) {
-          return suspendedFailure(options);
-        },
-        revalidateSeconds: 60,
-      });
-
-      expect(response.status).toBe(200);
-      await response.arrayBuffer();
-      await Promise.all(common.waitUntilPromises);
-      expect(common.isrSet).not.toHaveBeenCalled();
+      const failed = await render(true);
+      expect(failed.response.status).toBe(200);
+      expect(failed.isrSet).not.toHaveBeenCalled();
       // Only a build's prerender reads the marker.
-      expect(response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      expect(failed.response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      expect((await render(false)).isrSet).toHaveBeenCalled();
     });
   }
 
-  for (const isRscRequest of [false, true]) {
-    it(`never admits a live miss to a CDN cache (${isRscRequest ? "RSC" : "HTML"})`, async () => {
-      const admit = async (reportsError: boolean, mode: "admit" | "probe" = "admit") => {
+  it.each([
+    { name: "HTML", isRscRequest: false },
+    { name: "RSC", isRscRequest: true },
+    // The payload's own document renders beside it, and only it fails.
+    { name: "RSC whose document", isRscRequest: true, reportsError: "document" as const },
+    // An edge render without a revalidate export is evaluated, not written,
+    // and never gets a lifetime, so only its refusal's reason is checked.
+    { name: "edge HTML", isEdgeRuntime: true, isRscRequest: false, revalidateSeconds: null },
+  ])(
+    "never admits a live $name miss that reports an error to a CDN cache",
+    async ({
+      isEdgeRuntime,
+      isRscRequest,
+      reportsError = "flight" as const,
+      revalidateSeconds = 60,
+    }) => {
+      const admit = async (reports: boolean, mode: "admit" | "probe" = "admit") => {
         const common = createCommonOptions();
+        const late = lateRender(reports && reportsError);
         const state: RouteCacheabilityState = {
           captureDeadlineAt: Date.now() + 10_000,
           mode,
@@ -4030,14 +4088,16 @@ describe("runtime ISR renders that report an error", () => {
         const response = await runWithRequestContext(requestContext, () =>
           renderAppPageLifecycle({
             ...common.options,
+            isCacheCandidate: reportsError === "document",
+            isEdgeRuntime,
             isProduction: true,
             isRscRequest,
-            renderToReadableStream(_element, options) {
-              return reportsError ? suspendedFailure(options) : createStream(["flight-data"]);
-            },
-            revalidateSeconds: 60,
+            loadSsrHandler: late.loadSsrHandler,
+            renderToReadableStream: late.renderToReadableStream,
+            revalidateSeconds,
           }),
         );
+        late.release();
         await response.arrayBuffer();
         return state.completion;
       };
@@ -4046,52 +4106,47 @@ describe("runtime ISR renders that report an error", () => {
         cacheable: false,
         reason: "render reported an error",
       });
+      if (revalidateSeconds === null) return;
       await expect(admit(false)).resolves.toMatchObject({ cacheable: true });
       // The deploy probe classifies the route, not this one render.
       await expect(admit(true, "probe")).resolves.toMatchObject({ cacheable: true });
-    });
-  }
+    },
+  );
 
   it("never stores an RSC miss whose stored document reports an error", async () => {
     const common = createCommonOptions();
-    const loadSsrHandler = vi.fn(async () => ({
-      async handleSsr(
-        _rscStream: ReadableStream<Uint8Array>,
-        _navContext: unknown,
-        _fontData: unknown,
-        options?: { onSsrError?: (error: unknown) => unknown },
-      ) {
-        // A client component's server-only error, inside Suspense.
-        options?.onSsrError?.(new Error("client failure"));
-        return createStream(["<html>fallback</html>"]);
-      },
-    }));
+    const late = lateRender("document");
 
     const response = await renderAppPageLifecycle({
       ...common.options,
       isCacheCandidate: true,
       isProduction: true,
       isRscRequest: true,
-      loadSsrHandler,
+      loadSsrHandler: late.loadSsrHandler,
+      renderToReadableStream: late.renderToReadableStream,
       revalidateSeconds: 60,
     });
 
+    late.release();
     await response.text();
     await Promise.all(common.waitUntilPromises);
     // The document rendered to be stored beside the payload.
-    expect(loadSsrHandler).toHaveBeenCalledOnce();
+    expect(late.loadSsrHandler).toHaveBeenCalledOnce();
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
+  // A render no client waits on is whole before it answers, so the error is
+  // released while it waits.
   it("answers a render no client waits on with a 500 it never stores", async () => {
     const common = createCommonOptions();
+    const late = lateRender();
+    setTimeout(late.release, 10);
 
     const response = await renderAppPageLifecycle({
       ...common.options,
       isProduction: true,
-      renderToReadableStream(_element, options) {
-        return suspendedFailure(options);
-      },
+      loadSsrHandler: late.loadSsrHandler,
+      renderToReadableStream: late.renderToReadableStream,
       renderWholeDocument: true,
       revalidateSeconds: 60,
     });
@@ -4109,14 +4164,15 @@ describe("runtime ISR renders that report an error", () => {
   // As in `next build`, a render that turned dynamic doesn't fail on its error.
   it("keeps the 200 of a render no client waits on when it turned dynamic", async () => {
     const common = createCommonOptions();
+    const late = lateRender();
+    setTimeout(late.release, 10);
 
     const response = await renderAppPageLifecycle({
       ...common.options,
       consumeDynamicUsage: vi.fn(() => true),
       isProduction: true,
-      renderToReadableStream(_element, options) {
-        return suspendedFailure(options);
-      },
+      loadSsrHandler: late.loadSsrHandler,
+      renderToReadableStream: late.renderToReadableStream,
       renderWholeDocument: true,
       revalidateSeconds: 60,
     });

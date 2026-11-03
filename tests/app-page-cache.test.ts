@@ -2930,8 +2930,8 @@ describe("app page regeneration failures", () => {
     },
   );
 
-  // As in `next build`, a PPR render that turned dynamic postpones the hole
-  // whose error it reported, so the regeneration is still stored.
+  // A PPR render that turned dynamic is excused its error, as `next build`'s
+  // check in vinext excuses it, so the regeneration is still stored.
   it("stores a PPR regeneration that turned dynamic before reporting an error", async () => {
     const scheduled: Array<() => Promise<void>> = [];
     const isrSet = vi.fn<AppPageCacheSetter>(async () => {});

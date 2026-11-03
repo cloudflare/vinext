@@ -495,7 +495,7 @@ test("an on-demand path whose render reports an error is never stored", async ({
 }) => {
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   if (!baseURL) throw new Error("deployed test requires a base URL");
-  test.setTimeout(120_000);
+  test.setTimeout(150_000);
 
   const id = randomUUID();
   const renderIds = { failing: [] as string[][], stored: [] as string[][] };
@@ -525,7 +525,7 @@ test("an on-demand path whose render reports an error is never stored", async ({
         return isStable(renderIds.stored);
       },
       // KV caches a miss's "not found" read in its location for up to 60s.
-      { intervals: [1_000], timeout: 75_000 },
+      { intervals: [1_000], timeout: 90_000 },
     )
     .toBe(true);
   for (const part of [0, 1]) {
