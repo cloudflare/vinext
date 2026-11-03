@@ -94,6 +94,7 @@ import {
   applyAppRscConfigHeaders,
   finalizeAppRscResponse,
   isStreamedActionRedirectResponse,
+  markAppRscApplicationResponse,
   markAppRscResponseConfigHeadersApplied,
   markStreamedActionRedirectResponse,
 } from "./app-rsc-response-finalizer.js";
@@ -105,6 +106,7 @@ import {
 } from "./app-page-navigation-params.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import {
+  isLocaleRedirect,
   normalizeDefaultLocalePathname,
   shouldRestoreLocaleRootTrailingSlash,
 } from "./pages-i18n.js";
@@ -904,8 +906,8 @@ async function applyConfigHeadersToMiddlewareRedirect(
   },
 ): Promise<Response> {
   // Non-redirect middleware responses still pass through finalization, where
-  // config headers are applied once. Redirects skip finalization to avoid
-  // mutating immutable redirect headers, so they need the earlier header layer here.
+  // config headers are applied once. Finalization leaves redirects that
+  // application code did not return alone, so they need the earlier header layer here.
   if (response.status < 300 || response.status >= 400) return response;
   if (!HAS_CONFIG_HEADERS || !options.configHeaders.length) return response;
 
@@ -2323,7 +2325,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       routeMatch,
     });
     if (progressiveActionResult instanceof Response) {
-      return markServerActionResponse(progressiveActionResult);
+      return markServerActionResponse(markAppRscApplicationResponse(progressiveActionResult));
     }
     if (progressiveActionResult?.kind !== "form-state") return null;
     // Other errors answer a plain 500 before the render, so this is an action
@@ -2495,12 +2497,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
     }
 
+    // Next.js answers the locale-detection redirect before it stages
+    // next.config headers, so only the Pages route's own responses get them.
+    const markPagesResponse = (pagesResponse: Response): Response =>
+      dispatchPagesResponseStage
+        ? markAppRscResponseConfigHeadersApplied(pagesResponse)
+        : isLocaleRedirect(response)
+          ? pagesResponse
+          : markAppRscApplicationResponse(pagesResponse);
     const isRewritten = resolvedUrl !== originalResolvedUrl;
     const isPrerender = typeof process !== "undefined" && process.env?.VINEXT_PRERENDER === "1";
     if ((!pagesDataRequest || !isRewritten) && !isPrerender) {
-      return dispatchPagesResponseStage
-        ? markAppRscResponseConfigHeadersApplied(response)
-        : response;
+      return markPagesResponse(response);
     }
 
     const headers = new Headers(response.headers);
@@ -2516,9 +2524,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       status: response.status,
       statusText: response.statusText,
     });
-    return dispatchPagesResponseStage
-      ? markAppRscResponseConfigHeadersApplied(markedResponse)
-      : markedResponse;
+    return markPagesResponse(markedResponse);
   };
   const staticPagesFallbackResponse = await renderPagesForMatchKind("static");
   if (staticPagesFallbackResponse) {
@@ -2799,7 +2805,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }),
     );
     if (renderedNotFoundResponse) {
-      return withUnmatchedRouteCacheControl(renderedNotFoundResponse);
+      // The root layout can redirect() during this render.
+      return markAppRscApplicationResponse(
+        withUnmatchedRouteCacheControl(renderedNotFoundResponse),
+      );
     }
 
     options.clearRequestContext();
@@ -2949,7 +2958,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     setCurrentFetchSoftTags(
       buildPageCacheTags(cleanPathname, [], [...route.routeSegments], "route"),
     );
-    return options.dispatchMatchedRouteHandler({
+    const routeHandlerResponse = await options.dispatchMatchedRouteHandler({
       bypassInterceptionContextCache,
       cachePathname,
       cleanPathname,
@@ -2963,6 +2972,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       route,
       searchParams: resolvedSearchParams,
     });
+    return markAppRscApplicationResponse(routeHandlerResponse);
   }
 
   const failedProgressiveActionResult =
@@ -3069,10 +3079,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Issue: https://github.com/cloudflare/vinext/issues/1483
   if (progressiveActionFormState) {
     return markServerActionResponse(
-      applyProgressiveActionSideEffects(pageResponse, progressiveActionFormState),
+      markAppRscApplicationResponse(
+        applyProgressiveActionSideEffects(pageResponse, progressiveActionFormState),
+      ),
     );
   }
-  return pageResponse;
+  return markAppRscApplicationResponse(pageResponse);
 }
 
 function progressiveActionHttpFallbackStatus(actionError: unknown): number | null {
