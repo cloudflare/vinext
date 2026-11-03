@@ -639,6 +639,7 @@ export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 export const publicFiles = new Set(${JSON.stringify(publicFiles)});
+export const clientBuildFiles = new Set(__pagesClientAssets.clientBuildFiles ?? []);
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
 const _errorPageRoute = {
   pattern: "/_error",

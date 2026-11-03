@@ -54,6 +54,7 @@ import { mergeRewriteQuery } from "../utils/query.js";
 import { restoreBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import { publicFileRouteKey } from "../utils/public-file-path.js";
 import {
   isOnDemandRevalidateRequest,
   PRERENDER_REVALIDATE_HEADER,
@@ -116,6 +117,67 @@ type PageRouteMatch = {
   route: { isDynamic: boolean; pattern?: string; dataKind?: PagesRouteDataKind };
 };
 
+/**
+ * Whether a filesystem route may serve `requestPathname` from the client
+ * build directory. Like Next.js, only a public file or a build asset resolves
+ * there: the directory also holds build metadata and private artifacts. A
+ * direct GET/HEAD reaches this route only for a public file, since servers
+ * answer existing build assets before middleware.
+ */
+export function isServableFilesystemRoute(
+  requestPathname: string,
+  phase: FilesystemRoutePhase,
+  method: string,
+  publicFiles: ReadonlySet<string>,
+  basePath = "",
+  assetPathPrefix = "",
+  pathnameHasBasePath = true,
+): boolean {
+  // Judge the pathname as a URL carries it, then resolve any dot segments
+  // that only appear once decoded (`..%2F`, `..%5C`) before classifying it.
+  const assetUrl = new URL("http://localhost");
+  assetUrl.pathname = requestPathname;
+  const decodedAssetUrl = new URL(assetUrl);
+  let publicFileKey: string;
+  // The file a server serves for the pathname, decoded once. It must pass the
+  // same checks, since `%5C` or `%2F` decode to a separator only in the URL.
+  let servedPathname: string;
+  let servedFileKey: string;
+  try {
+    decodedAssetUrl.pathname = decodeURIComponent(assetUrl.pathname);
+    publicFileKey = normalizePathnameForRouteMatchStrict(assetUrl.pathname);
+    servedPathname = decodeURIComponent(requestPathname);
+    servedFileKey = publicFileRouteKey(servedPathname);
+  } catch {
+    return false;
+  }
+  const decodedPathname = decodedAssetUrl.pathname;
+  // Like Next.js, a file resolves only for a pathname under the basePath,
+  // whether the request's own or a rewrite destination. Its built-in rewrite
+  // still maps `${assetPrefix}/_next/*` into the basePath.
+  if (!pathnameHasBasePath && !isAssetPrefixBuildAsset(decodedPathname, assetPathPrefix)) {
+    return false;
+  }
+  const isPublicFile =
+    pathnameHasBasePath && publicFiles.has(publicFileKey) && publicFiles.has(servedFileKey);
+  // Public files precede API routes in the filesystem order, so a file such as
+  // public/api/schema.json is served rather than handed to API routing.
+  if (!isPublicFile && (requestPathname === "/api" || requestPathname.startsWith("/api/"))) {
+    return false;
+  }
+  if (phase === "direct" && (method === "GET" || method === "HEAD") && !isPublicFile) {
+    return false;
+  }
+  // Every rewrite phase must stay inside the public filesystem boundary.
+  // Authorize the normalized destination, never the original request's
+  // build-asset classification.
+  return (
+    isPublicFile ||
+    (isNextStaticPath(decodedPathname, basePath, assetPathPrefix) &&
+      isNextStaticPath(servedPathname, basePath, assetPathPrefix))
+  );
+}
+
 export async function fetchWorkerFilesystemRoute(
   request: Request,
   requestPathname: string,
@@ -130,36 +192,20 @@ export async function fetchWorkerFilesystemRoute(
   const assetUrl = new URL(request.url);
   assetUrl.pathname = requestPathname;
   assetUrl.search = "";
-  const decodedAssetUrl = new URL(assetUrl);
-  let publicFileKey: string;
-  try {
-    decodedAssetUrl.pathname = decodeURIComponent(assetUrl.pathname);
-    publicFileKey = normalizePathnameForRouteMatchStrict(assetUrl.pathname);
-  } catch {
-    return false;
-  }
-  // Like Next.js, a file resolves only for a pathname under the basePath,
-  // whether the request's own or a rewrite destination. Its built-in rewrite
-  // still maps `${assetPrefix}/_next/*` into the basePath.
-  if (!pathnameHasBasePath && !isAssetPrefixBuildAsset(decodedAssetUrl.pathname, assetPathPrefix)) {
-    return false;
-  }
-  const isPublicFile = pathnameHasBasePath && publicFiles.has(publicFileKey);
-  // Public files precede API routes in the filesystem order, so a file such as
-  // public/api/schema.json is served rather than handed to API routing.
-  if (!isPublicFile && (requestPathname === "/api" || requestPathname.startsWith("/api/"))) {
-    return false;
-  }
   // A direct GET/HEAD for a public file reaches the Worker when run_worker_first
   // routes it here, so serve it after middleware. A direct build-asset request
   // reaches the Worker only after Workers Static Assets found no such file.
-  if (phase === "direct" && isRetrievalMethod && !isPublicFile) {
-    return false;
-  }
-  // Every rewrite phase must stay inside the public filesystem boundary. The
-  // binding also contains private cache artifacts. Authorize the normalized
-  // destination, never the original request's build-asset classification.
-  if (!isPublicFile && !isNextStaticPath(decodedAssetUrl.pathname, basePath, assetPathPrefix)) {
+  if (
+    !isServableFilesystemRoute(
+      requestPathname,
+      phase,
+      request.method,
+      publicFiles,
+      basePath,
+      assetPathPrefix,
+      pathnameHasBasePath,
+    )
+  ) {
     return false;
   }
   // Never forward a mutating method or body to the asset binding. A HEAD probe

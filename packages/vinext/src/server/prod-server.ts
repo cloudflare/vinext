@@ -61,9 +61,9 @@ import {
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import {
+  isServableFilesystemRoute,
   runPagesRequest,
   wrapMiddlewareWithBasePath,
-  type FilesystemRoutePhase,
   type PagesPipelineDeps,
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
@@ -82,7 +82,6 @@ import {
   ASSET_PREFIX_URL_DIR,
   assetPrefixPathname,
   isAbsoluteAssetPrefix,
-  isAssetPrefixBuildAsset,
 } from "../utils/asset-prefix.js";
 import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.js";
 import { setPagesClientAssets, type AssetCrossOrigin } from "./pages-client-assets.js";
@@ -782,16 +781,6 @@ function withImageSourceCacheControl(
       config,
     ),
   };
-}
-
-/** Pathnames the Pages Router serves from routes rather than the client directory. */
-function isPagesFilesystemExcludedPath(pathname: string, phase: FilesystemRoutePhase): boolean {
-  return (
-    pathname === "/" ||
-    pathname === "/api" ||
-    pathname.startsWith("/api/") ||
-    (phase === "direct" && pathname.startsWith(`/${ASSET_PREFIX_URL_DIR}/`))
-  );
 }
 
 /**
@@ -2482,6 +2471,15 @@ async function createPagesRouterRequestHandler(
       : () => undefined;
   const hasMiddleware = serverEntry.hasMiddleware === true;
   const pageRoutes = readPagesServerEntryPageRoutes(serverEntry.pageRoutes);
+  // The public/ files recorded at build time. The client directory also holds
+  // build metadata, so only these and build assets are served from it.
+  const publicFiles: ReadonlySet<string> =
+    serverEntry.publicFiles instanceof Set ? serverEntry.publicFiles : new Set();
+  // Files the client build emits outside `_next/static`, for example a
+  // Module Federation host's `remoteEntry.js`. Workers Static Assets serves
+  // them before the Worker runs, and so does this server, before routing.
+  const clientBuildFiles: ReadonlySet<string> =
+    serverEntry.clientBuildFiles instanceof Set ? serverEntry.clientBuildFiles : new Set();
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
@@ -2664,6 +2662,15 @@ async function createPagesRouterRequestHandler(
         return;
       }
     }
+    if (req.method === "GET" || req.method === "HEAD") {
+      const clientBuildFile = resolveClientBuildFile(rawPagesPathname, basePath, clientBuildFiles);
+      if (
+        clientBuildFile &&
+        (await tryServeStatic(req, res, clientDir, clientBuildFile, compress, staticCache))
+      ) {
+        return;
+      }
+    }
 
     try {
       // ── 2. Strip basePath ─────────────────────────────────────────
@@ -2831,17 +2838,20 @@ async function createPagesRouterRequestHandler(
               stagedHeaders,
               phase,
               _resolvedUrl,
-              _request,
+              sourceRequest,
               candidateHasBasePath,
             ) => {
-              // Like Next.js, a file resolves only for a pathname under the
-              // basePath, whether the source's own or a rewrite destination.
-              // Its built-in rewrite still maps `${assetPrefix}/_next/*` into it.
               if (
-                (!candidateHasBasePath &&
-                  !isAssetPrefixBuildAsset(candidate, pagesAssetPathPrefix)) ||
                 isImageOptimizationPath(candidate) ||
-                isPagesFilesystemExcludedPath(candidate, phase)
+                !isServableFilesystemRoute(
+                  candidate,
+                  phase,
+                  sourceRequest.method,
+                  publicFiles,
+                  basePath,
+                  pagesAssetPathPrefix,
+                  candidateHasBasePath,
+                )
               ) {
                 return false;
               }
@@ -2949,7 +2959,7 @@ async function createPagesRouterRequestHandler(
           stagedHeaders,
           phase,
           resolvedUrl,
-          _request,
+          filesystemRequest,
           resolvedPathnameHasBasePath,
         ) => {
           // Next.js resolves middleware and beforeFiles rewrites before
@@ -3028,7 +3038,8 @@ async function createPagesRouterRequestHandler(
             }
             const assetLookupPath =
               sourcePathname !== null
-                ? resolveAppRouterAssetPath(sourcePathname, pagesAssetPathPrefix, assetPrefix)
+                ? (resolveAppRouterAssetPath(sourcePathname, pagesAssetPathPrefix, assetPrefix) ??
+                  resolveClientBuildFile(sourceUrl.pathname, basePath, clientBuildFiles))
                 : null;
             if (assetLookupPath && (await serveSource(assetLookupPath))) return true;
 
@@ -3050,13 +3061,16 @@ async function createPagesRouterRequestHandler(
             res.end(INVALID_IMAGE_SOURCE_MESSAGE);
             return true;
           }
-          // Like Next.js, a file resolves only for a pathname under the
-          // basePath, whether the request's own or a rewrite destination.
-          // Its built-in rewrite still maps `${assetPrefix}/_next/*` into it.
           if (
-            (!resolvedPathnameHasBasePath &&
-              !isAssetPrefixBuildAsset(requestPathname, pagesAssetPathPrefix)) ||
-            isPagesFilesystemExcludedPath(requestPathname, phase)
+            !isServableFilesystemRoute(
+              requestPathname,
+              phase,
+              filesystemRequest.method,
+              publicFiles,
+              basePath,
+              pagesAssetPathPrefix,
+              resolvedPathnameHasBasePath,
+            )
           ) {
             return false;
           }
