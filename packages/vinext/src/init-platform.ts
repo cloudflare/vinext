@@ -318,10 +318,12 @@ export async function resolveInitOptions(
     );
   }
   const supportsWarmCdnCache =
-    platformOptions?.cdnCache === "response-store" || platformOptions?.cdnCache === "workers-cache";
+    platformOptions?.cdnCache !== undefined && platformOptions.cdnCache !== "none";
   if (platform === "cloudflare" && !supportsWarmCdnCache) {
     if (explicitWarmCdnCache === true) {
-      throw new Error("--warm-cache requires --cdn-cache=response-store or workers-cache.");
+      throw new Error(
+        "--warm-cache requires a cache: pass --cdn-cache=response-store, workers-cache, data-cache, or static-assets.",
+      );
     }
   }
 
