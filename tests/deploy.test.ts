@@ -67,7 +67,11 @@ import {
   buildPagesClientAssetsModule,
   writePagesClientAssetsModuleIfMissing,
 } from "../packages/vinext/src/build/pages-client-assets-module.js";
-import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-request-pipeline.js";
+import {
+  fetchWorkerFilesystemRoute,
+  isServableFilesystemRoute,
+} from "../packages/vinext/src/server/pages-request-pipeline.js";
+import { publicFileRouteKey } from "../packages/vinext/src/utils/public-file-path.js";
 import {
   createStaticAssetRequest,
   finalizeMissingStaticAssetResponse,
@@ -2475,6 +2479,35 @@ describe("readPagesRouterEntrySource", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain("let response = result.response;");
     expect(content).not.toContain("finalizeMissingStaticAssetResponse");
+  });
+});
+
+describe("isServableFilesystemRoute", () => {
+  it("serves only public files directly and build assets through rewrites", () => {
+    const publicFiles = new Set(["/visible.txt", "/api/schema.json"]);
+    expect(isServableFilesystemRoute("/visible.txt", "direct", "GET", publicFiles)).toBe(true);
+    expect(isServableFilesystemRoute("/api/schema.json", "direct", "GET", publicFiles)).toBe(true);
+    expect(
+      isServableFilesystemRoute("/vinext-client-entry-manifest.json", "direct", "GET", publicFiles),
+    ).toBe(false);
+    expect(isServableFilesystemRoute("/_next/static/a.js", "direct", "GET", publicFiles)).toBe(
+      false,
+    );
+    expect(isServableFilesystemRoute("/_next/static/a.js", "afterFiles", "GET", publicFiles)).toBe(
+      true,
+    );
+  });
+
+  // The pathname is authorized as the file a server serves when it decodes it
+  // once, not only as the URL resolves it.
+  it("rejects encoded separators that name a different file once decoded", () => {
+    expect(
+      isServableFilesystemRoute("/_next%5Cstatic%5Cprivate.json", "afterFiles", "GET", new Set()),
+    ).toBe(false);
+
+    const publicFiles = new Set([publicFileRouteKey("/a%2Fb.txt")]);
+    expect(isServableFilesystemRoute("/a%2Fb.txt", "direct", "GET", publicFiles)).toBe(false);
+    expect(isServableFilesystemRoute("/a%252Fb.txt", "direct", "GET", publicFiles)).toBe(true);
   });
 });
 

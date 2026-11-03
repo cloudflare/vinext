@@ -54,6 +54,7 @@ import { mergeRewriteQuery } from "../utils/query.js";
 import { restoreBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import { publicFileRouteKey } from "../utils/public-file-path.js";
 import {
   isOnDemandRevalidateRequest,
   PRERENDER_REVALIDATE_HEADER,
@@ -138,9 +139,15 @@ export function isServableFilesystemRoute(
   assetUrl.pathname = requestPathname;
   const decodedAssetUrl = new URL(assetUrl);
   let publicFileKey: string;
+  // The file a server serves for the pathname, decoded once. It must pass the
+  // same checks, since `%5C` or `%2F` decode to a separator only in the URL.
+  let servedPathname: string;
+  let servedFileKey: string;
   try {
     decodedAssetUrl.pathname = decodeURIComponent(assetUrl.pathname);
     publicFileKey = normalizePathnameForRouteMatchStrict(assetUrl.pathname);
+    servedPathname = decodeURIComponent(requestPathname);
+    servedFileKey = publicFileRouteKey(servedPathname);
   } catch {
     return false;
   }
@@ -151,7 +158,8 @@ export function isServableFilesystemRoute(
   if (!pathnameHasBasePath && !isAssetPrefixBuildAsset(decodedPathname, assetPathPrefix)) {
     return false;
   }
-  const isPublicFile = pathnameHasBasePath && publicFiles.has(publicFileKey);
+  const isPublicFile =
+    pathnameHasBasePath && publicFiles.has(publicFileKey) && publicFiles.has(servedFileKey);
   // Public files precede API routes in the filesystem order, so a file such as
   // public/api/schema.json is served rather than handed to API routing.
   if (!isPublicFile && (requestPathname === "/api" || requestPathname.startsWith("/api/"))) {
@@ -163,7 +171,11 @@ export function isServableFilesystemRoute(
   // Every rewrite phase must stay inside the public filesystem boundary.
   // Authorize the normalized destination, never the original request's
   // build-asset classification.
-  return isPublicFile || isNextStaticPath(decodedPathname, basePath, assetPathPrefix);
+  return (
+    isPublicFile ||
+    (isNextStaticPath(decodedPathname, basePath, assetPathPrefix) &&
+      isNextStaticPath(servedPathname, basePath, assetPathPrefix))
+  );
 }
 
 export async function fetchWorkerFilesystemRoute(
