@@ -155,7 +155,6 @@ import {
 import {
   resolvePagesI18nRequest,
   shouldRestoreLocaleRootTrailingSlash,
-  stripI18nLocaleForApiRoute,
 } from "./server/pages-i18n.js";
 import {
   MIDDLEWARE_NEXT_HEADER,
@@ -223,7 +222,7 @@ import {
   pagesRouteHasPriorityOverAppRoute,
   validateHybridRouteConflicts,
 } from "./server/hybrid-route-priority.js";
-import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
+import { proxyExternalRequest } from "./config/config-matchers.js";
 import { encodeMiddlewareRequestHeaders } from "./utils/middleware-request-headers.js";
 import {
   detectPackageManager,
@@ -7226,62 +7225,6 @@ export const loadServerActionClient = ${
                     headers: notFoundHeaders,
                   });
                 }
-              }
-
-              // Skip file-looking requests after trailing-slash canonicalization,
-              // except rewrites and Pages routes that should stay in the pipeline.
-              // This still lets dynamic routes like /catch-all/hello.world/ receive
-              // the same Next.js redirects and route matching as extensionless URLs.
-              const filePathMatchesRewrite = [
-                ...(nextConfig?.rewrites.beforeFiles ?? []),
-                ...(nextConfig?.rewrites.afterFiles ?? []),
-                ...(nextConfig?.rewrites.fallback ?? []),
-              ].some((rewrite) =>
-                matchesRewriteSource(pathname, rewrite, {
-                  basePath: bp,
-                  hadBasePath: true,
-                }),
-              );
-              const isFilePathRequest = pathname.includes(".") && !pathname.endsWith(".html");
-              const isExistingPublicMutation =
-                req.method !== "GET" && req.method !== "HEAD" && isExistingDevPublicFile(pathname);
-              let filePathMatchesPagesRoute = false;
-              const requestHostname = getUrlHostname(requestOrigin);
-              if (isFilePathRequest && !filePathMatchesRewrite && !isDataReq) {
-                const [pageRoutes, apiRoutes] = await Promise.all([
-                  pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
-                  apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
-                ]);
-                // Page matching follows matchPageRoute's full i18n resolution. API matching
-                // mirrors the shared Pages pipeline lookup, which only strips a locale prefix.
-                const pageRouteUrl = nextConfig?.i18n
-                  ? resolvePagesI18nRequest(
-                      pathname,
-                      nextConfig.i18n,
-                      req.headers,
-                      requestHostname,
-                      bp,
-                      nextConfig.trailingSlash ?? false,
-                    ).url
-                  : pathname;
-                const apiRouteUrl = stripI18nLocaleForApiRoute(pathname, nextConfig?.i18n ?? null);
-                filePathMatchesPagesRoute =
-                  matchRoute(pageRouteUrl, pageRoutes) !== null ||
-                  matchRoute(apiRouteUrl, apiRoutes) !== null;
-              }
-              if (
-                isFilePathRequest &&
-                !isDataReq &&
-                !filePathMatchesRewrite &&
-                !filePathMatchesPagesRoute &&
-                !isNextStaticPath(
-                  pathname,
-                  "",
-                  assetPrefixPathname(nextConfig?.assetPrefix ?? ""),
-                ) &&
-                !isExistingPublicMutation
-              ) {
-                return next();
               }
 
               // Snapshot of req.headers before middleware runs. Used for both
