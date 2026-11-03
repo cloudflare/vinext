@@ -1965,6 +1965,20 @@ describe("prerender path manifest", () => {
         trailingSlash: true,
       }),
     ).toBe(true);
+    // With skipProxyUrlNormalize, that data request is matched unslashed.
+    const unslashedData = { pagesDataTrailingSlash: false, runsMiddleware: true, ...slashed };
+    expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null, runs)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null, unslashedData)).toBe(
+      true,
+    );
+    // The default-locale root is requested as /en/, so a slashed source only
+    // ends the request, and not with skipProxyUrlNormalize.
+    const enRoot = [{ locale: false as const, source: "/en/" }];
+    expect(matchesMiddlewareWarmPath("/", enRoot, i18n, slashed)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/", enRoot, i18n, runs)).toBe(false);
+    expect(
+      matchesMiddlewareWarmPath("/", enRoot, i18n, { ...slashed, skipProxyUrlNormalize: true }),
+    ).toBe(false);
   });
 
   it("retains redirect sources only when routing runs in an uncached stage", async () => {
