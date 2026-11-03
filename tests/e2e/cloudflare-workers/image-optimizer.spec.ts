@@ -24,6 +24,17 @@ function webpWidth(bytes: Buffer): number {
   throw new Error(`Not a WebP image: ${chunk}`);
 }
 
+/** A source transformed to WebP, which must succeed. */
+async function transformed(request: APIRequestContext, source: string): Promise<Buffer> {
+  const response = await request.get(imagePath(source), {
+    headers: { Accept: "image/webp,*/*" },
+    maxRedirects: 0,
+  });
+  expect(response.status(), source).toBe(200);
+  expect(response.headers()["content-type"], source).toBe("image/webp");
+  return Buffer.from(await response.body());
+}
+
 async function original(request: APIRequestContext, source: string): Promise<Buffer> {
   const response = await request.get(source);
   expect(response.status(), source).toBe(200);
@@ -34,7 +45,6 @@ test.describe("Cloudflare Workers /_next/image optimizes still images", () => {
   for (const [source, why] of [
     ["/image-still.jpg", "a format detection skips"],
     ["/image-still.webp", "a still WebP, read to its end"],
-    ["/image-still-large.gif", "a GIF read past 1 MiB, so fetched again"],
   ] as const) {
     test(`transforms ${source}: ${why}`, async ({ request }) => {
       const sourceBytes = await original(request, source);
@@ -60,18 +70,18 @@ test.describe("Cloudflare Workers /_next/image optimizes still images", () => {
   // source. A compact copy of the same pixels, read whole, must transform to
   // the same image.
   test("transforms a PNG streamed on past where detection decided", async ({ request }) => {
-    const transform = async (source: string) => {
-      const response = await request.get(imagePath(source), {
-        headers: { Accept: "image/webp,*/*" },
-        maxRedirects: 0,
-      });
-      expect(response.status(), source).toBe(200);
-      expect(response.headers()["content-type"], source).toBe("image/webp");
-      return Buffer.from(await response.body());
-    };
-    const streamed = await transform("/image-still-stored.png");
+    const streamed = await transformed(request, "/image-still-stored.png");
     expect(webpWidth(streamed)).toBe(64);
-    expect(streamed.equals(await transform("/image-still-compact.png"))).toBe(true);
+    expect(streamed.equals(await transformed(request, "/image-still-compact.png"))).toBe(true);
+  });
+
+  // ~1.2 MB of comment precedes this GIF's only frame, so detection reads past
+  // the 1 MiB it keeps before finding the trailer, and the source is fetched
+  // again. The frame comes from that second fetch, so the GIF must transform
+  // to the same image as its copy without the comment.
+  test("transforms a GIF fetched again with its frame past 1 MiB", async ({ request }) => {
+    const refetched = await transformed(request, "/image-still-large.gif");
+    expect(refetched.equals(await transformed(request, "/image-still.gif"))).toBe(true);
   });
 });
 
