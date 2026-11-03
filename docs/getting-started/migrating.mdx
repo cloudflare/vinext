@@ -41,19 +41,19 @@ The scanner reports known unsupported configuration, imports, and project patter
 
 Choose Cloudflare or Node when prompted. The command installs the required packages, adds ESM and Vite configuration, and creates deployment config for the selected platform.
 
-For a non-interactive run, select the target explicitly:
+For a non-interactive run, pass the choices explicitly:
 
 <PackageManagerCommand
   commands={{
-    pnpm: "pnpm dlx vinext init --platform=cloudflare\npnpm dlx vinext init --platform=node",
-    npm: "npx vinext init --platform=cloudflare\nnpx vinext init --platform=node",
-    yarn: "yarn dlx vinext init --platform=cloudflare\nyarn dlx vinext init --platform=node",
-    bun: "bunx vinext init --platform=cloudflare\nbunx vinext init --platform=node",
-    vp: "vpx vinext init --platform=cloudflare\nvpx vinext init --platform=node",
+    pnpm: "pnpm dlx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none\npnpm dlx vinext init --platform=node",
+    npm: "npx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none\nnpx vinext init --platform=node",
+    yarn: "yarn dlx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none\nyarn dlx vinext init --platform=node",
+    bun: "bunx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none\nbunx vinext init --platform=node",
+    vp: "vpx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none\nvpx vinext init --platform=node",
   }}
 />
 
-For Cloudflare, agents and CI must also pass `--cdn-cache`, `--data-cache`, and `--image-optimization`; see [Run init without prompts](/docs/deploying/cloudflare#run-init-without-prompts).
+For Cloudflare, agents and CI must pass all three of `--cdn-cache`, `--data-cache`, and `--image-optimization`. The Cloudflare command above chooses no cache and no image optimization; see [Run init without prompts](/docs/deploying/cloudflare#run-init-without-prompts) for the other values.
 
 ## 3. Run both toolchains
 
