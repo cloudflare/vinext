@@ -78,7 +78,7 @@ imported from \node_modules.pnpm\validator@13.15.26\node_modules\validator\es\li
 
 **Symptom:** ISR pages not caching across requests.
 **Cause:** Default `MemoryCacheHandler` doesn't persist across Worker invocations.
-**Fix:** Configure a persistent cache. On a fresh setup, pass a cache to `vinext init --platform=cloudflare` (for example `--cdn-cache=response-store --data-cache=none`, or `--cdn-cache=data-cache --data-cache=kv` for KV; see the Phase 2 flags table in [SKILL.md](../SKILL.md)). For an existing setup, rerunning init with those flags adds the adapter to the existing Vite config but leaves an existing `cloudflare.config.ts` untouched, so then add only the matching bindings there by hand (see Phase 2, step 4 in [SKILL.md](../SKILL.md) for the cases where init stops instead). Without rerunning init, add both the adapter to `vinext()` and its bindings to `cloudflare.config.ts` by hand, as described in [Caching on Cloudflare](https://vinext.dev/docs/guides/caching).
+**Fix:** Configure a persistent cache. On a fresh setup, ask the user which cache they want and run `vinext init --platform=cloudflare` with all three of `--cdn-cache`, `--data-cache`, and `--image-optimization` set to their choices (for example `--cdn-cache=response-store --data-cache=none`, or `--cdn-cache=data-cache --data-cache=kv` for KV, plus their `--image-optimization` choice; see the Phase 2 flags table in [SKILL.md](../SKILL.md)). On an existing setup, add the cache adapter to `vinext()` and its bindings to `cloudflare.config.ts` by hand, as described in [Caching on Cloudflare](https://vinext.dev/docs/guides/caching).
 
 ## Verification Checklist
 
