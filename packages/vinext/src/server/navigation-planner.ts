@@ -262,7 +262,8 @@ export type EarlyNavigationIntentDecision =
   | {
       kind: "flightNavigation";
       // True for same-path search changes, where a cached full-route payload is
-      // not authoritative because search params are a page input.
+      // not authoritative because search params are a page input, and for a
+      // Link to the exact current URL. Neither shows an optimistic route shell.
       bypassNavigationCache: boolean;
       trace: NavigationTrace;
     };
@@ -762,14 +763,24 @@ function classifyNavigationReuse(facts: NavigationReuseFacts): NavigationReuseDe
     return createFreshFetchDecision(facts, "refresh");
   }
 
-  if (!facts.bypassNavigationCache && facts.visitedResponse.status === "available") {
+  // Only same-pathname navigations bypass the cache. They skip the optimistic
+  // shell too: Next.js keys segment boundaries without the page's search
+  // params, so such a navigation suspends inside the mounted loading boundary
+  // and the transition keeps the current page until the new one commits. A
+  // loading shell would replace it.
+  // Ref: packages/next/src/client/components/layout-router.tsx (activeStateKey)
+  if (facts.bypassNavigationCache) {
+    return createFreshFetchDecision(facts, "cacheBypassed");
+  }
+
+  if (facts.visitedResponse.status === "available") {
     return {
       kind: "reuseVisitedResponse",
       trace: createNavigationReuseTrace(NavigationTraceReasonCodes.visitedResponseReuse, facts),
     };
   }
 
-  if (!facts.bypassNavigationCache && facts.prefetch.status === "available") {
+  if (facts.prefetch.status === "available") {
     return {
       kind: "consumePrefetch",
       trace: createNavigationReuseTrace(NavigationTraceReasonCodes.prefetchResponseReuse, facts),
@@ -784,14 +795,7 @@ function classifyNavigationReuse(facts: NavigationReuseFacts): NavigationReuseDe
       };
     }
 
-    return createFreshFetchDecision(
-      facts,
-      facts.bypassNavigationCache ? "cacheBypassed" : facts.optimisticRouteShell.reason,
-    );
-  }
-
-  if (facts.bypassNavigationCache) {
-    return createFreshFetchDecision(facts, "cacheBypassed");
+    return createFreshFetchDecision(facts, facts.optimisticRouteShell.reason);
   }
 
   return createFreshFetchDecision(facts, "cacheMiss");
