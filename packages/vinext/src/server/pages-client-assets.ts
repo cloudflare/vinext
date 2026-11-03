@@ -6,6 +6,11 @@ export type PagesClientAssets = {
   clientEntry?: string;
   appBootstrapPreinitModules?: string[];
   appRouteManifestModule?: string;
+  /**
+   * Subresource Integrity hash (`experimental.sri`) of the App Router bootstrap
+   * module, its preinitialised chunks and the RouteManifest chunk, by URL.
+   */
+  integrity?: Record<string, string>;
   /** What each App Router client reference loads in the browser, by URL. */
   appClientReferenceChunks?: ClientReferenceChunks;
   ssrManifest?: Record<string, string[]>;

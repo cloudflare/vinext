@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { createHash } from "node:crypto";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -731,6 +732,70 @@ describe("computeClientRuntimeMetadata", () => {
     expect(routeManifestModule("/docs/", "https://cdn.example.com/assets")).toBe(
       "https://cdn.example.com/assets/_next/static/route-manifest.js",
     );
+  });
+
+  it("hashes the App Router bootstrap chunks for experimental.sri, keyed by served URL", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-app-browser-entry": {
+          file: "_next/static/app-entry.js",
+          isEntry: true,
+          imports: ["shared.js"],
+          dynamicImports: ["virtual:vinext-app-route-manifest", "lazy.js"],
+        },
+        "shared.js": { file: "_next/static/shared.js" },
+        "virtual:vinext-app-route-manifest": {
+          file: "_next/static/route-manifest.js",
+          isDynamicEntry: true,
+        },
+        "lazy.js": { file: "_next/static/lazy.js", isDynamicEntry: true },
+      }),
+    );
+    await fsp.writeFile(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({
+        appBrowserEntry: "_next/static/app-entry.js",
+        appRouteManifest: "_next/static/route-manifest.js",
+      }),
+    );
+    await fsp.mkdir(path.join(clientDir, "_next/static"), { recursive: true });
+    for (const name of ["app-entry", "shared", "route-manifest", "lazy"]) {
+      await fsp.writeFile(path.join(clientDir, `_next/static/${name}.js`), `// ${name}\n`);
+    }
+    const sha256 = (name: string) =>
+      "sha256-" + createHash("sha256").update(`// ${name}\n`).digest("base64");
+
+    expect(
+      computeClientRuntimeMetadata({ clientDir, assetBase: "/", assetPrefix: "" }).integrity,
+    ).toBeUndefined();
+    expect(
+      computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/",
+        assetPrefix: "",
+        sriAlgorithm: "sha256",
+      }).integrity,
+    ).toEqual({
+      "/_next/static/app-entry.js": sha256("app-entry"),
+      "/_next/static/shared.js": sha256("shared"),
+      "/_next/static/route-manifest.js": sha256("route-manifest"),
+    });
+    expect(
+      computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/",
+        assetPrefix: "https://cdn.example.com",
+        sriAlgorithm: "sha384",
+      }).integrity,
+    ).toEqual({
+      "https://cdn.example.com/_next/static/app-entry.js":
+        "sha384-" + createHash("sha384").update("// app-entry\n").digest("base64"),
+      "https://cdn.example.com/_next/static/shared.js":
+        "sha384-" + createHash("sha384").update("// shared\n").digest("base64"),
+      "https://cdn.example.com/_next/static/route-manifest.js":
+        "sha384-" + createHash("sha384").update("// route-manifest\n").digest("base64"),
+    });
   });
 
   it("finds the App Router client reference chunks, with the asset prefix", async () => {

@@ -619,6 +619,22 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.cachedNavigations")?.status).toBe("partial");
   });
 
+  it("detects experimental.sri as supported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        experimental: {
+          sri: { algorithm: "sha256" },
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    const item = items.find((i) => i.name === "experimental.sri");
+    expect(item?.status).toBe("supported");
+    expect(item?.detail).toContain("integrity");
+  });
+
   it("detects experimental.swcEnvOptions as unsupported", () => {
     writeFile(
       "next.config.mjs",
