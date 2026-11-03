@@ -487,8 +487,8 @@ test("useSearchParams() outside Suspense fails an on-demand static path", async 
 
 // Next.js renders an on-demand ISR path at runtime as `next build` would, so a
 // render that reports an error, even one a Suspense boundary caught, is a 500
-// it never stores. A live miss here streams before the error, but no backend
-// stores either part of it, while the route's other paths are stored.
+// it never stores. A live miss here keeps its 200, but no backend stores
+// either part of it, while the route's other paths are stored.
 test("an on-demand path whose render reports an error is never stored", async ({
   baseURL,
   request,

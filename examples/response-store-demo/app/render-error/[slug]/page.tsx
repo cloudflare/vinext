@@ -3,9 +3,9 @@ import { Suspense } from "react";
 export const revalidate = 60;
 
 // No path is generated at build, so each one renders on demand. A path
-// starting with `throw-` throws inside Suspense after the shell. Next.js fails
-// `next build` for such a page, and at runtime answers it with a 500 and
-// stores nothing, as it does for every ISR render that reports an error.
+// starting with `throw-` throws inside Suspense after the shell. Next.js
+// answers it with a 500 at runtime and stores nothing (and fails `next build`
+// for a generated path), as it does for every ISR render that reports an error.
 export function generateStaticParams() {
   return [];
 }

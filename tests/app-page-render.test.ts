@@ -4007,16 +4007,18 @@ describe("runtime ISR renders that report an error", () => {
       await response.arrayBuffer();
       await Promise.all(common.waitUntilPromises);
       expect(common.isrSet).not.toHaveBeenCalled();
+      // Only a build's prerender reads the marker.
+      expect(response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
     });
   }
 
   for (const isRscRequest of [false, true]) {
     it(`never admits a live miss to a CDN cache (${isRscRequest ? "RSC" : "HTML"})`, async () => {
-      const admit = async (reportsError: boolean) => {
+      const admit = async (reportsError: boolean, mode: "admit" | "probe" = "admit") => {
         const common = createCommonOptions();
         const state: RouteCacheabilityState = {
           captureDeadlineAt: Date.now() + 10_000,
-          mode: "admit",
+          mode,
           route: { kind: "app-page", pattern: "/posts/[slug]" },
         };
         const executionContext: ExecutionContextLike = { waitUntil() {} };
@@ -4045,6 +4047,8 @@ describe("runtime ISR renders that report an error", () => {
         reason: "render reported an error",
       });
       await expect(admit(false)).resolves.toMatchObject({ cacheable: true });
+      // The deploy probe classifies the route, not this one render.
+      await expect(admit(true, "probe")).resolves.toMatchObject({ cacheable: true });
     });
   }
 
@@ -4086,8 +4090,7 @@ describe("runtime ISR renders that report an error", () => {
       ...common.options,
       isProduction: true,
       renderToReadableStream(_element, options) {
-        options?.onError?.(new Error("suspended failure"), undefined, undefined);
-        return createStream(["flight-data"]);
+        return suspendedFailure(options);
       },
       renderWholeDocument: true,
       revalidateSeconds: 60,
@@ -4097,6 +4100,28 @@ describe("runtime ISR renders that report an error", () => {
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
+    expect(response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  // As in `next build`, a render that turned dynamic doesn't fail on its error.
+  it("keeps the 200 of a render no client waits on when it turned dynamic", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: vi.fn(() => true),
+      isProduction: true,
+      renderToReadableStream(_element, options) {
+        return suspendedFailure(options);
+      },
+      renderWholeDocument: true,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(200);
     await response.text();
     await Promise.all(common.waitUntilPromises);
     expect(common.isrSet).not.toHaveBeenCalled();
