@@ -505,6 +505,17 @@ const nextConfig: NextConfig = {
           { key: "X-Mw-Image-Endpoint", value: "config" },
         ],
       },
+      // Used by Vitest: app-router-production-server.test.ts — collisions with
+      // Route Handler headers resolve like Next.js on each runtime.
+      {
+        source: "/api/config-header-collision/:path*",
+        headers: [
+          { key: "X-Config-Collision", value: "config" },
+          { key: "WWW-Authenticate", value: "Bearer realm=config" },
+          { key: "Vary", value: "X-Config" },
+          { key: "X-Nextjs-Cache", value: "config" },
+        ],
+      },
       // Used by Vitest: app-router-production-server.test.ts — redirects that
       // application code returns carry config headers like Next.js; the
       // redirects() rule on /old-about does not.

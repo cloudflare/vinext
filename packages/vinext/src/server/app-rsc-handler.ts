@@ -95,9 +95,11 @@ import {
   finalizeAppRscResponse,
   isStreamedActionRedirectResponse,
   markAppRscApplicationResponse,
+  markAppRscRouteHandlerResponse,
   markAppRscResponseConfigHeadersApplied,
   markStreamedActionRedirectResponse,
 } from "./app-rsc-response-finalizer.js";
+import type { RouteHandlerRuntime } from "./config-headers.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { isAppRouteHandlerRoute } from "./app-rsc-route-matching.js";
 import {
@@ -1615,6 +1617,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const applyConfigHeadersToResponseStage = async (
     response: Response,
     preserveExistingPolicy = false,
+    routeHandlerRuntime?: RouteHandlerRuntime,
   ): Promise<Response> => {
     // Responses returned by a transport binding can have immutable headers.
     // Compose config headers on a mutable copy while retaining stream/cache
@@ -1630,6 +1633,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       overwriteExisting: preserveExistingPolicy ? new Set<string>() : isCdnResponsePolicyHeader,
       recordCacheability: dispatchResponseStage === undefined,
       requestContext: preMiddlewareRequestContext,
+      routeHandlerRuntime,
     });
     return preserveFullyBufferedBodyMetadata(
       response,
@@ -1665,7 +1669,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     ]).then(([headers, responseStagePolicy]) =>
       captureCdnResponsePolicyOverrides(headers, new Headers(responseStagePolicy ?? [])),
     ));
-  const composeResponseStageResponse = async (response: Response): Promise<Response> => {
+  const composeResponseStageResponse = async (
+    response: Response,
+    routeHandlerRuntime?: RouteHandlerRuntime,
+  ): Promise<Response> => {
     // Positive config cache policy was already transported into the response
     // stage before admission. Preserve its completed policy so a late render
     // failure cannot be made public again and the uncached gateway does not
@@ -1676,6 +1683,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     response = await applyConfigHeadersToResponseStage(
       response,
       Boolean(dispatchResponseStage || options.renderResponseStageLocally),
+      routeHandlerRuntime,
     );
     response = applyMiddlewareContextToResponse(
       response,
@@ -2913,11 +2921,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // internal search params from the request URL. Node route handlers only
     // strip `_rsc` from the parsed query object and rebuild request.url from
     // initURL, preserving it there even for RSC requests.
-    const routeHandlerRequest = isEdgeRouteHandler(route.routeHandler) ? userlandRequest : request;
+    const routeHandlerRuntime = isEdgeRouteHandler(route.routeHandler) ? "edge" : "node";
+    const routeHandlerRequest = routeHandlerRuntime === "edge" ? userlandRequest : request;
     const routeHandlerUrl = new URL(routeHandlerRequest.url);
-    const internalRscValues = isEdgeRouteHandler(route.routeHandler)
-      ? []
-      : routeHandlerUrl.searchParams.getAll(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
+    const internalRscValues =
+      routeHandlerRuntime === "edge"
+        ? []
+        : routeHandlerUrl.searchParams.getAll(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
     routeHandlerUrl.search = resolvedSearchParams.toString();
     for (const internalRscValue of internalRscValues) {
       routeHandlerUrl.searchParams.append(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM, internalRscValue);
@@ -2949,7 +2959,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         routePathname: responseStageRoutePathname,
         scriptNonce: scriptNonce ?? null,
       });
-      return composeResponseStageResponse(response);
+      return composeResponseStageResponse(response, routeHandlerRuntime);
     }
     const { setCurrentFetchSoftTags } = await import("vinext/shims/fetch-cache");
     setCurrentFetchSoftTags(
@@ -2969,7 +2979,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       route,
       searchParams: resolvedSearchParams,
     });
-    return markAppRscApplicationResponse(routeHandlerResponse);
+    return markAppRscRouteHandlerResponse(routeHandlerResponse, routeHandlerRuntime);
   }
 
   const failedProgressiveActionResult =

@@ -2610,6 +2610,41 @@ describe("App Router Production server (startProdServer)", () => {
     }
   });
 
+  it("resolves config header collisions with Route Handler headers like Next.js (production)", async () => {
+    const node = {
+      collision: "config",
+      challenge: "Bearer realm=config, Basic realm=handler",
+      cacheState: "config",
+      varyStart: "X-Config, X-Handler",
+    };
+    const cases = [
+      { pathname: "/api/config-header-collision", status: 200, ...node },
+      { pathname: "/api/config-header-collision?status=302", status: 302, ...node },
+      { pathname: "/api/config-header-collision?status=304", status: 304, ...node },
+      {
+        pathname: "/api/config-header-collision/edge",
+        status: 200,
+        collision: "config, handler",
+        challenge: "Bearer realm=config, Basic realm=handler",
+        cacheState: "config, handler",
+        varyStart: "X-Config, X-Handler",
+      },
+    ];
+    for (const { pathname, ...expected } of cases) {
+      const res = await fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+      await res.body?.cancel();
+      expect({
+        pathname,
+        status: res.status,
+        collision: res.headers.get("x-config-collision"),
+        challenge: res.headers.get("www-authenticate"),
+        cacheState: res.headers.get("x-nextjs-cache"),
+        // vinext's own RSC Vary fields follow.
+        varyStart: res.headers.get("vary")?.split(", ").slice(0, 2).join(", "),
+      }).toEqual({ pathname, ...expected });
+    }
+  });
+
   it("answers a config redirect with its statusCode (production)", async () => {
     const res = await fetch(`${baseUrl}/config-redirect-status-code`, { redirect: "manual" });
     expect(res.status).toBe(301);
