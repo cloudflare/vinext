@@ -377,9 +377,11 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
       // Next.js's `RootErrorBoundary errorComponent={DefaultGlobalError}`.
       return createElement(GlobalErrorBoundary, {
         fallback: DEFAULT_GLOBAL_ERROR_COMPONENT,
+        wrapsGlobalErrorBoundary: true,
         // oxlint-disable-next-line react/no-children-prop
         children: createElement(ErrorBoundary, {
           fallback: GlobalErrorComponent,
+          isGlobalErrorBoundary: true,
           // oxlint-disable-next-line react/no-children-prop
           children,
         }),

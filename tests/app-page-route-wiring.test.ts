@@ -6534,7 +6534,9 @@ describe("app page route wiring helpers", () => {
     const userBoundary = findElementByTypeName(outerBoundary?.props.children, "ErrorBoundary");
 
     expect(getElementTypeName(outerBoundary?.props.fallback)).toBe("DefaultGlobalError");
+    expect(outerBoundary?.props.wrapsGlobalErrorBoundary).toBe(true);
     expect(userBoundary?.props.fallback).toBe(UserGlobalError);
+    expect(userBoundary?.props.isGlobalErrorBoundary).toBe(true);
   });
 
   it("installs the default global error boundary without a user global error", () => {
@@ -6561,6 +6563,7 @@ describe("app page route wiring helpers", () => {
 
     const outerBoundary = findElementByTypeName(elements["route:/"], "GlobalErrorBoundary");
     expect(getElementTypeName(outerBoundary?.props.fallback)).toBe("DefaultGlobalError");
+    expect(outerBoundary?.props.wrapsGlobalErrorBoundary).toBe(false);
   });
 
   it("interleaves templates with their corresponding layouts", async () => {
