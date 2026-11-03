@@ -10,8 +10,13 @@ import {
 } from "./app-elements.js";
 import type { AppRouterState } from "./app-browser-state.js";
 import { isNestedBfcacheSlotSegmentIdFor } from "./bfcache-identity.js";
-import { normalizePathnameForRouteMatch } from "../routing/utils.js";
-import { addBasePathToPathname, removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
+import type {
+  BrowserRouteManifest,
+  BrowserRouteManifestInterception,
+} from "../routing/browser-route-manifest.js";
+import { matchRoutePattern } from "../routing/route-pattern.js";
+import { normalizePathnameForRouteMatch, splitPathnameForRouteMatch } from "../routing/utils.js";
+import { removeTrailingSlash, restoreBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizePath } from "./normalize-path.js";
 
 const SUPPLEMENTAL_REFRESH_TIMEOUT_MS = 10_000;
@@ -286,7 +291,7 @@ export function resolvePersistedSourcePageRefreshes(options: {
     ) {
       continue;
     }
-    const pathname = addBasePathToPathname(activeRoutePath, options.basePath);
+    const pathname = restoreBasePath(activeRoutePath, options.basePath);
     if (sourceUrlsByPathname.has(pathname)) continue;
     const sourceUrl = new URL(pathname, options.refreshUrl);
     sourceUrl.search = options.refreshUrl.search;
@@ -299,6 +304,69 @@ export function resolvePersistedSourcePageRefreshes(options: {
     const pathAndSearch = `${sourceUrl.pathname}${sourceUrl.search}`;
     if (pathAndSearch !== refreshPathAndSearch) resolved.push(pathAndSearch);
   }
+  return resolved;
+}
+
+export type PersistedRefreshInterception = {
+  interception: BrowserRouteManifestInterception;
+  interceptionContext: string;
+  targetPathname: string;
+};
+
+function getMatchedUrlPathname(matchedUrl: string): string {
+  return new URL(matchedUrl, "https://vinext.local").pathname;
+}
+
+export function resolvePersistedRefreshInterceptions(options: {
+  basePath: string;
+  refreshUrl: URL;
+  requestInterceptionContext: string | null;
+  routeManifest: BrowserRouteManifest | null;
+  state: Pick<AppRouterState, "interception" | "slotBindings">;
+}): PersistedRefreshInterception[] {
+  const { basePath, refreshUrl, requestInterceptionContext, routeManifest, state } = options;
+  if (routeManifest === null) return [];
+
+  const refreshPathname = stripBasePath(refreshUrl.pathname, basePath);
+  const refreshPathParts = splitPathnameForRouteMatch(refreshPathname);
+  const resolved: PersistedRefreshInterception[] = [];
+
+  for (const binding of state.slotBindings) {
+    if (binding.state !== "active" || !binding.activeRouteId) continue;
+    if (!binding.interceptionId || !binding.interceptionSourceMatchedUrl) continue;
+    const activeRoute = AppElementsWire.parseElementKey(binding.activeRouteId);
+    if (activeRoute?.kind !== "route") continue;
+    const match = routeManifest.segmentGraph.interceptions.get(binding.interceptionId);
+    if (!match) continue;
+
+    const retainedInterception =
+      state.interception?.slotId === binding.slotId &&
+      matchRoutePattern(
+        splitPathnameForRouteMatch(getMatchedUrlPathname(state.interception.targetMatchedUrl)),
+        match.targetPatternParts,
+      ) !== null
+        ? state.interception
+        : null;
+    const targetPathname = retainedInterception?.targetMatchedUrl ?? activeRoute.path;
+    const targetParts = splitPathnameForRouteMatch(getMatchedUrlPathname(targetPathname));
+    const isPrimaryRefreshInterception =
+      requestInterceptionContext !== null &&
+      state.interception?.slotId === binding.slotId &&
+      matchRoutePattern(refreshPathParts, match.targetPatternParts) !== null &&
+      matchRoutePattern(targetParts, match.targetPatternParts) !== null;
+    if (isPrimaryRefreshInterception) continue;
+
+    const targetUrl = new URL(targetPathname, refreshUrl);
+    targetUrl.pathname = restoreBasePath(targetUrl.pathname, basePath);
+    targetUrl.search = refreshUrl.search;
+    resolved.push({
+      interception: match,
+      interceptionContext:
+        retainedInterception?.sourceMatchedUrl ?? binding.interceptionSourceMatchedUrl,
+      targetPathname: `${targetUrl.pathname}${targetUrl.search}`,
+    });
+  }
+
   return resolved;
 }
 

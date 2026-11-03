@@ -2956,45 +2956,53 @@ describe("Pages Router entry template", () => {
     }
   });
 
-  it("reports trusted _next/data classification from URL normalization", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-entry-"));
-    const pagesDir = path.join(tmpDir, "pages");
-    const middlewarePath = path.join(tmpDir, "middleware.ts");
+  it.each([
+    ["server", generateServerEntry],
+    ["request-stage", generatePagesRequestEntry],
+  ] as const)(
+    "reports trusted _next/data classification from URL normalization in the %s entry",
+    async (_, generate) => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-entry-"));
+      const pagesDir = path.join(tmpDir, "pages");
+      const middlewarePath = path.join(tmpDir, "middleware.ts");
 
-    try {
-      fs.mkdirSync(pagesDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(pagesDir, "index.tsx"),
-        "export default function Page() { return null; }",
-      );
-      fs.writeFileSync(
-        middlewarePath,
-        'export function middleware() { return new Response(null, { headers: { "x-middleware-next": "1" } }); }',
-      );
+      try {
+        fs.mkdirSync(pagesDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(pagesDir, "index.tsx"),
+          "export default function Page() { return null; }",
+        );
+        fs.writeFileSync(
+          middlewarePath,
+          'export function middleware() { return new Response(null, { headers: { "x-middleware-next": "1" } }); }',
+        );
 
-      const code = await generateServerEntry(
-        pagesDir,
-        await resolveNextConfig({
-          basePath: "/root",
-          generateBuildId: () => "test-build-id",
-          skipProxyUrlNormalize: true,
-        }),
-        createValidFileMatcher(),
-        middlewarePath,
-        null,
-      );
+        const code = await generate(
+          pagesDir,
+          await resolveNextConfig({
+            basePath: "/root",
+            generateBuildId: () => "test-build-id",
+            skipProxyUrlNormalize: true,
+          }),
+          createValidFileMatcher(),
+          middlewarePath,
+          null,
+        );
 
-      expect(code).toContain("export function normalizeDataRequest(request)");
-      expect(code).toContain(
-        "vinextConfig.basePath,\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize",
-      );
-      expect(code).toContain("export const hasMiddleware = true");
-      expect(code).toContain('"skipProxyUrlNormalize":true');
-      expect(code).not.toContain('request.headers.get("x-nextjs-data")');
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
+        expect(code).toContain("export function normalizeDataRequest(request)");
+        // The Worker request stage strips basePath before calling it, so it must
+        // not strip it again.
+        expect(code).toContain(
+          'buildId,\n    "",\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize',
+        );
+        expect(code).toContain("export const hasMiddleware = true");
+        expect(code).toContain('"skipProxyUrlNormalize":true');
+        expect(code).not.toContain('request.headers.get("x-nextjs-data")');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("installs server globals before Pages Router user modules are imported", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-entry-"));
