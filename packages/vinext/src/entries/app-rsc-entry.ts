@@ -1536,6 +1536,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
           isForceStatic: buildOptions?.isForceStatic === true,
           isUncacheableRender: buildOptions?.isUncacheableRender === true,
+          routeTreeOnlyPrefetchShell: buildOptions?.routeTreeOnlyPrefetchShell === true,
           mountedLayouts: buildOptions?.mountedLayouts ?? null,
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
           placeStreamedMetadataInHead: buildOptions?.placeStreamedMetadataInHead === true,

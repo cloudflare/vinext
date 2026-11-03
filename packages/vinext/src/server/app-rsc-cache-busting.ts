@@ -5,6 +5,7 @@ import {
 } from "./app-rsc-state-fingerprint.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   parseAppRscRenderMode,
   type AppRscRenderMode,
@@ -395,6 +396,26 @@ export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): bool
   headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
   headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
   return true;
+}
+
+/**
+ * Convert a search-param shell prefetch to the canonical navigation of its
+ * page. The shell renders the page with an empty query (app-page-dispatch.ts),
+ * which is what the query-free navigation renders, as Next.js's static
+ * prefetch of a page segment never varies on search params. The caller drops
+ * the query from the URL.
+ */
+export function canonicalizeDynamicShellRscRequestHeaders(headers: Headers): boolean {
+  if (
+    headers.get(VINEXT_RSC_RENDER_MODE_HEADER) !== APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL ||
+    headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
+    headers.has(VINEXT_INTERCEPTION_ID_HEADER) ||
+    headers.has(VINEXT_MOUNTED_SLOTS_HEADER)
+  ) {
+    return false;
+  }
+  headers.delete(VINEXT_RSC_RENDER_MODE_HEADER);
+  return canonicalizePrewarmableRscRequestHeaders(headers);
 }
 
 /**

@@ -2180,7 +2180,9 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Slot page");
   });
 
-  it("keeps the layouts of a loading-shell prefetch without a loading boundary that may be stored", async () => {
+  // With PPR, Next.js renders layouts for every production prefetch
+  // (isRoutePPREnabled in walkTreeWithFlightRouterState()).
+  it("keeps the layouts of a PPR loading-shell prefetch without a loading boundary", async () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
@@ -2204,7 +2206,6 @@ describe("app page route wiring helpers", () => {
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
     });
 
-    // A layout reading request data must still keep the shell out of the cache.
     expect(elements["page:/dashboard"]).toBeNull();
     expect(elements["route:/dashboard"]).not.toBeNull();
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
@@ -2255,9 +2256,11 @@ describe("app page route wiring helpers", () => {
       routePath: "/dashboard",
       rootNotFoundModule: null,
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-      isUncacheableRender: true,
+      routeTreeOnlyPrefetchShell: true,
     });
 
+    // A render that may be stored too: no layout runs, so nothing in it
+    // depends on the request.
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
     expect(elements["page:/dashboard"]).toBeNull();
     expect(elements["route:/dashboard"]).toBeNull();

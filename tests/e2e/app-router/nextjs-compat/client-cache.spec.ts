@@ -429,11 +429,11 @@ test.describe("Next.js compat: client cache", () => {
     );
   });
 
-  test("a loading-shell prefetch without a loading boundary that may be stored keeps its layouts", async ({
+  test("a static route's loading-shell prefetch without a loading boundary carries only the route tree", async ({
     page,
   }) => {
-    // A static route's shell may be stored, so its layouts still render and a
-    // layout reading request data keeps it out of the cache, as before.
+    // A static route's shell runs no layout either, so it depends on nothing
+    // in the request (issue #4496).
     const response = await page.request.get("/about?_rsc=no-loading-static-shell", {
       headers: {
         RSC: "1",
@@ -445,8 +445,8 @@ test.describe("Next.js compat: client cache", () => {
     const body = await response.text();
     expect(response.status()).toBe(200);
     expect(body).toContain("route:/about");
-    expect(body).toContain('"lang":"en"');
-    expect(body).toContain("App Basic");
+    expect(body).not.toContain('"lang":"en"');
+    expect(body).not.toContain("App Basic");
   });
 
   test("a pending prefetch that becomes dynamic uses the completed dynamic bound", async ({

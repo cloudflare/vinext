@@ -1037,6 +1037,59 @@ describe("createAppRscHandler", () => {
     expect(new URL(mountedRequest.url).searchParams.get("_rsc")).not.toBe("");
   });
 
+  // The shell renders the page with an empty query, as Next.js's static
+  // prefetch of a page segment never varies on search params, so it shares
+  // the query-free page's navigation entry (issue #4496).
+  it("dispatches a search-param shell prefetch as its page's canonical navigation", async () => {
+    const route = createPageRoute();
+    const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("rsc")),
+    );
+    const handler = createHandler({ matchRequestRoute: matchRoute, matchRoute });
+    const shellRequest = async (headersInit: Parameters<typeof createRscRequestHeaders>[0]) => {
+      const headers = createRscRequestHeaders({
+        nextUrl: "/",
+        prefetchRouterState: { pathAndSearch: "/", routeId: "route:/" },
+        renderMode: "prefetch-dynamic-shell",
+        ...headersInit,
+      });
+      headers.set("Next-Router-Segment-Prefetch", "1");
+      const url = await createRscRequestUrl("/docs/about?tab=1", headers);
+      return new Request(new URL(url, "https://example.test"), { headers });
+    };
+
+    await handler(await shellRequest({}), null, false, dispatchResponseStage);
+
+    const [shell, shellProps] = dispatchResponseStage.mock.calls[0]!;
+    expect([...new URL(shell.url).searchParams]).toEqual([["_rsc", ""]]);
+    for (const name of [
+      "next-router-prefetch",
+      "next-router-segment-prefetch",
+      "next-router-state-tree",
+      "next-url",
+      "x-vinext-rsc-render-mode",
+      "x-vinext-rsc-state-fingerprint",
+    ]) {
+      expect(shell.headers.get(name)).toBeNull();
+    }
+    expect(shellProps).toMatchObject({ renderMode: "navigation", resolvedUrl: "/about" });
+
+    // Interception and mounted-slot payloads stay contextual.
+    for (const contextual of [
+      { mountedSlotsHeader: "slot:modal:/" },
+      { interceptionContext: "/feed" },
+    ]) {
+      dispatchResponseStage.mockClear();
+      await handler(await shellRequest(contextual), null, false, dispatchResponseStage);
+
+      const [request, props] = dispatchResponseStage.mock.calls[0]!;
+      expect(new URL(request.url).searchParams.get("tab")).toBe("1");
+      expect(request.headers.get("x-vinext-rsc-render-mode")).toBe("prefetch-dynamic-shell");
+      expect(props).toMatchObject({ renderMode: "prefetch-dynamic-shell" });
+    }
+  });
+
   it("marks build-time hybrid Pages renders whose URL a rewrite changed", async () => {
     const handler = createHandler({
       configRewrites: {
