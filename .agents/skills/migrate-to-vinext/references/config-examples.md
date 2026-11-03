@@ -102,29 +102,6 @@ export default defineConfig({
 
 For a custom Worker entry, init sets `entrypoint` to `./worker/index.ts` (or `.js`) when that file exists. Unless `next.config` sets `output: "export"` (static exports serve their pages from assets before the Worker runs), the entry must hand requests to `vinext/server/fetch-handler`, or every page returns 404.
 
-## Legacy: wrangler.jsonc
-
-Only for projects set up with `vinext init --legacy-wrangler-cloudflare-init`, which keeps Cloudflare Vite plugin v1 and Wrangler. Init generates:
-
-```jsonc
-{
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "my-app",
-  "compatibility_date": "2026-11-02",
-  "compatibility_flags": ["nodejs_compat"],
-  "main": "vinext/server/fetch-handler",
-  "assets": {
-    "directory": "dist/client",
-    "html_handling": "none",
-    "not_found_handling": "none",
-    "binding": "ASSETS",
-    "run_worker_first": ["/*", "!/_next/static/*", "!/*/_next/static/*"],
-  },
-}
-```
-
-Cloudflare Images adds `"images": { "binding": "IMAGES" }`. Legacy projects define bindings here and run `wrangler types` for TypeScript types.
-
 ## Accessing Cloudflare Bindings
 
 Use `import { env } from "cloudflare:workers"` in server components, route handlers, and server actions. No custom worker entry needed.
@@ -202,16 +179,14 @@ Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET
 
 ## @vinext/cloudflare deploy flags
 
-| Flag                         | Description                                                                |
-| ---------------------------- | -------------------------------------------------------------------------- |
-| `--env <name>`               | Cloudflare mode for `cloudflare.config.ts`; Wrangler environment otherwise |
-| `--preview`                  | Alias for `--env preview` (not a Worker Preview deployment)                |
-| `--vite-config <path>`       | Vite config to build with (default: `vite.config.*`)                       |
-| `--name <name>`              | Override the Worker name (legacy Wrangler projects only)                   |
-| `--config <path>`            | Wrangler config path (legacy Wrangler projects only)                       |
-| `--skip-build`               | Skip build step (deploy existing output)                                   |
-| `--dry-run`                  | Validate setup without building or deploying                               |
-| `--warm-cache`               | Warm discovered routes before promotion                                    |
-| `--traffic-aware-warm-cache` | Enable traffic-aware cache warming                                         |
+| Flag                         | Description                                                    |
+| ---------------------------- | -------------------------------------------------------------- |
+| `--env <name>`               | Cloudflare mode for `cloudflare.config.ts`                     |
+| `--preview`                  | Alias for `--env preview` (not a Worker Preview deployment)    |
+| `--vite-config <path>`       | Vite config to build with (default: `vite.config.*`)           |
+| `--skip-build`               | Skip build step (deploy existing output)                       |
+| `--dry-run`                  | Validate setup without building or deploying                   |
+| `--warm-cache`               | Warm discovered routes before promotion (any configured cache) |
+| `--traffic-aware-warm-cache` | Enable traffic-aware cache warming                             |
 
 Run `npx @vinext/cloudflare deploy --help` for the full list.
