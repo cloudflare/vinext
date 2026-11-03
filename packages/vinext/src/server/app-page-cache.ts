@@ -686,10 +686,13 @@ export async function readAppPageCacheResponse(
               "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
           );
         }
-        // And, as in `next build`, one whose render reported an error throws it.
+        // And, as in `next build`, one whose render reported an error throws it,
+        // unless the render turned dynamic, as a PPR regeneration's may.
         // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
         // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
-        if (revalidatedPage.reportedError) throw revalidatedPage.reportedError.error;
+        if (revalidatedPage.reportedError && !revalidatedPage.usedDynamicApi) {
+          throw revalidatedPage.reportedError.error;
+        }
         // An RSC request whose shell's special error has no document of its
         // own stores its RSC entry alone.
         const documentKey = options.isRscRequest && revalidatedPage.html === "" ? null : htmlKey;

@@ -343,11 +343,23 @@ function finalizeEvaluatedAppPageResponse(
     // The document renders before the render's cacheLife and observations are
     // consumed, which its navigation cache metadata reads as an HTML request's
     // does.
-    void options.resolveRscRenderStatus().then(admit, () => {
-      options.consumeRenderObservationState?.();
-      settleAdmittedDocument(options.captureAdmittedDocument, null);
-      complete({ cacheable: false, reason: "render status could not be resolved" });
-    });
+    void options.resolveRscRenderStatus().then(
+      (renderStatus) => {
+        // The document rendered beside the payload can report an error too.
+        if (options.renderReportedError?.() === true && !isRouteCacheabilityProbe()) {
+          options.consumeRenderObservationState?.();
+          settleAdmittedDocument(options.captureAdmittedDocument, null);
+          complete({ cacheable: false, reason: "render reported an error" });
+          return;
+        }
+        admit(renderStatus);
+      },
+      () => {
+        options.consumeRenderObservationState?.();
+        settleAdmittedDocument(options.captureAdmittedDocument, null);
+        complete({ cacheable: false, reason: "render status could not be resolved" });
+      },
+    );
   };
 
   if (!response.body) {
@@ -589,10 +601,6 @@ export function scheduleAppPageRscCacheWrite(
         options.isrDebug?.("RSC cache write skipped (dynamic usage during render)", rscKey);
         return;
       }
-      if (options.renderReportedError?.()) {
-        options.isrDebug?.("RSC cache write skipped (render reported an error)", rscKey);
-        return;
-      }
 
       // Like Next.js, store the status and `location` of a special error that
       // rejects the document's shell. Replay sends a redirect as a 200. The
@@ -600,6 +608,11 @@ export function scheduleAppPageRscCacheWrite(
       // consumed, which its navigation cache metadata reads as an HTML
       // request's does.
       const renderStatus = (await options.resolveRscRenderStatus?.()) ?? { kind: "page" };
+      // Read after the document rendered beside the payload, which can report one too.
+      if (options.renderReportedError?.()) {
+        options.isrDebug?.("RSC cache write skipped (render reported an error)", rscKey);
+        return;
+      }
       const cacheControl = resolveAppPageCacheControl({
         expireSeconds: options.expireSeconds,
         requestCacheLife: options.getRequestCacheLife?.(),

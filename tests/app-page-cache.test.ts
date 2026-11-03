@@ -2930,6 +2930,38 @@ describe("app page regeneration failures", () => {
     },
   );
 
+  // As in `next build`, a PPR render that turned dynamic postpones the hole
+  // whose error it reported, so the regeneration is still stored.
+  it("stores a PPR regeneration that turned dynamic before reporting an error", async () => {
+    const scheduled: Array<() => Promise<void>> = [];
+    const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+
+    await readStale({
+      isRoutePPREnabled: true,
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation),
+          true,
+          { revalidate: 60 },
+        );
+      },
+      isrSet,
+      async renderFreshPageForCache() {
+        return freshPage({
+          reportedError: { error: new Error("hole failure") },
+          usedDynamicApi: true,
+        });
+      },
+      scheduled,
+    });
+
+    await expect(scheduled[0]()).resolves.toBeUndefined();
+    expect(isrSet.mock.calls.map(([key, data]) => [key, data.html])).toContainEqual([
+      "html:/stale",
+      "<h1>fresh</h1>",
+    ]);
+  });
+
   // Next.js fails a non-PPR regeneration whose render's revalidate is 0,
   // whether a dynamic API or its fetches or cacheLife set it
   // (`build/templates/app-page.ts`). A route without a revalidate reads the

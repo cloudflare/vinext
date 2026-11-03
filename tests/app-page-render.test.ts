@@ -4048,6 +4048,37 @@ describe("runtime ISR renders that report an error", () => {
     });
   }
 
+  it("never stores an RSC miss whose stored document reports an error", async () => {
+    const common = createCommonOptions();
+    const loadSsrHandler = vi.fn(async () => ({
+      async handleSsr(
+        _rscStream: ReadableStream<Uint8Array>,
+        _navContext: unknown,
+        _fontData: unknown,
+        options?: { onSsrError?: (error: unknown) => unknown },
+      ) {
+        // A client component's server-only error, inside Suspense.
+        options?.onSsrError?.(new Error("client failure"));
+        return createStream(["<html>fallback</html>"]);
+      },
+    }));
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isCacheCandidate: true,
+      isProduction: true,
+      isRscRequest: true,
+      loadSsrHandler,
+      revalidateSeconds: 60,
+    });
+
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    // The document rendered to be stored beside the payload.
+    expect(loadSsrHandler).toHaveBeenCalledOnce();
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
   it("answers a render no client waits on with a 500 it never stores", async () => {
     const common = createCommonOptions();
 

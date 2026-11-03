@@ -972,13 +972,15 @@ async function renderAppPageLifecycleImpl(
                       options.peekRequestCacheLife?.(),
                     ),
                   mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
-                  onSsrError: createAppPageSsrErrorHandler(
-                    options.createRscOnErrorHandler(options.cleanPathname, options.routePattern, {
-                      ...errorContextOverrides,
-                      renderSource: "server-rendering",
-                    }),
-                    rscErrorTracker.isCapturedError,
-                  ),
+                  onSsrError: createAppPageSsrErrorHandler((error, requestInfo, errorContext) => {
+                    // The document is stored beside the payload, so its errors count.
+                    prerenderRenderErrors.note(error);
+                    return options.createRscOnErrorHandler(
+                      options.cleanPathname,
+                      options.routePattern,
+                      { ...errorContextOverrides, renderSource: "server-rendering" },
+                    )(error, requestInfo, errorContext);
+                  }, rscErrorTracker.isCapturedError),
                   reactMaxHeadersLength: options.reactMaxHeadersLength,
                 },
               }
