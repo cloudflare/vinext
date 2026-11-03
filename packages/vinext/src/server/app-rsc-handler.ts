@@ -375,6 +375,8 @@ type RunAppMiddlewareOptions = {
   isDataRequest: boolean;
   middlewareRequest?: Request;
   request: Request;
+  /** `shouldRestoreLocaleRootTrailingSlash` for the raw request pathname. */
+  restoreLocaleRootTrailingSlash?: boolean;
   /** The request pathname carried a `.rsc` transport suffix, now removed. */
   rscSuffix?: boolean;
   validateExternalRewriteRequest: () => Promise<Response | null>;
@@ -1326,6 +1328,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       isDataRequest: isMiddlewareDataRequest,
       middlewareRequest: isolatedMiddlewareRequest,
       request: userlandRequest,
+      restoreLocaleRootTrailingSlash,
       rscSuffix: normalized.pathname.endsWith(".rsc"),
       validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
     });

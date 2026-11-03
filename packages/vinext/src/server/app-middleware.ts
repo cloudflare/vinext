@@ -42,6 +42,8 @@ export type ApplyAppMiddlewareOptions = {
   module: MiddlewareModule;
   request: Request;
   /** Forwarded to `executeMiddleware`. */
+  restoreLocaleRootTrailingSlash?: boolean;
+  /** Forwarded to `executeMiddleware`. */
   rscSuffix?: boolean;
   validateExternalRewriteRequest?: () => Promise<Response | null>;
   /**
@@ -383,6 +385,7 @@ export async function applyAppMiddleware(
         },
         requestBodyAlreadyIsolated: true,
         request: middlewareRequest,
+        restoreLocaleRootTrailingSlash: options.restoreLocaleRootTrailingSlash,
         rscSuffix: options.rscSuffix,
         skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
         trailingSlash: options.trailingSlash,

@@ -191,6 +191,7 @@ export function __ensureInstrumentation(ctx) {
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
+    restoreLocaleRootTrailingSlash: options?.restoreLocaleRootTrailingSlash === true,
     skipTrailingSlashRedirect: vinextConfig.skipTrailingSlashRedirect,
     trailingSlash: vinextConfig.trailingSlash,
   });
@@ -521,6 +522,7 @@ export async function runMiddleware(request, ctx, options) {
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
+    restoreLocaleRootTrailingSlash: options?.restoreLocaleRootTrailingSlash === true,
     skipTrailingSlashRedirect: vinextConfig.skipTrailingSlashRedirect,
     trailingSlash: vinextConfig.trailingSlash,
   });

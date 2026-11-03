@@ -109,6 +109,11 @@ type ExecuteMiddlewareOptions = {
    */
   requestBodyAlreadyIsolated?: boolean;
   /**
+   * `shouldRestoreLocaleRootTrailingSlash` for the raw request pathname. Next.js
+   * then tests the as-requested root as `/en/` after default-locale insertion.
+   */
+  restoreLocaleRootTrailingSlash?: boolean;
+  /**
    * App Router removed a `.rsc` transport suffix from the request pathname.
    * Next.js matches `/admin/.rsc` whole, with the suffix permitted by its
    * compiled matcher, so the slash before the suffix is not a terminal slash.
@@ -557,19 +562,29 @@ async function executeMiddlewareModule(
   // request with an empty 200 instead of routing it.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/resolve-routes.ts
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/next-server.ts
+  // Under i18n, the router server also restores the root's slash after
+  // inserting the default locale, so it tests `/en/` where the render server
+  // tests `/en`.
   const slashedRequestPathname = normalizePath(requestPathname);
   const hasTerminalSlash = slashedRequestPathname !== encodedRequestPathname;
+  const requestedLocaleContext: MiddlewareLocaleMatchContext | undefined =
+    options.restoreLocaleRootTrailingSlash && localeContext?.kind === "defaulted"
+      ? { ...localeContext, restoreRootTrailingSlash: true }
+      : localeContext;
+  const requestedDiffers = hasTerminalSlash || requestedLocaleContext !== localeContext;
   const slashedMatchPathnames: string[] = [];
-  if (hasTerminalSlash) {
-    const { decoded, encoded } = toMatchPathnames(slashedRequestPathname);
+  if (requestedDiffers) {
+    const { decoded, encoded } = hasTerminalSlash
+      ? toMatchPathnames(slashedRequestPathname)
+      : { decoded: decodedMatchPathname, encoded: encodedMatchPathname };
     if (encoded !== null) slashedMatchPathnames.push(encoded);
     if (decoded !== null && decoded !== encoded) slashedMatchPathnames.push(decoded);
   }
   // A request the as-requested test rejects is routed whatever its headers,
   // so only that test decides pathname eligibility.
-  const requestedPathMatches = hasTerminalSlash
+  const requestedPathMatches = requestedDiffers
     ? slashedMatchPathnames.some((candidate) =>
-        matchesMiddlewarePathname(candidate, matcher, options.i18nConfig, localeContext),
+        matchesMiddlewarePathname(candidate, matcher, options.i18nConfig, requestedLocaleContext),
       )
     : encodedPathMatches || decodedPathMatches;
   if (requestedPathMatches || (options.rscSuffix && (encodedPathMatches || decodedPathMatches))) {
@@ -598,9 +613,15 @@ async function executeMiddlewareModule(
     );
 
   const strippedMatches = encodedMatches || decodedMatches;
-  const requestedMatches = hasTerminalSlash
+  const requestedMatches = requestedDiffers
     ? slashedMatchPathnames.some((candidate) =>
-        matchesMiddleware(candidate, matcher, options.request, options.i18nConfig, localeContext),
+        matchesMiddleware(
+          candidate,
+          matcher,
+          options.request,
+          options.i18nConfig,
+          requestedLocaleContext,
+        ),
       )
     : strippedMatches;
   if (options.rscSuffix) {

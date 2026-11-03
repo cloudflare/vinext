@@ -347,6 +347,39 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
     expect((await run("?x=1")).response?.status).toBe(200);
   });
 
+  // Next.js's router server restores the root's slash after inserting the
+  // default locale, so it tests `/en/` while the render server tests `/en`.
+  it("tests the default-locale root with its restored slash", async () => {
+    const run = async (source: string, restoreLocaleRootTrailingSlash: boolean) => {
+      let pathnameEligible = false;
+      const result = await executeMiddleware({
+        i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+        isProxy: false,
+        module: {
+          config: { matcher: [{ locale: false, source }] },
+          middleware: () => new Response("unauthorized", { status: 401 }),
+        },
+        onPathMatch() {
+          pathnameEligible = true;
+        },
+        request: new Request("http://localhost/"),
+        restoreLocaleRootTrailingSlash,
+        trailingSlash: true,
+      });
+      return { pathnameEligible, result };
+    };
+
+    const restored = await run("/en/", true);
+    expect(restored.pathnameEligible).toBe(true);
+    expect(restored.result.response?.status).toBe(200);
+    expect(await restored.result.response?.text()).toBe("");
+    expect(await run("/en/", false)).toEqual({
+      pathnameEligible: false,
+      result: { continue: true },
+    });
+    expect((await run("/en", true)).result.response?.status).toBe(401);
+  });
+
   it("strips basePath before the as-requested matcher test", async () => {
     const result = await executeMiddleware({
       basePath: "/docs",
