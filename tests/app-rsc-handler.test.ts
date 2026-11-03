@@ -6802,8 +6802,8 @@ describe("createAppRscHandler", () => {
   });
 
   it("tests a default-locale root interception source with its restored slash", async () => {
-    // A direct request for `/` is tested as `/en/` and then `/en`, so a
-    // slash-ending matcher ends it with an empty 200. The source must match the same.
+    // A direct request for `/` is tested as `/en/`, so a slash-ending matcher
+    // runs middleware for it. The source must match the same.
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const sourceRoute = createPageRoute({ pattern: "/", routeSegments: [] });
     const dispatchMatchedPage = vi.fn(async () => new Response("source"));
@@ -6826,8 +6826,7 @@ describe("createAppRscHandler", () => {
     const rscUrl = await createRscRequestUrl("/docs/photos/1/", headers);
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
-    expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toBe("");
+    expect(response.status).toBe(401);
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
@@ -6868,8 +6867,7 @@ describe("createAppRscHandler", () => {
     Object.defineProperty(init, "duplex", { value: "half" });
     const response = await handler(new Request("https://example.test/docs/photos/1/", init), null);
 
-    expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toBe("");
+    expect(response.status).toBe(401);
     expect(handleServerActionRequest).not.toHaveBeenCalled();
     await expect(
       Promise.race([

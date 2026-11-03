@@ -232,9 +232,8 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
   });
 
   // A source that keeps its terminal slash never matches the slash-stripped
-  // pathname. Next.js first tests the pathname as requested, though, and ends
-  // a request only that test accepts with an empty 200 without running
-  // middleware.
+  // pathname, so middleware tests the pathname as requested. Next.js ends
+  // these requests with an empty 200 without running middleware.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/next-server.ts
   const slashedSources = [
     { source: "/api/admin/", slashed: "/api/admin/" },
@@ -261,16 +260,16 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
   );
 
   it.each(slashedSources)(
-    "ends $slashed with an empty response for source $source without running middleware",
+    "runs middleware for $slashed for source $source",
     async ({ source, slashed }) => {
-      let invoked = false;
+      const observedPathnames: string[] = [];
       let pathnameEligible = false;
       const result = await executeMiddleware({
         isProxy: false,
         module: {
           config: { matcher: [source] },
-          middleware: () => {
-            invoked = true;
+          middleware: (request: { nextUrl: { pathname: string } }) => {
+            observedPathnames.push(request.nextUrl.pathname);
             return new Response("unauthorized", { status: 401 });
           },
         },
@@ -281,48 +280,11 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
         trailingSlash: true,
       });
 
-      expect(invoked).toBe(false);
+      expect(observedPathnames).toEqual([slashed]);
       expect(pathnameEligible).toBe(true);
-      expect(result.continue).toBe(false);
-      expect(result.response?.status).toBe(200);
-      expect(await result.response?.text()).toBe("");
+      expect(result.response?.status).toBe(401);
     },
   );
-
-  it("releases the unread body of a request it ends with an empty response", async () => {
-    let resolveCancelled!: () => void;
-    const cancelled = new Promise<void>((resolve) => {
-      resolveCancelled = resolve;
-    });
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode("upload"));
-      },
-      cancel() {
-        resolveCancelled();
-      },
-    });
-    const init: RequestInit = { body, method: "POST" };
-    Object.defineProperty(init, "duplex", { value: "half" });
-
-    const result = await executeMiddleware({
-      isProxy: false,
-      module: {
-        config: { matcher: ["/admin/"] },
-        middleware: () => new Response("unauthorized", { status: 401 }),
-      },
-      request: new Request("http://localhost/admin/", init),
-      trailingSlash: true,
-    });
-
-    expect(result.response?.status).toBe(200);
-    await expect(
-      Promise.race([
-        cancelled.then(() => true),
-        new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
-      ]),
-    ).resolves.toBe(true);
-  });
 
   it("does not run middleware when only the slash-stripped pathname matches", async () => {
     const run = async (pathname: string) => {
@@ -348,7 +310,7 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
     expect(unslashed.result.response?.status).toBe(401);
   });
 
-  // `/admin/.rsc` has no terminal slash, so both passes test it whole. Like
+  // `/admin/.rsc` has no terminal slash, so it is tested whole. Like
   // Next.js's compiled matcher, a source permits the `.rsc` suffix after it.
   it.each([
     ["/admin/", 401],
@@ -380,11 +342,11 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
       });
 
     expect(await run("")).toEqual({ continue: true });
-    expect((await run("?x=1")).response?.status).toBe(200);
+    expect((await run("?x=1")).response?.status).toBe(401);
   });
 
   // Next.js's router server restores the root's slash after inserting the
-  // default locale, so it tests `/en/` while the render server tests `/en`.
+  // default locale, so the requested root is tested as `/en/`.
   it("tests the default-locale root with its restored slash", async () => {
     const run = async (source: string, restoreLocaleRootTrailingSlash: boolean) => {
       let pathnameEligible = false;
@@ -407,8 +369,7 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
 
     const restored = await run("/en/", true);
     expect(restored.pathnameEligible).toBe(true);
-    expect(restored.result.response?.status).toBe(200);
-    expect(await restored.result.response?.text()).toBe("");
+    expect(restored.result.response?.status).toBe(401);
     expect(await run("/en/", false)).toEqual({
       pathnameEligible: false,
       result: { continue: true },
@@ -428,9 +389,7 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
       trailingSlash: true,
     });
 
-    expect(result.continue).toBe(false);
-    expect(result.response?.status).toBe(200);
-    expect(await result.response?.text()).toBe("");
+    expect(result.response?.status).toBe(401);
   });
 });
 

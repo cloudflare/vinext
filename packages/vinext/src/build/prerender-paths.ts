@@ -48,7 +48,6 @@ import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtua
 import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
-import { removeTrailingSlash } from "../utils/base-path.js";
 import {
   normalizeNextDataPagePathname,
   shouldAddTrailingSlashToPagesDataPath,
@@ -1278,11 +1277,6 @@ export function matchesMiddlewareWarmPath(
      * Pages data target.
      */
     pagesDataTrailingSlash?: boolean;
-    /**
-     * Also require the slash-stripped matcher test, which middleware must pass
-     * to run. Passing only the as-requested test just ends the request.
-     */
-    runsMiddleware?: boolean;
     skipProxyUrlNormalize?: boolean;
     trailingSlash?: boolean;
   } = {},
@@ -1302,7 +1296,7 @@ export function matchesMiddlewareWarmPath(
     trailingSlash,
   );
   const firstSegment = encodedPathname.split("/", 3)[1]?.toLowerCase();
-  const htmlLocaleContexts: Array<MiddlewareLocaleMatchContext | undefined> = i18n
+  const localeContexts: Array<MiddlewareLocaleMatchContext | undefined> = i18n
     ? i18n.locales.some((locale) => locale.toLowerCase() === firstSegment)
       ? [{ kind: "literal" }]
       : Array.from(
@@ -1313,21 +1307,16 @@ export function matchesMiddlewareWarmPath(
           (defaultLocale) => ({ defaultLocale, kind: "defaulted" as const }),
         )
     : [undefined];
-  const restoredHtmlLocaleContexts = shouldRestoreLocaleRootTrailingSlash(
-    htmlRequestPathname,
-    options,
-  )
-    ? htmlLocaleContexts.map((localeContext) =>
-        localeContext?.kind === "defaulted"
-          ? { ...localeContext, restoreRootTrailingSlash: true }
-          : localeContext,
-      )
-    : htmlLocaleContexts;
   const requestSpellings = [
     {
-      localeContexts: htmlLocaleContexts,
+      localeContexts: shouldRestoreLocaleRootTrailingSlash(htmlRequestPathname, options)
+        ? localeContexts.map((localeContext) =>
+            localeContext?.kind === "defaulted"
+              ? { ...localeContext, restoreRootTrailingSlash: true }
+              : localeContext,
+          )
+        : localeContexts,
       pathname: normalizePathTrailingSlash(encodedPathname, trailingSlash),
-      requestedLocaleContexts: restoredHtmlLocaleContexts,
     },
   ];
   if (options.pagesDataTrailingSlash !== undefined) {
@@ -1342,32 +1331,22 @@ export function matchesMiddlewareWarmPath(
         localizePagesDataPath(encodedPathname, i18n),
         options.pagesDataTrailingSlash,
       ),
-      requestedLocaleContexts: dataLocaleContexts,
     });
   }
-  const matches = (
-    candidate: string,
-    localeContexts: Array<MiddlewareLocaleMatchContext | undefined>,
-  ): boolean => {
-    const matchPathnames = [candidate];
+  return requestSpellings.some((spelling) => {
+    const matchPathnames = [spelling.pathname];
     try {
-      const decodedPathname = decodeURIComponent(candidate);
-      if (decodedPathname !== candidate) matchPathnames.push(decodedPathname);
+      const decodedPathname = decodeURIComponent(spelling.pathname);
+      if (decodedPathname !== spelling.pathname) matchPathnames.push(decodedPathname);
     } catch {
       // Match runtime middleware behavior: malformed encoding is non-fatal.
     }
     return matchPathnames.some((matchPathname) =>
-      localeContexts.some((localeContext) =>
+      spelling.localeContexts.some((localeContext) =>
         matchesMiddlewarePathname(matchPathname, matcher, i18n, localeContext),
       ),
     );
-  };
-  return requestSpellings.some(
-    (spelling) =>
-      matches(spelling.pathname, spelling.requestedLocaleContexts) &&
-      (!options.runsMiddleware ||
-        matches(removeTrailingSlash(spelling.pathname), spelling.localeContexts)),
-  );
+  });
 }
 
 async function startPathDiscoveryServer(options: {
@@ -1645,7 +1624,7 @@ export async function discoverPrerenderPathManifest(
   // Route metadata is shared by a Pages page and its data target. In a hybrid
   // app, only a path the Pages Router owns emits that target.
   const pagesOwnedPathSet = appDir ? new Set(appOwnedWarmPaths.pagesPaths) : null;
-  const middlewareMatchesWarmPath = (pathname: string, runsMiddleware: boolean): boolean =>
+  const middlewareMatchesWarmPath = (pathname: string): boolean =>
     middlewarePath !== null &&
     matchesMiddlewareWarmPath(pathname, configuredMatcher, config.i18n, {
       basePath: config.basePath,
@@ -1653,7 +1632,6 @@ export async function discoverPrerenderPathManifest(
         discoveredPagesDataPathSet.has(pathname) && (pagesOwnedPathSet?.has(pathname) ?? true)
           ? pagesDataRequestsGetTrailingSlash
           : undefined,
-      runsMiddleware,
       skipProxyUrlNormalize: config.skipProxyUrlNormalize,
       trailingSlash: config.trailingSlash,
     });
@@ -1661,7 +1639,7 @@ export async function discoverPrerenderPathManifest(
     hasStagedRequestRouting
       ? routedWarmPaths.filter(
           (pathname) =>
-            middlewareMatchesWarmPath(pathname, true) ||
+            middlewareMatchesWarmPath(pathname) ||
             configuredRewritesCanReplaceWarmPath(
               pathname,
               config.rewrites,
@@ -1676,7 +1654,7 @@ export async function discoverPrerenderPathManifest(
     hasStagedRequestRouting
       ? routedWarmPaths.filter(
           (pathname) =>
-            middlewareMatchesWarmPath(pathname, false) ||
+            middlewareMatchesWarmPath(pathname) ||
             configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
             configuredRewritesCanReplaceWarmPath(
               pathname,

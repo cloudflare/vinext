@@ -540,90 +540,54 @@ async function executeMiddlewareModule(
             };
     }
   }
-  const encodedPathMatches =
-    encodedMatchPathname !== null &&
-    matchesMiddlewarePathname(encodedMatchPathname, matcher, options.i18nConfig, localeContext);
-  const decodedPathMatches =
-    !encodedPathMatches &&
-    decodedMatchPathname !== null &&
-    decodedMatchPathname !== encodedMatchPathname &&
-    matchesMiddlewarePathname(decodedMatchPathname, matcher, options.i18nConfig, localeContext);
-  // Next.js's router server first tests the pathname as requested, terminal
-  // slash included, and hands a match to the render server, whose test above
-  // strips the slash. Middleware runs only when both tests accept the request.
-  // A source that keeps a terminal slash ("/admin/", "/admin/(.*)") matches
-  // /admin/ only in the first test, and the render server then ends the
-  // request with an empty 200 instead of routing it.
+  // Test the pathname as requested, terminal slash included, so a source that
+  // keeps that slash ("/admin/", "/admin/(.*)") runs middleware for /admin/.
+  // Next.js tests this spelling first, then retests without the slash and
+  // ends a request only the first test accepts with an empty 200. vinext runs
+  // middleware there instead: the request reaches middleware as its matcher
+  // describes it.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/resolve-routes.ts
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/next-server.ts
-  // Under i18n, the router server also restores the root's slash after
-  // inserting the default locale, so it tests `/en/` where the render server
-  // tests `/en`.
+  // Under i18n, the requested default-locale root is tested as `/en/` where
+  // Next.js restores the root's slash after inserting the default locale.
   const slashedRequestPathname = normalizePath(requestPathname);
-  const hasTerminalSlash = slashedRequestPathname !== encodedRequestPathname;
+  const requestedMatchPathnames =
+    slashedRequestPathname !== encodedRequestPathname
+      ? toMatchPathnames(slashedRequestPathname)
+      : { decoded: decodedMatchPathname, encoded: encodedMatchPathname };
+  const candidatePathnames: string[] = [];
+  if (requestedMatchPathnames.encoded !== null) {
+    candidatePathnames.push(requestedMatchPathnames.encoded);
+  }
+  if (
+    requestedMatchPathnames.decoded !== null &&
+    requestedMatchPathnames.decoded !== requestedMatchPathnames.encoded
+  ) {
+    candidatePathnames.push(requestedMatchPathnames.decoded);
+  }
   const requestedLocaleContext: MiddlewareLocaleMatchContext | undefined =
     options.restoreLocaleRootTrailingSlash && localeContext?.kind === "defaulted"
       ? { ...localeContext, restoreRootTrailingSlash: true }
       : localeContext;
-  const requestedDiffers = hasTerminalSlash || requestedLocaleContext !== localeContext;
-  const slashedMatchPathnames: string[] = [];
-  if (requestedDiffers) {
-    const { decoded, encoded } = hasTerminalSlash
-      ? toMatchPathnames(slashedRequestPathname)
-      : { decoded: decodedMatchPathname, encoded: encodedMatchPathname };
-    if (encoded !== null) slashedMatchPathnames.push(encoded);
-    if (decoded !== null && decoded !== encoded) slashedMatchPathnames.push(decoded);
+  if (
+    candidatePathnames.some((candidate) =>
+      matchesMiddlewarePathname(candidate, matcher, options.i18nConfig, requestedLocaleContext),
+    )
+  ) {
+    options.onPathMatch?.();
   }
-  // A request the as-requested test rejects is routed whatever its headers,
-  // so only that test decides pathname eligibility.
-  const requestedPathMatches = requestedDiffers
-    ? slashedMatchPathnames.some((candidate) =>
-        matchesMiddlewarePathname(candidate, matcher, options.i18nConfig, requestedLocaleContext),
-      )
-    : encodedPathMatches || decodedPathMatches;
-  if (requestedPathMatches) options.onPathMatch?.();
-
-  const encodedMatches =
-    encodedMatchPathname !== null &&
-    matchesMiddleware(
-      encodedMatchPathname,
-      matcher,
-      options.request,
-      options.i18nConfig,
-      localeContext,
-    );
-  const decodedMatches =
-    !encodedMatches &&
-    decodedMatchPathname !== null &&
-    decodedMatchPathname !== encodedMatchPathname &&
-    matchesMiddleware(
-      decodedMatchPathname,
-      matcher,
-      options.request,
-      options.i18nConfig,
-      localeContext,
-    );
-
-  const strippedMatches = encodedMatches || decodedMatches;
-  const requestedMatches = requestedDiffers
-    ? slashedMatchPathnames.some((candidate) =>
-        matchesMiddleware(
-          candidate,
-          matcher,
-          options.request,
-          options.i18nConfig,
-          requestedLocaleContext,
-        ),
-      )
-    : strippedMatches;
-  if (!requestedMatches) {
+  if (
+    !candidatePathnames.some((candidate) =>
+      matchesMiddleware(
+        candidate,
+        matcher,
+        options.request,
+        options.i18nConfig,
+        requestedLocaleContext,
+      ),
+    )
+  ) {
     return { continue: true };
-  } else if (!strippedMatches) {
-    // Nothing reads the body of a request ended here. Release it so a paused
-    // upload stream cannot hold the connection.
-    const body = options.request.body;
-    if (body && !body.locked) void body.cancel().catch(() => {});
-    return { continue: false, response: new Response(null, { status: 200 }) };
   }
 
   options.onMatch?.();

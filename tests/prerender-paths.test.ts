@@ -1952,12 +1952,7 @@ describe("prerender path manifest", () => {
     expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null)).toBe(true);
     expect(matchesMiddlewareWarmPath("/robots.txt", "/robots.txt", null, slashed)).toBe(true);
     expect(matchesMiddlewareWarmPath("/robots.txt", "/robots.txt/", null, slashed)).toBe(false);
-    // A source only the as-requested test accepts ends the request without
-    // running middleware, so it cannot rewrite the route.
-    const runs = { runsMiddleware: true, trailingSlash: true };
-    expect(matchesMiddlewareWarmPath("/admin", "/admin/", null, runs)).toBe(false);
-    expect(matchesMiddlewareWarmPath("/admin", "/admin", null, runs)).toBe(true);
-    expect(matchesMiddlewareWarmPath("/admin/users", "/admin/(.*)", null, runs)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/admin", "/admin", null, slashed)).toBe(true);
     // A file-like Pages page's data request reaches middleware slashed.
     expect(
       matchesMiddlewareWarmPath("/report.csv", "/report.csv/", null, {
@@ -1966,16 +1961,14 @@ describe("prerender path manifest", () => {
       }),
     ).toBe(true);
     // With skipProxyUrlNormalize, that data request is matched unslashed.
-    const unslashedData = { pagesDataTrailingSlash: false, runsMiddleware: true, ...slashed };
-    expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null, runs)).toBe(false);
+    const unslashedData = { pagesDataTrailingSlash: false, ...slashed };
     expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null, unslashedData)).toBe(
       true,
     );
-    // The default-locale root is requested as /en/, so a slashed source only
-    // ends the request, and not with skipProxyUrlNormalize.
+    // The default-locale root is requested as /en/, but not with
+    // skipProxyUrlNormalize.
     const enRoot = [{ locale: false as const, source: "/en/" }];
     expect(matchesMiddlewareWarmPath("/", enRoot, i18n, slashed)).toBe(true);
-    expect(matchesMiddlewareWarmPath("/", enRoot, i18n, runs)).toBe(false);
     expect(
       matchesMiddlewareWarmPath("/", enRoot, i18n, { ...slashed, skipProxyUrlNormalize: true }),
     ).toBe(false);
