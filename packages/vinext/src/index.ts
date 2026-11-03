@@ -5962,6 +5962,7 @@ export const loadServerActionClient = ${
           if (this.environment?.name !== "client") return;
 
           const manifest: ClientEntryManifest = {};
+          const appBrowserRuntimeModule = toSlash(resolveRuntimeEntryModule("app-browser-entry"));
           for (const chunk of Object.values(bundle)) {
             if (chunk.type !== "chunk") continue;
 
@@ -5970,6 +5971,9 @@ export const loadServerActionClient = ${
               isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_APP_ROUTE_MANIFEST)
             ) {
               manifest.appRouteManifest = chunk.fileName;
+            }
+            if (chunk.moduleIds.some((id) => toSlash(id) === appBrowserRuntimeModule)) {
+              manifest.appBrowserRuntime = chunk.fileName;
             }
             if (!chunk.isEntry) continue;
 
@@ -8878,6 +8882,7 @@ export const loadServerActionClient = ${
             pagesClientAssetsModule = buildPagesClientAssetsModule({
               clientEntry: runtimeMetadata.clientEntryFile ?? undefined,
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
+              appBootstrapPreloadModules: runtimeMetadata.appBootstrapPreloadModules,
               appRouteManifestModule: runtimeMetadata.appRouteManifestModule,
               appClientReferenceChunks: runtimeMetadata.appClientReferenceChunks,
               ssrManifest,
