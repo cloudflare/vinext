@@ -448,6 +448,118 @@ describe("applyConfigHeadersToResponse", () => {
   );
 });
 
+describe("applyConfigHeadersToResponse Route Handler collisions", () => {
+  // Next.js send-response.ts copies a Node Route Handler's header only where
+  // config left none, appending its challenges and Vary; the edge runtime
+  // appends all. Middleware headers and cache policy keep their rules.
+  const applyCollidingConfig = (
+    headers: Headers,
+    routeHandlerRuntime: "node" | "edge" | undefined,
+  ): void =>
+    applyConfigHeadersToResponse(headers, {
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [
+            { key: "X-Collision", value: "config" },
+            { key: "WWW-Authenticate", value: "Bearer realm=config" },
+            { key: "X-Middleware", value: "config" },
+            { key: "x-nextjs-cache", value: "config" },
+            { key: "Cache-Control", value: "private, no-store" },
+            { key: "Vary", value: "X-Config" },
+            { key: "Vary", value: "X-Config-2" },
+          ],
+        },
+      ],
+      middlewareHeaders: new Headers({ "x-middleware": "middleware" }),
+      overwriteExisting: new Set<string>(),
+      pathname: "/about",
+      requestContext: {
+        headers: new Headers(),
+        cookies: {},
+        query: new URLSearchParams(),
+        host: "example.com",
+      },
+      routeHandlerRuntime,
+    });
+
+  it.each([
+    {
+      runtime: undefined,
+      expected: {
+        "x-collision": "handler",
+        "www-authenticate": "Basic realm=handler",
+        "x-nextjs-cache": "handler",
+        vary: "X-Handler, X-Config, X-Config-2",
+      },
+    },
+    {
+      runtime: "node" as const,
+      expected: {
+        "x-collision": "config",
+        "www-authenticate": "Bearer realm=config, Basic realm=handler",
+        "x-nextjs-cache": "config",
+        vary: "X-Config, X-Config-2, X-Handler",
+      },
+    },
+    {
+      runtime: "edge" as const,
+      expected: {
+        "x-collision": "config, handler",
+        "www-authenticate": "Bearer realm=config, Basic realm=handler",
+        "x-nextjs-cache": "config, handler",
+        vary: "X-Config, X-Config-2, X-Handler",
+      },
+    },
+  ])("merges handler headers for runtime $runtime", ({ runtime, expected }) => {
+    const headers = new Headers({
+      "cache-control": "public, max-age=60",
+      vary: "X-Handler",
+      "www-authenticate": "Basic realm=handler",
+      "x-collision": "handler",
+      "x-middleware": "middleware",
+      "x-nextjs-cache": "handler",
+    });
+
+    applyCollidingConfig(headers, runtime);
+
+    expect(Object.fromEntries(headers)).toEqual({
+      ...expected,
+      "cache-control": "public, max-age=60",
+      "x-middleware": "middleware",
+    });
+  });
+
+  // Next.js NodeNextResponse.appendHeader() skips a value already present.
+  it.each(["node" as const, "edge" as const])(
+    "keeps one copy of a value config and the handler share for runtime %s",
+    (runtime) => {
+      const headers = new Headers({
+        "www-authenticate": "Bearer realm=config",
+        "x-collision": "config",
+      });
+
+      applyCollidingConfig(headers, runtime);
+
+      expect(headers.get("www-authenticate")).toBe("Bearer realm=config");
+      expect(headers.get("x-collision")).toBe("config");
+    },
+  );
+
+  // Next.js sets x-nextjs-cache over config on the responses its cache manages.
+  it.each(["node" as const, "edge" as const])(
+    "keeps a cache-managed x-nextjs-cache for runtime %s",
+    (runtime) => {
+      const headers = new Headers({ "x-nextjs-cache": "MISS", "x-vinext-cache": "MISS" });
+
+      applyCollidingConfig(headers, runtime);
+
+      expect(headers.get("x-nextjs-cache")).toBe("MISS");
+      expect(headers.get("x-vinext-cache")).toBe("MISS");
+    },
+  );
+});
+
 describe("response-stage config policy", () => {
   it("carries only matched positive cache policy and Vary fields", () => {
     const request = new Request("https://example.com/about", {

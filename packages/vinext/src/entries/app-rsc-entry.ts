@@ -327,8 +327,7 @@ function buildAppDecodedPathnamePatterns(
 
 type ForcesDynamic = (filePath: string | null | undefined) => boolean;
 
-function createForcesDynamicReader(): ForcesDynamic {
-  const readSource = createSegmentSourceReader();
+function createForcesDynamicReader(readSource = createSegmentSourceReader()): ForcesDynamic {
   return (filePath) => {
     const source = readSource(filePath);
     return source !== null && extractExportConstString(source, "dynamic") === "force-dynamic";
@@ -343,7 +342,16 @@ function directRequestForcesDynamic(route: AppRoute, forcesDynamic: ForcesDynami
 }
 
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
-  const forcesDynamic = createForcesDynamicReader();
+  const readSource = createSegmentSourceReader();
+  const forcesDynamic = createForcesDynamicReader(readSource);
+  // The request stage never loads a Route Handler module. Next.js reads its
+  // runtime statically too, and config headers meet an edge handler's headers
+  // differently.
+  const routeHandlerMetadata = (filePath: string) => {
+    const source = readSource(filePath);
+    const runtime = source === null ? null : extractExportConstString(source, "runtime");
+    return runtime ? { runtime } : true;
+  };
 
   return routes.map((route) => ({
     canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
@@ -368,7 +376,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     params: route.params,
     rootParamNames: route.rootParamNames ?? [],
     page: route.pagePath ? true : null,
-    routeHandler: route.routePath ? true : null,
+    routeHandler: route.routePath ? routeHandlerMetadata(route.routePath) : null,
     routeSegments: route.routeSegments,
     layouts: [],
     layoutTreePositions: [],

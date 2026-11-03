@@ -9856,6 +9856,83 @@ describe("createAppRscHandler", () => {
     }
   });
 
+  it("lets next.config headers meet Route Handler headers like Next.js", async () => {
+    // Next.js copies a Node Route Handler's header only where config left
+    // none, and appends an edge handler's after config. A page keeps its own.
+    const handlerHeaders = {
+      "x-collision": "handler",
+      "www-authenticate": "Basic realm=handler",
+    };
+    const configHeaders = [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Collision", value: "config" },
+          { key: "WWW-Authenticate", value: "Bearer realm=config" },
+        ],
+      },
+    ];
+    const routeFor = (runtime?: string) =>
+      createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        page: null,
+        routeHandler: { GET: () => new Response("route"), runtime },
+      });
+    const cases = [
+      { label: "node", route: routeFor(), status: 200 },
+      { label: "node 302", route: routeFor(), status: 302 },
+      { label: "edge", route: routeFor("edge"), status: 200 },
+      { label: "page", route: undefined, status: 200 },
+    ];
+
+    const results = [];
+    for (const staged of [false, true]) {
+      for (const { label, route, status } of cases) {
+        const handlerResponse = () =>
+          new Response(null, {
+            status,
+            headers: status === 302 ? { ...handlerHeaders, Location: "/" } : handlerHeaders,
+          });
+        const handler = createHandler({
+          configHeaders,
+          dispatchMatchedPage: async () => handlerResponse(),
+          dispatchMatchedRouteHandler: async () => handlerResponse(),
+          ...(route && {
+            matchRoute: (pathname: string) =>
+              pathname === "/about" ? { params: {}, route } : null,
+          }),
+        });
+        const response = await handler(
+          new Request("https://example.test/docs/about"),
+          null,
+          false,
+          staged ? async () => handlerResponse() : undefined,
+        );
+        results.push({
+          label: `${staged ? "staged " : ""}${label}`,
+          collision: response.headers.get("x-collision"),
+          challenge: response.headers.get("www-authenticate"),
+        });
+      }
+    }
+
+    const node = { collision: "config", challenge: "Bearer realm=config, Basic realm=handler" };
+    const edge = {
+      collision: "config, handler",
+      challenge: "Bearer realm=config, Basic realm=handler",
+    };
+    const page = { collision: "handler", challenge: "Basic realm=handler" };
+    expect(results).toEqual(
+      ["", "staged "].flatMap((prefix) => [
+        { label: `${prefix}node`, ...node },
+        { label: `${prefix}node 302`, ...node },
+        { label: `${prefix}edge`, ...edge },
+        { label: `${prefix}page`, ...page },
+      ]),
+    );
+  });
+
   it("propagates middleware rewrite query parameters to App pages", async () => {
     let pageOptions: Parameters<HandlerOptions["dispatchMatchedPage"]>[0] | undefined;
     const handler = createHandler({
