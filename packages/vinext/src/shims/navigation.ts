@@ -3354,9 +3354,32 @@ const _appRouter: AppRouterInstance = {
       // from its own chunk. A call before it arrives resolves the context from
       // the call-time pathname once it does.
       const routeManifestLoad = loadNavigationRuntimeRouteManifest();
+      // Load the policy modules and, when client rewrites can affect the
+      // destination policy, the rewrite-aware ownership module alongside the
+      // manifest, like <Link>'s prefetch. Without rewrites, the synchronous
+      // direct resolver below already has enough manifest data to distinguish
+      // App and Pages ownership, avoiding a feature-specific chunk on the
+      // prefetch path. Dynamic imports keep the policy module and its
+      // route-trie dependencies off the startup path of every
+      // next/navigation consumer.
+      const [
+        routeManifestLoaded,
+        [
+          { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch },
+          { resolveAppPrefetchRscRequest },
+        ],
+      ] = await Promise.all([
+        routeManifestLoad,
+        Promise.all([
+          import("./internal/app-route-prefetch-policy.js"),
+          import("./internal/app-prefetch-rsc-request.js"),
+        ]),
+        HAS_CLIENT_REWRITES ? preloadHybridClientRouteOwner() : null,
+      ]);
+      if (setup.cancelled) return;
       if (routeManifestLoad !== null) {
         // Without the manifest the prefetch would miss its interception context.
-        if (!(await routeManifestLoad) || setup.cancelled) return;
+        if (!routeManifestLoaded) return;
         interceptionContext = getPrefetchInterceptionContext(fullHref, currentPathname);
         if (interceptionContext !== null) {
           headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);
@@ -3368,13 +3391,6 @@ const _appRouter: AppRouterInstance = {
       // an unusable cache entry. The matching `push`/`replace` call will
       // hard-navigate via `window.location`, so a no-op here is correct —
       // the document prefetch the link shim emits on hover still runs.
-      // Load the rewrite-aware module when client rewrites can affect the
-      // destination policy. Without rewrites, the synchronous direct resolver
-      // below already has enough manifest data to distinguish App and Pages
-      // ownership, avoiding a feature-specific chunk on the prefetch path.
-      if (HAS_CLIENT_REWRITES) {
-        await preloadHybridClientRouteOwner();
-      }
       const hybridOwner = resolveHybridClientRouteOwner(fullHref);
       if (hybridOwner === "pages" || hybridOwner === "document") {
         return;
@@ -3401,16 +3417,6 @@ const _appRouter: AppRouterInstance = {
         ? resolveLoadedHybridClientRewriteHref(fullHref, __basePath)
         : null;
       const kind = options?.kind === "full" ? "full" : "auto";
-      // Dynamic import keeps the policy module and its route-trie
-      // dependencies off the startup path of every next/navigation consumer.
-      const [
-        { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch },
-        { resolveAppPrefetchRscRequest },
-      ] = await Promise.all([
-        import("./internal/app-route-prefetch-policy.js"),
-        import("./internal/app-prefetch-rsc-request.js"),
-      ]);
-      if (setup.cancelled) return;
       const policy =
         kind === "full"
           ? resolveFullAppRoutePrefetch()
