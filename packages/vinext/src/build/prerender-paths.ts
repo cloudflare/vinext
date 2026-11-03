@@ -1271,6 +1271,7 @@ export function matchesMiddlewareWarmPath(
   matcher: MatcherConfig | undefined,
   i18n: ResolvedNextConfig["i18n"],
   options: {
+    basePath?: string;
     /**
      * Whether the path's Pages data request reaches middleware slashed
      * (`shouldAddTrailingSlashToPagesDataPath`). Omit for a path without a
@@ -1291,11 +1292,22 @@ export function matchesMiddlewareWarmPath(
   // request carries the configured terminal slash, and its default-locale
   // root is tested as `/en/` where Next.js restores that slash. A Pages data
   // request is matched as its page, slashed as the runtime normalizes it.
-  const htmlPathname = normalizePathTrailingSlash(encodedPathname, options.trailingSlash ?? false);
+  const trailingSlash = options.trailingSlash ?? false;
+  // The warmer slashes the basePath-prefixed path, so a file-like basePath
+  // keeps an unslashed root.
+  const htmlRequestPathname = normalizePathTrailingSlash(
+    options.basePath
+      ? `${options.basePath}${encodedPathname === "/" ? "" : encodedPathname}`
+      : encodedPathname,
+    trailingSlash,
+  );
   const requestSpellings = [
     {
-      pathname: htmlPathname,
-      restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(htmlPathname, options),
+      pathname: normalizePathTrailingSlash(encodedPathname, trailingSlash),
+      restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
+        htmlRequestPathname,
+        options,
+      ),
     },
   ];
   if (options.pagesDataTrailingSlash !== undefined) {
@@ -1622,6 +1634,7 @@ export async function discoverPrerenderPathManifest(
   const middlewareMatchesWarmPath = (pathname: string, runsMiddleware: boolean): boolean =>
     middlewarePath !== null &&
     matchesMiddlewareWarmPath(pathname, configuredMatcher, config.i18n, {
+      basePath: config.basePath,
       pagesDataTrailingSlash:
         discoveredPagesDataPathSet.has(pathname) && (pagesOwnedPathSet?.has(pathname) ?? true)
           ? pagesDataRequestsGetTrailingSlash

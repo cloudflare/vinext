@@ -6830,6 +6830,86 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  it("runs source middleware for an intercepted .rsc request like a direct one", async () => {
+    // A direct `/feed/.rsc` request runs middleware for a `/feed/` matcher.
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const dispatchMatchedPage = vi.fn(async () => new Response("source"));
+    const middlewarePaths: string[] = [];
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed/" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1/" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        config: { matcher: ["/feed/"] },
+        default(request: NextRequest) {
+          middlewarePaths.push(request.nextUrl.pathname);
+          return new Response("denied", { status: 401 });
+        },
+      },
+      trailingSlash: true,
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1/.rsc", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(401);
+    expect(middlewarePaths).toEqual(["/feed/"]);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("releases a streamed body when source middleware ends the request", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const handleServerActionRequest = vi.fn(async () => new Response("action"));
+    let resolveCancelled!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      resolveCancelled = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("upload"));
+      },
+      cancel() {
+        resolveCancelled();
+      },
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed/" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1/" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        config: { matcher: ["/feed/"] },
+        default: () => new Response("denied", { status: 401 }),
+      },
+      trailingSlash: true,
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/" });
+    headers.set("content-type", "text/plain");
+    headers.set("next-action", "interception-action");
+    const init: RequestInit = { body, headers, method: "POST" };
+    Object.defineProperty(init, "duplex", { value: "half" });
+    const response = await handler(new Request("https://example.test/docs/photos/1/", init), null);
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("");
+    expect(handleServerActionRequest).not.toHaveBeenCalled();
+    await expect(
+      Promise.race([
+        cancelled.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+      ]),
+    ).resolves.toBe(true);
+  });
+
   it("authorizes an intercepted Server Action source with the resolved query", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const sourceRoute = createPageRoute({ pattern: "/feed" });

@@ -210,6 +210,7 @@ import {
 } from "./app-response-header-provenance.js";
 import { traceAppPageRender } from "./app-page-tracing.js";
 import { runOutsideWorkStoreScope } from "vinext/shims/internal/work-store-scope";
+import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { setFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
@@ -2022,12 +2023,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             hadBasePath: resolvedPathnameHasBasePath,
             isDataRequest: isMiddlewareDataRequest,
             request: sourceMiddlewareRequest,
-            // From the basePath-less source: a basePath root drops its slash
-            // in `sourceUrl`, while a direct request for it keeps `/docs/`.
+            // From the spelling a direct request uses: a basePath root drops
+            // its slash in `sourceUrl`, while a direct request keeps `/docs/`.
             restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
-              sourceRequestPathname,
+              normalizePathTrailingSlash(sourceUrlPathname, options.trailingSlash ?? false),
               options,
             ),
+            rscSuffix: normalized.pathname.endsWith(".rsc"),
             validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
           }),
         );
@@ -2062,6 +2064,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         );
       }
       if (sourceMiddlewareResult.kind === "response") {
+        if (request.body && !request.body.locked) {
+          void request.body.cancel().catch(() => {});
+        }
         options.clearRequestContext();
         return sourceMiddlewareResult.response;
       }

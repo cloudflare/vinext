@@ -1979,6 +1979,13 @@ describe("prerender path manifest", () => {
     expect(
       matchesMiddlewareWarmPath("/", enRoot, i18n, { ...slashed, skipProxyUrlNormalize: true }),
     ).toBe(false);
+    // The warmer slashes the basePath-prefixed root, unless it looks like a file.
+    expect(matchesMiddlewareWarmPath("/", enRoot, i18n, { ...slashed, basePath: "/docs" })).toBe(
+      true,
+    );
+    expect(
+      matchesMiddlewareWarmPath("/", enRoot, i18n, { ...slashed, basePath: "/docs.json" }),
+    ).toBe(false);
   });
 
   it("retains redirect sources only when routing runs in an uncached stage", async () => {
