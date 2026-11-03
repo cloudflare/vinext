@@ -81,6 +81,8 @@ Like Next.js, a client navigation renders only below the layouts the client alre
 
 Like Next.js, vinext doesn't check the regexes in `redirects`, `rewrites`, and `headers` sources, in `has` and `missing` values, or in middleware matchers for catastrophic backtracking. They run as written against request paths, headers, cookies, query values, and hosts, so avoid nested or overlapping repeats such as `(a+)+` in these patterns.
 
+Under `trailingSlash` or `skipTrailingSlashRedirect`, a middleware matcher source that ends in a slash, such as `"/admin/"` or `"/admin/(.*)"`, runs middleware for `/admin/`. Next.js tests that request a second time without the slash, and when that test fails it answers with an empty `200` without running middleware or rendering the page. In both, a source that rejects slashed paths, such as `"/admin/((?!.*\\/$).*)"`, doesn't run middleware for them.
+
 ## Compatibility
 
 App Router, Pages Router, RSC, Server Actions, middleware, Route Handlers, static generation, ISR, and the commonly used `next/*` modules are implemented. Cache Components and Partial Prerendering remain incomplete, and build-time image and font optimization do not yet reproduce the full Next.js pipeline.
