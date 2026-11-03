@@ -1801,7 +1801,8 @@ describe("App Router Production server (startProdServer)", () => {
     },
     {
       name: "an App page as RSC",
-      pathname: "/about.rsc?mw-mirror-request-headers",
+      pathname: "/about?_rsc&mw-mirror-request-headers",
+      rsc: true,
       status: 200,
       marker: "About",
     },
@@ -1831,7 +1832,7 @@ describe("App Router Production server (startProdServer)", () => {
     },
   ])(
     "keeps middleware's copied request framing headers off $name",
-    async ({ pathname, status, marker, location }) => {
+    async ({ pathname, rsc, status, marker, location }) => {
       // Next.js drops these from middleware's response headers
       // (`ipcForbiddenHeaders` plus `content-length` in resolve-routes.ts),
       // so a request body's length can't frame the response.
@@ -1843,11 +1844,13 @@ describe("App Router Production server (startProdServer)", () => {
           "content-length": String(body.length),
           "content-encoding": "br",
           "keep-alive": "timeout=1",
+          ...(rsc ? { rsc: "1" } : {}),
         },
         body,
       });
 
       expect(res.status).toBe(status);
+      if (rsc) expect(res.headers["content-type"]).toContain("text/x-component");
       expect(res.headers.location).toBe(location);
       expect(res.headers["x-mw-mirrored"]).toBe("1");
       expect(res.headers["content-encoding"]).toBeUndefined();
