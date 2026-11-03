@@ -1,5 +1,15 @@
 # @vinext/cloudflare
 
+## 1.3.3
+
+### Bug Fixes
+
+- **Cloudflare:** reject --config for cloudflare.config.ts deploys and show Wrangler-only flags only for Wrangler projects (#4521)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.3.2
 
 ### Bug Fixes
