@@ -179,14 +179,14 @@ Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET
 
 ## @vinext/cloudflare deploy flags
 
-| Flag                         | Description                                                    |
-| ---------------------------- | -------------------------------------------------------------- |
-| `--env <name>`               | Cloudflare mode for `cloudflare.config.ts`                     |
-| `--preview`                  | Alias for `--env preview` (not a Worker Preview deployment)    |
-| `--vite-config <path>`       | Vite config to build with (default: `vite.config.*`)           |
-| `--skip-build`               | Skip build step (deploy existing output)                       |
-| `--dry-run`                  | Validate setup without building or deploying                   |
-| `--warm-cache`               | Warm discovered routes before promotion (any configured cache) |
-| `--traffic-aware-warm-cache` | Enable traffic-aware cache warming                             |
+| Flag                         | Description                                                       |
+| ---------------------------- | ----------------------------------------------------------------- |
+| `--env <name>`               | Cloudflare mode for `cloudflare.config.ts`                        |
+| `--preview`                  | Alias for `--env preview` (not a Worker Preview deployment)       |
+| `--vite-config <path>`       | Vite config to build with (default: `vite.config.*`)              |
+| `--skip-build`               | Skip build step (deploy existing output)                          |
+| `--dry-run`                  | Validate setup without building or deploying                      |
+| `--warm-cache`               | Warm discovered routes before promotion (built-in cache adapters) |
+| `--traffic-aware-warm-cache` | Enable traffic-aware cache warming                                |
 
 Run `npx @vinext/cloudflare deploy --help` for the full list.
