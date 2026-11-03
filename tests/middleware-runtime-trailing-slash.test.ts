@@ -289,6 +289,41 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
     },
   );
 
+  it("releases the unread body of a request it ends with an empty response", async () => {
+    let resolveCancelled!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      resolveCancelled = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("upload"));
+      },
+      cancel() {
+        resolveCancelled();
+      },
+    });
+    const init: RequestInit = { body, method: "POST" };
+    Object.defineProperty(init, "duplex", { value: "half" });
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        config: { matcher: ["/admin/"] },
+        middleware: () => new Response("unauthorized", { status: 401 }),
+      },
+      request: new Request("http://localhost/admin/", init),
+      trailingSlash: true,
+    });
+
+    expect(result.response?.status).toBe(200);
+    await expect(
+      Promise.race([
+        cancelled.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+      ]),
+    ).resolves.toBe(true);
+  });
+
   it("does not run middleware when only the slash-stripped pathname matches", async () => {
     const run = async (pathname: string) => {
       let pathnameEligible = false;

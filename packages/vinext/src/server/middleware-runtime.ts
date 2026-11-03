@@ -631,6 +631,10 @@ async function executeMiddlewareModule(
   } else if (!requestedMatches) {
     return { continue: true };
   } else if (!strippedMatches) {
+    // Nothing reads the body of a request ended here. Release it so a paused
+    // upload stream cannot hold the connection.
+    const body = options.request.body;
+    if (body && !body.locked) void body.cancel().catch(() => {});
     return { continue: false, response: new Response(null, { status: 200 }) };
   }
 
