@@ -71,41 +71,36 @@ export default defineConfig({
 `@vitejs/plugin-rsc` is an optional peer dependency: it must be installed in the project, but vinext
 registers it for you. Only register it yourself after passing `rsc: false` to `vinext()`.
 
-In most cases `npx @vinext/cloudflare deploy` generates this automatically. Only use manual config when customizing the worker entry or adding bindings.
+`vinext init --platform=cloudflare` generates this config, together with the cache and image adapters you select. Only write it by hand when customizing the setup.
 
-## wrangler.jsonc — Cloudflare Workers
+## cloudflare.config.ts — Cloudflare Workers
 
-Minimal config for deployment:
+`vinext init --platform=cloudflare` generates this file for `cf` and Cloudflare Vite plugin v2. It is the deployment source of truth. With `--cdn-cache=none --image-optimization=none`, it looks like this:
 
-```jsonc
-{
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "my-app",
-  "compatibility_date": "2026-02-12",
-  "compatibility_flags": ["nodejs_compat"],
-  "main": "vinext/server/app-router-entry",
-  "assets": {
-    "not_found_handling": "none",
-  },
-}
+```ts
+import { bindings, defineConfig, defineWorker } from "cf/config";
+
+export default defineConfig({
+  worker: defineWorker({
+    name: "my-app",
+    entrypoint: "vinext/server/fetch-handler",
+    compatibilityDate: "2026-11-02",
+    compatibilityFlags: ["nodejs_compat"],
+    assets: {
+      htmlHandling: "none",
+      notFoundHandling: "none",
+      runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"],
+    },
+    env: {
+      ASSETS: bindings.assets(),
+    },
+  }),
+});
 ```
 
-For custom worker entries (e.g., adding KV cache, image optimization bindings):
+`--image-optimization=cloudflare-images` adds `IMAGES: bindings.images()`, and `--data-cache=kv` adds `VINEXT_KV_CACHE: bindings.kv()`. Response Store and Workers Cache setups also spread a helper's config from `@vinext/cloudflare/cache/config` into `defineWorker` (its `cache`, and `exports` where the helper defines them, as well as its `env` bindings).
 
-```jsonc
-{
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "my-app",
-  "compatibility_date": "2026-02-12",
-  "compatibility_flags": ["nodejs_compat"],
-  "main": "./worker/index.ts",
-  "assets": {
-    "not_found_handling": "none",
-    "binding": "ASSETS",
-  },
-  "images": { "binding": "IMAGES" },
-}
-```
+For a custom Worker entry, init sets `entrypoint` to `./worker/index.ts` (or `.js`) when that file exists. Unless `next.config` sets `output: "export"` (static exports serve their pages from assets before the Worker runs), the entry must hand requests to `vinext/server/fetch-handler`, or every page returns 404.
 
 ## Accessing Cloudflare Bindings
 
@@ -131,22 +126,20 @@ export async function GET() {
 }
 ```
 
-Define bindings in `wrangler.jsonc`:
+Define bindings in the Worker's `env` in `cloudflare.config.ts`:
 
-```jsonc
-{
-  "name": "my-app",
-  "compatibility_date": "2026-02-12",
-  "compatibility_flags": ["nodejs_compat"],
-  "main": "vinext/server/app-router-entry",
-  "d1_databases": [{ "binding": "DB", "database_name": "my-db", "database_id": "..." }],
-  "kv_namespaces": [{ "binding": "CACHE", "id": "..." }],
-  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "my-bucket" }],
-  "ai": { "binding": "AI" },
-}
+```ts
+import { bindings } from "cf/config";
+
+env: {
+  // ...existing bindings
+  DB: bindings.d1({ name: "my-db" }),
+  CACHE: bindings.kv(),
+  BUCKET: bindings.r2({ name: "my-bucket" }),
+},
 ```
 
-Run `wrangler types` to generate TypeScript types for the `env` object.
+Add `.cloudflare/types` to the `include` list in `tsconfig.json`. Binding types are generated there during dev and build; run `cf workers types` before a standalone type-check.
 
 Do NOT use `getPlatformProxy()`, `getRequestContext()`, or custom worker entries with `fetch(request, env)`. These are older patterns. `cloudflare:workers` is the recommended approach.
 
@@ -186,11 +179,14 @@ Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET
 
 ## @vinext/cloudflare deploy flags
 
-| Flag                         | Description                              |
-| ---------------------------- | ---------------------------------------- |
-| `--preview`                  | Deploy to preview environment            |
-| `--name <name>`              | Override worker name (Wrangler only)     |
-| `--skip-build`               | Skip build step (deploy existing output) |
-| `--dry-run`                  | Generate config without deploying        |
-| `--warm-cache`               | Warm discovered routes before promotion  |
-| `--traffic-aware-warm-cache` | Enable traffic-aware cache warming       |
+| Flag                         | Description                                                       |
+| ---------------------------- | ----------------------------------------------------------------- |
+| `--env <name>`               | Cloudflare mode for `cloudflare.config.ts`                        |
+| `--preview`                  | Alias for `--env preview` (not a Worker Preview deployment)       |
+| `--vite-config <path>`       | Vite config to build with (default: `vite.config.*`)              |
+| `--skip-build`               | Skip build step (deploy existing output)                          |
+| `--dry-run`                  | Validate setup without building or deploying                      |
+| `--warm-cache`               | Warm discovered routes before promotion (built-in cache adapters) |
+| `--traffic-aware-warm-cache` | Enable traffic-aware cache warming                                |
+
+Run `npx @vinext/cloudflare deploy --help` for the full list.
