@@ -52,6 +52,15 @@ test.describe("basePath + trailingSlash", () => {
     expect(outside.status).toBe(404);
   });
 
+  // Next.js tests the matcher on the pathname as requested, where
+  // "/slashed-guard/" accepts it, and again without the terminal slash, where
+  // it does not. It ends such a request with an empty 200 instead of the page.
+  test("ends a request only the slashed middleware matcher accepts with an empty response", async () => {
+    const response = await getRawPath("/docs/slashed-guard/");
+    expect(response.status).toBe(200);
+    expect(response.body).toBe("");
+  });
+
   // Next.js renders the shared getStaticProps /404 for "/404", keeping only
   // the request's trailing slash under trailingSlash:
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts

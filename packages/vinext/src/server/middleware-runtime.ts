@@ -108,6 +108,11 @@ type ExecuteMiddlewareOptions = {
    * second tee whose preserved side would never be consumed.
    */
   requestBodyAlreadyIsolated?: boolean;
+  /**
+   * `shouldRestoreLocaleRootTrailingSlash` for the raw request pathname. Next.js
+   * then tests the as-requested root as `/en/` after default-locale insertion.
+   */
+  restoreLocaleRootTrailingSlash?: boolean;
   request: Request;
   /**
    * The user's `trailingSlash` config. Plumbed into the NextRequest's NextURL
@@ -485,24 +490,25 @@ async function executeMiddlewareModule(
     candidate !== null && options.isDataRequest && !isStaleDataRequest
       ? (nextDataMiddlewareMatchPathname(candidate) ?? candidate)
       : candidate;
-  const encodedMatchPathname = toPageMatcherPathname(
-    prepareMatcherPathname(encodedRequestPathname),
-  );
-  let decodedMatchPathname = encodedMatchPathname;
-  try {
-    if (encodedMatchPathname !== null) {
-      decodedMatchPathname = decodeURIComponent(encodedMatchPathname);
-    } else if (!options.i18nConfig) {
-      // Without i18n, Next.js can discover an encoded basePath on the decoded
-      // matcher attempt. With i18n, default-locale insertion has already made
-      // that path ineligible for the compiled basePath-prefixed matcher.
-      decodedMatchPathname = toPageMatcherPathname(
-        prepareMatcherPathname(decodeURIComponent(encodedRequestPathname)),
-      );
+  const toMatchPathnames = (candidate: string) => {
+    const encoded = toPageMatcherPathname(prepareMatcherPathname(candidate));
+    let decoded = encoded;
+    try {
+      if (encoded !== null) {
+        decoded = decodeURIComponent(encoded);
+      } else if (!options.i18nConfig) {
+        // Without i18n, Next.js can discover an encoded basePath on the decoded
+        // matcher attempt. With i18n, default-locale insertion has already made
+        // that path ineligible for the compiled basePath-prefixed matcher.
+        decoded = toPageMatcherPathname(prepareMatcherPathname(decodeURIComponent(candidate)));
+      }
+    } catch {
+      // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
     }
-  } catch {
-    // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
-  }
+    return { decoded, encoded };
+  };
+  const { decoded: decodedMatchPathname, encoded: encodedMatchPathname } =
+    toMatchPathnames(encodedRequestPathname);
 
   let localeContext: MiddlewareLocaleMatchContext | undefined;
   if (isStaleDataRequest) {
@@ -542,9 +548,40 @@ async function executeMiddlewareModule(
     decodedMatchPathname !== null &&
     decodedMatchPathname !== encodedMatchPathname &&
     matchesMiddlewarePathname(decodedMatchPathname, matcher, options.i18nConfig, localeContext);
-  if (encodedPathMatches || decodedPathMatches) {
-    options.onPathMatch?.();
+  // Next.js's router server first tests the pathname as requested, terminal
+  // slash included, and hands a match to the render server, whose test above
+  // strips the slash. Middleware runs only when both tests accept the request.
+  // A source that keeps a terminal slash ("/admin/", "/admin/(.*)") matches
+  // /admin/ only in the first test, and the render server then ends the
+  // request with an empty 200 instead of routing it.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/next-server.ts
+  // Under i18n, the router server also restores the root's slash after
+  // inserting the default locale, so it tests `/en/` where the render server
+  // tests `/en`.
+  const slashedRequestPathname = normalizePath(requestPathname);
+  const hasTerminalSlash = slashedRequestPathname !== encodedRequestPathname;
+  const requestedLocaleContext: MiddlewareLocaleMatchContext | undefined =
+    options.restoreLocaleRootTrailingSlash && localeContext?.kind === "defaulted"
+      ? { ...localeContext, restoreRootTrailingSlash: true }
+      : localeContext;
+  const requestedDiffers = hasTerminalSlash || requestedLocaleContext !== localeContext;
+  const slashedMatchPathnames: string[] = [];
+  if (requestedDiffers) {
+    const { decoded, encoded } = hasTerminalSlash
+      ? toMatchPathnames(slashedRequestPathname)
+      : { decoded: decodedMatchPathname, encoded: encodedMatchPathname };
+    if (encoded !== null) slashedMatchPathnames.push(encoded);
+    if (decoded !== null && decoded !== encoded) slashedMatchPathnames.push(decoded);
   }
+  // A request the as-requested test rejects is routed whatever its headers,
+  // so only that test decides pathname eligibility.
+  const requestedPathMatches = requestedDiffers
+    ? slashedMatchPathnames.some((candidate) =>
+        matchesMiddlewarePathname(candidate, matcher, options.i18nConfig, requestedLocaleContext),
+      )
+    : encodedPathMatches || decodedPathMatches;
+  if (requestedPathMatches) options.onPathMatch?.();
 
   const encodedMatches =
     encodedMatchPathname !== null &&
@@ -567,8 +604,26 @@ async function executeMiddlewareModule(
       localeContext,
     );
 
-  if (!encodedMatches && !decodedMatches) {
+  const strippedMatches = encodedMatches || decodedMatches;
+  const requestedMatches = requestedDiffers
+    ? slashedMatchPathnames.some((candidate) =>
+        matchesMiddleware(
+          candidate,
+          matcher,
+          options.request,
+          options.i18nConfig,
+          requestedLocaleContext,
+        ),
+      )
+    : strippedMatches;
+  if (!requestedMatches) {
     return { continue: true };
+  } else if (!strippedMatches) {
+    // Nothing reads the body of a request ended here. Release it so a paused
+    // upload stream cannot hold the connection.
+    const body = options.request.body;
+    if (body && !body.locked) void body.cancel().catch(() => {});
+    return { continue: false, response: new Response(null, { status: 200 }) };
   }
 
   options.onMatch?.();

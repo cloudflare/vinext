@@ -7330,6 +7330,7 @@ export const loadServerActionClient = ${
                         pathname,
                         opts.isStaleDataRequest,
                         nextConfig?.skipTrailingSlashRedirect,
+                        opts.restoreLocaleRootTrailingSlash,
                       );
 
                       // Forward middleware context to the RSC entry so it can

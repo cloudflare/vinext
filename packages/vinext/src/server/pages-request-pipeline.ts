@@ -306,7 +306,11 @@ export type PagesPipelineDeps = {
     | ((
         request: Request,
         ctx: unknown,
-        opts: { isDataRequest: boolean; isStaleDataRequest?: boolean },
+        opts: {
+          isDataRequest: boolean;
+          isStaleDataRequest?: boolean;
+          restoreLocaleRootTrailingSlash?: boolean;
+        },
       ) => Promise<MiddlewareResult>)
     | null;
   /** Original URL presented to middleware when URL normalization is disabled. */
@@ -623,6 +627,7 @@ export async function runPagesRequest(
     const result = await deps.runMiddleware(deps.middlewareRequest ?? request, deps.ctx ?? null, {
       isDataRequest,
       isStaleDataRequest: isDataRequest && !!deps.dataNotFoundResponse,
+      restoreLocaleRootTrailingSlash: deps.restoreLocaleRootTrailingSlash,
     });
 
     if (deps.recordCacheability !== false && result.pathnameEligible) {

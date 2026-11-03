@@ -214,6 +214,7 @@ import {
 } from "./app-response-header-provenance.js";
 import { traceAppPageRender } from "./app-page-tracing.js";
 import { runOutsideWorkStoreScope } from "vinext/shims/internal/work-store-scope";
+import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { setFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
@@ -379,6 +380,8 @@ type RunAppMiddlewareOptions = {
   isDataRequest: boolean;
   middlewareRequest?: Request;
   request: Request;
+  /** `shouldRestoreLocaleRootTrailingSlash` for the raw request pathname. */
+  restoreLocaleRootTrailingSlash?: boolean;
   validateExternalRewriteRequest: () => Promise<Response | null>;
 };
 
@@ -1330,6 +1333,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       isDataRequest: isMiddlewareDataRequest,
       middlewareRequest: isolatedMiddlewareRequest,
       request: userlandRequest,
+      restoreLocaleRootTrailingSlash,
       validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
     });
     if (!dispatchResponseStage && middlewareResult.pathnameEligible) {
@@ -2028,6 +2032,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             hadBasePath: resolvedPathnameHasBasePath,
             isDataRequest: isMiddlewareDataRequest,
             request: sourceMiddlewareRequest,
+            // From the spelling a direct request uses: a basePath root drops
+            // its slash in `sourceUrl`, while a direct request keeps `/docs/`.
+            restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
+              normalizePathTrailingSlash(sourceUrlPathname, options.trailingSlash ?? false),
+              options,
+            ),
             validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
           }),
         );
@@ -2062,6 +2072,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         );
       }
       if (sourceMiddlewareResult.kind === "response") {
+        if (request.body && !request.body.locked) {
+          void request.body.cancel().catch(() => {});
+        }
         options.clearRequestContext();
         return sourceMiddlewareResult.response;
       }
