@@ -485,6 +485,64 @@ test("useSearchParams() outside Suspense fails an on-demand static path", async 
   }
 });
 
+// Next.js renders an on-demand ISR path at runtime as `next build` would, so a
+// render that reports an error, even one a Suspense boundary caught, is a 500
+// it never stores. A live miss here streams before the error, but no backend
+// stores either part of it, while the route's other paths are stored.
+test("an on-demand path whose render reports an error is never stored", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(120_000);
+
+  const id = randomUUID();
+  const renderIds = { failing: [] as string[][], stored: [] as string[][] };
+  const readParts = async (path: string) => {
+    const ids: string[] = [];
+    for (const [url, headers] of [
+      [path, { accept: "text/html" }],
+      [`${path}?_rsc`, RSC_HEADERS],
+    ] as const) {
+      const response = await request.get(`${baseURL}${url}`, { headers });
+      const trace = JSON.stringify({ backend, headers: response.headers() });
+      expect(response.status(), trace).toBe(200);
+      ids.push(cachedPageRenderId(await response.text()));
+    }
+    return ids;
+  };
+  const isStable = (reads: string[][]) =>
+    reads.length > 1 && reads.at(-1)!.every((renderId, part) => renderId === reads.at(-2)![part]);
+
+  // The stored path proves this backend stores both parts of an on-demand
+  // path in time.
+  await expect
+    .poll(
+      async () => {
+        renderIds.failing.push(await readParts(`/render-error/throw-${id}`));
+        renderIds.stored.push(await readParts(`/render-error/ok-${id}`));
+        return isStable(renderIds.stored);
+      },
+      // KV caches a miss's "not found" read in its location for up to 60s.
+      { intervals: [1_000], timeout: 75_000 },
+    )
+    .toBe(true);
+  for (const part of [0, 1]) {
+    const ids = renderIds.failing.map((reads) => reads[part]);
+    expect(new Set(ids).size, JSON.stringify({ backend, part })).toBe(ids.length);
+  }
+
+  // A warm-up renders the whole page before it answers, so it gets the 500.
+  if (hasResponseCache) {
+    const warmup = await request.get(`${baseURL}/render-error/throw-${randomUUID()}`, {
+      headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    await warmup.dispose();
+    expect(warmup.status(), JSON.stringify({ backend, headers: warmup.headers() })).toBe(500);
+  }
+});
+
 test("useSearchParams() server-renders the real query once the page is dynamic", async ({
   baseURL,
   request,

@@ -3965,6 +3965,135 @@ describe("ISR storage of a page's special error", () => {
   });
 });
 
+// Next.js renders an ISR page at runtime as it does in `next build`, so a render
+// that reports an error, even one a Suspense boundary caught, throws: the
+// request gets a 500 and nothing is stored.
+// Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
+// (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
+describe("runtime ISR renders that report an error", () => {
+  const suspendedFailure = (
+    options: { onError?: (error: unknown, ...rest: unknown[]) => unknown } | undefined,
+  ) => {
+    let sent = false;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) {
+          // A Suspense boundary's error, after the response started.
+          options?.onError?.(new Error("suspended failure"), undefined, undefined);
+          controller.close();
+          return;
+        }
+        controller.enqueue(new TextEncoder().encode("flight-data"));
+        sent = true;
+      },
+    });
+  };
+
+  for (const isRscRequest of [false, true]) {
+    it(`streams a live miss but never stores it (${isRscRequest ? "RSC" : "HTML"})`, async () => {
+      const common = createCommonOptions();
+
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isProduction: true,
+        isRscRequest,
+        renderToReadableStream(_element, options) {
+          return suspendedFailure(options);
+        },
+        revalidateSeconds: 60,
+      });
+
+      expect(response.status).toBe(200);
+      await response.arrayBuffer();
+      await Promise.all(common.waitUntilPromises);
+      expect(common.isrSet).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const isRscRequest of [false, true]) {
+    it(`never admits a live miss to a CDN cache (${isRscRequest ? "RSC" : "HTML"})`, async () => {
+      const admit = async (reportsError: boolean) => {
+        const common = createCommonOptions();
+        const state: RouteCacheabilityState = {
+          captureDeadlineAt: Date.now() + 10_000,
+          mode: "admit",
+          route: { kind: "app-page", pattern: "/posts/[slug]" },
+        };
+        const executionContext: ExecutionContextLike = { waitUntil() {} };
+        Reflect.set(executionContext, CACHEABILITY_REQUEST_STATE, state);
+        const requestContext = createRequestContext({
+          executionContext,
+          headersContext: headersContextFromRequest(new Request("https://example.test/posts/post")),
+        });
+        const response = await runWithRequestContext(requestContext, () =>
+          renderAppPageLifecycle({
+            ...common.options,
+            isProduction: true,
+            isRscRequest,
+            renderToReadableStream(_element, options) {
+              return reportsError ? suspendedFailure(options) : createStream(["flight-data"]);
+            },
+            revalidateSeconds: 60,
+          }),
+        );
+        await response.arrayBuffer();
+        return state.completion;
+      };
+
+      await expect(admit(true)).resolves.toMatchObject({
+        cacheable: false,
+        reason: "render reported an error",
+      });
+      await expect(admit(false)).resolves.toMatchObject({ cacheable: true });
+    });
+  }
+
+  it("answers a render no client waits on with a 500 it never stores", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      renderToReadableStream(_element, options) {
+        options?.onError?.(new Error("suspended failure"), undefined, undefined);
+        return createStream(["flight-data"]);
+      },
+      renderWholeDocument: true,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("stores a render whose only error is a navigation signal", async () => {
+    const common = createCommonOptions();
+    const notFoundError = Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      renderToReadableStream(_element, options) {
+        options?.onError?.(notFoundError, undefined, undefined);
+        return createStream(["flight-data"]);
+      },
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).toHaveBeenCalled();
+  });
+});
+
 describe("routes that are not statically generated", () => {
   // Next.js classifies a dynamic-segment route without generateStaticParams as
   // dynamic (ƒ). A page-level "use cache" + cacheLife still reuses its data

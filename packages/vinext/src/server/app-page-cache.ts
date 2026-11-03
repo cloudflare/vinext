@@ -83,6 +83,8 @@ type AppPageCacheRenderResult = {
    * matched route's read seed, as when the render regenerated that route.
    */
   revalidateSeconds?: number | null;
+  /** The first error the render reported that Next.js never stores a render with. */
+  reportedError?: { error: unknown };
   tags: string[];
   usedDynamicApi: boolean;
 };
@@ -684,6 +686,10 @@ export async function readAppPageCacheResponse(
               "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
           );
         }
+        // And, as in `next build`, one whose render reported an error throws it.
+        // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
+        // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
+        if (revalidatedPage.reportedError) throw revalidatedPage.reportedError.error;
         // An RSC request whose shell's special error has no document of its
         // own stores its RSC entry alone.
         const documentKey = options.isRscRequest && revalidatedPage.html === "" ? null : htmlKey;

@@ -30,6 +30,7 @@ import { readStreamAsText } from "../utils/text-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
+import { isPrerenderBuildFailingError } from "./prerender-render-error.js";
 
 type AppPageRenderableElement = ReactNode | Record<string, ReactNode>;
 type AppPageCacheRoute = {
@@ -96,6 +97,8 @@ export type RenderAppPageCacheArtifactsResult = {
   rscRenderObservation?: ReturnType<typeof createAppPageRenderObservation>;
   /** The status of a render whose shell ended in a special error. */
   status?: number;
+  /** The first error the render reported that Next.js never stores a render with. */
+  reportedError?: { error: unknown };
   tags: string[];
   /** The render used a dynamic API, so its output must not be stored. */
   usedDynamicApi: boolean;
@@ -119,9 +122,16 @@ async function renderAppPageCacheArtifactsImpl(
   options: RenderAppPageCacheArtifactsOptions,
   renderSpan: FrameworkSpan,
 ): Promise<RenderAppPageCacheArtifactsResult> {
+  // As in `next build`, Next.js fails an ISR render that reports an error,
+  // even one a Suspense boundary caught, so a regeneration stores nothing.
+  let reportedError: { error: unknown } | undefined;
+  const noteError = (error: unknown): void => {
+    if (!reportedError && isPrerenderBuildFailingError(error)) reportedError = { error };
+  };
   const rscStream = options.renderToReadableStream(options.element, {
     onError(error, requestInfo, errorContext) {
       recordAppPageRenderError(renderSpan, error);
+      noteError(error);
       return options.onError(error, requestInfo, errorContext);
     },
   });
@@ -155,11 +165,13 @@ async function renderAppPageCacheArtifactsImpl(
           options.onSsrError && options.isCapturedRscError
             ? createAppPageSsrErrorHandler((error) => {
                 recordAppPageRenderError(renderSpan, error);
+                noteError(error);
                 return options.onSsrError?.(error);
               }, options.isCapturedRscError)
             : options.onSsrError
               ? (error) => {
                   recordAppPageRenderError(renderSpan, error);
+                  noteError(error);
                   return options.onSsrError?.(error);
                 }
               : undefined,
@@ -252,6 +264,7 @@ async function renderAppPageCacheArtifactsImpl(
     ...(specialErrorDocument
       ? { headers: specialErrorDocument.headers, status: specialErrorDocument.status }
       : {}),
+    ...(reportedError ? { reportedError } : {}),
     tags,
     usedDynamicApi,
     cacheControl:

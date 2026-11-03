@@ -29,6 +29,7 @@ import {
   captureRouteCacheabilityResponsePolicy,
   deferRouteCacheability,
   isRouteCacheabilityEvaluation,
+  isRouteCacheabilityProbe,
   type RouteCacheabilityOutcome,
 } from "vinext/shims/cacheability-classification";
 import { getCdnCacheAdapter, type CdnAppPageDocument } from "vinext/shims/cdn-cache";
@@ -67,6 +68,8 @@ type FinalizeAppPageCacheabilityEvaluationOptions = {
    * cacheable even when a cacheLife resolves during the render.
    */
   isStaticEligible: boolean;
+  /** Whether the render reported an error, which Next.js never stores. */
+  renderReportedError?: () => boolean;
   /** An RSC render's status, from its document's shell. */
   resolveRscRenderStatus?: () => Promise<AppPageRscRenderStatus>;
   revalidateSeconds: number | null;
@@ -95,6 +98,8 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   interceptionId?: string | null;
   omitPendingDynamicCacheState?: boolean;
   preserveClientResponseHeaders?: boolean;
+  /** Whether the render reported an error, which Next.js never stores. */
+  renderReportedError?: () => boolean;
   expireSeconds?: number;
   isStaticEligible: boolean;
   revalidateSeconds: number | null;
@@ -130,6 +135,8 @@ type ScheduleAppPageRscCacheWriteOptions = {
   interceptionId?: string | null;
   mountedSlotsHeader?: string | null;
   omitPendingDynamicCacheState?: boolean;
+  /** Whether the render reported an error, which Next.js never stores. */
+  renderReportedError?: () => boolean;
   renderMode?: AppRscRenderMode;
   /**
    * The render's status, from its document's shell, and the page's document
@@ -312,6 +319,9 @@ function finalizeEvaluatedAppPageResponse(
         dynamicUsage: true,
         reason: "dynamic API used during render",
       };
+    } else if (options.renderReportedError?.() === true && !isRouteCacheabilityProbe()) {
+      // Only this render is unstorable. The deploy probe classifies the route.
+      ineligible = { cacheable: false, reason: "render reported an error" };
     } else if (options.isStaticEligible === false) {
       ineligible = { cacheable: false, reason: "route is not statically generated" };
     } else if (
@@ -423,6 +433,10 @@ export function finalizeAppPageHtmlCacheResponse(
         options.consumeDynamicUsage()
       ) {
         options.isrDebug?.("HTML cache write skipped (dynamic usage during render)", htmlKey);
+        return;
+      }
+      if (options.renderReportedError?.()) {
+        options.isrDebug?.("HTML cache write skipped (render reported an error)", htmlKey);
         return;
       }
 
@@ -573,6 +587,10 @@ export function scheduleAppPageRscCacheWrite(
 
       if (options.consumeDynamicUsage()) {
         options.isrDebug?.("RSC cache write skipped (dynamic usage during render)", rscKey);
+        return;
+      }
+      if (options.renderReportedError?.()) {
+        options.isrDebug?.("RSC cache write skipped (render reported an error)", rscKey);
         return;
       }
 

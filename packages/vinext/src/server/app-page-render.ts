@@ -745,12 +745,13 @@ async function renderAppPageLifecycleImpl(
       : null;
   // As in `next build`, a prerender of a route Next.js prerenders fails the
   // build when its render reports an error, unless the render turned dynamic.
-  // A fallback shell's own abort ends its render on purpose.
+  // Next.js renders an ISR page at runtime the same way, so such a render is
+  // never stored. A fallback shell's own abort ends its render on purpose.
   // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
   // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
   const prerenderRenderErrors = createPrerenderRenderErrorTracker(
     () =>
-      options.isPrerender === true &&
+      (options.isPrerender === true || options.isProduction) &&
       options.isStaticEligible &&
       options.pprFallbackShellSignal?.aborted !== true,
   );
@@ -758,7 +759,8 @@ async function renderAppPageLifecycleImpl(
     response: Response,
     // Peeks, so the read leaves the render's later dynamic-usage checks as they were.
     isDynamic: () => boolean = () => dynamicUsageObserved || peekRenderDynamicUsage(),
-  ): Response => prerenderRenderErrors.finalize(response, isDynamic);
+  ): Response =>
+    options.isPrerender === true ? prerenderRenderErrors.finalize(response, isDynamic) : response;
   const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
     if (renderSpan) recordAppPageRenderError(renderSpan, error);
     prerenderRenderErrors.note(error);
@@ -1173,6 +1175,7 @@ async function renderAppPageLifecycleImpl(
       interceptionContext: options.interceptionContext,
       interceptionId: options.interceptionId,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      renderReportedError: prerenderRenderErrors.reported,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
       resolveRscRenderStatus,
@@ -1308,6 +1311,7 @@ async function renderAppPageLifecycleImpl(
         revalidateSeconds,
       }),
       linkHeader: write.linkHeader,
+      renderReportedError: prerenderRenderErrors.reported,
       status: write.status,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
@@ -1717,7 +1721,14 @@ async function renderAppPageLifecycleImpl(
     responseKind: "html",
   });
 
-  if (htmlRender.shellErrorRecovered) {
+  // A render no client waits on, such as a warm-up or a regeneration, is
+  // whole by now. As in Next.js, one that reported an error is a 500 that
+  // nothing stores.
+  const wholeRenderReportedError =
+    options.renderWholeDocument === true &&
+    options.isPrerender !== true &&
+    prerenderRenderErrors.failsBuild(() => dynamicUsedDuringRender);
+  if (htmlRender.shellErrorRecovered || wholeRenderReportedError) {
     const response = buildAppPageHtmlResponse(safeHtmlStream, {
       cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       draftCookie,
@@ -1775,6 +1786,7 @@ async function renderAppPageLifecycleImpl(
       return dynamicUsedBeforeContextCleanup;
     },
     consumeDynamicUsage: consumeRenderDynamicUsage,
+    renderReportedError: prerenderRenderErrors.reported,
     consumeRenderObservationState,
     getPageTags() {
       return options.getPageTags();

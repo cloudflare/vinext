@@ -2858,7 +2858,11 @@ describe("app page regeneration failures", () => {
     });
   }
 
-  function freshPage(overrides: { cacheControl?: CacheControlMetadata; usedDynamicApi: boolean }) {
+  function freshPage(overrides: {
+    cacheControl?: CacheControlMetadata;
+    reportedError?: { error: unknown };
+    usedDynamicApi: boolean;
+  }) {
     return {
       ...queryInvariantRegenObservations(),
       html: "<h1>fresh</h1>",
@@ -2873,6 +2877,8 @@ describe("app page regeneration failures", () => {
     { failure: "throws", isRscRequest: true },
     { failure: "turns dynamic", isRscRequest: false },
     { failure: "turns dynamic", isRscRequest: true },
+    { failure: "reports an error", isRscRequest: false },
+    { failure: "reports an error", isRscRequest: true },
   ] as const)(
     "serves stale and re-stores only its own key when a regeneration $failure (RSC request: $isRscRequest)",
     async ({ failure, isRscRequest }) => {
@@ -2893,6 +2899,13 @@ describe("app page regeneration failures", () => {
         isrSet,
         async renderFreshPageForCache() {
           if (failure === "throws") throw new Error("regeneration failed");
+          // A Suspense boundary's error, which the page still renders around.
+          if (failure === "reports an error") {
+            return freshPage({
+              reportedError: { error: new Error("suspended failure") },
+              usedDynamicApi: false,
+            });
+          }
           return freshPage({ usedDynamicApi: true });
         },
         scheduled,
@@ -2902,7 +2915,9 @@ describe("app page regeneration failures", () => {
       await expect(scheduled[0]()).rejects.toThrow(
         failure === "throws"
           ? "regeneration failed"
-          : "Page changed from static to dynamic at runtime /stale",
+          : failure === "reports an error"
+            ? "suspended failure"
+            : "Page changed from static to dynamic at runtime /stale",
       );
       expect(isrSet).toHaveBeenCalledOnce();
       const [key, data, policy] = isrSet.mock.calls[0];
