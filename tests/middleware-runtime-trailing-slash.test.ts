@@ -348,23 +348,24 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
     expect(unslashed.result.response?.status).toBe(401);
   });
 
-  it.each(["/admin/", "/admin"])(
-    "runs middleware for a stripped .rsc payload URL when source %s matches either spelling",
-    async (source) => {
-      const result = await executeMiddleware({
-        isProxy: false,
-        module: {
-          config: { matcher: [source] },
-          middleware: () => new Response("unauthorized", { status: 401 }),
-        },
-        request: new Request("http://localhost/admin/"),
-        rscSuffix: true,
-        trailingSlash: true,
-      });
+  // `/admin/.rsc` has no terminal slash, so both passes test it whole. Like
+  // Next.js's compiled matcher, a source permits the `.rsc` suffix after it.
+  it.each([
+    ["/admin/", 401],
+    ["/other/", undefined],
+  ])("matches /admin/.rsc whole for source %s", async (source, status) => {
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        config: { matcher: [source] },
+        middleware: () => new Response("unauthorized", { status: 401 }),
+      },
+      request: new Request("http://localhost/admin/.rsc"),
+      trailingSlash: true,
+    });
 
-      expect(result.response?.status).toBe(401);
-    },
-  );
+    expect(result.response?.status).toBe(status);
+  });
 
   it("applies has conditions to the as-requested matcher test", async () => {
     const run = (search: string) =>

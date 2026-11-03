@@ -113,12 +113,6 @@ type ExecuteMiddlewareOptions = {
    * then tests the as-requested root as `/en/` after default-locale insertion.
    */
   restoreLocaleRootTrailingSlash?: boolean;
-  /**
-   * App Router removed a `.rsc` transport suffix from the request pathname.
-   * Next.js matches `/admin/.rsc` whole, with the suffix permitted by its
-   * compiled matcher, so the slash before the suffix is not a terminal slash.
-   */
-  rscSuffix?: boolean;
   request: Request;
   /**
    * The user's `trailingSlash` config. Plumbed into the NextRequest's NextURL
@@ -587,9 +581,7 @@ async function executeMiddlewareModule(
         matchesMiddlewarePathname(candidate, matcher, options.i18nConfig, requestedLocaleContext),
       )
     : encodedPathMatches || decodedPathMatches;
-  if (requestedPathMatches || (options.rscSuffix && (encodedPathMatches || decodedPathMatches))) {
-    options.onPathMatch?.();
-  }
+  if (requestedPathMatches) options.onPathMatch?.();
 
   const encodedMatches =
     encodedMatchPathname !== null &&
@@ -624,11 +616,7 @@ async function executeMiddlewareModule(
         ),
       )
     : strippedMatches;
-  if (options.rscSuffix) {
-    // Run middleware when either spelling matches. A `.rsc` payload that
-    // vinext serves must never skip middleware its page spelling would run.
-    if (!requestedMatches && !strippedMatches) return { continue: true };
-  } else if (!requestedMatches) {
+  if (!requestedMatches) {
     return { continue: true };
   } else if (!strippedMatches) {
     // Nothing reads the body of a request ended here. Release it so a paused

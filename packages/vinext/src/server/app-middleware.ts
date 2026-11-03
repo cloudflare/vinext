@@ -43,8 +43,6 @@ export type ApplyAppMiddlewareOptions = {
   request: Request;
   /** Forwarded to `executeMiddleware`. */
   restoreLocaleRootTrailingSlash?: boolean;
-  /** Forwarded to `executeMiddleware`. */
-  rscSuffix?: boolean;
   validateExternalRewriteRequest?: () => Promise<Response | null>;
   /**
    * Forwarded to `executeMiddleware` so the NextRequest exposes a NextURL with
@@ -386,7 +384,6 @@ export async function applyAppMiddleware(
         requestBodyAlreadyIsolated: true,
         request: middlewareRequest,
         restoreLocaleRootTrailingSlash: options.restoreLocaleRootTrailingSlash,
-        rscSuffix: options.rscSuffix,
         skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
         trailingSlash: options.trailingSlash,
       });
