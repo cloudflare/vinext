@@ -3,8 +3,8 @@ import { NextResponse } from "next/server";
 // The matcher is written without the basePath; Next.js prefixes it, so it
 // gates only /docs/private/*, /docs/mw-rewrite/* and /docs/docs/*.
 // "/slashed-guard/" keeps its terminal slash, so /docs/slashed-guard/ matches
-// only as requested and gets an empty response without running middleware,
-// as in Next.js.
+// only as requested. vinext runs middleware for it, where Next.js ends the
+// request with an empty 200.
 export function middleware(request) {
   const { pathname } = request.nextUrl;
   // A rewrite destination resolves only under the basePath, so these

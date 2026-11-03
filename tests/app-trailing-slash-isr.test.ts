@@ -51,17 +51,17 @@ describe("App Router trailing-slash ISR with generated static params", () => {
     expect(html).toContain('id="lang">en');
   });
 
-  // Next.js tests the matcher on the pathname as requested, where
-  // "/guarded/(.*)" accepts /guarded/, and again without the terminal slash,
-  // where it does not. It ends such a request with an empty 200.
-  it("ends a request only the slashed middleware matcher accepts with an empty response", async () => {
+  // "/guarded/(.*)" accepts /guarded/ only as requested, slash included.
+  // Next.js then retests without the slash and ends the request with an empty
+  // 200; vinext runs middleware.
+  it("runs middleware for a request only the slashed matcher accepts", async () => {
     // The RSC request follows the cache-busting `_rsc` redirect first.
     for (const headers of [{}, { RSC: "1" }] as Record<string, string>[]) {
       const response = await fetch(`${baseUrl}/guarded/`, { headers });
 
       expect(new URL(response.url).pathname).toBe("/guarded/");
-      expect(response.status).toBe(200);
-      expect(await response.text()).toBe("");
+      expect(response.status).toBe(403);
+      expect(await response.text()).toBe("blocked by middleware");
     }
 
     const nested = await fetch(`${baseUrl}/guarded/inner/`, { redirect: "manual" });

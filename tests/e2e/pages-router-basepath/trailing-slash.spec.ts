@@ -52,13 +52,13 @@ test.describe("basePath + trailingSlash", () => {
     expect(outside.status).toBe(404);
   });
 
-  // Next.js tests the matcher on the pathname as requested, where
-  // "/slashed-guard/" accepts it, and again without the terminal slash, where
-  // it does not. It ends such a request with an empty 200 instead of the page.
-  test("ends a request only the slashed middleware matcher accepts with an empty response", async () => {
+  // "/slashed-guard/" accepts /docs/slashed-guard/ only as requested, slash
+  // included. Next.js then retests without the slash and ends the request with
+  // an empty 200; vinext runs middleware.
+  test("runs middleware for a request only the slashed matcher accepts", async () => {
     const response = await getRawPath("/docs/slashed-guard/");
-    expect(response.status).toBe(200);
-    expect(response.body).toBe("");
+    expect(response.status).toBe(403);
+    expect(response.body).toBe("blocked by middleware");
   });
 
   // Next.js renders the shared getStaticProps /404 for "/404", keeping only
