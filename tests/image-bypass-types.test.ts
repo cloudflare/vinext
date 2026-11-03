@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { isAnimatedImage } from "../packages/vinext/src/server/image-animation.js";
+import { ImageSourceReader } from "../packages/vinext/src/server/image-source-reader.js";
 import {
   handleImageOptimization,
   markImageBuildAsset,
@@ -67,23 +68,70 @@ function riff(chunks: string): Uint8Array<ArrayBuffer> {
 const STATIC_WEBP = riff("VP8 \0\0\0\0");
 const ANIMATED_WEBP = riff("VP8X\0\0\0\0ANIM\0\0\0\0");
 
+/** A stream of `bytes` in chunks of `chunkSize`, counting the chunks pulled. */
+function chunkedSource(bytes: Uint8Array, chunkSize: number) {
+  const source = { pulled: 0, body: null as unknown as ReadableStream<Uint8Array> };
+  let offset = 0;
+  source.body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.byteLength) return controller.close();
+      source.pulled += 1;
+      controller.enqueue(bytes.slice(offset, offset + chunkSize));
+      offset += chunkSize;
+    },
+  });
+  return source;
+}
+
+// A GIF frame whose image data runs to about 2 MiB, past what detection holds.
+const LARGE_GIF_FRAME = [
+  0x2c,
+  ...Array(9).fill(0),
+  2,
+  ...Array.from({ length: 8_000 }, () => [255, ...Array(255).fill(1)]).flat(),
+  0,
+];
+
 describe("isAnimatedImage", () => {
-  it("detects animated GIF, PNG and WebP like Next.js' is-animated", () => {
-    expect(isAnimatedImage(ANIMATED_GIF)).toBe(true);
-    expect(isAnimatedImage(ANIMATED_PNG)).toBe(true);
-    expect(isAnimatedImage(ANIMATED_WEBP)).toBe(true);
+  const isAnimated = async (bytes: Uint8Array) => {
+    // Parse byte by byte as well as whole, so no check depends on chunking.
+    const whole = await isAnimatedImage(
+      new ImageSourceReader(chunkedSource(bytes, Math.max(bytes.byteLength, 1)).body, Infinity),
+    );
+    const bytewise = await isAnimatedImage(
+      new ImageSourceReader(chunkedSource(bytes, 1).body, Infinity),
+    );
+    expect(bytewise).toBe(whole);
+    return whole;
+  };
+
+  it("detects animated GIF, PNG and WebP like Next.js' is-animated", async () => {
+    expect(await isAnimated(ANIMATED_GIF)).toBe(true);
+    expect(await isAnimated(ANIMATED_PNG)).toBe(true);
+    expect(await isAnimated(ANIMATED_WEBP)).toBe(true);
+    const largeGif = new Uint8Array([...GIF_HEADER, ...LARGE_GIF_FRAME, ...GIF_FRAME, 0x3b]);
+    expect(
+      await isAnimatedImage(new ImageSourceReader(chunkedSource(largeGif, 4_093).body, Infinity)),
+    ).toBe(true);
   });
 
-  it("treats single-frame images and other formats as still", () => {
-    expect(isAnimatedImage(STATIC_GIF)).toBe(false);
-    expect(isAnimatedImage(STATIC_PNG)).toBe(false);
-    expect(isAnimatedImage(STATIC_WEBP)).toBe(false);
-    expect(isAnimatedImage(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe(false);
-    expect(isAnimatedImage(new Uint8Array())).toBe(false);
+  it("treats single-frame images and other formats as still", async () => {
+    expect(await isAnimated(STATIC_GIF)).toBe(false);
+    expect(await isAnimated(STATIC_PNG)).toBe(false);
+    expect(await isAnimated(STATIC_WEBP)).toBe(false);
+    expect(await isAnimated(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe(false);
+    expect(await isAnimated(new Uint8Array())).toBe(false);
   });
 
-  it("ends the scan at a truncated PNG chunk", () => {
-    expect(isAnimatedImage(ANIMATED_PNG.subarray(0, PNG_SIGNATURE.length + 30))).toBe(false);
+  it("finds a WebP ANIM chunk split across reads", async () => {
+    const bytes = new Uint8Array(65_536 + 8);
+    bytes.set(STATIC_WEBP);
+    bytes.set([0x41, 0x4e, 0x49, 0x4d], 65_534);
+    expect(await isAnimated(bytes)).toBe(true);
+  });
+
+  it("ends the scan at a truncated PNG chunk", async () => {
+    expect(await isAnimated(ANIMATED_PNG.subarray(0, PNG_SIGNATURE.length + 30))).toBe(false);
   });
 });
 
@@ -191,7 +239,7 @@ describe("handleImageOptimization formats Next.js does not optimize", () => {
     });
   }
 
-  it("transforms a still GIF from its buffered bytes", async () => {
+  it("transforms a still GIF from its replayed bytes", async () => {
     const { handlers: imageHandlers, transformed } = handlers(STATIC_GIF, "image/gif");
     const response = await handleImageOptimization(imageRequest("/still.gif"), imageHandlers);
     expect(response.status).toBe(200);
@@ -200,7 +248,7 @@ describe("handleImageOptimization formats Next.js does not optimize", () => {
     expect(transformed).toEqual([new TextDecoder().decode(STATIC_GIF)]);
   });
 
-  it("falls back to the buffered source when the transform fails", async () => {
+  it("falls back to the replayed source when the transform fails", async () => {
     const response = await handleImageOptimization(imageRequest("/still.png"), {
       fetchAsset: async () =>
         new Response(STATIC_PNG, { status: 200, headers: { "Content-Type": "image/png" } }),
@@ -339,10 +387,18 @@ describe("handleImageOptimization source size limit", () => {
     }
   });
 
-  it("sends a buffered source at the length read, not the one declared", async () => {
+  // An APNG's detection reads it to the end; a source still streaming keeps
+  // the length it declared, as a format served as-is does.
+  it("sends a source read whole at the length read, not the one declared", async () => {
     for (const [bytes, transform] of [
-      [ANIMATED_GIF, transformImage],
-      [STATIC_PNG, async () => Promise.reject(new Error("unsupported"))],
+      [ANIMATED_PNG, transformImage],
+      [
+        STATIC_PNG,
+        async (input: ReadableStream) => {
+          await new Response(input).arrayBuffer();
+          throw new Error("unsupported");
+        },
+      ],
     ] as const) {
       for (const contentLength of ["3", "999"]) {
         const response = await handleImageOptimization(imageRequest, {
@@ -417,7 +473,7 @@ describe("handleImageOptimization source size limit", () => {
     expect(await response.text()).toBe(TOO_LARGE);
   });
 
-  it("stops reading a source once it exceeds the limit", async () => {
+  it("stops reading a source streamed to the optimizer once it exceeds the limit", async () => {
     const chunk = new Uint8Array(1_000_000);
     let enqueued = 0;
     let cancelled = false;
@@ -433,12 +489,80 @@ describe("handleImageOptimization source size limit", () => {
     const response = await handleImageOptimization(imageRequest, {
       fetchAsset: async () =>
         new Response(body, { status: 200, headers: { "Content-Type": "image/png" } }),
-      transformImage,
+      transformImage: async (input) => {
+        await new Response(input).arrayBuffer();
+        return new Response("transformed");
+      },
     });
     expect(response.status).toBe(413);
     expect(await response.text()).toBe(TOO_LARGE);
     expect(cancelled).toBe(true);
     expect(enqueued).toBeLessThanOrEqual(52);
+  });
+});
+
+describe("handleImageOptimization animation detection memory", () => {
+  // Deep equality is slow on megabytes; compare them natively.
+  const sameBytes = (actual: Uint8Array | null, expected: Uint8Array) =>
+    actual !== null && Buffer.from(actual).equals(Buffer.from(expected));
+  const imageRequest = new Request("http://localhost/_next/image?url=%2Fbig&w=640&q=75");
+
+  it("streams a still PNG to the optimizer without reading it ahead", async () => {
+    const bytes = new Uint8Array(5_000_000);
+    bytes.set(STATIC_PNG);
+    const source = chunkedSource(bytes, 65_536);
+    let pulledAtTransform = -1;
+    let received: Uint8Array | null = null;
+    let fetches = 0;
+    const response = await handleImageOptimization(imageRequest, {
+      fetchAsset: async () => {
+        fetches += 1;
+        return new Response(source.body, { status: 200, headers: { "Content-Type": "image/png" } });
+      },
+      transformImage: async (input) => {
+        pulledAtTransform = source.pulled;
+        received = new Uint8Array(await new Response(input).arrayBuffer());
+        return new Response("transformed", { headers: { "Content-Type": "image/webp" } });
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(pulledAtTransform).toBeLessThanOrEqual(2);
+    expect(sameBytes(received, bytes)).toBe(true);
+    expect(fetches).toBe(1);
+  });
+
+  it("fetches a source again once detection has read more than it holds", async () => {
+    const stillWebp = new Uint8Array(3_000_000);
+    stillWebp.set(STATIC_WEBP);
+    const animatedGif = new Uint8Array([...GIF_HEADER, ...LARGE_GIF_FRAME, ...GIF_FRAME, 0x3b]);
+    for (const [bytes, contentType, animated] of [
+      [stillWebp, "image/webp", false],
+      [animatedGif, "image/gif", true],
+    ] as const) {
+      let fetches = 0;
+      let received: Uint8Array | null = null;
+      const response = await handleImageOptimization(imageRequest, {
+        fetchAsset: async () => {
+          fetches += 1;
+          return new Response(chunkedSource(bytes, 65_536).body, {
+            status: 200,
+            headers: { "Content-Type": contentType },
+          });
+        },
+        transformImage: async (input) => {
+          received = new Uint8Array(await new Response(input).arrayBuffer());
+          return new Response("transformed", { headers: { "Content-Type": "image/webp" } });
+        },
+      });
+      expect(response.status, contentType).toBe(200);
+      expect(fetches, contentType).toBe(2);
+      if (animated) {
+        expect(received, contentType).toBeNull();
+        expect(sameBytes(new Uint8Array(await response.arrayBuffer()), bytes)).toBe(true);
+      } else {
+        expect(sameBytes(received, bytes), contentType).toBe(true);
+      }
+    }
   });
 });
 

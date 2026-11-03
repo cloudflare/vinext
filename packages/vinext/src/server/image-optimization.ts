@@ -21,6 +21,7 @@
  */
 
 import { isAnimatedImage } from "./image-animation.js";
+import { ImageSourceReader, ImageSourceTooLargeError } from "./image-source-reader.js";
 import { hasLocalMatch, type LocalPattern } from "./image-local-patterns.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { badRequestResponse } from "./http-error-responses.js";
@@ -100,8 +101,8 @@ export type ImageConfig = {
   /** Least max-age, in seconds, of an image served as-is. Default: 14400. */
   minimumCacheTTL?: number;
   /**
-   * Most bytes read of a GIF, PNG or WebP source buffered for animation
-   * detection before answering 413. Default: 50000000.
+   * Most bytes of a GIF, PNG or WebP source read for optimization before
+   * answering 413. Default: 50000000.
    */
   maximumResponseBody?: number;
 };
@@ -656,11 +657,12 @@ function createPassthroughImageResponse(
   body: BodyInit | null,
   cacheControl: string,
   config?: ImageConfig,
+  readLength: number | null = null,
 ): Response {
   const headers = new Headers(source.headers);
   setImageResponseHeaders(headers, cacheControl, config);
-  // A buffered source is sent at the length read, whatever it declared.
-  if (body instanceof Uint8Array) headers.set("Content-Length", String(body.byteLength));
+  // A source read whole is sent at the length read, whatever it declared.
+  if (readLength !== null) headers.set("Content-Length", String(readLength));
   return new Response(body, { status: 200, headers });
 }
 
@@ -669,45 +671,6 @@ function sourceTooLargeResponse(): Response {
   return new Response('"url" parameter is valid but internal response is invalid', {
     status: 413,
   });
-}
-
-/**
- * Read a source body, or return null once it exceeds `limit` bytes. The body is
- * cancelled without waiting, so a cancellation that fails or never settles
- * cannot hold up or replace the 413.
- */
-async function readBoundedBody(
-  body: ReadableStream<Uint8Array>,
-  declaredLength: string | null,
-  limit: number,
-): Promise<Uint8Array<ArrayBuffer> | null> {
-  const declared = declaredLength === null ? Number.NaN : Number(declaredLength);
-  if (declared > limit) {
-    body.cancel().catch(() => {});
-    return null;
-  }
-  // Read into one buffer, sized by Content-Length when declared, so the
-  // source is held once rather than as chunks plus a copy.
-  let bytes = new Uint8Array(Number.isSafeInteger(declared) && declared >= 0 ? declared : 0);
-  let length = 0;
-  const reader = body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const end = length + value.byteLength;
-    if (end > limit) {
-      reader.cancel().catch(() => {});
-      return null;
-    }
-    if (end > bytes.byteLength) {
-      const grown = new Uint8Array(Math.min(limit, Math.max(end, bytes.byteLength * 2)));
-      grown.set(bytes.subarray(0, length));
-      bytes = grown;
-    }
-    bytes.set(value, length);
-    length = end;
-  }
-  return bytes.subarray(0, length);
 }
 
 /**
@@ -791,35 +754,40 @@ export async function handleImageOptimization(
   }
 
   // Transform if handler provided, otherwise serve original
-  let sourceBytes: Uint8Array<ArrayBuffer> | null = null;
+  let reader: ImageSourceReader | null = null;
   if (handlers.transformImage) {
     try {
-      let body = source.body;
+      let body: ReadableStream<Uint8Array> = source.body;
       // Next.js serves an animated image as-is rather than flattening it to
-      // one frame, which takes reading the whole source, up to the size
-      // Next.js reads at most.
+      // one frame, and answers 413 past the most it reads of a source.
       if (ANIMATABLE_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
-        sourceBytes = await readBoundedBody(
-          source.body,
-          source.headers.get("Content-Length"),
-          imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY,
-        );
-        if (sourceBytes === null) return sourceTooLargeResponse();
-        if (isAnimatedImage(sourceBytes)) {
+        const limit = imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY;
+        if (Number(source.headers.get("Content-Length") ?? Number.NaN) > limit) {
+          source.body.cancel().catch(() => {});
+          return sourceTooLargeResponse();
+        }
+        // Detect animation as the source streams in, then replay the bytes
+        // read, or fetch the source again when too many were read to hold.
+        reader = new ImageSourceReader(source.body, limit);
+        const animated = await isAnimatedImage(reader);
+        let sourceBody = reader.body();
+        if (!sourceBody) {
+          reader.cancel();
+          const refetched = await handlers.fetchAsset(imageUrl, request);
+          if (!refetched.ok || !refetched.body) return invalidImageSourceResponse();
+          reader = new ImageSourceReader(refetched.body, limit);
+          sourceBody = reader.body()!;
+        }
+        if (animated) {
           return createPassthroughImageResponse(
             source,
-            sourceBytes,
+            sourceBody,
             sourceCacheControl,
             imageConfig,
+            reader.completeLength,
           );
         }
-        const bytes = sourceBytes;
-        body = new ReadableStream({
-          start(controller) {
-            controller.enqueue(bytes);
-            controller.close();
-          },
-        });
+        body = sourceBody;
       }
       const transformed = await handlers.transformImage(body, {
         width,
@@ -837,6 +805,9 @@ export async function handleImageOptimization(
 
       return new Response(transformed.body, { status: 200, headers });
     } catch (e) {
+      if (e instanceof ImageSourceTooLargeError || reader?.tooLarge) {
+        return sourceTooLargeResponse();
+      }
       console.error("[vinext] Image optimization error:", e);
     }
   }
@@ -847,12 +818,16 @@ export async function handleImageOptimization(
   const fallbackCacheControl = handlers.transformImage
     ? sourceImageCacheControl(isBuildAsset, null, imageConfig)
     : sourceCacheControl;
+  // A source read whole replays; any other has been read, so a locked body
+  // throws and the source is fetched again.
+  const readLength = reader?.completeLength ?? null;
   try {
     return createPassthroughImageResponse(
       source,
-      sourceBytes ?? source.body,
+      (readLength !== null && reader?.body()) || source.body,
       fallbackCacheControl,
       imageConfig,
+      readLength,
     );
   } catch (e) {
     console.error("[vinext] Image fallback error, refetching source image:", e);
