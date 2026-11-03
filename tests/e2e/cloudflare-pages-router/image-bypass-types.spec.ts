@@ -34,3 +34,24 @@ test.describe("/_next/image formats Next.js does not optimize", () => {
     });
   }
 });
+
+// This Worker configures no image optimizer, so a format Next.js would
+// optimize is served as-is too, with Next.js's image headers.
+test.describe("/_next/image without an image optimizer", () => {
+  test("serves a JPEG as-is", async ({ request }) => {
+    const original = Buffer.from(await (await request.get("/image-still.jpg")).body());
+    const response = await request.get(imagePath("/image-still.jpg"), {
+      headers: { Accept: "image/avif,image/webp,*/*" },
+      maxRedirects: 0,
+    });
+    expect(response.status()).toBe(200);
+    expect(response.headers()["location"]).toBeUndefined();
+    expect(response.headers()["content-type"]).toBe("image/jpeg");
+    expect(Buffer.from(await response.body()).equals(original)).toBe(true);
+    expect(response.headers()["cache-control"]).toBe("public, max-age=14400, must-revalidate");
+    expect(response.headers()["content-security-policy"]).toBe(
+      "script-src 'none'; frame-src 'none'; sandbox;",
+    );
+    expect(response.headers()["x-nextjs-cache"]).toBe("MISS");
+  });
+});
