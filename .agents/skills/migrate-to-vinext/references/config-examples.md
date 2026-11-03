@@ -98,7 +98,7 @@ export default defineConfig({
 });
 ```
 
-`--image-optimization=cloudflare-images` adds `IMAGES: bindings.images()`, and `--data-cache=kv` adds `VINEXT_KV_CACHE: bindings.kv()`. Response Store and Workers Cache setups also spread the bindings from a helper in `@vinext/cloudflare/cache/config`.
+`--image-optimization=cloudflare-images` adds `IMAGES: bindings.images()`, and `--data-cache=kv` adds `VINEXT_KV_CACHE: bindings.kv()`. Response Store and Workers Cache setups also spread a helper's config from `@vinext/cloudflare/cache/config` into `defineWorker` (its `cache`, and `exports` where the helper defines them, as well as its `env` bindings).
 
 For a custom Worker entry, init sets `entrypoint` to `./worker/index.ts` (or `.js`) when that file exists. Unless `next.config` sets `output: "export"` (static exports serve their pages from assets before the Worker runs), the entry must hand requests to `vinext/server/fetch-handler`, or every page returns 404.
 
