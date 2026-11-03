@@ -1986,6 +1986,14 @@ describe("prerender path manifest", () => {
     expect(
       matchesMiddlewareWarmPath("/", enRoot, i18n, { ...slashed, basePath: "/docs.json" }),
     ).toBe(false);
+    // Its data request names the locale, so it reaches middleware as /en/.
+    expect(
+      matchesMiddlewareWarmPath("/", enRoot, i18n, {
+        ...slashed,
+        basePath: "/docs.json",
+        pagesDataTrailingSlash: true,
+      }),
+    ).toBe(true);
   });
 
   it("retains redirect sources only when routing runs in an uncached stage", async () => {

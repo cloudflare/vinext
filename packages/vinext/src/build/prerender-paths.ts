@@ -1311,9 +1311,11 @@ export function matchesMiddlewareWarmPath(
     },
   ];
   if (options.pagesDataTrailingSlash !== undefined) {
+    // The data URL always names the locale (`/_next/data/<id>/en.json`), so
+    // its root page is `/en/` whenever the data spelling is slashed.
     requestSpellings.push({
       pathname: normalizeNextDataPagePathname(encodedPathname, options.pagesDataTrailingSlash),
-      restoreLocaleRootTrailingSlash: false,
+      restoreLocaleRootTrailingSlash: options.pagesDataTrailingSlash,
     });
   }
   const firstSegment = encodedPathname.split("/", 3)[1]?.toLowerCase();
