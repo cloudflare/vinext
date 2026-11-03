@@ -3035,7 +3035,33 @@ describe("init — dependency installation", () => {
       "react-dom": "latest",
     });
     expect(output).toContain(
-      "Added dependencies to dependencies:\n      - react\n      - react-dom",
+      "✓ Upgraded react ^19.0.0 → latest\n    ✓ Upgraded react-dom ^19.0.0 → latest",
+    );
+  });
+
+  it("reports the peerDependencies spec of a React package it upgrades", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: {
+        dependencies: { next: "^15.0.0" },
+        peerDependencies: { react: "^19.0.0", "react-dom": "^19.0.0" },
+      },
+    });
+    setupFakeReact(tmpDir, "19.2.3");
+
+    const { output } = await runInit(tmpDir, {
+      // npm saves the upgraded packages to dependencies.
+      _exec: (cmd) => {
+        if (!cmd.includes('"react@latest"')) return;
+        const pkg = readPkg(tmpDir) as { dependencies: Record<string, string> };
+        pkg.dependencies.react = "^19.3.1";
+        pkg.dependencies["react-dom"] = "^19.3.1";
+        writeFile(tmpDir, "package.json", JSON.stringify(pkg, null, 2));
+      },
+    });
+
+    expect(output).toContain(
+      "✓ Upgraded react ^19.0.0 → ^19.3.1\n    ✓ Upgraded react-dom ^19.0.0 → ^19.3.1",
     );
   });
 
