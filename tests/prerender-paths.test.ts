@@ -1994,6 +1994,11 @@ describe("prerender path manifest", () => {
         pagesDataTrailingSlash: true,
       }),
     ).toBe(true);
+    // That data URL names the build's default locale, never a domain's.
+    const frData = [{ locale: false as const, source: "/fr/r1/((?!.*\\/$).*)" }];
+    const enData = [{ locale: false as const, source: "/en/r1/((?!.*\\/$).*)" }];
+    expect(matchesMiddlewareWarmPath("/r1/x", frData, i18n, unslashedData)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/r1/x", enData, i18n, unslashedData)).toBe(true);
   });
 
   it("retains redirect sources only when routing runs in an uncached stage", async () => {

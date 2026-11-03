@@ -1301,25 +1301,8 @@ export function matchesMiddlewareWarmPath(
       : encodedPathname,
     trailingSlash,
   );
-  const requestSpellings = [
-    {
-      pathname: normalizePathTrailingSlash(encodedPathname, trailingSlash),
-      restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
-        htmlRequestPathname,
-        options,
-      ),
-    },
-  ];
-  if (options.pagesDataTrailingSlash !== undefined) {
-    // The data URL always names the locale (`/_next/data/<id>/en.json`), so
-    // its root page is `/en/` whenever the data spelling is slashed.
-    requestSpellings.push({
-      pathname: normalizeNextDataPagePathname(encodedPathname, options.pagesDataTrailingSlash),
-      restoreLocaleRootTrailingSlash: options.pagesDataTrailingSlash,
-    });
-  }
   const firstSegment = encodedPathname.split("/", 3)[1]?.toLowerCase();
-  const localeContexts: Array<MiddlewareLocaleMatchContext | undefined> = i18n
+  const htmlLocaleContexts: Array<MiddlewareLocaleMatchContext | undefined> = i18n
     ? i18n.locales.some((locale) => locale.toLowerCase() === firstSegment)
       ? [{ kind: "literal" }]
       : Array.from(
@@ -1330,7 +1313,42 @@ export function matchesMiddlewareWarmPath(
           (defaultLocale) => ({ defaultLocale, kind: "defaulted" as const }),
         )
     : [undefined];
-  const matches = (candidate: string, restoreLocaleRootTrailingSlash = false): boolean => {
+  const restoredHtmlLocaleContexts = shouldRestoreLocaleRootTrailingSlash(
+    htmlRequestPathname,
+    options,
+  )
+    ? htmlLocaleContexts.map((localeContext) =>
+        localeContext?.kind === "defaulted"
+          ? { ...localeContext, restoreRootTrailingSlash: true }
+          : localeContext,
+      )
+    : htmlLocaleContexts;
+  const requestSpellings = [
+    {
+      localeContexts: htmlLocaleContexts,
+      pathname: normalizePathTrailingSlash(encodedPathname, trailingSlash),
+      requestedLocaleContexts: restoredHtmlLocaleContexts,
+    },
+  ];
+  if (options.pagesDataTrailingSlash !== undefined) {
+    // The emitted data URL names the build's default locale, which the
+    // runtime then matches as a literal locale segment.
+    const dataLocaleContexts: Array<MiddlewareLocaleMatchContext | undefined> = [
+      i18n ? { kind: "literal" } : undefined,
+    ];
+    requestSpellings.push({
+      localeContexts: dataLocaleContexts,
+      pathname: normalizeNextDataPagePathname(
+        localizePagesDataPath(encodedPathname, i18n),
+        options.pagesDataTrailingSlash,
+      ),
+      requestedLocaleContexts: dataLocaleContexts,
+    });
+  }
+  const matches = (
+    candidate: string,
+    localeContexts: Array<MiddlewareLocaleMatchContext | undefined>,
+  ): boolean => {
     const matchPathnames = [candidate];
     try {
       const decodedPathname = decodeURIComponent(candidate);
@@ -1340,21 +1358,15 @@ export function matchesMiddlewareWarmPath(
     }
     return matchPathnames.some((matchPathname) =>
       localeContexts.some((localeContext) =>
-        matchesMiddlewarePathname(
-          matchPathname,
-          matcher,
-          i18n,
-          restoreLocaleRootTrailingSlash && localeContext?.kind === "defaulted"
-            ? { ...localeContext, restoreRootTrailingSlash: true }
-            : localeContext,
-        ),
+        matchesMiddlewarePathname(matchPathname, matcher, i18n, localeContext),
       ),
     );
   };
   return requestSpellings.some(
     (spelling) =>
-      matches(spelling.pathname, spelling.restoreLocaleRootTrailingSlash) &&
-      (!options.runsMiddleware || matches(removeTrailingSlash(spelling.pathname))),
+      matches(spelling.pathname, spelling.requestedLocaleContexts) &&
+      (!options.runsMiddleware ||
+        matches(removeTrailingSlash(spelling.pathname), spelling.localeContexts)),
   );
 }
 
