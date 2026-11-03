@@ -792,9 +792,21 @@ describe("paired performance benchmarks", () => {
   it("accepts dispatched main artifacts after main advances", () => {
     const workflowSha = "c".repeat(40);
     const repositoryRoot = join(import.meta.dirname, "..");
-    execFileSync("git", ["fetch", "--no-tags", "origin", "main"], {
-      cwd: repositoryRoot,
-    });
+    // In a shallow CI checkout, fetching main without a depth downloads its
+    // whole history, which can outlast the timeout. Fetch only its tip there;
+    // the validator's own fetch then finds it, and a full clone stays full.
+    const shallow =
+      execFileSync("git", ["rev-parse", "--is-shallow-repository"], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+      }).trim() === "true";
+    execFileSync(
+      "git",
+      ["fetch", "--no-tags", ...(shallow ? ["--depth=1"] : []), "origin", "main"],
+      {
+        cwd: repositoryRoot,
+      },
+    );
     const commitSha = execFileSync("git", ["rev-parse", "origin/main"], {
       cwd: repositoryRoot,
       encoding: "utf8",
