@@ -6800,6 +6800,36 @@ describe("createAppRscHandler", () => {
     ]);
   });
 
+  it("tests a default-locale root interception source with its restored slash", async () => {
+    // A direct request for `/` is tested as `/en/` and then `/en`, so a
+    // slash-ending matcher ends it with an empty 200. The source must match the same.
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/", routeSegments: [] });
+    const dispatchMatchedPage = vi.fn(async () => new Response("source"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1/" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        config: { matcher: [{ locale: false, source: "/en/" }] },
+        default: () => new Response("denied", { status: 401 }),
+      },
+      trailingSlash: true,
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1/", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("");
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
   it("authorizes an intercepted Server Action source with the resolved query", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const sourceRoute = createPageRoute({ pattern: "/feed" });

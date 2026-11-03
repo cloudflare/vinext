@@ -2022,6 +2022,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             hadBasePath: resolvedPathnameHasBasePath,
             isDataRequest: isMiddlewareDataRequest,
             request: sourceMiddlewareRequest,
+            // From the basePath-less source: a basePath root drops its slash
+            // in `sourceUrl`, while a direct request for it keeps `/docs/`.
+            restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
+              sourceRequestPathname,
+              options,
+            ),
             validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
           }),
         );
