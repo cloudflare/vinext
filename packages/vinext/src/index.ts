@@ -8658,6 +8658,16 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
+          // Saves each request's raw target before h3 can rewrite req.url. The
+          // dev server checks the raw target itself.
+          if (!nitro.options.dev) {
+            const requestTargetPlugin = resolveRuntimeEntryModule("nitro-request-target-plugin");
+            nitro.options.plugins ??= [];
+            if (!nitro.options.plugins.includes(requestTargetPlugin)) {
+              nitro.options.plugins.push(requestTargetPlugin);
+            }
+          }
+
           nitroPublicFiles = registerNitroPublicFiles(
             nitro.options,
             NITRO_PUBLIC_FILES_PLUGIN,
