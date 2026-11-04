@@ -697,30 +697,6 @@ describe("handleImageOptimization fallback after the optimizer rejects early", (
     expect(fetches).toBe(2);
   });
 
-  it("answers 413 for a source past the limit the optimizer never reads", async () => {
-    const LIMIT = 100;
-    const jpeg = padded([0xff, 0xd8, 0xff], 3 * LIMIT);
-    for (const declares of [null, "20"]) {
-      const response = await handleImageOptimization(
-        imageRequest,
-        {
-          fetchAsset: async () =>
-            new Response(chunkedSource(jpeg, 10).body, {
-              headers: {
-                "Content-Type": "image/jpeg",
-                ...(declares === null ? {} : { "Content-Length": declares }),
-              },
-            }),
-          transformImage: async () =>
-            new Response("transformed", { headers: { "Content-Type": "image/webp" } }),
-        },
-        undefined,
-        { maximumResponseBody: LIMIT },
-      );
-      expect(response.status, String(declares)).toBe(413);
-    }
-  });
-
   it("reads a source fetched again once the optimizer cancelled a read still pending", async () => {
     const LIMIT = 100;
     // JPEG reaches the optimizer as it streams in; PNG through its animation check.

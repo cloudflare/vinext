@@ -917,16 +917,6 @@ async function servePassthroughWithinLimit(
   return servePassthroughWithinLimit(refetched, cacheControl, imageConfig, limit, refetch, true);
 }
 
-/** Read a source to its end, or until it errors past the limit. */
-async function drainImageSource(body: ReadableStream<Uint8Array>): Promise<void> {
-  const reader = body.getReader();
-  try {
-    while (!(await reader.read()).done);
-  } catch {
-    // Past the limit, or a source that failed to read.
-  }
-}
-
 /**
  * Handlers for image optimization I/O operations.
  * Workers provide these callbacks to adapt their specific bindings.
@@ -1043,9 +1033,6 @@ export async function handleImageOptimization(
         format,
         quality,
       });
-      // Next.js reads the whole source before optimizing it, so one the
-      // optimizer never took is read here to hold it to the limit too.
-      if (!body.locked) await drainImageSource(body);
       if (limitedSource?.tooLarge || reader?.tooLarge) {
         transformed.body?.cancel().catch(() => {});
         return sourceTooLargeResponse();
@@ -1135,9 +1122,10 @@ export async function handleImageOptimization(
 export type ImageOptimizer = {
   /**
    * Transform the source image (resize, format, quality). `body` errors past
-   * `images.maximumResponseBody`. Read it before resolving, as Cloudflare
-   * Images does, for a source past the limit to get a 413: one read later can
-   * only error the transformed response's body.
+   * `images.maximumResponseBody`. Read it whole before resolving, as Cloudflare
+   * Images does, for a source past the limit to get a 413: the endpoint cannot
+   * tell a body left unread from one streamed later into the response, which
+   * can only error that response's body.
    */
   transformImage: (
     body: ReadableStream,
