@@ -57,11 +57,10 @@ type BarrelCaches = {
   /** Barrel export maps keyed by resolved entry file path. */
   exportMapCache: Map<string, BarrelExportMap>;
   /**
-   * Maps sub-package specifiers to the barrel entry path they were derived from,
-   * keyed by environment name ("rsc" | "ssr") so that divergent RSC/SSR barrel
-   * entries don't cross-contaminate each other's sub-package origin mappings.
-   * Using a per-environment map is consistent with entryPathCache, which is
-   * already environment-keyed via the "rsc:"/"ssr:" prefix on its cache keys.
+   * Maps the sub-package specifiers a transformed module now imports to the
+   * barrel entry path they were derived from. Keyed by environment and importer:
+   * importers can see different installed copies of a barrel, and RSC and SSR
+   * can resolve different entries of the same one.
    */
   subpkgOrigin: Map<string, Map<string, string>>;
 };
@@ -580,6 +579,10 @@ async function resolveFileId(
   return resolved && !resolved.external && path.isAbsolute(resolved.id) ? resolved.id : null;
 }
 
+function subpkgOriginKey(ctx: PluginCtx, importer: string): string {
+  return JSON.stringify([ctx.environment?.name ?? "ssr", importer]);
+}
+
 /** Resolve a barrel to its original source for export and directive analysis. */
 async function resolveBarrelEntry(
   ctx: Pick<Rollup.PluginContext, "resolve">,
@@ -605,11 +608,9 @@ async function resolveBarrelEntry(
  * Creates the vinext:optimize-imports Vite plugin.
  *
  * @param nextConfig - Resolved Next.js config (may be undefined before config hook runs).
- * @param _getRoot - Retained for existing callers; entries resolve from their importer.
  */
 export function createOptimizeImportsPlugin(
   getNextConfig: () => ResolvedNextConfig | undefined,
-  _getRoot: () => string,
 ): Plugin {
   const barrelCaches: BarrelCaches = {
     exportMapCache: new Map<string, BarrelExportMap>(),
@@ -621,13 +622,6 @@ export function createOptimizeImportsPlugin(
   let optimizedPackages: Set<string> = new Set();
   let hasOptimizedImportSource: (code: string) => boolean = () => false;
   let hasOptimizedRscImportSource: (code: string) => boolean = () => false;
-  // Tracks barrel entries whose sub-package origins have already been registered,
-  // so repeated imports of the same barrel (across many files) don't redundantly
-  // iterate the full export map. Keys are `${envKey}:${barrelEntry}` so that RSC
-  // and SSR each maintain their own registration — if both environments share the
-  // same barrel entry path, RSC registering first must not prevent SSR from
-  // running its own inner loop and populating its own subpkgOrigin map.
-  const registeredBarrels = new Set<string>();
 
   // `satisfies Plugin` gives a structural type-check at the object literal in addition
   // to the `: Plugin` return type annotation on the function, catching hook name typos
@@ -656,10 +650,9 @@ export function createOptimizeImportsPlugin(
       entryPathCache.clear();
       barrelCaches.exportMapCache.clear();
       barrelCaches.subpkgOrigin.clear();
-      registeredBarrels.clear();
     },
 
-    async resolveId(source) {
+    async resolveId(source, importer) {
       // Only apply on server environments (RSC/SSR). The client uses Vite's
       // dep optimizer which handles barrel CJS→ESM conversion correctly.
       if ((this as PluginCtx).environment?.name === "client") return;
@@ -667,12 +660,12 @@ export function createOptimizeImportsPlugin(
       // In pnpm strict mode, sub-packages like @radix-ui/react-slot are only
       // resolvable from the barrel package's location, not from user code.
       // Use Vite's own resolver (not createRequire) so it picks the ESM entry.
-      // subpkgOrigin is keyed like the transform below, which registers every
-      // specifier it emits in its own environment's map. The other environment's
-      // map may hold specifiers this one never emits, such as packages behind a
-      // "use client" boundary in RSC.
-      const envKey = (this as PluginCtx).environment?.name === "rsc" ? "rsc" : "ssr";
-      const barrelEntry = barrelCaches.subpkgOrigin.get(envKey)?.get(source);
+      // Look up the barrel this importer's own rewrite used: another importer
+      // may have rewritten the same specifier from a different copy.
+      if (!importer) return;
+      const barrelEntry = barrelCaches.subpkgOrigin
+        .get(subpkgOriginKey(this as PluginCtx, importer))
+        ?.get(source);
       if (!barrelEntry) return;
       const resolved = await this.resolve(source, barrelEntry, { skipSelf: true });
       return resolved ?? undefined;
@@ -719,6 +712,9 @@ export function createOptimizeImportsPlugin(
 
         const s = new MagicString(code);
         let hasChanges = false;
+        // Sub-package specifiers this module's rewrites import, mapped to the
+        // barrel they must resolve from (needed for pnpm strict hoisting).
+        const origins = new Map<string, string>();
 
         for (const node of ast.body) {
           if (node.type !== "ImportDeclaration") continue;
@@ -732,10 +728,9 @@ export function createOptimizeImportsPlugin(
           if (!isSubpath && !packages.has(importSource)) continue;
 
           // Build or retrieve the barrel export map for this package.
-          // Cache the resolved entry path to avoid repeated FS work.
-          // The cache key includes the environment prefix because RSC resolves the
-          // "react-server" export condition while SSR uses the standard conditions —
-          // the same package can have different barrel entry paths in each environment.
+          // Cache the resolved entry path per environment and importer: RSC
+          // resolves the "react-server" condition, and importers can see
+          // different installed copies of the package.
           let barrelEntry: string | null | undefined;
           if (isSubpath) {
             // Subpath entries go through Vite's resolver from the importer: it
@@ -765,42 +760,6 @@ export function createOptimizeImportsPlugin(
             const boundary = preferReactServer ? entry?.rscBoundary : entry?.ssrBoundary;
             return boundary ? { source: boundary, isNamespace: false, originalName: name } : entry;
           };
-
-          // Register sub-package sources so resolveId can find them from
-          // the barrel's context (needed for pnpm strict hoisting).
-          // Only bare specifiers (npm packages) need this — absolute paths are
-          // already fully resolved and don't require context-aware resolution.
-          // Gate with registeredBarrels so files that all import from the same
-          // barrel don't each re-iterate the full export map.
-          // subpkgOrigin is keyed by environment ("rsc"/"ssr") so that divergent
-          // barrel entries (e.g. react-server vs import condition) stay isolated.
-          // registeredBarrels is likewise keyed by `${envKey}:${barrelEntry}` so
-          // that RSC and SSR each get their own registration — if both environments
-          // share the same barrel entry path (common when the package has no
-          // react-server export condition), RSC registers first, but SSR must still
-          // run the inner loop so it populates its own subpkgOrigin map.
-          const envKey = preferReactServer ? "rsc" : "ssr";
-          const registeredKey = `${envKey}:${barrelEntry}`;
-          // Subpath imports emit already-resolved ids for package sources below.
-          if (!isSubpath && !registeredBarrels.has(registeredKey)) {
-            registeredBarrels.add(registeredKey);
-            let envOriginMap = barrelCaches.subpkgOrigin.get(envKey);
-            if (!envOriginMap) {
-              envOriginMap = new Map<string, string>();
-              barrelCaches.subpkgOrigin.set(envKey, envOriginMap);
-            }
-            for (const name of exportMap.keys()) {
-              // Only the sources this environment can emit, so a package behind
-              // a boundary isn't registered.
-              const source = getEntry(name)!.source;
-              if (!source.startsWith("/") && !source.startsWith(".") && !envOriginMap.has(source)) {
-                // First barrel to register this specifier (within this environment) wins.
-                // Sub-package specifiers are keyed per environment so that RSC and SSR
-                // barrel entries don't cross-contaminate each other's resolution context.
-                envOriginMap.set(source, barrelEntry);
-              }
-            }
-          }
 
           // Check if ALL specifiers can be resolved. If any can't, leave the import unchanged.
           const specifiers: Array<{ local: string; imported: string }> = [];
@@ -907,6 +866,10 @@ export function createOptimizeImportsPlugin(
             // works in practice, but a future improvement would be to resolve the
             // extension here (or verify via the barrel AST that the file exists).
             const resolvedSource = resolvedPackageSources.get(entry.source) ?? entry.source;
+            // Subpath imports emit already-resolved ids for package sources.
+            if (!isSubpath && !path.isAbsolute(resolvedSource) && !origins.has(resolvedSource)) {
+              origins.set(resolvedSource, barrelEntry);
+            }
             // Key on both resolved source and isNamespace: a named import and a
             // namespace import from the same sub-module must produce separate
             // import statements.
@@ -965,6 +928,10 @@ export function createOptimizeImportsPlugin(
           s.overwrite(node.start, node.end, replacements.join(";\n") + ";");
           hasChanges = true;
         }
+
+        const originKey = subpkgOriginKey(this as PluginCtx, id);
+        if (origins.size > 0) barrelCaches.subpkgOrigin.set(originKey, origins);
+        else barrelCaches.subpkgOrigin.delete(originKey);
 
         if (!hasChanges) return null;
 

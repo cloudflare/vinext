@@ -1458,12 +1458,21 @@ importers:
       fake-context-lib:
         specifier: file:./__test_packages__/fake-context-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-context-lib
+      fake-copy-barrel:
+        specifier: file:./__test_packages__/fake-copy-barrel-v1
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v1
+      fake-copy-consumer:
+        specifier: workspace:*
+        version: link:__test_packages__/fake-copy-consumer
       fake-css-lib:
         specifier: file:./__test_packages__/fake-css-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-css-lib
       fake-css-module-lib:
         specifier: file:./__test_packages__/fake-css-module-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib
+      fake-export-order-barrel:
+        specifier: file:./__test_packages__/fake-export-order-barrel
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-export-order-barrel
       fake-tsconfig-exact-lib:
         specifier: file:./__test_packages__/fake-tsconfig-exact-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib
@@ -1486,6 +1495,15 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 1.3.0(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.0.5(vitest@5.0.5))(@vitest/ui@5.0.5(vitest@5.0.5))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.63.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
+  tests/fixtures/app-basic/__test_packages__/fake-copy-consumer:
+    dependencies:
+      fake-copy-barrel:
+        specifier: file:../fake-copy-barrel-v2
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v2
+      react:
+        specifier: 'catalog:'
+        version: 19.3.1
 
   tests/fixtures/app-bfcache:
     dependencies:
@@ -1613,6 +1631,9 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.38(@voidzero-dev/vite-plus-core@1.3.0(@types/node@25.9.2)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react-server-dom-webpack@19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react@19.3.1)
+      fake-node-first-barrel:
+        specifier: file:./__test_packages__/fake-node-first-barrel
+        version: file:tests/fixtures/cf-app-basic/__test_packages__/fake-node-first-barrel
       react:
         specifier: 'catalog:'
         version: 19.3.1
@@ -8593,11 +8614,29 @@ packages:
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-context-lib, type: directory}
 
+  fake-copy-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v1:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v1, type: directory}
+
+  fake-copy-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v2:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v2, type: directory}
+
+  fake-copy-leaf@file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v1:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v1, type: directory}
+
+  fake-copy-leaf@file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v2:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v2, type: directory}
+
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-lib, type: directory}
 
   fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-module-lib, type: directory}
+
+  fake-export-order-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-export-order-barrel:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-export-order-barrel, type: directory}
+
+  fake-node-first-barrel@file:tests/fixtures/cf-app-basic/__test_packages__/fake-node-first-barrel:
+    resolution: {directory: tests/fixtures/cf-app-basic/__test_packages__/fake-node-first-barrel, type: directory}
 
   fake-tsconfig-exact-lib@file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib, type: directory}
@@ -17195,9 +17234,25 @@ snapshots:
 
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib: {}
 
+  fake-copy-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v1:
+    dependencies:
+      fake-copy-leaf: file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v1
+
+  fake-copy-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v2:
+    dependencies:
+      fake-copy-leaf: file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v2
+
+  fake-copy-leaf@file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v1: {}
+
+  fake-copy-leaf@file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v2: {}
+
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib: {}
 
   fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib: {}
+
+  fake-export-order-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-export-order-barrel: {}
+
+  fake-node-first-barrel@file:tests/fixtures/cf-app-basic/__test_packages__/fake-node-first-barrel: {}
 
   fake-tsconfig-exact-lib@file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib: {}
 

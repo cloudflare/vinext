@@ -1,0 +1,14 @@
+{
+  "name": "fake-node-first-barrel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "node": "./index.cjs",
+      "import": "./index.js",
+      "module": "./index.js",
+      "default": "./index.cjs"
+    }
+  }
+}

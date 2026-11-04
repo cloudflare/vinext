@@ -8416,10 +8416,7 @@ export const loadServerActionClient = ${
     // for packages listed in optimizePackageImports or DEFAULT_OPTIMIZE_PACKAGES.
     // This prevents Vite from eagerly evaluating barrel re-exports that call
     // React.createContext() in RSC environments where createContext doesn't exist.
-    createOptimizeImportsPlugin(
-      () => nextConfig,
-      () => root,
-    ),
+    createOptimizeImportsPlugin(() => nextConfig),
     // next/dynamic preload metadata:
     // Mirrors Next.js's react-loadable transform by recording which resolved
     // module IDs belong to each dynamic() boundary. The runtime resolves those

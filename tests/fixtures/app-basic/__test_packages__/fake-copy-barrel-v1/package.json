@@ -1,0 +1,13 @@
+{
+  "name": "fake-copy-barrel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./index.js"
+  },
+  "dependencies": {
+    "fake-copy-leaf": "file:../fake-copy-leaf-v1"
+  }
+}

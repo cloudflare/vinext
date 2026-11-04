@@ -85,10 +85,7 @@ function uniquePath(name: string): string {
 
 describe("vinext:optimize-imports plugin", () => {
   it("exists and has the correct name", () => {
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => "/fake/root",
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     expect(plugin.name).toBe("vinext:optimize-imports");
     // No enforce — runs after JSX transform so parseAst gets plain JS
     expect(plugin.enforce).toBeUndefined();
@@ -97,10 +94,7 @@ describe("vinext:optimize-imports plugin", () => {
   // ── Guard clauses ────────────────────────────────────────────
 
   it("returns null for virtual modules", async () => {
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => "/fake/root",
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     const transform = unwrapHook(plugin.transform)!;
     const code = `import { Slot } from "radix-ui";`;
 
@@ -109,10 +103,7 @@ describe("vinext:optimize-imports plugin", () => {
   });
 
   it("returns null for files without barrel imports", async () => {
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => "/fake/root",
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     const transform = unwrapHook(plugin.transform)!;
     const code = `import React from 'react';\nconst x = 1;`;
 
@@ -190,10 +181,7 @@ describe("vinext:optimize-imports plugin", () => {
   });
 
   it("returns null when barrel package mentioned but no resolvable entry", async () => {
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => "/nonexistent/root",
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     const transform = unwrapHook(plugin.transform)!;
     // "radix-ui" is in DEFAULT_OPTIMIZE_PACKAGES but since we're not in a real
     // project, Vite resolution returns null → buildBarrelExportMap returns null
@@ -713,11 +701,7 @@ describe("vinext:optimize-imports transform", () => {
     );
     fs.writeFileSync(path.join(pkgDir, "index.js"), barrelContents);
 
-    let capturedRoot = tmpDir;
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => capturedRoot,
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
 
     // Initialize optimizedPackages via buildStart
     const buildStartHook = unwrapHook((plugin as any).buildStart);
@@ -834,10 +818,7 @@ describe("vinext:optimize-imports transform", () => {
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
     );
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => tmpDir,
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     const buildStartHook = unwrapHook((plugin as any).buildStart);
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
@@ -907,10 +888,7 @@ describe("vinext:optimize-imports transform", () => {
       `"use client";\nexport { Slot } from "@radix-ui/react-slot";`,
     );
 
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => tmpDir,
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     const buildStartHook = unwrapHook((plugin as any).buildStart);
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
@@ -924,7 +902,7 @@ describe("vinext:optimize-imports transform", () => {
     // "use client" entry, whichever environment transforms first.
     for (const context of [ssr, rsc]) {
       await (transform as any).call(context, `import { Slot } from "antd";`, "/app/page.tsx");
-      await (resolveId as any).call(context, "@radix-ui/react-slot", "/app/other.tsx");
+      await (resolveId as any).call(context, "@radix-ui/react-slot", "/app/page.tsx");
     }
     expect(ssr.resolve.mock.calls.some(([source]) => source === "@radix-ui/react-slot")).toBe(true);
     expect(rsc.resolve.mock.calls.some(([source]) => source === "@radix-ui/react-slot")).toBe(
@@ -1046,10 +1024,7 @@ describe("vinext:optimize-imports transform", () => {
       `const Mo = {};\nexport { Mo as Listbox };`,
     );
 
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => tmpDir,
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     const buildStartHook = unwrapHook((plugin as any).buildStart);
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
@@ -1096,10 +1071,7 @@ describe("vinext:optimize-imports transform", () => {
       `export { Button } from "./button";\nexport { Input } from "./input";`,
     );
 
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => tmpDir,
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     const buildStartHook = unwrapHook((plugin as any).buildStart);
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
@@ -1149,10 +1121,7 @@ describe("vinext:optimize-imports transform", () => {
     // Barrel exports a named re-export from a scoped sub-package.
     fs.writeFileSync(path.join(pkgDir, "index.js"), `export { Slot } from "@radix-ui/react-slot";`);
 
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => tmpDir,
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     const buildStartHook = unwrapHook((plugin as any).buildStart);
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
@@ -1215,10 +1184,7 @@ describe("vinext:optimize-imports transform", () => {
     async (query) => {
       await setupTransform("lucide-react", `export { default } from "./icon.js";`);
       const entry = path.join(tmpDir, "node_modules", "lucide-react", "index.js");
-      const plugin = createOptimizeImportsPlugin(
-        () => undefined,
-        () => tmpDir,
-      ) as Plugin;
+      const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
       await unwrapHook(plugin.buildStart)!.call(plugin);
       const context = await resolverContext(tmpDir, "ssr", { "lucide-react": entry + query });
       const result = await unwrapHook(plugin.transform)!.call(
@@ -1246,10 +1212,7 @@ describe("vinext:optimize-imports transform", () => {
       );
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, `export { Check } from "./flattened-client-code.js";`);
-      const plugin = createOptimizeImportsPlugin(
-        () => undefined,
-        () => tmpDir,
-      ) as Plugin;
+      const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
       await unwrapHook(plugin.buildStart)!.call(plugin);
       const metadata: {
         optimized: Record<string, { file: string; src: string }>;
@@ -1298,6 +1261,76 @@ describe("vinext:optimize-imports transform", () => {
     }
   });
 
+  it("resolves emitted package specifiers from the barrel copy each importer used", async () => {
+    tmpDir = toSlash(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+    // Each copy of radix-ui can only see its own nested @radix-ui/react-slot,
+    // as in a pnpm workspace whose packages install different versions.
+    const writePackage = (dir: string, name: string, index: string) => {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "package.json"),
+        JSON.stringify({ name, type: "module", main: "./index.js" }),
+      );
+      fs.writeFileSync(path.join(dir, "index.js"), index);
+    };
+    const importers: Record<string, string> = {};
+    for (const name of ["a", "b"]) {
+      importers[name] = path.posix.join(tmpDir, name, "entry.js");
+      const barrelDir = path.join(tmpDir, name, "node_modules", "radix-ui");
+      writePackage(barrelDir, "radix-ui", `export { Slot } from "@radix-ui/react-slot";`);
+      writePackage(
+        path.join(barrelDir, "node_modules", "@radix-ui", "react-slot"),
+        "@radix-ui/react-slot",
+        `export const Slot = ${JSON.stringify(name)};`,
+      );
+    }
+
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+    const resolveId = unwrapHook(plugin.resolveId)!;
+    const rscContext = await resolverContext(tmpDir, "rsc");
+    const context = { ...plugin, ...rscContext, resolve: vi.fn(rscContext.resolve) };
+
+    for (const importer of Object.values(importers)) {
+      const result = await (transform as any).call(
+        context,
+        `import { Slot } from "radix-ui";`,
+        importer,
+      );
+      expect(result!.code).toContain(`import { Slot } from "@radix-ui/react-slot"`);
+    }
+    for (const [name, importer] of Object.entries(importers)) {
+      const resolved = await (resolveId as any).call(context, "@radix-ui/react-slot", importer);
+      expect(resolved?.id).toBe(
+        path.posix.join(
+          tmpDir,
+          name,
+          "node_modules/radix-ui/node_modules/@radix-ui/react-slot/index.js",
+        ),
+      );
+    }
+
+    // A resolution the rewrite didn't emit, such as the nested lookups the
+    // bundler makes while resolving from the barrel, falls through.
+    context.resolve.mockClear();
+    expect(
+      await (resolveId as any).call(
+        context,
+        "@radix-ui/react-slot",
+        path.posix.join(tmpDir, "index.html"),
+      ),
+    ).toBeUndefined();
+    expect(context.resolve).not.toHaveBeenCalled();
+  });
+
   it("prefers react-server export condition in RSC but not in SSR", async () => {
     // Simulates a package (like react-dom) that exposes different barrel entries
     // under "react-server" vs "import" export conditions.
@@ -1334,10 +1367,7 @@ describe("vinext:optimize-imports transform", () => {
     // Standard barrel: exports Button
     fs.writeFileSync(path.join(pkgDir, "index.js"), `export { Button } from "./btn";`);
 
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => tmpDir,
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     const buildStartHook = unwrapHook((plugin as any).buildStart);
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
@@ -1437,10 +1467,7 @@ describe("vinext:optimize-imports subpath imports", () => {
       return null;
     };
 
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => tmpDir,
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     await unwrapHook((plugin as any).buildStart)!.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
     const call = async (envName: string, code: string, id: string) =>
@@ -1474,10 +1501,7 @@ describe("vinext:optimize-imports subpath imports", () => {
   });
 
   it("accepts dev ids with a ?v= query", () => {
-    const plugin = createOptimizeImportsPlugin(
-      () => undefined,
-      () => "/fake/root",
-    ) as Plugin;
+    const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     const include = (plugin.transform as any).filter.id.include as RegExp;
     expect(include.test("/app/node_modules/pkg/dist/index.js?v=1a2b3c")).toBe(true);
     expect(include.test("/app/page.tsx")).toBe(true);

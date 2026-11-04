@@ -120,6 +120,7 @@ const projectServers = {
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
       "app-router/tsconfig-exact-path.spec.ts",
+      "app-router/optimize-imports-resolution.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
     server: {
@@ -695,7 +696,8 @@ const projectServers = {
     },
   },
   "cloudflare-encoded-paths": {
-    testDir: "./tests/e2e/cloudflare-encoded-paths",
+    testDir: "./tests/e2e",
+    testMatch: ["cloudflare-encoded-paths/**/*.spec.ts", "cf-app-basic/**/*.spec.ts"],
     use: { baseURL: "http://localhost:4197" },
     server: {
       command:
@@ -707,7 +709,8 @@ const projectServers = {
     },
   },
   "cloudflare-dev-run-worker-first": {
-    testDir: "./tests/e2e/cloudflare-dev-run-worker-first",
+    testDir: "./tests/e2e",
+    testMatch: ["cloudflare-dev-run-worker-first/**/*.spec.ts", "cf-app-basic/**/*.spec.ts"],
     use: { baseURL: "http://localhost:4204" },
     server: {
       // Dev with the runWorkerFirst pattern that `vinext init` generates

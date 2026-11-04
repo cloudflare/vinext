@@ -34,7 +34,9 @@ const nextConfig: NextConfig = {
     gestureTransition: true,
     // Used by E2E: optimize-imports-client-barrel.spec.ts — a "use client"
     // barrel whose imports SSR rewrites to the modules that define them.
-    optimizePackageImports: ["fake-client-barrel"],
+    // optimize-imports-resolution.spec.ts — barrels resolved like Vite resolves
+    // them: by export condition order and from each importer's installed copy.
+    optimizePackageImports: ["fake-client-barrel", "fake-copy-barrel", "fake-export-order-barrel"],
   },
 
   // Used by Vitest: app-router-production-server.test.ts — a next/dynamic()
