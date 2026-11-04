@@ -1,5 +1,9 @@
 import { type ViteDevServer } from "vite";
 import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
+import {
+  INTERNAL_HEADERS,
+  VINEXT_INTERNAL_HEADERS,
+} from "../packages/vinext/src/server/headers.js";
 import { APP_FIXTURE_DIR, fetchHtml, fetchRsc, startFixtureServer } from "./helpers.js";
 
 describe("App Router middleware with NextRequest", () => {
@@ -214,6 +218,26 @@ describe("App Router middleware with NextRequest", () => {
       empty: null,
       setCookie: ["merged-cookie=1; Path=/", "merged-cookie-2=2; Path=/"],
     });
+  });
+
+  it("removes forged internal headers from Pages API rawHeaders and headersDistinct in mixed projects", async () => {
+    const internalHeaders = [...INTERNAL_HEADERS, ...VINEXT_INTERNAL_HEADERS];
+    const res = await fetch(`${baseUrl}/api/pages-raw-header-names`, {
+      headers: {
+        ...Object.fromEntries(internalHeaders.map((name) => [name, "1"])),
+        "x-client-header": "1",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const { names, distinctNames } = (await res.json()) as {
+      names: string[];
+      distinctNames: string[];
+    };
+    expect(names).toContain("x-client-header");
+    expect(names.filter((name) => internalHeaders.includes(name))).toEqual([]);
+    expect(distinctNames).toContain("x-client-header");
+    expect(distinctNames.filter((name) => internalHeaders.includes(name))).toEqual([]);
   });
 
   it("middleware request header overrides can delete credential headers before pages getServerSideProps in mixed projects", async () => {

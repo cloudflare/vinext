@@ -166,9 +166,9 @@ import {
 } from "./server/headers.js";
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
+import { removeRequestHeaders } from "./server/remove-request-headers.js";
 import {
   canonicalizeRequestUrlPathname,
-  filterInternalHeaders,
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
   normalizeTrailingSlash,
@@ -501,16 +501,16 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
 const VINEXT_GENERATED_DIR_RE = /(?:^|[/\\])\.vinext(?:[/\\]|$)/;
 
-// Node keeps each client header in req.rawHeaders as well as req.headers, and
-// srvx (plugin-rsc's dev request adapter) answers Headers reads from rawHeaders
-// once anything iterates them. Keep both views in sync so the App Router only
-// ever sees the forwarded middleware context the hybrid Pages handler attached.
+const FORWARDED_MIDDLEWARE_CONTEXT_HEADERS: ReadonlySet<string> = new Set([VINEXT_MW_CTX_HEADER]);
+const STRIPPED_INTERNAL_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  ...INTERNAL_HEADERS,
+  ...VINEXT_INTERNAL_HEADERS,
+]);
+
+// The App Router only ever sees the forwarded middleware context the hybrid
+// Pages handler attached.
 function removeForwardedMiddlewareContext(req: import("node:http").IncomingMessage): void {
-  delete req.headers[VINEXT_MW_CTX_HEADER];
-  const rawHeaders = req.rawHeaders;
-  for (let i = rawHeaders.length - 2; i >= 0; i -= 2) {
-    if (rawHeaders[i].toLowerCase() === VINEXT_MW_CTX_HEADER) rawHeaders.splice(i, 2);
-  }
+  removeRequestHeaders(req, FORWARDED_MIDDLEWARE_CONTEXT_HEADERS);
 }
 
 function setForwardedMiddlewareContext(
@@ -7046,6 +7046,12 @@ export const loadServerActionClient = ${
                   nextConfig?.i18n,
                 );
               }
+              // Strip internal headers from inbound requests so they cannot be
+              // forged to influence routing or impersonate internal state. Do it
+              // before any branch below hands the request on, and in rawHeaders
+              // too, so middleware, the SSR handler, API routes and the App
+              // Router all see clean headers.
+              removeRequestHeaders(req, STRIPPED_INTERNAL_REQUEST_HEADERS);
               const requestHost =
                 revalidationHostname ??
                 ((Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
@@ -7264,7 +7270,7 @@ export const loadServerActionClient = ${
               // preMiddlewareReqCtx and the middleware Request itself. Intentionally
               // captured once here — applyRequestHeadersToNodeRequest() mutates
               // req.headers later, but by then this Headers object is no longer read.
-              const rawHeaders = new Headers(
+              const nodeRequestHeaders = new Headers(
                 Object.fromEntries(
                   Object.entries(req.headers)
                     // Drop `undefined` values and HTTP/2 pseudo-headers
@@ -7279,18 +7285,7 @@ export const loadServerActionClient = ${
               // The inbound x-nextjs-data header is internal and must not let
               // callers opt normal URLs into the data redirect protocol.
               const isDataRequest = isDataReq;
-              // Strip internal headers from inbound requests so they cannot be
-              // forged to influence routing or impersonate internal state.
-              // Both the middleware Request (built below) and the SSR handler
-              // (which reads req.headers directly) must see clean headers.
-              const nodeRequestHeaders = filterInternalHeaders(rawHeaders);
               if (revalidationHostname) nodeRequestHeaders.set("host", revalidationHostname);
-              for (const header of INTERNAL_HEADERS) {
-                delete req.headers[header];
-              }
-              for (const header of VINEXT_INTERNAL_HEADERS) {
-                delete req.headers[header];
-              }
 
               // Build a Web Request for the pipeline (no body — middleware and
               // SSR read req directly). The pipeline only needs the body when
