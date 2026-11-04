@@ -2281,6 +2281,15 @@ export default class CustomDocument extends Document {
     });
   });
 
+  // Next.js's send-response drops NextResponse's internal
+  // x-middleware-set-cookie copy and sends only Set-Cookie.
+  it("sends only Set-Cookie for NextResponse cookies from an edge API route", async () => {
+    const res = await fetch(`${baseUrl}/api/edge-next-response-cookie`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["edge-session=abc123; Path=/; HttpOnly"]);
+    expect(res.headers.get("x-middleware-set-cookie")).toBeNull();
+  });
+
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
   it("passes middleware rewrite search params to Pages Router edge API nextUrl", async () => {
@@ -8279,6 +8288,18 @@ describe("Production server middleware (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/gssp-dedup-test`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  });
+
+  // Next.js sends middleware cookies before the edge API route's own, and
+  // never sends NextResponse's internal x-middleware-set-cookie copy.
+  it("sends only Set-Cookie for middleware and edge API NextResponse cookies in production", async () => {
+    const res = await fetch(`${prodUrl}/api/edge-next-response-cookie?mw=1`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual([
+      "mw-edge=1; Path=/; HttpOnly",
+      "edge-session=abc123; Path=/; HttpOnly",
+    ]);
+    expect(res.headers.get("x-middleware-set-cookie")).toBeNull();
   });
 
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
