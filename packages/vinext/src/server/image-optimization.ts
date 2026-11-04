@@ -22,6 +22,7 @@
 
 import { isAnimatedImage } from "./image-animation.js";
 import {
+  HELD_SOURCE_LIMIT,
   ImageSourceReader,
   ImageSourceTooLargeError,
   LimitedImageSource,
@@ -580,13 +581,16 @@ export function sniffImageContentType(
  * `IMAGE_SIGNATURE_LENGTH`: those for a signature, enough to know the source
  * holds a whole `ftyp` box, as Next.js checks it against the source it read
  * whole, and otherwise enough to find an SVG root element. Never more than
- * `maxLength`.
+ * `maxLength`, and never an `ftyp` box past `HELD_SOURCE_LIMIT`, since the bytes
+ * read are held to replay: such a source is typed by its label instead.
  */
 function imageDetectionLength(bytes: Uint8Array, maxLength: number): number {
   for (const [, signature] of IMAGE_SIGNATURES) {
     if ("ftypBrand" in signature) {
       const boxSize = ftypBoxSize(bytes, signature.ftypBrand);
-      if (boxSize !== null) return Math.min(boxSize, maxLength);
+      if (boxSize !== null) {
+        return boxSize > HELD_SOURCE_LIMIT ? IMAGE_SIGNATURE_LENGTH : Math.min(boxSize, maxLength);
+      }
     } else if (signature.every((byte, i) => byte === null || bytes[i] === byte)) {
       return IMAGE_SIGNATURE_LENGTH;
     }
@@ -650,26 +654,17 @@ function concatBytes(chunks: Uint8Array[], length: number): Uint8Array {
 async function withDetectedImageContentType(
   source: Response,
   maxLength: number,
-  refetch: () => Promise<Response>,
 ): Promise<Response | null> {
   if (!source.ok || !source.body) return source;
   const reader = source.body.getReader();
-  // Replay the chunks read, copying only the bytes detection reads. Chunks
-  // are held whole until they reach `IMAGE_DETECTION_LENGTH`, so a large first
-  // chunk is held as it arrived. Past that, the chunks read to reach the end of
-  // an `ftyp` box are only counted, so a large box costs the source a second
-  // fetch rather than isolate memory.
+  // Replay the chunks read, copying only the bytes detection reads.
   const head: Uint8Array[] = [];
-  let heldLength = 0;
   let length = 0;
   let target = IMAGE_SIGNATURE_LENGTH;
   while (length < target) {
     const { done, value } = await reader.read();
     if (done) break;
-    if (heldLength < IMAGE_DETECTION_LENGTH) {
-      head.push(value);
-      heldLength += value.byteLength;
-    }
+    head.push(value);
     length += value.byteLength;
     if (target === IMAGE_SIGNATURE_LENGTH && length >= target) {
       target = imageDetectionLength(concatBytes(head, IMAGE_SIGNATURE_LENGTH), maxLength);
@@ -681,90 +676,28 @@ async function withDetectedImageContentType(
   }
   // Copy only what the SVG scan reads: a whole `ftyp` box needs only its length.
   const detected = concatBytes(head, Math.min(length, IMAGE_DETECTION_LENGTH));
-  const type = detectImageContentType(detected, source.headers.get("Content-Type"), length);
-  const typed = (response: Response, body: ReadableStream<Uint8Array>) => {
-    const headers = new Headers(response.headers);
-    if (type === null) headers.delete("Content-Type");
-    else headers.set("Content-Type", type);
-    return new Response(body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
-  };
-  if (heldLength === length) return typed(source, replayImageSource(head, reader));
-  // Not all the bytes read are held to replay, so serve it fetched again. Only
-  // an `ftyp` box larger than detection holds gets here.
-  reader.cancel().catch(() => {});
-  const refetched = await refetch();
-  if (!refetched.ok || !refetched.body) return refetched;
-  // The type found holds for the same first bytes and a source holding the
-  // whole box, so a source whose first bytes changed between the fetches is
-  // typed afresh, without a third fetch. One that ends before the box errors:
-  // only its bytes tell, whatever length it declares, and checking them before
-  // it is served would take a third fetch. `target` is the box size, however
-  // the first fetch was chunked.
-  const minLength = Math.min(target, length);
-  const refetchedReader = refetched.body.getReader();
-  const refetchedHead: Uint8Array[] = [];
-  let refetchedLength = 0;
-  while (refetchedLength < heldLength) {
-    const { done, value } = await refetchedReader.read();
-    if (done) break;
-    refetchedHead.push(value);
-    refetchedLength += value.byteLength;
-  }
-  if (
-    refetchedLength >= heldLength &&
-    bytesEqual(concatBytes(refetchedHead, heldLength), concatBytes(head, heldLength))
-  ) {
-    return typed(refetched, replayImageSource(refetchedHead, refetchedReader, minLength));
-  }
-  const body = replayImageSource(refetchedHead, refetchedReader);
-  return withDetectedImageContentType(new Response(body, refetched), maxLength, async () =>
-    Response.error(),
-  );
-}
-
-/**
- * Stream `head`, then the rest of `reader`, reading the source only as the
- * stream is read, and erroring should it end before `minLength` bytes.
- */
-function replayImageSource(
-  head: Uint8Array[],
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  minLength = 0,
-): ReadableStream<Uint8Array> {
-  let length = 0;
-  return new ReadableStream<Uint8Array>(
+  const body = new ReadableStream<Uint8Array>(
     {
       start(controller) {
-        for (const chunk of head) {
-          controller.enqueue(chunk);
-          length += chunk.byteLength;
-        }
+        for (const chunk of head) controller.enqueue(chunk);
       },
       async pull(controller) {
         const { done, value } = await reader.read();
-        if (!done) {
-          length += value.byteLength;
-          controller.enqueue(value);
-        } else if (length < minLength) {
-          controller.error(new Error("The image source changed while it was fetched again."));
-        } else {
-          controller.close();
-        }
+        if (done) controller.close();
+        else controller.enqueue(value);
       },
       cancel(reason) {
         return reader.cancel(reason);
       },
     },
+    // Read the source only as the body is read.
     { highWaterMark: 0 },
   );
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return a.byteLength === b.byteLength && a.every((byte, i) => byte === b[i]);
+  const headers = new Headers(source.headers);
+  const type = detectImageContentType(detected, source.headers.get("Content-Type"), length);
+  if (type === null) headers.delete("Content-Type");
+  else headers.set("Content-Type", type);
+  return new Response(body, { status: source.status, statusText: source.statusText, headers });
 }
 
 /**
@@ -912,16 +845,15 @@ type AdmittedImageSource = {
  * Admit a fetched source as Next.js does, which reads it whole before typing
  * it: a 413 past the limit, then a 400 for one that is no image or of a type
  * not allowed. A rejected source is read on to the limit to tell the two
- * apart, counting its bytes without holding them. Like Next.js, the limit is
- * held to the bytes read, whatever length the source declares.
+ * apart, counting its bytes without holding them. Like Next.js, the limit is held to the bytes read, whatever length the
+ * source declares.
  */
 async function admitImageSource(
   fetched: Response,
   limit: number,
   imageConfig: ImageConfig | undefined,
-  refetch: () => Promise<Response>,
 ): Promise<AdmittedImageSource | Response> {
-  const source = await withDetectedImageContentType(fetched, limit, refetch);
+  const source = await withDetectedImageContentType(fetched, limit);
   if (source === null) return sourceTooLargeResponse();
   if (!source.ok || !source.body) return invalidImageSourceResponse();
   const body = source.body;
@@ -976,7 +908,7 @@ async function servePassthroughWithinLimit(
     const length = reader.completeLength;
     return createPassthroughImageResponse(source, held, cacheControl, imageConfig, length);
   }
-  const refetched = await admitImageSource(await refetch(), limit, imageConfig, refetch);
+  const refetched = await admitImageSource(await refetch(), limit, imageConfig);
   if (refetched instanceof Response) return refetched;
   return servePassthroughWithinLimit(refetched, cacheControl, imageConfig, limit, refetch, true);
 }
@@ -1024,10 +956,10 @@ export async function handleImageOptimization(
   const fetchedSource = await handlers.fetchAsset(imageUrl, request);
   const isBuildAsset = isImageBuildAsset(fetchedSource);
   const limit = imageSourceLimit(imageConfig);
-  const refetch = () => handlers.fetchAsset(imageUrl, request);
-  const admitted = await admitImageSource(fetchedSource, limit, imageConfig, refetch);
+  const admitted = await admitImageSource(fetchedSource, limit, imageConfig);
   if (admitted instanceof Response) return admitted;
   const { source, contentType: sourceContentType } = admitted;
+  const refetch = () => handlers.fetchAsset(imageUrl, request);
 
   // Negotiate output format from Accept header
   const format = negotiateImageFormat(request.headers.get("Accept"));
@@ -1095,7 +1027,7 @@ export async function handleImageOptimization(
             );
           }
           reader.cancel();
-          const refetched = await admitImageSource(await refetch(), limit, imageConfig, refetch);
+          const refetched = await admitImageSource(await refetch(), limit, imageConfig);
           if (refetched instanceof Response) return refetched;
           return servePassthroughWithinLimit(
             refetched,
@@ -1176,7 +1108,7 @@ export async function handleImageOptimization(
   if (limitedSource && !limitedSource.body.locked) {
     limitedSource.body.cancel().catch(() => {});
   }
-  const refetched = await admitImageSource(await refetch(), limit, imageConfig, refetch);
+  const refetched = await admitImageSource(await refetch(), limit, imageConfig);
   if (refetched instanceof Response) return refetched;
   const withinLimit = limitedSource?.readWhole ?? reader?.readWhole ?? false;
   return servePassthroughWithinLimit(
