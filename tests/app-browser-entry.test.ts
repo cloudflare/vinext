@@ -5255,7 +5255,9 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("does not hard-navigate same-URL server action payloads from snapshot root topology alone", async () => {
+  // Like Next.js, which compares the rendered router trees, a payload that
+  // renders another root layout loads a new document, also without a manifest.
+  it("hard-navigates same-URL server action payloads that render another root layout", async () => {
     const actionTargetHref = "https://example.com/marketing?from=action";
     const initialState = createState({
       rootLayoutTreePath: "/(marketing)",
@@ -5282,8 +5284,8 @@ describe("app browser navigation controller", () => {
       );
 
       expect(result).toBeUndefined();
-      expect(assign).not.toHaveBeenCalled();
-      expect(stateRef.current.routeId).toBe("route:/dashboard");
+      expect(assign).toHaveBeenCalledWith(actionTargetHref);
+      expect(stateRef.current.routeId).toBe("route:/marketing");
     } finally {
       detach();
     }
@@ -6698,7 +6700,7 @@ describe("app browser entry previousNextUrl helpers", () => {
     });
   });
 
-  it("classifies same-url payloads without treating snapshot root topology as authority", async () => {
+  it("classifies same-url payloads that render another root layout as hard navigations", async () => {
     const currentState = createState({
       rootLayoutTreePath: "/(marketing)",
     });
@@ -6716,11 +6718,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       type: "navigate",
     });
 
-    expect(result.decision.disposition).toBe("commit");
+    expect(result.decision.disposition).toBe("hard-navigate");
     expect(result.pending.routeId).toBe("route:/dashboard");
     expect(result.pending.action.renderId).toBe(3);
-    expect(result.trace.entries[0]?.code).toBe(NavigationTraceTransactionCodes.visibleCommit);
-    expect(result.trace.entries[1]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryUnknown);
+    expect(result.trace.entries[0]?.code).toBe(NavigationTraceTransactionCodes.hardNavigate);
+    expect(result.trace.entries[1]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryChanged);
     expect(result.trace.entries[1]?.fields.targetHref).toBe(
       "https://example.com/dashboard?action=same-url",
     );
