@@ -866,6 +866,19 @@ describe("handleImageOptimization source typed by its bytes", () => {
     }
   });
 
+  it("finds an SVG root element only within images.maximumResponseBody", async () => {
+    const body = new TextEncoder().encode(`${"x".repeat(50)}${SVG}`);
+    for (const chunkSize of [10, body.byteLength]) {
+      const response = await handleImageOptimization(
+        imageRequest,
+        { fetchAsset: async () => new Response(chunkedSource(body, chunkSize).body) },
+        undefined,
+        { maximumResponseBody: 40, dangerouslyAllowSVG: true },
+      );
+      expect(response.status, `${chunkSize}-byte chunks`).toBe(400);
+    }
+  });
+
   it("cancels a source it rejects by its bytes", async () => {
     for (const body of [SVG, "<!DOCTYPE html><p>page</p>"]) {
       let cancelled = false;

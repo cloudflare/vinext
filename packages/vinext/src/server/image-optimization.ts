@@ -656,8 +656,11 @@ async function withDetectedImageContentType(
       target = imageDetectionLength(concatBytes(head, IMAGE_SIGNATURE_LENGTH), maxLength);
     }
   }
-  // Copy only what the SVG scan reads: a whole `ftyp` box needs its length.
-  const detected = concatBytes(head, Math.min(length, IMAGE_DETECTION_LENGTH));
+  // Detect from no more than `maxLength`, however the source is chunked: a
+  // box past it is never whole. Copy only what the SVG scan reads, since a
+  // whole `ftyp` box needs only its length.
+  const known = Math.min(length, maxLength);
+  const detected = concatBytes(head, Math.min(known, IMAGE_DETECTION_LENGTH));
   const body = new ReadableStream<Uint8Array>(
     {
       start(controller) {
@@ -676,12 +679,7 @@ async function withDetectedImageContentType(
     { highWaterMark: 0 },
   );
   const headers = new Headers(source.headers);
-  // A box past `maxLength` is never whole, however the source is chunked.
-  const type = detectImageContentType(
-    detected,
-    source.headers.get("Content-Type"),
-    Math.min(length, maxLength),
-  );
+  const type = detectImageContentType(detected, source.headers.get("Content-Type"), known);
   if (type === null) headers.delete("Content-Type");
   else headers.set("Content-Type", type);
   return new Response(body, { status: source.status, statusText: source.statusText, headers });
