@@ -166,6 +166,7 @@ import {
 } from "./server/headers.js";
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
+import { removeRequestHeaders } from "./server/remove-request-headers.js";
 import {
   canonicalizeRequestUrlPathname,
   INTERNAL_HEADERS,
@@ -505,27 +506,6 @@ const STRIPPED_INTERNAL_REQUEST_HEADERS: ReadonlySet<string> = new Set([
   ...INTERNAL_HEADERS,
   ...VINEXT_INTERNAL_HEADERS,
 ]);
-
-// Node keeps each client header in req.rawHeaders as well as req.headers, and
-// srvx (plugin-rsc's dev request adapter) answers Headers reads from rawHeaders
-// once anything iterates them. Remove headers from every view so later
-// handlers never see a removed header. Node builds req.headers and
-// req.headersDistinct lazily from rawHeaders and the header count it parsed,
-// so both must exist before rawHeaders gets shorter.
-function removeRequestHeaders(
-  req: import("node:http").IncomingMessage,
-  names: ReadonlySet<string>,
-): void {
-  const headersDistinct = req.headersDistinct;
-  for (const name of names) {
-    delete req.headers[name];
-    delete headersDistinct[name];
-  }
-  const rawHeaders = req.rawHeaders;
-  for (let i = rawHeaders.length - 2; i >= 0; i -= 2) {
-    if (names.has(rawHeaders[i].toLowerCase())) rawHeaders.splice(i, 2);
-  }
-}
 
 // The App Router only ever sees the forwarded middleware context the hybrid
 // Pages handler attached.
