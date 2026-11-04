@@ -4615,7 +4615,7 @@ describe("Virtual server entry generation", () => {
     // Next.js includes /_app files in every Pages document before collecting
     // stylesheets:
     // .nextjs-ref/packages/next/src/pages/_document.tsx getDocumentFiles().
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-"));
+    const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-")));
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     fs.unlinkSync(path.join(tmpDir, "node_modules"));
     fs.symlinkSync(
@@ -5026,7 +5026,9 @@ describe("Virtual server entry generation", () => {
   });
 
   it("dev Pages client assets re-resolve only edited modules until tsconfig.json changes", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-reuse-"));
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-reuse-")),
+    );
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     // The assets module resolves each import of the modules it reads.
     const resolveImporters: string[] = [];
@@ -5102,10 +5104,12 @@ describe("Virtual server entry generation", () => {
       server: { port: 0, cors: false },
       logLevel: "silent",
     });
+    // vinext resolves the root through symlinks like Vite, so routes are keyed by real path.
+    const realAppPath = fs.realpathSync(fixture.appPath);
     const readAppManifest = async () => {
       const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
       return (assetsModule.default as { ssrManifest?: Record<string, string[]> }).ssrManifest?.[
-        fixture.appPath
+        realAppPath
       ];
     };
 
@@ -5132,7 +5136,9 @@ describe("Virtual server entry generation", () => {
   });
 
   it("dev Pages client assets follow an imported stylesheet symlink being retargeted", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-retarget-"));
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-retarget-")),
+    );
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     const themePath = path.join(tmpDir, "styles", "theme.css");
     fs.mkdirSync(path.join(tmpDir, "themes"));
