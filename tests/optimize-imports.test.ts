@@ -23,7 +23,8 @@ import { createServer, type EnvironmentOptions, type InlineConfig, type ViteDevS
 const resolverServers = new Map<string, ViteDevServer>();
 
 async function resolverContext(root: string, envName = "rsc", alias?: Record<string, string>) {
-  let server = resolverServers.get(root);
+  const key = JSON.stringify([root, alias]);
+  let server = resolverServers.get(key);
   if (!server) {
     const config: InlineConfig = {
       root,
@@ -45,7 +46,7 @@ async function resolverContext(root: string, envName = "rsc", alias?: Record<str
       ),
     };
     server = await createServer(config);
-    resolverServers.set(root, server);
+    resolverServers.set(key, server);
   }
   return {
     environment: { name: envName },
@@ -899,9 +900,12 @@ describe("vinext:optimize-imports transform", () => {
     const ssr = { ...plugin, ...ssrContext, resolve: vi.fn(ssrContext.resolve) };
 
     // SSR imports Slot from @radix-ui/react-slot, but RSC imports it from the
-    // "use client" entry, whichever environment transforms first.
+    // "use client" entry. Dev can transform the module in both environments
+    // before either resolves its imports.
     for (const context of [ssr, rsc]) {
       await (transform as any).call(context, `import { Slot } from "antd";`, "/app/page.tsx");
+    }
+    for (const context of [ssr, rsc]) {
       await (resolveId as any).call(context, "@radix-ui/react-slot", "/app/page.tsx");
     }
     expect(ssr.resolve.mock.calls.some(([source]) => source === "@radix-ui/react-slot")).toBe(true);
