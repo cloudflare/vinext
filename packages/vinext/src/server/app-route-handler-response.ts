@@ -49,15 +49,24 @@ const APP_ROUTE_REWRITE_ERROR =
 const APP_ROUTE_NEXT_ERROR =
   "NextResponse.next() was used in a app route handler, this is not supported. See here for more info: https://nextjs.org/docs/messages/next-response-next-in-app-route-handler";
 
-// Like Next.js's sendResponse, a route handler's Response never frames the
-// body that is sent. Its body may have been transparently decoded: Node's
-// fetch() decompresses a gzip body but keeps the upstream Content-Length and
-// Content-Encoding, so forwarding them would describe bytes that are no longer
-// there. The server frames (and may compress) the body itself.
+// Like Next.js's sendResponse for a Node response, a route handler's Response
+// never frames the body that is sent. Its body may have been transparently
+// decoded: Node's fetch() decompresses a gzip body but keeps the upstream
+// Content-Length and Content-Encoding, so forwarding them would describe bytes
+// that are no longer there. The server frames (and may compress) the body
+// itself.
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-response.ts
+//
+// workerd frames the body itself and keeps Content-Encoding accurate: it
+// ignores a set Content-Length, passes a returned fetch() body through still
+// encoded, and compresses any other body to match its Content-Encoding. So
+// Workers responses keep the headers.
+// https://developers.cloudflare.com/workers/runtime-apis/fetch/#passthrough-behavior
+// https://developers.cloudflare.com/workers/runtime-apis/response/
 const ROUTE_HANDLER_FRAMING_HEADERS = ["content-length", "content-encoding", "transfer-encoding"];
 
-function hasRouteHandlerFramingHeader(headers: Headers): boolean {
+function shouldDropRouteHandlerFramingHeaders(headers: Headers): boolean {
+  if (globalThis.navigator?.userAgent === "Cloudflare-Workers") return false;
   return ROUTE_HANDLER_FRAMING_HEADERS.some((name) => headers.has(name));
 }
 
@@ -66,7 +75,7 @@ function deleteRouteHandlerFramingHeaders(headers: Headers): void {
 }
 
 export function stripRouteHandlerFramingHeaders(response: Response): Response {
-  if (!hasRouteHandlerFramingHeader(response.headers)) return response;
+  if (!shouldDropRouteHandlerFramingHeaders(response.headers)) return response;
   const headers = new Headers(response.headers);
   deleteRouteHandlerFramingHeaders(headers);
   return preserveFullyBufferedBodyMetadata(
@@ -140,7 +149,7 @@ export function buildRouteHandlerCachedResponse(
   }
   headers.delete(NEXT_CACHE_TAGS_HEADER);
   headers.delete(VINEXT_METADATA_ROUTE_CACHE_HEADER);
-  deleteRouteHandlerFramingHeaders(headers);
+  if (shouldDropRouteHandlerFramingHeaders(headers)) deleteRouteHandlerFramingHeaders(headers);
   setCacheStateHeaders(headers, options.cacheState);
   // HIT/STALE served from the origin store: route the cache header through the
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
@@ -329,13 +338,13 @@ export function finalizeRouteHandlerResponse(
     !draftCookie &&
     !isHead &&
     !hasMiddlewareHeader(response.headers) &&
-    !hasRouteHandlerFramingHeader(response.headers)
+    !shouldDropRouteHandlerFramingHeaders(response.headers)
   ) {
     return response;
   }
 
   const headers = new Headers(response.headers);
-  deleteRouteHandlerFramingHeaders(headers);
+  if (shouldDropRouteHandlerFramingHeaders(headers)) deleteRouteHandlerFramingHeaders(headers);
   processMiddlewareHeaders(headers);
   applyMutableCookieFallbacks(headers, pendingCookies);
   if (draftCookie) {

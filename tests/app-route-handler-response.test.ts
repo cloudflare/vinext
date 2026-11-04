@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "vite-plus/test";
+import { describe, expect, it, afterEach, vi } from "vite-plus/test";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import {
   applyRouteHandlerMiddlewareContext,
@@ -378,6 +378,31 @@ describe("app route handler response helpers", () => {
     expect(result.headers.has("content-encoding")).toBe(false);
     expect(result.headers.has("content-length")).toBe(false);
     await expect(result.text()).resolves.toBe("decoded body");
+  });
+
+  it("keeps a returned response's framing headers on Workers", async () => {
+    // workerd passes a fetched body through still encoded while its
+    // Content-Encoding is kept, and frames the body itself.
+    vi.stubGlobal("navigator", { userAgent: "Cloudflare-Workers" });
+    try {
+      const response = new Response("encoded body", {
+        headers: { "content-encoding": "gzip", "content-length": "4" },
+      });
+      const finalized = finalizeRouteHandlerResponse(response, {
+        pendingCookies: [],
+        draftCookie: null,
+        isHead: false,
+      });
+      expect(finalized).toBe(response);
+
+      const replayed = buildRouteHandlerCachedResponse(
+        buildCachedRouteValue("decoded body", { "content-encoding": "gzip" }),
+        { cacheState: "HIT", isHead: false, revalidateSeconds: 60 },
+      );
+      expect(replayed.headers.get("content-encoding")).toBe("gzip");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("uses mutable cookies as fallbacks and keeps returned response cookies final", async () => {
