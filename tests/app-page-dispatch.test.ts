@@ -4373,7 +4373,9 @@ describe("app page dispatch", () => {
         },
       );
 
-      expect(isrGet).not.toHaveBeenCalled();
+      // It reads the entries only to re-store them should the render fail, as
+      // Next.js's handleGet reads the previous entry before it revalidates.
+      expect(isrGet).toHaveBeenCalledTimes(2);
       expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
       expect(readPolicy).toEqual([true]);
     },
@@ -4434,6 +4436,23 @@ describe("app page dispatch", () => {
       expired: true,
     },
     { name: "an RSC request's Flight error", reports: "flight", failed: true, isRscRequest: true },
+    // A variant's payload is never the page's document, which it leaves alone.
+    {
+      name: "a prefetch shell's Flight error",
+      reports: "flight",
+      failed: true,
+      isRscRequest: true,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      restored: ["rsc"],
+    },
+    // The entries are read before the render, so a write since is newer.
+    {
+      name: "a Flight error after another render's write",
+      reports: "flight",
+      failed: true,
+      overwritten: true,
+      restored: [],
+    },
     {
       name: "a Flight error after turning dynamic",
       reports: "flight",
@@ -4448,6 +4467,11 @@ describe("app page dispatch", () => {
     const isRscRequest = "isRscRequest" in testCase && testCase.isRscRequest;
     const dynamic = "dynamic" in testCase && testCase.dynamic;
     const scriptNonce = "scriptNonce" in testCase ? testCase.scriptNonce : undefined;
+    const renderMode = "renderMode" in testCase ? testCase.renderMode : undefined;
+    const restored: readonly string[] = ("restored" in testCase && testCase.restored) || [
+      "html",
+      "rsc",
+    ];
     const previous: ISRCacheEntry = {
       ...("expired" in testCase ? { isExpired: true } : {}),
       isStale: "expired" in testCase,
@@ -4462,12 +4486,18 @@ describe("app page dispatch", () => {
         ),
       },
     };
+    const newer: ISRCacheEntry = {
+      ...previous,
+      value: { ...previous.value, lastModified: previous.value.lastModified + 1 },
+    };
+    let rendered = false;
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
     const { options } = createDispatchOptions({
       isProduction: true,
       isRscRequest,
-      isrGet: vi.fn(async () => previous),
+      isrGet: vi.fn(async () => ("overwritten" in testCase && rendered ? newer : previous)),
       isrSet,
+      renderMode,
       // Its document closes once it has read the whole Flight stream, as
       // handleSsr's does.
       loadSsrHandler: async () => ({
@@ -4490,6 +4520,7 @@ describe("app page dispatch", () => {
         },
       }),
       renderToReadableStream(_element, renderOptions) {
+        rendered = true;
         if (reports === "early") {
           renderOptions?.onError?.(new Error("shell failure"), undefined, undefined);
         }
@@ -4533,10 +4564,7 @@ describe("app page dispatch", () => {
           data === previous.value.value,
           policy.cacheControl,
         ]),
-    ).toEqual([
-      ["html", true, { revalidate: 30 }],
-      ["rsc", true, { revalidate: 30 }],
-    ]);
+    ).toEqual(restored.map((kind) => [kind, true, { revalidate: 30 }]));
   });
 
   it("bypasses shared caches for an unverified interception context", async () => {

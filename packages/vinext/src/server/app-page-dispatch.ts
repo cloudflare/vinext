@@ -1682,7 +1682,43 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           interceptionId,
         )
       : options.isrHtmlKey(options.cleanPathname);
+  // The entries a failed on-demand revalidation re-stores: its own, and the
+  // other half of the page's entry when its render may write both. A variant's
+  // RSC payload, such as a prefetch shell or an interception, never writes
+  // the page's document.
+  const onDemandRestoreKeys = (): string[] => {
+    if (!options.isRscRequest) {
+      return [
+        onDemandCacheKey(),
+        options.isrRscKey(
+          options.cleanPathname,
+          null,
+          undefined,
+          options.interceptionContext,
+          interceptionId,
+        ),
+      ];
+    }
+    const writesDocument =
+      !options.scriptNonce &&
+      !options.interceptionContext &&
+      !interceptionId &&
+      (options.renderMode === undefined || options.renderMode === APP_RSC_RENDER_MODE_NAVIGATION);
+    return writesDocument
+      ? [onDemandCacheKey(), options.isrHtmlKey(options.cleanPathname)]
+      : [onDemandCacheKey()];
+  };
   const renderResponse = async () => {
+    // Next.js reads the previous entry before it revalidates, so a failed
+    // revalidation re-stores that one and leaves a newer write alone
+    // (ResponseCache.handleGet).
+    const previousEntries = onDemandCacheWrites
+      ? await Promise.all(
+          onDemandRestoreKeys().map(
+            async (key) => [key, await options.isrGet(key).catch(() => null)] as const,
+          ),
+        )
+      : [];
     const response = await renderAppPageLifecycle(lifecycleOptions);
     // Each write reads its own branch of the render's streams, so it completes
     // while the response's branch stays unread.
@@ -1698,18 +1734,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // and the RSC payload, with a short revalidate, so a later request
       // regenerates it (server/response-cache/index.ts).
       const { keepPreviousAppPageEntry } = await import("./app-page-cache.js");
-      const siblingKey = options.isRscRequest
-        ? options.isrHtmlKey(options.cleanPathname)
-        : options.isrRscKey(
-            options.cleanPathname,
-            null,
-            undefined,
-            options.interceptionContext,
-            interceptionId,
-          );
       await Promise.all(
-        [onDemandCacheKey(), siblingKey].map(async (key) => {
-          const previous = await options.isrGet(key).catch(() => null);
+        previousEntries.map(async ([key, previous]) => {
           if (previous) await keepPreviousAppPageEntry(options, key, previous);
         }),
       );
