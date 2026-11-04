@@ -909,24 +909,23 @@ describe("handleImageOptimization source typed by its bytes", () => {
     }
   });
 
-  it("types a source fetched again afresh when it declares a length short of its ftyp box", async () => {
+  it("serves a source fetched again by its bytes, whatever length it declares", async () => {
     const box = new Uint8Array(20_000);
     box.set([0, 0, 0x4e, 0x20, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
     let fetches = 0;
     // Served as-is, as without an optimizer, so the type decides the response.
     const response = await handleImageOptimization(imageRequest, {
-      fetchAsset: async () => {
-        const bytes = fetches++ === 0 ? box : box.subarray(0, 1_000);
-        return new Response(chunkedSource(bytes, 100).body, {
+      fetchAsset: async () =>
+        new Response(chunkedSource(box, 100).body, {
           headers: {
             "Content-Type": "application/octet-stream",
-            "Content-Length": String(bytes.byteLength),
+            "Content-Length": fetches++ === 0 ? String(box.byteLength) : "1000",
           },
-        });
-      },
+        }),
     });
-    expect(response.status).toBe(400);
-    expect(await response.text()).toBe(NOT_ALLOWED);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("image/avif");
+    expect((await response.arrayBuffer()).byteLength).toBe(box.byteLength);
   });
 
   it("serves a source fetched again that ends at its ftyp box, however the first was chunked", async () => {
