@@ -846,115 +846,25 @@ describe("handleImageOptimization source typed by its bytes", () => {
     }
   });
 
-  it("holds only the bytes detection reads of an ftyp box, fetching the source again", async () => {
-    const box = new Uint8Array(20_000);
-    box.set([0, 0, 0x4e, 0x20, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
-    let fetches = 0;
-    let cancelled = 0;
-    const transformed: number[] = [];
-    const response = await handleImageOptimization(imageRequest, {
-      fetchAsset: async () => {
-        fetches++;
-        const chunks = chunkedSource(box, 100).body.getReader();
-        return new Response(
-          new ReadableStream<Uint8Array>({
-            async pull(controller) {
-              const { done, value } = await chunks.read();
-              if (done) controller.close();
-              else controller.enqueue(value);
-            },
-            cancel() {
-              cancelled++;
-            },
-          }),
-          { headers: { "Content-Type": "application/octet-stream" } },
-        );
-      },
-      transformImage: async (input, options) => {
-        transformed.push((await new Response(input).arrayBuffer()).byteLength);
-        return new Response("transformed", { headers: { "Content-Type": options.format } });
-      },
-    });
-    expect(response.status).toBe(200);
-    expect(fetches).toBe(2);
-    expect(cancelled).toBe(1);
-    expect(transformed).toEqual([box.byteLength]);
-  });
-
-  it("types a source fetched again afresh when its first bytes changed", async () => {
-    const box = new Uint8Array(20_000);
-    box.set([0, 0, 0x4e, 0x20, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
-    const otherBox = box.slice();
-    otherBox[20] = 1;
-    for (const [second, status, body] of [
-      [new TextEncoder().encode(SVG), 400, NOT_ALLOWED],
-      [otherBox, 400, "The requested resource isn't a valid image."],
-      // Ending before the box, so not AVIF by its own bytes.
-      [box.subarray(0, 1_000), 400, NOT_ALLOWED],
-      [box, 200, "transformed"],
+  it("types a source by its label rather than an ftyp box past what is held", async () => {
+    const box = new Uint8Array(1_048_577);
+    box.set([0, 0x10, 0, 0x01, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
+    for (const [label, status] of [
+      ["application/octet-stream", 400],
+      ["image/avif", 200],
     ] as const) {
-      let fetches = 0;
+      const source = chunkedSource(box, 64 * 1024);
       const response = await handleImageOptimization(imageRequest, {
-        fetchAsset: async () =>
-          new Response(chunkedSource(fetches++ === 0 ? box : second, 100).body, {
-            headers: { "Content-Type": "application/octet-stream" },
-          }),
+        fetchAsset: async () => new Response(source.body, { headers: { "Content-Type": label } }),
         transformImage: async (input, options) => {
           await new Response(input).arrayBuffer();
           return new Response("transformed", { headers: { "Content-Type": options.format } });
         },
       });
-      expect(response.status, String(second.byteLength)).toBe(status);
-      expect(await response.text(), String(second.byteLength)).toBe(body);
+      expect(response.status, label).toBe(status);
+      // Rejected from its first chunk, not read on to the box's 17th.
+      if (status === 400) expect(source.pulled, label).toBeLessThanOrEqual(2);
     }
-  });
-
-  it("serves a source fetched again by its bytes, whatever length it declares", async () => {
-    const box = new Uint8Array(20_000);
-    box.set([0, 0, 0x4e, 0x20, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
-    let fetches = 0;
-    // Served as-is, as without an optimizer, so the type decides the response.
-    const response = await handleImageOptimization(imageRequest, {
-      fetchAsset: async () =>
-        new Response(chunkedSource(box, 100).body, {
-          headers: {
-            "Content-Type": "application/octet-stream",
-            "Content-Length": fetches++ === 0 ? String(box.byteLength) : "1000",
-          },
-        }),
-    });
-    expect(response.status).toBe(200);
-    expect(response.headers.get("Content-Type")).toBe("image/avif");
-    expect((await response.arrayBuffer()).byteLength).toBe(box.byteLength);
-  });
-
-  it("serves a source fetched again that ends at its ftyp box, however the first was chunked", async () => {
-    const box = new Uint8Array(20_000);
-    box.set([0, 0, 0x4e, 0x20, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
-    const first = new Uint8Array(20_001);
-    first.set(box);
-    let fetches = 0;
-    const response = await handleImageOptimization(imageRequest, {
-      fetchAsset: async () => {
-        const chunks = fetches++ === 0 ? [first.subarray(0, 1_000), first.subarray(1_000)] : [box];
-        return new Response(
-          new ReadableStream<Uint8Array>({
-            pull(controller) {
-              const chunk = chunks.shift();
-              if (chunk) controller.enqueue(chunk);
-              else controller.close();
-            },
-          }),
-          { headers: { "Content-Type": "application/octet-stream" } },
-        );
-      },
-      transformImage: async (input, options) => {
-        await new Response(input).arrayBuffer();
-        return new Response("transformed", { headers: { "Content-Type": options.format } });
-      },
-    });
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("transformed");
   });
 
   it("does not type a source by an ftyp box past images.maximumResponseBody", async () => {
