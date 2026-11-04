@@ -319,6 +319,38 @@ function resolveRegenerationFailureCacheControl(
 }
 
 /**
+ * Re-stores a key's previous entry with a backoff policy after a failed render,
+ * as Next.js does. Another render can write the key too (an HTML one also
+ * writes the RSC key), so a newer entry is left alone. A missing one is
+ * restored, as Next.js restores unconditionally.
+ */
+export async function keepPreviousAppPageEntry(
+  cache: { isrGet: AppPageCacheGetter; isrSet: AppPageCacheSetter },
+  key: string,
+  previous: ISRCacheEntry,
+): Promise<void> {
+  const previousValue = getCachedAppPageValue(previous);
+  const previousCacheControl = previous.value.cacheControl;
+  // Its tags come from its render observation; an entry without one can't be
+  // re-stored with the tags it was written with, so it is left alone. An
+  // expired one is revived, as Next.js re-stores whatever it read.
+  const previousTags = previousValue?.renderObservation?.cacheTags;
+  if (!previousValue || !previousCacheControl || !previousTags) return;
+  try {
+    const current = await cache.isrGet(key);
+    if (!current || current.value.lastModified === previous.value.lastModified) {
+      await cache.isrSet(key, previousValue, {
+        cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
+        tags: [...previousTags],
+      });
+    }
+  } catch (storeError) {
+    // Report the render's own failure, not the store's.
+    console.error(`[vinext] Failed to keep the previous entry for ${key}:`, storeError);
+  }
+}
+
+/**
  * Next.js stamps every prerender with the stale time it collected. A render
  * that made no `cacheLife` claim keeps the `INFINITE_CACHE` sentinel, which
  * resolves to `experimental.staleTimes.static` (`createSelectStaleTime` in
@@ -609,32 +641,6 @@ export async function readAppPageCacheResponse(
     }
 
     if (cached?.isStale && cachedValue) {
-      // Re-store a key's previous entry with a backoff policy after a failed
-      // render, as Next.js does. Another regeneration can write the key too (an
-      // HTML one also writes the RSC key), so a newer entry is left alone. A
-      // missing one is restored, as Next.js restores unconditionally.
-      const keepPreviousEntry = async (key: string, previous: ISRCacheEntry): Promise<void> => {
-        const previousValue = getCachedAppPageValue(previous);
-        const previousCacheControl = previous.value.cacheControl;
-        // Its tags come from its render observation; an entry without one can't
-        // be re-stored with the tags it was written with, so it is left alone.
-        // An expired one must not be served, so re-storing would revive it.
-        const previousTags = previousValue?.renderObservation?.cacheTags;
-        if (!previousValue || !previousCacheControl || !previousTags || previous.isExpired) return;
-        try {
-          const current = await options.isrGet(key);
-          if (!current || current.value.lastModified === previous.value.lastModified) {
-            await options.isrSet(key, previousValue, {
-              cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
-              tags: [...previousTags],
-            });
-          }
-        } catch (storeError) {
-          // Report the regeneration's own failure, not the store's.
-          console.error(`[vinext] Failed to keep the previous entry for ${key}:`, storeError);
-        }
-      };
-
       // Preserve the legacy behavior from the inline generator: stale entries
       // still trigger background regeneration even if this request cannot use
       // the stale payload and will fall through to a fresh render.
@@ -774,7 +780,7 @@ export async function readAppPageCacheResponse(
         } catch (error) {
           // Keep the previous entry under this key only: an RSC-triggered
           // regeneration must not write its payload under the HTML key.
-          await keepPreviousEntry(isrKey, cached);
+          await keepPreviousAppPageEntry(options, isrKey, cached);
           throw error;
         }
       });

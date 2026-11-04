@@ -4419,6 +4419,126 @@ describe("app page dispatch", () => {
     expect(bodies[1]).toBe(bodies[0]);
   });
 
+  // As in Next.js, an on-demand revalidation whose render reports an error, even
+  // one a Suspense boundary caught, fails, so `res.revalidate()` throws, and the
+  // previous entry is re-stored with a short revalidate. A render that turned
+  // dynamic is excused, as the build excuses it.
+  it.each([
+    { name: "a Flight error", reports: "flight", failed: true },
+    { name: "an SSR error", reports: "ssr", failed: true },
+    // Next.js re-stores whatever it read, so an expired entry is revived.
+    {
+      name: "a Flight error over an expired entry",
+      reports: "flight",
+      failed: true,
+      expired: true,
+    },
+    { name: "an RSC request's Flight error", reports: "flight", failed: true, isRscRequest: true },
+    {
+      name: "a Flight error after turning dynamic",
+      reports: "flight",
+      failed: false,
+      dynamic: true,
+    },
+    { name: "no error", reports: false, failed: false },
+    // A render that is never stored isn't checked, whenever its error comes.
+    { name: "a never-stored render's error", reports: "early", failed: false, scriptNonce: "n" },
+  ] as const)("answers an on-demand revalidation with $name accordingly", async (testCase) => {
+    const { reports, failed } = testCase;
+    const isRscRequest = "isRscRequest" in testCase && testCase.isRscRequest;
+    const dynamic = "dynamic" in testCase && testCase.dynamic;
+    const scriptNonce = "scriptNonce" in testCase ? testCase.scriptNonce : undefined;
+    const previous: ISRCacheEntry = {
+      ...("expired" in testCase ? { isExpired: true } : {}),
+      isStale: "expired" in testCase,
+      value: {
+        cacheControl: { revalidate: 3600 },
+        lastModified: Date.now(),
+        value: buildCachedAppPageValue(
+          "<html>stored</html>",
+          new TextEncoder().encode("stored-flight").buffer,
+          200,
+          buildQueryInvariantRenderObservation(),
+        ),
+      },
+    };
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isRscRequest,
+      isrGet: vi.fn(async () => previous),
+      isrSet,
+      // Its document closes once it has read the whole Flight stream, as
+      // handleSsr's does.
+      loadSsrHandler: async () => ({
+        async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const flight = new Response(rscStream).arrayBuffer();
+          return new ReadableStream<Uint8Array>({
+            async start(controller) {
+              await flight;
+              // A client component's server-only error, inside Suspense.
+              if (reports === "ssr") captureOptions?.onSsrError?.(new Error("client failure"));
+              controller.enqueue(new TextEncoder().encode("<html>page</html>"));
+              controller.close();
+            },
+          });
+        },
+      }),
+      renderToReadableStream(_element, renderOptions) {
+        if (reports === "early") {
+          renderOptions?.onError?.(new Error("shell failure"), undefined, undefined);
+        }
+        return new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight"));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (dynamic) markDynamicUsage();
+            if (reports === "flight") {
+              renderOptions?.onError?.(new Error("suspended failure"), undefined, undefined);
+            }
+            controller.close();
+          },
+        });
+      },
+      revalidateSeconds: 60,
+    });
+    options.scriptNonce = scriptNonce;
+
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () => dispatchAppPage(options),
+    );
+    await response.arrayBuffer();
+
+    if (!failed) {
+      expect(response.status).toBe(200);
+      expect(isrSet).toHaveBeenCalledTimes(dynamic || scriptNonce ? 0 : 2);
+      return;
+    }
+    expect(response.status).toBe(500);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    // The previous entry's document and payload both.
+    expect(
+      [...isrSet.mock.calls]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, data, policy]) => [
+          key.split(":")[0],
+          data === previous.value.value,
+          policy.cacheControl,
+        ]),
+    ).toEqual([
+      ["html", true, { revalidate: 30 }],
+      ["rsc", true, { revalidate: 30 }],
+    ]);
+  });
+
   it("bypasses shared caches for an unverified interception context", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(

@@ -242,6 +242,11 @@ type RenderAppPageLifecycleOptionsBase = {
     element: ReactNode | AppOutgoingElements,
     options: { onError: AppPageBoundaryOnError; signal?: AbortSignal },
   ) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
+  /**
+   * Filled with whether the render reported an error that keeps it from being
+   * stored, read once its writes have settled.
+   */
+  renderFailedRef?: { value: (() => boolean) | null };
   routePattern: string;
   scriptNonce?: string;
   mountedSlotsHeader?: string | null;
@@ -755,6 +760,10 @@ async function renderAppPageLifecycleImpl(
       options.isStaticEligible &&
       options.pprFallbackShellSignal?.aborted !== true,
   );
+  if (options.renderFailedRef) {
+    options.renderFailedRef.value = () =>
+      prerenderRenderErrors.failsBuild(consumeRenderDynamicUsage);
+  }
   const finalizePrerenderRenderError = (
     response: Response,
     // Peeks, so the read leaves the render's later dynamic-usage checks as they were.

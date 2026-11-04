@@ -131,6 +131,7 @@ import {
   type CacheabilityManifest,
   type CacheabilityRepresentation,
 } from "./cacheability-manifest.js";
+import { NEVER_CACHE_CONTROL } from "./cache-control.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { traceResponseStart } from "./response-start-tracing.js";
 import { getFrameworkLinkHeader } from "./app-response-header-provenance.js";
@@ -1555,6 +1556,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // Next.js's ResponseCache awaits an on-demand revalidation's writes before
   // it answers, so `await res.revalidate()` resolves once the entry is stored.
   const onDemandCacheWrites: Promise<void>[] | null = isOnDemandRevalidate ? [] : null;
+  const renderFailedRef: { value: (() => boolean) | null } = { value: null };
 
   const lifecycleOptions: Parameters<typeof renderAppPageLifecycle>[0] = {
     basePath: options.basePath,
@@ -1662,17 +1664,60 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     renderToReadableStream: options.renderToReadableStream,
     prerenderToReadableStream: options.prerenderToReadableStream,
     routePattern: route.pattern,
+    renderFailedRef,
     scriptNonce: options.scriptNonce,
     waitUntil(cachePromise) {
       onDemandCacheWrites?.push(cachePromise);
       getRequestExecutionContext()?.waitUntil(cachePromise);
     },
   };
+  // The entry an on-demand revalidation of this request writes.
+  const onDemandCacheKey = () =>
+    options.isRscRequest
+      ? options.isrRscKey(
+          options.cleanPathname,
+          null,
+          options.renderMode,
+          options.interceptionContext,
+          interceptionId,
+        )
+      : options.isrHtmlKey(options.cleanPathname);
   const renderResponse = async () => {
     const response = await renderAppPageLifecycle(lifecycleOptions);
     // Each write reads its own branch of the render's streams, so it completes
     // while the response's branch stays unread.
     if (onDemandCacheWrites) await Promise.all(onDemandCacheWrites);
+    // As in Next.js, an on-demand revalidation whose render reported an error
+    // fails, so `res.revalidate()` throws. Only a render that would have been
+    // stored is checked, once its writes have read all of it.
+    // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
+    // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
+    if (onDemandCacheWrites && onDemandCacheWrites.length > 0 && renderFailedRef.value?.()) {
+      void response.body?.cancel().catch(() => {});
+      // Next.js re-stores the previous entry, which holds both the document
+      // and the RSC payload, with a short revalidate, so a later request
+      // regenerates it (server/response-cache/index.ts).
+      const { keepPreviousAppPageEntry } = await import("./app-page-cache.js");
+      const siblingKey = options.isRscRequest
+        ? options.isrHtmlKey(options.cleanPathname)
+        : options.isrRscKey(
+            options.cleanPathname,
+            null,
+            undefined,
+            options.interceptionContext,
+            interceptionId,
+          );
+      await Promise.all(
+        [onDemandCacheKey(), siblingKey].map(async (key) => {
+          const previous = await options.isrGet(key).catch(() => null);
+          if (previous) await keepPreviousAppPageEntry(options, key, previous);
+        }),
+      );
+      return new Response(null, {
+        status: 500,
+        headers: { "Cache-Control": NEVER_CACHE_CONTROL },
+      });
+    }
     return response;
   };
   // Concurrent on-demand revalidations of one stored entry share a single
@@ -1684,17 +1729,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isStaticEligible &&
     !(options.isRscRequest && options.mountedSlotsHeader)
   ) {
-    const cacheKey = options.isRscRequest
-      ? options.isrRscKey(
-          options.cleanPathname,
-          null,
-          options.renderMode,
-          options.interceptionContext,
-          interceptionId,
-        )
-      : options.isrHtmlKey(options.cleanPathname);
     return coalesceOnDemandResponse(
-      `${options.request.method}:${cacheKey}`,
+      `${options.request.method}:${onDemandCacheKey()}`,
       options.request.method,
       renderResponse,
     );
