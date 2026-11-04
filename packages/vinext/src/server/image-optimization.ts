@@ -644,9 +644,11 @@ async function withDetectedImageContentType(
 ): Promise<Response> {
   if (!source.ok || !source.body) return source;
   const reader = source.body.getReader();
-  // Replay the chunks read, copying only the bytes detection reads. Past
-  // those, the chunks read to reach the end of an `ftyp` box are only counted,
-  // so a large box costs the source a second fetch rather than isolate memory.
+  // Replay the chunks read, copying only the bytes detection reads. Chunks
+  // are held whole until they reach `IMAGE_DETECTION_LENGTH`, so a large first
+  // chunk is held as it arrived. Past that, the chunks read to reach the end of
+  // an `ftyp` box are only counted, so a large box costs the source a second
+  // fetch rather than isolate memory.
   const head: Uint8Array[] = [];
   let heldLength = 0;
   let length = 0;
