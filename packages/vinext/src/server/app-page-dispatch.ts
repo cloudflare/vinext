@@ -1743,18 +1743,21 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       );
     };
     let response: Response;
+    let body: ArrayBuffer | null;
     try {
       response = await renderAppPageLifecycle(lifecycleOptions);
+      // A render that skipped its writes can still report an error from its
+      // lazy streams, so it is whole only once its response has been read.
+      // The coalesced response is buffered anyway, as Next.js's ResponseCache
+      // does.
+      body = isStoredOnDemandRevalidate && response.body ? await response.arrayBuffer() : null;
     } catch (error) {
       // An error that ends the render, such as one its page throws while its
-      // element is prepared, fails the revalidation too.
+      // element is prepared or one its stream fails with, fails the
+      // revalidation too.
       await keepPreviousEntries();
       throw error;
     }
-    // A render that skipped its writes can still report an error from its
-    // lazy streams, so it is whole only once its response has been read. The
-    // coalesced response is buffered anyway, as Next.js's ResponseCache does.
-    const body = isStoredOnDemandRevalidate && response.body ? await response.arrayBuffer() : null;
     // Each write reads its own branch of the render's streams.
     if (onDemandCacheWrites) await Promise.all(onDemandCacheWrites);
     // As in Next.js, an on-demand revalidation whose render reported an error

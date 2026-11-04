@@ -4445,6 +4445,14 @@ describe("app page dispatch", () => {
       failed: true,
       throws: true,
     },
+    // A stream that fails once the render has returned rejects as it is read.
+    {
+      name: "a stream error",
+      reports: "stream",
+      failed: true,
+      isRscRequest: true,
+      throws: true,
+    },
     // Next.js rethrows the bail-out instead of rendering an error boundary.
     { name: "a useSearchParams() outside Suspense", reports: "bailout", failed: true },
     // Next.js re-stores whatever it read, so an expired entry is revived.
@@ -4588,6 +4596,10 @@ describe("app page dispatch", () => {
             controller.enqueue(new TextEncoder().encode("flight"));
             await new Promise((resolve) => setTimeout(resolve, 0));
             if (dynamic === true) markDynamicUsage();
+            if (reports === "stream") {
+              controller.error(shellError);
+              return;
+            }
             if (reports === "flight") {
               renderOptions?.onError?.(new Error("suspended failure"), undefined, undefined);
             }
