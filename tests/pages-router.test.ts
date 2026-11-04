@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
-import { createBuilder, createServer, build, type ViteDevServer } from "vite-plus";
+import { createBuilder, createServer, build, type Plugin, type ViteDevServer } from "vite-plus";
 import {
   createServer as createHttpServer,
   get as httpGet,
@@ -2038,6 +2038,45 @@ export default class CustomDocument extends Document {
     }
   });
 
+  // Vite and Next.js both resolve the project root through symlinks, so module
+  // URLs stay root-relative when the root is given as a symlinked path.
+  // A plugin that enables resolve.preserveSymlinks from a later config hook
+  // must not leave Vite on the symlinked root while vinext uses the real one.
+  const preserveSymlinksPlugin: Plugin = {
+    name: "test:preserve-symlinks",
+    config: () => ({ resolve: { preserveSymlinks: true } }),
+  };
+  it.each([
+    ["an auto-detected appDir", null, []],
+    ["an explicit appDir", undefined, []],
+    ["a later plugin enabling preserveSymlinks", undefined, [preserveSymlinksPlugin]],
+  ] as const)(
+    "serves root-relative module URLs for a symlinked project root with %s in dev",
+    async (_label, appDir, prependPlugins) => {
+      const linkDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-symlinked-root-"));
+      const linkedRoot = path.join(linkDir, "pages-basic");
+      try {
+        await fsp.symlink(FIXTURE_DIR, linkedRoot, "junction");
+        const started = await startFixtureServer(linkedRoot, {
+          appDir,
+          prependPlugins: [...prependPlugins],
+        });
+        try {
+          const html = await fetch(`${started.baseUrl}/about`).then((response) => response.text());
+          const nextData = JSON.parse(
+            html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? "{}",
+          );
+          expect(nextData.__vinext.pageModuleUrl).toBe("/pages/about.tsx");
+          expect(nextData.__vinext.appModuleUrl).toBe("/pages/_app.tsx");
+        } finally {
+          await started.server.close();
+        }
+      } finally {
+        await fsp.rm(linkDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   // --- API Routes ---
 
   it("handles API routes returning JSON", async () => {
@@ -2341,7 +2380,9 @@ export default class CustomDocument extends Document {
   });
 
   it("refreshes the dev hydration matcher after middleware config changes", async () => {
-    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-matcher-edit-"));
+    const tmpRoot = await fsp.realpath(
+      await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-matcher-edit-")),
+    );
     const middlewareFile = path.join(tmpRoot, "middleware.ts");
     const previousSource = (matcher: string) => `import { NextResponse } from "next/server";
 export function middleware() { return NextResponse.next(); }
@@ -2401,9 +2442,15 @@ export const config = { matcher: "${matcher}" };
   });
 
   it("refreshes dev page data classifications after edits and replacements", async () => {
-    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-data-hmr-"));
+    const tmpRoot = await fsp.realpath(
+      await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-data-hmr-")),
+    );
+    // Served through a symlinked root: Vite watches the real path, so watcher
+    // events name real paths and vinext must match them.
+    const linkedRoot = `${tmpRoot}-link`;
     const pageFile = path.join(tmpRoot, "pages", "index.tsx");
     try {
+      await fsp.symlink(tmpRoot, linkedRoot, "junction");
       await fsp.symlink(
         path.resolve(import.meta.dirname, "../node_modules"),
         path.join(tmpRoot, "node_modules"),
@@ -2414,7 +2461,7 @@ export const config = { matcher: "${matcher}" };
         pageFile,
         "export const getServerSideProps = () => ({ props: {} });\nexport default function Home() { return <p>home</p>; }\n",
       );
-      const { server: devServer, baseUrl } = await startFixtureServer(tmpRoot);
+      const { server: devServer, baseUrl } = await startFixtureServer(linkedRoot);
       const wsSend = vi.spyOn(devServer.ws, "send");
       const invalidateClientModule = vi.spyOn(
         devServer.environments.client.moduleGraph,
@@ -2506,6 +2553,7 @@ export const config = { matcher: "${matcher}" };
         await devServer.close();
       }
     } finally {
+      await fsp.rm(linkedRoot, { force: true });
       await fsp.rm(tmpRoot, { recursive: true, force: true });
     }
   });
@@ -4567,7 +4615,7 @@ describe("Virtual server entry generation", () => {
     // Next.js includes /_app files in every Pages document before collecting
     // stylesheets:
     // .nextjs-ref/packages/next/src/pages/_document.tsx getDocumentFiles().
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-"));
+    const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-")));
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     fs.unlinkSync(path.join(tmpDir, "node_modules"));
     fs.symlinkSync(
@@ -4870,7 +4918,9 @@ describe("Virtual server entry generation", () => {
   });
 
   it("dev Pages _app stylesheet metadata updates when _app imports change", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-hmr-"));
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-hmr-")),
+    );
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     const appPath = fixture.appPath;
     const testServer = await createServer({
@@ -4919,7 +4969,9 @@ describe("Virtual server entry generation", () => {
   });
 
   it("dev Pages _app stylesheet metadata updates when transitive imports change", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-transitive-"));
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-transitive-")),
+    );
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     const transitivePath = path.join(tmpDir, "lib", "transitive.ts");
     const testServer = await createServer({
@@ -4974,7 +5026,9 @@ describe("Virtual server entry generation", () => {
   });
 
   it("dev Pages client assets re-resolve only edited modules until tsconfig.json changes", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-reuse-"));
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-reuse-")),
+    );
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     // The assets module resolves each import of the modules it reads.
     const resolveImporters: string[] = [];
@@ -5050,10 +5104,12 @@ describe("Virtual server entry generation", () => {
       server: { port: 0, cors: false },
       logLevel: "silent",
     });
+    // vinext resolves the root through symlinks like Vite, so routes are keyed by real path.
+    const realAppPath = fs.realpathSync(fixture.appPath);
     const readAppManifest = async () => {
       const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
       return (assetsModule.default as { ssrManifest?: Record<string, string[]> }).ssrManifest?.[
-        fixture.appPath
+        realAppPath
       ];
     };
 
@@ -5080,7 +5136,9 @@ describe("Virtual server entry generation", () => {
   });
 
   it("dev Pages client assets follow an imported stylesheet symlink being retargeted", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-retarget-"));
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-retarget-")),
+    );
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     const themePath = path.join(tmpDir, "styles", "theme.css");
     fs.mkdirSync(path.join(tmpDir, "themes"));
@@ -5407,7 +5465,9 @@ describe("Virtual server entry generation", () => {
     // Ported from Next.js:
     // test/development/pages-dir/custom-app-hmr/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/development/pages-dir/custom-app-hmr/index.test.ts
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-fast-refresh-"));
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-fast-refresh-")),
+    );
     const sharedPath = path.join(tmpDir, "lib", "shared.ts");
     const appPath = path.join(tmpDir, "pages", "_app.tsx");
     const pagePath = path.join(tmpDir, "pages", "index.tsx");
