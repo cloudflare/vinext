@@ -37,6 +37,7 @@ import {
   type StaticParamsMap,
 } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
+import { tryRealpathSync } from "./ssr-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
 import { loadMdxEsmReader } from "../utils/mdx-scan.js";
 import { findDir } from "../utils/project.js";
@@ -1246,6 +1247,10 @@ function configuredRewritesCanReplaceWarmPath(
   return configuredRulesAffectWarmPath(pathname, applicableRewrites, config);
 }
 
+function canonicalDir(dir: string): string {
+  return toSlash(tryRealpathSync(dir) ?? dir);
+}
+
 function findMiddlewareConventionFile(
   root: string,
   appDir: string | null,
@@ -1254,7 +1259,9 @@ function findMiddlewareConventionFile(
 ): string | null {
   const routeDir = appDir ?? pagesDir;
   const routeRoot = routeDir ? path.dirname(routeDir) : root;
-  const conventionDir = routeRoot === path.join(root, "src") ? routeRoot : root;
+  // Compare real paths: `root` is resolved through symlinks, a user appDir may not be.
+  const conventionDir =
+    canonicalDir(routeRoot) === canonicalDir(path.join(root, "src")) ? routeRoot : root;
   for (const name of ["proxy", "middleware"]) {
     for (const extension of pageExtensions) {
       const filePath = path.join(conventionDir, `${name}.${extension}`);

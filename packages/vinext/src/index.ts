@@ -1603,6 +1603,23 @@ function hasReactDirective(code: string): boolean {
   return getLeadingReactDirective(code) !== null;
 }
 
+/**
+ * Resolve a project directory through symlinks the way Vite resolves
+ * `config.root` (and Next.js its project dir), so route files, `server.config.root`
+ * and module ids all share one path. Windows uses the JS realpath, as Vite
+ * does, to keep mapped network drives.
+ */
+function resolveProjectDir(dir: string, preserveSymlinks: boolean | undefined): string {
+  if (preserveSymlinks) return toSlash(dir);
+  try {
+    return toSlash(
+      process.platform === "win32" ? fs.realpathSync(dir) : fs.realpathSync.native(dir),
+    );
+  } catch {
+    return toSlash(dir);
+  }
+}
+
 function generateRootParamsModule(rootParamNames: Iterable<string>): string {
   const names = Array.from(new Set(rootParamNames)).filter(isValidExportIdentifier).sort();
   if (names.length === 0) return "export {};\n";
@@ -2845,7 +2862,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // dependency, so a bare `import "ipaddr.js"` left in dist/server cannot
         // be resolved from the app under strict layouts such as pnpm's.
         const ipaddrSsrExternal = env.command === "serve" ? ["ipaddr.js"] : [];
-        root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
+        root = resolveProjectDir(
+          path.resolve(toSlash(process.cwd()), config.root ?? "."),
+          config.resolve?.preserveSymlinks,
+        );
         if (env.command === "build") assertClientOutDirIsSeparate(root, options);
         const devCliLifecycleEnabled =
           env.command === "serve" &&
@@ -2879,7 +2899,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : config.envDir
               ? path.resolve(root, config.envDir)
               : root;
-        if (earlyDotenv && envDir !== earlyDotenv.dir) {
+        if (
+          earlyDotenv &&
+          envDir !== resolveProjectDir(earlyDotenv.dir, config.resolve?.preserveSymlinks)
+        ) {
           // Values the early pass read from another directory must not shadow
           // this envDir's. Variables set before vinext loaded stay.
           for (const [key, value] of Object.entries(earlyDotenv.env)) {
@@ -2922,7 +2945,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const dir = path.isAbsolute(options.appDir)
             ? options.appDir
             : path.resolve(root, options.appDir);
-          baseDir = toSlash(dir);
+          baseDir = resolveProjectDir(dir, config.resolve?.preserveSymlinks);
         } else {
           // Auto-detect: prefer root-level app/ and pages/, fall back to src/
           const hasRootApp = fs.existsSync(path.join(root, "app"));
@@ -3678,6 +3701,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         const viteConfig: UserConfig = {
+          // Vite resolves `root` after every config hook. Hand it the root
+          // resolved above, so a later plugin enabling resolve.preserveSymlinks
+          // cannot leave Vite on the symlinked path while vinext uses the real one.
+          root,
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           ...(devCliLifecycleEnabled ? { [VINEXT_DEV_CLI_LIFECYCLE]: true } : {}),
