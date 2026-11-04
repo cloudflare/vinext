@@ -2899,9 +2899,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : config.envDir
               ? path.resolve(root, config.envDir)
               : root;
+        // Compare both resolved, so another spelling of the same directory
+        // (e.g. through a symlink) keeps the early pass's values.
         if (
           earlyDotenv &&
-          envDir !== resolveProjectDir(earlyDotenv.dir, config.resolve?.preserveSymlinks)
+          (envDir === undefined ||
+            resolveProjectDir(envDir, config.resolve?.preserveSymlinks) !==
+              resolveProjectDir(earlyDotenv.dir, config.resolve?.preserveSymlinks))
         ) {
           // Values the early pass read from another directory must not shadow
           // this envDir's. Variables set before vinext loaded stay.
