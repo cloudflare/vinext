@@ -1539,6 +1539,8 @@ importers:
 
   tests/fixtures/app-layout-error: {}
 
+  tests/fixtures/app-root-params-unstable-cache: {}
+
   tests/fixtures/app-router-nitro-server:
     dependencies:
       '@vitejs/plugin-react':
