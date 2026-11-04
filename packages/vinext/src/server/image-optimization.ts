@@ -681,16 +681,44 @@ async function withDetectedImageContentType(
       headers,
     });
   };
-  if (heldLength < length) {
-    // Not all the bytes read are held to replay, so serve it fetched again,
-    // typed by the first fetch. Only an `ftyp` box larger than detection
-    // holds gets here.
-    reader.cancel().catch(() => {});
-    const refetched = await refetch();
-    if (!refetched.ok || !refetched.body) return refetched;
-    return typed(refetched, refetched.body);
+  if (heldLength === length) return typed(source, replayImageSource(head, reader));
+  // Not all the bytes read are held to replay, so serve it fetched again. Only
+  // an `ftyp` box larger than detection holds gets here.
+  reader.cancel().catch(() => {});
+  const refetched = await refetch();
+  if (!refetched.ok || !refetched.body) return refetched;
+  // The type found holds for the same first bytes, so a source whose bytes
+  // changed between the fetches is typed afresh, without a third fetch.
+  const refetchedReader = refetched.body.getReader();
+  const refetchedHead: Uint8Array[] = [];
+  let refetchedLength = 0;
+  while (refetchedLength < heldLength) {
+    const { done, value } = await refetchedReader.read();
+    if (done) break;
+    refetchedHead.push(value);
+    refetchedLength += value.byteLength;
   }
-  const body = new ReadableStream<Uint8Array>(
+  const body = replayImageSource(refetchedHead, refetchedReader);
+  if (
+    refetchedLength >= heldLength &&
+    bytesEqual(concatBytes(refetchedHead, heldLength), concatBytes(head, heldLength))
+  ) {
+    return typed(refetched, body);
+  }
+  return withDetectedImageContentType(new Response(body, refetched), maxLength, async () =>
+    Response.error(),
+  );
+}
+
+/**
+ * Stream `head`, then the rest of `reader`, reading the source only as the
+ * stream is read.
+ */
+function replayImageSource(
+  head: Uint8Array[],
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>(
     {
       start(controller) {
         for (const chunk of head) controller.enqueue(chunk);
@@ -704,10 +732,12 @@ async function withDetectedImageContentType(
         return reader.cancel(reason);
       },
     },
-    // Read the source only as the body is read.
     { highWaterMark: 0 },
   );
-  return typed(source, body);
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  return a.byteLength === b.byteLength && a.every((byte, i) => byte === b[i]);
 }
 
 /**

@@ -881,6 +881,32 @@ describe("handleImageOptimization source typed by its bytes", () => {
     expect(transformed).toEqual([box.byteLength]);
   });
 
+  it("types a source fetched again afresh when its first bytes changed", async () => {
+    const box = new Uint8Array(20_000);
+    box.set([0, 0, 0x4e, 0x20, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
+    const otherBox = box.slice();
+    otherBox[20] = 1;
+    for (const [second, status, body] of [
+      [new TextEncoder().encode(SVG), 400, NOT_ALLOWED],
+      [otherBox, 400, "The requested resource isn't a valid image."],
+      [box, 200, "transformed"],
+    ] as const) {
+      let fetches = 0;
+      const response = await handleImageOptimization(imageRequest, {
+        fetchAsset: async () =>
+          new Response(chunkedSource(fetches++ === 0 ? box : second, 100).body, {
+            headers: { "Content-Type": "image/avif" },
+          }),
+        transformImage: async (input, options) => {
+          await new Response(input).arrayBuffer();
+          return new Response("transformed", { headers: { "Content-Type": options.format } });
+        },
+      });
+      expect(response.status).toBe(status);
+      expect(await response.text()).toBe(body);
+    }
+  });
+
   it("does not type a source by an ftyp box past images.maximumResponseBody", async () => {
     const box = new Uint8Array(2_000);
     box.set([0, 0, 0x07, 0xd0, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
