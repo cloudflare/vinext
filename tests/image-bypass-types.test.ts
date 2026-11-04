@@ -344,7 +344,7 @@ describe("handleImageOptimization source size limit", () => {
   const transformImage = async () => new Response("transformed");
   const imageRequest = new Request("http://localhost/_next/image?url=%2Fbig.png&w=640&q=75");
 
-  it("rejects a source that declares more than the limit without reading it", async () => {
+  it("answers 413 for a source that declares more than the limit once it reads past it", async () => {
     let pulled = 0;
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {
@@ -352,19 +352,30 @@ describe("handleImageOptimization source size limit", () => {
         controller.enqueue(STATIC_PNG);
       },
     });
-    const response = await handleImageOptimization(imageRequest, {
-      fetchAsset: async () =>
-        new Response(body, {
-          status: 200,
-          headers: { "Content-Type": "image/png", "Content-Length": "50000001" },
-        }),
-      transformImage,
-    });
+    const response = await handleImageOptimization(
+      imageRequest,
+      {
+        fetchAsset: async () =>
+          new Response(body, {
+            status: 200,
+            headers: { "Content-Type": "image/png", "Content-Length": "1001" },
+          }),
+        // Reads its whole input before it resolves, as Cloudflare Images does.
+        transformImage: async (input) => {
+          await new Response(input).arrayBuffer();
+          return new Response("transformed");
+        },
+      },
+      undefined,
+      { maximumResponseBody: 1_000 },
+    );
     expect(response.status).toBe(413);
     expect(await response.text()).toBe(TOO_LARGE);
-    // Only the first chunk is read, to type the source; the stream refills
-    // its queue once.
-    expect(pulled).toBeLessThanOrEqual(2);
+    // Like Next.js, the bytes read count, not the length declared, and reading
+    // stops once they pass the limit.
+    const chunksPastLimit = Math.ceil(1_000 / STATIC_PNG.byteLength) + 1;
+    expect(pulled).toBeGreaterThanOrEqual(chunksPastLimit);
+    expect(pulled).toBeLessThanOrEqual(chunksPastLimit + 2);
   });
 
   it("passes the whole source to the optimizer whatever its chunking and Content-Length", async () => {
@@ -584,14 +595,20 @@ describe("handleImageOptimization source size limit for every type", () => {
     }
 
     it(`does not answer 413 for a ${name} source at the limit`, async () => {
-      for (const chunkSize of [null, 10]) {
+      // Including one that declares more than it is, as only bytes read count.
+      const atLimit: Delivery[] = [
+        { chunkSize: null },
+        { chunkSize: 10 },
+        { chunkSize: 10, declares: LIMIT + 1 },
+      ];
+      for (const delivery of atLimit) {
         const response = await handleImageOptimization(
           imageRequest,
-          handlers(padded(head, LIMIT), label, { chunkSize }, optimizer),
+          handlers(padded(head, LIMIT), label, delivery, optimizer),
           undefined,
           { maximumResponseBody: LIMIT, dangerouslyAllowSVG: allowSvg },
         );
-        expect(response.status, String(chunkSize)).not.toBe(413);
+        expect(response.status, JSON.stringify(delivery)).not.toBe(413);
         await response.arrayBuffer();
       }
     });
@@ -695,6 +712,26 @@ describe("handleImageOptimization fallback after the optimizer rejects early", (
     expect(response.status).toBe(200);
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(jpeg);
     expect(fetches).toBe(2);
+  });
+
+  it("labels a source fetched again by its own type", async () => {
+    // Bytes of no known type keep their ICO label. Past what is held to
+    // replay, the source is fetched again, as a JPEG by then.
+    const ico = new Uint8Array(1_200_000);
+    const jpeg = padded([0xff, 0xd8, 0xff], 1_200_000);
+    let fetches = 0;
+    const response = await handleImageOptimization(imageRequest, {
+      fetchAsset: async () => {
+        fetches += 1;
+        const bytes = fetches === 1 ? ico : jpeg;
+        return new Response(chunkedSource(bytes, 64 * 1024).body, {
+          headers: { "Content-Type": "image/vnd.microsoft.icon" },
+        });
+      },
+    });
+    expect(fetches).toBe(2);
+    expect(response.headers.get("Content-Type")).toBe("image/jpeg");
+    await response.arrayBuffer();
   });
 
   it("reads a source fetched again once the optimizer cancelled a read still pending", async () => {

@@ -821,11 +821,6 @@ function createPassthroughImageResponse(
   return new Response(body, { status: 200, headers });
 }
 
-/** Whether a source's Content-Length is more than `limit` bytes. */
-function declaresMoreThan(source: Response, limit: number): boolean {
-  return Number(source.headers.get("Content-Length") ?? Number.NaN) > limit;
-}
-
 /** Next.js's 413 message for a source larger than `images.maximumResponseBody`. */
 export const IMAGE_SOURCE_TOO_LARGE_MESSAGE =
   '"url" parameter is valid but internal response is invalid';
@@ -846,7 +841,8 @@ type AdmittedImageSource = {
  * Admit a fetched source as Next.js does, which reads it whole before typing
  * it: a 413 past the limit, then a 400 for one that is no image or of a type
  * not allowed. A rejected source is read on to the limit to tell the two
- * apart, whatever length it declares within it.
+ * apart. Like Next.js, the limit is held to the bytes read, whatever length the
+ * source declares.
  */
 async function admitImageSource(
   fetched: Response,
@@ -857,10 +853,6 @@ async function admitImageSource(
   if (source === null) return sourceTooLargeResponse();
   if (!source.ok || !source.body) return invalidImageSourceResponse();
   const body = source.body;
-  if (declaresMoreThan(source, limit)) {
-    body.cancel().catch(() => {});
-    return sourceTooLargeResponse();
-  }
   // Block unsafe Content-Types (e.g., SVG which can contain embedded
   // scripts). SVG is only allowed when dangerouslyAllowSVG is enabled.
   const contentType = source.headers.get("Content-Type");
@@ -986,7 +978,11 @@ export async function handleImageOptimization(
     );
     // Next.js labels an ICO by its detected type, `image/x-icon`, where
     // Workers static assets use the registered `image/vnd.microsoft.icon`.
-    if (response.ok && sourceMediaType === "image/vnd.microsoft.icon") {
+    // The response served may be a source fetched again, so its own type decides.
+    if (
+      response.ok &&
+      imageMediaType(response.headers.get("Content-Type")) === "image/vnd.microsoft.icon"
+    ) {
       response.headers.set("Content-Type", "image/x-icon");
     }
     return response;
