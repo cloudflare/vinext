@@ -4432,6 +4432,13 @@ describe("app page dispatch", () => {
     // boundary recovers from the shell, or one the page throws as it builds.
     { name: "a shell error", reports: "shell", failed: true },
     { name: "a page build error", reports: "build", failed: true },
+    // Without PPR, Next.js fails a revalidation that turned dynamic anyway.
+    {
+      name: "a page build error after turning dynamic",
+      reports: "build",
+      failed: true,
+      dynamic: true,
+    },
     {
       name: "a page build error that no boundary renders",
       reports: "build",
@@ -4471,6 +4478,13 @@ describe("app page dispatch", () => {
       reports: "flight",
       failed: true,
       dynamic: true,
+    },
+    // One that turns dynamic before its writes skips them, yet still fails.
+    {
+      name: "a Flight error after turning dynamic first",
+      reports: "flight",
+      failed: true,
+      dynamic: "first",
     },
     // With PPR, a dynamic hole Next.js postpones is excused.
     {
@@ -4526,7 +4540,10 @@ describe("app page dispatch", () => {
     const { options } = createDispatchOptions({
       ...("ppr" in testCase ? { pprRuntime: appPagePprRuntime } : {}),
       async buildPageElement() {
-        if (reports === "build") throw shellError;
+        if (reports === "build") {
+          if (dynamic) markDynamicUsage();
+          throw shellError;
+        }
         return React.createElement("div", null, "fresh");
       },
       isProduction: true,
@@ -4565,11 +4582,12 @@ describe("app page dispatch", () => {
           renderOptions?.onError?.(new Error("shell failure"), undefined, undefined);
         }
         if (reports === "shell") renderOptions?.onError?.(shellError, undefined, undefined);
+        if (dynamic === "first") markDynamicUsage();
         return new ReadableStream<Uint8Array>({
           async start(controller) {
             controller.enqueue(new TextEncoder().encode("flight"));
             await new Promise((resolve) => setTimeout(resolve, 0));
-            if (dynamic) markDynamicUsage();
+            if (dynamic === true) markDynamicUsage();
             if (reports === "flight") {
               renderOptions?.onError?.(new Error("suspended failure"), undefined, undefined);
             }
