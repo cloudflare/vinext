@@ -82,7 +82,7 @@ import {
   useSearchParams,
   type NavigationContext,
 } from "../packages/vinext/src/shims/navigation.js";
-import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
+import { BailoutToCSRError, notFound } from "../packages/vinext/src/shims/navigation-errors.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import { cacheLife } from "../packages/vinext/src/shims/cache.js";
 import {
@@ -4428,6 +4428,18 @@ describe("app page dispatch", () => {
   it.each([
     { name: "a Flight error", reports: "flight", failed: true },
     { name: "an SSR error", reports: "ssr", failed: true },
+    // These fail before the render schedules its writes: an error the error
+    // boundary recovers from the shell, or one the page throws as it builds.
+    { name: "a shell error", reports: "shell", failed: true },
+    { name: "a page build error", reports: "build", failed: true },
+    {
+      name: "a page build error that no boundary renders",
+      reports: "build",
+      failed: true,
+      throws: true,
+    },
+    // Next.js rethrows the bail-out instead of rendering an error boundary.
+    { name: "a useSearchParams() outside Suspense", reports: "bailout", failed: true },
     // Next.js re-stores whatever it read, so an expired entry is revived.
     {
       name: "a Flight error over an expired entry",
@@ -4491,8 +4503,13 @@ describe("app page dispatch", () => {
       value: { ...previous.value, lastModified: previous.value.lastModified + 1 },
     };
     let rendered = false;
+    const shellError = new Error("layout failure");
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
     const { options } = createDispatchOptions({
+      async buildPageElement() {
+        if (reports === "build") throw shellError;
+        return React.createElement("div", null, "fresh");
+      },
       isProduction: true,
       isRscRequest,
       isrGet: vi.fn(async () => ("overwritten" in testCase && rendered ? newer : previous)),
@@ -4508,6 +4525,10 @@ describe("app page dispatch", () => {
             ).arrayBuffer();
           }
           const flight = new Response(rscStream).arrayBuffer();
+          if (reports === "shell" || reports === "bailout") {
+            await flight;
+            throw reports === "shell" ? shellError : new BailoutToCSRError("useSearchParams()");
+          }
           return new ReadableStream<Uint8Array>({
             async start(controller) {
               await flight;
@@ -4524,6 +4545,7 @@ describe("app page dispatch", () => {
         if (reports === "early") {
           renderOptions?.onError?.(new Error("shell failure"), undefined, undefined);
         }
+        if (reports === "shell") renderOptions?.onError?.(shellError, undefined, undefined);
         return new ReadableStream<Uint8Array>({
           async start(controller) {
             controller.enqueue(new TextEncoder().encode("flight"));
@@ -4539,11 +4561,24 @@ describe("app page dispatch", () => {
       revalidateSeconds: 60,
     });
     options.scriptNonce = scriptNonce;
+    options.renderErrorBoundaryPage = vi.fn(async () =>
+      "throws" in testCase ? null : new Response("error", { status: 500 }),
+    );
 
-    const response = await runWithRequestContext(
+    const dispatched = runWithRequestContext(
       createRequestContext({ isOnDemandRevalidate: true }),
       () => dispatchAppPage(options),
     );
+    if ("throws" in testCase) {
+      await expect(dispatched).rejects.toBe(shellError);
+      expect(
+        [...isrSet.mock.calls]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, , policy]) => [key.split(":")[0], policy.cacheControl]),
+      ).toEqual(restored.map((kind) => [kind, { revalidate: 30 }]));
+      return;
+    }
+    const response = await dispatched;
     await response.arrayBuffer();
 
     if (!failed) {

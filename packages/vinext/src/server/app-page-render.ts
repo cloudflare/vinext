@@ -760,9 +760,11 @@ async function renderAppPageLifecycleImpl(
       options.isStaticEligible &&
       options.pprFallbackShellSignal?.aborted !== true,
   );
+  // A candidate's useSearchParams() outside Suspense fails its render too.
+  let bailedOutToClientRendering = false;
   if (options.renderFailedRef) {
     options.renderFailedRef.value = () =>
-      prerenderRenderErrors.failsBuild(consumeRenderDynamicUsage);
+      bailedOutToClientRendering || prerenderRenderErrors.failsBuild(consumeRenderDynamicUsage);
   }
   const finalizePrerenderRenderError = (
     response: Response,
@@ -1492,6 +1494,7 @@ async function renderAppPageLifecycleImpl(
         console.error(
           `${error.reason} should be wrapped in a suspense boundary at page "${options.routePattern}". Read more: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout`,
         );
+        bailedOutToClientRendering = true;
         options.clearRequestContext();
         const headers = new Headers();
         mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
