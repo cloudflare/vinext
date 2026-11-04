@@ -736,6 +736,26 @@ describe("handleImageOptimization source typed by its bytes", () => {
     };
   }
 
+  it("finds an SVG root element as Next.js' detector does", async () => {
+    const svgRoot = /<svg\s([^>"']|"[^"]*"|'[^']*')*>/;
+    for (const text of [
+      '<!-- c --><svg width="1">',
+      "<!-- c --><svg\n>",
+      "<!-- c --><svg a=\">\" b='>'>",
+      '<!-- c --><svg a=">"',
+      '<!-- c --><svg a="unclosed <svg b>',
+      "<!-- c --><svgx a>",
+      "<!-- c --><svg>",
+      "<!-- c --><svg ",
+    ]) {
+      const { fetchAsset } = source(text, "image/png");
+      const response = await handleImageOptimization(imageRequest, { fetchAsset }, undefined, {
+        dangerouslyAllowSVG: true,
+      });
+      expect(response.status === 200, text).toBe(svgRoot.test(text));
+    }
+  });
+
   it("does not take text with `ftyp` at offset 4 for an ISOBMFF image", () => {
     const encode = (text: string) => new TextEncoder().encode(text);
     expect(sniffImageContentType(encode(`<!--ftypavif-->${SVG}`))).toBeNull();

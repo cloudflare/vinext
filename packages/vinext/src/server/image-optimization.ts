@@ -502,8 +502,27 @@ const IMAGE_SIGNATURE_LENGTH = 12;
  */
 export const IMAGE_DETECTION_LENGTH = 1000;
 
-/** Next.js' SVG root element (image-size's SVG detector). */
-const SVG_ROOT = /<svg\s([^>"']|"[^"]*"|'[^']*')*>/;
+/**
+ * Whether `text` has an SVG root element, as Next.js' image detector checks
+ * with image-size's `/<svg\s([^>"']|"[^"]*"|'[^']*')*>/`. Its alternatives
+ * start with distinct characters, so a single scan from each `<svg` matches
+ * what the expression matches, without its backtracking.
+ */
+function hasSvgRootElement(text: string): boolean {
+  for (let start = text.indexOf("<svg"); start !== -1; start = text.indexOf("<svg", start + 1)) {
+    if (!/\s/.test(text.charAt(start + 4))) continue;
+    for (let i = start + 5; i < text.length; i++) {
+      const char = text[i];
+      if (char === ">") return true;
+      if (char === '"' || char === "'") {
+        const end = text.indexOf(char, i + 1);
+        if (end === -1) break;
+        i = end;
+      }
+    }
+  }
+  return false;
+}
 
 /**
  * Whether `bytes` start with an `ftyp` box of `brand`: a big-endian box size
@@ -580,7 +599,7 @@ function startsWithMarkup(bytes: Uint8Array): boolean {
 export function detectImageContentType(bytes: Uint8Array, label: string | null): string | null {
   const type = sniffImageContentType(bytes);
   if (type !== null) return type;
-  if (SVG_ROOT.test(new TextDecoder().decode(bytes.subarray(0, IMAGE_DETECTION_LENGTH)))) {
+  if (hasSvgRootElement(new TextDecoder().decode(bytes.subarray(0, IMAGE_DETECTION_LENGTH)))) {
     return "image/svg+xml";
   }
   return startsWithMarkup(bytes) ? null : label;
