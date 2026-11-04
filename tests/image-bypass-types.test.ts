@@ -1188,21 +1188,23 @@ describe("handleImageOptimization source typed by its bytes", () => {
     for (const [second, status, body] of [
       [new TextEncoder().encode(SVG), 400, NOT_ALLOWED],
       [otherBox, 400, "The requested resource isn't a valid image."],
+      // Ending before the box, so not AVIF by its own bytes.
+      [box.subarray(0, 1_000), 400, NOT_ALLOWED],
       [box, 200, "transformed"],
     ] as const) {
       let fetches = 0;
       const response = await handleImageOptimization(imageRequest, {
         fetchAsset: async () =>
           new Response(chunkedSource(fetches++ === 0 ? box : second, 100).body, {
-            headers: { "Content-Type": "image/avif" },
+            headers: { "Content-Type": "application/octet-stream" },
           }),
         transformImage: async (input, options) => {
           await new Response(input).arrayBuffer();
           return new Response("transformed", { headers: { "Content-Type": options.format } });
         },
       });
-      expect(response.status).toBe(status);
-      expect(await response.text()).toBe(body);
+      expect(response.status, String(second.byteLength)).toBe(status);
+      expect(await response.text(), String(second.byteLength)).toBe(body);
     }
   });
 

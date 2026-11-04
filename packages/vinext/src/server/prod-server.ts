@@ -820,7 +820,13 @@ async function staticImageSource(
   const file = await fsp.open(path, "r");
   try {
     const bytes = new Uint8Array(IMAGE_DETECTION_LENGTH);
-    const { bytesRead } = await file.read(bytes, 0, IMAGE_DETECTION_LENGTH, 0);
+    // A read can return fewer bytes than asked for before the end of the file.
+    let bytesRead = 0;
+    while (bytesRead < IMAGE_DETECTION_LENGTH) {
+      const read = await file.read(bytes, bytesRead, IMAGE_DETECTION_LENGTH - bytesRead, bytesRead);
+      if (read.bytesRead === 0) break;
+      bytesRead += read.bytesRead;
+    }
     const contentType = detectImageContentType(bytes.subarray(0, bytesRead), label, size);
     return { tooLarge: false, contentType };
   } finally {
