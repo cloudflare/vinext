@@ -823,6 +823,52 @@ describe("handleImageOptimization source typed by its bytes", () => {
     }
   });
 
+  it("reads a whole ftyp box past the first 1000 bytes to type the source", async () => {
+    const box = new Uint8Array(2_000);
+    box.set([0, 0, 0x07, 0xd0, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
+    for (const [bytes, status] of [
+      [box, 200],
+      [box.subarray(0, 1_500), 400],
+    ] as const) {
+      const transformed: number[] = [];
+      const response = await handleImageOptimization(imageRequest, {
+        fetchAsset: async () =>
+          new Response(chunkedSource(bytes, 100).body, {
+            headers: { "Content-Type": "application/octet-stream" },
+          }),
+        transformImage: async (input, options) => {
+          transformed.push((await new Response(input).arrayBuffer()).byteLength);
+          return new Response("transformed", { headers: { "Content-Type": options.format } });
+        },
+      });
+      expect(response.status).toBe(status);
+      expect(transformed).toEqual(status === 200 ? [bytes.byteLength] : []);
+    }
+  });
+
+  it("cancels a source it rejects by its bytes", async () => {
+    for (const body of [SVG, "<!DOCTYPE html><p>page</p>"]) {
+      let cancelled = false;
+      const response = await handleImageOptimization(imageRequest, {
+        fetchAsset: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              // More than detection reads, and never closed.
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(body.padEnd(2_000)));
+              },
+              cancel() {
+                cancelled = true;
+              },
+            }),
+            { headers: { "Content-Type": "image/png" } },
+          ),
+      });
+      expect(response.status).toBe(400);
+      expect(cancelled, body).toBe(true);
+    }
+  });
+
   it("labels an image by its bytes rather than its Content-Type", async () => {
     const response = await handleImageOptimization(imageRequest, {
       fetchAsset: source(STATIC_GIF, "image/jpeg").fetchAsset,

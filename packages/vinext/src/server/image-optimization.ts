@@ -494,13 +494,13 @@ const IMAGE_SIGNATURES: ReadonlyArray<readonly [string, ReadonlyArray<number | n
   ];
 
 /** The bytes every signature fits in. */
-const IMAGE_SIGNATURE_LENGTH = 12;
+export const IMAGE_SIGNATURE_LENGTH = 12;
 
 /**
  * The most of a source read to identify it: Next.js looks for an SVG root
  * element in the first 1000 bytes.
  */
-export const IMAGE_DETECTION_LENGTH = 1000;
+const IMAGE_DETECTION_LENGTH = 1000;
 
 /**
  * Whether `text` has an SVG root element, as Next.js' image detector checks
@@ -561,19 +561,20 @@ export function sniffImageContentType(bytes: Uint8Array): string | null {
 
 /**
  * How many of a source's first bytes detection reads, given the first
- * `IMAGE_SIGNATURE_LENGTH`: those for a signature, the box for an `ftyp`
- * box, and otherwise enough to find an SVG root element.
+ * `IMAGE_SIGNATURE_LENGTH`: those for a signature, the whole box for an
+ * `ftyp` box, as Next.js checks it against the source it read whole, and
+ * otherwise enough to find an SVG root element. Never more than `maxLength`.
  */
-function imageDetectionLength(bytes: Uint8Array): number {
+export function imageDetectionLength(bytes: Uint8Array, maxLength: number): number {
   for (const [, signature] of IMAGE_SIGNATURES) {
     if ("ftypBrand" in signature) {
       const boxSize = ftypBoxSize(bytes, signature.ftypBrand);
-      if (boxSize !== null && boxSize <= IMAGE_DETECTION_LENGTH) return boxSize;
+      if (boxSize !== null) return Math.min(boxSize, maxLength);
     } else if (signature.every((byte, i) => byte === null || bytes[i] === byte)) {
       return IMAGE_SIGNATURE_LENGTH;
     }
   }
-  return IMAGE_DETECTION_LENGTH;
+  return Math.min(IMAGE_DETECTION_LENGTH, maxLength);
 }
 
 /**
@@ -590,7 +591,7 @@ function startsWithMarkup(bytes: Uint8Array): boolean {
 }
 
 /**
- * The type of a source from its first `IMAGE_DETECTION_LENGTH` bytes, as
+ * The type of a source from the first bytes `imageDetectionLength` reads, as
  * Next.js types every source by its bytes rather than its label, so an SVG
  * is an SVG whatever its name or Content-Type. Bytes that match no signature
  * keep `label`, since Next.js identifies formats these signatures don't,
@@ -605,29 +606,44 @@ export function detectImageContentType(bytes: Uint8Array, label: string | null):
   return startsWithMarkup(bytes) ? null : label;
 }
 
+/** The first `length` bytes of `chunks`, which hold at least that many. */
+function concatBytes(chunks: Uint8Array[], length: number): Uint8Array {
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (offset === length) break;
+    const part = chunk.subarray(0, length - offset);
+    bytes.set(part, offset);
+    offset += part.byteLength;
+  }
+  return bytes;
+}
+
 /**
  * Type a source by its first bytes, replacing its Content-Type, as Next.js
  * types every source. Workers static assets have no type for some formats
  * Next.js serves, such as ICNS, and label any file by its name.
  */
-async function withDetectedImageContentType(source: Response): Promise<Response> {
+async function withDetectedImageContentType(
+  source: Response,
+  maxLength: number,
+): Promise<Response> {
   if (!source.ok || !source.body) return source;
   const reader = source.body.getReader();
   // Replay the chunks read, copying only the bytes detection reads.
   const head: Uint8Array[] = [];
-  const detected = new Uint8Array(IMAGE_DETECTION_LENGTH);
   let length = 0;
   let target = IMAGE_SIGNATURE_LENGTH;
   while (length < target) {
     const { done, value } = await reader.read();
     if (done) break;
     head.push(value);
-    detected.set(value.subarray(0, IMAGE_DETECTION_LENGTH - length), length);
-    length += Math.min(value.byteLength, IMAGE_DETECTION_LENGTH - length);
+    length += value.byteLength;
     if (target === IMAGE_SIGNATURE_LENGTH && length >= target) {
-      target = imageDetectionLength(detected.subarray(0, length));
+      target = imageDetectionLength(concatBytes(head, IMAGE_SIGNATURE_LENGTH), maxLength);
     }
   }
+  const detected = concatBytes(head, Math.min(length, target));
   const body = new ReadableStream<Uint8Array>(
     {
       start(controller) {
@@ -646,10 +662,7 @@ async function withDetectedImageContentType(source: Response): Promise<Response>
     { highWaterMark: 0 },
   );
   const headers = new Headers(source.headers);
-  const type = detectImageContentType(
-    detected.subarray(0, length),
-    source.headers.get("Content-Type"),
-  );
+  const type = detectImageContentType(detected, source.headers.get("Content-Type"));
   if (type === null) headers.delete("Content-Type");
   else headers.set("Content-Type", type);
   return new Response(body, { status: source.status, statusText: source.statusText, headers });
@@ -833,7 +846,8 @@ export async function handleImageOptimization(
   // Fetch source image
   const fetchedSource = await handlers.fetchAsset(imageUrl, request);
   const isBuildAsset = isImageBuildAsset(fetchedSource);
-  const source = await withDetectedImageContentType(fetchedSource);
+  const limit = imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY;
+  const source = await withDetectedImageContentType(fetchedSource, limit);
   if (!source.ok || !source.body) {
     return invalidImageSourceResponse();
   }
@@ -846,9 +860,14 @@ export async function handleImageOptimization(
   // when dangerouslyAllowSVG is explicitly enabled in next.config.js. Like
   // Next.js, a source of no detected type isn't an image at all.
   const sourceContentType = source.headers.get("Content-Type");
-  if (sourceContentType === null) return invalidImageSourceResponse();
-  if (!isSafeImageContentType(sourceContentType, imageConfig?.dangerouslyAllowSVG)) {
-    return imageTypeNotAllowedResponse();
+  if (
+    sourceContentType === null ||
+    !isSafeImageContentType(sourceContentType, imageConfig?.dangerouslyAllowSVG)
+  ) {
+    source.body.cancel().catch(() => {});
+    return sourceContentType === null
+      ? invalidImageSourceResponse()
+      : imageTypeNotAllowedResponse();
   }
 
   // Like Next.js, serve a format it does not optimize as-is, SVG included
@@ -875,7 +894,6 @@ export async function handleImageOptimization(
   }
 
   // Transform if handler provided, otherwise serve original
-  const limit = imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY;
   let reader: ImageSourceReader | null = null;
   if (handlers.transformImage) {
     try {
@@ -955,15 +973,21 @@ export async function handleImageOptimization(
     reader?.cancel();
     const refetchedSource = await withDetectedImageContentType(
       await handlers.fetchAsset(imageUrl, request),
+      limit,
     );
     if (!refetchedSource.ok || !refetchedSource.body) {
       return invalidImageSourceResponse();
     }
 
     const refetchedContentType = refetchedSource.headers.get("Content-Type");
-    if (refetchedContentType === null) return invalidImageSourceResponse();
-    if (!isSafeImageContentType(refetchedContentType, imageConfig?.dangerouslyAllowSVG)) {
-      return imageTypeNotAllowedResponse();
+    if (
+      refetchedContentType === null ||
+      !isSafeImageContentType(refetchedContentType, imageConfig?.dangerouslyAllowSVG)
+    ) {
+      refetchedSource.body.cancel().catch(() => {});
+      return refetchedContentType === null
+        ? invalidImageSourceResponse()
+        : imageTypeNotAllowedResponse();
     }
 
     // A source that was bound for the optimizer stays within the limit.
