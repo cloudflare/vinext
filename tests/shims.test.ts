@@ -8193,9 +8193,11 @@ describe('"use cache" runtime', () => {
     expect(outerCalls).toBe(2);
   });
 
-  // The inner result holds a root-param value next to a pending Promise, and the
-  // outer returns only that value. The outer entry must still vary by the param.
-  it("partitions an outer cache that drops a nested result's pending tail", async () => {
+  // The inner result reads a root param only in a Promise that is still pending
+  // when the function returns, and the outer drops that Promise. The outer entry
+  // must still vary by the param, so the nested call has to finish serializing
+  // before it resolves to the outer.
+  it("partitions an outer cache by a root param read in a dropped nested Promise", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { setCacheHandler, MemoryCacheHandler } =
@@ -8207,29 +8209,24 @@ describe('"use cache" runtime', () => {
     let outerCalls = 0;
     const inner = registerCachedFunction(
       async () => ({
-        early: await getRootParam("lang"),
-        tail: new Promise<string>((resolve) => setTimeout(() => resolve("done"), 50)),
+        early: "early",
+        tail: (async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return getRootParam("lang");
+        })(),
       }),
       "test:nested-root-param-pending-tail-inner",
     );
     const outer = registerCachedFunction(async () => {
       outerCalls++;
-      return (await inner()).early;
+      return `${(await inner()).early}:${outerCalls}`;
     }, "test:nested-root-param-pending-tail-outer");
-    const invoke = (lang: string) =>
-      runWithRootParamsScope({ lang }, async () => {
-        const value = await outer();
-        await (
-          await inner()
-        ).tail;
-        return value;
-      });
+    const invoke = (lang: string) => runWithRootParamsScope({ lang }, () => outer());
 
-    await expect(invoke("en")).resolves.toBe("en");
-    await expect(invoke("fr")).resolves.toBe("fr");
-    await expect(invoke("en")).resolves.toBe("en");
-    await expect(invoke("fr")).resolves.toBe("fr");
-    expect(outerCalls).toBe(2);
+    await expect(invoke("en")).resolves.toBe("early:1");
+    await expect(invoke("fr")).resolves.toBe("early:2");
+    await expect(invoke("en")).resolves.toBe("early:1");
+    await expect(invoke("fr")).resolves.toBe("early:2");
   });
 
   // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
