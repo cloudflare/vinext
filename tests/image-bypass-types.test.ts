@@ -1208,6 +1208,35 @@ describe("handleImageOptimization source typed by its bytes", () => {
     }
   });
 
+  it("serves a source fetched again that ends at its ftyp box, however the first was chunked", async () => {
+    const box = new Uint8Array(20_000);
+    box.set([0, 0, 0x4e, 0x20, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
+    const first = new Uint8Array(20_001);
+    first.set(box);
+    let fetches = 0;
+    const response = await handleImageOptimization(imageRequest, {
+      fetchAsset: async () => {
+        const chunks = fetches++ === 0 ? [first.subarray(0, 1_000), first.subarray(1_000)] : [box];
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              const chunk = chunks.shift();
+              if (chunk) controller.enqueue(chunk);
+              else controller.close();
+            },
+          }),
+          { headers: { "Content-Type": "application/octet-stream" } },
+        );
+      },
+      transformImage: async (input, options) => {
+        await new Response(input).arrayBuffer();
+        return new Response("transformed", { headers: { "Content-Type": options.format } });
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("transformed");
+  });
+
   it("cancels a source it rejects once it reads past the limit", async () => {
     for (const body of [SVG, "<!DOCTYPE html><p>page</p>"]) {
       let cancelled = false;

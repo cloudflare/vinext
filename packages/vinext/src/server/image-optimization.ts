@@ -698,9 +698,10 @@ async function withDetectedImageContentType(
   reader.cancel().catch(() => {});
   const refetched = await refetch();
   if (!refetched.ok || !refetched.body) return refetched;
-  // The type found holds for the same first bytes and a source as long as the
-  // box, so a source whose first bytes changed between the fetches is typed
-  // afresh, without a third fetch, and one that ends before the box errors.
+  // The type found holds for the same first bytes and a source holding the
+  // whole box, so a source whose first bytes changed between the fetches is
+  // typed afresh, without a third fetch, and one that ends before the box
+  // errors. `target` is the box size, however the first fetch was chunked.
   const refetchedReader = refetched.body.getReader();
   const refetchedHead: Uint8Array[] = [];
   let refetchedLength = 0;
@@ -714,7 +715,10 @@ async function withDetectedImageContentType(
     refetchedLength >= heldLength &&
     bytesEqual(concatBytes(refetchedHead, heldLength), concatBytes(head, heldLength))
   ) {
-    return typed(refetched, replayImageSource(refetchedHead, refetchedReader, length));
+    return typed(
+      refetched,
+      replayImageSource(refetchedHead, refetchedReader, Math.min(target, length)),
+    );
   }
   const body = replayImageSource(refetchedHead, refetchedReader);
   return withDetectedImageContentType(new Response(body, refetched), maxLength, async () =>
