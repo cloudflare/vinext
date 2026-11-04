@@ -4423,8 +4423,8 @@ describe("app page dispatch", () => {
 
   // As in Next.js, an on-demand revalidation whose render reports an error, even
   // one a Suspense boundary caught, fails, so `res.revalidate()` throws, and the
-  // previous entry is re-stored with a short revalidate. A render that turned
-  // dynamic is excused, as the build excuses it.
+  // previous entry is re-stored with a short revalidate. Only a PPR render that
+  // turned dynamic is excused, as the build excuses it.
   it.each([
     { name: "a Flight error", reports: "flight", failed: true },
     { name: "an SSR error", reports: "ssr", failed: true },
@@ -4465,11 +4465,29 @@ describe("app page dispatch", () => {
       overwritten: true,
       restored: [],
     },
+    // Without PPR, Next.js fails a revalidation that turned dynamic anyway.
     {
       name: "a Flight error after turning dynamic",
       reports: "flight",
+      failed: true,
+      dynamic: true,
+    },
+    // With PPR, a dynamic hole Next.js postpones is excused.
+    {
+      name: "a PPR route's Flight error after turning dynamic",
+      reports: "flight",
       failed: false,
       dynamic: true,
+      ppr: true,
+    },
+    // A PPR route's RSC render never writes the page's document.
+    {
+      name: "a PPR route's RSC Flight error",
+      reports: "flight",
+      failed: true,
+      isRscRequest: true,
+      ppr: true,
+      restored: ["rsc"],
     },
     { name: "no error", reports: false, failed: false },
     // A render that is never stored isn't checked, whenever its error comes.
@@ -4506,6 +4524,7 @@ describe("app page dispatch", () => {
     const shellError = new Error("layout failure");
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
     const { options } = createDispatchOptions({
+      ...("ppr" in testCase ? { pprRuntime: appPagePprRuntime } : {}),
       async buildPageElement() {
         if (reports === "build") throw shellError;
         return React.createElement("div", null, "fresh");

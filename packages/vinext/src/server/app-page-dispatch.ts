@@ -1689,7 +1689,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // The entries a failed on-demand revalidation re-stores: its own, and the
   // other half of the page's entry when its render may write both. A variant's
   // RSC payload, such as a prefetch shell or an interception, never writes
-  // the page's document.
+  // the page's document, nor does a PPR route's RSC render.
   const onDemandRestoreKeys = (): string[] => {
     if (!options.isRscRequest) {
       return [
@@ -1704,6 +1704,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       ];
     }
     const writesDocument =
+      options.pprRuntime === undefined &&
       !options.scriptNonce &&
       !options.interceptionContext &&
       !interceptionId &&

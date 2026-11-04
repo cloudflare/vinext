@@ -763,8 +763,15 @@ async function renderAppPageLifecycleImpl(
   // A candidate's useSearchParams() outside Suspense fails its render too.
   let bailedOutToClientRendering = false;
   if (options.renderFailedRef) {
+    // Without PPR, Next.js fails a revalidation whose render turned dynamic
+    // anyway (app-page.ts's static-to-dynamic error), so one that reported an
+    // error fails whether or not it did. With PPR, Next.js postpones the dynamic
+    // holes vinext renders, so an error in one is excused, as in #4542.
     options.renderFailedRef.value = () =>
-      bailedOutToClientRendering || prerenderRenderErrors.failsBuild(consumeRenderDynamicUsage);
+      bailedOutToClientRendering ||
+      (options.isRoutePPREnabled === true
+        ? prerenderRenderErrors.failsBuild(consumeRenderDynamicUsage)
+        : prerenderRenderErrors.reported());
   }
   const finalizePrerenderRenderError = (
     response: Response,
