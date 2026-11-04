@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "vite-plus/test";
+import { describe, expect, it, afterEach, vi } from "vite-plus/test";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import {
   applyRouteHandlerMiddlewareContext,
@@ -383,7 +383,7 @@ describe("app route handler response helpers", () => {
   it("keeps a returned response's framing headers on Workers", async () => {
     // workerd passes a fetched body through still encoded while its
     // Content-Encoding is kept, and frames the body itself.
-    await import("../packages/vinext/src/server/workerd-host.js");
+    vi.stubGlobal("WebSocketPair", class WebSocketPair {});
     try {
       const response = new Response("encoded body", {
         headers: { "content-encoding": "gzip", "content-length": "4" },
@@ -401,7 +401,7 @@ describe("app route handler response helpers", () => {
       );
       expect(replayed.headers.get("content-encoding")).toBe("gzip");
     } finally {
-      Reflect.deleteProperty(globalThis, Symbol.for("vinext.workerdHost"));
+      vi.unstubAllGlobals();
     }
   });
 

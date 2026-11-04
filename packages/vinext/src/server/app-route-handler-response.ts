@@ -24,7 +24,6 @@ import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
 import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
-import { isWorkerdHost } from "./host-runtime.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -61,13 +60,15 @@ const APP_ROUTE_NEXT_ERROR =
 // workerd frames the body itself and keeps Content-Encoding accurate: it
 // ignores a set Content-Length, passes a returned fetch() body through still
 // encoded, and compresses any other body to match its Content-Encoding. So
-// Workers responses keep the headers.
+// Workers responses keep the headers. `WebSocketPair` identifies workerd under
+// any compatibility flags (`navigator` is absent with `no_global_navigator`),
+// and is absent when a Worker build runs on Node through `vinext start`.
 // https://developers.cloudflare.com/workers/runtime-apis/fetch/#passthrough-behavior
 // https://developers.cloudflare.com/workers/runtime-apis/response/
 const ROUTE_HANDLER_FRAMING_HEADERS = ["content-length", "content-encoding", "transfer-encoding"];
 
 function shouldDropRouteHandlerFramingHeaders(headers: Headers): boolean {
-  if (isWorkerdHost()) return false;
+  if ("WebSocketPair" in globalThis) return false;
   return ROUTE_HANDLER_FRAMING_HEADERS.some((name) => headers.has(name));
 }
 
