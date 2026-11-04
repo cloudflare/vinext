@@ -1618,6 +1618,19 @@ function planFlightResponseArrived(options: {
   );
   const cacheEntryProposalFields = createCacheEntryProposalFields(acceptedCacheEntryDecision);
 
+  if (renderedRootLayoutChanged) {
+    return {
+      kind: "hardNavigate",
+      reason: "rootBoundaryChanged",
+      token: options.event.token,
+      trace: createNavigationTrace(
+        NavigationTraceReasonCodes.rootBoundaryChanged,
+        commitTraceFields,
+      ),
+      url: options.event.result.href,
+    };
+  }
+
   // interceptionContext is transport evidence, not authority. Normal payloads
   // can carry it when a request was sent from an intercepted visible world, so
   // only explicit __interception proof enters the preservation branch.
@@ -1666,9 +1679,8 @@ function planFlightResponseArrived(options: {
     };
   }
 
-  const transition = renderedRootLayoutChanged
-    ? "rootBoundaryChanged"
-    : currentTopology.kind === "unknown" || targetTopology.kind === "unknown"
+  const transition =
+    currentTopology.kind === "unknown" || targetTopology.kind === "unknown"
       ? "rootBoundaryUnknown"
       : classifyRootBoundaryTransition(
           currentTopology.topology.rootBoundaryId,

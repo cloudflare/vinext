@@ -1555,6 +1555,63 @@ describe("navigationPlanner root-boundary decisions", () => {
     expect(decision.proposal.preserveElementIds).toEqual(["layout:/", "layout:/feed"]);
   });
 
+  // Next.js checks for a new root layout on intercepted navigations too.
+  it("hard-navigates intercepted payloads that render another root layout", () => {
+    const routeManifest = createTestRouteManifest([
+      {
+        layoutIds: ["layout:/", "layout:/feed"],
+        pattern: "/feed",
+        rootBoundaryId: "root-boundary:/",
+        interceptions: [
+          {
+            ownerLayoutId: "layout:/feed",
+            slotId: "slot:modal:/feed",
+            sourcePattern: "/feed",
+            targetPattern: "/photos/:id",
+          },
+        ],
+      },
+      {
+        layoutIds: ["layout:/photos", "layout:/photos/photo"],
+        pattern: "/photos/:id",
+        rootBoundaryId: "root-boundary:/photos",
+      },
+    ]);
+    // The visible page was rewritten to /feed but renders another root layout.
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/(pin)", []),
+      matchedUrl: "/feed",
+      routeId: "route:/pin",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        [],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      routeManifest,
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
+    }
+    expect(decision.reason).toBe("rootBoundaryChanged");
+    expect(decision.trace.entries[0]?.fields.currentRootLayoutTreePath).toBe("/(pin)");
+    expect(decision.trace.entries[0]?.fields.nextRootLayoutTreePath).toBe("/");
+  });
+
   it("approves manifest-declared dynamic interception topology with concrete wire route ids", () => {
     const routeManifest = createTestRouteManifest([
       {
@@ -1876,7 +1933,7 @@ describe("navigationPlanner root-boundary decisions", () => {
     };
     const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
-        "/marketing",
+        "/",
         ["layout:/marketing"],
         [],
         [createSlotBinding("slot:modal:/feed", "layout:/marketing", "active")],
