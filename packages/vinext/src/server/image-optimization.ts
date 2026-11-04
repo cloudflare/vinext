@@ -640,17 +640,24 @@ function concatBytes(chunks: Uint8Array[], length: number): Uint8Array {
 async function withDetectedImageContentType(
   source: Response,
   maxLength: number,
+  refetch: () => Promise<Response>,
 ): Promise<Response> {
   if (!source.ok || !source.body) return source;
   const reader = source.body.getReader();
-  // Replay the chunks read, copying only the bytes detection reads.
+  // Replay the chunks read, copying only the bytes detection reads. Past
+  // those, the chunks read to reach the end of an `ftyp` box are only counted,
+  // so a large box costs the source a second fetch rather than isolate memory.
   const head: Uint8Array[] = [];
+  let heldLength = 0;
   let length = 0;
   let target = IMAGE_SIGNATURE_LENGTH;
   while (length < target) {
     const { done, value } = await reader.read();
     if (done) break;
-    head.push(value);
+    if (heldLength < IMAGE_DETECTION_LENGTH) {
+      head.push(value);
+      heldLength += value.byteLength;
+    }
     length += value.byteLength;
     if (target === IMAGE_SIGNATURE_LENGTH && length >= target) {
       target = imageDetectionLength(concatBytes(head, IMAGE_SIGNATURE_LENGTH), maxLength);
@@ -661,6 +668,26 @@ async function withDetectedImageContentType(
   // whole `ftyp` box needs only its length.
   const known = Math.min(length, maxLength);
   const detected = concatBytes(head, Math.min(known, IMAGE_DETECTION_LENGTH));
+  const type = detectImageContentType(detected, source.headers.get("Content-Type"), known);
+  const typed = (response: Response, body: ReadableStream<Uint8Array>) => {
+    const headers = new Headers(response.headers);
+    if (type === null) headers.delete("Content-Type");
+    else headers.set("Content-Type", type);
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  };
+  if (heldLength < length) {
+    // Not all the bytes read are held to replay, so serve it fetched again,
+    // typed by the first fetch. Only an `ftyp` box larger than detection
+    // holds gets here.
+    reader.cancel().catch(() => {});
+    const refetched = await refetch();
+    if (!refetched.ok || !refetched.body) return refetched;
+    return typed(refetched, refetched.body);
+  }
   const body = new ReadableStream<Uint8Array>(
     {
       start(controller) {
@@ -678,11 +705,7 @@ async function withDetectedImageContentType(
     // Read the source only as the body is read.
     { highWaterMark: 0 },
   );
-  const headers = new Headers(source.headers);
-  const type = detectImageContentType(detected, source.headers.get("Content-Type"), known);
-  if (type === null) headers.delete("Content-Type");
-  else headers.set("Content-Type", type);
-  return new Response(body, { status: source.status, statusText: source.statusText, headers });
+  return typed(source, body);
 }
 
 /**
@@ -864,7 +887,8 @@ export async function handleImageOptimization(
   const fetchedSource = await handlers.fetchAsset(imageUrl, request);
   const isBuildAsset = isImageBuildAsset(fetchedSource);
   const limit = imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY;
-  const source = await withDetectedImageContentType(fetchedSource, limit);
+  const refetch = () => handlers.fetchAsset(imageUrl, request);
+  const source = await withDetectedImageContentType(fetchedSource, limit, refetch);
   if (!source.ok || !source.body) {
     return invalidImageSourceResponse();
   }
@@ -988,10 +1012,7 @@ export async function handleImageOptimization(
   } catch (e) {
     console.error("[vinext] Image fallback error, refetching source image:", e);
     reader?.cancel();
-    const refetchedSource = await withDetectedImageContentType(
-      await handlers.fetchAsset(imageUrl, request),
-      limit,
-    );
+    const refetchedSource = await withDetectedImageContentType(await refetch(), limit, refetch);
     if (!refetchedSource.ok || !refetchedSource.body) {
       return invalidImageSourceResponse();
     }
