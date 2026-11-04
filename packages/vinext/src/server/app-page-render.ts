@@ -1612,7 +1612,36 @@ async function renderAppPageLifecycleImpl(
     },
   });
   options.onRenderComplete?.(htmlRender.renderComplete);
-  if (htmlRender.response) {
+  // A render no client waits on, such as a warm-up or a regeneration, is
+  // whole before it answers. As in Next.js, one that reported an error is a
+  // 500 that nothing stores.
+  const wholeRenderReportedError = (isDynamic: () => boolean): boolean =>
+    options.renderWholeDocument === true &&
+    options.isPrerender !== true &&
+    prerenderRenderErrors.failsBuild(isDynamic);
+  let specialResponse = htmlRender.response;
+  if (specialResponse) {
+    // So is one whose special error escaped the shell while another error was
+    // reported. A render that may be stored has settled its Flight render, and
+    // the boundary renders as its document streams, so its dynamic API use is
+    // known once its document is read.
+    if (
+      shellSpecialError &&
+      options.renderWholeDocument === true &&
+      options.isPrerender !== true &&
+      prerenderRenderErrors.reported()
+    ) {
+      specialResponse = await bufferPrerenderResponse(specialResponse);
+      if (wholeRenderReportedError(consumeRenderDynamicUsage)) {
+        const headers = new Headers(specialResponse.headers);
+        headers.delete("location");
+        headers.set("Cache-Control", NEVER_CACHE_CONTROL);
+        applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
+        const response = new Response(specialResponse.body, { headers, status: 500 });
+        copyLinkHeaderProvenance(specialResponse.headers, response.headers);
+        return response;
+      }
+    }
     // A special error that escaped the shell sets the status of the render,
     // which Next.js stores like any other: 404/403/401, or 307/308 with its
     // `location`, beside the page's RSC payload carrying the digest.
@@ -1622,16 +1651,16 @@ async function renderAppPageLifecycleImpl(
       options.isPrerender !== true &&
       resolveEarlyResponseCacheControl(options) === null
     ) {
-      return finalizeShellSpecialErrorResponse(htmlRender.response, shellSpecialError);
+      return finalizeShellSpecialErrorResponse(specialResponse, shellSpecialError);
     }
     if (shellSpecialError && prerenderedSpecialError) {
       return finalizePrerenderedShellSpecialErrorResponse(
-        htmlRender.response,
+        specialResponse,
         shellSpecialError,
         prerenderedSpecialError,
       ).then((response) => finalizePrerenderRenderError(response));
     }
-    const response = applyIneligibleRouteCachePolicy(htmlRender.response, options);
+    const response = applyIneligibleRouteCachePolicy(specialResponse, options);
     if (shellSpecialError) markPrerenderedDynamicShellSpecialError(response, shellSpecialError);
     return finalizePrerenderRenderError(response);
   }
@@ -1723,14 +1752,7 @@ async function renderAppPageLifecycleImpl(
     responseKind: "html",
   });
 
-  // A render no client waits on, such as a warm-up or a regeneration, is
-  // whole by now. As in Next.js, one that reported an error is a 500 that
-  // nothing stores.
-  const wholeRenderReportedError =
-    options.renderWholeDocument === true &&
-    options.isPrerender !== true &&
-    prerenderRenderErrors.failsBuild(() => dynamicUsedDuringRender);
-  if (htmlRender.shellErrorRecovered || wholeRenderReportedError) {
+  if (htmlRender.shellErrorRecovered || wholeRenderReportedError(() => dynamicUsedDuringRender)) {
     const response = buildAppPageHtmlResponse(safeHtmlStream, {
       cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       draftCookie,

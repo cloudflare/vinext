@@ -4184,6 +4184,79 @@ describe("runtime ISR renders that report an error", () => {
     expect(common.isrSet).toHaveBeenCalled();
   });
 
+  // Its special error rejects the shell while a Suspense boundary of its
+  // Flight render reports an error.
+  it.each([
+    { name: "notFound()", digest: "NEXT_NOT_FOUND", status: 404 },
+    { name: "redirect()", digest: "NEXT_REDIRECT;replace;/target;307;", status: 307 },
+  ])(
+    "answers a render no client waits on whose $name escaped beside an error with its 500",
+    async ({ digest, status }) => {
+      const render = async (reportsError: boolean, turnsDynamic = false) => {
+        const common = createCommonOptions();
+        const late = lateRender(reportsError && "flight");
+        setTimeout(late.release, 10);
+        // The boundary reads cookies() only as its document streams.
+        let boundaryUsedDynamicApi = false;
+        const response = await renderAppPageLifecycle({
+          ...common.options,
+          consumeDynamicUsage: vi.fn(() => boundaryUsedDynamicApi),
+          peekDynamicUsage: vi.fn(() => boundaryUsedDynamicApi),
+          isProduction: true,
+          loadSsrHandler: async () => ({
+            async handleSsr(
+              _rscStream: ReadableStream<Uint8Array>,
+              _navContext: unknown,
+              _fontData: unknown,
+              options?: SsrOptions,
+            ): Promise<ReadableStream<Uint8Array>> {
+              if (options?.capturedRscDataRef && options.sideStream) {
+                options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+              }
+              throw Object.assign(new Error(digest), { digest });
+            },
+          }),
+          renderPageSpecialError: async (specialError) =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                async start(controller) {
+                  await new Promise((resolve) => setTimeout(resolve, 0));
+                  if (turnsDynamic) boundaryUsedDynamicApi = true;
+                  controller.enqueue(new TextEncoder().encode("page:special"));
+                  controller.close();
+                },
+              }),
+              {
+                headers: specialError.kind === "redirect" ? { Location: "/target" } : {},
+                status: specialError.statusCode,
+              },
+            ),
+          renderToReadableStream: late.renderToReadableStream,
+          renderWholeDocument: true,
+          revalidateSeconds: 60,
+        });
+        await response.text();
+        await Promise.all(common.waitUntilPromises);
+        return {
+          cacheControl: response.headers.get("cache-control"),
+          location: response.headers.get("location"),
+          status: response.status,
+          stored: common.isrSet.mock.calls.length,
+        };
+      };
+
+      await expect(render(true)).resolves.toEqual({
+        cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
+        location: null,
+        status: 500,
+        stored: 0,
+      });
+      await expect(render(false)).resolves.toMatchObject({ status, stored: 2 });
+      // As in `next build`, a render that turned dynamic doesn't fail on its error.
+      await expect(render(true, true)).resolves.toMatchObject({ status, stored: 0 });
+    },
+  );
+
   // As in `next build`, a render that turned dynamic doesn't fail on its error.
   it("keeps the 200 of a render no client waits on when it turned dynamic", async () => {
     const common = createCommonOptions();
