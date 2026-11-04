@@ -1545,12 +1545,27 @@ function planFlightResponseArrived(options: {
     slotBindingSource: "manifestTarget",
     snapshot: targetSnapshot,
   });
+  // Like Next.js, which compares the rendered router trees, payloads that
+  // render different root layouts never share a document. A rewrite can keep
+  // the display URL the manifest resolves while rendering another root layout,
+  // and the manifest may not be loaded yet.
+  const renderedRootLayoutChanged =
+    classifyRootBoundaryTransition(
+      options.state.visibleSnapshot.rootBoundaryId,
+      targetSnapshot.rootBoundaryId,
+    ) === "rootBoundaryChanged";
   const traceFields = createRootBoundaryTraceFields({
-    currentRootLayoutTreePath:
-      currentTopology.kind === "known" ? currentTopology.topology.rootLayoutTreePath : null,
+    currentRootLayoutTreePath: renderedRootLayoutChanged
+      ? options.state.visibleSnapshot.rootBoundaryId
+      : currentTopology.kind === "known"
+        ? currentTopology.topology.rootLayoutTreePath
+        : null,
     event: options.event,
-    nextRootLayoutTreePath:
-      targetTopology.kind === "known" ? targetTopology.topology.rootLayoutTreePath : null,
+    nextRootLayoutTreePath: renderedRootLayoutChanged
+      ? targetSnapshot.rootBoundaryId
+      : targetTopology.kind === "known"
+        ? targetTopology.topology.rootLayoutTreePath
+        : null,
     state: options.state,
   });
 
@@ -1651,22 +1666,14 @@ function planFlightResponseArrived(options: {
     };
   }
 
-  // Rewrites can keep the display URL unchanged while rendering a different
-  // root layout. Manifest lookup by that URL must not override the root
-  // identities carried by the actual current and incoming render payloads.
-  const renderedRootTransition = classifyRootBoundaryTransition(
-    options.state.visibleSnapshot.rootBoundaryId,
-    targetSnapshot.rootBoundaryId,
-  );
-  const transition =
-    renderedRootTransition === "rootBoundaryChanged"
-      ? renderedRootTransition
-      : currentTopology.kind === "unknown" || targetTopology.kind === "unknown"
-        ? "rootBoundaryUnknown"
-        : classifyRootBoundaryTransition(
-            currentTopology.topology.rootBoundaryId,
-            targetTopology.topology.rootBoundaryId,
-          );
+  const transition = renderedRootLayoutChanged
+    ? "rootBoundaryChanged"
+    : currentTopology.kind === "unknown" || targetTopology.kind === "unknown"
+      ? "rootBoundaryUnknown"
+      : classifyRootBoundaryTransition(
+          currentTopology.topology.rootBoundaryId,
+          targetTopology.topology.rootBoundaryId,
+        );
 
   if (transition === "rootBoundaryChanged") {
     return {

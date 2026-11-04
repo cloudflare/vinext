@@ -762,6 +762,8 @@ describe("navigationPlanner root-boundary decisions", () => {
       }
       expect(decision.reason).toBe("rootBoundaryChanged");
       expect(decision.url).toBe("https://example.com/");
+      expect(decision.trace.entries[0]?.fields.currentRootLayoutTreePath).toBe("/(pin)");
+      expect(decision.trace.entries[0]?.fields.nextRootLayoutTreePath).toBe("/(site)");
     },
   );
 
