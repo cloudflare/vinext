@@ -132,6 +132,18 @@ function mockRes(): http.ServerResponse & {
     setHeader(name: string, value: string | string[]) {
       headers[name.toLowerCase()] = value;
     },
+    appendHeader(name: string, value: string | string[]) {
+      const key = name.toLowerCase();
+      const existing = headers[key];
+      const values = Array.isArray(value) ? value : [value];
+      headers[key] =
+        existing === undefined
+          ? Array.isArray(value)
+            ? [...values]
+            : value
+          : [...(Array.isArray(existing) ? existing : [existing]), ...values];
+      return res;
+    },
     getHeader(name: string) {
       return headers[name.toLowerCase()];
     },
