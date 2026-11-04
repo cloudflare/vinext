@@ -917,6 +917,16 @@ async function servePassthroughWithinLimit(
   return servePassthroughWithinLimit(refetched, cacheControl, imageConfig, limit, refetch, true);
 }
 
+/** Read a source to its end, or until it errors past the limit. */
+async function drainImageSource(body: ReadableStream<Uint8Array>): Promise<void> {
+  const reader = body.getReader();
+  try {
+    while (!(await reader.read()).done);
+  } catch {
+    // Past the limit, or a source that failed to read.
+  }
+}
+
 /**
  * Handlers for image optimization I/O operations.
  * Workers provide these callbacks to adapt their specific bindings.
@@ -1033,6 +1043,9 @@ export async function handleImageOptimization(
         format,
         quality,
       });
+      // Next.js reads the whole source before optimizing it, so one the
+      // optimizer never took is read here to hold it to the limit too.
+      if (!body.locked) await drainImageSource(body);
       if (limitedSource?.tooLarge || reader?.tooLarge) {
         transformed.body?.cancel().catch(() => {});
         return sourceTooLargeResponse();
@@ -1077,7 +1090,9 @@ export async function handleImageOptimization(
       readLength,
     );
   }
-  // Any other is fetched again, and streamed once a read proved it fits.
+  // Any other is fetched again, and streamed once a read proved it fits. That
+  // proof is of the first fetch, so a source that grows past the limit between
+  // the two fetches errors its body rather than getting a 413.
   reader?.cancel();
   const refetched = await admitImageSource(await refetch(), limit, imageConfig);
   if (refetched instanceof Response) return refetched;
@@ -1118,7 +1133,12 @@ export async function handleImageOptimization(
  * {@link setImageOptimizer}.
  */
 export type ImageOptimizer = {
-  /** Transform the source image (resize, format, quality). */
+  /**
+   * Transform the source image (resize, format, quality). `body` errors past
+   * `images.maximumResponseBody`. Read it before resolving, as Cloudflare
+   * Images does, for a source past the limit to get a 413: one read later can
+   * only error the transformed response's body.
+   */
   transformImage: (
     body: ReadableStream,
     options: { width: number; format: string; quality: number },
