@@ -688,9 +688,13 @@ async function withDetectedImageContentType(
   const refetched = await refetch();
   if (!refetched.ok || !refetched.body) return refetched;
   // The type found holds for the same first bytes and a source holding the
-  // whole box, so a source whose first bytes changed between the fetches is
-  // typed afresh, without a third fetch, and one that ends before the box
-  // errors. `target` is the box size, however the first fetch was chunked.
+  // whole box, so a source whose first bytes changed between the fetches, or
+  // that declares a length short of the box, is typed afresh, without a third
+  // fetch. One that ends before the box without declaring it errors, since
+  // only a third fetch could check it before it is served. `target` is the box
+  // size, however the first fetch was chunked.
+  const minLength = Math.min(target, known);
+  const declaredLength = Number(refetched.headers.get("Content-Length") ?? Number.NaN);
   const refetchedReader = refetched.body.getReader();
   const refetchedHead: Uint8Array[] = [];
   let refetchedLength = 0;
@@ -701,13 +705,11 @@ async function withDetectedImageContentType(
     refetchedLength += value.byteLength;
   }
   if (
+    !(declaredLength < minLength) &&
     refetchedLength >= heldLength &&
     bytesEqual(concatBytes(refetchedHead, heldLength), concatBytes(head, heldLength))
   ) {
-    return typed(
-      refetched,
-      replayImageSource(refetchedHead, refetchedReader, Math.min(target, known)),
-    );
+    return typed(refetched, replayImageSource(refetchedHead, refetchedReader, minLength));
   }
   const body = replayImageSource(refetchedHead, refetchedReader);
   return withDetectedImageContentType(new Response(body, refetched), maxLength, async () =>
