@@ -8193,6 +8193,42 @@ describe('"use cache" runtime', () => {
     expect(outerCalls).toBe(2);
   });
 
+  // The inner result reads a root param only in a Promise that is still pending
+  // when the function returns, and the outer drops that Promise. The outer entry
+  // must still vary by the param, so the nested call has to finish serializing
+  // before it resolves to the outer.
+  it("partitions an outer cache by a root param read in a dropped nested Promise", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let outerCalls = 0;
+    const inner = registerCachedFunction(
+      async () => ({
+        early: "early",
+        tail: (async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return getRootParam("lang");
+        })(),
+      }),
+      "test:nested-root-param-pending-tail-inner",
+    );
+    const outer = registerCachedFunction(async () => {
+      outerCalls++;
+      return `${(await inner()).early}:${outerCalls}`;
+    }, "test:nested-root-param-pending-tail-outer");
+    const invoke = (lang: string) => runWithRootParamsScope({ lang }, () => outer());
+
+    await expect(invoke("en")).resolves.toBe("early:1");
+    await expect(invoke("fr")).resolves.toBe("early:2");
+    await expect(invoke("en")).resolves.toBe("early:1");
+    await expect(invoke("fr")).resolves.toBe("early:2");
+  });
+
   // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
   it("bypasses the shared cache in draft mode", async () => {
