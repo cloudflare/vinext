@@ -36,6 +36,14 @@ export function middleware(request: NextRequest) {
     res.cookies.set("mw", "1");
     return res;
   }
+  // Matched only with ?mw. Middleware cookies precede the edge API route's own
+  // NextResponse cookies, with no internal x-middleware-set-cookie copy.
+  // Coverage: tests/pages-router.test.ts
+  if (url.pathname === "/api/edge-next-response-cookie") {
+    const res = NextResponse.next();
+    res.cookies.set("mw-edge", "1", { httpOnly: true, path: "/" });
+    return res;
+  }
   if (url.pathname === "/api/edge-request-signal") {
     if (!url.searchParams.has("override")) return NextResponse.next();
     const headers = new Headers(request.headers);
@@ -443,6 +451,10 @@ export const config = {
     "/api/append-header",
     "/edge-api-rewrite/:path*",
     "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
+    {
+      source: "/api/edge-next-response-cookie",
+      has: [{ type: "query", key: "mw" }],
+    },
     {
       source: "/mw-object-gated",
       has: [{ type: "header", key: "x-mw-allow", value: "1" }],

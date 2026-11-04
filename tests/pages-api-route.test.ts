@@ -642,6 +642,41 @@ describe("pages api route", () => {
     }
   });
 
+  it("drops x-middleware-set-cookie from a proxied Worker edge API response", async () => {
+    const upstream = http.createServer((_req, res) => {
+      res.setHeader("set-cookie", "session=abc; Path=/; HttpOnly");
+      res.setHeader("x-middleware-set-cookie", "session=abc; Path=/; HttpOnly");
+      res.writeHead(201, "Created");
+      res.end("proxied");
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const address = upstream.address() as AddressInfo;
+      const response = await handlePagesApiRoute({
+        edgeRuntime: "worker",
+        match: createMatch(
+          () => fetch(`http://127.0.0.1:${address.port}`),
+          {},
+          { runtime: "edge" },
+        ),
+        request: new Request("https://example.com/api/proxy"),
+        url: "/api/proxy",
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.statusText).toBe("Created");
+      expect(response.headers.getSetCookie()).toEqual(["session=abc; Path=/; HttpOnly"]);
+      expect(response.headers.get("x-middleware-set-cookie")).toBeNull();
+      await expect(response.text()).resolves.toBe("proxied");
+    } finally {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
   it("preserves encoded edge API responses in the Worker runtime", async () => {
     const body = gzipSync("Example Domain");
     const response = await handlePagesApiRoute({
