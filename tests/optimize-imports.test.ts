@@ -1143,14 +1143,12 @@ describe("vinext:optimize-imports transform", () => {
         id,
       );
 
-    // RSC processes the barrel first — this registers `rsc:<barrelEntry>`.
+    // RSC processes the barrel first.
     const rscResult = await rscCall(`import { Slot } from "lucide-react";`, "/app/page.tsx");
     expect(rscResult).not.toBeNull();
     expect(rscResult!.code).toContain(`from "@radix-ui/react-slot"`);
 
-    // SSR processes the same barrel next — with the bug it would skip the inner loop
-    // (barrelEntry already in registeredBarrels) and leave its subpkgOrigin map empty.
-    // With the fix it registers `ssr:<barrelEntry>` and populates its own map.
+    // SSR rewrites the same barrel too, rather than reusing the RSC analysis.
     const ssrResult = await ssrCall(`import { Slot } from "lucide-react";`, "/app/layout.tsx");
     expect(ssrResult).not.toBeNull();
     expect(ssrResult!.code).toContain(`from "@radix-ui/react-slot"`);

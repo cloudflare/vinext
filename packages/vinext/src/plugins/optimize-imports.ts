@@ -662,7 +662,7 @@ export function createOptimizeImportsPlugin(
       // Use Vite's own resolver (not createRequire) so it picks the ESM entry.
       // Look up the barrel this importer's own rewrite used: another importer
       // may have rewritten the same specifier from a different copy.
-      if (!importer) return;
+      if (!importer || barrelCaches.subpkgOrigin.size === 0) return;
       const barrelEntry = barrelCaches.subpkgOrigin
         .get(subpkgOriginKey(this as PluginCtx, importer))
         ?.get(source);
