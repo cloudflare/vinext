@@ -220,7 +220,7 @@ describe("App Router middleware with NextRequest", () => {
     });
   });
 
-  it("removes forged internal headers from Pages API rawHeaders in mixed projects", async () => {
+  it("removes forged internal headers from Pages API rawHeaders and headersDistinct in mixed projects", async () => {
     const internalHeaders = [...INTERNAL_HEADERS, ...VINEXT_INTERNAL_HEADERS];
     const res = await fetch(`${baseUrl}/api/pages-raw-header-names`, {
       headers: {
@@ -230,9 +230,14 @@ describe("App Router middleware with NextRequest", () => {
     });
 
     expect(res.status).toBe(200);
-    const { names } = (await res.json()) as { names: string[] };
+    const { names, distinctNames } = (await res.json()) as {
+      names: string[];
+      distinctNames: string[];
+    };
     expect(names).toContain("x-client-header");
     expect(names.filter((name) => internalHeaders.includes(name))).toEqual([]);
+    expect(distinctNames).toContain("x-client-header");
+    expect(distinctNames.filter((name) => internalHeaders.includes(name))).toEqual([]);
   });
 
   it("middleware request header overrides can delete credential headers before pages getServerSideProps in mixed projects", async () => {

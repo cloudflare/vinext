@@ -508,13 +508,19 @@ const STRIPPED_INTERNAL_REQUEST_HEADERS: ReadonlySet<string> = new Set([
 
 // Node keeps each client header in req.rawHeaders as well as req.headers, and
 // srvx (plugin-rsc's dev request adapter) answers Headers reads from rawHeaders
-// once anything iterates them. Remove headers from both views so later
-// handlers never see a removed header.
+// once anything iterates them. Remove headers from every view so later
+// handlers never see a removed header. Node builds req.headers and
+// req.headersDistinct lazily from rawHeaders and the header count it parsed,
+// so both must exist before rawHeaders gets shorter.
 function removeRequestHeaders(
   req: import("node:http").IncomingMessage,
   names: ReadonlySet<string>,
 ): void {
-  for (const name of names) delete req.headers[name];
+  const headersDistinct = req.headersDistinct;
+  for (const name of names) {
+    delete req.headers[name];
+    delete headersDistinct[name];
+  }
   const rawHeaders = req.rawHeaders;
   for (let i = rawHeaders.length - 2; i >= 0; i -= 2) {
     if (names.has(rawHeaders[i].toLowerCase())) rawHeaders.splice(i, 2);
