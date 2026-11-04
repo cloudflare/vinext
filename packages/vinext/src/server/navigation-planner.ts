@@ -1545,12 +1545,27 @@ function planFlightResponseArrived(options: {
     slotBindingSource: "manifestTarget",
     snapshot: targetSnapshot,
   });
+  // Like Next.js, which compares the rendered router trees, payloads that
+  // render different root layouts never share a document. A rewrite can keep
+  // the display URL the manifest resolves while rendering another root layout,
+  // and the manifest may not be loaded yet.
+  const renderedRootLayoutChanged =
+    classifyRootBoundaryTransition(
+      options.state.visibleSnapshot.rootBoundaryId,
+      targetSnapshot.rootBoundaryId,
+    ) === "rootBoundaryChanged";
   const traceFields = createRootBoundaryTraceFields({
-    currentRootLayoutTreePath:
-      currentTopology.kind === "known" ? currentTopology.topology.rootLayoutTreePath : null,
+    currentRootLayoutTreePath: renderedRootLayoutChanged
+      ? options.state.visibleSnapshot.rootBoundaryId
+      : currentTopology.kind === "known"
+        ? currentTopology.topology.rootLayoutTreePath
+        : null,
     event: options.event,
-    nextRootLayoutTreePath:
-      targetTopology.kind === "known" ? targetTopology.topology.rootLayoutTreePath : null,
+    nextRootLayoutTreePath: renderedRootLayoutChanged
+      ? targetSnapshot.rootBoundaryId
+      : targetTopology.kind === "known"
+        ? targetTopology.topology.rootLayoutTreePath
+        : null,
     state: options.state,
   });
 
@@ -1602,6 +1617,19 @@ function planFlightResponseArrived(options: {
     acceptedCacheEntryDecision,
   );
   const cacheEntryProposalFields = createCacheEntryProposalFields(acceptedCacheEntryDecision);
+
+  if (renderedRootLayoutChanged) {
+    return {
+      kind: "hardNavigate",
+      reason: "rootBoundaryChanged",
+      token: options.event.token,
+      trace: createNavigationTrace(
+        NavigationTraceReasonCodes.rootBoundaryChanged,
+        commitTraceFields,
+      ),
+      url: options.event.result.href,
+    };
+  }
 
   // interceptionContext is transport evidence, not authority. Normal payloads
   // can carry it when a request was sent from an intercepted visible world, so
