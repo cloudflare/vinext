@@ -47,7 +47,11 @@ export function markPrerenderRenderError(response: Response, isNotFoundPage = fa
 export type PrerenderRenderErrorTracker = {
   /** Notes an error the render reports. */
   note(error: unknown): void;
-  /** Whether the render reported an error that fails a prerender, dynamic or not. */
+  /**
+   * Whether the render reported an error that fails a prerender, dynamic or
+   * not. A render that turned dynamic doesn't fail, so a caller reads this only
+   * once it has checked the render's dynamic usage, or uses `failsBuild`.
+   */
   reported: () => boolean;
   /** Whether a noted error fails the build, as the render didn't turn dynamic. */
   failsBuild(isDynamic: () => boolean): boolean;
