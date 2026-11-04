@@ -591,6 +591,8 @@ jobs:
 
       - name: Delete named preview Workers
         if: github.event.action == 'closed'
+        # The repo root has no wrangler bin; the package's pinned Wrangler does.
+        working-directory: packages/workers-response-store
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
