@@ -13,7 +13,27 @@ import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager"
 
 > Migration is non-destructive. `vinext init` leaves your Next.js scripts and source files in place, then adds parallel `*:vinext` scripts for evaluation.
 
-## 1. Check compatibility
+## Migrate with an AI agent
+
+To have an AI agent investigate compatibility issues and guide the migration, install the optional vinext Agent Skill. It works with Claude Code, OpenCode, Cursor, Codex, and other AI coding tools:
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx skills add cloudflare/vinext",
+    npm: "npx skills add cloudflare/vinext",
+    yarn: "yarn dlx skills add cloudflare/vinext",
+    bun: "bunx skills add cloudflare/vinext",
+    vp: "vpx skills add cloudflare/vinext",
+  }}
+/>
+
+Then open your Next.js project in your agent and ask it to `migrate this project to vinext`. The skill runs the compatibility check, installs dependencies, generates config, and starts the dev server, and flags anything that needs manual attention. When it runs `vinext init` for Cloudflare, it asks you for the cache and image optimization choices rather than picking them itself.
+
+## Migrate manually
+
+`vinext init` is the direct, repeatable path. Run these steps yourself to migrate without an agent.
+
+### 1. Check compatibility
 
 <PackageManagerCommand
   commands={{
@@ -27,7 +47,7 @@ import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager"
 
 The scanner reports known unsupported configuration, imports, and project patterns. Also check the [compatibility dashboard](/compatibility) and open issues for behavior specific to your application.
 
-## 2. Initialize vinext
+### 2. Initialize vinext
 
 <PackageManagerCommand
   commands={{
@@ -55,7 +75,7 @@ For a non-interactive run, pass the choices explicitly:
 
 For Cloudflare, agents and CI must pass all three of `--cdn-cache`, `--data-cache`, and `--image-optimization`. The Cloudflare command above chooses no cache and no image optimization; see [Run init without prompts](/docs/deploying/cloudflare#run-init-without-prompts) for the other values.
 
-## 3. Run both toolchains
+### 3. Run both toolchains
 
 <PackageManagerCommand
   commands={{
@@ -68,22 +88,6 @@ For Cloudflare, agents and CI must pass all three of `--cdn-cache`, `--data-cach
 />
 
 Compare the routes and workflows your application depends on. Start with authentication, middleware, mutations, caching, and deployment bindings rather than only checking the home page.
-
-## Migrate with an AI agent
-
-`vinext init` is the direct, repeatable path. If you want an AI agent to investigate compatibility issues and guide the migration, install the optional vinext Agent Skill. It works with Claude Code, OpenCode, Cursor, Codex, and other AI coding tools:
-
-<PackageManagerCommand
-  commands={{
-    pnpm: "pnpm dlx skills add cloudflare/vinext",
-    npm: "npx skills add cloudflare/vinext",
-    yarn: "yarn dlx skills add cloudflare/vinext",
-    bun: "bunx skills add cloudflare/vinext",
-    vp: "vpx skills add cloudflare/vinext",
-  }}
-/>
-
-Then open your Next.js project in your agent and ask it to `migrate this project to vinext`. The skill runs the compatibility check, installs dependencies, generates config, and starts the dev server, and flags anything that needs manual attention. When it runs `vinext init` for Cloudflare, it asks you for the cache and image optimization choices rather than picking them itself.
 
 ## Styling
 
