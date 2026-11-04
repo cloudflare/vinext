@@ -567,8 +567,19 @@ describe("handleImageOptimization source size limit for every type", () => {
         });
       },
       transformImage: optimizer
-        ? async (input: ReadableStream) => {
-            transformed.push((await new Response(input).arrayBuffer()).byteLength);
+        ? async (input: ReadableStream<Uint8Array>) => {
+            // Count the bytes as they are read, including before a read fails.
+            const reader = input.getReader();
+            let read = 0;
+            try {
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                read += value.byteLength;
+              }
+            } finally {
+              transformed.push(read);
+            }
             return new Response("transformed", { headers: { "Content-Type": "image/webp" } });
           }
         : undefined,
