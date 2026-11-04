@@ -41,6 +41,13 @@ describe("App Router dev server origin check", () => {
     expect(res.status).toBe(403);
   });
 
+  it("blocks cross-origin requests whose X-Forwarded-Host matches the Origin", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: "http://evil.com", "X-Forwarded-Host": "evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
   it("blocks cross-origin requests to internal Vite paths (/@*)", async () => {
     const res = await fetch(`${baseUrl}/@fs/etc/passwd`, {
       headers: { Origin: "http://evil.com" },

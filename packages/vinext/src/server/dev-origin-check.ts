@@ -9,6 +9,9 @@
  * This module adds origin verification to vinext's own request handlers.
  */
 
+import { resolveEntryPath } from "../entries/runtime-entry-module.js";
+import { trustedForwardedHost } from "./proxy-trust.js";
+
 /**
  * Default hostnames considered safe for dev server access.
  * These are always allowed regardless of configuration.
@@ -121,9 +124,10 @@ export function validateDevRequest(
     return `cross-site no-cors request blocked`;
   }
 
-  // Use x-forwarded-host when behind a reverse proxy, falling back to host.
-  // Matches the App Router generated code in generateDevOriginCheckCode().
-  const effectiveHost = headers["x-forwarded-host"] || headers.host;
+  // Any client can send X-Forwarded-Host, so it only names the host when
+  // VINEXT_TRUSTED_HOSTS lists it, as in resolveRequestHost(). Matches the
+  // App Router generated code in generateDevOriginCheckCode().
+  const effectiveHost = trustedForwardedHost(headers["x-forwarded-host"]) ?? headers.host;
 
   // Check Origin header
   if (!isAllowedDevOrigin(headers.origin, effectiveHost, allowedDevOrigins)) {
@@ -142,9 +146,11 @@ export function validateDevRequest(
  */
 export function generateDevOriginCheckCode(allowedDevOrigins?: string[]): string {
   const origins = JSON.stringify(allowedDevOrigins ?? []);
+  const proxyTrustPath = resolveEntryPath("./proxy-trust.js", import.meta.url);
   return `
 // ── Dev server origin verification ──────────────────────────────────────
 // Block cross-origin requests to prevent data exfiltration during development.
+import { resolveTrustedForwardedHost as __resolveTrustedForwardedHost } from ${JSON.stringify(proxyTrustPath)};
 const __allowedDevOrigins = ${origins};
 const __safeDevHosts = ["localhost", "127.0.0.1", "[::1]"];
 
@@ -182,8 +188,8 @@ function __validateDevRequestOrigin(request) {
   // Allow localhost, 127.0.0.1, [::1], and *.localhost
   if (__safeDevHosts.includes(originHostname) || originHostname.endsWith(".localhost")) return null;
 
-  // Same-origin: compare against Host header
-  const hostHeader = (request.headers.get("x-forwarded-host") || request.headers.get("host") || "").split(",")[0].trim().split(":")[0].toLowerCase();
+  // Same-origin: compare against Host, or X-Forwarded-Host when VINEXT_TRUSTED_HOSTS lists it
+  const hostHeader = (__resolveTrustedForwardedHost(request.headers) || request.headers.get("host") || "").split(",")[0].trim().split(":")[0].toLowerCase();
   if (hostHeader && originHostname === hostHeader) return null;
 
   // Check user-configured allowed origins
