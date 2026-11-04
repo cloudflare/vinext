@@ -24,6 +24,7 @@ import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
 import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
+import { isWorkerdHost } from "./host-runtime.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -66,7 +67,7 @@ const APP_ROUTE_NEXT_ERROR =
 const ROUTE_HANDLER_FRAMING_HEADERS = ["content-length", "content-encoding", "transfer-encoding"];
 
 function shouldDropRouteHandlerFramingHeaders(headers: Headers): boolean {
-  if (globalThis.navigator?.userAgent === "Cloudflare-Workers") return false;
+  if (isWorkerdHost()) return false;
   return ROUTE_HANDLER_FRAMING_HEADERS.some((name) => headers.has(name));
 }
 

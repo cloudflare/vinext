@@ -1,5 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import "vinext/internal/server/cloudflare-workers-tracing";
+import "vinext/internal/server/workerd-host";
 import {
   VINEXT_PRERENDER_READINESS_PATH,
   VINEXT_RSC_VARY_HEADER,

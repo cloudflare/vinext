@@ -5600,6 +5600,23 @@ export const loadServerActionClient = ${
       },
     },
     {
+      name: "vinext:workerd-host",
+      transform: {
+        filter: { id: /(?:app|pages)-router-entry\.[cm]?[jt]s(?:\?|$)/ },
+        handler(code, id) {
+          if (!hasCloudflarePlugin && !(hasNitroPlugin && nitroHostRuntime === "worker")) {
+            return null;
+          }
+          const cleanId = toSlash(stripViteModuleQuery(id));
+          if (!WORKER_ROUTER_ENTRIES.has(cleanId)) return null;
+          return {
+            code: `import "vinext/internal/server/workerd-host";\n${code}`,
+            map: null,
+          };
+        },
+      },
+    },
+    {
       name: "vinext:pages-client-assets-resolver",
       // The resolver and writer share a build-scoped destination registry.
       // Keep only these focused plugins shared across Vite environments.
