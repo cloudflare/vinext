@@ -2634,7 +2634,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             {
               origin: req.headers.origin as string | undefined,
               host: req.headers.host,
-              "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
               "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
               "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
             },
@@ -7022,7 +7021,6 @@ export const loadServerActionClient = ${
                 {
                   origin: req.headers.origin as string | undefined,
                   host: req.headers.host,
-                  "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
                   "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
                   "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
                 },

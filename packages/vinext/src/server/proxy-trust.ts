@@ -84,13 +84,7 @@ export function resolveRequestHost(source: IncomingMessage | Headers, fallback: 
  * operator-approved.
  */
 export function resolveTrustedForwardedHost(source: IncomingMessage | Headers): string | undefined {
-  return trustedForwardedHost(readForwardedHost(source));
-}
-
-/**
- * Like `resolveTrustedForwardedHost`, for a raw `X-Forwarded-Host` value.
- */
-export function trustedForwardedHost(rawForwarded: string | null | undefined): string | undefined {
+  const rawForwarded = readForwardedHost(source);
   if (!rawForwarded || trustedHosts.size === 0) return undefined;
   // `X-Forwarded-Host` can be comma-separated when passing through
   // multiple proxies — take only the first (client-facing) value.

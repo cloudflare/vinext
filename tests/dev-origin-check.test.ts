@@ -6,26 +6,9 @@ import {
   validateDevRequest,
   generateDevOriginCheckCode,
 } from "../packages/vinext/src/server/dev-origin-check.js";
-import {
-  resolveTrustedForwardedHost,
-  trustedHosts,
-} from "../packages/vinext/src/server/proxy-trust.js";
 
-function withTrustedHost<T>(host: string, run: () => T): T {
-  trustedHosts.add(host);
-  try {
-    return run();
-  } finally {
-    trustedHosts.delete(host);
-  }
-}
-
-// Evaluate the generated App Router check with its proxy-trust import bound
-// to the real helper.
 function generatedDevOriginCheck(): (request: Request) => Response | null {
-  const code = generateDevOriginCheckCode().replace(/^import .*$/m, "");
-  return runInNewContext(`${code}\n__validateDevRequestOrigin;`, {
-    __resolveTrustedForwardedHost: resolveTrustedForwardedHost,
+  return runInNewContext(`${generateDevOriginCheckCode()}\n__validateDevRequestOrigin;`, {
     console,
     Response,
     URL,
@@ -197,27 +180,6 @@ describe("dev origin check", () => {
         validateDevRequest({ origin: "http://custom.com", host: "localhost:5173" }, ["custom.com"]),
       ).toBeNull();
     });
-
-    it("ignores an X-Forwarded-Host that VINEXT_TRUSTED_HOSTS does not list", () => {
-      const result = validateDevRequest({
-        origin: "https://evil.com",
-        host: "localhost:5173",
-        "x-forwarded-host": "evil.com",
-      });
-      expect(result).toContain("evil.com");
-    });
-
-    it("matches the Origin against an X-Forwarded-Host listed in VINEXT_TRUSTED_HOSTS", () => {
-      withTrustedHost("proxy.example.com", () => {
-        expect(
-          validateDevRequest({
-            origin: "https://proxy.example.com",
-            host: "localhost:5173",
-            "x-forwarded-host": "proxy.example.com",
-          }),
-        ).toBeNull();
-      });
-    });
   });
 
   // ── generateDevOriginCheckCode ────────────────────────────────────────
@@ -242,13 +204,7 @@ describe("dev origin check", () => {
       expect(code).toContain("__allowedDevOrigins = []");
     });
 
-    it("imports the trusted forwarded host resolver", () => {
-      expect(generateDevOriginCheckCode()).toMatch(
-        /^import \{ resolveTrustedForwardedHost as __resolveTrustedForwardedHost \} from ".*\/proxy-trust\.js";$/m,
-      );
-    });
-
-    it("ignores an X-Forwarded-Host that VINEXT_TRUSTED_HOSTS does not list", () => {
+    it("ignores X-Forwarded-Host", () => {
       const result = generatedDevOriginCheck()(
         new Request("http://localhost:5173/", {
           headers: {
@@ -261,21 +217,14 @@ describe("dev origin check", () => {
       expect(result?.status).toBe(403);
     });
 
-    it("matches the Origin against an X-Forwarded-Host listed in VINEXT_TRUSTED_HOSTS", () => {
-      const check = generatedDevOriginCheck();
-      withTrustedHost("proxy.example.com", () => {
-        expect(
-          check(
-            new Request("http://localhost:5173/", {
-              headers: {
-                origin: "https://proxy.example.com",
-                host: "localhost:5173",
-                "x-forwarded-host": "proxy.example.com",
-              },
-            }),
-          ),
-        ).toBeNull();
-      });
+    it("matches the Origin against the Host header", () => {
+      expect(
+        generatedDevOriginCheck()(
+          new Request("http://myapp.local:5173/", {
+            headers: { origin: "http://myapp.local:3000", host: "myapp.local:5173" },
+          }),
+        ),
+      ).toBeNull();
     });
   });
 });
