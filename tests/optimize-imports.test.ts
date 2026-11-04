@@ -1334,6 +1334,16 @@ describe("vinext:optimize-imports transform", () => {
       ),
     ).toBeUndefined();
     expect(context.resolve).not.toHaveBeenCalled();
+
+    // After an edit drops the barrel import, a direct import resolves normally.
+    await (transform as any).call(
+      context,
+      `import { Slot } from "@radix-ui/react-slot";`,
+      importers.a,
+    );
+    expect(
+      await (resolveId as any).call(context, "@radix-ui/react-slot", importers.a),
+    ).toBeUndefined();
   });
 
   it("prefers react-server export condition in RSC but not in SSR", async () => {

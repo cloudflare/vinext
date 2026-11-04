@@ -689,6 +689,10 @@ export function createOptimizeImportsPlugin(
         // "react-server" export condition should only be preferred in the RSC environment.
         // SSR renders with the full React runtime and must NOT resolve react-server entries.
         const preferReactServer = env?.name === "rsc";
+        // Drop the mappings from this module's previous transform (e.g. before an
+        // HMR edit removed its barrel import); a successful rewrite records new ones.
+        const originKey = subpkgOriginKey(this as PluginCtx, id);
+        barrelCaches.subpkgOrigin.delete(originKey);
 
         // Quick pre-parse check: only transformable static `import ... from "pkg"`
         // declarations can be rewritten, so skip files that merely mention an
@@ -929,9 +933,7 @@ export function createOptimizeImportsPlugin(
           hasChanges = true;
         }
 
-        const originKey = subpkgOriginKey(this as PluginCtx, id);
         if (origins.size > 0) barrelCaches.subpkgOrigin.set(originKey, origins);
-        else barrelCaches.subpkgOrigin.delete(originKey);
 
         if (!hasChanges) return null;
 
