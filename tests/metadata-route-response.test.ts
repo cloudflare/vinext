@@ -895,6 +895,95 @@ describe("handleMetadataRouteRequest", () => {
     expect(generateSitemapsReads).toBe(0);
   });
 
+  it("drops the framing headers of a metadata route's returned Response", async () => {
+    // A metadata image route can return a fetch() Response whose body Node
+    // decoded while keeping the upstream Content-Length and Content-Encoding.
+    const route = {
+      type: "icon",
+      isDynamic: true,
+      filePath: "/tmp/app/icon.tsx",
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl: "/icon",
+      contentType: "image/png",
+      module: {
+        default: () =>
+          new Response("decoded icon", {
+            headers: {
+              "Content-Type": "image/png",
+              "Content-Encoding": "gzip",
+              "Content-Length": "4",
+            },
+          }),
+      },
+    } satisfies MetadataFileRoute;
+
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [route],
+      cleanPathname: "/icon",
+      makeThenableParams,
+    });
+
+    expect(response?.headers.get("content-type")).toBe("image/png");
+    expect(response?.headers.has("content-encoding")).toBe(false);
+    expect(response?.headers.has("content-length")).toBe(false);
+    await expect(response?.text()).resolves.toBe("decoded icon");
+  });
+
+  // Next.js strips the framing headers only when sending, so the stored entry
+  // keeps them and each replay drops them again.
+  it("stores a metadata route's framing headers and drops them from the response and replays", async () => {
+    const isrSet = vi.fn<NonNullable<Parameters<typeof handleMetadataRouteRequest>[0]["isrSet"]>>(
+      async () => {},
+    );
+    const route = {
+      type: "icon",
+      isDynamic: true,
+      filePath: "/tmp/app/icon.tsx",
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl: "/icon",
+      contentType: "image/png",
+      module: {
+        default: () =>
+          new Response("decoded icon", {
+            headers: { "Content-Type": "image/png", "Content-Encoding": "gzip" },
+          }),
+      },
+    } satisfies MetadataFileRoute;
+
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () =>
+        handleMetadataRouteRequest({
+          cleanPathname: "/icon",
+          isrRouteKey: (pathname) => pathname,
+          isrGet: async () => null,
+          isrSet,
+          makeThenableParams,
+          metadataRoutes: [route],
+        }),
+    );
+
+    expect(response?.headers.has("content-encoding")).toBe(false);
+    await expect(response?.text()).resolves.toBe("decoded icon");
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    const stored = isrSet.mock.calls[0]![1];
+    expect(stored.kind === "APP_ROUTE" && stored.headers["content-encoding"]).toBe("gzip");
+
+    const replayed = await handleMetadataRouteRequest({
+      cleanPathname: "/icon",
+      isrRouteKey: (pathname) => pathname,
+      isrGet: async () => ({ isStale: false, value: { lastModified: 1, value: stored } }),
+      makeThenableParams,
+      metadataRoutes: [route],
+    });
+
+    expect(replayed?.headers.get("content-type")).toBe("image/png");
+    expect(replayed?.headers.has("content-encoding")).toBe(false);
+    await expect(replayed?.text()).resolves.toBe("decoded icon");
+  });
+
   it("serves matched static metadata route file data", async () => {
     const route = {
       type: "icon",
