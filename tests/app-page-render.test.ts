@@ -4114,25 +4114,28 @@ describe("runtime ISR renders that report an error", () => {
   );
 
   it("never stores an RSC miss whose stored document reports an error", async () => {
-    const common = createCommonOptions();
-    const late = lateRender("document");
+    const render = async (reportsError: boolean) => {
+      const common = createCommonOptions();
+      const late = lateRender(reportsError && "document");
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isCacheCandidate: true,
+        isProduction: true,
+        isRscRequest: true,
+        loadSsrHandler: late.loadSsrHandler,
+        renderToReadableStream: late.renderToReadableStream,
+        revalidateSeconds: 60,
+      });
+      late.release();
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
+      // The document rendered to be stored beside the payload.
+      expect(late.loadSsrHandler).toHaveBeenCalledOnce();
+      return common.isrSet.mock.calls.map(([key]) => key);
+    };
 
-    const response = await renderAppPageLifecycle({
-      ...common.options,
-      isCacheCandidate: true,
-      isProduction: true,
-      isRscRequest: true,
-      loadSsrHandler: late.loadSsrHandler,
-      renderToReadableStream: late.renderToReadableStream,
-      revalidateSeconds: 60,
-    });
-
-    late.release();
-    await response.text();
-    await Promise.all(common.waitUntilPromises);
-    // The document rendered to be stored beside the payload.
-    expect(late.loadSsrHandler).toHaveBeenCalledOnce();
-    expect(common.isrSet).not.toHaveBeenCalled();
+    await expect(render(true)).resolves.toEqual([]);
+    await expect(render(false)).resolves.toEqual(["rsc:/posts/post", "html:/posts/post"]);
   });
 
   // A render no client waits on is whole before it answers, so the error is
@@ -4159,6 +4162,26 @@ describe("runtime ISR renders that report an error", () => {
     await response.text();
     await Promise.all(common.waitUntilPromises);
     expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("answers a render no client waits on that reports no error with its 200", async () => {
+    const common = createCommonOptions();
+    const late = lateRender(false);
+    setTimeout(late.release, 10);
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: late.loadSsrHandler,
+      renderToReadableStream: late.renderToReadableStream,
+      renderWholeDocument: true,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).toHaveBeenCalled();
   });
 
   // As in `next build`, a render that turned dynamic doesn't fail on its error.

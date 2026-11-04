@@ -687,10 +687,10 @@ export async function readAppPageCacheResponse(
           );
         }
         // And, as in `next build`, one whose render reported an error throws it.
-        // A render that turned dynamic, as a PPR regeneration's may, is excused
-        // whichever boundary failed, as the build's own check excuses it.
         // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
         // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
+        // A render that turned dynamic, as a PPR regeneration's may, is excused
+        // whichever boundary failed, as vinext's build check excuses it.
         if (revalidatedPage.reportedError && !revalidatedPage.usedDynamicApi) {
           throw revalidatedPage.reportedError.error;
         }
