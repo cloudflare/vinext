@@ -846,6 +846,26 @@ describe("handleImageOptimization source typed by its bytes", () => {
     }
   });
 
+  it("does not type a source by an ftyp box past images.maximumResponseBody", async () => {
+    const box = new Uint8Array(2_000);
+    box.set([0, 0, 0x07, 0xd0, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
+    for (const chunkSize of [100, 2_000]) {
+      const response = await handleImageOptimization(
+        imageRequest,
+        {
+          fetchAsset: async () =>
+            new Response(chunkedSource(box, chunkSize).body, {
+              headers: { "Content-Type": "application/octet-stream" },
+            }),
+          transformImage: async () => new Response("transformed"),
+        },
+        undefined,
+        { maximumResponseBody: 100 },
+      );
+      expect(response.status, `${chunkSize}-byte chunks`).toBe(400);
+    }
+  });
+
   it("cancels a source it rejects by its bytes", async () => {
     for (const body of [SVG, "<!DOCTYPE html><p>page</p>"]) {
       let cancelled = false;

@@ -676,7 +676,12 @@ async function withDetectedImageContentType(
     { highWaterMark: 0 },
   );
   const headers = new Headers(source.headers);
-  const type = detectImageContentType(detected, source.headers.get("Content-Type"), length);
+  // A box past `maxLength` is never whole, however the source is chunked.
+  const type = detectImageContentType(
+    detected,
+    source.headers.get("Content-Type"),
+    Math.min(length, maxLength),
+  );
   if (type === null) headers.delete("Content-Type");
   else headers.set("Content-Type", type);
   return new Response(body, { status: source.status, statusText: source.statusText, headers });
