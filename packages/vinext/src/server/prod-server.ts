@@ -44,8 +44,7 @@ import {
   IMAGE_TYPE_NOT_ALLOWED_MESSAGE,
   isSafeImageContentType,
   detectImageContentType,
-  IMAGE_SIGNATURE_LENGTH,
-  imageDetectionLength,
+  IMAGE_DETECTION_LENGTH,
   sourceImageCacheControl,
   readImageOptimizationSignal,
   DEFAULT_DEVICE_SIZES,
@@ -800,14 +799,14 @@ async function detectStaticImageContentType(
   if (!entry) return undefined;
   const { buffer, headers, path, size } = entry.original;
   const label = headers["Content-Type"] ?? null;
-  if (buffer) return detectImageContentType(buffer, label);
+  if (buffer) {
+    return detectImageContentType(buffer.subarray(0, IMAGE_DETECTION_LENGTH), label, size);
+  }
   const file = await fsp.open(path, "r");
   try {
-    const signature = new Uint8Array(IMAGE_SIGNATURE_LENGTH);
-    const { bytesRead } = await file.read(signature, 0, IMAGE_SIGNATURE_LENGTH, 0);
-    const bytes = new Uint8Array(imageDetectionLength(signature.subarray(0, bytesRead), size));
-    const read = await file.read(bytes, 0, bytes.byteLength, 0);
-    return detectImageContentType(bytes.subarray(0, read.bytesRead), label);
+    const bytes = new Uint8Array(IMAGE_DETECTION_LENGTH);
+    const { bytesRead } = await file.read(bytes, 0, IMAGE_DETECTION_LENGTH, 0);
+    return detectImageContentType(bytes.subarray(0, bytesRead), label, size);
   } finally {
     await file.close();
   }

@@ -494,13 +494,13 @@ const IMAGE_SIGNATURES: ReadonlyArray<readonly [string, ReadonlyArray<number | n
   ];
 
 /** The bytes every signature fits in. */
-export const IMAGE_SIGNATURE_LENGTH = 12;
+const IMAGE_SIGNATURE_LENGTH = 12;
 
 /**
  * The most of a source read to identify it: Next.js looks for an SVG root
  * element in the first 1000 bytes.
  */
-const IMAGE_DETECTION_LENGTH = 1000;
+export const IMAGE_DETECTION_LENGTH = 1000;
 
 /**
  * Whether `text` has an SVG root element, as Next.js' image detector checks
@@ -525,13 +525,14 @@ function hasSvgRootElement(text: string): boolean {
 }
 
 /**
- * Whether `bytes` start with an `ftyp` box of `brand`: a big-endian box size
- * of at least 16 that the bytes hold, then `ftyp` and the major brand. The
- * size keeps text from matching the brand at offset 4.
+ * Whether `bytes`, the first of a source `length` bytes long, start with an
+ * `ftyp` box of `brand`: a big-endian box size of at least 16 that the source
+ * holds, then `ftyp` and the major brand. The size keeps text from matching
+ * the brand at offset 4.
  */
-function hasFtypBox(bytes: Uint8Array, brand: FtypBrand["ftypBrand"]): boolean {
+function hasFtypBox(bytes: Uint8Array, brand: FtypBrand["ftypBrand"], length: number): boolean {
   const boxSize = ftypBoxSize(bytes, brand);
-  return boxSize !== null && boxSize <= bytes.byteLength;
+  return boxSize !== null && boxSize <= length;
 }
 
 /** The declared size of an `ftyp` box of `brand` that `bytes` start with, or null. */
@@ -545,12 +546,18 @@ function ftypBoxSize(bytes: Uint8Array, brand: FtypBrand["ftypBrand"]): number |
     : null;
 }
 
-/** The image type Next.js detects from a source's first bytes, or null. */
-export function sniffImageContentType(bytes: Uint8Array): string | null {
+/**
+ * The image type Next.js detects from a source's first bytes, or null, given
+ * the source's length.
+ */
+export function sniffImageContentType(
+  bytes: Uint8Array,
+  length: number = bytes.byteLength,
+): string | null {
   for (const [type, signature] of IMAGE_SIGNATURES) {
     if (
       "ftypBrand" in signature
-        ? hasFtypBox(bytes, signature.ftypBrand)
+        ? hasFtypBox(bytes, signature.ftypBrand, length)
         : signature.every((byte, i) => byte === null || bytes[i] === byte)
     ) {
       return type;
@@ -561,11 +568,12 @@ export function sniffImageContentType(bytes: Uint8Array): string | null {
 
 /**
  * How many of a source's first bytes detection reads, given the first
- * `IMAGE_SIGNATURE_LENGTH`: those for a signature, the whole box for an
- * `ftyp` box, as Next.js checks it against the source it read whole, and
- * otherwise enough to find an SVG root element. Never more than `maxLength`.
+ * `IMAGE_SIGNATURE_LENGTH`: those for a signature, enough to know the source
+ * holds a whole `ftyp` box, as Next.js checks it against the source it read
+ * whole, and otherwise enough to find an SVG root element. Never more than
+ * `maxLength`.
  */
-export function imageDetectionLength(bytes: Uint8Array, maxLength: number): number {
+function imageDetectionLength(bytes: Uint8Array, maxLength: number): number {
   for (const [, signature] of IMAGE_SIGNATURES) {
     if ("ftypBrand" in signature) {
       const boxSize = ftypBoxSize(bytes, signature.ftypBrand);
@@ -591,14 +599,19 @@ function startsWithMarkup(bytes: Uint8Array): boolean {
 }
 
 /**
- * The type of a source from the first bytes `imageDetectionLength` reads, as
- * Next.js types every source by its bytes rather than its label, so an SVG
- * is an SVG whatever its name or Content-Type. Bytes that match no signature
- * keep `label`, since Next.js identifies formats these signatures don't,
- * except markup, which is never an image unless it is an SVG (null).
+ * The type of a source `length` bytes long from its first
+ * `IMAGE_DETECTION_LENGTH` bytes, as Next.js types every source by its bytes
+ * rather than its label, so an SVG is an SVG whatever its name or
+ * Content-Type. Bytes that match no signature keep `label`, since Next.js
+ * identifies formats these signatures don't, except markup, which is never
+ * an image unless it is an SVG (null).
  */
-export function detectImageContentType(bytes: Uint8Array, label: string | null): string | null {
-  const type = sniffImageContentType(bytes);
+export function detectImageContentType(
+  bytes: Uint8Array,
+  label: string | null,
+  length: number = bytes.byteLength,
+): string | null {
+  const type = sniffImageContentType(bytes, length);
   if (type !== null) return type;
   if (hasSvgRootElement(new TextDecoder().decode(bytes.subarray(0, IMAGE_DETECTION_LENGTH)))) {
     return "image/svg+xml";
@@ -643,7 +656,8 @@ async function withDetectedImageContentType(
       target = imageDetectionLength(concatBytes(head, IMAGE_SIGNATURE_LENGTH), maxLength);
     }
   }
-  const detected = concatBytes(head, Math.min(length, target));
+  // Copy only what the SVG scan reads: a whole `ftyp` box needs its length.
+  const detected = concatBytes(head, Math.min(length, IMAGE_DETECTION_LENGTH));
   const body = new ReadableStream<Uint8Array>(
     {
       start(controller) {
@@ -662,7 +676,7 @@ async function withDetectedImageContentType(
     { highWaterMark: 0 },
   );
   const headers = new Headers(source.headers);
-  const type = detectImageContentType(detected, source.headers.get("Content-Type"));
+  const type = detectImageContentType(detected, source.headers.get("Content-Type"), length);
   if (type === null) headers.delete("Content-Type");
   else headers.set("Content-Type", type);
   return new Response(body, { status: source.status, statusText: source.statusText, headers });
