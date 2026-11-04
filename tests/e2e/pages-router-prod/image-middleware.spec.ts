@@ -74,8 +74,15 @@ test.describe("image optimization source behind middleware", () => {
     expect((await request.get(imagePath(imageQuery("/heart.png")))).status()).toBe(400);
 
     // Like Next.js, the file's bytes decide its type, so an image extension
-    // on an SVG file does not admit it.
-    for (const source of ["/logo.svg", "/logo.svg?.png", "/logo-svg.png", "/logo-svg.avif"]) {
+    // on an SVG file does not admit it, held in memory or (above 64 KiB) read
+    // from disk.
+    for (const source of [
+      "/logo.svg",
+      "/logo.svg?.png",
+      "/logo-svg.png",
+      "/logo-svg.avif",
+      "/logo-svg-large.png",
+    ]) {
       const svg = await request.get(imagePath(source));
       expect(svg.status(), source).toBe(400);
       expect(await svg.text(), source).toBe(

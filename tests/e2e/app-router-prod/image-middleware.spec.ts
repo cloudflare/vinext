@@ -128,13 +128,15 @@ test.describe("image optimization endpoint behind middleware", () => {
 
     // The type comes from the file served, so an image extension in the
     // source's query or hash does not admit an SVG. Like Next.js, the file's
-    // bytes decide, so neither does an image extension on an SVG file.
+    // bytes decide, so neither does an image extension on an SVG file, held
+    // in memory or (above 64 KiB) read from disk.
     for (const source of [
       "/logo/logo.svg",
       "/logo/logo.svg?.png",
       "/logo/logo.svg#.png",
       "/logo/logo-svg.png",
       "/logo/logo-svg.avif",
+      "/logo/logo-svg-large.png",
     ]) {
       const svg = await request.get(imagePath("/_next/image", source));
       expect(svg.status(), source).toBe(400);
