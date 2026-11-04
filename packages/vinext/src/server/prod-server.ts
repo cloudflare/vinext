@@ -788,6 +788,15 @@ function withImageSourceCacheControl(
 }
 
 /**
+ * The most bytes the image endpoint reads of a source requested with `method`.
+ * Next.js requests a source with the endpoint's own method, so one other than
+ * GET or HEAD gets the static file's 405 rather than a 413.
+ */
+function imageSourceReadLimit(method: string | undefined, config?: ImageConfig): number {
+  return method === "GET" || method === "HEAD" ? imageSourceLimit(config) : Infinity;
+}
+
+/**
  * The file the static cache serves for an image source: past `limit`, or its
  * type from its first bytes, as the image endpoint types every source rather
  * than by its name. Undefined when the cache has no such file.
@@ -2093,7 +2102,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const staticSource = await staticImageSource(
         staticCache,
         sourcePath,
-        imageSourceLimit(imageConfig),
+        imageSourceReadLimit(req.method, imageConfig),
       );
       if (staticSource === undefined) return false;
       if (staticSource.tooLarge) {
@@ -3027,6 +3036,12 @@ async function createPagesRouterRequestHandler(
             for (const [name, value] of Object.entries(stagedHeaders)) {
               res.setHeader(name, value);
             }
+            // An error carries its own body, not the length a staged header gave.
+            const sendImageError = (status: number, body: string) => {
+              res.removeHeader("Content-Length");
+              res.writeHead(status);
+              res.end(body);
+            };
             const parsedUrl = new URL(resolvedUrl, "http://localhost");
             const params = parseImageParams(
               parsedUrl,
@@ -3035,15 +3050,13 @@ async function createPagesRouterRequestHandler(
               { localPatterns: pagesImageConfig?.localPatterns },
             );
             if (!params) {
-              res.writeHead(400);
-              res.end("Bad Request");
+              sendImageError(400, "Bad Request");
               return true;
             }
             // Check the extension of the file actually served, not the `url`
             // text, whose query or hash could carry an image extension.
             const sendUnsafeContentType = () => {
-              res.writeHead(400);
-              res.end(IMAGE_TYPE_NOT_ALLOWED_MESSAGE);
+              sendImageError(400, IMAGE_TYPE_NOT_ALLOWED_MESSAGE);
             };
             const isSafeSourcePath = (sourcePath: string) =>
               isSafeImageContentType(
@@ -3068,18 +3081,16 @@ async function createPagesRouterRequestHandler(
               const staticSource = await staticImageSource(
                 staticCache,
                 sourcePath,
-                imageSourceLimit(pagesImageConfig),
+                imageSourceReadLimit(req.method, pagesImageConfig),
               );
               if (staticSource === undefined) return false;
               if (staticSource.tooLarge) {
-                res.writeHead(413);
-                res.end(IMAGE_SOURCE_TOO_LARGE_MESSAGE);
+                sendImageError(413, IMAGE_SOURCE_TOO_LARGE_MESSAGE);
                 return true;
               }
               const { contentType } = staticSource;
               if (contentType === null) {
-                res.writeHead(400);
-                res.end(INVALID_IMAGE_SOURCE_MESSAGE);
+                sendImageError(400, INVALID_IMAGE_SOURCE_MESSAGE);
                 return true;
               }
               if (!isSafeImageContentType(contentType, pagesImageConfig?.dangerouslyAllowSVG)) {

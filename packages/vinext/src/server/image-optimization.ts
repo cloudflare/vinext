@@ -845,8 +845,8 @@ type AdmittedImageSource = {
 /**
  * Admit a fetched source as Next.js does, which reads it whole before typing
  * it: a 413 past the limit, then a 400 for one that is no image or of a type
- * not allowed. A source that declares no length and is rejected is read on to
- * the limit to tell the two apart.
+ * not allowed. A rejected source is read on to the limit to tell the two
+ * apart, whatever length it declares within it.
  */
 async function admitImageSource(
   fetched: Response,
@@ -870,27 +870,23 @@ async function admitImageSource(
   ) {
     return { source, body, contentType };
   }
-  if (source.headers.has("Content-Length")) {
-    body.cancel().catch(() => {});
-  } else {
-    const reader = new ImageSourceReader(body, limit);
-    try {
-      await reader.byte(limit);
-    } catch {
-      // Past the limit, or a source that failed to read.
-    }
-    reader.cancel();
-    if (reader.tooLarge) return sourceTooLargeResponse();
+  const reader = new ImageSourceReader(body, limit);
+  try {
+    await reader.byte(limit);
+  } catch {
+    // Past the limit, or a source that failed to read.
   }
+  reader.cancel();
+  if (reader.tooLarge) return sourceTooLargeResponse();
   return contentType === null ? invalidImageSourceResponse() : imageTypeNotAllowedResponse();
 }
 
 /**
- * Serve an admitted source as-is within the limit. One that declares its
- * length, or that a read proved `withinLimit`, is streamed, erroring should it
- * run past the limit; any other is read to its end first, as Next.js reads
- * every source whole, so it gets a 413 rather than a response cut short. Only
- * its first bytes are held to replay, so a longer one is fetched again.
+ * Serve an admitted source as-is within the limit. One a read proved
+ * `withinLimit` is streamed, erroring should it run past the limit; any other
+ * is read to its end first, as Next.js reads every source whole, so it gets a
+ * 413 rather than a response cut short, whatever length it declares. Only its
+ * first bytes are held to replay, so a longer one is fetched again.
  */
 async function servePassthroughWithinLimit(
   { source, body }: AdmittedImageSource,
@@ -900,7 +896,7 @@ async function servePassthroughWithinLimit(
   refetch: () => Promise<Response>,
   withinLimit = false,
 ): Promise<Response> {
-  if (withinLimit || source.headers.has("Content-Length")) {
+  if (withinLimit) {
     const limited = new LimitedImageSource(body, limit).body;
     return createPassthroughImageResponse(source, limited, cacheControl, imageConfig);
   }

@@ -532,14 +532,24 @@ describe("handleImageOptimization source size limit for every type", () => {
     { name: "PNG without an optimizer", head: STATIC_PNG, label: "image/png", optimizer: false },
   ];
 
-  function handlers(bytes: Uint8Array, label: string, chunkSize: number | null, optimizer = true) {
+  // A declared length comes in one chunk; an undeclared one in chunks. A source
+  // can also declare less than it is.
+  type Delivery = { chunkSize: number | null; declares?: number };
+  const deliveries: Record<string, Delivery> = {
+    declared: { chunkSize: null },
+    "in 10-byte chunks": { chunkSize: 10 },
+    [`in ${3 * LIMIT}-byte chunks`]: { chunkSize: 3 * LIMIT },
+    "declaring less than it is": { chunkSize: 10, declares: LIMIT / 5 },
+  };
+
+  function handlers(bytes: Uint8Array, label: string, delivery: Delivery, optimizer = true) {
     const transformed: number[] = [];
+    const { chunkSize, declares = chunkSize === null ? bytes.byteLength : undefined } = delivery;
     return {
       transformed,
       fetchAsset: async () => {
         const headers = new Headers({ "Content-Type": label });
-        // A declared length comes in one chunk; an undeclared one in chunks.
-        if (chunkSize === null) headers.set("Content-Length", String(bytes.byteLength));
+        if (declares !== undefined) headers.set("Content-Length", String(declares));
         return new Response(chunkedSource(bytes, chunkSize ?? bytes.byteLength).body, {
           headers,
         });
@@ -554,13 +564,12 @@ describe("handleImageOptimization source size limit for every type", () => {
   }
 
   for (const { name, head, label, allowSvg = false, optimizer = true } of cases) {
-    for (const chunkSize of [null, 10, 3 * LIMIT]) {
-      const delivery = chunkSize === null ? "declared" : `in ${chunkSize}-byte chunks`;
+    for (const [delivery, options] of Object.entries(deliveries)) {
       it(`answers 413 for a ${name} source past the limit, ${delivery}`, async () => {
         const { transformed, ...sourceHandlers } = handlers(
           padded(head, 3 * LIMIT),
           label,
-          chunkSize,
+          options,
           optimizer,
         );
         const response = await handleImageOptimization(imageRequest, sourceHandlers, undefined, {
@@ -578,7 +587,7 @@ describe("handleImageOptimization source size limit for every type", () => {
       for (const chunkSize of [null, 10]) {
         const response = await handleImageOptimization(
           imageRequest,
-          handlers(padded(head, LIMIT), label, chunkSize, optimizer),
+          handlers(padded(head, LIMIT), label, { chunkSize }, optimizer),
           undefined,
           { maximumResponseBody: LIMIT, dangerouslyAllowSVG: allowSvg },
         );
@@ -686,6 +695,49 @@ describe("handleImageOptimization fallback after the optimizer rejects early", (
     expect(response.status).toBe(200);
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(jpeg);
     expect(fetches).toBe(2);
+  });
+
+  it("reads a source fetched again once the optimizer cancelled a read still pending", async () => {
+    const LIMIT = 100;
+    // JPEG reaches the optimizer as it streams in; PNG through its animation check.
+    const sources: [string, Uint8Array | number[]][] = [
+      ["image/jpeg", [0xff, 0xd8, 0xff]],
+      ["image/png", STATIC_PNG],
+    ];
+    for (const [label, head] of sources) {
+      const bytes = padded(head, 3 * LIMIT);
+      let fetches = 0;
+      const response = await handleImageOptimization(
+        imageRequest,
+        {
+          fetchAsset: async () => {
+            fetches += 1;
+            // The first fetch stalls after its first chunk; the second runs past the limit.
+            const body =
+              fetches === 1
+                ? new ReadableStream<Uint8Array>({
+                    start: (controller) => controller.enqueue(bytes.slice(0, 60)),
+                  })
+                : chunkedSource(bytes, 10).body;
+            return new Response(body, { headers: { "Content-Type": label } });
+          },
+          transformImage: async (input) => {
+            const reader = input.getReader();
+            await reader.read();
+            // Cancel once the next read waits on the stalled source.
+            const pending = reader.read();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            await reader.cancel();
+            await pending;
+            throw new Error("unsupported");
+          },
+        },
+        undefined,
+        { maximumResponseBody: LIMIT },
+      );
+      expect(response.status, label).toBe(413);
+      expect(fetches, label).toBe(2);
+    }
   });
 
   it("streams a source fetched again once the optimizer read it whole within the limit", async () => {
@@ -1011,25 +1063,30 @@ describe("handleImageOptimization source typed by its bytes", () => {
     }
   });
 
-  it("cancels a source it rejects by its bytes", async () => {
+  it("cancels a source it rejects once it reads past the limit", async () => {
     for (const body of [SVG, "<!DOCTYPE html><p>page</p>"]) {
       let cancelled = false;
-      const response = await handleImageOptimization(imageRequest, {
-        fetchAsset: async () =>
-          new Response(
-            new ReadableStream<Uint8Array>({
-              // More than detection reads, and never closed.
-              start(controller) {
-                controller.enqueue(new TextEncoder().encode(body.padEnd(2_000)));
-              },
-              cancel() {
-                cancelled = true;
-              },
-            }),
-            { headers: { "Content-Type": "image/png", "Content-Length": "2000" } },
-          ),
-      });
-      expect(response.status).toBe(400);
+      const response = await handleImageOptimization(
+        imageRequest,
+        {
+          fetchAsset: async () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                // More than detection reads, and never closed.
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode(body.padEnd(2_000)));
+                },
+                cancel() {
+                  cancelled = true;
+                },
+              }),
+              { headers: { "Content-Type": "image/png" } },
+            ),
+        },
+        undefined,
+        { maximumResponseBody: 1_500 },
+      );
+      expect(response.status).toBe(413);
       expect(cancelled, body).toBe(true);
     }
   });

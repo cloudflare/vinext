@@ -21,6 +21,7 @@ export class ImageSourceReader {
   readonly #limit: number;
   #read = 0;
   #done = false;
+  #cancelled = false;
   #tooLarge = false;
   // Chunks a parse can still reach, the first starting at #windowStart.
   #window: Uint8Array[] = [];
@@ -52,6 +53,7 @@ export class ImageSourceReader {
 
   /** Stop reading the source without waiting on its cancellation. */
   cancel(): void {
+    this.#cancelled = true;
     this.#reader.cancel().catch(() => {});
   }
 
@@ -101,7 +103,10 @@ export class ImageSourceReader {
         index = held.length;
         controller.enqueue(chunk);
       },
-      cancel: (reason) => this.#reader.cancel(reason),
+      cancel: (reason) => {
+        this.#cancelled = true;
+        return this.#reader.cancel(reason);
+      },
     });
   }
 
@@ -109,7 +114,8 @@ export class ImageSourceReader {
     if (this.#done) return undefined;
     const { done, value } = await this.#reader.read();
     if (done) {
-      this.#done = true;
+      // A read pending as the source is cancelled ends it short, not whole.
+      this.#done = !this.#cancelled;
       return undefined;
     }
     this.#read += value.byteLength;
@@ -163,6 +169,7 @@ export class LimitedImageSource {
   constructor(source: ReadableStream<Uint8Array>, limit: number) {
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     let read = 0;
+    let cancelled = false;
     this.body = new ReadableStream<Uint8Array>(
       {
         pull: async (controller) => {
@@ -170,7 +177,8 @@ export class LimitedImageSource {
           reader ??= source.getReader();
           const { done, value } = await reader.read();
           if (done) {
-            this.readWhole = true;
+            // A read pending as `body` is cancelled ends it short, not whole.
+            this.readWhole = !cancelled;
             return controller.close();
           }
           read += value.byteLength;
@@ -184,6 +192,7 @@ export class LimitedImageSource {
         },
         cancel: (reason) => {
           this.disturbed = true;
+          cancelled = true;
           return reader ? reader.cancel(reason) : source.cancel(reason);
         },
       },
