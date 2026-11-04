@@ -582,15 +582,14 @@ export function sniffImageContentType(
  * holds a whole `ftyp` box, as Next.js checks it against the source it read
  * whole, and otherwise enough to find an SVG root element. Never more than
  * `maxLength`, and never an `ftyp` box past `HELD_SOURCE_LIMIT`, since the bytes
- * read are held to replay: such a source is typed by its label instead.
+ * read are held to replay: such a source is checked for markup, then typed by
+ * its label.
  */
 function imageDetectionLength(bytes: Uint8Array, maxLength: number): number {
   for (const [, signature] of IMAGE_SIGNATURES) {
     if ("ftypBrand" in signature) {
       const boxSize = ftypBoxSize(bytes, signature.ftypBrand);
-      if (boxSize !== null) {
-        return boxSize > HELD_SOURCE_LIMIT ? IMAGE_SIGNATURE_LENGTH : Math.min(boxSize, maxLength);
-      }
+      if (boxSize !== null && boxSize <= HELD_SOURCE_LIMIT) return Math.min(boxSize, maxLength);
     } else if (signature.every((byte, i) => byte === null || bytes[i] === byte)) {
       return IMAGE_SIGNATURE_LENGTH;
     }
@@ -674,8 +673,11 @@ async function withDetectedImageContentType(
     reader.cancel().catch(() => {});
     return null;
   }
-  // Copy only what the SVG scan reads: a whole `ftyp` box needs only its length.
-  const detected = concatBytes(head, Math.min(length, IMAGE_DETECTION_LENGTH));
+  // Detect from no more than detection asked for, however the source is
+  // chunked: a box past it is never whole. Copy only what the SVG scan reads,
+  // since a whole `ftyp` box needs only its length.
+  const known = Math.min(length, target);
+  const detected = concatBytes(head, Math.min(known, IMAGE_DETECTION_LENGTH));
   const body = new ReadableStream<Uint8Array>(
     {
       start(controller) {
@@ -694,7 +696,7 @@ async function withDetectedImageContentType(
     { highWaterMark: 0 },
   );
   const headers = new Headers(source.headers);
-  const type = detectImageContentType(detected, source.headers.get("Content-Type"), length);
+  const type = detectImageContentType(detected, source.headers.get("Content-Type"), known);
   if (type === null) headers.delete("Content-Type");
   else headers.set("Content-Type", type);
   return new Response(body, { status: source.status, statusText: source.statusText, headers });

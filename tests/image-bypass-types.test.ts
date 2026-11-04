@@ -1149,11 +1149,12 @@ describe("handleImageOptimization source typed by its bytes", () => {
   it("types a source by its label rather than an ftyp box past what is held", async () => {
     const box = new Uint8Array(1_048_577);
     box.set([0, 0x10, 0, 0x01, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
-    for (const [label, status] of [
-      ["application/octet-stream", 400],
-      ["image/avif", 200],
+    for (const [label, status, chunkSize] of [
+      ["application/octet-stream", 400, 64 * 1024],
+      ["application/octet-stream", 400, box.byteLength],
+      ["image/avif", 200, 64 * 1024],
     ] as const) {
-      const source = chunkedSource(box, 64 * 1024);
+      const source = chunkedSource(box, chunkSize);
       const response = await handleImageOptimization(imageRequest, {
         fetchAsset: async () => new Response(source.body, { headers: { "Content-Type": label } }),
         transformImage: async (input, options) => {
@@ -1161,7 +1162,7 @@ describe("handleImageOptimization source typed by its bytes", () => {
           return new Response("transformed", { headers: { "Content-Type": options.format } });
         },
       });
-      expect(response.status, label).toBe(status);
+      expect(response.status, `${label}, ${chunkSize}-byte chunks`).toBe(status);
     }
   });
 
