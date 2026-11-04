@@ -541,6 +541,7 @@ describe("handleImageOptimization source size limit for every type", () => {
     { name: "JPEG", head: [0xff, 0xd8, 0xff], label: "image/jpeg" },
     { name: "AVIF", head: avifBox, label: "application/octet-stream" },
     { name: "PNG without an optimizer", head: STATIC_PNG, label: "image/png", optimizer: false },
+    { name: "animated GIF", head: ANIMATED_GIF, label: "image/gif" },
   ];
 
   // A declared length comes in one chunk; an undeclared one in chunks. A source
@@ -712,6 +713,39 @@ describe("handleImageOptimization fallback after the optimizer rejects early", (
     expect(response.status).toBe(200);
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(jpeg);
     expect(fetches).toBe(2);
+  });
+
+  it("cancels a source the optimizer let go of before fetching it again", async () => {
+    const jpeg = padded([0xff, 0xd8, 0xff], 40);
+    const cancelled: boolean[] = [];
+    const response = await handleImageOptimization(imageRequest, {
+      fetchAsset: async () => {
+        const index = cancelled.push(false) - 1;
+        const source = chunkedSource(jpeg, 8).body;
+        const reader = source.getReader();
+        const body = new ReadableStream<Uint8Array>({
+          pull: async (controller) => {
+            const { done, value } = await reader.read();
+            if (done) controller.close();
+            else controller.enqueue(value);
+          },
+          cancel: (reason) => {
+            cancelled[index] = true;
+            return reader.cancel(reason);
+          },
+        });
+        return new Response(body, { headers: { "Content-Type": "image/jpeg" } });
+      },
+      transformImage: async (input) => {
+        const reader = input.getReader();
+        await reader.read();
+        reader.releaseLock();
+        throw new Error("unsupported");
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(jpeg);
+    expect(cancelled[0]).toBe(true);
   });
 
   it("labels a source fetched again by its own type", async () => {

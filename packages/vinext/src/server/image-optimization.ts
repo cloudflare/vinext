@@ -1002,6 +1002,38 @@ export async function handleImageOptimization(
         // read, or fetch the source again when too many were read to hold.
         reader = new ImageSourceReader(admitted.body, limit);
         const animated = await isAnimatedImage(reader);
+        // Next.js reads the whole source before serving it as-is, so an
+        // animated one gets a 413 rather than a response cut short.
+        if (animated) {
+          try {
+            await reader.byte(limit);
+          } catch (e) {
+            if (reader.tooLarge) return sourceTooLargeResponse();
+            throw e;
+          }
+          const held = reader.body();
+          if (held) {
+            const length = reader.completeLength;
+            return createPassthroughImageResponse(
+              source,
+              held,
+              sourceCacheControl,
+              imageConfig,
+              length,
+            );
+          }
+          reader.cancel();
+          const refetched = await admitImageSource(await refetch(), limit, imageConfig);
+          if (refetched instanceof Response) return refetched;
+          return servePassthroughWithinLimit(
+            refetched,
+            sourceCacheControl,
+            imageConfig,
+            limit,
+            refetch,
+            reader.readWhole,
+          );
+        }
         let sourceBody = reader.body();
         if (!sourceBody) {
           reader.cancel();
@@ -1009,15 +1041,6 @@ export async function handleImageOptimization(
           if (!refetched.ok || !refetched.body) return invalidImageSourceResponse();
           reader = new ImageSourceReader(refetched.body, limit);
           sourceBody = reader.body()!;
-        }
-        if (animated) {
-          return createPassthroughImageResponse(
-            source,
-            sourceBody,
-            sourceCacheControl,
-            imageConfig,
-            reader.completeLength,
-          );
         }
         body = sourceBody;
       } else {
@@ -1077,6 +1100,10 @@ export async function handleImageOptimization(
   // proof is of the first fetch, so a source that grows past the limit between
   // the two fetches errors its body rather than getting a 413.
   reader?.cancel();
+  // One the optimizer let go of is cancelled too, before it is fetched again.
+  if (limitedSource && !limitedSource.body.locked) {
+    limitedSource.body.cancel().catch(() => {});
+  }
   const refetched = await admitImageSource(await refetch(), limit, imageConfig);
   if (refetched instanceof Response) return refetched;
   const withinLimit = limitedSource?.readWhole ?? reader?.readWhole ?? false;
