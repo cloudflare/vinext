@@ -6629,7 +6629,7 @@ describe("next/cache shim", () => {
     try {
       await unstable_cache(async (value: string) => value, ["x".repeat(1000)])("y".repeat(1000));
       expect(keys).toHaveLength(1);
-      expect(keys[0]).toMatch(/^unstable_cache:v3:[0-9a-f]{64}$/);
+      expect(keys[0]).toMatch(/^unstable_cache:v4:[0-9a-f]{64}$/);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -7626,7 +7626,7 @@ describe("next/cache shim", () => {
             data: {
               headers: {},
               body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v3:stale-swr-test:[]",
+              url: "unstable_cache:v4:stale-swr-test:[]",
             },
             tags: ["stale-swr"],
             revalidate: 1,
@@ -7773,7 +7773,7 @@ describe("next/cache shim", () => {
             data: {
               headers: {},
               body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v3:foreground-test:[]",
+              url: "unstable_cache:v4:foreground-test:[]",
             },
             tags: ["foreground"],
             revalidate: 1,
