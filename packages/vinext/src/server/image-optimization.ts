@@ -467,77 +467,172 @@ function imageMediaType(contentType: string | null): string {
   return contentType?.split(";")[0].trim().toLowerCase() ?? "";
 }
 
+/** An ISOBMFF `ftyp` box with the given major brand, as Next.js' `hasFtypBox`. */
+type FtypBrand = { readonly ftypBrand: readonly [number, number, number, number] };
+
 /**
  * Next.js's image signatures (`detectContentType` in
- * packages/next/src/server/image-optimizer.ts); a null byte matches any value.
+ * packages/next/src/server/image-optimizer/detect-content-type.ts); a null
+ * byte matches any value.
  */
-const IMAGE_SIGNATURES: ReadonlyArray<readonly [string, ReadonlyArray<number | null>]> = [
-  ["image/jpeg", [0xff, 0xd8, 0xff]],
-  ["image/png", [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
-  ["image/gif", [0x47, 0x49, 0x46, 0x38]],
-  ["image/webp", [0x52, 0x49, 0x46, 0x46, null, null, null, null, 0x57, 0x45, 0x42, 0x50]],
-  ["image/svg+xml", [0x3c, 0x3f, 0x78, 0x6d, 0x6c]],
-  ["image/svg+xml", [0x3c, 0x73, 0x76, 0x67]],
-  ["image/avif", [null, null, null, null, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]],
-  ["image/x-icon", [0x00, 0x00, 0x01, 0x00]],
-  ["image/x-icns", [0x69, 0x63, 0x6e, 0x73]],
-  ["image/tiff", [0x49, 0x49, 0x2a, 0x00]],
-  ["image/bmp", [0x42, 0x4d]],
-  ["image/jxl", [0xff, 0x0a]],
-  ["image/jxl", [0x00, 0x00, 0x00, 0x0c, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a]],
-  ["image/heic", [null, null, null, null, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]],
-];
+const IMAGE_SIGNATURES: ReadonlyArray<readonly [string, ReadonlyArray<number | null> | FtypBrand]> =
+  [
+    ["image/jpeg", [0xff, 0xd8, 0xff]],
+    ["image/png", [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
+    ["image/gif", [0x47, 0x49, 0x46, 0x38]],
+    ["image/webp", [0x52, 0x49, 0x46, 0x46, null, null, null, null, 0x57, 0x45, 0x42, 0x50]],
+    ["image/svg+xml", [0x3c, 0x3f, 0x78, 0x6d, 0x6c]],
+    ["image/svg+xml", [0x3c, 0x73, 0x76, 0x67]],
+    ["image/avif", { ftypBrand: [0x61, 0x76, 0x69, 0x66] }],
+    ["image/x-icon", [0x00, 0x00, 0x01, 0x00]],
+    ["image/x-icns", [0x69, 0x63, 0x6e, 0x73]],
+    ["image/tiff", [0x49, 0x49, 0x2a, 0x00]],
+    ["image/bmp", [0x42, 0x4d]],
+    ["image/jxl", [0xff, 0x0a]],
+    ["image/jxl", [0x00, 0x00, 0x00, 0x0c, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a]],
+    ["image/heic", { ftypBrand: [0x68, 0x65, 0x69, 0x63] }],
+  ];
+
+/** The bytes every signature fits in. */
 const IMAGE_SIGNATURE_LENGTH = 12;
+
+/**
+ * The most of a source read to identify it: Next.js looks for an SVG root
+ * element in the first 1000 bytes.
+ */
+export const IMAGE_DETECTION_LENGTH = 1000;
+
+/** Next.js' SVG root element (image-size's SVG detector). */
+const SVG_ROOT = /<svg\s([^>"']|"[^"]*"|'[^']*')*>/;
+
+/**
+ * Whether `bytes` start with an `ftyp` box of `brand`: a big-endian box size
+ * of at least 16 that the bytes hold, then `ftyp` and the major brand. The
+ * size keeps text from matching the brand at offset 4.
+ */
+function hasFtypBox(bytes: Uint8Array, brand: FtypBrand["ftypBrand"]): boolean {
+  const boxSize = ftypBoxSize(bytes, brand);
+  return boxSize !== null && boxSize <= bytes.byteLength;
+}
+
+/** The declared size of an `ftyp` box of `brand` that `bytes` start with, or null. */
+function ftypBoxSize(bytes: Uint8Array, brand: FtypBrand["ftypBrand"]): number | null {
+  if (bytes.byteLength < IMAGE_SIGNATURE_LENGTH) return null;
+  const boxSize = new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0);
+  return boxSize >= 16 &&
+    [0x66, 0x74, 0x79, 0x70].every((byte, i) => bytes[i + 4] === byte) &&
+    brand.every((byte, i) => bytes[i + 8] === byte)
+    ? boxSize
+    : null;
+}
 
 /** The image type Next.js detects from a source's first bytes, or null. */
 export function sniffImageContentType(bytes: Uint8Array): string | null {
   for (const [type, signature] of IMAGE_SIGNATURES) {
-    if (signature.every((byte, i) => byte === null || bytes[i] === byte)) return type;
+    if (
+      "ftypBrand" in signature
+        ? hasFtypBox(bytes, signature.ftypBrand)
+        : signature.every((byte, i) => byte === null || bytes[i] === byte)
+    ) {
+      return type;
+    }
   }
   return null;
 }
 
 /**
- * Label a source that arrives without an image Content-Type by its first
- * bytes, as Next.js types every source. Workers static assets have no type for
- * some formats Next.js serves, such as ICNS.
+ * How many of a source's first bytes detection reads, given the first
+ * `IMAGE_SIGNATURE_LENGTH`: those for a signature, the box for an `ftyp`
+ * box, and otherwise enough to find an SVG root element.
  */
-async function withSniffedImageContentType(source: Response): Promise<Response> {
-  if (
-    !source.ok ||
-    !source.body ||
-    imageMediaType(source.headers.get("Content-Type")).startsWith("image/")
-  ) {
-    return source;
+function imageDetectionLength(bytes: Uint8Array): number {
+  for (const [, signature] of IMAGE_SIGNATURES) {
+    if ("ftypBrand" in signature) {
+      const boxSize = ftypBoxSize(bytes, signature.ftypBrand);
+      if (boxSize !== null && boxSize <= IMAGE_DETECTION_LENGTH) return boxSize;
+    } else if (signature.every((byte, i) => byte === null || bytes[i] === byte)) {
+      return IMAGE_SIGNATURE_LENGTH;
+    }
   }
+  return IMAGE_DETECTION_LENGTH;
+}
+
+/**
+ * Whether `bytes` are text markup: they start with `<` after a UTF-8 byte
+ * order mark and whitespace, or with a UTF-16 byte order mark.
+ */
+function startsWithMarkup(bytes: Uint8Array): boolean {
+  if ((bytes[0] === 0xfe && bytes[1] === 0xff) || (bytes[0] === 0xff && bytes[1] === 0xfe)) {
+    return true;
+  }
+  let i = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+  while (bytes[i] === 0x20 || bytes[i] === 0x09 || bytes[i] === 0x0a || bytes[i] === 0x0d) i++;
+  return bytes[i] === 0x3c;
+}
+
+/**
+ * The type of a source from its first `IMAGE_DETECTION_LENGTH` bytes, as
+ * Next.js types every source by its bytes rather than its label, so an SVG
+ * is an SVG whatever its name or Content-Type. Bytes that match no signature
+ * keep `label`, since Next.js identifies formats these signatures don't,
+ * except markup, which is never an image unless it is an SVG (null).
+ */
+export function detectImageContentType(bytes: Uint8Array, label: string | null): string | null {
+  const type = sniffImageContentType(bytes);
+  if (type !== null) return type;
+  if (SVG_ROOT.test(new TextDecoder().decode(bytes.subarray(0, IMAGE_DETECTION_LENGTH)))) {
+    return "image/svg+xml";
+  }
+  return startsWithMarkup(bytes) ? null : label;
+}
+
+/**
+ * Type a source by its first bytes, replacing its Content-Type, as Next.js
+ * types every source. Workers static assets have no type for some formats
+ * Next.js serves, such as ICNS, and label any file by its name.
+ */
+async function withDetectedImageContentType(source: Response): Promise<Response> {
+  if (!source.ok || !source.body) return source;
   const reader = source.body.getReader();
-  // Replay the chunks read, copying only the signature's bytes.
+  // Replay the chunks read, copying only the bytes detection reads.
   const head: Uint8Array[] = [];
-  const signature = new Uint8Array(IMAGE_SIGNATURE_LENGTH);
+  const detected = new Uint8Array(IMAGE_DETECTION_LENGTH);
   let length = 0;
-  while (length < IMAGE_SIGNATURE_LENGTH) {
+  let target = IMAGE_SIGNATURE_LENGTH;
+  while (length < target) {
     const { done, value } = await reader.read();
     if (done) break;
     head.push(value);
-    signature.set(value.subarray(0, IMAGE_SIGNATURE_LENGTH - length), length);
-    length += Math.min(value.byteLength, IMAGE_SIGNATURE_LENGTH - length);
+    detected.set(value.subarray(0, IMAGE_DETECTION_LENGTH - length), length);
+    length += Math.min(value.byteLength, IMAGE_DETECTION_LENGTH - length);
+    if (target === IMAGE_SIGNATURE_LENGTH && length >= target) {
+      target = imageDetectionLength(detected.subarray(0, length));
+    }
   }
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of head) controller.enqueue(chunk);
+  const body = new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        for (const chunk of head) controller.enqueue(chunk);
+      },
+      async pull(controller) {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
     },
-    async pull(controller) {
-      const { done, value } = await reader.read();
-      if (done) controller.close();
-      else controller.enqueue(value);
-    },
-    cancel(reason) {
-      return reader.cancel(reason);
-    },
-  });
+    // Read the source only as the body is read.
+    { highWaterMark: 0 },
+  );
   const headers = new Headers(source.headers);
-  const type = sniffImageContentType(signature.subarray(0, length));
-  if (type !== null) headers.set("Content-Type", type);
+  const type = detectImageContentType(
+    detected.subarray(0, length),
+    source.headers.get("Content-Type"),
+  );
+  if (type === null) headers.delete("Content-Type");
+  else headers.set("Content-Type", type);
   return new Response(body, { status: source.status, statusText: source.statusText, headers });
 }
 
@@ -719,7 +814,7 @@ export async function handleImageOptimization(
   // Fetch source image
   const fetchedSource = await handlers.fetchAsset(imageUrl, request);
   const isBuildAsset = isImageBuildAsset(fetchedSource);
-  const source = await withSniffedImageContentType(fetchedSource);
+  const source = await withDetectedImageContentType(fetchedSource);
   if (!source.ok || !source.body) {
     return invalidImageSourceResponse();
   }
@@ -729,8 +824,10 @@ export async function handleImageOptimization(
 
   // Block unsafe Content-Types (e.g., SVG which can contain embedded scripts).
   // Check the source Content-Type before any processing. SVG is only allowed
-  // when dangerouslyAllowSVG is explicitly enabled in next.config.js.
+  // when dangerouslyAllowSVG is explicitly enabled in next.config.js. Like
+  // Next.js, a source of no detected type isn't an image at all.
   const sourceContentType = source.headers.get("Content-Type");
+  if (sourceContentType === null) return invalidImageSourceResponse();
   if (!isSafeImageContentType(sourceContentType, imageConfig?.dangerouslyAllowSVG)) {
     return imageTypeNotAllowedResponse();
   }
@@ -837,7 +934,7 @@ export async function handleImageOptimization(
   } catch (e) {
     console.error("[vinext] Image fallback error, refetching source image:", e);
     reader?.cancel();
-    const refetchedSource = await withSniffedImageContentType(
+    const refetchedSource = await withDetectedImageContentType(
       await handlers.fetchAsset(imageUrl, request),
     );
     if (!refetchedSource.ok || !refetchedSource.body) {
@@ -845,6 +942,7 @@ export async function handleImageOptimization(
     }
 
     const refetchedContentType = refetchedSource.headers.get("Content-Type");
+    if (refetchedContentType === null) return invalidImageSourceResponse();
     if (!isSafeImageContentType(refetchedContentType, imageConfig?.dangerouslyAllowSVG)) {
       return imageTypeNotAllowedResponse();
     }
