@@ -1651,13 +1651,22 @@ function planFlightResponseArrived(options: {
     };
   }
 
+  // Rewrites can keep the display URL unchanged while rendering a different
+  // root layout. Manifest lookup by that URL must not override the root
+  // identities carried by the actual current and incoming render payloads.
+  const renderedRootTransition = classifyRootBoundaryTransition(
+    options.state.visibleSnapshot.rootBoundaryId,
+    targetSnapshot.rootBoundaryId,
+  );
   const transition =
-    currentTopology.kind === "unknown" || targetTopology.kind === "unknown"
-      ? "rootBoundaryUnknown"
-      : classifyRootBoundaryTransition(
-          currentTopology.topology.rootBoundaryId,
-          targetTopology.topology.rootBoundaryId,
-        );
+    renderedRootTransition === "rootBoundaryChanged"
+      ? renderedRootTransition
+      : currentTopology.kind === "unknown" || targetTopology.kind === "unknown"
+        ? "rootBoundaryUnknown"
+        : classifyRootBoundaryTransition(
+            currentTopology.topology.rootBoundaryId,
+            targetTopology.topology.rootBoundaryId,
+          );
 
   if (transition === "rootBoundaryChanged") {
     return {
