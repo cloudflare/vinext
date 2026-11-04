@@ -687,8 +687,9 @@ async function withDetectedImageContentType(
   reader.cancel().catch(() => {});
   const refetched = await refetch();
   if (!refetched.ok || !refetched.body) return refetched;
-  // The type found holds for the same first bytes, so a source whose bytes
-  // changed between the fetches is typed afresh, without a third fetch.
+  // The type found holds for the same first bytes and a source as long as the
+  // box, so a source whose first bytes changed between the fetches is typed
+  // afresh, without a third fetch, and one that ends before the box errors.
   const refetchedReader = refetched.body.getReader();
   const refetchedHead: Uint8Array[] = [];
   let refetchedLength = 0;
@@ -698,13 +699,13 @@ async function withDetectedImageContentType(
     refetchedHead.push(value);
     refetchedLength += value.byteLength;
   }
-  const body = replayImageSource(refetchedHead, refetchedReader);
   if (
     refetchedLength >= heldLength &&
     bytesEqual(concatBytes(refetchedHead, heldLength), concatBytes(head, heldLength))
   ) {
-    return typed(refetched, body);
+    return typed(refetched, replayImageSource(refetchedHead, refetchedReader, known));
   }
+  const body = replayImageSource(refetchedHead, refetchedReader);
   return withDetectedImageContentType(new Response(body, refetched), maxLength, async () =>
     Response.error(),
   );
@@ -712,21 +713,32 @@ async function withDetectedImageContentType(
 
 /**
  * Stream `head`, then the rest of `reader`, reading the source only as the
- * stream is read.
+ * stream is read, and erroring should it end before `minLength` bytes.
  */
 function replayImageSource(
   head: Uint8Array[],
   reader: ReadableStreamDefaultReader<Uint8Array>,
+  minLength = 0,
 ): ReadableStream<Uint8Array> {
+  let length = 0;
   return new ReadableStream<Uint8Array>(
     {
       start(controller) {
-        for (const chunk of head) controller.enqueue(chunk);
+        for (const chunk of head) {
+          controller.enqueue(chunk);
+          length += chunk.byteLength;
+        }
       },
       async pull(controller) {
         const { done, value } = await reader.read();
-        if (done) controller.close();
-        else controller.enqueue(value);
+        if (!done) {
+          length += value.byteLength;
+          controller.enqueue(value);
+        } else if (length < minLength) {
+          controller.error(new Error("The image source changed while it was fetched again."));
+        } else {
+          controller.close();
+        }
       },
       cancel(reason) {
         return reader.cancel(reason);
