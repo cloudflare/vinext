@@ -1206,7 +1206,7 @@ describe("vinext:optimize-imports transform", () => {
     },
   );
 
-  it.each(["optimized", "discovered", "missing", "source-query", "relative-source", "mismatch"])(
+  it.each(["recorded", "nested", "missing", "source-query", "relative-source", "mismatch"])(
     "analyzes dependency prebundles through their recorded source (%s)",
     async (state) => {
       await setupTransform("lucide-react", `"use client"; export { Check } from "./check.js";`);
@@ -1218,12 +1218,13 @@ describe("vinext:optimize-imports transform", () => {
       fs.writeFileSync(file, `export { Check } from "./flattened-client-code.js";`);
       const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
       await unwrapHook(plugin.buildStart)!.call(plugin);
-      const metadata: {
-        optimized: Record<string, { file: string; src: string }>;
-        discovered: Record<string, { file: string; src: string }>;
-      } = { optimized: {}, discovered: {} };
+      const metadata: { depInfoList: Array<{ id: string; file: string; src: string }> } = {
+        depInfoList: [],
+      };
       if (state !== "missing") {
-        metadata[state === "discovered" ? "discovered" : "optimized"]["lucide-react"] = {
+        metadata.depInfoList.push({
+          // Vite records an importer-local copy under its parent package.
+          id: state === "nested" ? "some-ui > lucide-react" : "lucide-react",
           file: state === "mismatch" ? file + ".other" : file,
           src:
             state === "source-query"
@@ -1231,7 +1232,7 @@ describe("vinext:optimize-imports transform", () => {
               : state === "relative-source"
                 ? "./index.js"
                 : entry,
-        };
+        });
       }
       const result = await unwrapHook(plugin.transform)!.call(
         {
@@ -1242,7 +1243,7 @@ describe("vinext:optimize-imports transform", () => {
         `import { Check } from "lucide-react";`,
         path.join(tmpDir, "entry.js"),
       );
-      if (state === "optimized" || state === "discovered")
+      if (state === "recorded" || state === "nested")
         expect(result?.code).toContain(JSON.stringify(entry));
       else expect(result).toBeNull();
     },
@@ -1422,10 +1423,7 @@ describe("vinext:optimize-imports subpath imports", () => {
    * imports "client-only", and re-exports ToastQueue from a react-stately copy
    * nested under react-aria-components.
    */
-  async function setup(
-    toastEntry?: string,
-    prebundleState?: "optimized" | "discovered" | "missing",
-  ) {
+  async function setup(toastEntry?: string, prebundleState?: "recorded" | "missing") {
     const tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-subpath-"))),
     );
@@ -1453,12 +1451,12 @@ describe("vinext:optimize-imports subpath imports", () => {
     const nestedStately = prebundleState
       ? `${prebundleFile}?v=abc`
       : `${racDir}/node_modules/react-stately/dist/exports/useToastState.mjs?v=abc`;
-    const metadata = { optimized: {}, discovered: {} };
-    if (prebundleState && prebundleState !== "missing") {
-      Object.assign(metadata[prebundleState], {
-        "react-stately/useToastState": { file: prebundleFile, src: statelySource },
-      });
-    }
+    const metadata = {
+      depInfoList:
+        prebundleState && prebundleState !== "missing"
+          ? [{ id: "react-stately/useToastState", file: prebundleFile, src: statelySource }]
+          : [],
+    };
     const resolveCalls: Array<[string, string]> = [];
     const resolve = async (source: string, importer: string) => {
       resolveCalls.push([source, importer]);
@@ -1543,7 +1541,7 @@ describe("vinext:optimize-imports subpath imports", () => {
     );
   });
 
-  it.each(["optimized", "discovered", "missing"] as const)(
+  it.each(["recorded", "missing"] as const)(
     "preserves emitted dependency prebundle IDs and version queries (%s metadata)",
     async (state) => {
       const { call, nestedStately, statelySource } = await setup(undefined, state);

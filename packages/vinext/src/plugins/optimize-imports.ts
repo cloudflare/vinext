@@ -596,10 +596,10 @@ async function resolveBarrelEntry(
   if (depsOptimizer?.isOptimizedDepFile(id)) {
     // Analyze the source Vite resolved, not its prebundle: bundling erases
     // directive boundaries and would expose client-only code to RSC again.
-    const info =
-      depsOptimizer.metadata.optimized[source] ?? depsOptimizer.metadata.discovered[source];
+    // Match by file: nested copies are recorded under ids like "parent > pkg".
     const file = query === -1 ? id : id.slice(0, query);
-    return info?.file === file && info.src && canAnalyzeFileId(info.src) ? info.src : null;
+    const info = depsOptimizer.metadata.depInfoList.find((dep) => dep.file === file);
+    return info?.src && canAnalyzeFileId(info.src) ? info.src : null;
   }
   return id;
 }
