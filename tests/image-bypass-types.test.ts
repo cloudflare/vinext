@@ -839,7 +839,8 @@ describe("handleImageOptimization fallback after the optimizer rejects early", (
       },
     });
     expect(response.status).toBe(200);
-    expect(new Uint8Array(await response.arrayBuffer())).toEqual(jpeg);
+    // Compared whole, as a deep equality of each byte is slow at this size.
+    expect(Buffer.from(await response.arrayBuffer()).equals(jpeg)).toBe(true);
     expect(fetches).toBe(2);
   });
 
