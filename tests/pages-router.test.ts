@@ -2329,6 +2329,18 @@ export default class CustomDocument extends Document {
     expect(res.headers.get("x-middleware-set-cookie")).toBeNull();
   });
 
+  // Next.js's send-response appends the edge API route's cookies after the
+  // ones middleware already put on the response.
+  it("sends middleware cookies before edge API NextResponse cookies", async () => {
+    const res = await fetch(`${baseUrl}/api/edge-next-response-cookie?mw=1`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual([
+      "mw-edge=1; Path=/; HttpOnly",
+      "edge-session=abc123; Path=/; HttpOnly",
+    ]);
+    expect(res.headers.get("x-middleware-set-cookie")).toBeNull();
+  });
+
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
   it("passes middleware rewrite search params to Pages Router edge API nextUrl", async () => {

@@ -483,12 +483,13 @@ export async function handleApiRoute(
 
       res.statusCode = response.status;
       res.statusMessage = response.statusText;
-      const setCookieHeaders = response.headers.getSetCookie();
       response.headers.forEach((value, name) => {
         if (name !== "set-cookie") res.setHeader(name, value);
       });
-      if (setCookieHeaders.length) {
-        res.setHeader("set-cookie", setCookieHeaders);
+      // Append after any cookies middleware already staged on `res`, as
+      // Next.js's send-response does.
+      for (const cookie of response.headers.getSetCookie()) {
+        res.appendHeader("set-cookie", cookie);
       }
       await writeEdgeApiResponseBody(res, response.body, nextRequest.signal);
       return true;
