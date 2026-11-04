@@ -166,9 +166,9 @@ import {
 } from "./server/headers.js";
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
+import { removeRequestHeaders } from "./server/remove-request-headers.js";
 import {
   canonicalizeRequestUrlPathname,
-  filterInternalHeaders,
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
   normalizeTrailingSlash,
@@ -501,16 +501,16 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
 const VINEXT_GENERATED_DIR_RE = /(?:^|[/\\])\.vinext(?:[/\\]|$)/;
 
-// Node keeps each client header in req.rawHeaders as well as req.headers, and
-// srvx (plugin-rsc's dev request adapter) answers Headers reads from rawHeaders
-// once anything iterates them. Keep both views in sync so the App Router only
-// ever sees the forwarded middleware context the hybrid Pages handler attached.
+const FORWARDED_MIDDLEWARE_CONTEXT_HEADERS: ReadonlySet<string> = new Set([VINEXT_MW_CTX_HEADER]);
+const STRIPPED_INTERNAL_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  ...INTERNAL_HEADERS,
+  ...VINEXT_INTERNAL_HEADERS,
+]);
+
+// The App Router only ever sees the forwarded middleware context the hybrid
+// Pages handler attached.
 function removeForwardedMiddlewareContext(req: import("node:http").IncomingMessage): void {
-  delete req.headers[VINEXT_MW_CTX_HEADER];
-  const rawHeaders = req.rawHeaders;
-  for (let i = rawHeaders.length - 2; i >= 0; i -= 2) {
-    if (rawHeaders[i].toLowerCase() === VINEXT_MW_CTX_HEADER) rawHeaders.splice(i, 2);
-  }
+  removeRequestHeaders(req, FORWARDED_MIDDLEWARE_CONTEXT_HEADERS);
 }
 
 function setForwardedMiddlewareContext(
@@ -1601,6 +1601,23 @@ function getLeadingReactDirective(code: string): "use client" | "use server" | n
 
 function hasReactDirective(code: string): boolean {
   return getLeadingReactDirective(code) !== null;
+}
+
+/**
+ * Resolve a project directory through symlinks the way Vite resolves
+ * `config.root` (and Next.js its project dir), so route files, `server.config.root`
+ * and module ids all share one path. Windows uses the JS realpath, as Vite
+ * does, to keep mapped network drives.
+ */
+function resolveProjectDir(dir: string, preserveSymlinks: boolean | undefined): string {
+  if (preserveSymlinks) return toSlash(dir);
+  try {
+    return toSlash(
+      process.platform === "win32" ? fs.realpathSync(dir) : fs.realpathSync.native(dir),
+    );
+  } catch {
+    return toSlash(dir);
+  }
 }
 
 function generateRootParamsModule(rootParamNames: Iterable<string>): string {
@@ -2845,7 +2862,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // dependency, so a bare `import "ipaddr.js"` left in dist/server cannot
         // be resolved from the app under strict layouts such as pnpm's.
         const ipaddrSsrExternal = env.command === "serve" ? ["ipaddr.js"] : [];
-        root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
+        root = resolveProjectDir(
+          path.resolve(toSlash(process.cwd()), config.root ?? "."),
+          config.resolve?.preserveSymlinks,
+        );
         if (env.command === "build") assertClientOutDirIsSeparate(root, options);
         const devCliLifecycleEnabled =
           env.command === "serve" &&
@@ -2879,7 +2899,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : config.envDir
               ? path.resolve(root, config.envDir)
               : root;
-        if (earlyDotenv && envDir !== earlyDotenv.dir) {
+        // Compare both resolved, so another spelling of the same directory
+        // (e.g. through a symlink) keeps the early pass's values.
+        if (
+          earlyDotenv &&
+          (envDir === undefined ||
+            resolveProjectDir(envDir, config.resolve?.preserveSymlinks) !==
+              resolveProjectDir(earlyDotenv.dir, config.resolve?.preserveSymlinks))
+        ) {
           // Values the early pass read from another directory must not shadow
           // this envDir's. Variables set before vinext loaded stay.
           for (const [key, value] of Object.entries(earlyDotenv.env)) {
@@ -2922,7 +2949,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const dir = path.isAbsolute(options.appDir)
             ? options.appDir
             : path.resolve(root, options.appDir);
-          baseDir = toSlash(dir);
+          baseDir = resolveProjectDir(dir, config.resolve?.preserveSymlinks);
         } else {
           // Auto-detect: prefer root-level app/ and pages/, fall back to src/
           const hasRootApp = fs.existsSync(path.join(root, "app"));
@@ -3678,6 +3705,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         const viteConfig: UserConfig = {
+          // Vite resolves `root` after every config hook. Hand it the root
+          // resolved above, so a later plugin enabling resolve.preserveSymlinks
+          // cannot leave Vite on the symlinked path while vinext uses the real one.
+          root,
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           ...(devCliLifecycleEnabled ? { [VINEXT_DEV_CLI_LIFECYCLE]: true } : {}),
@@ -7015,6 +7046,12 @@ export const loadServerActionClient = ${
                   nextConfig?.i18n,
                 );
               }
+              // Strip internal headers from inbound requests so they cannot be
+              // forged to influence routing or impersonate internal state. Do it
+              // before any branch below hands the request on, and in rawHeaders
+              // too, so middleware, the SSR handler, API routes and the App
+              // Router all see clean headers.
+              removeRequestHeaders(req, STRIPPED_INTERNAL_REQUEST_HEADERS);
               const requestHost =
                 revalidationHostname ??
                 ((Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
@@ -7233,7 +7270,7 @@ export const loadServerActionClient = ${
               // preMiddlewareReqCtx and the middleware Request itself. Intentionally
               // captured once here — applyRequestHeadersToNodeRequest() mutates
               // req.headers later, but by then this Headers object is no longer read.
-              const rawHeaders = new Headers(
+              const nodeRequestHeaders = new Headers(
                 Object.fromEntries(
                   Object.entries(req.headers)
                     // Drop `undefined` values and HTTP/2 pseudo-headers
@@ -7248,18 +7285,7 @@ export const loadServerActionClient = ${
               // The inbound x-nextjs-data header is internal and must not let
               // callers opt normal URLs into the data redirect protocol.
               const isDataRequest = isDataReq;
-              // Strip internal headers from inbound requests so they cannot be
-              // forged to influence routing or impersonate internal state.
-              // Both the middleware Request (built below) and the SSR handler
-              // (which reads req.headers directly) must see clean headers.
-              const nodeRequestHeaders = filterInternalHeaders(rawHeaders);
               if (revalidationHostname) nodeRequestHeaders.set("host", revalidationHostname);
-              for (const header of INTERNAL_HEADERS) {
-                delete req.headers[header];
-              }
-              for (const header of VINEXT_INTERNAL_HEADERS) {
-                delete req.headers[header];
-              }
 
               // Build a Web Request for the pipeline (no body — middleware and
               // SSR read req directly). The pipeline only needs the body when
