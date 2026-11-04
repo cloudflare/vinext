@@ -45,6 +45,8 @@ import {
   isSafeImageContentType,
   detectImageContentType,
   IMAGE_DETECTION_LENGTH,
+  IMAGE_SOURCE_TOO_LARGE_MESSAGE,
+  imageSourceLimit,
   sourceImageCacheControl,
   readImageOptimizationSignal,
   DEFAULT_DEVICE_SIZES,
@@ -786,27 +788,32 @@ function withImageSourceCacheControl(
 }
 
 /**
- * The type of the file the static cache serves for an image source, from its
- * first bytes as the image endpoint types every source rather than by its
- * name, or undefined when the cache has no such file.
+ * The file the static cache serves for an image source: past `limit`, or its
+ * type from its first bytes, as the image endpoint types every source rather
+ * than by its name. Undefined when the cache has no such file.
  */
-async function detectStaticImageContentType(
+async function staticImageSource(
   cache: StaticFileCache,
   pathname: string,
-): Promise<string | null | undefined> {
+  limit: number,
+): Promise<{ tooLarge: true } | { tooLarge: false; contentType: string | null } | undefined> {
   const lookupPath = staticCacheLookupPath(pathname);
   const entry = lookupPath === null ? undefined : cache.lookup(lookupPath);
   if (!entry) return undefined;
   const { buffer, headers, path, size } = entry.original;
+  // Next.js answers 413 for a source past the limit before typing it.
+  if (size > limit) return { tooLarge: true };
   const label = headers["Content-Type"] ?? null;
   if (buffer) {
-    return detectImageContentType(buffer.subarray(0, IMAGE_DETECTION_LENGTH), label, size);
+    const bytes = buffer.subarray(0, IMAGE_DETECTION_LENGTH);
+    return { tooLarge: false, contentType: detectImageContentType(bytes, label, size) };
   }
   const file = await fsp.open(path, "r");
   try {
     const bytes = new Uint8Array(IMAGE_DETECTION_LENGTH);
     const { bytesRead } = await file.read(bytes, 0, IMAGE_DETECTION_LENGTH, 0);
-    return detectImageContentType(bytes.subarray(0, bytesRead), label, size);
+    const contentType = detectImageContentType(bytes.subarray(0, bytesRead), label, size);
+    return { tooLarge: false, contentType };
   } finally {
     await file.close();
   }
@@ -2041,14 +2048,15 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
     // Next.js sets config and middleware headers before the image handler, so
     // only an image replaces their Content-Type and Content-Encoding.
-    const sendBadRequest = (body: string) => {
+    const sendImageError = (status: number, body: string) => {
       for (const name of IMAGE_ERROR_SIGNAL_HEADERS) {
         const value = signalHeaders[name];
         if (value !== undefined) res.setHeader(name, value);
       }
-      res.writeHead(400);
+      res.writeHead(status);
       res.end(body);
     };
+    const sendBadRequest = (body: string) => sendImageError(400, body);
     // The query middleware and rewrites selected, which the handler validated.
     const parsedUrl = new URL(`/${signal.search}`, "http://localhost");
     const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities, {
@@ -2082,8 +2090,17 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       sourcePath: string,
       publicFileCacheControl?: string | null,
     ): Promise<boolean> => {
-      const contentType = await detectStaticImageContentType(staticCache, sourcePath);
-      if (contentType === undefined) return false;
+      const staticSource = await staticImageSource(
+        staticCache,
+        sourcePath,
+        imageSourceLimit(imageConfig),
+      );
+      if (staticSource === undefined) return false;
+      if (staticSource.tooLarge) {
+        sendImageError(413, IMAGE_SOURCE_TOO_LARGE_MESSAGE);
+        return true;
+      }
+      const { contentType } = staticSource;
       if (contentType === null) {
         sendBadRequest(INVALID_IMAGE_SOURCE_MESSAGE);
         return true;
@@ -3048,8 +3065,18 @@ async function createPagesRouterRequestHandler(
               sourcePath: string,
               publicFileCacheControl?: string | null,
             ): Promise<boolean> => {
-              const contentType = await detectStaticImageContentType(staticCache, sourcePath);
-              if (contentType === undefined) return false;
+              const staticSource = await staticImageSource(
+                staticCache,
+                sourcePath,
+                imageSourceLimit(pagesImageConfig),
+              );
+              if (staticSource === undefined) return false;
+              if (staticSource.tooLarge) {
+                res.writeHead(413);
+                res.end(IMAGE_SOURCE_TOO_LARGE_MESSAGE);
+                return true;
+              }
+              const { contentType } = staticSource;
               if (contentType === null) {
                 res.writeHead(400);
                 res.end(INVALID_IMAGE_SOURCE_MESSAGE);

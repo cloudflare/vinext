@@ -40,6 +40,11 @@ export class ImageSourceReader {
     return this.#tooLarge;
   }
 
+  /** Whether the source has been read to its end, within the limit. */
+  get readWhole(): boolean {
+    return this.#done;
+  }
+
   /** The source's length once it has all been read and held, else null. */
   get completeLength(): number | null {
     return this.#done && this.#held ? this.#read : null;
@@ -138,5 +143,51 @@ export class ImageSourceReader {
       this.#window.push(chunk);
       this.#windowEnd += chunk.byteLength;
     }
+  }
+}
+
+/**
+ * A source read only once `body` is read, so one `body` never read can still
+ * be served itself. `body` errors with `ImageSourceTooLargeError`, cancelling
+ * the source, once it grows past `limit`.
+ */
+export class LimitedImageSource {
+  readonly body: ReadableStream<Uint8Array>;
+  /** Whether `body` has been read or cancelled. */
+  disturbed = false;
+  /** Whether the source has grown past the limit. */
+  tooLarge = false;
+  /** Whether the source has been read to its end, within the limit. */
+  readWhole = false;
+
+  constructor(source: ReadableStream<Uint8Array>, limit: number) {
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    let read = 0;
+    this.body = new ReadableStream<Uint8Array>(
+      {
+        pull: async (controller) => {
+          this.disturbed = true;
+          reader ??= source.getReader();
+          const { done, value } = await reader.read();
+          if (done) {
+            this.readWhole = true;
+            return controller.close();
+          }
+          read += value.byteLength;
+          if (read > limit) {
+            this.tooLarge = true;
+            reader.cancel().catch(() => {});
+            controller.error(new ImageSourceTooLargeError());
+            return;
+          }
+          controller.enqueue(value);
+        },
+        cancel: (reason) => {
+          this.disturbed = true;
+          return reader ? reader.cancel(reason) : source.cancel(reason);
+        },
+      },
+      { highWaterMark: 0 },
+    );
   }
 }

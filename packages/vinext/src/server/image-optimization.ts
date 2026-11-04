@@ -21,7 +21,11 @@
  */
 
 import { isAnimatedImage } from "./image-animation.js";
-import { ImageSourceReader, ImageSourceTooLargeError } from "./image-source-reader.js";
+import {
+  ImageSourceReader,
+  ImageSourceTooLargeError,
+  LimitedImageSource,
+} from "./image-source-reader.js";
 import { hasLocalMatch, type LocalPattern } from "./image-local-patterns.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { badRequestResponse } from "./http-error-responses.js";
@@ -410,6 +414,11 @@ const DEFAULT_MINIMUM_CACHE_TTL = 14400;
  */
 const DEFAULT_MAXIMUM_RESPONSE_BODY = 50_000_000;
 
+/** The most of a source the image endpoint reads before answering 413. */
+export function imageSourceLimit(imageConfig: ImageConfig | undefined): number {
+  return imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY;
+}
+
 /**
  * Content-Security-Policy for image optimization responses.
  * Blocks script execution and framing to prevent XSS via SVG or other
@@ -635,12 +644,13 @@ function concatBytes(chunks: Uint8Array[], length: number): Uint8Array {
 /**
  * Type a source by its first bytes, replacing its Content-Type, as Next.js
  * types every source. Workers static assets have no type for some formats
- * Next.js serves, such as ICNS, and label any file by its name.
+ * Next.js serves, such as ICNS, and label any file by its name. Null, with
+ * the source cancelled, once the bytes read pass `maxLength`.
  */
 async function withDetectedImageContentType(
   source: Response,
   maxLength: number,
-): Promise<Response> {
+): Promise<Response | null> {
   if (!source.ok || !source.body) return source;
   const reader = source.body.getReader();
   // Replay the chunks read, copying only the bytes detection reads.
@@ -656,11 +666,12 @@ async function withDetectedImageContentType(
       target = imageDetectionLength(concatBytes(head, IMAGE_SIGNATURE_LENGTH), maxLength);
     }
   }
-  // Detect from no more than `maxLength`, however the source is chunked: a
-  // box past it is never whole. Copy only what the SVG scan reads, since a
-  // whole `ftyp` box needs only its length.
-  const known = Math.min(length, maxLength);
-  const detected = concatBytes(head, Math.min(known, IMAGE_DETECTION_LENGTH));
+  if (length > maxLength) {
+    reader.cancel().catch(() => {});
+    return null;
+  }
+  // Copy only what the SVG scan reads: a whole `ftyp` box needs only its length.
+  const detected = concatBytes(head, Math.min(length, IMAGE_DETECTION_LENGTH));
   const body = new ReadableStream<Uint8Array>(
     {
       start(controller) {
@@ -679,7 +690,7 @@ async function withDetectedImageContentType(
     { highWaterMark: 0 },
   );
   const headers = new Headers(source.headers);
-  const type = detectImageContentType(detected, source.headers.get("Content-Type"), known);
+  const type = detectImageContentType(detected, source.headers.get("Content-Type"), length);
   if (type === null) headers.delete("Content-Type");
   else headers.set("Content-Type", type);
   return new Response(body, { status: source.status, statusText: source.statusText, headers });
@@ -815,11 +826,99 @@ function declaresMoreThan(source: Response, limit: number): boolean {
   return Number(source.headers.get("Content-Length") ?? Number.NaN) > limit;
 }
 
+/** Next.js's 413 message for a source larger than `images.maximumResponseBody`. */
+export const IMAGE_SOURCE_TOO_LARGE_MESSAGE =
+  '"url" parameter is valid but internal response is invalid';
+
 /** Next.js's 413 for a source larger than `images.maximumResponseBody`. */
 function sourceTooLargeResponse(): Response {
-  return new Response('"url" parameter is valid but internal response is invalid', {
-    status: 413,
-  });
+  return new Response(IMAGE_SOURCE_TOO_LARGE_MESSAGE, { status: 413 });
+}
+
+/** A source admitted to the image endpoint, typed by its bytes. */
+type AdmittedImageSource = {
+  source: Response;
+  body: ReadableStream<Uint8Array>;
+  contentType: string;
+};
+
+/**
+ * Admit a fetched source as Next.js does, which reads it whole before typing
+ * it: a 413 past the limit, then a 400 for one that is no image or of a type
+ * not allowed. A source that declares no length and is rejected is read on to
+ * the limit to tell the two apart.
+ */
+async function admitImageSource(
+  fetched: Response,
+  limit: number,
+  imageConfig: ImageConfig | undefined,
+): Promise<AdmittedImageSource | Response> {
+  const source = await withDetectedImageContentType(fetched, limit);
+  if (source === null) return sourceTooLargeResponse();
+  if (!source.ok || !source.body) return invalidImageSourceResponse();
+  const body = source.body;
+  if (declaresMoreThan(source, limit)) {
+    body.cancel().catch(() => {});
+    return sourceTooLargeResponse();
+  }
+  // Block unsafe Content-Types (e.g., SVG which can contain embedded
+  // scripts). SVG is only allowed when dangerouslyAllowSVG is enabled.
+  const contentType = source.headers.get("Content-Type");
+  if (
+    contentType !== null &&
+    isSafeImageContentType(contentType, imageConfig?.dangerouslyAllowSVG)
+  ) {
+    return { source, body, contentType };
+  }
+  if (source.headers.has("Content-Length")) {
+    body.cancel().catch(() => {});
+  } else {
+    const reader = new ImageSourceReader(body, limit);
+    try {
+      await reader.byte(limit);
+    } catch {
+      // Past the limit, or a source that failed to read.
+    }
+    reader.cancel();
+    if (reader.tooLarge) return sourceTooLargeResponse();
+  }
+  return contentType === null ? invalidImageSourceResponse() : imageTypeNotAllowedResponse();
+}
+
+/**
+ * Serve an admitted source as-is within the limit. One that declares its
+ * length, or that a read proved `withinLimit`, is streamed, erroring should it
+ * run past the limit; any other is read to its end first, as Next.js reads
+ * every source whole, so it gets a 413 rather than a response cut short. Only
+ * its first bytes are held to replay, so a longer one is fetched again.
+ */
+async function servePassthroughWithinLimit(
+  { source, body }: AdmittedImageSource,
+  cacheControl: string,
+  imageConfig: ImageConfig | undefined,
+  limit: number,
+  refetch: () => Promise<Response>,
+  withinLimit = false,
+): Promise<Response> {
+  if (withinLimit || source.headers.has("Content-Length")) {
+    const limited = new LimitedImageSource(body, limit).body;
+    return createPassthroughImageResponse(source, limited, cacheControl, imageConfig);
+  }
+  const reader = new ImageSourceReader(body, limit);
+  try {
+    await reader.byte(limit);
+  } catch (e) {
+    if (reader.tooLarge) return sourceTooLargeResponse();
+    throw e;
+  }
+  const held = reader.body();
+  if (held) {
+    const length = reader.completeLength;
+    return createPassthroughImageResponse(source, held, cacheControl, imageConfig, length);
+  }
+  const refetched = await admitImageSource(await refetch(), limit, imageConfig);
+  if (refetched instanceof Response) return refetched;
+  return servePassthroughWithinLimit(refetched, cacheControl, imageConfig, limit, refetch, true);
 }
 
 /**
@@ -860,32 +959,18 @@ export async function handleImageOptimization(
 
   const { imageUrl, width, quality } = params;
 
-  // Fetch source image
+  // Fetch the source image and admit it as Next.js does: the limit holds for
+  // every type, ahead of the type check.
   const fetchedSource = await handlers.fetchAsset(imageUrl, request);
   const isBuildAsset = isImageBuildAsset(fetchedSource);
-  const limit = imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY;
-  const source = await withDetectedImageContentType(fetchedSource, limit);
-  if (!source.ok || !source.body) {
-    return invalidImageSourceResponse();
-  }
+  const limit = imageSourceLimit(imageConfig);
+  const admitted = await admitImageSource(fetchedSource, limit, imageConfig);
+  if (admitted instanceof Response) return admitted;
+  const { source, contentType: sourceContentType } = admitted;
+  const refetch = () => handlers.fetchAsset(imageUrl, request);
 
   // Negotiate output format from Accept header
   const format = negotiateImageFormat(request.headers.get("Accept"));
-
-  // Block unsafe Content-Types (e.g., SVG which can contain embedded scripts).
-  // Check the source Content-Type before any processing. SVG is only allowed
-  // when dangerouslyAllowSVG is explicitly enabled in next.config.js. Like
-  // Next.js, a source of no detected type isn't an image at all.
-  const sourceContentType = source.headers.get("Content-Type");
-  if (
-    sourceContentType === null ||
-    !isSafeImageContentType(sourceContentType, imageConfig?.dangerouslyAllowSVG)
-  ) {
-    source.body.cancel().catch(() => {});
-    return sourceContentType === null
-      ? invalidImageSourceResponse()
-      : imageTypeNotAllowedResponse();
-  }
 
   // Like Next.js, serve a format it does not optimize as-is, SVG included
   // once dangerouslyAllowSVG admitted it above.
@@ -896,15 +981,16 @@ export async function handleImageOptimization(
     imageConfig,
   );
   if (BYPASS_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
-    const response = createPassthroughImageResponse(
-      source,
-      source.body,
+    const response = await servePassthroughWithinLimit(
+      admitted,
       sourceCacheControl,
       imageConfig,
+      limit,
+      refetch,
     );
     // Next.js labels an ICO by its detected type, `image/x-icon`, where
     // Workers static assets use the registered `image/vnd.microsoft.icon`.
-    if (sourceMediaType === "image/vnd.microsoft.icon") {
+    if (response.ok && sourceMediaType === "image/vnd.microsoft.icon") {
       response.headers.set("Content-Type", "image/x-icon");
     }
     return response;
@@ -912,24 +998,22 @@ export async function handleImageOptimization(
 
   // Transform if handler provided, otherwise serve original
   let reader: ImageSourceReader | null = null;
+  // The optimizer reads a still source through this, within the limit too.
+  let limitedSource: LimitedImageSource | null = null;
   if (handlers.transformImage) {
     try {
-      let body: ReadableStream<Uint8Array> = source.body;
+      let body: ReadableStream<Uint8Array>;
       // Next.js serves an animated image as-is rather than flattening it to
       // one frame, and answers 413 past the most it reads of a source.
       if (ANIMATABLE_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
-        if (declaresMoreThan(source, limit)) {
-          source.body.cancel().catch(() => {});
-          return sourceTooLargeResponse();
-        }
         // Detect animation as the source streams in, then replay the bytes
         // read, or fetch the source again when too many were read to hold.
-        reader = new ImageSourceReader(source.body, limit);
+        reader = new ImageSourceReader(admitted.body, limit);
         const animated = await isAnimatedImage(reader);
         let sourceBody = reader.body();
         if (!sourceBody) {
           reader.cancel();
-          const refetched = await handlers.fetchAsset(imageUrl, request);
+          const refetched = await refetch();
           if (!refetched.ok || !refetched.body) return invalidImageSourceResponse();
           reader = new ImageSourceReader(refetched.body, limit);
           sourceBody = reader.body()!;
@@ -944,12 +1028,19 @@ export async function handleImageOptimization(
           );
         }
         body = sourceBody;
+      } else {
+        limitedSource = new LimitedImageSource(admitted.body, limit);
+        body = limitedSource.body;
       }
       const transformed = await handlers.transformImage(body, {
         width,
         format,
         quality,
       });
+      if (limitedSource?.tooLarge || reader?.tooLarge) {
+        transformed.body?.cancel().catch(() => {});
+        return sourceTooLargeResponse();
+      }
       const headers = new Headers(transformed.headers);
       setImageResponseHeaders(headers, IMAGE_CACHE_CONTROL, imageConfig);
 
@@ -961,7 +1052,7 @@ export async function handleImageOptimization(
 
       return new Response(transformed.body, { status: 200, headers });
     } catch (e) {
-      if (e instanceof ImageSourceTooLargeError || reader?.tooLarge) {
+      if (e instanceof ImageSourceTooLargeError || limitedSource?.tooLarge || reader?.tooLarge) {
         return sourceTooLargeResponse();
       }
       console.error("[vinext] Image optimization error:", e);
@@ -974,50 +1065,35 @@ export async function handleImageOptimization(
   const fallbackCacheControl = handlers.transformImage
     ? sourceImageCacheControl(isBuildAsset, null, imageConfig)
     : sourceCacheControl;
-  // A source read whole replays; any other has been read, so a locked body
-  // throws and the source is fetched again.
+  // A source the optimizer never read is served as it is.
+  if (!handlers.transformImage || (limitedSource && !limitedSource.disturbed)) {
+    return servePassthroughWithinLimit(admitted, fallbackCacheControl, imageConfig, limit, refetch);
+  }
+  // One it read whole replays.
   const readLength = reader?.completeLength ?? null;
-  try {
+  const replayed = readLength !== null ? reader?.body() : null;
+  if (replayed) {
     return createPassthroughImageResponse(
       source,
-      (readLength !== null && reader?.body()) || source.body,
+      replayed,
       fallbackCacheControl,
       imageConfig,
       readLength,
     );
-  } catch (e) {
-    console.error("[vinext] Image fallback error, refetching source image:", e);
-    reader?.cancel();
-    const refetchedSource = await withDetectedImageContentType(
-      await handlers.fetchAsset(imageUrl, request),
-      limit,
-    );
-    if (!refetchedSource.ok || !refetchedSource.body) {
-      return invalidImageSourceResponse();
-    }
-
-    const refetchedContentType = refetchedSource.headers.get("Content-Type");
-    if (
-      refetchedContentType === null ||
-      !isSafeImageContentType(refetchedContentType, imageConfig?.dangerouslyAllowSVG)
-    ) {
-      refetchedSource.body.cancel().catch(() => {});
-      return refetchedContentType === null
-        ? invalidImageSourceResponse()
-        : imageTypeNotAllowedResponse();
-    }
-
-    // A source that was bound for the optimizer stays within the limit.
-    let body: ReadableStream<Uint8Array> = refetchedSource.body;
-    if (reader) {
-      if (declaresMoreThan(refetchedSource, limit)) {
-        body.cancel().catch(() => {});
-        return sourceTooLargeResponse();
-      }
-      body = new ImageSourceReader(body, limit).body()!;
-    }
-    return createPassthroughImageResponse(refetchedSource, body, fallbackCacheControl, imageConfig);
   }
+  // Any other is fetched again, and streamed once a read proved it fits.
+  reader?.cancel();
+  const refetched = await admitImageSource(await refetch(), limit, imageConfig);
+  if (refetched instanceof Response) return refetched;
+  const withinLimit = limitedSource?.readWhole ?? reader?.readWhole ?? false;
+  return servePassthroughWithinLimit(
+    refetched,
+    fallbackCacheControl,
+    imageConfig,
+    limit,
+    refetch,
+    withinLimit,
+  );
 }
 
 // ---------------------------------------------------------------------------
