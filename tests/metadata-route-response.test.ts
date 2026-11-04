@@ -895,6 +895,41 @@ describe("handleMetadataRouteRequest", () => {
     expect(generateSitemapsReads).toBe(0);
   });
 
+  it("drops the framing headers of a metadata route's returned Response", async () => {
+    // A metadata image route can return a fetch() Response whose body Node
+    // decoded while keeping the upstream Content-Length and Content-Encoding.
+    const route = {
+      type: "icon",
+      isDynamic: true,
+      filePath: "/tmp/app/icon.tsx",
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl: "/icon",
+      contentType: "image/png",
+      module: {
+        default: () =>
+          new Response("decoded icon", {
+            headers: {
+              "Content-Type": "image/png",
+              "Content-Encoding": "gzip",
+              "Content-Length": "4",
+            },
+          }),
+      },
+    } satisfies MetadataFileRoute;
+
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [route],
+      cleanPathname: "/icon",
+      makeThenableParams,
+    });
+
+    expect(response?.headers.get("content-type")).toBe("image/png");
+    expect(response?.headers.has("content-encoding")).toBe(false);
+    expect(response?.headers.has("content-length")).toBe(false);
+    await expect(response?.text()).resolves.toBe("decoded icon");
+  });
+
   it("serves matched static metadata route file data", async () => {
     const route = {
       type: "icon",

@@ -27,6 +27,7 @@ import {
 import {
   buildAppRouteCacheValue,
   buildRouteHandlerCachedResponse,
+  stripRouteHandlerFramingHeaders,
 } from "./app-route-handler-response.js";
 import {
   _consumeRequestScopedCacheLife,
@@ -516,7 +517,7 @@ async function renderMetadataRouteMiss(
     const rendered = await render();
     if (!rendered) return null;
     await writeMetadataRouteMiss(options, route, rendered, cachedEntry);
-    return rendered.response;
+    return stripRouteHandlerFramingHeaders(rendered.response);
   };
   const routeKey = _isOnDemandRevalidate() ? getOuterMetadataCacheKey(options, route) : null;
   if (routeKey === null || !options.isrSet) return renderAndStore();

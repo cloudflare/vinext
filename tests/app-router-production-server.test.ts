@@ -28,6 +28,7 @@ import {
   requestExternalRewriteHeaders,
   requestExternalRewriteWithConnectionTokens,
   rscRequestPath,
+  startGzipUpstream,
   testCacheDir,
 } from "./helpers.js";
 
@@ -2101,6 +2102,41 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json).toHaveProperty("message");
+  });
+
+  // Node's fetch() decodes a gzip body but keeps the upstream Content-Length
+  // and Content-Encoding. Next.js's sendResponse drops both (and
+  // Transfer-Encoding) from a route handler's Response and frames the body
+  // itself, so a returned fetch Response reaches the client decoded.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-response.ts
+  it("sends a route handler's returned gzip fetch Response decoded, including fetch cache hits", async () => {
+    const upstream = await startGzipUpstream();
+    try {
+      const key = randomUUID();
+      for (const [cache, expectedUpstreamHits] of [
+        ["no-store", 1],
+        ["force-cache", 1],
+        // The fetch cache entry replays without another upstream request.
+        ["force-cache", 0],
+      ] as const) {
+        const upstreamPath = `/payload?key=${key}-${cache}`;
+        const upstreamHitsBefore = upstream.hits(upstreamPath);
+        const res = await fetch(
+          `${baseUrl}/api/forwarded-fetch?port=${upstream.port}&cache=${cache}&key=${key}-${cache}`,
+          { headers: { "Accept-Encoding": "identity" } },
+        );
+
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-encoding")).toBeNull();
+        expect(res.headers.get("content-length") ?? String(upstream.body.length)).toBe(
+          String(upstream.body.length),
+        );
+        await expect(res.text()).resolves.toBe(upstream.body);
+        expect(upstream.hits(upstreamPath) - upstreamHitsBefore).toBe(expectedUpstreamHits);
+      }
+    } finally {
+      await upstream.close();
+    }
   });
 
   it("does not treat a route handler's reflected static-file header as a framework signal", async () => {
