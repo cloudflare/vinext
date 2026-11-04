@@ -11,10 +11,9 @@
  * React.createContext() in RSC environments where createContext doesn't exist.
  */
 
-import type { ESTree, Plugin, Rollup } from "vite";
-import { createRequire } from "node:module";
+import type { DevEnvironment, ESTree, Plugin, Rollup } from "vite";
 import fs from "node:fs/promises";
-import path, { toSlash } from "pathslash";
+import path from "pathslash";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { collectBindingNames, getAstName, parseProgram } from "./ast-utils.js";
@@ -33,17 +32,6 @@ async function readFileSafe(filepath: string): Promise<string | null> {
     return null;
   }
 }
-
-/** Nested conditional exports value (string path or nested conditions). */
-type ExportsValue = string | { [condition: string]: ExportsValue };
-
-/** Minimal package.json shape for entry point resolution. */
-type PackageJson = {
-  name?: string;
-  exports?: Record<string, ExportsValue>;
-  module?: string;
-  main?: string;
-};
 
 type BarrelExportEntry = {
   source: string;
@@ -81,7 +69,9 @@ type BarrelCaches = {
 // Vite doesn't publicly type `this.environment` on plugin hooks yet.
 // This cast type is used consistently across resolveId and transform handlers
 // so that when Vite adds proper typing it can be removed in one place.
-type PluginCtx = { environment?: { name?: string } };
+type PluginCtx = {
+  environment?: { name?: string; depsOptimizer?: DevEnvironment["depsOptimizer"] };
+};
 
 /**
  * Packages whose barrel imports are automatically optimized.
@@ -239,132 +229,6 @@ export function createOptimizedImportSourceMatcher(
     code.includes("from") &&
     quotedSourcePattern.test(code) &&
     importFromPattern.test(code);
-}
-
-/**
- * Resolve a package.json exports value to a string entry path.
- * Prefers node → import → module → default conditions, recursing into nested objects.
- * When `preferReactServer` is true (RSC environment), "react-server" is checked first
- * so that packages like `react` and `react-dom` resolve their RSC-compatible entry points.
- */
-function resolveExportsValue(value: ExportsValue, preferReactServer: boolean): string | null {
-  if (typeof value === "string") return value;
-  if (typeof value === "object" && value !== null) {
-    // In the RSC environment prefer "react-server" before standard conditions so that
-    // packages exposing RSC-only entry points (e.g. react, react-dom) are resolved
-    // to their server-compatible barrel. In the SSR environment the "react-server"
-    // condition must NOT be preferred — SSR renders with the full React runtime.
-    const conditions = preferReactServer
-      ? ["react-server", "node", "import", "module", "default"]
-      : ["node", "import", "module", "default"];
-    for (const key of conditions) {
-      const nested = value[key];
-      if (nested !== undefined) {
-        const resolved = resolveExportsValue(nested, preferReactServer);
-        if (resolved) return resolved;
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * Result of resolving a package, including the directory and parsed package.json.
- * Used internally by resolvePackageInfo.
- */
-type PackageInfo = {
-  pkgDir: string;
-  pkgJson: PackageJson;
-};
-
-/**
- * Resolve a package name to its directory and parsed package.json.
- * Handles packages with strict `exports` fields that don't expose `./package.json`
- * by first resolving the main entry, then walking up to find the package root.
- */
-async function resolvePackageInfo(
-  packageName: string,
-  projectRoot: string,
-): Promise<PackageInfo | null> {
-  try {
-    const req = createRequire(path.join(projectRoot, "package.json"));
-
-    // Try resolving package.json directly (works for packages without strict exports)
-    try {
-      const pkgJsonPath = req.resolve(`${packageName}/package.json`);
-      const pkgDir = path.dirname(pkgJsonPath);
-      const pkgJson = JSON.parse(await fs.readFile(pkgJsonPath, "utf-8")) as PackageJson;
-      return { pkgDir, pkgJson };
-    } catch {
-      // Package has strict exports — resolve main entry and walk up to find package.json
-      try {
-        const mainEntry = req.resolve(packageName);
-        let dir = path.dirname(mainEntry);
-        // Walk up until we find package.json with matching name
-        for (let i = 0; i < 10; i++) {
-          const candidate = path.join(dir, "package.json");
-          try {
-            const parsed = JSON.parse(await fs.readFile(candidate, "utf-8")) as PackageJson;
-            if (parsed.name === packageName) {
-              return { pkgDir: dir, pkgJson: parsed };
-            }
-          } catch {
-            // file doesn't exist or isn't parseable — keep walking up
-          }
-          const parent = path.dirname(dir);
-          if (parent === dir) break;
-          dir = parent;
-        }
-      } catch {
-        return null;
-      }
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Resolve a package name to its ESM entry file path.
- * Checks `exports["."]` → `module` → `main`, then falls back to require.resolve.
- * Pass `preferReactServer: true` in the RSC environment to prefer the "react-server"
- * export condition over "node"/"import" when resolving the barrel entry.
- */
-async function resolvePackageEntry(
-  packageName: string,
-  projectRoot: string,
-  preferReactServer: boolean,
-): Promise<string | null> {
-  try {
-    const info = await resolvePackageInfo(packageName, projectRoot);
-    if (!info) return null;
-    const { pkgDir, pkgJson } = info;
-
-    if (pkgJson.exports) {
-      // NOTE: Only the root export (".") is checked here. Subpath exports like
-      // "./Button" or "./*" are intentionally ignored — this function resolves
-      // the barrel entry point, not individual sub-module paths.
-      const dotExport = pkgJson.exports["."];
-      if (dotExport) {
-        const entryPath = resolveExportsValue(dotExport, preferReactServer);
-        if (entryPath) {
-          return path.resolve(pkgDir, entryPath);
-        }
-      }
-    }
-
-    const entryField = pkgJson.module ?? pkgJson.main;
-    if (typeof entryField === "string") {
-      return path.resolve(pkgDir, entryField);
-    }
-
-    const req = createRequire(path.join(projectRoot, "package.json"));
-    return toSlash(req.resolve(packageName));
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -695,6 +559,14 @@ export async function buildBarrelExportMap(
   return exportMap;
 }
 
+// A raw/url (or custom loader) query changes the module exports. Only Vite's
+// dependency version query can be removed before reading the barrel file.
+function canAnalyzeFileId(id: string): boolean {
+  if (!path.isAbsolute(id)) return false;
+  const query = id.indexOf("?");
+  return query === -1 || /^\?v=\w+$/.test(id.slice(query));
+}
+
 /**
  * Resolve a specifier with Vite's resolver, returning the id only when it is a
  * file in the module graph (not external or virtual).
@@ -705,27 +577,46 @@ async function resolveFileId(
   importer: string,
 ): Promise<string | null> {
   const resolved = await ctx.resolve(source, importer, { skipSelf: true });
-  if (!resolved || resolved.external || !path.isAbsolute(resolved.id)) return null;
-  return resolved.id;
+  return resolved && !resolved.external && path.isAbsolute(resolved.id) ? resolved.id : null;
+}
+
+/** Resolve a barrel to its original source for export and directive analysis. */
+async function resolveBarrelEntry(
+  ctx: Pick<Rollup.PluginContext, "resolve">,
+  source: string,
+  importer: string,
+): Promise<string | null> {
+  const id = await resolveFileId(ctx, source, importer);
+  if (!id || !canAnalyzeFileId(id)) return null;
+  const query = id.indexOf("?");
+  const depsOptimizer = (ctx as PluginCtx).environment?.depsOptimizer;
+  if (depsOptimizer?.isOptimizedDepFile(id)) {
+    // Analyze the source Vite resolved, not its prebundle: bundling erases
+    // directive boundaries and would expose client-only code to RSC again.
+    const info =
+      depsOptimizer.metadata.optimized[source] ?? depsOptimizer.metadata.discovered[source];
+    const file = query === -1 ? id : id.slice(0, query);
+    return info?.file === file && info.src && canAnalyzeFileId(info.src) ? info.src : null;
+  }
+  return id;
 }
 
 /**
  * Creates the vinext:optimize-imports Vite plugin.
  *
  * @param nextConfig - Resolved Next.js config (may be undefined before config hook runs).
- * @param getRoot - Returns the current project root (set by the vinext:config hook).
+ * @param _getRoot - Retained for existing callers; entries resolve from their importer.
  */
 export function createOptimizeImportsPlugin(
   getNextConfig: () => ResolvedNextConfig | undefined,
-  getRoot: () => string,
+  _getRoot: () => string,
 ): Plugin {
   const barrelCaches: BarrelCaches = {
     exportMapCache: new Map<string, BarrelExportMap>(),
     subpkgOrigin: new Map<string, Map<string, string>>(),
   };
-  // Cache resolved entry paths — resolvePackageEntry does require.resolve, file I/O,
-  // and dir-walking on every call; caching avoids repeating that work for each
-  // file that imports from the same barrel package.
+  // Importers can resolve different installed copies or aliases of the same package.
+  // Keep those resolutions isolated along with each environment's conditions.
   const entryPathCache = new Map<string, string | null>();
   let optimizedPackages: Set<string> = new Set();
   let hasOptimizedImportSource: (code: string) => boolean = () => false;
@@ -828,7 +719,6 @@ export function createOptimizeImportsPlugin(
 
         const s = new MagicString(code);
         let hasChanges = false;
-        const root = getRoot();
 
         for (const node of ast.body) {
           if (node.type !== "ImportDeclaration") continue;
@@ -851,13 +741,14 @@ export function createOptimizeImportsPlugin(
             // Subpath entries go through Vite's resolver from the importer: it
             // applies the environment's conditions and `exports` patterns, and
             // finds the copy of the package nested next to the importer.
-            barrelEntry = await resolveFileId(this, importSource, id);
+            barrelEntry = await resolveBarrelEntry(this, importSource, id);
             if (barrelEntry) barrelEntry = barrelEntry.replace(/\?.*$/, "");
           } else {
-            const cacheKey = `${preferReactServer ? "rsc" : "ssr"}:${importSource}`;
+            const cacheKey = JSON.stringify([env?.name ?? "ssr", id, importSource]);
             barrelEntry = entryPathCache.get(cacheKey);
             if (barrelEntry === undefined) {
-              barrelEntry = await resolvePackageEntry(importSource, root, preferReactServer);
+              barrelEntry = await resolveBarrelEntry(this, importSource, id);
+              if (barrelEntry) barrelEntry = barrelEntry.replace(/\?.*$/, "");
               entryPathCache.set(cacheKey, barrelEntry ?? null);
             }
           }

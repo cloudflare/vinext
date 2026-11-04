@@ -31,7 +31,7 @@ function linkWorkspaceDependencies(
   }
 }
 
-function createFixture(dependenciesRoot?: string): string {
+function createFixture(dependenciesRoot?: string, conditionalExports = false): string {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-imports-")));
   linkWorkspaceDependencies(root, dependenciesRoot);
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
@@ -61,8 +61,17 @@ export default function Page() {
   fs.mkdirSync(packageRoot, { recursive: true });
   fs.writeFileSync(
     path.join(packageRoot, "package.json"),
-    JSON.stringify({ name: "custom-icons", version: "1.0.0", type: "module", main: "./index.js" }),
+    JSON.stringify({
+      name: "custom-icons",
+      version: "1.0.0",
+      type: "module",
+      main: "./index.js",
+      ...(conditionalExports
+        ? { exports: { ".": { module: "./index.js", node: "./index.cjs", import: "./index.js" } } }
+        : {}),
+    }),
   );
+  fs.writeFileSync(path.join(packageRoot, "index.cjs"), "exports.Button = function Button() {};\n");
   fs.writeFileSync(path.join(packageRoot, "index.js"), `export { Button } from "./button";`);
   fs.writeFileSync(
     path.join(packageRoot, "button.js"),
@@ -106,51 +115,59 @@ describe("optimizePackageImports extensionless re-exports", () => {
     root = "";
   });
 
-  it("lets Vite resolve extensionless optimized targets in RSC, SSR, and production", async () => {
-    root = createFixture();
-    const transformed = new Map<string, string>();
+  // Same mixed server/client imports covered by Next.js barrel-optimization/basic:
+  // https://github.com/vercel/next.js/blob/canary/test/production/app-dir/barrel-optimization/basic/index.test.ts
+  it.each([false, true])(
+    "resolves optimized targets in RSC, SSR, and production (conditional exports: %s)",
+    async (conditionalExports) => {
+      root = createFixture(undefined, conditionalExports);
+      const transformed = new Map<string, string>();
 
-    server = await createServer({
-      root,
-      configFile: false,
-      plugins: createPlugins(root, transformed),
-      server: { port: 0 },
-      logLevel: "silent",
-    });
-    await server.listen();
-    const address = server.httpServer?.address();
-    expect(address && typeof address === "object").toBe(true);
-    if (!address || typeof address !== "object") return;
+      server = await createServer({
+        root,
+        configFile: false,
+        plugins: createPlugins(root, transformed),
+        server: { port: 0 },
+        logLevel: "silent",
+      });
+      await server.listen();
+      const address = server.httpServer?.address();
+      expect(address && typeof address === "object").toBe(true);
+      if (!address || typeof address !== "object") return;
 
-    const devResponse = await fetch(`http://localhost:${address.port}/`);
-    expect(devResponse.status).toBe(200);
-    const devHtml = await devResponse.text();
-    expect(devHtml).toContain("extensionless-button-server");
-    expect(devHtml).toContain("extensionless-button-client");
+      const devResponse = await fetch(`http://localhost:${address.port}/`);
+      expect(devResponse.status).toBe(200);
+      const devHtml = await devResponse.text();
+      expect(devHtml).toContain("extensionless-button-server");
+      expect(devHtml).toContain("extensionless-button-client");
 
-    const extensionlessTarget = toSlash(path.join(root, "node_modules", "custom-icons", "button"));
-    expect(transformed.get("rsc:page.tsx")).toContain(extensionlessTarget);
-    expect(transformed.get("ssr:client.tsx")).toContain(extensionlessTarget);
+      const extensionlessTarget = toSlash(
+        path.join(root, "node_modules", "custom-icons", "button"),
+      );
+      expect(transformed.get("rsc:page.tsx")).toContain(extensionlessTarget);
+      expect(transformed.get("ssr:client.tsx")).toContain(extensionlessTarget);
 
-    await server.close();
-    server = null;
+      await server.close();
+      server = null;
 
-    const builder = await createBuilder({
-      root,
-      configFile: false,
-      plugins: createPlugins(root),
-      logLevel: "silent",
-    });
-    await builder.buildApp();
-    const built = (await import(
-      `${pathToFileURL(path.join(root, "dist", "server", "index.js")).href}?t=${Date.now()}`
-    )) as { default: BuiltHandler };
-    const productionResponse = await built.default(new Request("http://localhost/"));
-    expect(productionResponse.status).toBe(200);
-    const productionHtml = await productionResponse.text();
-    expect(productionHtml).toContain("extensionless-button-server");
-    expect(productionHtml).toContain("extensionless-button-client");
-  }, 120000);
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        plugins: createPlugins(root),
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      const built = (await import(
+        `${pathToFileURL(path.join(root, "dist", "server", "index.js")).href}?t=${Date.now()}`
+      )) as { default: BuiltHandler };
+      const productionResponse = await built.default(new Request("http://localhost/"));
+      expect(productionResponse.status).toBe(200);
+      const productionHtml = await productionResponse.text();
+      expect(productionHtml).toContain("extensionless-button-server");
+      expect(productionHtml).toContain("extensionless-button-client");
+    },
+    120000,
+  );
 
   it("renders Chakra client components imported from its root barrel in dev", async () => {
     root = createFixture(CLOUDFLARE_NODE_MODULES);

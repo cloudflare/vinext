@@ -18,6 +18,47 @@ import {
 import type { Plugin } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
 import { toSlash } from "pathslash";
+import { createServer, type EnvironmentOptions, type InlineConfig, type ViteDevServer } from "vite";
+
+const resolverServers = new Map<string, ViteDevServer>();
+
+async function resolverContext(root: string, envName = "rsc", alias?: Record<string, string>) {
+  let server = resolverServers.get(root);
+  if (!server) {
+    const config: InlineConfig = {
+      root,
+      configFile: false,
+      logLevel: "silent",
+      resolve: { alias },
+      server: { host: "127.0.0.1", middlewareMode: true, hmr: false, watch: null },
+      environments: Object.fromEntries(
+        ["rsc", "ssr"].map((name) => [
+          name,
+          {
+            optimizeDeps: { noDiscovery: true, include: [] },
+            resolve: {
+              noExternal: true,
+              conditions: name === "rsc" ? ["react-server", "module", "node"] : ["module", "node"],
+            },
+          } satisfies EnvironmentOptions,
+        ]),
+      ),
+    };
+    server = await createServer(config);
+    resolverServers.set(root, server);
+  }
+  return {
+    environment: { name: envName },
+    resolve: server.environments[envName].pluginContainer.resolveId.bind(
+      server.environments[envName].pluginContainer,
+    ),
+  };
+}
+
+afterEach(async () => {
+  await Promise.all([...resolverServers.values()].map((server) => server.close()));
+  resolverServers.clear();
+});
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -155,14 +196,14 @@ describe("vinext:optimize-imports plugin", () => {
     ) as Plugin;
     const transform = unwrapHook(plugin.transform)!;
     // "radix-ui" is in DEFAULT_OPTIMIZE_PACKAGES but since we're not in a real
-    // project, resolvePackageEntry will return null → buildBarrelExportMap returns null
+    // project, Vite resolution returns null → buildBarrelExportMap returns null
     const code = `import { Slot } from "radix-ui";`;
     // buildStart must be called first to initialize optimizedPackages
     const buildStart = unwrapHook((plugin as any).buildStart);
     if (buildStart) buildStart.call(plugin);
 
     const result = await (transform as any).call(
-      { ...plugin, environment: { name: "rsc" } },
+      { ...plugin, environment: { name: "rsc" }, resolve: vi.fn().mockResolvedValue(null) },
       code,
       "/app/page.tsx",
     );
@@ -224,7 +265,7 @@ describe("vinext:optimize-imports plugin", () => {
 
       const transform = unwrapHook(optimizePlugin.transform)!;
       const result = await (transform as any).call(
-        { ...optimizePlugin, environment: { name: "rsc" } },
+        { ...optimizePlugin, ...(await resolverContext(tmpDir)) },
         `import { IconFoo } from "custom-icons";\nexport default IconFoo;`,
         "/app/page.tsx",
       );
@@ -685,7 +726,11 @@ describe("vinext:optimize-imports transform", () => {
     const transform = unwrapHook(plugin.transform)!;
     // Return a caller that fakes the environment context, RSC by default
     return async (code: string, id: string, envName = "rsc") =>
-      await (transform as any).call({ ...plugin, environment: { name: envName } }, code, id);
+      await (transform as any).call(
+        { ...plugin, ...(await resolverContext(tmpDir, envName)) },
+        code,
+        id,
+      );
   }
 
   afterEach(() => {
@@ -870,8 +915,10 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
     const resolveId = unwrapHook(plugin.resolveId)!;
-    const rsc = { ...plugin, environment: { name: "rsc" }, resolve: vi.fn() };
-    const ssr = { ...plugin, environment: { name: "ssr" }, resolve: vi.fn() };
+    const rscContext = await resolverContext(tmpDir, "rsc");
+    const rsc = { ...plugin, ...rscContext, resolve: vi.fn(rscContext.resolve) };
+    const ssrContext = await resolverContext(tmpDir, "ssr");
+    const ssr = { ...plugin, ...ssrContext, resolve: vi.fn(ssrContext.resolve) };
 
     // SSR imports Slot from @radix-ui/react-slot, but RSC imports it from the
     // "use client" entry, whichever environment transforms first.
@@ -879,8 +926,10 @@ describe("vinext:optimize-imports transform", () => {
       await (transform as any).call(context, `import { Slot } from "antd";`, "/app/page.tsx");
       await (resolveId as any).call(context, "@radix-ui/react-slot", "/app/other.tsx");
     }
-    expect(ssr.resolve).toHaveBeenCalledOnce();
-    expect(rsc.resolve).not.toHaveBeenCalled();
+    expect(ssr.resolve.mock.calls.some(([source]) => source === "@radix-ui/react-slot")).toBe(true);
+    expect(rsc.resolve.mock.calls.some(([source]) => source === "@radix-ui/react-slot")).toBe(
+      false,
+    );
   });
 
   it('stops at "use server" modules in SSR', async () => {
@@ -1005,7 +1054,11 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
     const call = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, ...(await resolverContext(tmpDir, "rsc")) },
+        code,
+        id,
+      );
 
     const code = `import { Listbox as HeadlessListbox } from "antd";`;
     const result = await call(code, "/app/page.tsx");
@@ -1051,7 +1104,11 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
     const call = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, ...(await resolverContext(tmpDir, "rsc")) },
+        code,
+        id,
+      );
 
     const code = `import { Button } from "antd";`;
     const result = await call(code, "/app/page.tsx");
@@ -1101,9 +1158,17 @@ describe("vinext:optimize-imports transform", () => {
     const transform = unwrapHook(plugin.transform)!;
 
     const rscCall = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, ...(await resolverContext(tmpDir, "rsc")) },
+        code,
+        id,
+      );
     const ssrCall = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, ...(await resolverContext(tmpDir, "ssr")) },
+        code,
+        id,
+      );
 
     // RSC processes the barrel first — this registers `rsc:<barrelEntry>`.
     const rscResult = await rscCall(`import { Slot } from "lucide-react";`, "/app/page.tsx");
@@ -1116,6 +1181,121 @@ describe("vinext:optimize-imports transform", () => {
     const ssrResult = await ssrCall(`import { Slot } from "lucide-react";`, "/app/layout.tsx");
     expect(ssrResult).not.toBeNull();
     expect(ssrResult!.code).toContain(`from "@radix-ui/react-slot"`);
+  });
+
+  it("uses Vite's module condition when a default optimized package also exports Node CJS", async () => {
+    // Mirrors lucide-react's module/node/import exports, where Node's CJS entry
+    // cannot provide the ESM barrel export map.
+    const call = await setupTransform("lucide-react", `export { Check } from "./check.js";`);
+    const pkgDir = path.join(tmpDir, "node_modules", "lucide-react");
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "lucide-react",
+        type: "module",
+        exports: {
+          ".": {
+            module: "./index.js",
+            node: "./index.cjs",
+            import: "./other.js",
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(path.join(pkgDir, "index.cjs"), "exports.Check = () => null;");
+    fs.writeFileSync(path.join(pkgDir, "other.js"), "export const Other = null;");
+    for (const envName of ["rsc", "ssr"]) {
+      const result = await call(`import { Check } from "lucide-react";`, "/app/page.tsx", envName);
+      expect(result?.code).toContain(JSON.stringify(toSlash(path.join(pkgDir, "check.js"))));
+    }
+  });
+
+  it.each(["?raw", "?url", "?v=abc123"])(
+    "preserves an aliased entry's loader semantics (%s)",
+    async (query) => {
+      await setupTransform("lucide-react", `export { default } from "./icon.js";`);
+      const entry = path.join(tmpDir, "node_modules", "lucide-react", "index.js");
+      const plugin = createOptimizeImportsPlugin(
+        () => undefined,
+        () => tmpDir,
+      ) as Plugin;
+      await unwrapHook(plugin.buildStart)!.call(plugin);
+      const context = await resolverContext(tmpDir, "ssr", { "lucide-react": entry + query });
+      const result = await unwrapHook(plugin.transform)!.call(
+        { ...plugin, ...context },
+        `import Icon from "lucide-react";`,
+        path.join(tmpDir, "entry.js"),
+      );
+      if (query.startsWith("?v=")) {
+        expect(result?.code).toContain(
+          JSON.stringify(toSlash(path.join(tmpDir, "node_modules", "lucide-react", "icon.js"))),
+        );
+      } else {
+        expect(result).toBeNull();
+      }
+    },
+  );
+
+  it.each(["optimized", "discovered", "missing", "source-query", "relative-source", "mismatch"])(
+    "analyzes dependency prebundles through their recorded source (%s)",
+    async (state) => {
+      await setupTransform("lucide-react", `"use client"; export { Check } from "./check.js";`);
+      const entry = toSlash(path.join(tmpDir, "node_modules", "lucide-react", "index.js"));
+      const file = toSlash(
+        path.join(tmpDir, "node_modules", ".vite", "deps_rsc", "lucide-react.js"),
+      );
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `export { Check } from "./flattened-client-code.js";`);
+      const plugin = createOptimizeImportsPlugin(
+        () => undefined,
+        () => tmpDir,
+      ) as Plugin;
+      await unwrapHook(plugin.buildStart)!.call(plugin);
+      const metadata: {
+        optimized: Record<string, { file: string; src: string }>;
+        discovered: Record<string, { file: string; src: string }>;
+      } = { optimized: {}, discovered: {} };
+      if (state !== "missing") {
+        metadata[state === "discovered" ? "discovered" : "optimized"]["lucide-react"] = {
+          file: state === "mismatch" ? file + ".other" : file,
+          src:
+            state === "source-query"
+              ? entry + "?custom-loader"
+              : state === "relative-source"
+                ? "./index.js"
+                : entry,
+        };
+      }
+      const result = await unwrapHook(plugin.transform)!.call(
+        {
+          ...plugin,
+          environment: { name: "rsc", depsOptimizer: { isOptimizedDepFile: () => true, metadata } },
+          resolve: async () => ({ id: `${file}?v=abc123` }),
+        },
+        `import { Check } from "lucide-react";`,
+        path.join(tmpDir, "entry.js"),
+      );
+      if (state === "optimized" || state === "discovered")
+        expect(result?.code).toContain(JSON.stringify(entry));
+      else expect(result).toBeNull();
+    },
+  );
+
+  it("keeps different installed copies isolated by importer", async () => {
+    const call = await setupTransform("date-fns", `export { format } from "./root.js";`);
+    for (const name of ["a", "b"]) {
+      const importer = path.join(tmpDir, name, "entry.js");
+      const pkgDir = path.join(tmpDir, name, "node_modules", "date-fns");
+      fs.mkdirSync(pkgDir, { recursive: true });
+      fs.writeFileSync(importer, `import { format } from "date-fns";`);
+      fs.writeFileSync(
+        path.join(pkgDir, "package.json"),
+        JSON.stringify({ name: "date-fns", type: "module", main: "./index.js" }),
+      );
+      fs.writeFileSync(path.join(pkgDir, "index.js"), `export { format } from "./${name}.js";`);
+      const result = await call(`import { format } from "date-fns";`, importer);
+      expect(result?.code).toContain(JSON.stringify(toSlash(path.join(pkgDir, `${name}.js`))));
+    }
   });
 
   it("prefers react-server export condition in RSC but not in SSR", async () => {
@@ -1164,10 +1344,18 @@ describe("vinext:optimize-imports transform", () => {
 
     // RSC environment: should use react-server entry → knows about RscButton
     const rscCall = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, ...(await resolverContext(tmpDir, "rsc")) },
+        code,
+        id,
+      );
     // SSR environment: should use import entry → knows about Button, not RscButton
     const ssrCall = async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
+      await (transform as any).call(
+        { ...plugin, ...(await resolverContext(tmpDir, "ssr")) },
+        code,
+        id,
+      );
 
     // RSC: RscButton is exported from the react-server barrel → rewrite succeeds
     const rscResult = await rscCall(`import { RscButton } from "antd";`, "/app/page.tsx");
@@ -1200,7 +1388,10 @@ describe("vinext:optimize-imports subpath imports", () => {
    * imports "client-only", and re-exports ToastQueue from a react-stately copy
    * nested under react-aria-components.
    */
-  async function setup(toastEntry?: string) {
+  async function setup(
+    toastEntry?: string,
+    prebundleState?: "optimized" | "discovered" | "missing",
+  ) {
     const tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-subpath-"))),
     );
@@ -1223,7 +1414,17 @@ describe("vinext:optimize-imports subpath imports", () => {
           `export {$t as UNSTABLE_Toast, $r as UNSTABLE_ToastRegion, $q$re_export$UNSTABLE_ToastQueue as UNSTABLE_ToastQueue};`,
         ].join("\n"),
     );
-    const nestedStately = `${racDir}/node_modules/react-stately/dist/exports/useToastState.mjs?v=abc`;
+    const statelySource = `${racDir}/node_modules/react-stately/dist/exports/useToastState.cjs`;
+    const prebundleFile = `${tmpDir}/node_modules/.vite/deps_rsc/react-stately_useToastState.js`;
+    const nestedStately = prebundleState
+      ? `${prebundleFile}?v=abc`
+      : `${racDir}/node_modules/react-stately/dist/exports/useToastState.mjs?v=abc`;
+    const metadata = { optimized: {}, discovered: {} };
+    if (prebundleState && prebundleState !== "missing") {
+      Object.assign(metadata[prebundleState], {
+        "react-stately/useToastState": { file: prebundleFile, src: statelySource },
+      });
+    }
     const resolveCalls: Array<[string, string]> = [];
     const resolve = async (source: string, importer: string) => {
       resolveCalls.push([source, importer]);
@@ -1244,11 +1445,25 @@ describe("vinext:optimize-imports subpath imports", () => {
     const transform = unwrapHook(plugin.transform)!;
     const call = async (envName: string, code: string, id: string) =>
       await (transform as any).call(
-        { ...plugin, environment: { name: envName }, resolve },
+        {
+          ...plugin,
+          environment: {
+            name: envName,
+            ...(prebundleState
+              ? {
+                  depsOptimizer: {
+                    isOptimizedDepFile: (id: string) => id.startsWith(prebundleFile),
+                    metadata,
+                  },
+                }
+              : {}),
+          },
+          resolve,
+        },
         code,
         id,
       );
-    return { call, racDir, nestedStately, resolveCalls };
+    return { call, racDir, nestedStately, statelySource, resolveCalls };
   }
 
   const heroToastQueue =
@@ -1299,6 +1514,24 @@ describe("vinext:optimize-imports subpath imports", () => {
       `import { UNSTABLE_Toast } from ${JSON.stringify(`${racDir}/dist/private/Toast.mjs`)};`,
     );
   });
+
+  it.each(["optimized", "discovered", "missing"] as const)(
+    "preserves emitted dependency prebundle IDs and version queries (%s metadata)",
+    async (state) => {
+      const { call, nestedStately, statelySource } = await setup(undefined, state);
+      const result = await call(
+        "rsc",
+        `import { UNSTABLE_ToastQueue } from "react-aria-components/Toast";`,
+        heroToastQueue,
+      );
+      // Normal imports use this same Vite-resolved ID. Replacing it with the raw
+      // CJS source would split module state and bypass the optimizer's ESM conversion.
+      expect(result?.code).toContain(
+        `import { ToastQueue as UNSTABLE_ToastQueue } from ${JSON.stringify(nestedStately)};`,
+      );
+      expect(result?.code).not.toContain(statelySource);
+    },
+  );
 
   it("leaves subpath imports alone outside RSC", async () => {
     const { call } = await setup();
