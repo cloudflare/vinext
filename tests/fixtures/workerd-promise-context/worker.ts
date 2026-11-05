@@ -13,13 +13,13 @@ import { ensureAppRouteModulesLoaded } from "vinext/internal/server/app-route-mo
 import { wrapClientReferenceRequire } from "vinext/internal/server/app-streamed-client-references";
 import { isolateServerReferenceLoads } from "vinext/internal/server/server-reference-loader";
 // @ts-expect-error -- the test supplies this module
-import { optimize, optimizationStatus } from "./v8-natives.js";
+import { isTurbofanned, optimize } from "./v8-natives.js";
 
 type Scenario = {
-  /** Compile the function that creates the shared promise; returns its V8 status. */
-  prime(): number;
-  /** Start the shared load of the "gated" source; returns the creator's V8 status. */
-  start(): number;
+  /** Compile the function that creates the shared promise; whether TurboFan did. */
+  prime(): boolean;
+  /** Start the shared load of the "gated" source; whether the creator still runs TurboFan code. */
+  start(): boolean;
   /** The shared load, as a later request gets it, for the request to await. */
   join(): unknown;
 };
@@ -54,7 +54,7 @@ const routeModules: Scenario = {
   start() {
     gatedRoute = createRoute("gated");
     void ensureAppRouteModulesLoaded(gatedRoute);
-    return optimizationStatus(ensureAppRouteModulesLoaded);
+    return isTurbofanned(ensureAppRouteModulesLoaded);
   },
   join: () => ensureAppRouteModulesLoaded(gatedRoute),
 };
@@ -81,7 +81,7 @@ const serverReferences: Scenario = {
   prime: () => optimize(loadServerModule, () => [primeId()]),
   start() {
     void serverRequire("gated");
-    return optimizationStatus(loadServerModule);
+    return isTurbofanned(loadServerModule);
   },
   join: () => serverRequire("gated"),
 };
@@ -96,7 +96,7 @@ const clientReferences: Scenario = {
   prime: () => optimize(clientRequire, () => [primeId()]),
   start() {
     void clientRequire("gated");
-    return optimizationStatus(clientRequire);
+    return isTurbofanned(clientRequire);
   },
   join: () => clientRequire("gated"),
 };
@@ -125,12 +125,12 @@ export default {
         // Compile the creator and start the load in one task, before the
         // priming loads settle and change what the compiled code assumed.
         const primed = scenario.prime();
-        const status = scenario.start();
+        const created = scenario.start();
         started = true;
         // Settle the load from this request once both joiners await it.
         for (let i = 0; joined < 2 && i < 500; i++) await scheduler.wait(10);
         open();
-        return Response.json({ primed, status, joined });
+        return Response.json({ primed, created, joined });
       }
       case "/started":
         return new Response(String(started));

@@ -23,25 +23,22 @@ const requireFromCloudflare = createRequire(
   path.resolve(import.meta.dirname, "../packages/cloudflare/package.json"),
 );
 
-// With Maglev off, %OptimizeFunctionOnNextCall() compiles with TurboFan, and
-// %GetOptimizationStatus() sets this bit while the function runs that code.
-const TURBOFANNED = 1 << 5;
-// Only V8 parses natives syntax, so this module reaches workerd unbundled. A
-// first compile can deoptimize on feedback the priming calls left incomplete;
-// the next round compiles with the feedback that deoptimization recorded.
+// Only V8 parses natives syntax, so this module reaches workerd unbundled. With
+// Maglev off, %OptimizeFunctionOnNextCall() compiles with TurboFan. A first
+// compile can deoptimize on feedback the priming calls left incomplete; the
+// next round compiles with the feedback that deoptimization recorded.
 const V8_NATIVES_MODULE = `
 export function optimize(fn, args) {
-  for (let round = 0; round < 5; round++) {
+  for (let round = 0; round < 5 && !%ActiveTierIsTurbofan(fn); round++) {
     %PrepareFunctionForOptimization(fn);
     for (let i = 0; i < 20; i++) fn(...args());
     %OptimizeFunctionOnNextCall(fn);
     fn(...args());
-    if (%GetOptimizationStatus(fn) & ${TURBOFANNED}) break;
   }
-  return %GetOptimizationStatus(fn);
+  return %ActiveTierIsTurbofan(fn);
 }
-export function optimizationStatus(fn) {
-  return %GetOptimizationStatus(fn);
+export function isTurbofanned(fn) {
+  return %ActiveTierIsTurbofan(fn);
 }
 `;
 
@@ -138,14 +135,12 @@ describe("isolate-shared loads on the Cloudflare Workers runtime", () => {
       });
 
       const started = (await (await start).json()) as {
-        primed: number;
-        status: number;
+        primed: boolean;
+        created: boolean;
         joined: number;
       };
       // TurboFan code created the shared promise, and both requests joined it.
-      expect(started.primed & TURBOFANNED).toBe(TURBOFANNED);
-      expect(started.status & TURBOFANNED).toBe(TURBOFANNED);
-      expect(started.joined).toBe(2);
+      expect(started).toEqual({ primed: true, created: true, joined: 2 });
       expect(await Promise.all(joins)).toEqual(["200 upstream ok", "200 upstream ok"]);
     },
     30_000,
