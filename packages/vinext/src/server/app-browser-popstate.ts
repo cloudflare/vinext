@@ -16,7 +16,11 @@ type BrowserPopstateRestoreDeps = {
   getActiveNavigationId: () => number;
   getPendingNavigation: () => Promise<void> | null | undefined;
   getNavigate: () => NavigationRuntimeNavigate | undefined;
-  isCurrentNavigation: (navId: number) => boolean;
+  /**
+   * Whether no navigation other than a router.refresh() started since navId.
+   * A refresh keeps the scroll position, so it doesn't end a scroll restore.
+   */
+  isLatestNonRefreshNavigation: (navId: number) => boolean;
   notifyAppRouterTransitionStart: (href: string) => void;
   restorePopstateScrollPosition: RestoreScrollPosition;
   setPendingNavigation: (pendingNavigation: Promise<void> | null) => void;
@@ -25,7 +29,7 @@ type BrowserPopstateRestoreDeps = {
 
 type SynchronousPopstateScrollRestoreDeps = {
   getActiveNavigationId: () => number;
-  isCurrentNavigation: (navId: number) => boolean;
+  isLatestNonRefreshNavigation: (navId: number) => boolean;
   markScrollRestoreConsumed: (navId: number) => void;
   restorePopstateScrollPosition: RestoreScrollPosition;
 };
@@ -41,7 +45,7 @@ export function restoreSynchronousPopstateScrollPosition(
   const navId = deps.getActiveNavigationId();
   deps.markScrollRestoreConsumed(navId);
   deps.restorePopstateScrollPosition(state, {
-    shouldContinue: () => deps.isCurrentNavigation(navId),
+    shouldContinue: () => deps.isLatestNonRefreshNavigation(navId),
   });
 }
 
@@ -94,7 +98,8 @@ export function createPopstateRestoreHandler(
     deps.setPendingNavigation(pendingNavigation);
     const shouldRestoreSavedScroll = hasSavedScrollPosition(event.state);
     const shouldRestoreScrollForNavigation = () =>
-      deps.isCurrentNavigation(popstateNavId) && !deps.shouldSkipScrollRestore(popstateNavId);
+      deps.isLatestNonRefreshNavigation(popstateNavId) &&
+      !deps.shouldSkipScrollRestore(popstateNavId);
 
     if (shouldRestoreSavedScroll) {
       scheduleAfterFrame(() => {

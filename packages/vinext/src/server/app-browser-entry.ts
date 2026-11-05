@@ -122,6 +122,7 @@ import {
   resolveSupplementalRefreshes,
 } from "./app-browser-supplemental-refresh.js";
 import { createAppBrowserNavigationAbortCoordinator } from "./app-browser-navigation-abort.js";
+import { createAppBrowserRefreshQueue } from "./app-browser-refresh-queue.js";
 import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,
@@ -2157,6 +2158,7 @@ function bootstrapHydration(
   markInitialAppRouterBootstrapHydrated();
 
   const navigationAbortCoordinator = createAppBrowserNavigationAbortCoordinator();
+  const refreshQueue = createAppBrowserRefreshQueue();
 
   const navigateRsc: NavigationRuntimeNavigate = async function navigateRsc(
     href: string,
@@ -2174,7 +2176,12 @@ function bootstrapHydration(
     const navigationAbortHandle = navigationAbortCoordinator.begin();
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
-    const navId = browserNavigationController.beginNavigation();
+    const navId = browserNavigationController.beginNavigation({
+      refresh: navigationKind === "refresh",
+    });
+    // A router.refresh() waits behind this navigation (or refresh) instead of
+    // superseding it.
+    const refreshQueueNavigation = refreshQueue.beginNavigation();
     const navigationCacheGeneration = clientNavigationCacheGeneration;
     discardedServerActionRefreshScheduler.markNavigationStart();
 
@@ -2513,6 +2520,11 @@ function bootstrapHydration(
             if (navigationKind === "traverse") {
               restoredBfcacheIds = null;
             }
+            if (navigationKind === "refresh") {
+              // A refresh that redirects leaves the page, so it ends a back/forward
+              // navigation's scroll restore like any other navigation.
+              browserNavigationController.markNonRefreshNavigation(navId);
+            }
             currentHref = cachedFetchDecision.redirect.href;
             currentHistoryMode = cachedFetchDecision.redirect.historyUpdateMode;
             currentPrevNextUrl = cachedFetchDecision.redirect.previousNextUrl;
@@ -2791,6 +2803,11 @@ function bootstrapHydration(
           if (navigationKind === "traverse") {
             restoredBfcacheIds = null;
           }
+          if (navigationKind === "refresh") {
+            // A refresh that redirects leaves the page, so it ends a back/forward
+            // navigation's scroll restore like any other navigation.
+            browserNavigationController.markNonRefreshNavigation(navId);
+          }
           currentHref = liveFetchDecision.redirect.href;
           currentHistoryMode = liveFetchDecision.redirect.historyUpdateMode;
           currentPrevNextUrl = liveFetchDecision.redirect.previousNextUrl;
@@ -2976,6 +2993,10 @@ function bootstrapHydration(
           browserNavigationController.abandonPendingBrowserRouterState(pendingRouterState);
         }
         if (renderOutcome !== "committed") return;
+        // The history update has run, so a queued refresh reads the
+        // destination URL. It does not wait for the response to finish
+        // streaming or for the cache publication below.
+        refreshQueueNavigation.settle();
         if (hasSupplementalRefresh) {
           clearVisitedResponseCache();
           return;
@@ -3110,6 +3131,11 @@ function bootstrapHydration(
       // settlePendingBrowserRouterState is idempotent via the settled flag.
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
       discardedServerActionRefreshScheduler.markNavigationSettled();
+      if (startedHardNavigation) {
+        refreshQueueNavigation.drop();
+      } else {
+        refreshQueueNavigation.settle();
+      }
       releaseNavigationInFlight();
       if (startedHardNavigation) {
         await waitForMpaNavigationRestore();
@@ -3134,6 +3160,7 @@ function bootstrapHydration(
       };
     },
     navigate: navigateRsc,
+    queueRefresh: (refresh) => refreshQueue.queueRefresh(refresh),
     readVisitedResponseForFullPrefetch: (rscUrls, interceptionContext, mountedSlotsHeader) =>
       findVisitedResponseForFullPrefetch(
         visitedResponseCache,
@@ -3179,9 +3206,8 @@ function bootstrapHydration(
     ),
     getPendingNavigation: () => window.__VINEXT_RSC_PENDING__,
     getNavigate: () => getNavigationRuntime()?.functions.navigate,
-    isCurrentNavigation: browserNavigationController.isCurrentNavigation.bind(
-      browserNavigationController,
-    ),
+    isLatestNonRefreshNavigation: (navId) =>
+      browserNavigationController.isLatestNonRefreshNavigation(navId),
     notifyAppRouterTransitionStart: (href) => {
       notifyAppRouterTransitionStart(href, "traverse");
     },
@@ -3230,7 +3256,8 @@ function bootstrapHydration(
       restoreSynchronousPopstateScrollPosition(
         {
           getActiveNavigationId: () => browserNavigationController.getActiveNavigationId(),
-          isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
+          isLatestNonRefreshNavigation: (navId) =>
+            browserNavigationController.isLatestNonRefreshNavigation(navId),
           markScrollRestoreConsumed: (navId) => {
             synchronousPopstateScrollRestoreNavigationId = navId;
           },
