@@ -1903,6 +1903,9 @@ function registerServerActionCallback(): void {
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
             if (target.type === "push") saveScrollPosition();
+            // The action may have started during a refresh and holds its id;
+            // the redirect leaves the refreshed page all the same.
+            browserNavigationController.markNonRefreshNavigation(actionInitiation.navigationId);
             void renderNavigationPayload({
               actionType: target.type === "push" ? "navigate" : "replace",
               historyUpdateMode: target.type === "push" ? "push" : "replace",
