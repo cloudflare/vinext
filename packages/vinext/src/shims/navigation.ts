@@ -3295,7 +3295,7 @@ const _appRouter: AppRouterInstance = {
     // or after the navigation that superseded it.
     const clearCaches = () => runtime?.clearNavigationCaches?.({ pingVisibleLinks: false });
     const rscNavigate = runtime?.navigate;
-    if (hasScheduledAppRouterNavigation() || !rscNavigate) {
+    if (!rscNavigate) {
       clearCaches();
       runtime?.pingVisibleLinks?.();
       return;
@@ -3310,9 +3310,17 @@ const _appRouter: AppRouterInstance = {
       });
     };
     // Like Next.js's action queue, a refresh does not discard the navigation
-    // in flight. It waits for that navigation, then refreshes (and invalidates
-    // the caches) on the page the navigation landed on.
-    if (runtime?.queueRefresh?.(refresh)) return;
+    // in flight, including a push() made earlier in this task. It waits for
+    // that navigation, then refreshes (and invalidates the caches) on the page
+    // the navigation landed on.
+    if (runtime.queueRefresh?.(refresh)) return;
+    // A push() in this task that started no RSC navigation (a hash change or
+    // a document load) leaves nothing to wait for; refetching now would race it.
+    if (hasScheduledAppRouterNavigation()) {
+      clearCaches();
+      runtime.pingVisibleLinks?.();
+      return;
+    }
     refresh();
   },
   prefetch(href: string, options?: PrefetchOptions): void {
