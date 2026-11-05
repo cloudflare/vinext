@@ -3,11 +3,12 @@ import { createRequire } from "node:module";
 import path from "pathslash";
 import { findPackageVersion, isVersionBelow, MINIMUM_REACT_VERSION } from "./react-version.js";
 
-// 0.5.37 binds encrypted "use server" closures to their action id
-// (vitejs/vite-plugin-react#1499). Older versions let one inline Server
-// Action's closure decrypt as another's captures, so they are rejected rather
-// than left to the optional peer range.
-const MINIMUM_PLUGIN_RSC_VERSION: [number, number, number] = [0, 5, 37];
+// 0.5.39 lets decodeReply/decodeAction/decodeFormState reject server
+// references through `onServerReference` (vitejs/vite-plugin-react#1520).
+// Older versions ignore the callback, so Server Actions would decode
+// references owned by other routes. They are rejected rather than left to the
+// optional peer range.
+const MINIMUM_PLUGIN_RSC_VERSION: [number, number, number] = [0, 5, 39];
 
 /** Return the installed @vitejs/plugin-rsc version, or throw if it is unsupported. */
 export function assertPluginRscVersion(resolvedRscPath: string): string {

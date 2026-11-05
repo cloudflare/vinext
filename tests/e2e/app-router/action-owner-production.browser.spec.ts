@@ -580,6 +580,9 @@ test.describe("production server action ownership", () => {
     for (const parts of [
       reference(app.actionIds.describeArgument),
       reference(app.actionIds.inlineArgument),
+      // plugin-rsc resolves only `module#export`, so a trailing `#name` still
+      // decodes the owned action rather than this module's `default`.
+      reference(`${app.actionIds.inlineArgument}#default`),
       streamed("$R1", app.actionIds.inlineArgument),
       streamed("$x1", app.actionIds.inlineArgument),
     ]) {
@@ -593,9 +596,6 @@ test.describe("production server action ownership", () => {
     for (const parts of [
       reference(app.actionIds.protected),
       reference(pageComponentId),
-      // React retries a missing id without its last `#name`, keeping `name`
-      // as the export, which would reach this owned module's `default`.
-      reference(`${app.actionIds.inlineArgument}#default`),
       [
         ["0", JSON.stringify(["$h1"])],
         ["1", metadata(app.actionIds.describeArgument, "$@2")],
@@ -646,7 +646,6 @@ test.describe("production server action ownership", () => {
     for (const parts of [
       reference(app.actionIds.protected),
       reference(pageComponentId),
-      reference(`${app.actionIds.inlineArgument}#default`),
       [
         ...reference(app.actionIds.inlineArgument),
         ["$ACTION_1:2", metadata(app.actionIds.protected)],
