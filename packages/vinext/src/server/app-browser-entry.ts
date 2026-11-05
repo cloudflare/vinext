@@ -124,6 +124,10 @@ import {
   resolveSupplementalRefreshes,
 } from "./app-browser-supplemental-refresh.js";
 import { createAppBrowserNavigationAbortCoordinator } from "./app-browser-navigation-abort.js";
+import {
+  createAppBrowserDocumentLoadTracker,
+  type AppBrowserDocumentLoad,
+} from "./app-browser-document-load.js";
 import { createAppBrowserRefreshQueue } from "./app-browser-refresh-queue.js";
 import {
   consumeInitialFormState,
@@ -257,6 +261,7 @@ type MpaNavigationState = {
   href: string;
   historyUpdateMode: HistoryUpdateMode;
   kind: "mpa-navigation";
+  load: AppBrowserDocumentLoad;
 };
 
 // Maps NavigationKind to the AppRouterAction type used by the reducer.
@@ -384,6 +389,32 @@ const historyController = new AppBrowserHistoryController({
 
 // router.refresh() calls waiting behind the App Router navigation in flight.
 const refreshQueue = createAppBrowserRefreshQueue();
+const documentLoads = createAppBrowserDocumentLoadTracker();
+
+// Every document load the router starts gets here: once React renders the MPA
+// state, or straight away before the router mounts. A queued refresh of the
+// page being unloaded would only race the load.
+function startDocumentLoad(load: AppBrowserDocumentLoad): void {
+  refreshQueue.dropQueuedRefresh();
+  documentLoads.start(load);
+}
+
+/** Runs `callback` once the document load the router just entered starts. */
+function onceDocumentLoadStarts(callback: () => void): void {
+  const load = documentLoads.latest();
+  if (load !== null) documentLoads.onSettled(load, callback);
+}
+
+/** Resolves true once `load` starts, or false if a router update replaced it. */
+function didDocumentLoadStart(load: AppBrowserDocumentLoad): Promise<boolean> {
+  return new Promise((resolve) => {
+    documentLoads.onSettled(
+      load,
+      () => resolve(true),
+      () => resolve(false),
+    );
+  });
+}
 
 const browserNavigationController = createAppBrowserNavigationController({
   basePath: __basePath,
@@ -394,7 +425,7 @@ const browserNavigationController = createAppBrowserNavigationController({
       mpaNavigationTree.enter(href, mode === "replace" ? "replace" : "push");
       return;
     }
-    refreshQueue.dropQueuedRefresh();
+    startDocumentLoad(documentLoads.enter());
     navigateDocumentDirectly(href, mode);
   },
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
@@ -1316,15 +1347,12 @@ function isMpaNavigationState(
   );
 }
 
-function performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode): void {
+function performMpaNavigation(state: MpaNavigationState): void {
   // Match Next's MPA path by suspending forever, but delay the actual location
   // mutation just enough for the old tree to commit the pending transition
   // signal before unload.
-  mpaNavigationScheduler.navigate(window, href, historyUpdateMode);
-  // Every document load the router starts once mounted gets here, after React
-  // renders the MPA state. A queued refresh of the page being unloaded would
-  // only race the load.
-  refreshQueue.dropQueuedRefresh();
+  mpaNavigationScheduler.navigate(window, state.href, state.historyUpdateMode);
+  startDocumentLoad(state.load);
 }
 
 function AppRouterRedirectBridge({ children }: { children?: React.ReactNode }) {
@@ -1406,7 +1434,7 @@ function BrowserRoot({
     visibleCommitVersion: 0,
   }));
   if (isMpaNavigationState(treeStateValue)) {
-    performMpaNavigation(treeStateValue.href, treeStateValue.historyUpdateMode);
+    performMpaNavigation(treeStateValue);
     throw unresolvedMpaNavigation;
   }
   const treeState = isRouterStatePromise(treeStateValue) ? use(treeStateValue) : treeStateValue;
@@ -1425,6 +1453,14 @@ function BrowserRoot({
   useLayoutEffect(() => {
     committedStateRef.current = treeState;
   }, [treeState]);
+  // Every commit BrowserRoot renders, including one that resolves a pending
+  // state to the same tree. Work for a superseded document load (such as
+  // running the queued refresh) waits for the update that replaced the MPA
+  // state, so it sees its URL; route layout effects, which commit history,
+  // have run by now.
+  useLayoutEffect(() => {
+    documentLoads.commit();
+  });
 
   // Publish the stable ref object and dispatch during layout commit. This keeps
   // the module-level escape hatches aligned with React's committed tree without
@@ -1433,6 +1469,8 @@ function BrowserRoot({
   // the hydration commit, so getBrowserRouterState() never observes a null ref.
   useLayoutEffect(() => {
     const setAppRouterStateValue = (value: AppRouterState | Promise<AppRouterState>) => {
+      // Replaces any MPA state that has not rendered yet.
+      documentLoads.supersede();
       setTreeStateValue(value);
     };
     const detach = browserNavigationController.attachBrowserRouterState(
@@ -1443,17 +1481,23 @@ function BrowserRoot({
       // Next.js reaches the MPA state through the navigation's transition, so
       // only transitions suspend; a default-priority update would freeze every
       // other update in the app until unload.
+      const load = documentLoads.enter();
       startTransition(() => {
         setTreeStateValue({
           href,
           historyUpdateMode,
           kind: "mpa-navigation",
+          load,
         });
       });
     };
     const currentMpaNavigationTree = {
       enter: setMpaNavigationState,
       restore() {
+        documentLoads.supersede();
+        // This puts back the committed tree, so there is no new URL to wait
+        // for, and React may bail out of the update without committing.
+        documentLoads.commit();
         setTreeStateValue((current) =>
           isMpaNavigationState(current) ? committedStateRef.current : current,
         );
@@ -1890,6 +1934,16 @@ function registerServerActionCallback(): void {
   setServerCallback((id, args) => {
     const releaseCacheInvalidationGuard = historyController.beginCacheInvalidationGuard();
     const actionInitiation = createActionInitiationSnapshot();
+    // The action may have started during a refresh and holds its id; a
+    // redirect or document load leaves the refreshed page all the same, once
+    // the redirect commits or the load starts.
+    const markActionLeftPage = () =>
+      browserNavigationController.markNonRefreshNavigation(actionInitiation.navigationId);
+    const performActionHardNavigation = (url: string, historyMode?: "assign" | "replace") => {
+      if (browserNavigationController.performHardNavigation(url, historyMode)) {
+        onceDocumentLoadStarts(markActionLeftPage);
+      }
+    };
     return loadServerActionClient!()
       .then(({ invokeClientServerAction }) =>
         invokeClientServerAction(id, args, actionInitiation, {
@@ -1899,8 +1953,7 @@ function registerServerActionCallback(): void {
           clientRscCompatibilityId,
           commitSameUrlNavigatePayload,
           navigationPlanner,
-          performHardNavigation: (url, historyMode) =>
-            browserNavigationController.performHardNavigation(url, historyMode),
+          performHardNavigation: performActionHardNavigation,
           renderRedirectPayload(elements, target, actionInitiation, revalidation) {
             // Action redirects bypass navigateClientSide. Reset the previous
             // link's pending indicator when this action still owns navigation;
@@ -1912,6 +1965,7 @@ function registerServerActionCallback(): void {
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
             if (target.type === "push") saveScrollPosition();
+            const loadEntriesBeforeRender = documentLoads.entries();
             void renderNavigationPayload({
               actionType: target.type === "push" ? "navigate" : "replace",
               historyUpdateMode: target.type === "push" ? "push" : "replace",
@@ -1922,10 +1976,7 @@ function registerServerActionCallback(): void {
                 target.renderedPathAndSearch,
               ),
               navId: actionInitiation.navigationId,
-              // The action may have started during a refresh and holds its
-              // id; the redirect leaves the refreshed page all the same.
-              onCommittedState: () =>
-                browserNavigationController.markNonRefreshNavigation(actionInitiation.navigationId),
+              onCommittedState: markActionLeftPage,
               operationLane: resolveServerActionOperationLane(revalidation),
               params: {},
               payload: Promise.resolve(elements),
@@ -1934,9 +1985,20 @@ function registerServerActionCallback(): void {
               previousNextUrl: null,
               scrollIntent: actionScrollIntent,
               targetHref: target.href,
-            }).catch(() => {
-              browserNavigationController.performHardNavigation(target.href);
-            });
+            })
+              .then((outcome) => {
+                // The RouteManifest fallback loads a document but reports no
+                // commit, so a load entered during the render counts too.
+                if (
+                  outcome === "hard-navigate" ||
+                  documentLoads.entries() !== loadEntriesBeforeRender
+                ) {
+                  onceDocumentLoadStarts(markActionLeftPage);
+                }
+              })
+              .catch(() => {
+                performActionHardNavigation(target.href);
+              });
           },
           syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>
             historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
@@ -2214,10 +2276,12 @@ function bootstrapHydration(
       navigationKind === "traverse"
         ? (traversalIntent ?? historyController.resolveTraversalIntent(window.history.state))
         : null;
-    let startedHardNavigation = false;
+    // The document load this navigation entered. Until it starts, React can
+    // still replace the MPA state and nothing loads.
+    let documentLoad: AppBrowserDocumentLoad | null = null;
     const noteStartedHardNavigation = (): void => {
-      startedHardNavigation = true;
-      markRefreshLeftPage();
+      documentLoad = documentLoads.latest();
+      onceDocumentLoadStarts(markRefreshLeftPage);
     };
     const performHardNavigationForScrollIntent = (
       targetHref: string,
@@ -2725,7 +2789,7 @@ function bootstrapHydration(
                 visibleCommitMode,
               })
                 .then((outcome) => {
-                  if (outcome === "hard-navigate") markRefreshLeftPage();
+                  if (outcome === "hard-navigate") onceDocumentLoadStarts(markRefreshLeftPage);
                 })
                 .catch((error) => {
                   if (browserNavigationController.isCurrentNavigation(navId)) {
@@ -3141,13 +3205,21 @@ function bootstrapHydration(
       // settlePendingBrowserRouterState is idempotent via the settled flag.
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
       discardedServerActionRefreshScheduler.markNavigationSettled();
-      if (startedHardNavigation) {
-        refreshQueueNavigation.drop();
-      } else {
+      if (documentLoad === null) {
         refreshQueueNavigation.settle();
+      } else {
+        // Drop the refresh queued behind this navigation once its document
+        // load starts, or run it if a router update replaced the MPA state first.
+        documentLoads.onSettled(
+          documentLoad,
+          () => refreshQueueNavigation.drop(),
+          () => refreshQueueNavigation.settle(),
+        );
       }
       releaseNavigationInFlight();
-      if (startedHardNavigation) {
+      // A load that never started leaves this document in place, so the
+      // navigation returns as usual.
+      if (documentLoad !== null && (await didDocumentLoadStart(documentLoad))) {
         await waitForMpaNavigationRestore();
       }
     }
@@ -3174,6 +3246,10 @@ function bootstrapHydration(
     // discarded navigation: a refresh queued behind it runs now, on the URL
     // the browser now shows.
     refreshQueue.beginNavigation().settle();
+    // The discard puts back the committed tree, which replaces any MPA state
+    // still pending, and React may bail out of that update without committing.
+    // The URL is already in place, so nothing is left to wait for.
+    documentLoads.commit();
   };
 
   // Exposed through one typed runtime seam so next/navigation, Link, Form, and
@@ -3299,6 +3375,10 @@ function bootstrapHydration(
         event.state,
         snapshotNavigationId,
       );
+      // The restored tree replaces any MPA state still pending. If it is the
+      // tree React already shows, React may bail out without committing; the
+      // entry's URL is already in place.
+      documentLoads.commit();
       browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
       return;
     }
