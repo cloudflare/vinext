@@ -83,16 +83,9 @@ export function getReactUpgradeDeps(
   });
 }
 
-export function reactUpgradeRequiredMessage(
-  installCommand: string,
-  upgrades: string[],
-  pluginRscVersion?: string,
-): string {
+export function reactUpgradeRequiredMessage(installCommand: string, upgrades: string[]): string {
   return (
     `vinext: App Router requires react, react-dom, and react-server-dom-webpack ${MINIMUM_REACT_VERSION.join(".")} or later.\n` +
-    (pluginRscVersion
-      ? `@vitejs/plugin-rsc ${pluginRscVersion} bundles an older react-server-dom-webpack, so install the latest in your app.\n`
-      : "") +
     `Run: ${installCommand} ${upgrades.join(" ")}`
   );
 }
