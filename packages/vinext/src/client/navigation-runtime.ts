@@ -92,6 +92,12 @@ export type NavigationRuntimeFunctions = {
    */
   notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
+  /**
+   * Queues a router.refresh() behind the App Router navigation in flight, as
+   * Next.js's action queue does. Returns false when no navigation is in flight
+   * and the caller should refresh now.
+   */
+  queueRefresh?: (refresh: () => void) => boolean;
   preparePrefetchResponse?: (response: Response) => Promise<unknown>;
   /**
    * The visited (BFCache) response a full prefetch can be fulfilled from, and

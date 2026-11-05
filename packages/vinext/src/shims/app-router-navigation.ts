@@ -2445,6 +2445,7 @@ const _appRouter: AppRouterInstance = {
   },
   refresh(): void {
     if (isServer) return;
+    const runtime = getNavigationRuntime()?.functions;
     // Drop cached RSC payloads for every previously-visited / prefetched route
     // before re-fetching. Next.js's refresh-reducer invalidates the entire
     // segment cache (refresh-reducer.ts → invalidateSegmentCacheEntries), so
@@ -2456,19 +2457,27 @@ const _appRouter: AppRouterInstance = {
     // runs again. vinext's refresh can fan out to slot refreshes once its
     // response arrives, so the visible links prefetch again only after it,
     // or after the navigation that superseded it.
-    getNavigationRuntime()?.functions.clearNavigationCaches?.({ pingVisibleLinks: false });
-    const rscNavigate = getNavigationRuntime()?.functions.navigate;
+    const clearCaches = () => runtime?.clearNavigationCaches?.({ pingVisibleLinks: false });
+    const rscNavigate = runtime?.navigate;
     if (hasScheduledAppRouterNavigation() || !rscNavigate) {
-      getNavigationRuntime()?.functions.pingVisibleLinks?.();
+      clearCaches();
+      runtime?.pingVisibleLinks?.();
       return;
     }
     // Re-fetch the current page's RSC stream
-    const navigate = () => {
-      void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true).finally(
-        pingVisibleLinksOnceNavigationsSettle,
-      );
+    const refresh = () => {
+      clearCaches();
+      React.startTransition(() => {
+        void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true).finally(
+          pingVisibleLinksOnceNavigationsSettle,
+        );
+      });
     };
-    React.startTransition(navigate);
+    // Like Next.js's action queue, a refresh does not discard the navigation
+    // in flight. It waits for that navigation, then refreshes (and invalidates
+    // the caches) on the page the navigation landed on.
+    if (runtime?.queueRefresh?.(refresh)) return;
+    refresh();
   },
   prefetch(href: string, options?: PrefetchOptions): void {
     assertSafeNavigationUrl(href);
