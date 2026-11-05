@@ -631,11 +631,18 @@ test.describe("production server action ownership", () => {
     const pageComponentId = app.actionIds.inlineArgument.replace(/#.*$/, "#default");
 
     // The action redirects with its description of the bound argument.
-    const owned = await postBoundAction(reference(app.actionIds.inlineArgument));
-    expect(owned.status).toBe(200);
-    expect(new URL(owned.url).searchParams.get("described")).toBe("FUNCTION_ARGUMENT");
+    for (const parts of [
+      reference(app.actionIds.inlineArgument),
+      // plugin-rsc resolves only `module#export`, so a trailing `#name` still
+      // decodes the owned action rather than this module's `default`.
+      reference(`${app.actionIds.inlineArgument}#default`),
+    ]) {
+      const owned = await postBoundAction(parts);
+      expect(owned.status).toBe(200);
+      expect(new URL(owned.url).searchParams.get("described")).toBe("FUNCTION_ARGUMENT");
+    }
 
-    // React resolves bound arguments through the route-scoped manifest, so an id
+    // Bound arguments resolve through the route's `onServerReference`, so an id
     // outside this route fails decoding as it does in Next.js.
     const streamed = (type: "$R3" | "$x3", id: string) =>
       [
