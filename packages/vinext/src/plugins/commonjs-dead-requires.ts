@@ -152,6 +152,33 @@ function evaluate(
   return null;
 }
 
+/**
+ * Whether an expression is always truthy or always falsy. Unlike its value,
+ * this can be known when one operand is not: `enabled && false` is falsy.
+ */
+function truthiness(
+  value: ESTree.Node | null | undefined,
+  scope: AstScope,
+  defines: LiteralDefines,
+): boolean | null {
+  const node = unwrapExpression(value);
+  if (node?.type === "UnaryExpression" && node.operator === "!") {
+    const argument = truthiness(node.argument, scope, defines);
+    return argument === null ? null : !argument;
+  }
+  if (node?.type === "LogicalExpression" && node.operator !== "??") {
+    // `&&` is falsy when either operand is, and `||` truthy when either is.
+    const decisive = node.operator === "||";
+    const left = truthiness(node.left, scope, defines);
+    if (left === decisive) return decisive;
+    const right = truthiness(node.right, scope, defines);
+    if (left !== null || right === decisive) return right;
+    return null;
+  }
+  const result = evaluate(node, scope, defines);
+  return result && Boolean(result.value);
+}
+
 /** The branch of a conditional that the literal defines make unreachable. */
 function deadBranch(
   node: ESTree.Node,
@@ -159,13 +186,16 @@ function deadBranch(
   defines: LiteralDefines,
 ): ESTree.Node | null {
   if (node.type === "IfStatement" || node.type === "ConditionalExpression") {
-    const test = evaluate(node.test, scope, defines);
-    if (!test) return null;
-    return (test.value ? node.alternate : node.consequent) ?? null;
+    const test = truthiness(node.test, scope, defines);
+    if (test === null) return null;
+    return (test ? node.alternate : node.consequent) ?? null;
   }
   if (node.type === "LogicalExpression") {
-    const left = evaluate(node.left, scope, defines);
-    return left && shortCircuits(node.operator, left.value) ? node.right : null;
+    if (node.operator === "??") {
+      const left = evaluate(node.left, scope, defines);
+      return left && left.value !== null ? node.right : null;
+    }
+    return truthiness(node.left, scope, defines) === (node.operator === "||") ? node.right : null;
   }
   return null;
 }

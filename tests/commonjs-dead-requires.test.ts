@@ -111,6 +111,19 @@ describe("blankDefineDeadRequires", () => {
     }
   });
 
+  it("folds conditions a define decides whatever their other operand is", () => {
+    const code = [
+      `if (enabled && process.env.NODE_ENV !== "production") require("dev-a");`,
+      `if (!(enabled || process.env.NODE_ENV === "production")) require("dev-b");`,
+      `const c = enabled && process.env.NODE_ENV !== "production" ? require("dev-c") : null;`,
+      `if (process.env.NODE_ENV === "production" || enabled) {} else require("dev-d");`,
+    ].join("\n");
+    const blanked = blank(code);
+    for (const specifier of ["dev-a", "dev-b", "dev-c", "dev-d"]) {
+      expect(blanked).not.toContain(specifier);
+    }
+  });
+
   it("folds statically computed member access to a define", () => {
     const code = [
       `if (process.env["NEXT_RUNTIME"] === "edge") require("edge-a");`,
@@ -153,6 +166,9 @@ describe("blankDefineDeadRequires", () => {
       `if (process.env.UNKNOWN === "x") require("unknown");`,
       `if (globalThis.Bun) require("bun-only"); else require("node-only");`,
       `if (process.env[runtimeKey] === "edge") require("dynamic-key");`,
+      `if (enabled && process.env.NODE_ENV === "production") require("prod-a");`,
+      `if (enabled || process.env.NODE_ENV !== "production") require("prod-b");`,
+      `const c = (enabled && process.env.NODE_ENV === "production") ?? require("nullish");`,
     ].join("\n");
     expect(blankDefineDeadRequires(code, ID, SERVER_DEFINES, true)).toBeNull();
   });
