@@ -32,8 +32,8 @@ const SERVER_DEFINES = literalDefines({
   "typeof window": '"undefined"',
 });
 
-function blank(code: string): string {
-  return blankDefineDeadRequires(code, ID, SERVER_DEFINES)?.toString() ?? code;
+function blank(code: string, definesEveryModule = true): string {
+  return blankDefineDeadRequires(code, ID, SERVER_DEFINES, definesEveryModule)?.toString() ?? code;
 }
 
 describe("blankDefineDeadRequires", () => {
@@ -84,7 +84,7 @@ describe("blankDefineDeadRequires", () => {
     // On the client, NEXT_RUNTIME is "" and the final else branch runs.
     const client = literalDefines({ "process.env.NEXT_RUNTIME": '""' });
     const deadCall = 'require("./instrumentation.node")';
-    expect(blankDefineDeadRequires(instrumentation, ID, client)?.toString()).toBe(
+    expect(blankDefineDeadRequires(instrumentation, ID, client, true)?.toString()).toBe(
       instrumentation.replace(deadCall, "0".padEnd(deadCall.length)),
     );
   });
@@ -111,13 +111,37 @@ describe("blankDefineDeadRequires", () => {
     }
   });
 
+  it("folds statically computed member access to a define", () => {
+    const code = [
+      `if (process.env["NEXT_RUNTIME"] === "edge") require("edge-a");`,
+      `if (process["env"].NEXT_RUNTIME === "edge") require("edge-b");`,
+    ].join("\n");
+    const blanked = blank(code);
+    for (const specifier of ["edge-a", "edge-b"]) {
+      expect(blanked).not.toContain(specifier);
+    }
+  });
+
+  it("folds computed member access in unbundled dev only when Vite does", () => {
+    // Vite's dev define transform skips server modules that never spell a key
+    // with dots, so this condition reads the real process.env at runtime.
+    const computedOnly = `if (process.env["NEXT_RUNTIME"] === "edge") require("edge-only");\n`;
+    expect(blank(computedOnly, false)).toBe(computedOnly);
+    // Once a dotted key matches, Vite folds every spelling in the module.
+    const withDotted = `${computedOnly}if (process?.env.NODE_ENV === "test") require("test-only");\n`;
+    const blanked = blank(withDotted, false);
+    expect(blanked).not.toContain("edge-only");
+    expect(blanked).not.toContain("test-only");
+  });
+
   it("leaves require() calls whose condition is not a literal define", () => {
     const code = [
       `if (process.env.NEXT_PHASE === "phase-production-build") require("phase");`,
       `if (process.env.UNKNOWN === "x") require("unknown");`,
       `if (globalThis.Bun) require("bun-only"); else require("node-only");`,
+      `if (process.env[runtimeKey] === "edge") require("dynamic-key");`,
     ].join("\n");
-    expect(blankDefineDeadRequires(code, ID, SERVER_DEFINES)).toBeNull();
+    expect(blankDefineDeadRequires(code, ID, SERVER_DEFINES, true)).toBeNull();
   });
 
   it("does not fold a define key whose root is a local binding", () => {
@@ -125,6 +149,6 @@ describe("blankDefineDeadRequires", () => {
   if (process.env.NEXT_RUNTIME === "edge") return require("edge-only");
 }
 `;
-    expect(blankDefineDeadRequires(code, ID, SERVER_DEFINES)).toBeNull();
+    expect(blankDefineDeadRequires(code, ID, SERVER_DEFINES, true)).toBeNull();
   });
 });

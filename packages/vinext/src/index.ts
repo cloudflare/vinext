@@ -2522,6 +2522,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         code,
         id,
         literalDefines(this.environment.config.define),
+        this.environment.config.isBundled || this.environment.config.consumer === "client",
       );
       const previousProjectLocal = transformProjectLocalCommonJs;
       const previous = transformBundledCommonJsDependencies;

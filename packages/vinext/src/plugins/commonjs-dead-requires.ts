@@ -7,6 +7,7 @@ import {
   unwrapExpression,
 } from "./ast-utils.js";
 import { hasAstBinding, walkAstScopes, type AstScope } from "./ast-scope.js";
+import { escapeRegExp } from "../utils/regex.js";
 import { COMMONJS_REQUIRE_CALL_RE } from "./commonjs-syntax.js";
 
 type LiteralValue = string | number | boolean | null;
@@ -16,6 +17,7 @@ export type LiteralDefines = ReadonlyMap<string, LiteralValue>;
 // overwrites a line break, which cannot appear inside the `require` callee.
 const DEAD_REQUIRE_REPLACEMENT = "0";
 const literalDefinesCache = new WeakMap<object, LiteralDefines>();
+const dottedDefinePatternCache = new WeakMap<LiteralDefines, RegExp | null>();
 
 /**
  * The entries of a Vite `define` map whose replacement is a JSON literal, such
@@ -48,14 +50,43 @@ export function literalDefines(define: Record<string, unknown> | undefined): Lit
   return defines;
 }
 
-/** The define key an expression reads (`process.env.X`, `typeof window`), if any. */
+/**
+ * Vite's prefilter for unbundled server environments: it folds a module's
+ * defines (in every spelling) only when the module spells a key with dots,
+ * allowing `?.`, such as `process.env.NODE_ENV` or `process?.env.NODE_ENV`.
+ */
+function dottedDefinePattern(defines: LiteralDefines): RegExp | null {
+  if (dottedDefinePatternCache.has(defines)) return dottedDefinePatternCache.get(defines)!;
+  const pattern = defines.size
+    ? new RegExp(
+        Array.from(defines.keys(), (key) => escapeRegExp(key).replaceAll("\\.", "\\??\\.")).join(
+          "|",
+        ),
+      )
+    : null;
+  dottedDefinePatternCache.set(defines, pattern);
+  return pattern;
+}
+
+/** A member's property name, for `a.b` and the statically computed `a["b"]`. */
+function memberPropertyName(node: ESTree.MemberExpression): string | null {
+  if (!node.computed) return node.property.type === "Identifier" ? node.property.name : null;
+  const property = unwrapExpression(node.property);
+  return property?.type === "Literal" && typeof property.value === "string" ? property.value : null;
+}
+
+/**
+ * The define key an expression reads (`process.env.X`, `process.env["X"]`,
+ * `typeof window`), if any. Vite folds defines in every one of these spellings.
+ */
 function defineKey(value: ESTree.Node | null | undefined, scope: AstScope): string | null {
   const node = unwrapExpression(value);
   if (node?.type === "Identifier") return hasAstBinding(scope, node.name) ? null : node.name;
   if (node?.type === "MemberExpression") {
-    if (node.computed || node.property.type !== "Identifier") return null;
+    const property = memberPropertyName(node);
+    if (property === null) return null;
     const object = defineKey(node.object, scope);
-    return object === null ? null : `${object}.${node.property.name}`;
+    return object === null ? null : `${object}.${property}`;
   }
   if (node?.type === "UnaryExpression" && node.operator === "typeof") {
     const argument = unwrapExpression(node.argument);
@@ -152,17 +183,30 @@ export function blankDefineDeadRequires(
   code: string,
   id: string,
   defines: LiteralDefines,
+  /**
+   * Whether Vite applies the defines to every module, as in bundled
+   * environments and the client (where defines are runtime globals in dev).
+   * Unbundled server environments apply them only to modules matching
+   * {@link dottedDefinePattern}; other modules read the real `process.env`.
+   */
+  definesEveryModule: boolean,
 ): MagicString | null {
   // vite-plugin-commonjs only transforms files with a script extension, which
   // generated modules such as vinext's virtual entries do not have.
   const lang = scriptParserLanguage(id);
   if (!lang || !COMMONJS_REQUIRE_CALL_RE.test(code)) return null;
   let mentionsDefine = false;
-  for (const key of defines.keys()) {
-    if (code.includes(key)) {
-      mentionsDefine = true;
-      break;
+  if (definesEveryModule) {
+    // Match only a member key's last name: `process.env["NEXT_RUNTIME"]`
+    // spells the `process.env.NEXT_RUNTIME` key differently.
+    for (const key of defines.keys()) {
+      if (code.includes(key.slice(key.lastIndexOf(".") + 1))) {
+        mentionsDefine = true;
+        break;
+      }
     }
+  } else {
+    mentionsDefine = dottedDefinePattern(defines)?.test(code) ?? false;
   }
   if (!mentionsDefine) return null;
 
