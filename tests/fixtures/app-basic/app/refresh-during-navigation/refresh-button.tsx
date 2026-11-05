@@ -12,6 +12,22 @@ export function RefreshButton() {
   );
 }
 
+export function PushAndRefreshButton() {
+  const router = useRouter();
+  return (
+    <button
+      type="button"
+      id="push-and-refresh-button"
+      onClick={() => {
+        router.push("/refresh-during-navigation/destination");
+        router.refresh();
+      }}
+    >
+      Push and refresh
+    </button>
+  );
+}
+
 export function RedirectActionButton() {
   return (
     <button type="button" id="redirect-action-button" onClick={() => redirectToTarget()}>

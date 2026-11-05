@@ -120,7 +120,10 @@ function recordRscRequests(page: Page): string[] {
 test.describe("router.refresh() during an in-flight navigation", () => {
   // The reported case: a page polls router.refresh() while the user opens a
   // page that takes 2s to render. Each refresh used to cancel the navigation,
-  // so the slow page never opened.
+  // so the slow page never opened. Next.js does not cancel it either, but it
+  // never opens the page while refreshes keep starting faster than the server
+  // responds: it commits the destination only with the latest refresh's
+  // response. Here the navigation commits on its own response.
   test("a polling refresh does not cancel a slow navigation", async ({ page }) => {
     const readAborts = await recordRscAborts(page);
     await page.goto(`${BASE}${START}/polling`);
@@ -146,6 +149,8 @@ test.describe("router.refresh() during an in-flight navigation", () => {
     release(0);
 
     // The navigation commits on its own response, with its history entry.
+    // (Next.js commits the destination once, with the refresh's response,
+    // and replaces the history entry.)
     await expect(page).toHaveURL(`${BASE}${DESTINATION}`);
     await expect(page.locator("#destination-page")).toBeVisible();
     await expect.poll(() => started).toEqual([DESTINATION, DESTINATION]);
@@ -162,6 +167,31 @@ test.describe("router.refresh() during an in-flight navigation", () => {
     await page.goBack();
     await expect(page.locator("#start-page")).toBeVisible();
     await expect(page).toHaveURL(`${BASE}${START}`);
+    await expectClientNavigationsOnly();
+  });
+
+  // A refresh right after a push in the same task, e.g. after a mutation.
+  test("runs after a push() made in the same task and refreshes its destination", async ({
+    page,
+  }) => {
+    const { expectClientNavigationsOnly, readAborts } = await openStartPage(page);
+    const release = await holdRscRequests(page, DESTINATION);
+    const started = recordRscRequests(page);
+
+    await page.locator("#push-and-refresh-button").click();
+    await expect.poll(() => started).toEqual([DESTINATION]);
+    release(0);
+
+    await expect(page.locator("#destination-page")).toBeVisible();
+    await expect.poll(() => started).toEqual([DESTINATION, DESTINATION]);
+    const navigationRenderedAt = await page.locator("#destination-rendered-at").textContent();
+    release(1);
+    await expect(page.locator("#destination-rendered-at")).not.toHaveText(
+      navigationRenderedAt ?? "",
+    );
+    await expect(page).toHaveURL(`${BASE}${DESTINATION}`);
+    expect(started).toEqual([DESTINATION, DESTINATION]);
+    expect(await readAborts()).toEqual([]);
     await expectClientNavigationsOnly();
   });
 

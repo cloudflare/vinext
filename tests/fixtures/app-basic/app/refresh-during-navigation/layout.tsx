@@ -1,5 +1,10 @@
 import Link from "next/link";
-import { RedirectActionButton, RefreshButton, RevalidateActionButton } from "./refresh-button";
+import {
+  PushAndRefreshButton,
+  RedirectActionButton,
+  RefreshButton,
+  RevalidateActionButton,
+} from "./refresh-button";
 
 export default function RefreshDuringNavigationLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -17,7 +22,8 @@ export default function RefreshDuringNavigationLayout({ children }: { children: 
         <Link href="/old-school" prefetch={false} id="pages-link">
           Pages
         </Link>{" "}
-        <RefreshButton /> <RedirectActionButton /> <RevalidateActionButton />
+        <RefreshButton /> <PushAndRefreshButton /> <RedirectActionButton />{" "}
+        <RevalidateActionButton />
       </nav>
       {children}
     </main>

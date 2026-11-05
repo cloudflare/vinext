@@ -2167,9 +2167,6 @@ function bootstrapHydration(
     const navId = browserNavigationController.beginNavigation({
       refresh: navigationKind === "refresh",
     });
-    // A router.refresh() waits behind this navigation (or refresh) instead of
-    // superseding it.
-    const refreshQueueNavigation = refreshQueue.beginNavigation();
     const navigationCacheGeneration = clientNavigationCacheGeneration;
     discardedServerActionRefreshScheduler.markNavigationStart();
 
@@ -2239,6 +2236,9 @@ function bootstrapHydration(
           activeTraversalIntent?.historyState ?? window.history.state,
         ));
     const releaseNavigationInFlight = trackAppRouterNavigationInFlight();
+    // A router.refresh() waits behind this navigation (or refresh) instead of
+    // superseding it.
+    const refreshQueueNavigation = refreshQueue.beginNavigation();
     try {
       const shouldUsePendingRouterState = programmaticTransition;
       if (hasBrowserRouterState()) {

@@ -15,12 +15,22 @@ export type AppBrowserRefreshQueueNavigation = {
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router-instance.ts
  *
  * The queue releases once the navigation commits, without waiting for its
- * response to finish streaming. Next.js releases once the navigation reducer
- * resolves; both refresh the page the navigation landed on.
+ * response to finish streaming. Both refresh the page the navigation landed on.
  *
  * Deliberate differences from Next.js:
+ * - The navigation commits on its own response, with its history entry, and
+ *   the refresh then runs as a navigation of its own. Next.js starts the
+ *   refresh when the navigation's response arrives and commits the
+ *   destination once, with the refresh's response, replacing the navigation's
+ *   history entry. While refreshes keep starting faster than the server
+ *   responds (a polling page), Next.js never commits the navigation at all.
+ * - So the caller's useTransition is pending only until the navigation ahead
+ *   of a queued refresh commits, not until the refresh commits as in Next.js.
+ *   Keeping it pending would mean suspending a transition, and React renders
+ *   pending transitions together, so that would hold the navigation's commit
+ *   too: the single commit above.
  * - Refreshes queued behind one navigation run once, where Next.js sends a
- *   request for each.
+ *   request for each. The one request starts after all of them were made.
  * - A navigation that starts a document load drops the refresh queued behind
  *   it. Next.js still runs it, but here a refresh in the page being unloaded
  *   can fall back to a document load of its own and replace the pending one.
