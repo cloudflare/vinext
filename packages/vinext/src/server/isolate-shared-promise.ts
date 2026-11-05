@@ -32,9 +32,10 @@ import {
 function ignore(): void {}
 
 // The ES2022 lib vinext compiles against has no types for Promise.withResolvers
-// (ES2024), which every supported runtime has.
+// (ES2024). Node 20, still the default runtime of some deploy targets such as
+// Nitro's aws_amplify preset, lacks it; only workerd tags promises anyway.
 type PromiseWithResolversConstructor = PromiseConstructor & {
-  withResolvers<T>(): {
+  withResolvers?<T>(): {
     promise: Promise<T>;
     resolve: (value: T | PromiseLike<T>) => void;
     reject: (reason?: unknown) => void;
@@ -46,7 +47,9 @@ type PromiseWithResolversConstructor = PromiseConstructor & {
  * tag, so each request awaiting it resumes in its own context.
  */
 export function tagPromiseWithRequest<T>(promise: Promise<T>): Promise<T> {
-  const tagged = (Promise as PromiseWithResolversConstructor).withResolvers<T>();
+  const PromiseConstructor = Promise as PromiseWithResolversConstructor;
+  if (typeof PromiseConstructor.withResolvers !== "function") return promise;
+  const tagged = PromiseConstructor.withResolvers<T>();
   void promise.then(tagged.resolve, tagged.reject);
   return tagged.promise;
 }

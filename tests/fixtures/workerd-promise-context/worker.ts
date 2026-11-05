@@ -104,7 +104,7 @@ const clientReferences: Scenario = {
 // --- Requests ---------------------------------------------------------------
 
 const scenarios: Record<string, Scenario> = { routeModules, serverReferences, clientReferences };
-let started = false;
+let startedRun: string | null = null;
 let joined = 0;
 
 export default {
@@ -115,7 +115,7 @@ export default {
 
     switch (url.pathname) {
       case "/start": {
-        started = false;
+        startedRun = null;
         joined = 0;
         let open!: () => void;
         const gate = new Promise<void>((resolve) => {
@@ -126,14 +126,15 @@ export default {
         // priming loads settle and change what the compiled code assumed.
         const primed = scenario.prime();
         const created = scenario.start();
-        started = true;
+        // Joiners wait for this run's id, so none joins before the reset above.
+        startedRun = url.searchParams.get("run");
         // Settle the load from this request once both joiners await it.
         for (let i = 0; joined < 2 && i < 500; i++) await scheduler.wait(10);
         open();
         return Response.json({ primed, created, joined });
       }
       case "/started":
-        return new Response(String(started));
+        return new Response(String(startedRun === url.searchParams.get("run")));
       case "/join": {
         joined++;
         // Pending I/O of this request's own, so workerd does not cancel it as

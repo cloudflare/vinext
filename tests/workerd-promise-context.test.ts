@@ -119,14 +119,17 @@ describe("isolate-shared loads on the Cloudflare Workers runtime", () => {
   });
 
   async function get(pathname: string, scenario: string): Promise<Response> {
-    return worker!.dispatchFetch(`http://worker${pathname}?scenario=${scenario}`);
+    const url = new URL(pathname, "http://worker");
+    url.searchParams.set("scenario", scenario);
+    return worker!.dispatchFetch(url.href);
   }
 
   it.each(["routeModules", "serverReferences", "clientReferences"])(
     "resumes each request joining a %s load in its own context",
     async (scenario) => {
-      const start = get("/start", scenario);
-      while ((await (await get("/started", scenario)).text()) !== "true") {
+      const run = crypto.randomUUID();
+      const start = get(`/start?run=${run}`, scenario);
+      while ((await (await get(`/started?run=${run}`, scenario)).text()) !== "true") {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       const joins = [0, 1].map(async () => {

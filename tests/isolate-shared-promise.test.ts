@@ -47,6 +47,20 @@ describe("shareIsolatePromise", () => {
     await expect(ctx.waitUntil.mock.calls[0]![0]).resolves.toBeUndefined();
   });
 
+  // Node 20 has no Promise.withResolvers, and only workerd tags promises.
+  it("returns the promise itself where Promise.withResolvers is missing", () => {
+    const shared = Promise.resolve("value");
+    vi.stubGlobal(
+      "Promise",
+      Object.assign(function () {}, { withResolvers: undefined }),
+    );
+    try {
+      expect(shareIsolatePromise(shared, { waitUntil: vi.fn() })).toBe(shared);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   // Shims that are also bundled for the browser, such as next/dynamic, reach
   // the helper through this global on the server.
   it("publishes itself for shims that cannot import request state", () => {
