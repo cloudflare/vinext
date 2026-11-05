@@ -387,13 +387,11 @@ const browserNavigationController = createAppBrowserNavigationController({
   getRouteManifest: getBrowserRouteManifest,
   loadRouteManifest: loadNavigationRuntimeRouteManifest,
   navigateDocument: (href, mode) => {
-    // Every hard navigation the router starts loads here. A queued refresh of
-    // the page being unloaded would only race the load.
-    refreshQueue.dropQueuedRefresh();
     if (mpaNavigationTree) {
       mpaNavigationTree.enter(href, mode === "replace" ? "replace" : "push");
       return;
     }
+    refreshQueue.dropQueuedRefresh();
     navigateDocumentDirectly(href, mode);
   },
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
@@ -1334,6 +1332,10 @@ function performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode
   // mutation just enough for the old tree to commit the pending transition
   // signal before unload.
   mpaNavigationScheduler.navigate(window, href, historyUpdateMode);
+  // Every document load the router starts once mounted gets here, after React
+  // renders the MPA state. A queued refresh of the page being unloaded would
+  // only race the load.
+  refreshQueue.dropQueuedRefresh();
 }
 
 function AppRouterRedirectBridge({ children }: { children?: React.ReactNode }) {
@@ -1471,7 +1473,6 @@ function BrowserRoot({
     mpaNavigationTree = currentMpaNavigationTree;
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
-        refreshQueue.dropQueuedRefresh();
         setMpaNavigationState(href, historyUpdateMode);
         return waitForMpaNavigationRestore();
       },
@@ -2225,6 +2226,10 @@ function bootstrapHydration(
         ? (traversalIntent ?? historyController.resolveTraversalIntent(window.history.state))
         : null;
     let startedHardNavigation = false;
+    const noteStartedHardNavigation = (): void => {
+      startedHardNavigation = true;
+      markRefreshLeftPage();
+    };
     const performHardNavigationForScrollIntent = (
       targetHref: string,
       mode?: "assign" | "replace",
@@ -2237,8 +2242,7 @@ function bootstrapHydration(
         mode ?? (currentHistoryMode === "push" ? "assign" : "replace"),
       );
       if (didNavigate) {
-        startedHardNavigation = true;
-        markRefreshLeftPage();
+        noteStartedHardNavigation();
         browserNavigationController.abandonPendingBrowserRouterState(pendingRouterState);
       } else {
         clearAppNavigationFailureTarget(targetHref);
@@ -2595,7 +2599,7 @@ function bootstrapHydration(
             visibleCommitMode,
           });
           if (cachedRenderOutcome === "hard-navigate") {
-            startedHardNavigation = true;
+            noteStartedHardNavigation();
             browserNavigationController.abandonPendingBrowserRouterState(pendingRouterState);
           }
           if (cachedRenderOutcome === "no-commit") {
@@ -2730,11 +2734,15 @@ function bootstrapHydration(
                 targetHref: currentHref,
                 traversalIntent: activeTraversalIntent,
                 visibleCommitMode,
-              }).catch((error) => {
-                if (browserNavigationController.isCurrentNavigation(navId)) {
-                  console.error("[vinext] Optimistic RSC navigation error:", error);
-                }
-              });
+              })
+                .then((outcome) => {
+                  if (outcome === "hard-navigate") markRefreshLeftPage();
+                })
+                .catch((error) => {
+                  if (browserNavigationController.isCurrentNavigation(navId)) {
+                    console.error("[vinext] Optimistic RSC navigation error:", error);
+                  }
+                });
             }
           }
         }
@@ -3002,7 +3010,7 @@ function bootstrapHydration(
           visibleCommitMode,
         });
         if (renderOutcome === "hard-navigate") {
-          startedHardNavigation = true;
+          noteStartedHardNavigation();
           browserNavigationController.abandonPendingBrowserRouterState(pendingRouterState);
         }
         if (renderOutcome !== "committed") return;
