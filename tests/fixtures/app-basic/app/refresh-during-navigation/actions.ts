@@ -10,3 +10,7 @@ export async function redirectToTarget() {
 export async function revalidateStart() {
   revalidatePath("/refresh-during-navigation");
 }
+
+export async function redirectToPagesRoute() {
+  redirect("/old-school");
+}

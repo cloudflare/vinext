@@ -471,6 +471,18 @@ let mpaNavigationTree: {
   restore(): void;
 } | null = null;
 let mpaNavigationRestore: { promise: Promise<void>; resolve: () => void } | null = null;
+// router.refresh() calls waiting behind the App Router navigation in flight.
+const refreshQueue = createAppBrowserRefreshQueue();
+
+/**
+ * Starts a document load, and drops a router.refresh() queued behind the
+ * navigation in flight: refreshing the page being unloaded would race the load.
+ */
+function performHardNavigation(href: string, mode?: "assign" | "replace"): boolean {
+  const didNavigate = browserNavigationController.performHardNavigation(href, mode);
+  if (didNavigate) refreshQueue.dropQueuedRefresh();
+  return didNavigate;
+}
 
 // A navigation the document load replaces stays pending until unload, or until
 // bfcache restores this document and the navigation's transition can finish.
@@ -931,7 +943,7 @@ async function commitSameUrlNavigatePayload(
       !routeManifestLoaded &&
       browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)
     ) {
-      browserNavigationController.performHardNavigation(actionInitiation.href);
+      performHardNavigation(actionInitiation.href);
       return undefined;
     }
   }
@@ -1902,8 +1914,7 @@ function registerServerActionCallback(): void {
           clientRscCompatibilityId,
           commitSameUrlNavigatePayload,
           navigationPlanner,
-          performHardNavigation: (url, historyMode) =>
-            browserNavigationController.performHardNavigation(url, historyMode),
+          performHardNavigation: (url, historyMode) => performHardNavigation(url, historyMode),
           renderRedirectPayload(elements, target, actionInitiation, revalidation) {
             // Action redirects bypass navigateClientSide. Reset the previous
             // link's pending indicator when this action still owns navigation;
@@ -1915,9 +1926,6 @@ function registerServerActionCallback(): void {
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
             if (target.type === "push") saveScrollPosition();
-            // The action may have started during a refresh and holds its id;
-            // the redirect leaves the refreshed page all the same.
-            browserNavigationController.markNonRefreshNavigation(actionInitiation.navigationId);
             void renderNavigationPayload({
               actionType: target.type === "push" ? "navigate" : "replace",
               historyUpdateMode: target.type === "push" ? "push" : "replace",
@@ -1928,6 +1936,10 @@ function registerServerActionCallback(): void {
                 target.renderedPathAndSearch,
               ),
               navId: actionInitiation.navigationId,
+              // The action may have started during a refresh and holds its
+              // id; the redirect leaves the refreshed page all the same.
+              onCommittedState: () =>
+                browserNavigationController.markNonRefreshNavigation(actionInitiation.navigationId),
               operationLane: resolveServerActionOperationLane(revalidation),
               params: {},
               payload: Promise.resolve(elements),
@@ -1937,7 +1949,7 @@ function registerServerActionCallback(): void {
               scrollIntent: actionScrollIntent,
               targetHref: target.href,
             }).catch(() => {
-              browserNavigationController.performHardNavigation(target.href);
+              performHardNavigation(target.href);
             });
           },
           syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>
@@ -2161,7 +2173,6 @@ function bootstrapHydration(
   markInitialAppRouterBootstrapHydrated();
 
   const navigationAbortCoordinator = createAppBrowserNavigationAbortCoordinator();
-  const refreshQueue = createAppBrowserRefreshQueue();
 
   const navigateRsc: NavigationRuntimeNavigate = async function navigateRsc(
     href: string,
@@ -2218,7 +2229,7 @@ function bootstrapHydration(
       consumeAppRouterScrollIntent(scrollIntent ?? null);
       // Like Next.js's completeHardNavigation, only a push adds a history
       // entry; refresh, replace, and traversal load in place.
-      const didNavigate = browserNavigationController.performHardNavigation(
+      const didNavigate = performHardNavigation(
         targetHref,
         mode ?? (currentHistoryMode === "push" ? "assign" : "replace"),
       );

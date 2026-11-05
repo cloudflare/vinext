@@ -123,4 +123,23 @@ describe("app browser refresh queue", () => {
 
     expect(refresh).toHaveBeenCalledOnce();
   });
+
+  it("drops a queued or released refresh when a document load starts", () => {
+    const { flushTasks, queue } = createQueue();
+    const queued = vi.fn();
+    const released = vi.fn();
+    const first = queue.beginNavigation();
+    queue.queueRefresh(released);
+    first.settle();
+    queue.dropQueuedRefresh();
+    flushTasks();
+    expect(released).not.toHaveBeenCalled();
+
+    const second = queue.beginNavigation();
+    queue.queueRefresh(queued);
+    queue.dropQueuedRefresh();
+    second.settle();
+    flushTasks();
+    expect(queued).not.toHaveBeenCalled();
+  });
 });

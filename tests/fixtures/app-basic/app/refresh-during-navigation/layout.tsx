@@ -1,5 +1,6 @@
 import Link from "next/link";
 import {
+  PagesRedirectActionButton,
   PushAndRefreshButton,
   RedirectActionButton,
   RefreshButton,
@@ -23,7 +24,7 @@ export default function RefreshDuringNavigationLayout({ children }: { children: 
           Pages
         </Link>{" "}
         <RefreshButton /> <PushAndRefreshButton /> <RedirectActionButton />{" "}
-        <RevalidateActionButton />
+        <RevalidateActionButton /> <PagesRedirectActionButton />
       </nav>
       {children}
     </main>
