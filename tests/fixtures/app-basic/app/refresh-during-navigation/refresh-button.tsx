@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { redirectToTarget, revalidateStart } from "./actions";
+import { redirectToPagesRoute, redirectToTarget, revalidateStart } from "./actions";
 
 export function RefreshButton() {
   const router = useRouter();
@@ -32,6 +32,14 @@ export function RedirectActionButton() {
   return (
     <button type="button" id="redirect-action-button" onClick={() => redirectToTarget()}>
       Redirect action
+    </button>
+  );
+}
+
+export function PagesRedirectActionButton() {
+  return (
+    <button type="button" id="pages-redirect-action-button" onClick={() => redirectToPagesRoute()}>
+      Pages redirect action
     </button>
   );
 }

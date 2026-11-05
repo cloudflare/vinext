@@ -31,14 +31,15 @@ export type AppBrowserRefreshQueueNavigation = {
  *   too: the single commit above.
  * - Refreshes queued behind one navigation run once, where Next.js sends a
  *   request for each. The one request starts after all of them were made.
- * - A navigation that starts a document load drops the refresh queued behind
- *   it. Next.js still runs it, but here a refresh in the page being unloaded
+ * - A document load the router starts (for a navigation or a Server Action
+ *   redirect) drops the queued refresh. Next.js still runs it, but here a refresh in the page being unloaded
  *   can fall back to a document load of its own and replace the pending one.
  */
 export function createAppBrowserRefreshQueue(
   options: { queueTask?: (task: () => void) => void } = {},
 ): {
   beginNavigation(): AppBrowserRefreshQueueNavigation;
+  dropQueuedRefresh(): void;
   queueRefresh(refresh: () => void): boolean;
 } {
   const queueTask = options.queueTask ?? queueMicrotask;
@@ -75,6 +76,11 @@ export function createAppBrowserRefreshQueue(
         settle: () => end(navigation, true),
         drop: () => end(navigation, false),
       };
+    },
+    /** A document load started; drop the refresh waiting to run. */
+    dropQueuedRefresh() {
+      queuedRefresh = null;
+      releasedRefresh = null;
     },
     /**
      * Queues `refresh` behind the navigation in flight and returns true, or

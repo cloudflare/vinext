@@ -455,6 +455,48 @@ test.describe("router.refresh() during an in-flight navigation", () => {
     expect(started).toEqual([DESTINATION]);
   });
 
+  test("drops a refresh queued behind a navigation when a Server Action loads a new document", async ({
+    page,
+  }) => {
+    await openStartPage(page);
+    // Hold the Pages document the action redirects to, so the page being left
+    // stays alive while the navigation settles.
+    let documentRequested!: () => void;
+    const documentRequest = new Promise<void>((resolve) => {
+      documentRequested = resolve;
+    });
+    let releaseDocument!: () => void;
+    const documentReleased = new Promise<void>((resolve) => {
+      releaseDocument = resolve;
+    });
+    await page.route(
+      (url) => url.pathname === "/old-school",
+      async (route) => {
+        documentRequested();
+        await documentReleased;
+        await route.continue().catch(() => {});
+      },
+    );
+    const release = await holdRscRequests(page, DESTINATION);
+    const started = recordRscRequests(page);
+    const destinationEnded = waitForRscRequestEnd(page, DESTINATION);
+
+    await page.locator("#destination-link").click();
+    await expect.poll(() => started).toEqual([DESTINATION]);
+    await page.locator("#refresh-button").click();
+    await page.locator("#pages-redirect-action-button").click();
+    await documentRequest;
+    release(0);
+    await destinationEnded;
+    // A refresh released by the navigation would start straight after.
+    await page.waitForTimeout(500);
+    releaseDocument();
+
+    await expect(page).toHaveURL(`${BASE}/old-school`);
+    // No refresh of the page being unloaded.
+    expect(started).toEqual([DESTINATION]);
+  });
+
   // The router does not start this document load, so the refresh is not
   // dropped, as in Next.js; it runs in the page being left without replacing
   // the load. Unlike Next.js, where the link discards the navigation in
