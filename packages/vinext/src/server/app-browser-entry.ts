@@ -379,11 +379,17 @@ const historyController = new AppBrowserHistoryController({
   },
 });
 
+// router.refresh() calls waiting behind the App Router navigation in flight.
+const refreshQueue = createAppBrowserRefreshQueue();
+
 const browserNavigationController = createAppBrowserNavigationController({
   basePath: __basePath,
   getRouteManifest: getBrowserRouteManifest,
   loadRouteManifest: loadNavigationRuntimeRouteManifest,
   navigateDocument: (href, mode) => {
+    // Every hard navigation the router starts loads here. A queued refresh of
+    // the page being unloaded would only race the load.
+    refreshQueue.dropQueuedRefresh();
     if (mpaNavigationTree) {
       mpaNavigationTree.enter(href, mode === "replace" ? "replace" : "push");
       return;
@@ -471,18 +477,6 @@ let mpaNavigationTree: {
   restore(): void;
 } | null = null;
 let mpaNavigationRestore: { promise: Promise<void>; resolve: () => void } | null = null;
-// router.refresh() calls waiting behind the App Router navigation in flight.
-const refreshQueue = createAppBrowserRefreshQueue();
-
-/**
- * Starts a document load, and drops a router.refresh() queued behind the
- * navigation in flight: refreshing the page being unloaded would race the load.
- */
-function performHardNavigation(href: string, mode?: "assign" | "replace"): boolean {
-  const didNavigate = browserNavigationController.performHardNavigation(href, mode);
-  if (didNavigate) refreshQueue.dropQueuedRefresh();
-  return didNavigate;
-}
 
 // A navigation the document load replaces stays pending until unload, or until
 // bfcache restores this document and the navigation's transition can finish.
@@ -943,7 +937,7 @@ async function commitSameUrlNavigatePayload(
       !routeManifestLoaded &&
       browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)
     ) {
-      performHardNavigation(actionInitiation.href);
+      browserNavigationController.performHardNavigation(actionInitiation.href);
       return undefined;
     }
   }
@@ -1477,6 +1471,7 @@ function BrowserRoot({
     mpaNavigationTree = currentMpaNavigationTree;
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
+        refreshQueue.dropQueuedRefresh();
         setMpaNavigationState(href, historyUpdateMode);
         return waitForMpaNavigationRestore();
       },
@@ -1914,7 +1909,8 @@ function registerServerActionCallback(): void {
           clientRscCompatibilityId,
           commitSameUrlNavigatePayload,
           navigationPlanner,
-          performHardNavigation: (url, historyMode) => performHardNavigation(url, historyMode),
+          performHardNavigation: (url, historyMode) =>
+            browserNavigationController.performHardNavigation(url, historyMode),
           renderRedirectPayload(elements, target, actionInitiation, revalidation) {
             // Action redirects bypass navigateClientSide. Reset the previous
             // link's pending indicator when this action still owns navigation;
@@ -1949,7 +1945,7 @@ function registerServerActionCallback(): void {
               scrollIntent: actionScrollIntent,
               targetHref: target.href,
             }).catch(() => {
-              performHardNavigation(target.href);
+              browserNavigationController.performHardNavigation(target.href);
             });
           },
           syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>
@@ -2204,6 +2200,13 @@ function bootstrapHydration(
     let currentPrevNextUrl = previousNextUrlOverride;
     let redirectCount = redirectDepth;
     let detachedNavigationCommits = false;
+    // A refresh that redirects leaves the page, so once it commits (or loads
+    // a document) it ends a back/forward navigation's scroll restore like any
+    // other navigation.
+    let refreshLeftPage = false;
+    const markRefreshLeftPage = (): void => {
+      if (refreshLeftPage) browserNavigationController.markNonRefreshNavigation(navId);
+    };
     // The optimistic shell this navigation committed, if any.
     let optimisticShellElements: AppElements | null = null;
     const keepOptimisticShellMetadata = (
@@ -2229,12 +2232,13 @@ function bootstrapHydration(
       consumeAppRouterScrollIntent(scrollIntent ?? null);
       // Like Next.js's completeHardNavigation, only a push adds a history
       // entry; refresh, replace, and traversal load in place.
-      const didNavigate = performHardNavigation(
+      const didNavigate = browserNavigationController.performHardNavigation(
         targetHref,
         mode ?? (currentHistoryMode === "push" ? "assign" : "replace"),
       );
       if (didNavigate) {
         startedHardNavigation = true;
+        markRefreshLeftPage();
         browserNavigationController.abandonPendingBrowserRouterState(pendingRouterState);
       } else {
         clearAppNavigationFailureTarget(targetHref);
@@ -2534,11 +2538,7 @@ function bootstrapHydration(
             if (navigationKind === "traverse") {
               restoredBfcacheIds = null;
             }
-            if (navigationKind === "refresh") {
-              // A refresh that redirects leaves the page, so it ends a back/forward
-              // navigation's scroll restore like any other navigation.
-              browserNavigationController.markNonRefreshNavigation(navId);
-            }
+            if (navigationKind === "refresh") refreshLeftPage = true;
             currentHref = cachedFetchDecision.redirect.href;
             currentHistoryMode = cachedFetchDecision.redirect.historyUpdateMode;
             currentPrevNextUrl = cachedFetchDecision.redirect.previousNextUrl;
@@ -2578,6 +2578,7 @@ function bootstrapHydration(
             navigationInitiationState,
             navigationSnapshot: cachedNavigationSnapshot,
             navId,
+            onCommittedState: markRefreshLeftPage,
             operationLane: toOperationLane(navigationKind),
             params: cachedParams,
             payload: keepOptimisticShellMetadata(cachedPayload),
@@ -2716,6 +2717,7 @@ function bootstrapHydration(
                 navigationInitiationState,
                 navigationSnapshot: optimisticNavigationSnapshot,
                 navId,
+                onCommittedState: markRefreshLeftPage,
                 operationLane: toOperationLane(navigationKind),
                 params: optimisticPayload.params,
                 payload: Promise.resolve(optimisticPayload.elements),
@@ -2817,11 +2819,7 @@ function bootstrapHydration(
           if (navigationKind === "traverse") {
             restoredBfcacheIds = null;
           }
-          if (navigationKind === "refresh") {
-            // A refresh that redirects leaves the page, so it ends a back/forward
-            // navigation's scroll restore like any other navigation.
-            browserNavigationController.markNonRefreshNavigation(navId);
-          }
+          if (navigationKind === "refresh") refreshLeftPage = true;
           currentHref = liveFetchDecision.redirect.href;
           currentHistoryMode = liveFetchDecision.redirect.historyUpdateMode;
           currentPrevNextUrl = liveFetchDecision.redirect.previousNextUrl;
@@ -2979,6 +2977,7 @@ function bootstrapHydration(
           navId,
           onCommittedState: (state) => {
             committedState = state;
+            markRefreshLeftPage();
             // Once React has committed this payload, its RSC stream owns the
             // mounted tree even if a Suspense boundary is still consuming it.
             // A later navigation may supersede future cache publication, but
