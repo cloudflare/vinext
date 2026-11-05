@@ -21,17 +21,20 @@ const dottedDefinePatternCache = new WeakMap<LiteralDefines, RegExp | null>();
 
 /**
  * The entries of a Vite `define` map whose replacement is a JSON literal, such
- * as `process.env.NEXT_RUNTIME` or `process.env.NODE_ENV`.
+ * as `process.env.NEXT_RUNTIME` or `process.env.NODE_ENV`, or a raw primitive
+ * that Vite serializes the same way.
  */
 export function literalDefines(define: Record<string, unknown> | undefined): LiteralDefines {
   if (!define) return new Map();
   let defines = literalDefinesCache.get(define);
   if (defines) return defines;
   const entries = new Map<string, LiteralValue>();
-  for (const [key, replacement] of Object.entries(define)) {
-    if (typeof replacement !== "string") continue;
+  for (const [key, raw] of Object.entries(define)) {
     let value: unknown;
     try {
+      // Vite serializes non-string values itself (`define: { __DEV__: false }`).
+      const replacement = typeof raw === "string" ? raw : JSON.stringify(raw);
+      if (replacement === undefined) continue;
       value = JSON.parse(replacement);
     } catch {
       continue;

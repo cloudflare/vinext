@@ -134,6 +134,19 @@ describe("blankDefineDeadRequires", () => {
     expect(blanked).not.toContain("test-only");
   });
 
+  it("folds raw primitive define values that Vite serializes", () => {
+    const defines = literalDefines({ __DEV__: false, __COUNT__: 0, __NIL__: null });
+    const code = [
+      `if (__DEV__) require("dev-only");`,
+      `if (__COUNT__ === 1) require("count-one");`,
+      `const nil = __NIL__ !== null && require("nil-fallback");`,
+    ].join("\n");
+    const blanked = blankDefineDeadRequires(code, ID, defines, true)?.toString();
+    for (const specifier of ["dev-only", "count-one", "nil-fallback"]) {
+      expect(blanked).not.toContain(specifier);
+    }
+  });
+
   it("leaves require() calls whose condition is not a literal define", () => {
     const code = [
       `if (process.env.NEXT_PHASE === "phase-production-build") require("phase");`,
