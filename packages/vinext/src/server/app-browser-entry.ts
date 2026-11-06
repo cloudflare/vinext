@@ -3196,6 +3196,10 @@ function bootstrapHydration(
         // Only cancels a request still waiting for its response; a Flight body
         // React is already decoding has released its abort handle.
         navigationAbortCoordinator.abortActive();
+        // Like Next.js's restore action, this takes over the queue from the
+        // discarded navigation: a refresh queued behind it runs now, on the
+        // URL just written.
+        refreshQueue.beginNavigation().settle();
       }
     },
     flushCommittingNavigationUrl: () => {
