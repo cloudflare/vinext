@@ -2701,6 +2701,74 @@ describe("init — dependency installation", () => {
     expect(execCalls.some((c) => c.cmd.includes('"@vitejs/plugin-react@latest"'))).toBe(true);
   });
 
+  it("upgrades a declared @types/node below Vite 8's peer range before vite", async () => {
+    // Vite 8 peers on @types/node@^20.19.0 || >=22.12.0 (optional); npm stops with ERESOLVE on
+    // the 18.x that Next.js examples declare.
+    setupProject(tmpDir, {
+      router: "pages",
+      extraPkg: { devDependencies: { "@types/node": "^18.19.4" } },
+    });
+
+    const { execCalls, output } = await runInit(tmpDir);
+
+    const upgradeCall = execCalls.find((c) => c.cmd.includes('"@types/node@^22.12.0"'));
+    expect(upgradeCall?.cmd).toContain("-D");
+    const viteCall = execCalls.find((c) => c.cmd.includes('"vite"'));
+    expect(execCalls.indexOf(upgradeCall!)).toBeLessThan(execCalls.indexOf(viteCall!));
+    expect(output).toContain("  Upgrading devDependencies:\n    - @types/node@^22.12.0");
+  });
+
+  it("keeps an @types/node upgrade in dependencies when the project declares it there", async () => {
+    setupProject(tmpDir, {
+      router: "pages",
+      extraPkg: { dependencies: { "@types/node": "20.10.6" } },
+    });
+
+    const { execCalls, output } = await runInit(tmpDir);
+
+    const upgradeCall = execCalls.find((c) => c.cmd.includes('"@types/node@^22.12.0"'));
+    expect(upgradeCall).toBeDefined();
+    expect(upgradeCall!.cmd).not.toContain("-D");
+    expect(output).toContain("  Upgrading dependencies:\n    - @types/node@^22.12.0");
+  });
+
+  it("upgrades an installed @types/node 20.x below the floor of the peer range", async () => {
+    setupProject(tmpDir, {
+      router: "pages",
+      extraPkg: { devDependencies: { "@types/node": "^20.10.8" } },
+    });
+    setupFakePackage(tmpDir, "@types/node", "20.12.0");
+
+    const { execCalls } = await runInit(tmpDir);
+
+    expect(execCalls.some((c) => c.cmd.includes('"@types/node@^22.12.0"'))).toBe(true);
+  });
+
+  it.each([
+    ["^20.19.0", "20.19.5"],
+    ["^22.12.0", "22.15.0"],
+    ["^24", "24.1.0"],
+    ["latest", "26.6.6"],
+  ])("keeps a declared @types/node inside the peer range (%s)", async (declared, installed) => {
+    setupProject(tmpDir, {
+      router: "pages",
+      extraPkg: { devDependencies: { "@types/node": declared } },
+    });
+    setupFakePackage(tmpDir, "@types/node", installed);
+
+    const { execCalls } = await runInit(tmpDir);
+
+    expect(execCalls.some((c) => c.cmd.includes("@types/node"))).toBe(false);
+  });
+
+  it("leaves a project without @types/node alone", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    const { execCalls } = await runInit(tmpDir);
+
+    expect(execCalls.some((c) => c.cmd.includes("@types/node"))).toBe(false);
+  });
+
   it("keeps a declared @vitejs/plugin-react union whose installed match is supported", async () => {
     setupProject(tmpDir, {
       router: "pages",

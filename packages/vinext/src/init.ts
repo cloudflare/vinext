@@ -41,6 +41,7 @@ import {
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
 import { getPluginReactUpgradeDeps } from "./utils/plugin-react-version.js";
+import { getTypesNodeUpgrade } from "./utils/types-node-version.js";
 import { findPackageVersion, getReactUpgradeDeps } from "./utils/react-version.js";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
@@ -1071,6 +1072,37 @@ export async function init(options: InitOptions): Promise<InitResult> {
       } else {
         const added = addDependencyEntries(root, pluginReactUpgrade, { dev: true });
         devDependencyEntriesAdded.push(...added);
+      }
+    } catch (error) {
+      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
+      dependencyInstallNeedsApproval = true;
+    }
+  }
+
+  // A declared @types/node below Vite 8's optional peer range must move before vite installs, or npm
+  // stops with ERESOLVE and leaves the project half migrated.
+  const typesNodeUpgrade = getTypesNodeUpgrade(root);
+  if (typesNodeUpgrade) {
+    recordUpgrades([typesNodeUpgrade.spec]);
+    console.log(
+      `  ${terminalStyle.cyan(
+        terminalStyle.bold(
+          `Upgrading ${typesNodeUpgrade.dev ? "devDependencies" : "dependencies"}:`,
+        ),
+      )}`,
+    );
+    console.log(formatList([typesNodeUpgrade.spec], "    "));
+    try {
+      if (shouldInstall) {
+        const installOutput = await installDeps(root, [typesNodeUpgrade.spec], exec, {
+          dev: typesNodeUpgrade.dev,
+        });
+        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+      } else {
+        const added = addDependencyEntries(root, [typesNodeUpgrade.spec], {
+          dev: typesNodeUpgrade.dev,
+        });
+        (typesNodeUpgrade.dev ? devDependencyEntriesAdded : dependencyEntriesAdded).push(...added);
       }
     } catch (error) {
       if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
