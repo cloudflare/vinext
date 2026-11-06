@@ -3266,17 +3266,25 @@ function bootstrapHydration(
       return;
     }
     const snapshotNavigationId = browserNavigationController.beginNavigation();
-    if (
-      restoreHistoryStateSnapshot(
-        event.state,
-        snapshotNavigationId,
-        () => {
-          navigationAbortCoordinator.abortActive();
-          notifyAppRouterTransitionStart(href, "traverse");
-        },
-        isExternalHistoryEntry,
-      )
-    ) {
+    let settleSnapshotQueueNavigation = (): void => {};
+    const restoredSnapshot = restoreHistoryStateSnapshot(
+      event.state,
+      snapshotNavigationId,
+      () => {
+        navigationAbortCoordinator.abortActive();
+        // Like Next.js's restore action, this takes over the queue from the
+        // navigation it replaces, even one whose payload is still decoding. It
+        // does so before the restored tree commits, so a refresh or navigation
+        // its effects start queues behind it or takes over from it.
+        const queueNavigation = refreshQueue.beginNavigation();
+        settleSnapshotQueueNavigation = () => queueNavigation.settle();
+        notifyAppRouterTransitionStart(href, "traverse");
+      },
+      isExternalHistoryEntry,
+    );
+    // A refresh queued behind the replaced navigation runs now.
+    settleSnapshotQueueNavigation();
+    if (restoredSnapshot) {
       window.__VINEXT_RSC_PENDING__ = null;
       restoreSynchronousPopstateScrollPosition(
         {

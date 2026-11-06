@@ -337,6 +337,87 @@ test.describe("router.refresh() during an in-flight navigation", () => {
     await expectClientNavigationsOnly();
   });
 
+  // Back restores a snapshot over a navigation whose payload hasn't decoded,
+  // which the restore can no longer abort. Like Next.js's restore action, it
+  // takes over the queue, so the refresh runs at once on the restored page.
+  test("runs after a back navigation that restores a snapshot over an undecoded navigation", async ({
+    page,
+  }) => {
+    const releaseBodies = await withholdRscBodies(page, SLOW_COMMIT);
+    const { expectClientNavigationsOnly, readAborts } = await openStartPage(page);
+    const startRenderedAt = await page.locator("#start-rendered-at").textContent();
+    await page.locator("#destination-link").click();
+    await expect(page.locator("#destination-page")).toBeVisible();
+    const started = recordRscRequests(page);
+    const slowCommitEnded = waitForRscRequestEnd(page, SLOW_COMMIT);
+
+    const accepted = page.waitForResponse((response) =>
+      isAppRouterRscRequestForPath(response.request(), SLOW_COMMIT),
+    );
+    await page.locator("#slow-commit-link").click();
+    await accepted;
+    await page.locator("#refresh-button").click();
+    await page.evaluate(() => window.history.back());
+
+    // The refresh doesn't wait for the replaced navigation's payload.
+    await expect(page.locator("#start-page")).toBeVisible();
+    await expect.poll(() => started).toEqual([SLOW_COMMIT, START]);
+    await expect(page.locator("#start-rendered-at")).not.toHaveText(startRenderedAt ?? "");
+    await expect(page).toHaveURL(`${BASE}${START}`);
+
+    // The replaced navigation's payload decodes without committing.
+    await releaseBodies();
+    await slowCommitEnded;
+    await page.waitForTimeout(500);
+    expect(await page.locator("#slow-commit-page").count()).toBe(0);
+    await expect(page.locator("#start-page")).toBeVisible();
+    await expect(page).toHaveURL(`${BASE}${START}`);
+    expect(await readAborts()).toEqual([]);
+    await expectClientNavigationsOnly();
+  });
+
+  // The restore takes over the queue before the restored page commits, so a
+  // navigation the page starts on mount takes over from it in turn: a refresh
+  // then waits for that navigation instead of cancelling it.
+  test("queues a refresh behind a navigation the restored page starts on mount", async ({
+    page,
+  }) => {
+    const releaseBodies = await withholdRscBodies(page, SLOW_COMMIT);
+    const { expectClientNavigationsOnly, readAborts } = await openStartPage(page);
+    await page.locator("#destination-link").click();
+    await expect(page.locator("#destination-page")).toBeVisible();
+    const release = await holdRscRequests(page, REDIRECT_TARGET);
+    const started = recordRscRequests(page);
+
+    const accepted = page.waitForResponse((response) =>
+      isAppRouterRscRequestForPath(response.request(), SLOW_COMMIT),
+    );
+    await page.locator("#slow-commit-link").click();
+    await accepted;
+    await page.locator("#refresh-button").click();
+    await page.evaluate((href) => {
+      Reflect.set(window, "__replaceOnMount", href);
+      window.history.back();
+    }, REDIRECT_TARGET);
+
+    // The restored start page replaces the URL on mount.
+    await expect(page.locator("#start-page")).toBeVisible();
+    await expect.poll(() => started).toEqual([SLOW_COMMIT, REDIRECT_TARGET]);
+    await page.locator("#refresh-button").click();
+    await page.waitForTimeout(500);
+    expect(started).toEqual([SLOW_COMMIT, REDIRECT_TARGET]);
+
+    // Both refreshes run once, on the page the navigation lands on.
+    release(0);
+    release(1);
+    await expect(page.locator("#redirect-target-page")).toBeVisible();
+    await expect(page).toHaveURL(`${BASE}${REDIRECT_TARGET}`);
+    await expect.poll(() => started).toEqual([SLOW_COMMIT, REDIRECT_TARGET, REDIRECT_TARGET]);
+    await releaseBodies();
+    expect(await readAborts()).toEqual([]);
+    await expectClientNavigationsOnly();
+  });
+
   test("moves a queued refresh behind a newer navigation", async ({ page }) => {
     const { expectClientNavigationsOnly, readAborts } = await openStartPage(page);
     const releaseDestination = await holdRscRequests(page, DESTINATION);
@@ -382,9 +463,13 @@ test.describe("router.refresh() during an in-flight navigation", () => {
     await page.locator("#destination-link").click();
     await accepted;
     await page.locator("#refresh-button").click();
+    const refreshRequest = page.waitForRequest((request) =>
+      isAppRouterRscRequestForPath(request, START),
+    );
     await page.evaluate(() => window.history.pushState(null, "", "?shallow=1"));
 
     // The refresh doesn't wait for the discarded navigation's payload.
+    expect(new URL((await refreshRequest).url()).searchParams.get("shallow")).toBe("1");
     await expect.poll(() => started).toEqual([DESTINATION, START]);
     await expect(page.locator("#start-rendered-at")).not.toHaveText(renderedAt ?? "");
     await expect(page).toHaveURL(`${BASE}${START}?shallow=1`);
