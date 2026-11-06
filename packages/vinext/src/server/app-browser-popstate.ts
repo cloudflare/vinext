@@ -28,7 +28,6 @@ type BrowserPopstateRestoreDeps = {
 };
 
 type SynchronousPopstateScrollRestoreDeps = {
-  getActiveNavigationId: () => number;
   isLatestNonRefreshNavigation: (navId: number) => boolean;
   markScrollRestoreConsumed: (navId: number) => void;
   restorePopstateScrollPosition: RestoreScrollPosition;
@@ -38,11 +37,15 @@ function hasSavedScrollPosition(state: unknown): boolean {
   return Boolean(state && typeof state === "object" && "__vinext_scrollY" in state);
 }
 
+/**
+ * `navId` is the snapshot restore's own navigation: a layout effect in the
+ * restored tree can already have started a router.refresh() by now.
+ */
 export function restoreSynchronousPopstateScrollPosition(
   deps: SynchronousPopstateScrollRestoreDeps,
   state: unknown,
+  navId: number,
 ): void {
-  const navId = deps.getActiveNavigationId();
   deps.markScrollRestoreConsumed(navId);
   deps.restorePopstateScrollPosition(state, {
     shouldContinue: () => deps.isLatestNonRefreshNavigation(navId),

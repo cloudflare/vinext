@@ -8827,16 +8827,17 @@ describe("createPopstateRestoreHandler", () => {
     ).toBe(true);
   });
 
-  it("guards synchronous popstate scroll retry to the active navigation", () => {
+  it("guards synchronous popstate scroll retry to the snapshot navigation", () => {
     const scrollState = { __vinext_scrollY: 10 };
-    let activeNavigationId = 3;
+    // A layout effect in the restored tree already started a refresh (id 4),
+    // which doesn't end the snapshot navigation's scroll restore.
+    let latestNonRefreshNavigationId = 3;
     let consumedNavigationId: number | null = null;
     let shouldContinue: (() => boolean) | undefined;
 
     restoreSynchronousPopstateScrollPosition(
       {
-        getActiveNavigationId: () => activeNavigationId,
-        isLatestNonRefreshNavigation: (navId) => navId === activeNavigationId,
+        isLatestNonRefreshNavigation: (navId) => navId === latestNonRefreshNavigationId,
         markScrollRestoreConsumed: (navId) => {
           consumedNavigationId = navId;
         },
@@ -8846,12 +8847,13 @@ describe("createPopstateRestoreHandler", () => {
         },
       },
       scrollState,
+      3,
     );
 
     expect(consumedNavigationId).toBe(3);
     expect(shouldContinue?.()).toBe(true);
 
-    activeNavigationId = 4;
+    latestNonRefreshNavigationId = 5;
     expect(shouldContinue?.()).toBe(false);
   });
 
