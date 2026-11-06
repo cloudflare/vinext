@@ -25,6 +25,13 @@ function stylesheetHrefs(html: string): string[] {
   );
 }
 
+/** The hrefs of a document's stylesheet preload links. */
+function stylePreloadHrefs(html: string): string[] {
+  return (html.match(/<link\b[^>]*\brel="preload"[^>]*>/g) ?? [])
+    .filter((tag) => tag.includes('as="style"'))
+    .map((tag) => tag.match(/\bhref="([^"]+)"/)![1]!);
+}
+
 /** A document's modulepreload links, in document order. */
 function modulepreloadTags(html: string): string[] {
   return html.match(/<link\b[^>]*\brel="modulepreload"[^>]*>/g) ?? [];
@@ -42,13 +49,21 @@ function unnoncedModulepreloads(html: string): string[] {
   return modulepreloadTags(html).filter((tag) => !tag.includes('nonce="vinext-test-nonce"'));
 }
 
-/** A response's first chunk and its whole body. */
+/**
+ * A response's first flush and its whole body. The SSR transform writes `<head>`
+ * and the shell's body as separate chunks, which a read may return one at a time.
+ */
 async function readStream(url: string): Promise<{ first: string; html: string }> {
   const response = await fetch(url);
   expect(response.status).toBe(200);
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
-  const first = decoder.decode((await reader.read()).value, { stream: true });
+  let first = "";
+  while (!first.includes("<body")) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    first += decoder.decode(chunk.value, { stream: true });
+  }
   let html = first;
   for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
     html += decoder.decode(chunk.value, { stream: true });
@@ -327,6 +342,86 @@ describe("App Router production SSR route client reference preloads", () => {
       expect(winningRule(warm.first, `.css-group-${route}`)).toBe(winner);
     },
   );
+
+  describe("a client component that renders after the shell", () => {
+    it.each([
+      ["below loading.js", "/late-css/loading", ".late-loading-panel", "late-loading"],
+      ["below a Suspense boundary", "/late-css/suspense", ".late-suspense-panel", "late-suspense"],
+      ["below an async layout", "/late-css/nested/inner", ".late-nested-panel", "late-nested"],
+      ["on a cache-candidate render", "/late-css/isr", ".late-isr-panel", "late-isr"],
+    ])("links its stylesheet ahead of the fallback %s", async (_label, route, rule, testId) => {
+      const href = cssHref(rule);
+      const colds = await Promise.all([1, 2, 3].map(() => readStream(`${baseUrl}${route}`)));
+      const warm = await readStream(`${baseUrl}${route}`);
+
+      for (const { html } of [...colds, warm]) {
+        const linkAt = html.indexOf(`<link rel="stylesheet" href="${href}"`);
+        const fallbackAt = html.indexOf(`data-testid="${testId}-fallback"`);
+        expect(linkAt).toBeGreaterThanOrEqual(0);
+        expect(linkAt).toBeLessThan(html.indexOf("</head>"));
+        expect(fallbackAt).toBeGreaterThan(linkAt);
+        expect(html.indexOf(`data-testid="${testId}-panel"`)).toBeGreaterThan(fallbackAt);
+        expect(stylesheetHrefs(html).filter((linked) => linked === href)).toEqual([href]);
+        // React can't see this link, so it must not preload the same file too.
+        expect(stylePreloadHrefs(html)).not.toContain(href);
+      }
+    });
+
+    it("links its stylesheet when the response body is read after the render finishes", async () => {
+      const { importServerEntryModule } =
+        await import("../packages/vinext/src/server/prod-server.js");
+      const entry = await importServerEntryModule(path.join(fixtureDir, "dist/server/index.js"));
+      const response: Response = await entry.default(new Request(`${baseUrl}/late-css/loading`));
+      // The page renders in 200ms. React has written its shell by then.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const html = await response.text();
+
+      const linkAt = html.indexOf(
+        `<link rel="stylesheet" href="${cssHref(".late-loading-panel")}"`,
+      );
+      expect(linkAt).toBeGreaterThanOrEqual(0);
+      expect(linkAt).toBeLessThan(html.indexOf("</head>"));
+    });
+
+    it("links its stylesheet after the shell's server stylesheets", async () => {
+      const { html } = await readStream(`${baseUrl}/late-css/loading`);
+      const hrefs = stylesheetHrefs(html);
+      const serverIndex = hrefs.indexOf(cssHref(".late-layout"));
+      expect(serverIndex).toBeGreaterThanOrEqual(0);
+      expect(hrefs.indexOf(cssHref(".late-loading-panel"))).toBeGreaterThan(serverIndex);
+    });
+
+    it("leaves a stylesheet it shares with a Server Component where the server links it", async () => {
+      const { html } = await readStream(`${baseUrl}/late-css/shared`);
+      const href = cssHref(".late-shared{");
+      const tags = (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).filter((tag) =>
+        tag.includes(`href="${href}"`),
+      );
+
+      expect(tags).toHaveLength(1);
+      expect(tags[0]).toContain('data-precedence="vite-rsc/importer-resources"');
+    });
+
+    it("hints its scripts with the CSP nonce", async () => {
+      const { html } = await readStream(`${baseUrl}/late-css/loading`);
+      expect(modulepreloadHrefs(html)).toContain(clientFileHref(".js", "late-loading-panel"));
+      expect(unnoncedModulepreloads(html)).toEqual([]);
+    });
+
+    it("leaves a next/dynamic stylesheet to its boundary, under the dynamic precedence", async () => {
+      const href = cssHref(".late-dynamic-widget");
+      const { html } = await readStream(`${baseUrl}/late-css/dynamic`);
+      expect(html).toContain('data-testid="late-dynamic-fallback"');
+      expect(stylesheetHrefs(html)).not.toContain(href);
+      expect(html).toContain(`"${href}","dynamic"`);
+    });
+
+    it("links nothing a render that finishes within its shell doesn't use", async () => {
+      const { html } = await readStream(`${baseUrl}/late-css/shell`);
+      expect(html).toContain('data-testid="late-shell"');
+      expect(stylesheetHrefs(html)).not.toContain(cssHref(".late-shell-unused"));
+    });
+  });
 
   it("passes a top-level-await client module's function export as a prop", async () => {
     for (const label of ["cold", "warm"]) {

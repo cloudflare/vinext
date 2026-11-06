@@ -48,6 +48,8 @@ export type RouteClientReferences = {
    * which a render streams instead of waiting for.
    */
   async: readonly number[];
+  /** Each route pattern's references whose stylesheets a streaming render links up front. */
+  stylesheets: Readonly<Record<string, readonly number[]>>;
 };
 
 /** The client references a render loads, and those it streams instead of waiting for. */
@@ -58,6 +60,8 @@ export type RouteClientReferenceSet = {
    */
   references: string[];
   streamed: string[];
+  /** Those whose stylesheets a streaming render links up front. */
+  stylesheets: string[];
 };
 
 /**
@@ -84,14 +88,21 @@ export function resolveRouteClientReferences(
     for (const index of plan.files[file]!) indices.add(index);
   }
   const asyncIndices = new Set(plan.async);
+  const stylesheetIndices = new Set(
+    routePattern !== null && Object.hasOwn(plan.stylesheets, routePattern)
+      ? plan.stylesheets[routePattern]
+      : [],
+  );
   const references: string[] = [];
   const streamed: string[] = [];
+  const stylesheets: string[] = [];
   for (const index of indices) {
     const id = plan.references[index]!;
     references.push(id);
     if (asyncIndices.has(index)) streamed.push(id);
+    if (stylesheetIndices.has(index)) stylesheets.push(id);
   }
-  return { references, streamed };
+  return { references, streamed, stylesheets };
 }
 
 export function createClientReferencePreloader(

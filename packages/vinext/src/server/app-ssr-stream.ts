@@ -696,6 +696,20 @@ function replaceLinkTagsOutsideRawText(
   );
 }
 
+/** The stylesheets `html` links or inlines, by their hrefs as written. */
+export function collectStylesheetHrefs(html: string): Set<string> {
+  const hrefs = new Set<string>();
+  for (const [tag] of html.matchAll(/<(?:link|style)\b[^>]*>/g)) {
+    if (tag.startsWith("<style")) {
+      for (const href of getHtmlAttribute(tag, "data-href")?.split(/\s+/) ?? []) hrefs.add(href);
+    } else if (htmlAttributeHasToken(tag, "rel", "stylesheet")) {
+      const href = getHtmlAttribute(tag, "href");
+      if (href) hrefs.add(href);
+    }
+  }
+  return hrefs;
+}
+
 export function rewriteInlineCssStylesheetLinks(
   html: string,
   inlineCssManifest: InlineCssManifest | undefined,
@@ -834,7 +848,7 @@ function indexOfAsciiBytes(bytes: Uint8Array, pattern: Uint8Array, from: number)
  */
 export function createTickBufferedTransform(
   rscEmbed: RscEmbedTransform,
-  injectHTML: HtmlInsertion = "",
+  injectHTML: string | ((headHtml: string) => string) = "",
   injectAfterHeadOpenHTML: HtmlInsertion = "",
   inlineCssManifest?: InlineCssManifest,
   inlineCssPrependCss = "",
@@ -922,8 +936,8 @@ export function createTickBufferedTransform(
     suffixStripped = true;
     return chunk.slice(0, index) + chunk.slice(index + DOCUMENT_CLOSE_SUFFIX.length);
   };
-  const readInsertion = (): string =>
-    typeof injectHTML === "function" ? injectHTML() : injectHTML;
+  const readInsertion = (headHtml = ""): string =>
+    typeof injectHTML === "function" ? injectHTML(headHtml) : injectHTML;
   const readPreHeadInsertion = (): string =>
     typeof injectAfterHeadOpenHTML === "function"
       ? injectAfterHeadOpenHTML()
@@ -1030,7 +1044,7 @@ export function createTickBufferedTransform(
           const rawHeadEnd = headEnd - (working.length - rawHtml.length);
           const byteHeadEnd = indexOfAsciiBytes(unchangedBytes, HEAD_CLOSE_BYTES, rawHeadEnd);
           controller.enqueue(
-            encoder.encode(before + readInlineCssPrependFallback() + readInsertion()),
+            encoder.encode(before + readInlineCssPrependFallback() + readInsertion(before)),
           );
           controller.enqueue(
             stripDocumentCloseSuffixBytes(unchangedBytes, byteHeadEnd, rawHtml, rawHeadEnd),
@@ -1040,7 +1054,7 @@ export function createTickBufferedTransform(
         }
         const after = stripDocumentCloseSuffix(working.slice(headEnd));
         controller.enqueue(
-          encoder.encode(before + readInlineCssPrependFallback() + readInsertion() + after),
+          encoder.encode(before + readInlineCssPrependFallback() + readInsertion(before) + after),
         );
         injected = true;
         return;

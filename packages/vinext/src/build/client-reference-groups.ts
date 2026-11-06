@@ -213,7 +213,32 @@ export type ClientReferencePreloadPlan = {
    * a `next/dynamic` component, always loads first.
    */
   staticOnly: string[];
+  /** Each route pattern's references whose stylesheets a streaming render links up front. */
+  stylesheets: Map<string, string[]>;
 };
+
+/**
+ * The files that render with a route. Its error and access boundaries stay out:
+ * their stylesheets would apply to every page, and a streamed error renders
+ * them in the browser, whose loader waits for their stylesheets.
+ */
+function routeRenderedFileIds(route: ClientReferenceGroupRoute): string[] {
+  return [
+    route.pagePath,
+    ...route.layouts,
+    ...route.templates,
+    route.loadingPath,
+    ...(route.loadingPaths ?? []),
+    ...route.parallelSlots.flatMap((slot) => [
+      slot.pagePath,
+      slot.defaultPath,
+      slot.layoutPath,
+      ...(slot.configLayoutPaths ?? []),
+      slot.loadingPath,
+      ...(slot.loadingPaths ?? []),
+    ]),
+  ].filter((value): value is string => typeof value === "string");
+}
 
 /**
  * Plan which client references SSR loads before rendering each route. A route
@@ -244,7 +269,11 @@ export function collectClientReferencePreloadPlan(options: {
     return info;
   };
   const reached = new Set<string>();
-  const referencesReachedFrom = (roots: readonly string[], stopAt?: ReadonlySet<string>) => {
+  const referencesReachedFrom = (
+    roots: readonly string[],
+    stopAt?: ReadonlySet<string>,
+    followDynamicImports = true,
+  ) => {
     const references: string[] = [];
     const visited = new Set<string>();
     const stack = roots.map(canonicalize).reverse();
@@ -262,7 +291,9 @@ export function collectClientReferencePreloadPlan(options: {
       }
       const info = getModuleInfo(id);
       if (!info) continue;
-      const imports = [...info.importedIds, ...info.dynamicallyImportedIds];
+      const imports = followDynamicImports
+        ? [...info.importedIds, ...info.dynamicallyImportedIds]
+        : info.importedIds;
       for (let index = imports.length - 1; index >= 0; index--) stack.push(imports[index]!);
     }
     return references;
@@ -281,6 +312,7 @@ export function collectClientReferencePreloadPlan(options: {
     return index;
   };
   const routes = new Map<string, number[]>();
+  const stylesheets = new Map<string, string[]>();
   const interceptFiles: string[] = [];
   for (const route of options.routes) {
     const indices = inRenderOrder(
@@ -292,6 +324,13 @@ export function collectClientReferencePreloadPlan(options: {
     ).map(fileIndex);
     // Patterns are unique, but a duplicate must still preload both routes.
     routes.set(route.pattern, [...new Set([...(routes.get(route.pattern) ?? []), ...indices])]);
+    // Static imports only: `next/dynamic` links its own stylesheets.
+    stylesheets.set(route.pattern, [
+      ...new Set([
+        ...(stylesheets.get(route.pattern) ?? []),
+        ...referencesReachedFrom(inRenderOrder(routeRenderedFileIds(route)), undefined, false),
+      ]),
+    ]);
     for (const intercept of [
       ...route.parallelSlots.flatMap((slot) => slot.interceptingRoutes),
       ...route.siblingIntercepts,
@@ -342,7 +381,7 @@ export function collectClientReferencePreloadPlan(options: {
   const staticOnly = [...new Set(files.flat())].filter(
     (id) => !always.has(id) && !dynamicallyReached.has(id),
   );
-  return { always: [...always], files, routes, routeless, staticOnly };
+  return { always: [...always], files, routes, routeless, staticOnly, stylesheets };
 }
 
 /** Export names an importer uses from a module, or `"*"` for all of them. */
