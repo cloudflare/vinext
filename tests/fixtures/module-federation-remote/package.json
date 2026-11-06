@@ -1,0 +1,16 @@
+{
+  "name": "module-federation-remote-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:"
+  },
+  "devDependencies": {
+    "@module-federation/vinext": "^0.2.0",
+    "@vitejs/plugin-react": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

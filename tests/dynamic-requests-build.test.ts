@@ -183,11 +183,12 @@ describe("App Router dynamic requests", () => {
   });
 
   it("does not parse modules the prescan skips", async () => {
-    const parseAst = vi.fn<typeof import("vite").parseAst>();
-    vi.doMock("vite", async (importOriginal) => {
-      const actual = await importOriginal<typeof import("vite")>();
-      parseAst.mockImplementation(actual.parseAst);
-      return { ...actual, parseAst };
+    type AstUtils = typeof import("../packages/vinext/src/plugins/ast-utils.js");
+    const parseProgram = vi.fn<AstUtils["parseProgram"]>();
+    vi.doMock("../packages/vinext/src/plugins/ast-utils.js", async (importOriginal) => {
+      const actual = await importOriginal<AstUtils>();
+      parseProgram.mockImplementation(actual.parseProgram);
+      return { ...actual, parseProgram };
     });
     try {
       const pluginSpecifier = "../packages/vinext/src/plugins/ignore-dynamic-requests.js?parse";
@@ -197,11 +198,11 @@ describe("App Router dynamic requests", () => {
         /* @vite-ignore */ pluginSpecifier
       );
       expect(transform(`const a = require("package");`, "/app/page.ts")).toBeNull();
-      expect(parseAst).not.toHaveBeenCalled();
+      expect(parseProgram).not.toHaveBeenCalled();
       expect(transform("require(request)", "/app/page.ts")).not.toBeNull();
-      expect(parseAst).toHaveBeenCalledOnce();
+      expect(parseProgram).toHaveBeenCalledOnce();
     } finally {
-      vi.doUnmock("vite");
+      vi.doUnmock("../packages/vinext/src/plugins/ast-utils.js");
     }
   });
 

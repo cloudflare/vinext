@@ -9,7 +9,9 @@
     "not_found_handling": "none",
     // Expose static assets to the Worker via env.ASSETS so the image
     // optimization handler can fetch source images programmatically.
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    // Public files under /protected/ reach the Worker so middleware gates them.
+    "run_worker_first": ["/protected/*"]
   },
   // Cloudflare Images binding for next/image optimization.
   // Enables resize, format negotiation (AVIF/WebP), and quality transforms

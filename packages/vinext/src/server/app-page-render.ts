@@ -4,8 +4,11 @@ import type { NavigationContext } from "vinext/shims/navigation";
 import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
+import { getAppPageLayoutGate } from "./app-page-layout-gate.js";
 import { hasDigest } from "./app-rsc-errors.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -18,14 +21,17 @@ import {
 import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,
+  resolveAppPageCaughtNotFoundBoundaries,
+  resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
+  resolveAppPageSpecialErrorStoredHeaders,
   teeAppPageRscStreamForCapture,
   type AppPageFontPreload,
   type AppPageSpecialError,
-  type LayoutClassificationOptions,
 } from "./app-page-execution.js";
-import { probeAppPageBeforeRender } from "./app-page-probe.js";
+import { createAppPageRscRenderStatusResolver } from "./app-page-rsc-render-status.js";
 import {
+  applyClientStaleTimeHeader,
   applyEdgeRuntimeHeader,
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
@@ -36,6 +42,7 @@ import {
   type AppPageResponseTiming,
 } from "./app-page-response.js";
 import {
+  buildAppPageHtmlDocumentResponse,
   buildAppPageLinkHeader,
   createAppPageFontData,
   createAppPageRscErrorTracker,
@@ -45,26 +52,13 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
+import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
   type ArtifactCompatibilityEnvelope,
 } from "./artifact-compatibility.js";
-import {
-  buildCacheVariantWithRouteBudget,
-  buildRenderObservation,
-  buildRenderRequestApiObservations,
-  createStaticLayoutArtifactReuseDecision,
-  DEFAULT_CACHE_VARIANT_BUDGET,
-  type StaticLayoutCacheProofOutputScope,
-} from "./cache-proof.js";
-import type {
-  ClientReuseManifestEntry,
-  ClientReuseManifestParseResult,
-  ClientReuseManifestSkipDisposition,
-  ClientReuseManifestTraceFields,
-} from "./client-reuse-manifest.js";
 import {
   applyCdnResponseHeaders,
   isCdnResponsePolicyHeader,
@@ -72,36 +66,37 @@ import {
   NO_STORE_CACHE_CONTROL,
 } from "./cache-control.js";
 import {
-  createClientReuseSkipTransportPlan,
-  createStaticLayoutClientReuseArtifactCompatibility,
-  createStaticLayoutClientReusePayloadHash,
-  createStaticLayoutClientReuseRouteId,
-  crossCheckClientReuseManifestEntryWithCache,
-} from "./skip-cache-proof.js";
-import {
   createAppPageHtmlOutputScope,
   createAppPageRenderObservation,
   createAppPageRscOutputScope,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
-import type {
-  AppLayoutParamAccessTracker,
-  StaticLayoutObservationSkipRejection,
-} from "./app-layout-param-observation.js";
-import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
 import { isRenderDynamicLatched, peekDynamicUsage } from "vinext/shims/headers";
 import {
   bindRequestContext,
   preserveFullyBufferedBodyMetadata,
 } from "vinext/shims/unified-request-context";
-import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
+import { setCacheStateHeaders } from "./cache-headers.js";
+import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_RSC_COMPLETION_METADATA_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+} from "./headers.js";
+import {
+  applyPrerenderCacheLifeHeader,
+  applyPrerenderCacheTagsHeader,
+} from "./prerender-cache-life-header.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
 import { traceResponseStartWithCompletion } from "./response-start-tracing.js";
-import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
 import {
+  copyLinkHeaderProvenance,
+  getFrameworkLinkHeader,
+} from "./app-response-header-provenance.js";
+import {
+  getRouteCacheabilityCaptureOptions,
   isRouteCacheabilityEvaluation,
   recordRouteCacheabilityClientTraceMetadataMarker,
 } from "vinext/shims/cacheability-classification";
@@ -120,6 +115,19 @@ type AppPageRequestCacheLife = {
 };
 
 type AppPageRenderableElement = ReactNode | Readonly<Record<string, ReactNode>>;
+
+type AppPageSpecialErrorRenderOptions = {
+  /**
+   * The document may be stored in place of the page's, so like a cache
+   * candidate's render it must not carry the request's query.
+   */
+  isCacheCandidate?: boolean;
+  /**
+   * The page's own document, in which parallel slot boundaries caught the
+   * error, to send in place of a fallback page.
+   */
+  caughtDocument?: Response;
+};
 
 type PreparedAppPageElement =
   | { element: AppPageRenderableElement; response?: never }
@@ -161,8 +169,6 @@ type RenderAppPageLifecycleOptionsBase = {
   peekRequestCacheLife?: () => AppPageRequestCacheLife | null;
   getDraftModeCookieHeader: () => string | null | undefined;
   handlerStart: number;
-  hasCustomGlobalError?: boolean;
-  hasLoadingBoundary: boolean;
   dynamicStaleTimeSeconds?: number;
   isDynamicError: boolean;
   isDraftMode: boolean;
@@ -182,9 +188,12 @@ type RenderAppPageLifecycleOptionsBase = {
   isCacheCandidate?: boolean;
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
+  /** PPR routes send every RSC response as a 200. */
+  isRoutePPREnabled?: boolean;
   isSpeculativePrerender?: boolean;
+  /** Wait for the whole document before its first byte, as a prerender does. */
+  renderWholeDocument?: boolean;
   isProduction: boolean;
-  probePageBeforeRender?: boolean;
   omitPendingDynamicCacheState?: boolean;
   isRscRequest: boolean;
   traceOperation?: "prerender" | "render";
@@ -201,7 +210,6 @@ type RenderAppPageLifecycleOptionsBase = {
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
   interceptionId?: string | null;
-  layoutCount: number;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   middlewareContext: AppPageMiddlewareContext;
   navigationParams: Record<string, unknown>;
@@ -211,8 +219,6 @@ type RenderAppPageLifecycleOptionsBase = {
   abortPprFallbackShell?: () => void;
   rootParams?: RootParams;
   peekRenderObservationState?: () => AppPageRenderObservationState;
-  probeLayoutAt: (layoutIndex: number) => unknown;
-  probePage: () => unknown;
   expireSeconds?: number;
   formState?: ReactFormState | null;
   revalidateSeconds: number | null;
@@ -220,11 +226,10 @@ type RenderAppPageLifecycleOptionsBase = {
     error: unknown,
     errorOrigin: "rsc" | "ssr",
   ) => Promise<Response | null>;
-  renderLayoutSpecialError: (
+  renderPageSpecialError: (
     specialError: AppPageSpecialError,
-    layoutIndex: number,
+    renderOptions?: AppPageSpecialErrorRenderOptions,
   ) => Promise<Response>;
-  renderPageSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   renderToReadableStream: (
     element: ReactNode | AppOutgoingElements,
     options: { onError: AppPageBoundaryOnError; signal?: AbortSignal },
@@ -234,18 +239,11 @@ type RenderAppPageLifecycleOptionsBase = {
     options: { onError: AppPageBoundaryOnError; signal?: AbortSignal },
   ) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
   routePattern: string;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   scriptNonce?: string;
-  clientReuseManifest?: ClientReuseManifestParseResult;
-  skipDisposition?: ClientReuseManifestSkipDisposition;
   mountedSlotsHeader?: string | null;
   renderedPathAndSearch?: string | null;
   renderMode?: AppRscRenderMode;
   waitUntil?: (promise: Promise<void>) => void;
-  // Per-layout observation tracker. Constructed in dispatch, consumed by the
-  // skip transport planner to reject layouts that are unsafe for static reuse.
-  layoutParamAccess?: AppLayoutParamAccessTracker;
-  classification?: LayoutClassificationOptions | null;
 };
 
 type RenderAppPageLifecycleOptions = RenderAppPageLifecycleOptionsBase &
@@ -343,16 +341,21 @@ function applyRequestCacheLife(options: {
  * static, draft mode, `force-dynamic`, `revalidate = 0`, or a dynamic API read
  * before the response left the render. Responses that leave the render before
  * its response policy, such as error boundaries and special errors, get the
- * same header as the normal render.
+ * same header as the normal render. One not yet known dynamic is never stored
+ * either, and its body can still reach a dynamic API after its headers leave,
+ * so it is sent like a dynamic render (see resolveUnstoredEarlyResponseCacheControl
+ * for the responses that aren't).
  */
 export function applyIneligibleRouteCachePolicy(
   response: Response,
   options: Pick<
     RenderAppPageLifecycleOptions,
+    | "dynamicStaleTimeSeconds"
     | "isDraftMode"
     | "isDynamicError"
     | "isForceDynamic"
     | "isForceStatic"
+    | "isPrerender"
     | "isProduction"
     | "isProgressiveActionRender"
     | "isRscRequest"
@@ -362,23 +365,55 @@ export function applyIneligibleRouteCachePolicy(
     | "revalidateSeconds"
     | "scriptNonce"
   >,
+  requestCacheLife: AppPageRequestCacheLife | null = null,
 ): Response {
-  const cacheControl = resolveEarlyResponseCacheControl(options);
-  if (!cacheControl) return response;
+  const isRscRedirect = options.isRscRequest && response.headers.has(VINEXT_RSC_REDIRECT_HEADER);
+  const cacheControl =
+    resolveEarlyResponseCacheControl(options) ??
+    (isRscRedirect ? null : resolveUnstoredEarlyResponseCacheControl(response, options));
+  if (!cacheControl) {
+    // A layout's redirect answers once the layouts above it rendered, so a
+    // static RSC redirect carries their cacheLife stale bound like a
+    // prerender. As in Next.js, a known-dynamic redirect carries only
+    // `staleTimes.dynamic`.
+    const staleTimeSeconds = isRscRedirect
+      ? resolveClientStaleTimeSeconds(requestCacheLife)
+      : undefined;
+    if (staleTimeSeconds === undefined) return response;
+    const stamped = cloneForStamping(response);
+    applyClientStaleTimeHeader(stamped.headers, staleTimeSeconds);
+    return stamped;
+  }
+  // A streamed RSC redirect from a known-dynamic render carries the
+  // `staleTimes.dynamic` bound, so a prefetched redirect is not replayed past it.
+  const dynamicStaleTimeSeconds = isRscRedirect
+    ? (options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds())
+    : undefined;
   // Middleware's own cache policy wins, as in the normal response builders.
   // Only keep what this response already carries from it.
   const middlewarePolicy = [...(options.middlewareContext.headers ?? [])].filter(
     ([name, value]) => isCdnResponsePolicyHeader(name) && response.headers.get(name) === value,
   );
-  if (middlewarePolicy.some(([name]) => name === "cache-control")) return response;
-  // Some early responses have immutable headers, so stamp a copy.
+  const keepsMiddlewareCacheControl = middlewarePolicy.some(([name]) => name === "cache-control");
+  if (keepsMiddlewareCacheControl && dynamicStaleTimeSeconds === undefined) return response;
+  const stamped = cloneForStamping(response);
+  if (!keepsMiddlewareCacheControl) {
+    applyCdnResponseHeaders(stamped.headers, { cacheControl });
+    for (const [name, value] of middlewarePolicy) stamped.headers.set(name, value);
+  }
+  if (dynamicStaleTimeSeconds !== undefined) {
+    stamped.headers.set(VINEXT_DYNAMIC_STALE_TIME_HEADER, String(dynamicStaleTimeSeconds));
+  }
+  return stamped;
+}
+
+/** Some early responses have immutable headers, so stamp a copy. */
+function cloneForStamping(response: Response): Response {
   const stamped = preserveFullyBufferedBodyMetadata(
     response,
     new Response(response.body, response as ResponseInit),
   );
   copyLinkHeaderProvenance(response.headers, stamped.headers);
-  applyCdnResponseHeaders(stamped.headers, { cacheControl });
-  for (const [name, value] of middlewarePolicy) stamped.headers.set(name, value);
   return stamped;
 }
 
@@ -404,6 +439,28 @@ function resolveEarlyResponseCacheControl(
     options.revalidateSeconds === 0 ||
     (!ignoresDynamicUsage && (options.peekDynamicUsage?.() ?? peekDynamicUsage()));
   return isKnownDynamic ? uncacheable : null;
+}
+
+/**
+ * The normal render can still become a cache entry, so it sends its pending
+ * policy until the stream proves it static. An early response never does, and
+ * nothing checks it again, so one with a body takes the never-cache header
+ * unless it already carries a policy, such as middleware's. A force-static or
+ * dynamic = "error" render can't read the request, and dev and the build's
+ * prerender, which reads `no-store` as a dynamic render, keep no policy.
+ */
+function resolveUnstoredEarlyResponseCacheControl(
+  response: Response,
+  options: Parameters<typeof applyIneligibleRouteCachePolicy>[1],
+): string | null {
+  return options.isProduction &&
+    options.isPrerender !== true &&
+    !options.isForceStatic &&
+    !options.isDynamicError &&
+    response.body !== null &&
+    !response.headers.has("cache-control")
+    ? NEVER_CACHE_CONTROL
+    : null;
 }
 
 function resolveAppPageCacheWriteRevalidateSeconds(options: {
@@ -445,241 +502,6 @@ function createAppPageArtifactCompatibility(
     deploymentVersion: process.env.__VINEXT_BUILD_ID ?? null,
     rootBoundaryId,
   });
-}
-
-function readStringMetadata(
-  element: Readonly<Record<string, unknown>>,
-  key: string,
-): string | null {
-  const value = element[key];
-  return typeof value === "string" ? value : null;
-}
-
-function createStaticLayoutOutputScope(input: {
-  artifactCompatibility: ArtifactCompatibilityEnvelope;
-  element: Readonly<Record<string, unknown>>;
-  layoutId: string;
-}): StaticLayoutCacheProofOutputScope | null {
-  const routeId = readStringMetadata(input.element, AppElementsWire.keys.route);
-  if (routeId === null) return null;
-
-  return {
-    kind: "layout",
-    layoutId: input.layoutId,
-    rootBoundaryId: input.artifactCompatibility.rootBoundaryId,
-    routeId,
-  };
-}
-
-function createRenderAndSendSkipDisposition(): ClientReuseManifestSkipDisposition {
-  return {
-    code: "SKIP_MODEL_DISABLED",
-    enabled: false,
-    mode: "renderAndSend",
-  };
-}
-
-function rejectStaticLayoutObservation(
-  entry: ClientReuseManifestEntry,
-  code: StaticLayoutObservationSkipRejection["code"],
-  fields: ClientReuseManifestTraceFields = {},
-): ReturnType<typeof crossCheckClientReuseManifestEntryWithCache> {
-  return {
-    kind: "rejected",
-    rejection: {
-      code,
-      entryId: entry.id,
-      fields,
-    },
-    skipDisposition: createRenderAndSendSkipDisposition(),
-  };
-}
-
-function rejectUnsafeStaticLayoutObservation(
-  entry: ClientReuseManifestEntry,
-  layoutParamAccess: AppLayoutParamAccessTracker | undefined,
-): ReturnType<typeof crossCheckClientReuseManifestEntryWithCache> | null {
-  // getLayoutObservation always returns an observation (defaults to
-  // completeness:"unknown" for missing/unknown layouts), so the optional-chain
-  // is the only path that produces a falsy value — this guards the missing-
-  // tracker case, not a missing observation.
-  const observation = layoutParamAccess?.getLayoutObservation(entry.id);
-  if (!observation) {
-    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE");
-  }
-
-  const observationRejection = getStaticLayoutObservationSkipRejection(observation);
-  if (observationRejection) {
-    return rejectStaticLayoutObservation(
-      entry,
-      observationRejection.code,
-      observationRejection.fields,
-    );
-  }
-
-  return null;
-}
-
-function createRenderLifecycleSkipDisposition(input: {
-  artifactCompatibility: ArtifactCompatibilityEnvelope | undefined;
-  cleanPathname: string;
-  clientReuseManifest: ClientReuseManifestParseResult | undefined;
-  element: ReactNode | Readonly<Record<string, ReactNode>>;
-  isRscRequest: boolean;
-  layoutFlags: Readonly<Record<string, "s" | "d">>;
-  layoutParamAccess: AppLayoutParamAccessTracker | undefined;
-}): ClientReuseManifestSkipDisposition | undefined {
-  if (!input.isRscRequest || input.clientReuseManifest === undefined) {
-    return undefined;
-  }
-  const clientReuseManifest = input.clientReuseManifest;
-  if (clientReuseManifest.kind !== "parsed" || clientReuseManifest.manifest.entries.length === 0) {
-    return undefined;
-  }
-  if (!isAppElementsRecord(input.element) || input.artifactCompatibility === undefined) {
-    return {
-      code: "SKIP_MODEL_DISABLED",
-      enabled: false,
-      mode: "renderAndSend",
-    };
-  }
-  const element = input.element;
-  const artifactCompatibility = input.artifactCompatibility;
-
-  const staticLayoutIds = new Set(
-    Object.entries(input.layoutFlags)
-      .filter(([, flag]) => flag === "s")
-      .map(([layoutId]) => layoutId),
-  );
-  const plan = createClientReuseSkipTransportPlan({
-    manifest: clientReuseManifest,
-    verifyEntry(entry) {
-      if (
-        entry.kind !== "layout" ||
-        !staticLayoutIds.has(entry.id) ||
-        AppElementsWire.parseElementKey(entry.id)?.kind !== "layout"
-      ) {
-        return crossCheckClientReuseManifestEntryWithCache({
-          artifact: {
-            compatibility: artifactCompatibility,
-            invalidation: { kind: "unknown" },
-            payloadHash: null,
-          },
-          cacheDecision: null,
-          entry,
-        });
-      }
-
-      const currentOutput = createStaticLayoutOutputScope({
-        artifactCompatibility,
-        element,
-        layoutId: entry.id,
-      });
-      if (currentOutput === null) {
-        return crossCheckClientReuseManifestEntryWithCache({
-          artifact: {
-            compatibility: artifactCompatibility,
-            invalidation: { kind: "unknown" },
-            payloadHash: null,
-          },
-          cacheDecision: null,
-          entry,
-        });
-      }
-      const observationRejection = rejectUnsafeStaticLayoutObservation(
-        entry,
-        input.layoutParamAccess,
-      );
-      if (observationRejection) {
-        return observationRejection;
-      }
-      const candidateRouteId = createStaticLayoutClientReuseRouteId(entry.id);
-      const candidateOutput: StaticLayoutCacheProofOutputScope = {
-        ...currentOutput,
-        routeId: candidateRouteId,
-      };
-
-      const candidateVariant = buildCacheVariantWithRouteBudget({
-        budget: DEFAULT_CACHE_VARIANT_BUDGET,
-        dimensions: [],
-        output: candidateOutput,
-        routeBudget: {
-          routeId: candidateRouteId,
-          variantCacheKeys: [],
-        },
-      });
-      const skipArtifactCompatibility =
-        candidateVariant.kind === "variant"
-          ? createStaticLayoutClientReuseArtifactCompatibility({
-              artifactCompatibility,
-              layoutId: entry.id,
-              rootBoundaryId: candidateOutput.rootBoundaryId,
-              routeId: candidateOutput.routeId,
-              variantCacheKey: candidateVariant.variant.cacheKey,
-            })
-          : artifactCompatibility;
-      const cacheDecision = createStaticLayoutArtifactReuseDecision({
-        candidateArtifactCompatibility: skipArtifactCompatibility,
-        // Static layout classification plus the per-layout observation gate
-        // above are the authority for this synthetic cache proof. Before a
-        // layout reaches this point, skip has already rejected param-scoped
-        // layouts, finite-revalidate segment configs, dynamic usage, request API
-        // reads, cacheLife(), unstable_cache(), cache-tagged/cacheable fetches,
-        // and dynamic fetches.
-        candidateObservation: buildRenderObservation({
-          boundaryOutcome: { kind: "success" },
-          cacheability: "public",
-          cacheTags: [],
-          completeness: "complete",
-          dynamicFetches: [],
-          output: candidateOutput,
-          pathTags: [input.cleanPathname],
-          // Invariant: reaching this point requires staticLayoutIds.has(entry.id),
-          // and a layout that observed any request API is flagged "d" by
-          // isLayoutObservationDynamic (isAppLayoutObservationUnsafeForStaticReuse
-          // rejects requestApis.length > 0) and excluded from staticLayoutIds. So
-          // the observed request-API set is necessarily empty here. Hardcoded
-          // rather than read back from the per-layout observation so that a future
-          // reordering of the classification gate cannot feed stale request-API
-          // reads into this synthetic cache proof.
-          requestApis: buildRenderRequestApiObservations({
-            completeness: "complete",
-            observed: [],
-          }),
-        }),
-        candidateVariant,
-        currentArtifactCompatibility: skipArtifactCompatibility,
-        currentOutput,
-      });
-
-      return crossCheckClientReuseManifestEntryWithCache({
-        artifact: {
-          compatibility: skipArtifactCompatibility,
-          invalidation: { kind: "valid" },
-          payloadHash:
-            candidateVariant.kind === "variant"
-              ? createStaticLayoutClientReusePayloadHash({
-                  artifactCompatibility: skipArtifactCompatibility,
-                  layoutId: entry.id,
-                  rootBoundaryId: candidateOutput.rootBoundaryId,
-                  routeId: candidateOutput.routeId,
-                  variantCacheKey: candidateVariant.variant.cacheKey,
-                })
-              : null,
-        },
-        cacheDecision,
-        entry,
-      });
-    },
-  });
-
-  return plan.skipDisposition;
-}
-
-function isSkipTransportEnabled(
-  skipDisposition: ClientReuseManifestSkipDisposition | undefined,
-): boolean {
-  return skipDisposition?.enabled === true;
 }
 
 /**
@@ -822,16 +644,17 @@ async function renderAppPageLifecycleImpl(
   // Request dynamic state is consumptive, but both cache finalization and the
   // streamed client completion marker need the final answer. Keep the first
   // positive observation for this render so whichever branch drains first
-  // cannot hide it from the other.
+  // cannot hide it from the other. A negative answer is never kept: the
+  // client's branch can end before the render does, as when the client
+  // disconnects, and the capture's render may still turn dynamic after that.
   let dynamicUsageObserved = false;
-  let dynamicUsageFinalized = false;
   const isCacheCandidateHtmlRender =
     options.isCacheCandidate === true && options.isPrerender !== true && !options.isRscRequest;
   // HTML renders that decide whether the page is static also read the
   // request's dynamic latch: a candidate's store decision, the Worker's probe
   // and admission, and the build prerender. The latch sees usage in child
-  // scopes that never reach this render's flag: the layout probe, and SSR, where
-  // a client page reads its searchParams. A candidate's SSR useSearchParams()
+  // scopes that never reach this render's flag, such as SSR, where a client
+  // page reads its searchParams. A candidate's SSR useSearchParams()
   // gate also opens with the real query once the render latches dynamic.
   // PPR fallback shells discard their warmup render's usage and keep their
   // client page query untracked, so they don't read it.
@@ -858,49 +681,6 @@ async function renderAppPageLifecycleImpl(
     if (!dynamicUsageObserved) dynamicUsageObserved = readDynamicUsage();
     return dynamicUsageObserved;
   };
-  const finalizeRenderDynamicUsage = (): boolean => {
-    if (!dynamicUsageFinalized) {
-      consumeRenderDynamicUsage();
-      dynamicUsageFinalized = true;
-    }
-    return dynamicUsageObserved;
-  };
-  const configuredProbePageBeforeRender = options.probePageBeforeRender ?? options.isRscRequest;
-  const probePageBeforeRender =
-    options.isRscRequest ||
-    (configuredProbePageBeforeRender && !(options.peekDynamicUsage?.() ?? false));
-  const preRenderResult = await probeAppPageBeforeRender({
-    hasLoadingBoundary: options.hasLoadingBoundary,
-    probePageBeforeRender,
-    skipProbes: options.pprFallbackShellSignal !== undefined,
-    layoutCount: options.layoutCount,
-    probeLayoutAt(layoutIndex) {
-      return options.probeLayoutAt(layoutIndex);
-    },
-    probePage() {
-      return options.probePage();
-    },
-    renderLayoutSpecialError(specialError, layoutIndex) {
-      return options.renderLayoutSpecialError(specialError, layoutIndex);
-    },
-    renderPageSpecialError(specialError) {
-      return options.renderPageSpecialError(specialError);
-    },
-    resolveSpecialError: resolveAppPageSpecialError,
-    runWithSuppressedHookWarning(probe) {
-      return options.runWithSuppressedHookWarning(probe);
-    },
-    classification: options.classification,
-  });
-  if (preRenderResult.response) {
-    return applyIneligibleRouteCachePolicy(preRenderResult.response, options);
-  }
-
-  const layoutFlags = preRenderResult.layoutFlags;
-
-  // Render the CANONICAL element. The outgoing payload carries per-layout
-  // static/dynamic flags under `__layoutFlags` so the client can later tell
-  // which layouts are safe to skip on subsequent navigations.
   const artifactCompatibility = createAppPageArtifactCompatibility(
     options.element,
     options.routePattern,
@@ -920,33 +700,23 @@ async function renderAppPageLifecycleImpl(
     rootBoundaryId,
     routePattern: options.routePattern,
   });
-  const skipDisposition =
-    options.skipDisposition ??
-    createRenderLifecycleSkipDisposition({
-      artifactCompatibility,
-      cleanPathname: options.cleanPathname,
-      clientReuseManifest: options.clientReuseManifest,
-      element: options.element,
-      isRscRequest: options.isRscRequest,
-      layoutFlags,
-      layoutParamAccess: options.layoutParamAccess,
-    });
-  const shouldBypassRscCacheForSkipTransport =
-    options.isRscRequest && isSkipTransportEnabled(skipDisposition);
-  const shouldBypassRscCache =
-    shouldBypassRscCacheForSkipTransport || options.bypassInterceptionContextCache === true;
+  // A payload that leaves out the layouts its client holds is that client's
+  // alone, so it's never stored or sent with shared cache headers.
+  const isPartialPayload =
+    options.isRscRequest &&
+    isAppElementsRecord(options.element) &&
+    Object.hasOwn(options.element, AppElementsWire.keys.skippedLayoutIds);
+  const shouldBypassRscCache = options.bypassInterceptionContextCache === true || isPartialPayload;
   const dynamicStaleTimeSeconds =
     options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
     element: options.element,
-    layoutFlags,
     ...(dynamicStaleTimeSeconds !== undefined &&
     options.isPrerender !== true &&
     !options.isForceStatic
       ? { dynamicStaleTimeSeconds }
       : {}),
     ...(artifactCompatibility ? { artifactCompatibility } : {}),
-    skipDisposition: options.isRscRequest ? skipDisposition : undefined,
   });
 
   const compileEnd = options.isProduction ? undefined : performance.now();
@@ -961,6 +731,14 @@ async function renderAppPageLifecycleImpl(
     options.routePattern,
     errorContextOverrides,
   );
+  // A client navigation's response waits for the layouts above the first
+  // loading boundary, as their redirect() answers it through a header.
+  const layoutGate =
+    options.isRscRequest &&
+    options.isPrerender !== true &&
+    options.pprFallbackShellSignal === undefined
+      ? getAppPageLayoutGate(options.element)
+      : null;
   const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
     if (renderSpan) recordAppPageRenderError(renderSpan, error);
     return baseOnError(error, requestInfo, errorContext);
@@ -995,10 +773,45 @@ async function renderAppPageLifecycleImpl(
     pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStream(rscStream));
   }
 
+  if (layoutGate) {
+    // A branch read only while waiting tells the gate when the render ends,
+    // completed or failed, before every held layout renders.
+    const [heldStream, watchedStream] = rscStream.tee();
+    rscStream = heldStream;
+    const watchedReader = watchedStream.getReader();
+    const renderEnded = (async () => {
+      while (!(await watchedReader.read()).done);
+    })();
+    const layoutFailure = await layoutGate.wait(
+      (layoutId) =>
+        isAppElementsRecord(outgoingElement) && Object.hasOwn(outgoingElement, layoutId),
+      renderEnded,
+    );
+    void watchedReader.cancel().catch(() => {});
+    const layoutSpecialError = layoutFailure
+      ? resolveAppPageSpecialError(layoutFailure.error)
+      : null;
+    if (layoutFailure && layoutSpecialError) {
+      // This response replaces the render, which classifies it.
+      void rscStream.cancel().catch(() => {});
+      const response = await options.renderPageSpecialError(
+        layoutSpecialError.kind === "http-access-fallback"
+          ? { ...layoutSpecialError, layoutIndex: layoutFailure.layoutIndex }
+          : layoutSpecialError,
+      );
+      return applyIneligibleRouteCachePolicy(
+        response,
+        options,
+        options.peekRequestCacheLife?.() ?? options.getRequestCacheLife(),
+      );
+    }
+  }
+
   let revalidateSeconds = options.revalidateSeconds;
   let expireSeconds = options.expireSeconds;
   const shouldWaitForAllReady =
-    options.isPrerender === true && options.isSpeculativePrerender !== true;
+    (options.isPrerender === true && options.isSpeculativePrerender !== true) ||
+    options.renderWholeDocument === true;
   const shouldReadRequestCacheLifeForPrerender = options.isPrerender === true;
   // A cache candidate's cacheLife can still lower its lifetime after headers,
   // including under the default `revalidate = false`.
@@ -1043,7 +856,119 @@ async function renderAppPageLifecycleImpl(
     capturedRscDataRef.value = readAppPageBinaryStream(rscCapture.sideStream);
   }
 
+  // The navigation cache metadata of a document's done script. It runs after
+  // the RSC embed drains, so its peeks observe the completed render's minimum.
+  // Peek, not consume — the cache-write closure owns the consuming read.
+  const resolveInitialNavigationCacheMetadata = (
+    dynamicUsed: boolean,
+    requestCacheLife: AppPageRequestCacheLife | null | undefined,
+  ): InitialNavigationCacheMetadata => {
+    let kind: "dynamic" | "static";
+    if (options.isForceStatic) {
+      kind = "static";
+    } else if (options.isForceDynamic || dynamicUsed) {
+      kind = "dynamic";
+    } else {
+      const observation = options.peekRenderObservationState?.();
+      kind =
+        observation && (observation.dynamicFetches.length > 0 || observation.requestApis.length > 0)
+          ? "dynamic"
+          : "static";
+    }
+    const staleTimeSeconds = resolveClientStaleTimeSeconds(requestCacheLife);
+    return {
+      kind,
+      // Unlike the RSC header, the done script never emits the pending
+      // marker, so there is no 30s floor to fall back on: a render that
+      // turned dynamic must carry the config bound even when the
+      // speculative capture was still armed, or the cacheLife claim
+      // becomes the only bound on reusing dynamic output.
+      ...(kind === "dynamic" &&
+      dynamicStaleTimeSeconds !== undefined &&
+      options.isPrerender !== true
+        ? { dynamicStaleTimeSeconds }
+        : {}),
+      ...(staleTimeSeconds === undefined ? {} : { staleTimeSeconds: Math.floor(staleTimeSeconds) }),
+    };
+  };
+
   if (options.isRscRequest) {
+    // A stored RSC render takes the status of its document's shell, as in
+    // Next.js, which renders HTML beside RSC for a cache entry.
+    const capturedRscData = capturedRscDataRef.value;
+    const resolvesRscRenderStatus =
+      options.isProduction &&
+      shouldCaptureRscForCacheMetadata &&
+      capturedRscData !== null &&
+      options.isPrerender !== true &&
+      options.isRoutePPREnabled !== true;
+    // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+    // miss for a page's own payload renders the page's document from it, as an
+    // HTML request whose render may be stored renders it. A variant's payload
+    // (a prefetch shell, an interception) isn't the one an HTML request
+    // stores, and a document with a nonce is never stored.
+    const isPageDocumentRender =
+      options.isCacheCandidate === true &&
+      !options.scriptNonce &&
+      !options.mountedSlotsHeader &&
+      !options.interceptionContext &&
+      !options.interceptionId &&
+      (options.renderMode === undefined || options.renderMode === APP_RSC_RENDER_MODE_NAVIGATION);
+    // An edge adapter keeps no origin page entries, so only one that stores
+    // the document beside the completed response gets it.
+    const cdnCacheAdapter = getCdnCacheAdapter();
+    const captureAdmittedDocument =
+      resolvesRscRenderStatus && isPageDocumentRender && !cdnCacheAdapter.ownsBackgroundRevalidation
+        ? cdnCacheAdapter.captureAppPageDocument?.()
+        : undefined;
+    const rendersDocument =
+      isPageDocumentRender &&
+      (cdnCacheAdapter.ownsBackgroundRevalidation || captureAdmittedDocument !== undefined);
+    const resolveRscRenderStatus = resolvesRscRenderStatus
+      ? createAppPageRscRenderStatusResolver({
+          basePath: options.basePath,
+          capturedRscData,
+          ...(rendersDocument
+            ? {
+                document: {
+                  clientTraceMetadata: options.clientTraceMetadata,
+                  // Admission waits for the document, so it gives it up at its
+                  // own deadline.
+                  ...(captureAdmittedDocument
+                    ? { deadlineAt: getRouteCacheabilityCaptureOptions()?.captureDeadlineAt }
+                    : {}),
+                  getFontData: () =>
+                    createAppPageFontData({
+                      getLinks: options.getFontLinks,
+                      getPreloads: options.getFontPreloads,
+                      getStyles: options.getFontStyles,
+                    }),
+                  getInitialNavigationCacheMetadata: () =>
+                    resolveInitialNavigationCacheMetadata(
+                      peekDynamicUsage(),
+                      options.peekRequestCacheLife?.(),
+                    ),
+                  mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
+                  onSsrError: createAppPageSsrErrorHandler(
+                    options.createRscOnErrorHandler(options.cleanPathname, options.routePattern, {
+                      ...errorContextOverrides,
+                      renderSource: "server-rendering",
+                    }),
+                    rscErrorTracker.isCapturedError,
+                  ),
+                  reactMaxHeadersLength: options.reactMaxHeadersLength,
+                },
+              }
+            : {}),
+          getCapturedSpecialError: rscErrorTracker.getCapturedSpecialError,
+          getCapturedSpecialErrors: rscErrorTracker.getCapturedSpecialErrors,
+          isForceStatic: options.isForceStatic,
+          loadSsrHandler: options.loadSsrHandler,
+          navigationContext: options.getNavigationContext(),
+          rootParams: options.rootParams,
+          routePattern: options.routePattern,
+        })
+      : undefined;
     let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
     if (shouldWaitForAllReady) {
       await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
@@ -1058,27 +983,31 @@ async function renderAppPageLifecycleImpl(
     }
 
     const dynamicUsedDuringBuild = consumeRenderDynamicUsage();
-    // When skip transport is enabled, omit cacheState because the response is a
-    // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
-    // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
-    const rscResponsePolicy = shouldBypassRscCache
-      ? { cacheControl: NO_STORE_CACHE_CONTROL }
-      : resolveAppPageRscResponsePolicy({
-          dynamicUsedDuringBuild,
-          isDraftMode: options.isDraftMode,
-          isDynamicError: options.isDynamicError,
-          isForceDynamic: options.isForceDynamic,
-          isForceStatic: options.isForceStatic,
-          isProduction: options.isProduction,
-          isStaticEligible: options.isStaticEligible,
-          expireSeconds,
-          revalidateSeconds,
-        });
+    // An unverified interception context or a partial payload omits
+    // cacheState, as the response is not a shared-cache MISS/HIT artifact. The
+    // absence also keeps finalizeAppPageRscCacheResponse from overwriting
+    // no-store. A partial payload only comes from a render that's never
+    // stored, so it keeps that render's uncacheable header.
+    const rscResponsePolicy = isPartialPayload
+      ? { cacheControl: resolveUncacheableCacheControl(options.isProduction) }
+      : shouldBypassRscCache
+        ? { cacheControl: NO_STORE_CACHE_CONTROL }
+        : resolveAppPageRscResponsePolicy({
+            dynamicUsedDuringBuild,
+            isDraftMode: options.isDraftMode,
+            isDynamicError: options.isDynamicError,
+            isForceDynamic: options.isForceDynamic,
+            isForceStatic: options.isForceStatic,
+            isProduction: options.isProduction,
+            isStaticEligible: options.isStaticEligible,
+            expireSeconds,
+            revalidateSeconds,
+          });
     if (shouldBypassRscCache) {
       options.isrDebug?.(
-        options.bypassInterceptionContextCache === true
-          ? "RSC cache write skipped (unverified interception context)"
-          : "RSC cache write skipped (skip transport payload)",
+        isPartialPayload
+          ? "RSC cache write skipped (partial payload)"
+          : "RSC cache write skipped (unverified interception context)",
         options.cleanPathname,
       );
     }
@@ -1139,7 +1068,7 @@ async function renderAppPageLifecycleImpl(
       rscResponse.body
         ? new Response(
             appendRscCompletionMetadata(rscResponse.body, () => {
-              if (!finalizeRenderDynamicUsage()) return undefined;
+              if (!consumeRenderDynamicUsage()) return undefined;
               const completedServerStaleTimeSeconds = resolveClientStaleTimeSeconds(
                 options.peekRequestCacheLife?.(),
               );
@@ -1177,9 +1106,22 @@ async function renderAppPageLifecycleImpl(
       capturedRscDataPromise:
         options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
       bypassInterceptionContextCache: options.bypassInterceptionContextCache,
+      captureAdmittedDocument,
       cleanPathname: options.cleanPathname,
-      consumeDynamicUsage: finalizeRenderDynamicUsage,
+      consumeDynamicUsage: consumeRenderDynamicUsage,
       consumeRenderObservationState,
+      createHtmlRenderObservation(input) {
+        return createAppPageRenderObservation({
+          boundaryOutcome: { kind: "success" },
+          cacheability: "public",
+          cacheTags: input.cacheTags,
+          cleanPathname: options.cleanPathname,
+          completeness: "complete",
+          output: htmlOutputScope,
+          params: options.navigationParams,
+          state: input.state,
+        });
+      },
       createRscRenderObservation(input) {
         return createAppPageRenderObservation({
           boundaryOutcome: { kind: "success" },
@@ -1200,6 +1142,7 @@ async function renderAppPageLifecycleImpl(
         return readRequestCacheLifeForCachePolicy(options);
       },
       isrDebug: options.isrDebug,
+      isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
@@ -1207,6 +1150,7 @@ async function renderAppPageLifecycleImpl(
       mountedSlotsHeader: options.mountedSlotsHeader,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
+      resolveRscRenderStatus,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
       expireSeconds,
       isStaticEligible: options.isStaticEligible,
@@ -1241,6 +1185,258 @@ async function renderAppPageLifecycleImpl(
   let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
   let dynamicUsedDuringHtmlRender = false;
   let renderEnd: number | undefined;
+  let shellSpecialError: AppPageSpecialError | null = null;
+
+  const resolveHtmlCacheWrite = (dynamicUsedDuringRender: boolean) => {
+    const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({
+      dynamicUsedDuringRender,
+      isProgressiveActionRender: options.isProgressiveActionRender === true,
+      hasScriptNonce: Boolean(options.scriptNonce),
+      isDraftMode: options.isDraftMode,
+      isDynamicError: options.isDynamicError,
+      isForceDynamic: options.isForceDynamic,
+      isForceStatic: options.isForceStatic,
+      isProduction: options.isProduction,
+      isStaticEligible: options.isStaticEligible,
+      expireSeconds,
+      revalidateSeconds,
+    });
+    const shouldSpeculativelyWriteCache =
+      options.isProduction &&
+      shouldCaptureRscForCacheMetadata &&
+      !options.isEdgeRuntime &&
+      revalidateSeconds === null &&
+      !options.isDynamicError &&
+      !options.isForceStatic &&
+      !options.scriptNonce &&
+      options.isProgressiveActionRender !== true &&
+      !dynamicUsedDuringRender;
+    return {
+      htmlResponsePolicy,
+      shouldWriteHtmlCache: htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache,
+    };
+  };
+
+  const finalizeHtmlCacheWrite = (
+    response: Response,
+    write: {
+      capturedDynamicUsageBeforeContextCleanup: () => boolean;
+      headers?: Record<string, string>;
+      htmlResponsePolicy: ReturnType<typeof resolveAppPageHtmlResponsePolicy>;
+      linkHeader: string | null;
+      status?: number;
+    },
+  ): Response =>
+    finalizeAppPageHtmlCacheResponse(response, {
+      bypassInterceptionContextCache: options.bypassInterceptionContextCache,
+      capturedDynamicUsageBeforeContextCleanup: write.capturedDynamicUsageBeforeContextCleanup,
+      capturedRscDataPromise: capturedRscDataRef.value,
+      cleanPathname: options.cleanPathname,
+      clientTraceMetadataMarker,
+      consumeDynamicUsage: consumeRenderDynamicUsage,
+      consumeRenderObservationState,
+      createHtmlRenderObservation(input) {
+        return createAppPageRenderObservation({
+          boundaryOutcome: { kind: "success" },
+          cacheability: "public",
+          cacheTags: input.cacheTags,
+          cleanPathname: options.cleanPathname,
+          completeness: "complete",
+          output: htmlOutputScope,
+          params: options.navigationParams,
+          state: input.state,
+        });
+      },
+      createRscRenderObservation(input) {
+        return createAppPageRenderObservation({
+          boundaryOutcome: { kind: "success" },
+          cacheability: "public",
+          cacheTags: input.cacheTags,
+          cleanPathname: options.cleanPathname,
+          completeness: "complete",
+          output: rscOutputScope,
+          params: options.navigationParams,
+          state: input.state,
+        });
+      },
+      getPageTags() {
+        return options.getPageTags();
+      },
+      getRequestCacheLife() {
+        return readRequestCacheLifeForCachePolicy(options);
+      },
+      headers: write.headers,
+      isrDebug: options.isrDebug,
+      isrHtmlKey: options.isrHtmlKey,
+      isrRscKey: options.isrRscKey,
+      isrSet: options.isrSet,
+      interceptionContext: options.interceptionContext,
+      interceptionId: options.interceptionId,
+      omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
+      preserveClientResponseHeaders: !write.htmlResponsePolicy.shouldWriteToCache,
+      expireSeconds,
+      isStaticEligible: options.isStaticEligible,
+      revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
+        isDynamicError: options.isDynamicError,
+        isForceStatic: options.isForceStatic,
+        isStaticEligible: options.isStaticEligible,
+        revalidateSeconds,
+      }),
+      linkHeader: write.linkHeader,
+      status: write.status,
+      waitUntil(cachePromise) {
+        options.waitUntil?.(cachePromise);
+      },
+    });
+
+  // Whether a special error that escaped the shell may be stored, before its
+  // response renders.
+  const mayStoreShellSpecialError = (): boolean =>
+    options.isProduction &&
+    shouldCaptureRscForCacheMetadata &&
+    options.isPrerender !== true &&
+    capturedRscDataRef.value !== null &&
+    resolveEarlyResponseCacheControl(options) === null;
+
+  // Whether a prerender writes a special error that escaped the shell, as
+  // Next.js's build does. A speculative or fallback-shell prerender doesn't.
+  const mayPrerenderShellSpecialError = (): boolean =>
+    options.isPrerender === true &&
+    options.isSpeculativePrerender !== true &&
+    options.pprFallbackShellSignal === undefined &&
+    shouldCaptureRscForCacheMetadata &&
+    capturedRscDataRef.value !== null &&
+    resolveEarlyResponseCacheControl(options) === null;
+  type PrerenderCacheMetadata = {
+    cacheTags: string[];
+    requestCacheLife: AppPageRequestCacheLife | null;
+  };
+  const readPrerenderCacheMetadata = (): PrerenderCacheMetadata => ({
+    cacheTags: options.getPageTags(),
+    requestCacheLife: readRequestCacheLifeForPrerender(options),
+  });
+  // A redirect's metadata is read while the request context is alive, since
+  // its response clears it. A boundary's is read once it has rendered.
+  let prerenderedSpecialError: {
+    dynamicUsed: boolean;
+    redirectMetadata: PrerenderCacheMetadata | null;
+  } | null = null;
+
+  // The special-error response replaces the page's document. prerender.ts
+  // writes it with its status and `location` when the header marks it, and
+  // the page's RSC payload from an RSC request.
+  const finalizePrerenderedShellSpecialErrorResponse = async (
+    response: Response,
+    specialError: AppPageSpecialError,
+    prerendered: NonNullable<typeof prerenderedSpecialError>,
+  ): Promise<Response> => {
+    if (response.status !== specialError.statusCode) {
+      return applyIneligibleRouteCachePolicy(response, options);
+    }
+    // The boundary renders as its document streams, so its tagged fetches,
+    // cacheLife() and dynamic API use are known once the document is read.
+    const body = await response.arrayBuffer();
+    const { cacheTags, requestCacheLife } =
+      prerendered.redirectMetadata ?? readPrerenderCacheMetadata();
+    ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
+      expireSeconds,
+      requestCacheLife,
+      revalidateSeconds,
+    }));
+    const { htmlResponsePolicy } = resolveHtmlCacheWrite(
+      prerendered.dynamicUsed || consumeRenderDynamicUsage(),
+    );
+    const headers = new Headers(response.headers);
+    // Middleware's merged policy wins, as on a normal response.
+    if (htmlResponsePolicy.cacheControl && !headers.has("cache-control")) {
+      headers.set("Cache-Control", htmlResponsePolicy.cacheControl);
+    }
+    applyPrerenderCacheLifeHeader(headers, requestCacheLife);
+    applyPrerenderCacheTagsHeader(headers, cacheTags);
+    // Recorded outside the response, which middleware can also produce, with
+    // the redirect's own location. The prerender server marks the response.
+    getRequestExecutionContext()?.recordPrerenderSpecialError?.({
+      headers: resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath) ?? {},
+      status: response.status,
+    });
+    const prerenderResponse = new Response(body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+    copyLinkHeaderProvenance(response.headers, prerenderResponse.headers);
+    return prerenderResponse;
+  };
+
+  // A page that reads cookies() before its redirect() or notFound(), such as an
+  // auth guard, is dynamic in Next.js: the dynamic API read interrupts static
+  // generation before the special error is thrown. Marked as the page's own,
+  // its no-store response is skipped by the build as dynamic, not failed.
+  // Ported from Next.js: packages/next/src/server/app-render/dynamic-rendering.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/dynamic-rendering.ts
+  const markPrerenderedDynamicShellSpecialError = (
+    response: Response,
+    specialError: AppPageSpecialError,
+  ): void => {
+    if (
+      options.isPrerender === true &&
+      response.status === specialError.statusCode &&
+      resolveEarlyResponseCacheControl(options) !== null &&
+      response.headers.get("cache-control")?.includes("no-store")
+    ) {
+      getRequestExecutionContext()?.recordPrerenderSpecialError?.({
+        headers: resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath) ?? {},
+        status: response.status,
+      });
+    }
+  };
+
+  // The special-error response replaces the page's document, and is stored as
+  // a normal render would be, with its status and redirect `location`. The
+  // RSC entry is the page's own payload, captured from the same render.
+  const finalizeShellSpecialErrorResponse = (
+    response: Response,
+    specialError: AppPageSpecialError,
+  ): Response => {
+    // A response the boundary replaced, such as a 500 from a failing
+    // not-found boundary, is not the special error's document. As in Next.js,
+    // generateMetadata()'s special error, which rejects the shell only for a
+    // request that blocks on metadata, is stored like the page's.
+    if (response.status !== specialError.statusCode) {
+      return applyIneligibleRouteCachePolicy(response, options);
+    }
+    const dynamicUsedDuringRender = consumeRenderDynamicUsage();
+    const { htmlResponsePolicy, shouldWriteHtmlCache } =
+      resolveHtmlCacheWrite(dynamicUsedDuringRender);
+
+    const headers = new Headers(response.headers);
+    // Middleware's merged policy wins, as on a normal response.
+    if (htmlResponsePolicy.cacheControl && !headers.has("cache-control")) {
+      headers.set("Cache-Control", htmlResponsePolicy.cacheControl);
+    }
+    if (htmlResponsePolicy.cacheState) {
+      setCacheStateHeaders(headers, htmlResponsePolicy.cacheState);
+    }
+    const policyResponse = new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+    copyLinkHeaderProvenance(response.headers, policyResponse.headers);
+    if (!shouldWriteHtmlCache) return policyResponse;
+
+    const clientResponse = finalizeHtmlCacheWrite(policyResponse, {
+      capturedDynamicUsageBeforeContextCleanup: () => dynamicUsedDuringRender,
+      // The response's headers carry this request's middleware headers, which
+      // replay merges again, so only the page's own are stored.
+      headers: resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath),
+      htmlResponsePolicy,
+      linkHeader: getFrameworkLinkHeader(response.headers),
+      status: response.status,
+    });
+    copyLinkHeaderProvenance(response.headers, clientResponse.headers);
+    return clientResponse;
+  };
 
   const htmlRender = await renderAppPageHtmlStreamWithRecovery({
     onShellRendered() {
@@ -1287,55 +1483,22 @@ async function renderAppPageLifecycleImpl(
       };
       return renderAppPageHtmlStream({
         capturedRscDataRef,
-        getInitialNavigationCacheMetadata: () => {
-          let kind: "dynamic" | "static";
-          if (options.isForceStatic) {
-            kind = "static";
-          } else if (options.isForceDynamic || dynamicUsedDuringHtmlRender || peekDynamicUsage()) {
-            kind = "dynamic";
-          } else {
-            const observation = options.peekRenderObservationState?.();
-            kind =
-              observation &&
-              (observation.dynamicFetches.length > 0 || observation.requestApis.length > 0)
-                ? "dynamic"
-                : "static";
-          }
-          // Runs after the RSC embed drains, so this peek observes the
-          // completed render's minimum. Peek, not consume — the cache-write
-          // closure owns the consuming read.
-          // During prerendering the done-script callback can run immediately
-          // after the RSC capture drains, before the outer lifecycle performs
-          // its consuming cacheLife read. Use the live non-destructive peek in
-          // that window, then reuse the captured value after the outer read;
-          // peeking only after consumption would omit the client stale claim
-          // even though the seeded cache entry retains it.
-          // Runtime renders have not consumed the state yet and still use the
-          // non-destructive peek so the cache-write closure remains its owner.
-          const requestCacheLife =
+        getInitialNavigationCacheMetadata: () =>
+          resolveInitialNavigationCacheMetadata(
+            dynamicUsedDuringHtmlRender || peekDynamicUsage(),
+            // During prerendering the done-script callback can run immediately
+            // after the RSC capture drains, before the outer lifecycle performs
+            // its consuming cacheLife read. Use the live non-destructive peek in
+            // that window, then reuse the captured value after the outer read;
+            // peeking only after consumption would omit the client stale claim
+            // even though the seeded cache entry retains it.
+            // Runtime renders have not consumed the state yet and still use the
+            // non-destructive peek so the cache-write closure remains its owner.
             options.isPrerender === true
               ? (requestCacheLifeForPrerender ?? options.peekRequestCacheLife?.())
-              : options.peekRequestCacheLife?.();
-          const staleTimeSeconds = resolveClientStaleTimeSeconds(requestCacheLife);
-          return {
-            kind,
-            // Unlike the RSC header, the done script never emits the pending
-            // marker, so there is no 30s floor to fall back on: a render that
-            // turned dynamic must carry the config bound even when the
-            // speculative capture was still armed, or the cacheLife claim
-            // becomes the only bound on reusing dynamic output.
-            ...(kind === "dynamic" &&
-            dynamicStaleTimeSeconds !== undefined &&
-            options.isPrerender !== true
-              ? { dynamicStaleTimeSeconds }
-              : {}),
-            ...(staleTimeSeconds === undefined
-              ? {}
-              : { staleTimeSeconds: Math.floor(staleTimeSeconds) }),
-          };
-        },
+              : options.peekRequestCacheLife?.(),
+          ),
         fontData,
-        hasCustomGlobalError: options.hasCustomGlobalError,
         navigationContext: options.getNavigationContext(),
         basePath: options.basePath,
         clientTraceMetadata: options.clientTraceMetadata,
@@ -1343,30 +1506,102 @@ async function renderAppPageLifecycleImpl(
         reactMaxHeadersLength: options.reactMaxHeadersLength,
         rootParams: options.rootParams,
         pprFallbackShellSignal: options.pprFallbackShellSignal,
+        preloadRoutePattern: options.routePattern,
         formState: options.formState ?? null,
         rscStream: rscForResponse,
         scriptNonce: options.scriptNonce,
         sideStream: rscCapture.sideStream,
         ssrHandler,
-        fallbackToErrorDocumentOnShellError:
+        fallbackToErrorDocumentOnShellError: !(
           options.isPrerender === true && options.isSpeculativePrerender === true
-            ? false
-            : undefined,
+        ),
+        isServerComponentError: rscErrorTracker.isCapturedError,
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,
         isCacheCandidate: isCacheCandidateHtmlRender,
         onSsrError: createAppPageSsrErrorHandler(onSsrError, rscErrorTracker.isCapturedError),
+        // A document that streams a special error a boundary caught carries
+        // Next.js's `self.__next_f` Flight transport, as the boundary's own
+        // document does.
+        mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
+        resolveCaughtNotFoundBoundaries: (error) =>
+          resolveAppPageCaughtNotFoundBoundaries(
+            error,
+            rscErrorTracker.getCapturedSpecialErrors(error),
+          ),
       });
     },
-    renderSpecialErrorResponse(specialError) {
-      return options.renderPageSpecialError(specialError);
+    async renderSpecialErrorResponse(specialError, caughtDocument) {
+      shellSpecialError = specialError;
+      const mayPrerender = mayPrerenderShellSpecialError();
+      if (mayStoreShellSpecialError() || mayPrerender) {
+        // The page's Flight render goes on after its shell rejected, such as
+        // a layout's Suspense boundary reading cookies(). Let it finish while
+        // the request context is alive, before the special-error response
+        // clears it, so that its dynamic API use, fetch tags and cacheLife all
+        // decide the store. A render that turns dynamic isn't stored, and
+        // stops the wait.
+        await settleCapturedRscRenderForCacheMetadata(
+          capturedRscDataRef.value,
+          peekRenderDynamicUsage,
+        );
+      }
+      if (mayPrerender) {
+        prerenderedSpecialError = {
+          dynamicUsed: consumeRenderDynamicUsage(),
+          redirectMetadata: specialError.kind === "redirect" ? readPrerenderCacheMetadata() : null,
+        };
+      }
+      return options.renderPageSpecialError(specialError, {
+        isCacheCandidate: isCacheCandidateHtmlRender,
+        ...(caughtDocument
+          ? {
+              caughtDocument: buildAppPageHtmlDocumentResponse(caughtDocument.htmlStream, {
+                clearRequestContext: options.clearRequestContext,
+                fontLinkHeader,
+                isEdgeRuntime: options.isEdgeRuntime,
+                // buildAppPageSpecialErrorResponse() merges the middleware
+                // headers into the fallback page it returns.
+                middlewareHeaders: null,
+                reactLinkHeader: caughtDocument.linkHeader,
+                reactMaxHeadersLength: options.reactMaxHeadersLength,
+                status: specialError.statusCode,
+              }),
+            }
+          : {}),
+      });
     },
-    resolveSpecialError: resolveAppPageSpecialError,
+    resolveSpecialError(error: unknown) {
+      return resolveAppPageShellSpecialError(
+        error,
+        rscErrorTracker.getCapturedSpecialErrors(error),
+      );
+    },
   });
   options.onRenderComplete?.(htmlRender.renderComplete);
   if (htmlRender.response) {
-    return applyIneligibleRouteCachePolicy(htmlRender.response, options);
+    // A special error that escaped the shell sets the status of the render,
+    // which Next.js stores like any other: 404/403/401, or 307/308 with its
+    // `location`, beside the page's RSC payload carrying the digest.
+    if (
+      shellSpecialError &&
+      options.isProduction &&
+      options.isPrerender !== true &&
+      resolveEarlyResponseCacheControl(options) === null
+    ) {
+      return finalizeShellSpecialErrorResponse(htmlRender.response, shellSpecialError);
+    }
+    if (shellSpecialError && prerenderedSpecialError) {
+      return finalizePrerenderedShellSpecialErrorResponse(
+        htmlRender.response,
+        shellSpecialError,
+        prerenderedSpecialError,
+      );
+    }
+    const response = applyIneligibleRouteCachePolicy(htmlRender.response, options);
+    if (shellSpecialError) markPrerenderedDynamicShellSpecialError(response, shellSpecialError);
+    return response;
   }
   let htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {
@@ -1385,31 +1620,10 @@ async function renderAppPageLifecycleImpl(
     await htmlRender.metadataReady;
   }
 
-  // Routes that skip the page probe render the page once, inside the RSC
-  // stream. Mirror Next.js's `app-render.tsx:4293` catch shape: by the time
-  // the SSR shell promise has resolved, any redirect()/notFound() throw whose
-  // async work settles in microtasks during shell rendering has already fired
-  // through React's onError and been captured by the tracker. Convert that to
-  // a 307/404 before any bytes are flushed.
-  //
-  // Late rejections — ones that settle after macrotask boundaries (real
-  // I/O, setTimeout, etc.) — fall through to the streamed body, exactly
-  // as Next.js does. The digest survives in the Flight payload for the
-  // client router to consume.
-  if (options.hasLoadingBoundary || !probePageBeforeRender) {
-    const captured = rscErrorTracker.getCapturedSpecialError();
-    if (captured) {
-      const specialError = resolveAppPageSpecialError(captured);
-      if (specialError) {
-        void htmlStream.cancel().catch(() => {});
-        return applyIneligibleRouteCachePolicy(
-          await options.renderPageSpecialError(specialError),
-          options,
-        );
-      }
-    }
-  }
-
+  // A special error that a Suspense boundary, such as a loading.tsx, caught
+  // didn't reject the shell. As in Next.js, the document streams as a 200
+  // with the digest, which the client's boundary renders, in dev, dynamic and
+  // ISR renders alike, and an ISR render is stored with that status.
   // Eagerly read values that must be captured before the stream is consumed.
   let dynamicUsedDuringRender = consumeRenderDynamicUsage();
   dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
@@ -1467,19 +1681,8 @@ async function renderAppPageLifecycleImpl(
     options.clearRequestContext();
   });
 
-  const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({
-    dynamicUsedDuringRender,
-    isProgressiveActionRender: options.isProgressiveActionRender === true,
-    hasScriptNonce: Boolean(options.scriptNonce),
-    isDraftMode: options.isDraftMode,
-    isDynamicError: options.isDynamicError,
-    isForceDynamic: options.isForceDynamic,
-    isForceStatic: options.isForceStatic,
-    isProduction: options.isProduction,
-    isStaticEligible: options.isStaticEligible,
-    expireSeconds,
-    revalidateSeconds,
-  });
+  const { htmlResponsePolicy, shouldWriteHtmlCache } =
+    resolveHtmlCacheWrite(dynamicUsedDuringRender);
   const htmlResponseTiming = buildResponseTiming({
     compileEnd,
     handlerStart: options.handlerStart,
@@ -1506,18 +1709,7 @@ async function renderAppPageLifecycleImpl(
     return response;
   }
 
-  const shouldSpeculativelyWriteCache =
-    options.isProduction &&
-    shouldCaptureRscForCacheMetadata &&
-    !options.isEdgeRuntime &&
-    revalidateSeconds === null &&
-    !options.isDynamicError &&
-    !options.isForceStatic &&
-    !options.scriptNonce &&
-    options.isProgressiveActionRender !== true &&
-    !dynamicUsedDuringRender;
-
-  if (htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache) {
+  if (shouldWriteHtmlCache) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
       draftCookie,
@@ -1533,66 +1725,10 @@ async function renderAppPageLifecycleImpl(
       return isrResponse;
     }
 
-    return finalizeAppPageHtmlCacheResponse(isrResponse, {
-      bypassInterceptionContextCache: options.bypassInterceptionContextCache,
-      capturedDynamicUsageBeforeContextCleanup() {
-        return dynamicUsedBeforeContextCleanup;
-      },
-      capturedRscDataPromise: capturedRscDataRef.value,
-      cleanPathname: options.cleanPathname,
-      clientTraceMetadataMarker,
-      consumeDynamicUsage: consumeRenderDynamicUsage,
-      consumeRenderObservationState,
-      createHtmlRenderObservation(input) {
-        return createAppPageRenderObservation({
-          boundaryOutcome: { kind: "success" },
-          cacheability: "public",
-          cacheTags: input.cacheTags,
-          cleanPathname: options.cleanPathname,
-          completeness: "complete",
-          output: htmlOutputScope,
-          params: options.navigationParams,
-          state: input.state,
-        });
-      },
-      createRscRenderObservation(input) {
-        return createAppPageRenderObservation({
-          boundaryOutcome: { kind: "success" },
-          cacheability: "public",
-          cacheTags: input.cacheTags,
-          cleanPathname: options.cleanPathname,
-          completeness: "complete",
-          output: rscOutputScope,
-          params: options.navigationParams,
-          state: input.state,
-        });
-      },
-      getPageTags() {
-        return options.getPageTags();
-      },
-      getRequestCacheLife() {
-        return readRequestCacheLifeForCachePolicy(options);
-      },
-      isrDebug: options.isrDebug,
-      isrHtmlKey: options.isrHtmlKey,
-      isrRscKey: options.isrRscKey,
-      isrSet: options.isrSet,
-      interceptionContext: options.interceptionContext,
-      interceptionId: options.interceptionId,
-      omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
-      preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
-      expireSeconds,
-      isStaticEligible: options.isStaticEligible,
-      revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
-        isDynamicError: options.isDynamicError,
-        isForceStatic: options.isForceStatic,
-        isStaticEligible: options.isStaticEligible,
-        revalidateSeconds,
-      }),
+    return finalizeHtmlCacheWrite(isrResponse, {
+      capturedDynamicUsageBeforeContextCleanup: () => dynamicUsedBeforeContextCleanup,
+      htmlResponsePolicy,
       linkHeader: linkHeader ?? null,
-      waitUntil(cachePromise) {
-        options.waitUntil?.(cachePromise);
-      },
     });
   }
 

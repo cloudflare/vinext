@@ -57,6 +57,13 @@
       "when": 1781797183982,
       "tag": "0007_ancient_thena",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791285866254,
+      "tag": "0008_performance_query_indexes",
+      "breakpoints": true
     }
   ]
 }

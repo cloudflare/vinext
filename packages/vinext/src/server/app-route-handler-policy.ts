@@ -142,7 +142,6 @@ export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheRead
     options.isProduction &&
     options.revalidateSeconds !== null &&
     options.revalidateSeconds > 0 &&
-    options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
     !options.isDraftMode &&
     !options.isKnownDynamic &&
@@ -196,16 +195,15 @@ export function shouldWriteAppRouteHandlerCache(
     options.isProduction &&
     options.revalidateSeconds !== null &&
     options.revalidateSeconds > 0 &&
-    options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
     !options.isDraftMode &&
-    shouldApplyAppRouteHandlerRevalidateHeader(options)
+    !options.dynamicUsedInHandler &&
+    (options.method === "GET" || options.isAutoHead)
   );
 }
 
 export function resolveAppRouteHandlerSpecialError(
   error: unknown,
-  requestUrl: string,
   options?: AppRouteHandlerSpecialErrorOptions,
 ): AppRouteHandlerSpecialError | null {
   if (!(error && typeof error === "object" && "digest" in error)) {
@@ -215,9 +213,11 @@ export function resolveAppRouteHandlerSpecialError(
   const digest = String(error.digest);
   const redirect = parseNextRedirectDigest(digest);
   if (redirect) {
+    // Next.js sends the target `redirect()` received, so the response is the
+    // same on every host that shares its cache entry.
     return {
       kind: "redirect",
-      location: new URL(redirect.url, requestUrl).toString(),
+      location: redirect.url,
       statusCode: options?.isAction ? 303 : redirect.status,
     };
   }

@@ -31,6 +31,23 @@ The OpenTelemetry packages and exporter belong to the application. They are not 
 
 Vinext completes `register()` before traced production user modules evaluate. In ordinary Node builds, when the application directly installs a resolvable, non-transpiled `@opentelemetry/instrumentation`, vinext also registers its ESM loader before those modules evaluate. Other instrumentation loaders remain application-owned.
 
+In Node builds, vinext also keeps every `@opentelemetry/*` package listed in the application's `package.json` external to the server bundle. Next.js does not include these packages in its default `serverExternalPackages`; vinext adds them because OpenTelemetry instrumentation depends on package boundaries. `import-in-the-middle` shares one hook registry between its ESM loader and the `Hook` class imported by `@opentelemetry/instrumentation`, so a bundled copy gets a second registry and ESM instrumentation silently stops working. Keeping the packages external also lets their transitive imports resolve from the owning package under strict pnpm installs. Cloudflare Workers builds bundle all server code, so this does not apply to them.
+
+To bundle one of these packages instead, for example in a deployment that ships no `node_modules`, list it in `transpilePackages`:
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  transpilePackages: ["@opentelemetry/api"],
+};
+
+export default nextConfig;
+```
+
+A package listed in `transpilePackages` is removed from the automatic externals. Transpiling `@opentelemetry/instrumentation` also skips the automatic ESM loader registration described above, so vinext no longer instruments ESM modules automatically in that build.
+
 ## Framework spans
 
 Every framework span includes these stable Next.js attributes:
@@ -147,6 +164,23 @@ export default withSentryConfig(nextConfig, {
 ```
 
 The Sentry SDK registers its OpenTelemetry provider through that existing setup and receives the request root and built-in child spans listed above. Sentry remains application-owned and optional; installing vinext does not install Sentry or OpenTelemetry packages.
+
+## Request error logs
+
+Like `next start`, vinext logs each error it passes to `onRequestError`, such as `[vinext] Server render error:`, in development and production. Set `VINEXT_QUIET=1` at runtime to turn these logs off, like the `quiet` option of a Next.js custom server. Use it when `onRequestError` redacts errors before recording them, so the unredacted message and stack don't also reach the server or Worker logs. `onRequestError` still runs.
+
+On Cloudflare Workers, add it to the Worker's `env` in `cloudflare.config.ts`, or to `vars` in a Wrangler config:
+
+```ts
+import { bindings } from "cf/config";
+
+env: {
+  // ...existing bindings
+  VINEXT_QUIET: bindings.text("1"),
+},
+```
+
+Workers expose these as `process.env` with Node.js compatibility and a compatibility date of 2025-04-01 or later. Node.js compatibility is on by default from compatibility date 2026-08-04 (older dates need the `nodejs_compat` flag), so configs `vinext init` generates already have both.
 
 ## Cloudflare Workers traces
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   createHttpAccessFallbackMetadataPlan,
+  createRouteNotFoundHeadPlanOptions,
   resolveHttpAccessFallbackMetadata,
   resolveHttpAccessFallbackViewport,
 } from "../packages/vinext/src/server/app-page-http-access-fallback-metadata.js";
@@ -220,5 +221,35 @@ describe("HTTP-access fallback metadata planning", () => {
       title: "Not found",
     });
     expect(boundaryParents).toEqual(["Root description"]);
+  });
+
+  describe("the not-found head a route falls back to", () => {
+    const rootLayout = {};
+    const manifestRootNotFound = {};
+    const planOptions = (segmentNotFoundTreePositions?: number[]) =>
+      createRouteNotFoundHeadPlanOptions({
+        parallelBranches: [],
+        params: {},
+        primaryParallelBranch: null,
+        rootNotFoundModule: manifestRootNotFound,
+        route: {
+          layouts: [rootLayout],
+          layoutTreePositions: [1],
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["studio", "[[...tool]]"],
+          ...(segmentNotFoundTreePositions ? { segmentNotFoundTreePositions } : {}),
+        },
+      });
+
+    // With several root layouts, the manifest's root not-found can belong to
+    // another root layout's tree (issue #4304).
+    it("ignores the manifest's root not-found for a route with segment data", () => {
+      expect(planOptions([]).boundaryModule).toBeNull();
+    });
+
+    it("uses the manifest's root not-found for a route without segment data", () => {
+      expect(planOptions().boundaryModule).toBe(manifestRootNotFound);
+    });
   });
 });

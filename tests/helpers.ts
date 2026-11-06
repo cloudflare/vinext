@@ -8,15 +8,27 @@
  */
 
 import http, { type IncomingHttpHeaders } from "node:http";
+import zlib from "node:zlib";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
-import { createServer, build, type ViteDevServer } from "vite";
+import {
+  createServer,
+  build,
+  type AliasOptions,
+  type PluginOption,
+  type ViteDevServer,
+} from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import {
+  createRscRequestHeaders,
+  createRscRequestUrl,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import path from "node:path";
 import type { NextConfigInput } from "../packages/vinext/src/config/next-config.js";
-import { afterAll } from "vite-plus/test";
+import type { VinextCacheConfig } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
+import { afterAll, expect } from "vite-plus/test";
 
 // ── Fixture paths ─────────────────────────────────────────────
 export const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
@@ -81,6 +93,7 @@ export type TestServerResult = {
  * detected, so callers do NOT need to inject rsc() manually.
  *
  * @param fixtureDir - Path to the fixture directory
+ * @param opts.cache - The vinext() `cache` option, for declarative cache adapters
  * @param opts.listen - If false, creates server without listening (default: true)
  */
 export async function startFixtureServer(
@@ -88,9 +101,13 @@ export async function startFixtureServer(
   opts?: {
     appDir?: string | null;
     appRouter?: boolean;
+    /** The vinext() `cache` option (declarative cache adapters). */
+    cache?: VinextCacheConfig;
     listen?: boolean;
+    /** Plugins listed ahead of vinext() in the plugins array. */
+    prependPlugins?: PluginOption[];
     publicDir?: string | false;
-    resolve?: { preserveSymlinks?: boolean };
+    resolve?: { alias?: AliasOptions; preserveSymlinks?: boolean };
     server?: {
       host?: string;
       allowedHosts?: true | string[];
@@ -108,14 +125,14 @@ export async function startFixtureServer(
     const previousCwd = process.cwd();
     try {
       process.chdir(fixtureDir);
-      plugin = vinext();
+      plugin = vinext({ cache: opts?.cache });
     } finally {
       process.chdir(previousCwd);
     }
   } else {
-    plugin = vinext({ appDir: opts?.appDir ?? fixtureDir });
+    plugin = vinext({ appDir: opts?.appDir ?? fixtureDir, cache: opts?.cache });
   }
-  const plugins = [plugin];
+  const plugins = [...(opts?.prependPlugins ?? []), plugin];
 
   const server = await createServer({
     root: fixtureDir,
@@ -186,6 +203,34 @@ export async function fetchHtml(
   const res = await fetch(`${baseUrl}${urlPath}`, init);
   const html = await res.text();
   return { res, html };
+}
+
+/**
+ * The path and query the client fetches for an App Router RSC payload: the
+ * `_rsc` cache-busting param matching `headers` (`RSC: 1` alone by default).
+ */
+export function rscRequestPath(
+  urlPath: string,
+  headers: Headers = createRscRequestHeaders(),
+): Promise<string> {
+  return createRscRequestUrl(urlPath, headers);
+}
+
+/**
+ * Fetch an App Router RSC payload the way the client does: `RSC: 1` plus the
+ * matching `_rsc` cache-busting param. Extra headers join the hash input.
+ * Server Action POSTs go to the plain path, as the client sends them.
+ */
+export async function fetchRsc(
+  baseUrl: string,
+  urlPath: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = createRscRequestHeaders();
+  new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  const requestPath =
+    init.method?.toUpperCase() === "POST" ? urlPath : await rscRequestPath(urlPath, headers);
+  return fetch(`${baseUrl}${requestPath}`, { ...init, headers });
 }
 
 /**
@@ -277,6 +322,94 @@ export async function requestNodeServerWithHost(
     req.on("error", reject);
     req.end();
   });
+}
+
+/**
+ * Raw request targets and what `next start` (Next.js 16.2.7) answers for
+ * them: literal repeated slashes and backslashes get a 308 to the collapsed
+ * path, percent-encoded leading delimiters stay a 404. Absolute-form targets
+ * get vinext's deliberate 404 where Next.js would echo a cross-origin Location.
+ */
+const REPEATED_SLASH_CASES: ReadonlyArray<readonly [string, string | 404]> = [
+  ["//", "/"],
+  ["//?a=1", "/?a=1"],
+  ["///", "/"],
+  ["/\\", "/"],
+  ["//evil.com", "/evil.com"],
+  ["///evil.com", "/evil.com"],
+  ["/\\evil.com", "/evil.com"],
+  ["/\\/evil.com", "/evil.com"],
+  ["/about//", "/about/"],
+  ["/%2F", 404],
+  ["/%5C", 404],
+  ["/%2F/evil.com", 404],
+  ["/%5C%5Cevil.com", 404],
+  ["/.//%2Fevil.com", 404],
+  // Absolute-form targets: Next.js 308s to the target's own URL (another
+  // origin) without routing it. vinext never routes them either, but answers
+  // 404 rather than echoing a cross-origin Location.
+  ["http://evil.example/", 404],
+  ["http://evil.example/about", 404],
+  ["https://evil.example//evil.com?a=1", 404],
+];
+
+/**
+ * Send raw request targets (backslashes and repeated slashes intact, which
+ * `fetch()` would normalize) and assert the server matches Next.js. Finishes
+ * with a plain `GET /` to prove the server survived.
+ */
+export async function expectRepeatedSlashRedirects(
+  baseUrl: string,
+  options: { dev?: boolean } = {},
+): Promise<void> {
+  const { hostname, port } = new URL(baseUrl);
+  const get = (requestPath: string, headers: Record<string, string> = {}) =>
+    new Promise<NodeHttpResponse>((resolve, reject) => {
+      const req = http.request({ hostname, port, path: requestPath, headers }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          }),
+        );
+      });
+      req.on("error", reject);
+      req.end();
+    });
+
+  if (options.dev) {
+    // Next.js runs its dev cross-site check before the redirect.
+    const crossOrigin = await get("/about//", { Origin: "https://evil.example" });
+    expect(crossOrigin.status).toBe(403);
+    expect(crossOrigin.headers.location).toBeUndefined();
+  }
+
+  for (const [requestPath, expected] of REPEATED_SLASH_CASES) {
+    const res = await get(requestPath);
+    if (expected === 404) {
+      expect({ requestPath, status: res.status }).toEqual({ requestPath, status: 404 });
+      continue;
+    }
+    expect({
+      requestPath,
+      status: res.status,
+      location: res.headers.location,
+      refresh: res.headers.refresh,
+      body: res.body,
+    }).toEqual({
+      requestPath,
+      status: 308,
+      location: expected,
+      refresh: `0;url=${expected}`,
+      body: expected,
+    });
+  }
+
+  const home = await get("/");
+  expect(home.status).toBe(200);
 }
 
 /**
@@ -400,4 +533,200 @@ export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
     root: tmpDir,
     rscBundlePath: path.join(tmpDir, "dist", "server", "index.js"),
   };
+}
+
+// ── External rewrite response headers ─────────────────────────
+// app-basic and pages-basic proxy /external-headers/* to a local upstream (see
+// their next.config and middleware). The expectations match next@16.2.7.
+
+const UPSTREAM_COOKIE = "upstream-cookie=1; Path=/";
+const MIDDLEWARE_COOKIE = "middleware-cookie=1; Path=/";
+const CONFIG_COOKIE = "config-cookie=1; Path=/";
+const ALL_MIDDLEWARE_SWITCHES = "?middleware-cookie&middleware-header&middleware-cache-control";
+
+export type ExternalRewriteHeaders = {
+  cookies: string[];
+  configHeader: string | null;
+  middlewareHeader: string | null;
+};
+
+export const EXTERNAL_REWRITE_HEADER_CASES: ({ path: string } & ExternalRewriteHeaders)[] = [
+  // A next.config rewrite proxies without the staged config and middleware
+  // headers, though middleware's cookies still precede the upstream's.
+  ...["before-files", "after-files", "fallback"].flatMap((phase) => [
+    {
+      path: `/external-headers/${phase}/a`,
+      cookies: [UPSTREAM_COOKIE],
+      configHeader: null,
+      middlewareHeader: null,
+    },
+    {
+      path: `/external-headers/${phase}/a${ALL_MIDDLEWARE_SWITCHES}`,
+      cookies: [MIDDLEWARE_COOKIE, UPSTREAM_COOKIE],
+      configHeader: null,
+      middlewareHeader: null,
+    },
+    {
+      path: `/external-headers/${phase}/no-cookie?middleware-cookie`,
+      cookies: [],
+      configHeader: null,
+      middlewareHeader: null,
+    },
+  ]),
+  // A middleware rewrite keeps the staged headers, with the upstream's set
+  // over them: an upstream cookie replaces the config cookie.
+  {
+    path: "/external-headers/middleware/a",
+    cookies: [UPSTREAM_COOKIE],
+    configHeader: "1",
+    middlewareHeader: null,
+  },
+  {
+    path: `/external-headers/middleware/a${ALL_MIDDLEWARE_SWITCHES}`,
+    cookies: [MIDDLEWARE_COOKIE, UPSTREAM_COOKIE],
+    configHeader: "1",
+    middlewareHeader: "1",
+  },
+  {
+    path: "/external-headers/middleware/no-cookie",
+    cookies: [CONFIG_COOKIE],
+    configHeader: "1",
+    middlewareHeader: null,
+  },
+  {
+    path: "/external-headers/middleware/no-cookie?middleware-cookie",
+    cookies: [MIDDLEWARE_COOKIE],
+    configHeader: "1",
+    middlewareHeader: null,
+  },
+];
+
+/**
+ * Request an /external-headers/* path through a fresh upstream that sets a
+ * cookie (except on `no-cookie` paths), `x-upstream` and a public
+ * Cache-Control, and return the headers the cases above describe.
+ */
+export async function requestExternalRewriteHeaders(
+  baseUrl: string,
+  requestPath: string,
+): Promise<
+  ExternalRewriteHeaders & {
+    status: number;
+    cacheControl: string | null;
+    upstreamHeader: string | null;
+  }
+> {
+  const upstream = http.createServer((req, res) => {
+    if (!req.url?.includes("no-cookie")) res.setHeader("Set-Cookie", [UPSTREAM_COOKIE]);
+    res.setHeader("x-upstream", "1");
+    res.setHeader("Cache-Control", "public, max-age=60");
+    res.end("upstream");
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = upstream.address() as { port: number };
+    const response = await fetch(`${baseUrl}${requestPath}`, {
+      headers: { "x-test-upstream-port": String(port) },
+    });
+    expect(await response.text()).toBe("upstream");
+    return {
+      status: response.status,
+      cookies: response.headers.getSetCookie(),
+      configHeader: response.headers.get("x-config-header"),
+      middlewareHeader: response.headers.get("x-mw-response-header"),
+      cacheControl: response.headers.get("cache-control"),
+      upstreamHeader: response.headers.get("x-upstream"),
+    };
+  } finally {
+    upstream.closeAllConnections();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  }
+}
+
+/**
+ * Start an upstream that answers every request with a gzip-encoded text body,
+ * framed by its compressed Content-Length.
+ */
+export async function startGzipUpstream(): Promise<{
+  port: number;
+  body: string;
+  hits: (pathAndQuery: string) => number;
+  close: () => Promise<void>;
+}> {
+  const body = "gzip upstream body ".repeat(64);
+  const compressed = zlib.gzipSync(body);
+  const hits = new Map<string, number>();
+  const upstream = http.createServer((req, res) => {
+    hits.set(req.url ?? "", (hits.get(req.url ?? "") ?? 0) + 1);
+    res.writeHead(200, {
+      "Content-Type": "text/plain",
+      "Content-Encoding": "gzip",
+      "Content-Length": compressed.length,
+    });
+    res.end(compressed);
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  return {
+    port: (upstream.address() as { port: number }).port,
+    body,
+    hits: (pathAndQuery) => hits.get(pathAndQuery) ?? 0,
+    close: async () => {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    },
+  };
+}
+
+// next.config's three rewrite phases and a middleware rewrite.
+export const EXTERNAL_REWRITE_PATHS = ["before-files", "after-files", "fallback", "middleware"].map(
+  (phase) => `/external-headers/${phase}/a`,
+);
+
+/**
+ * Request an /external-headers/* path with middleware's `x-mw-request-header`
+ * override and a client `Connection` header naming it, a client header and an
+ * invalid token. Uses node:http because fetch() rejects such a header.
+ */
+export async function requestExternalRewriteWithConnectionTokens(
+  baseUrl: string,
+  requestPath: string,
+): Promise<{
+  status: number;
+  middlewareRequestHeader: string | string[] | undefined;
+  clientNominatedHeader: string | string[] | undefined;
+}> {
+  let upstreamHeaders: IncomingHttpHeaders = {};
+  const upstream = http.createServer((req, res) => {
+    upstreamHeaders = req.headers;
+    res.end("upstream");
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = upstream.address() as { port: number };
+    const url = new URL(`${requestPath}?middleware-request-header`, baseUrl);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(url, {
+        agent: false,
+        headers: {
+          connection: "keep-alive, X-Mw-Request-Header, x-client-nominated, not a header",
+          "x-client-nominated": "1",
+          "x-test-upstream-port": String(port),
+        },
+      });
+      req.on("response", (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode ?? 0));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    return {
+      status,
+      middlewareRequestHeader: upstreamHeaders["x-mw-request-header"],
+      clientNominatedHeader: upstreamHeaders["x-client-nominated"],
+    };
+  } finally {
+    upstream.closeAllConnections();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  }
 }

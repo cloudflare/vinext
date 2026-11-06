@@ -120,6 +120,23 @@ describe("affectedPackages", () => {
     expect(affectedPackages(["packages\\vinext\\src\\x.ts"], map)).toEqual(["vinext"]);
   });
 
+  it("ignores a package's own tests", () => {
+    expect(
+      affectedPackages(
+        [
+          "packages/vinext/tests/a.e2e.test.ts",
+          "packages/vinext/src/a.test.ts",
+          "packages/other/src/nested/tests/fixture.ts",
+          "packages/other/src/b.spec.tsx",
+        ],
+        map,
+      ),
+    ).toEqual([]);
+    expect(
+      affectedPackages(["packages/vinext/tests/a.test.ts", "packages/vinext/src/a.ts"], map),
+    ).toEqual(["vinext"]);
+  });
+
   it("matches the most specific (longest) package dir first", () => {
     const nested = {
       "packages/vinext": "vinext",

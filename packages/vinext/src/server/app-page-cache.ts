@@ -11,6 +11,7 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
 import { applyClientStaleTimeHeader, applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
@@ -67,11 +68,15 @@ type AppPageCacheOutcomeRecorder = (metric: AppPageCacheOutcomeMetric) => void;
 
 type AppPageCacheRenderResult = {
   cacheControl?: CacheControlMetadata;
+  /** Response headers stored with both entries, such as a redirect's `location`. */
+  headers?: Record<string, string>;
   html: string;
   htmlRenderObservation: RenderObservation;
   linkHeader?: string;
   rscData: ArrayBuffer;
   rscRenderObservation: RenderObservation;
+  /** The status of a render whose shell ended in a special error. */
+  status?: number;
   /**
    * The route-level revalidate of the route this render regenerated, or null
    * when it has none and the render's cacheLife sets it. Undefined keeps the
@@ -87,6 +92,7 @@ type BuildAppPageCachedResponseOptions = {
   cacheState: "HIT" | "STALE";
   expireSeconds?: number;
   isEdgeRuntime?: boolean;
+  isRoutePPREnabled?: boolean;
   isRscRequest: boolean;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
@@ -126,7 +132,19 @@ type ReadAppPageCacheResponseOptions = {
   renderMode?: AppRscRenderMode;
   expireSeconds?: number;
   revalidateSeconds: number;
-  renderFreshPageForCache: () => Promise<AppPageCacheRenderResult>;
+  /**
+   * Whether this is an RSC request Next.js renders dynamically under PPR (one
+   * that is not a prefetch, for a path not generated at build time), and so
+   * never regenerates the page's document.
+   */
+  isDynamicRscRequest?: boolean;
+  /**
+   * Renders the page for its cache entries. `renderDocument` asks for the
+   * document as an HTML request renders it, to be stored beside the RSC payload.
+   */
+  renderFreshPageForCache: (options: {
+    renderDocument: boolean;
+  }) => Promise<AppPageCacheRenderResult>;
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
 };
 
@@ -137,7 +155,7 @@ type ReadAppPageFallbackShellCacheResponseOptions = {
   isEdgeRuntime?: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
-  isrHtmlKey: (pathname: string) => string;
+  isrFallbackShellHtmlKey: (pathname: string) => string;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   revalidateSeconds: number;
@@ -200,6 +218,7 @@ function buildAppPageCachedHeaders(options: {
   mountedSlotsHeader?: string | null;
   params?: Record<string, string | string[]>;
   staleTimeSeconds?: number;
+  storedHeaders?: CachedAppPageValue["headers"];
 }): Headers {
   const headers = new Headers({
     "Content-Type": options.contentType,
@@ -221,6 +240,14 @@ function buildAppPageCachedHeaders(options: {
   }
 
   applyClientStaleTimeHeader(headers, options.staleTimeSeconds);
+
+  // The page's stored headers, such as a redirect's `location`, precede this
+  // request's middleware headers, as on a fresh special-error response.
+  for (const [name, value] of Object.entries(options.storedHeaders ?? {})) {
+    // The renderer's Link is appended after middleware's, below.
+    if (name.toLowerCase() === "link") continue;
+    for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item);
+  }
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
   if (options.linkHeader) {
@@ -289,13 +316,52 @@ function resolveRegenerationFailureCacheControl(
   };
 }
 
+/**
+ * Next.js stamps every prerender with the stale time it collected. A render
+ * that made no `cacheLife` claim keeps the `INFINITE_CACHE` sentinel, which
+ * resolves to `experimental.staleTimes.static` (`createSelectStaleTime` in
+ * `server/app-render/stale-time.ts`, applied by
+ * `applyMetadataFromPrerenderResult` in `app-render.tsx`). Its client only
+ * caches a navigation response for that long under
+ * `experimental.cachedNavigations` (`fetch-server-response.ts`); otherwise the
+ * value only dates prefetches. vinext's client reuses navigation responses for
+ * any advertised stale time, so the unclaimed value is only advertised when
+ * cached navigations are on.
+ */
+function resolveUnclaimedPrerenderStaleTimeSeconds(
+  isRoutePPREnabled: boolean | undefined,
+): number | undefined {
+  if (isRoutePPREnabled !== true) return undefined;
+  if (String(process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS) !== "true") return undefined;
+  const raw = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+  // Next.js' default `staleTimes.static` when the plugin define is absent.
+  const seconds = raw === undefined || raw === "" ? 300 : Number(raw);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds) : undefined;
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
 export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
 ): Response | null {
   // Preserve the legacy fallback semantics from the generated entry: invalid
   // falsy statuses still fall back to 200 rather than being forwarded through.
-  const status = options.middlewareStatus ?? (cachedValue.status || 200);
+  const storedStatus = cachedValue.status || 200;
+  const isRedirect = isRedirectStatus(storedStatus);
+  const isHttpErrorFallbackStatus =
+    storedStatus === 401 || storedStatus === 403 || storedStatus === 404;
+  // As in Next.js, an RSC response carries a redirect in its payload, so a
+  // stored redirect is sent as a 200 with its `location`. With PPR, an RSC
+  // response is always a 200.
+  const replayStatus =
+    options.isRscRequest && (isRedirect || options.isRoutePPREnabled === true) ? 200 : storedStatus;
+  // The status of a stored special error is the page's own, which middleware
+  // can't override, as on a fresh render.
+  const isSpecialErrorStatus = isRedirect || isHttpErrorFallbackStatus;
+  const status = isSpecialErrorStatus ? replayStatus : (options.middlewareStatus ?? replayStatus);
   const { cacheControl } = decideIsr({
     cacheState: options.cacheState,
     kind: "app-page",
@@ -306,7 +372,9 @@ export function buildAppPageCachedResponse(
   // Replay the producing render's claim verbatim, not aged — Next.js re-emits
   // the stored header unchanged on every hit, and the cached HTML body embeds
   // the same original value in its done-script.
-  const staleTimeSeconds = resolveClientStaleTimeSeconds(options.cacheControl);
+  const staleTimeSeconds =
+    resolveClientStaleTimeSeconds(options.cacheControl) ??
+    resolveUnclaimedPrerenderStaleTimeSeconds(options.isRoutePPREnabled);
   if (options.isRscRequest) {
     if (!cachedValue.rscData) {
       return null;
@@ -323,6 +391,7 @@ export function buildAppPageCachedResponse(
       // bytes, so a hit composes them as a fresh render does.
       params: options.params,
       staleTimeSeconds,
+      storedHeaders: cachedValue.headers,
     });
     if (options.renderedPathAndSearch) {
       rscHeaders.set(
@@ -332,6 +401,10 @@ export function buildAppPageCachedResponse(
     }
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
+    // The request stage sends it to a Link's segment prefetch as a 200.
+    if (isHttpErrorFallbackStatus && status === storedStatus) {
+      rscHeaders.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(storedStatus));
+    }
 
     return new Response(cachedValue.rscData, {
       status,
@@ -339,7 +412,8 @@ export function buildAppPageCachedResponse(
     });
   }
 
-  if (typeof cachedValue.html !== "string" || cachedValue.html.length === 0) {
+  // A redirect's document is empty.
+  if (typeof cachedValue.html !== "string" || (cachedValue.html.length === 0 && !isRedirect)) {
     return null;
   }
 
@@ -351,6 +425,7 @@ export function buildAppPageCachedResponse(
     linkHeader: cachedValue.headers?.link,
     middlewareHeaders: options.middlewareHeaders,
     staleTimeSeconds,
+    storedHeaders: cachedValue.headers,
   });
 
   const response = new Response(cachedValue.html, {
@@ -497,6 +572,7 @@ export async function readAppPageCacheResponse(
         cacheControl: cached?.value.cacheControl,
         expireSeconds: options.expireSeconds,
         isEdgeRuntime: options.isEdgeRuntime,
+        isRoutePPREnabled: options.isRoutePPREnabled,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
@@ -561,11 +637,29 @@ export async function readAppPageCacheResponse(
       // still trigger background regeneration even if this request cannot use
       // the stale payload and will fall through to a fresh render.
       //
-      // The regeneration key is derived from exactly the same inputs as `isrKey`
-      // above (the RSC variant when `isRscRequest`, the HTML key otherwise), so
-      // reuse it instead of recomputing the hash.
+      // A regeneration that writes the document is keyed by the page's HTML
+      // key below. Any other reuses `isrKey`, the stale entry's own key,
+      // instead of recomputing the hash.
+      //
+      // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+      // request regenerates the document too. Here a regeneration of the
+      // canonical RSC entry does the same. An RSC variant (an interception, a
+      // prefetch shell) regenerates its own entry alone, as does an RSC request
+      // Next.js renders dynamically under PPR, which never regenerates a page.
+      // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+      const regeneratesDocument =
+        !options.isRscRequest ||
+        (options.isDynamicRscRequest !== true &&
+          isrKey === options.isrRscKey(options.cleanPathname, null));
+      const htmlKey = options.isRscRequest
+        ? regeneratesDocument
+          ? options.isrHtmlKey(options.cleanPathname)
+          : null
+        : isrKey;
       const regenerate = async (): Promise<void> => {
-        const revalidatedPage = await options.renderFreshPageForCache();
+        const revalidatedPage = await options.renderFreshPageForCache({
+          renderDocument: regeneratesDocument,
+        });
         const cacheControl = resolveRegeneratedAppPageCacheControl({
           expireSeconds: options.expireSeconds,
           renderCacheControl: revalidatedPage.cacheControl,
@@ -590,11 +684,14 @@ export async function readAppPageCacheResponse(
               "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
           );
         }
+        // An RSC request whose shell's special error has no document of its
+        // own stores its RSC entry alone.
+        const documentKey = options.isRscRequest && revalidatedPage.html === "" ? null : htmlKey;
         // Every query shares these entries, so a render not proven to leave
         // the query unread is never stored.
         if (
           !hasQueryInvariantRenderProof(revalidatedPage.rscRenderObservation) ||
-          (!options.isRscRequest &&
+          (documentKey !== null &&
             !hasQueryInvariantRenderProof(revalidatedPage.htmlRenderObservation))
         ) {
           options.isrDebug?.("regen write skipped (searchParams not proven unread)", isrKey);
@@ -624,44 +721,44 @@ export async function readAppPageCacheResponse(
             return false;
           }
         };
+        const status = revalidatedPage.status ?? 200;
         const storedRsc = await store(
           rscKey,
           buildAppPageCacheValue(
             "",
             revalidatedPage.rscData,
-            200,
+            status,
             revalidatedPage.rscRenderObservation,
+            revalidatedPage.headers,
           ),
         );
         // A failed RSC write leaves the previous page untouched, so the HTML
         // key isn't written either.
         if (!storedRsc) return;
 
-        if (!options.isRscRequest) {
-          // HTML cache is slot-state-independent (canonical), so only refresh it
-          // during HTML-triggered regens. RSC-triggered regens only update the
-          // requesting client's RSC slot variant; a stale HTML cache entry will
-          // be regenerated independently by the next full-page HTML request.
+        if (documentKey !== null) {
           const storedHtml = await store(
-            isrKey,
+            documentKey,
             buildAppPageCacheValue(
               revalidatedPage.html,
               undefined,
-              200,
+              status,
               revalidatedPage.htmlRenderObservation,
-              revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
+              revalidatedPage.linkHeader
+                ? { ...revalidatedPage.headers, link: revalidatedPage.linkHeader }
+                : revalidatedPage.headers,
             ),
           );
           // A failed HTML write leaves this regeneration's RSC beside the
-          // stale HTML: the state an RSC-triggered regeneration leaves anyway,
-          // and the stale HTML regenerates on its next request.
+          // stale HTML, which regenerates on its next request.
           if (!storedHtml) return;
         }
         options.isrDebug?.("regen complete", options.cleanPathname);
       };
       // As in Next.js, a failed render keeps the previous entry, re-stored
-      // with a backoff policy.
-      options.scheduleBackgroundRegeneration(isrKey, async () => {
+      // with a backoff policy. A regeneration that writes the document shares
+      // its key with the document's own, so a page regenerates once.
+      options.scheduleBackgroundRegeneration(htmlKey ?? isrKey, async () => {
         try {
           await regenerate();
         } catch (error) {
@@ -677,6 +774,7 @@ export async function readAppPageCacheResponse(
         cacheControl: cached.value.cacheControl,
         expireSeconds: options.expireSeconds,
         isEdgeRuntime: options.isEdgeRuntime,
+        isRoutePPREnabled: options.isRoutePPREnabled,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
@@ -736,7 +834,7 @@ export async function readAppPageCacheResponse(
 export async function readAppPageFallbackShellCacheResponse(
   options: ReadAppPageFallbackShellCacheResponseOptions,
 ): Promise<Response | null> {
-  const isrKey = options.isrHtmlKey(options.fallbackPathname);
+  const isrKey = options.isrFallbackShellHtmlKey(options.fallbackPathname);
 
   try {
     const cached = await options.isrGet(isrKey);

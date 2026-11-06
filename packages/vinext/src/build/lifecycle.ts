@@ -386,7 +386,7 @@ export function createBuildLifecyclePlugins(options: {
           if (outputPrepared || !options.shouldPrepare(config)) return;
           const context = createContext();
           if (config.build.emptyOutDir === false) context.emptyOutDir = false;
-          // Fail before onPrepare can install or upgrade dependencies.
+          // Report a missing standalone prerequisite before onPrepare runs its checks.
           checkStandaloneBuildPrerequisite(context);
           options.onPrepare?.();
           prepareBuildOutput(context);

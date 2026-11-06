@@ -31,7 +31,11 @@ import {
   isRouteCacheabilityEvaluation,
   type RouteCacheabilityOutcome,
 } from "vinext/shims/cacheability-classification";
-import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { getCdnCacheAdapter, type CdnAppPageDocument } from "vinext/shims/cdn-cache";
+import {
+  resolveAppPageRscResponseStatus,
+  type AppPageRscRenderStatus,
+} from "./app-page-rsc-render-status.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -63,7 +67,11 @@ type FinalizeAppPageCacheabilityEvaluationOptions = {
    * cacheable even when a cacheLife resolves during the render.
    */
   isStaticEligible: boolean;
+  /** An RSC render's status, from its document's shell. */
+  resolveRscRenderStatus?: () => Promise<AppPageRscRenderStatus>;
   revalidateSeconds: number | null;
+  /** Hands the CDN adapter the page's document to store beside the response. */
+  captureAdmittedDocument?: (document: CdnAppPageDocument | null) => void;
 };
 
 type FinalizeAppPageHtmlCacheResponseOptions = {
@@ -91,20 +99,31 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   isStaticEligible: boolean;
   revalidateSeconds: number | null;
   linkHeader: string | null;
+  /**
+   * The status and headers stored with both entries, for a render that ended
+   * in a special error: 404/403/401, or 307/308 with its `location`.
+   */
+  status?: number;
+  headers?: Record<string, string>;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
 type ScheduleAppPageRscCacheWriteOptions = {
   bypassInterceptionContextCache?: boolean;
+  /** Hands the CDN adapter the page's document to store beside the response. */
+  captureAdmittedDocument?: (document: CdnAppPageDocument | null) => void;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
   consumeRenderObservationState?: () => AppPageRenderObservationState;
+  /** Observes the document the render's status resolution rendered, if any. */
+  createHtmlRenderObservation?: BuildAppPageCacheRenderObservation;
   createRscRenderObservation: BuildAppPageCacheRenderObservation;
   dynamicUsedDuringBuild: boolean;
   getPageTags: () => string[];
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
+  isrHtmlKey?: (pathname: string) => string;
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
@@ -112,6 +131,11 @@ type ScheduleAppPageRscCacheWriteOptions = {
   mountedSlotsHeader?: string | null;
   omitPendingDynamicCacheState?: boolean;
   renderMode?: AppRscRenderMode;
+  /**
+   * The render's status, from its document's shell, and the page's document
+   * when it rendered one to store. Without it the render is a 200.
+   */
+  resolveRscRenderStatus?: () => Promise<AppPageRscRenderStatus>;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   isStaticEligible: boolean;
@@ -201,56 +225,119 @@ function appPageCacheControlHeader(cacheControl: CacheControlMetadata): string {
     : buildRevalidateCacheControl(cacheControl.revalidate, cacheControl.expire);
 }
 
+/**
+ * The completed response replaces a streamed 200 with the status Next.js sends
+ * for the render's special error, and stores that.
+ */
+function applyRscRenderStatus(
+  outcome: RouteCacheabilityOutcome,
+  renderStatus: AppPageRscRenderStatus,
+): RouteCacheabilityOutcome {
+  if (renderStatus.kind === "page") return outcome;
+  if (renderStatus.kind === "unstorable") {
+    return { cacheable: false, reason: "render ended in a special error Next.js doesn't store" };
+  }
+  return {
+    ...outcome,
+    status: resolveAppPageRscResponseStatus(renderStatus.status),
+    ...(renderStatus.headers ? { headers: renderStatus.headers } : {}),
+  };
+}
+
+/** Hand an adapter the document; its failure never holds back admission. */
+function settleAdmittedDocument(
+  capture: ((document: CdnAppPageDocument | null) => void) | undefined,
+  document: CdnAppPageDocument | null,
+): void {
+  try {
+    capture?.(document);
+  } catch (error) {
+    console.error("[vinext] CDN adapter document capture error:", error);
+  }
+}
+
 function finalizeEvaluatedAppPageResponse(
   response: Response,
   options: FinalizeAppPageCacheabilityEvaluationOptions,
 ): Response | null {
   if (!isRouteCacheabilityEvaluation()) return null;
   const complete = deferRouteCacheability();
-  if (!complete) return response;
+  if (!complete) {
+    settleAdmittedDocument(options.captureAdmittedDocument, null);
+    return response;
+  }
   captureRouteCacheabilityResponsePolicy(captureCdnResponsePolicyHeaders(response.headers));
+
+  const admit = (renderStatus?: AppPageRscRenderStatus): void => {
+    const observationState = options.consumeRenderObservationState?.();
+    const cacheControl = resolveAppPageCacheControl({
+      expireSeconds: options.expireSeconds,
+      requestCacheLife: options.getRequestCacheLife?.(),
+      revalidateSeconds: options.revalidateSeconds,
+    });
+    const outcome: RouteCacheabilityOutcome = cacheControl
+      ? {
+          cacheable: true,
+          cacheControl: appPageCacheControlHeader(cacheControl),
+          ...(observationState && !observationState.requestApis.includes("searchParams")
+            ? { searchParamsUnread: true }
+            : {}),
+          ...(cacheControl.stale !== undefined ? { staleTimeSeconds: cacheControl.stale } : {}),
+          tags: options.getPageTags(),
+        }
+      : { cacheable: false, reason: "render did not produce a cache policy" };
+    const admitted = renderStatus ? applyRscRenderStatus(outcome, renderStatus) : outcome;
+    // Every query shares the document's entry too.
+    settleAdmittedDocument(
+      options.captureAdmittedDocument,
+      admitted.cacheable && admitted.searchParamsUnread === true && renderStatus?.kind === "page"
+        ? (renderStatus.document ?? null)
+        : null,
+    );
+    complete(admitted);
+  };
 
   let completed = false;
   const finish = (): void => {
     if (completed) return;
     completed = true;
 
-    const observationState = options.consumeRenderObservationState?.();
-    let outcome: RouteCacheabilityOutcome;
+    let ineligible: RouteCacheabilityOutcome | undefined;
     if (
       options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
       options.consumeDynamicUsage()
     ) {
-      outcome = {
+      ineligible = {
         cacheable: false,
         dynamicUsage: true,
         reason: "dynamic API used during render",
       };
     } else if (options.isStaticEligible === false) {
-      outcome = { cacheable: false, reason: "route is not statically generated" };
+      ineligible = { cacheable: false, reason: "route is not statically generated" };
     } else if (
       response.headers.has("set-cookie") ||
       hasExplicitNonCacheableResponsePolicy(response.headers)
     ) {
-      outcome = { cacheable: false, reason: "response explicitly opts out of shared caching" };
-    } else {
-      const cacheControl = resolveAppPageCacheControl({
-        expireSeconds: options.expireSeconds,
-        requestCacheLife: options.getRequestCacheLife?.(),
-        revalidateSeconds: options.revalidateSeconds,
-      });
-      outcome = cacheControl
-        ? {
-            cacheable: true,
-            cacheControl: appPageCacheControlHeader(cacheControl),
-            ...(observationState && !observationState.requestApis.includes("searchParams")
-              ? { searchParamsUnread: true }
-              : {}),
-            tags: options.getPageTags(),
-          }
-        : { cacheable: false, reason: "render did not produce a cache policy" };
+      ineligible = { cacheable: false, reason: "response explicitly opts out of shared caching" };
     }
-    complete(outcome);
+    if (ineligible) {
+      options.consumeRenderObservationState?.();
+      settleAdmittedDocument(options.captureAdmittedDocument, null);
+      complete(ineligible);
+      return;
+    }
+    if (!options.resolveRscRenderStatus) {
+      admit();
+      return;
+    }
+    // The document renders before the render's cacheLife and observations are
+    // consumed, which its navigation cache metadata reads as an HTML request's
+    // does.
+    void options.resolveRscRenderStatus().then(admit, () => {
+      options.consumeRenderObservationState?.();
+      settleAdmittedDocument(options.captureAdmittedDocument, null);
+      complete({ cacheable: false, reason: "render status could not be resolved" });
+    });
   };
 
   if (!response.body) {
@@ -305,11 +392,8 @@ export function finalizeAppPageHtmlCacheResponse(
     markFrameworkLinkHeaders(clientResponse.headers, options.linkHeader);
     return clientResponse;
   }
-  if (!response.body) {
-    return response;
-  }
-
-  const [streamForClient, streamForCache] = response.body.tee();
+  // A redirect has no body, so its entry stores an empty document.
+  const [streamForClient, streamForCache] = response.body ? response.body.tee() : [null, null];
   const htmlKey = options.isrHtmlKey(options.cleanPathname);
   const rscKey = options.isrRscKey(
     options.cleanPathname,
@@ -327,7 +411,12 @@ export function finalizeAppPageHtmlCacheResponse(
 
   const cachePromise = (async () => {
     try {
-      let cachedHtml = await readStreamAsText(streamForCache);
+      let cachedHtml = streamForCache ? await readStreamAsText(streamForCache) : "";
+      // The page's Flight render can outlive a document it didn't render, such
+      // as a special error's, and the store reads what that render observed.
+      const rscData = options.capturedRscDataPromise
+        ? await options.capturedRscDataPromise
+        : undefined;
 
       if (
         options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
@@ -364,6 +453,7 @@ export function finalizeAppPageHtmlCacheResponse(
         state: observationState,
       });
       const linkHeader = options.linkHeader;
+      const status = options.status ?? 200;
       // Every query shares these entries, so a render not proven to leave the
       // query unread is never stored.
       if (
@@ -379,21 +469,20 @@ export function finalizeAppPageHtmlCacheResponse(
           buildAppPageCacheValue(
             cachedHtml,
             undefined,
-            200,
+            status,
             htmlRenderObservation,
-            linkHeader ? { link: linkHeader } : undefined,
+            linkHeader ? { ...options.headers, link: linkHeader } : options.headers,
           ),
           { cacheControl, tags: pageTags },
         ),
       ];
 
-      if (options.capturedRscDataPromise) {
+      if (rscData) {
         writes.push(
-          options.capturedRscDataPromise.then((rscData) =>
-            options.isrSet(rscKey, buildAppPageCacheValue("", rscData, 200, rscRenderObservation), {
-              cacheControl,
-              tags: pageTags,
-            }),
+          options.isrSet(
+            rscKey,
+            buildAppPageCacheValue("", rscData, status, rscRenderObservation, options.headers),
+            { cacheControl, tags: pageTags },
           ),
         );
       }
@@ -425,6 +514,7 @@ export function finalizeAppPageRscCacheResponse(
     void options.capturedRscDataPromise?.catch(() => {});
     return probeResponse;
   }
+  settleAdmittedDocument(options.captureAdmittedDocument, null);
   // Persisting to the ISR store and finalizing the client-facing headers are
   // independent decisions. Mounted-slot and unverified-interception variants
   // are deliberately never stored, but a fresh MISS stream can still reach a
@@ -486,6 +576,12 @@ export function scheduleAppPageRscCacheWrite(
         return;
       }
 
+      // Like Next.js, store the status and `location` of a special error that
+      // rejects the document's shell. Replay sends a redirect as a 200. The
+      // document renders before the render's cacheLife and observations are
+      // consumed, which its navigation cache metadata reads as an HTML
+      // request's does.
+      const renderStatus = (await options.resolveRscRenderStatus?.()) ?? { kind: "page" };
       const cacheControl = resolveAppPageCacheControl({
         expireSeconds: options.expireSeconds,
         requestCacheLife: options.getRequestCacheLife?.(),
@@ -509,11 +605,51 @@ export function scheduleAppPageRscCacheWrite(
         options.isrDebug?.("RSC cache write skipped (searchParams not proven unread)", rscKey);
         return;
       }
-      await options.isrSet(rscKey, buildAppPageCacheValue("", rscData, 200, rscRenderObservation), {
-        cacheControl,
-        tags: pageTags,
-      });
+      if (renderStatus.kind === "unstorable") {
+        options.isrDebug?.("RSC cache write skipped (unstorable special error)", rscKey);
+        return;
+      }
+      await options.isrSet(
+        rscKey,
+        renderStatus.kind === "special-error"
+          ? buildAppPageCacheValue(
+              "",
+              rscData,
+              renderStatus.status,
+              rscRenderObservation,
+              renderStatus.headers,
+            )
+          : buildAppPageCacheValue("", rscData, 200, rscRenderObservation),
+        { cacheControl, tags: pageTags },
+      );
       options.isrDebug?.("RSC cache written", rscKey);
+
+      // Next.js keeps a page's document and RSC payload in one entry, so an
+      // RSC miss stores the document as well.
+      // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+      const document = renderStatus.kind === "page" ? renderStatus.document : undefined;
+      if (!document || !options.isrHtmlKey || !options.createHtmlRenderObservation) return;
+      const htmlKey = options.isrHtmlKey(options.cleanPathname);
+      const htmlRenderObservation = options.createHtmlRenderObservation({
+        cacheTags: pageTags,
+        state: observationState,
+      });
+      if (!hasQueryInvariantRenderProof(htmlRenderObservation)) {
+        options.isrDebug?.("HTML cache write skipped (searchParams not proven unread)", htmlKey);
+        return;
+      }
+      await options.isrSet(
+        htmlKey,
+        buildAppPageCacheValue(
+          document.html,
+          undefined,
+          200,
+          htmlRenderObservation,
+          document.linkHeader ? { link: document.linkHeader } : undefined,
+        ),
+        { cacheControl, tags: pageTags },
+      );
+      options.isrDebug?.("HTML cache written", htmlKey);
     } catch (cacheError) {
       console.error("[vinext] ISR RSC cache write error:", cacheError);
     }

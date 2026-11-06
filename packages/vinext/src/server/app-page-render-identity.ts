@@ -28,7 +28,7 @@ function normalizeAppPageRenderMatchedPathname(pathname: string): string {
   return normalizePath(normalizePathnameForRouteMatch(pathname));
 }
 
-export function normalizeAppPageInterceptionProofPathname(pathname: string | null): string | null {
+function normalizeAppPageInterceptionProofPathname(pathname: string | null): string | null {
   if (pathname === null || !isInterceptionMatchedUrlPath(pathname)) return null;
   return normalizeAppPageRenderMatchedPathname(pathname);
 }

@@ -1,9 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import "vinext/internal/server/cloudflare-workers-tracing";
 import {
-  NEXTJS_CACHE_HEADER,
   VINEXT_PRERENDER_READINESS_PATH,
-  VINEXT_CACHE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "vinext/internal/server/headers";
 import type {
@@ -15,8 +13,20 @@ import type {
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
-import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
+import { isNonCacheableCacheControl, splitCacheControlDirectives } from "vinext/shims/cdn-cache";
+import {
+  createCanonicalRscRequestHeaders,
+  createCanonicalRscRequestUrl,
+  stripRscCacheBustingSearchParam,
+} from "vinext/internal/server/app-rsc-cache-busting";
+import { isCanonicalAppPage } from "./app-page-parts.js";
+import {
+  finalizeGatewayResponse,
+  SHARED_RESPONSE_STAGE_HEADER,
+  type SharedResponseStage,
+} from "./browser-cache-policy.js";
 import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
+import { hasCacheMethod, invalidateOrPurge } from "./workers-cache-invalidation.js";
 
 type StageBinding = {
   fetch(request: Request): Promise<Response> | Response;
@@ -41,6 +51,14 @@ type CloudflareResponseStageInvocation = {
   props: unknown;
   requestMethod: string;
   requestUrl: string;
+  /** The props and URL are a host-free cache identity; the dispatch rides in a header. */
+  restoresDispatch?: true;
+};
+
+/** What a host-free identity replaced in the dispatch it keys. */
+type ResponseStageDispatchRestore = {
+  props: Record<string, unknown>;
+  requestUrl: string;
 };
 
 type CachePurgeOptions = { tags: string[] };
@@ -64,8 +82,11 @@ const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CACHE_CONTROL_TRANSPORT_HEADER = "x-vinext-internal-request-cache-control";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const REQUEST_PRAGMA_TRANSPORT_HEADER = "x-vinext-internal-request-pragma";
-const CLOUDFLARE_EDGE_POLICY_HEADER = "Cloudflare-CDN-Cache-Control";
-const SHARED_RESPONSE_STAGE_HEADER = "x-vinext-cloudflare-shared-response-stage";
+const RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER = "x-vinext-internal-render-whole-document";
+const DISPATCH_TRANSPORT_HEADER = "x-vinext-internal-dispatch";
+/** The stage props a host-free cache identity replaces. */
+const HOST_BEARING_PROPS = new Set(["requestHost", "requestOrigin", "requestUrl"]);
+const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
 const RESPONSE_STAGE_WIRE_CACHE = {
   bypass: "vinext-cloudflare-v1:bypass",
   shared: "vinext-cloudflare-v1:shared",
@@ -73,6 +94,12 @@ const RESPONSE_STAGE_WIRE_CACHE = {
 
 type ResponseStageWireCache =
   (typeof RESPONSE_STAGE_WIRE_CACHE)[keyof typeof RESPONSE_STAGE_WIRE_CACHE];
+/**
+ * The statuses of a part Workers Cache just rendered for its entry, inline or
+ * as a background refresh of a stale one.
+ * https://developers.cloudflare.com/workers/cache/debugging/
+ */
+const RENDERED_ENTRY_CACHE_STATUSES = new Set(["EXPIRED", "MISS", "UPDATING"]);
 const FRAMEWORK_RESPONSE_VARY_FIELDS = new Set(
   VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
 );
@@ -142,7 +169,9 @@ function stripUntrustedTransportHeaders(request: Request): Request {
     !request.headers.has(AUTHORIZATION_TRANSPORT_HEADER) &&
     !request.headers.has(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER) &&
     !request.headers.has(REQUEST_CF_TRANSPORT_HEADER) &&
-    !request.headers.has(REQUEST_PRAGMA_TRANSPORT_HEADER)
+    !request.headers.has(REQUEST_PRAGMA_TRANSPORT_HEADER) &&
+    !request.headers.has(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER) &&
+    !request.headers.has(DISPATCH_TRANSPORT_HEADER)
   ) {
     return request;
   }
@@ -151,16 +180,22 @@ function stripUntrustedTransportHeaders(request: Request): Request {
   headers.delete(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
-  const sanitized = new Request(request, { headers });
-  const requestCf = Reflect.get(request, "cf");
+  headers.delete(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER);
+  headers.delete(DISPATCH_TRANSPORT_HEADER);
+  return withRequestCf(new Request(request, { headers }), request);
+}
+
+/** Give a request built from another the platform's `request.cf` of that one. */
+function withRequestCf(request: Request, source: Request): Request {
+  const requestCf = Reflect.get(source, "cf");
   if (requestCf !== undefined) {
-    Object.defineProperty(sanitized, "cf", {
+    Object.defineProperty(request, "cf", {
       configurable: true,
       enumerable: true,
       value: requestCf,
     });
   }
-  return sanitized;
+  return request;
 }
 
 function withWorkerHostRuntime(
@@ -203,15 +238,6 @@ function hasFetch(value: unknown): value is StageBinding {
   );
 }
 
-function hasPurge(value: unknown): value is Required<Pick<StageBinding, "purge">> {
-  return (
-    value !== null &&
-    (typeof value === "object" || typeof value === "function") &&
-    "purge" in value &&
-    typeof value.purge === "function"
-  );
-}
-
 function getResponseStageBinding(
   context: CloudflareStageContext,
   exportName: typeof CACHED_RESPONSE_STAGE_EXPORT | typeof UNCACHED_RESPONSE_STAGE_EXPORT,
@@ -232,6 +258,8 @@ function getResponseStageBinding(
 async function createCacheFacingRequest(
   request: Request,
   serializedInvocation: string,
+  identityRequest: Request,
+  dispatchRestore: ResponseStageDispatchRestore | null,
 ): Promise<Request> {
   const authorization = request.headers.get("Authorization");
   let serializedRequestCf: string | null = null;
@@ -258,11 +286,11 @@ async function createCacheFacingRequest(
   // can collect different tags, so promote the complete framework selector
   // tuple into the opaque primary key instead of relying on Vary alone.
   const frameworkVaryIdentity = JSON.stringify(
-    [...FRAMEWORK_RESPONSE_VARY_FIELDS].map((name) => [name, request.headers.get(name)]),
+    [...FRAMEWORK_RESPONSE_VARY_FIELDS].map((name) => [name, identityRequest.headers.get(name)]),
   );
   const responseStageBuildIdentity = getVinextCdnBuildIdentity() ?? "";
   const bytes = new TextEncoder().encode(
-    `${request.url}\0${serializedInvocation}\0${authorizationIdentity}\0${frameworkVaryIdentity}\0${responseStageBuildIdentity}`,
+    `${identityRequest.url}\0${serializedInvocation}\0${authorizationIdentity}\0${frameworkVaryIdentity}\0${responseStageBuildIdentity}`,
   );
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const key = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -278,8 +306,15 @@ async function createCacheFacingRequest(
   headers.delete(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
+  headers.delete(DISPATCH_TRANSPORT_HEADER);
   if (authorization !== null) {
     headers.set(AUTHORIZATION_TRANSPORT_HEADER, encodeURIComponent(authorization));
+  }
+  if (dispatchRestore !== null) {
+    // Workers Cache keys neither the host nor this header, so the real host
+    // reaches a cold render, or the edge's background refresh, without
+    // splitting the entry every host shares.
+    headers.set(DISPATCH_TRANSPORT_HEADER, encodeURIComponent(JSON.stringify(dispatchRestore)));
   }
   if (serializedRequestCf !== null) {
     headers.set(REQUEST_CF_TRANSPORT_HEADER, serializedRequestCf);
@@ -307,6 +342,11 @@ async function createCacheFacingRequest(
   return new Request(url, {
     ...init,
     method: request.method,
+    // A cache-fronted fetch follows redirects by default; following would
+    // re-enter the entrypoint for the redirect target while the invocation
+    // props still describe the original URL, re-rendering the redirect
+    // source forever. Return redirects to the caller instead.
+    redirect: "manual",
   });
 }
 
@@ -327,6 +367,8 @@ function restoreResponseStageRequest(
   headers.delete(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
+  headers.delete(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER);
+  headers.delete(DISPATCH_TRANSPORT_HEADER);
   if (serializedAuthorization !== null) {
     try {
       headers.set("Authorization", decodeURIComponent(serializedAuthorization));
@@ -380,6 +422,106 @@ function restoreResponseStageRequest(
   };
 }
 
+function isAppPageDocumentInvocation(invocation: CloudflareResponseStageInvocation): boolean {
+  const props = invocation.props;
+  return (
+    props !== null &&
+    typeof props === "object" &&
+    Reflect.get(props, "kind") === "app-page" &&
+    Reflect.get(props, "isRscRequest") === false
+  );
+}
+
+/** A Pages page render, as an HTML document or a `_next/data` payload. */
+function isPagesPageInvocation(invocation: CloudflareResponseStageInvocation): boolean {
+  const props = invocation.props;
+  if (props === null || typeof props !== "object") return false;
+  const kind = Reflect.get(props, "kind");
+  return (
+    kind === "pages-page" ||
+    (kind === "hybrid-pages" && Reflect.get(props, "resourceKind") === "page")
+  );
+}
+
+/**
+ * Workers Cache revalidates an entry that has a validator with a conditional
+ * request, and serves the stale entry meanwhile or fills an expired one.
+ */
+function revalidatesStoredEntry(request: Request): boolean {
+  return request.headers.has("If-None-Match") || request.headers.has("If-Modified-Since");
+}
+
+/**
+ * No client waits on a deployment warm-up, on a revalidation, as with the
+ * Response Store's, or on the gateway's fill of a page's document.
+ */
+function rendersWholeDocument(request: Request): boolean {
+  return (
+    request.headers.get("user-agent") === WARMUP_USER_AGENT ||
+    request.headers.has(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER) ||
+    revalidatesStoredEntry(request)
+  );
+}
+
+/**
+ * A conditional revalidation of a Pages page skips getStaticPaths(), so only a
+ * successful render may be stored with a validator. Bot renders carry an ETag
+ * whatever their status. A 304 answers a revalidation of a stored 200, and a
+ * response a shared cache may not store keeps its validators.
+ */
+function withPagesRevalidationValidator(response: Response): Response {
+  if (response.status === 200) return withRevalidationValidator(response);
+  const policy = selectedCachePolicy(response);
+  if (
+    response.status === 304 ||
+    (policy !== null && forbidsSharedStorage(policy)) ||
+    (!response.headers.has("ETag") && !response.headers.has("Last-Modified"))
+  ) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.delete("ETag");
+  headers.delete("Last-Modified");
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+/**
+ * `no-cache` and a field-qualified `private` still let a shared cache store the
+ * response (RFC 9111 sections 5.2.2.4 and 5.2.2.7).
+ */
+function forbidsSharedStorage(policy: string): boolean {
+  return splitCacheControlDirectives(policy).some((directive) => {
+    const normalized = directive.toLowerCase();
+    return normalized === "private" || normalized.split("=", 1)[0]!.trim() === "no-store";
+  });
+}
+
+function selectedCachePolicy(response: Response): string | null {
+  return (
+    response.headers.get("Cloudflare-CDN-Cache-Control") ??
+    response.headers.get("CDN-Cache-Control") ??
+    response.headers.get("Cache-Control")
+  );
+}
+
+/** Give a cacheable document a validator, so Workers Cache revalidates it conditionally. */
+function withRevalidationValidator(response: Response): Response {
+  if (response.headers.has("ETag") || response.headers.has("Last-Modified")) return response;
+  const policy = selectedCachePolicy(response);
+  if (policy === null || isNonCacheableCacheControl(policy)) return response;
+  const headers = new Headers(response.headers);
+  headers.set("Last-Modified", new Date().toUTCString());
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 function preventResponseCaching(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "no-store");
@@ -422,46 +564,6 @@ function markSharedResponseStage(
   );
 }
 
-function finalizeGatewayResponse(response: Response, provenanceToken: string): Response {
-  const provenance = response.headers.get(SHARED_RESPONSE_STAGE_HEADER);
-  const usedSharedResponseStage =
-    provenance === provenanceToken || provenance?.startsWith(`${provenanceToken}:`) === true;
-  // The marker is reserved for adapter-internal provenance. If outer response
-  // composition replaces it, fail closed rather than forwarding shared cache
-  // policy on a response whose origin can no longer be authenticated.
-  const sharedResponseStageCollision = provenance !== null && !usedSharedResponseStage;
-  const cacheControl = response.headers.get("Cache-Control");
-  if (
-    !response.headers.has(CLOUDFLARE_EDGE_POLICY_HEADER) &&
-    !usedSharedResponseStage &&
-    !sharedResponseStageCollision
-  ) {
-    return response;
-  }
-  const headers = new Headers(response.headers);
-  headers.delete(SHARED_RESPONSE_STAGE_HEADER);
-  headers.delete(CLOUDFLARE_EDGE_POLICY_HEADER);
-  if (usedSharedResponseStage || sharedResponseStageCollision) {
-    headers.delete("CDN-Cache-Control");
-    headers.delete("Cache-Tag");
-    headers.delete(VINEXT_CACHE_HEADER);
-    headers.delete(NEXTJS_CACHE_HEADER);
-    if (!cacheControl || !isNonCacheableCacheControl(cacheControl)) {
-      headers.set("Cache-Control", "private, max-age=0, must-revalidate");
-    }
-  }
-  if (usedSharedResponseStage && provenance?.startsWith(`${provenanceToken}:`)) {
-    const cacheStatus = decodeURIComponent(provenance.slice(provenanceToken.length + 1));
-    headers.set(VINEXT_CACHE_HEADER, cacheStatus);
-    headers.set(NEXTJS_CACHE_HEADER, cacheStatus);
-  }
-  return new Response(response.body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
-}
-
 function hasTaggedCustomVary(response: Response): boolean {
   if (!response.headers.get("Cache-Tag")) return false;
   const varyFields = (response.headers.get("Vary") ?? "")
@@ -471,7 +573,11 @@ function hasTaggedCustomVary(response: Response): boolean {
   return varyFields.some((name) => !FRAMEWORK_RESPONSE_VARY_FIELDS.has(name));
 }
 
-function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
+/**
+ * Workers Cache purges and invalidations only reach the calling entrypoint's
+ * cache, so route both through the cache-bearing response entrypoint.
+ */
+function withResponseStageCache(context: CloudflareStageContext): CloudflareStageContext {
   const factory = context.exports?.[CACHED_RESPONSE_STAGE_EXPORT];
   if (typeof factory !== "function") return context;
   const fallback = context.cache;
@@ -480,8 +586,14 @@ function withResponseStagePurge(context: CloudflareStageContext): CloudflareStag
     cache: {
       purge(options: CachePurgeOptions) {
         const target = (factory as StageBindingFactory)({ props: {} });
-        if (hasPurge(target)) return target.purge(options);
-        return hasPurge(fallback) ? fallback.purge(options) : undefined;
+        if (hasCacheMethod(target, "purge")) return target.purge(options);
+        return hasCacheMethod(fallback, "purge") ? fallback.purge(options) : undefined;
+      },
+      invalidate(options: CachePurgeOptions) {
+        const target = (factory as StageBindingFactory)({ props: {} });
+        const targetCanUpdate =
+          hasCacheMethod(target, "invalidate") || hasCacheMethod(target, "purge");
+        return invalidateOrPurge(targetCanUpdate ? target : fallback, options);
       },
     },
   };
@@ -538,6 +650,8 @@ function getResponseStageInvocation(
   } catch {
     return null;
   }
+  const restoresDispatch = Reflect.get(value, "restoresDispatch");
+  if (restoresDispatch !== undefined && restoresDispatch !== true) return null;
   return {
     ...(typeof expectedResponseStageBuildIdentity === "string"
       ? { expectedResponseStageBuildIdentity }
@@ -546,7 +660,132 @@ function getResponseStageInvocation(
     props: Reflect.get(value, "props"),
     requestMethod,
     requestUrl,
+    ...(restoresDispatch ? { restoresDispatch } : {}),
   };
+}
+
+type ResponseStageDispatch = { props: unknown; request: Request };
+
+/**
+ * The dispatch of the other part of the page a canonical App page part belongs
+ * to. Next.js keeps a page's document and RSC payload in one entry, so the two
+ * dispatches differ only in the RSC request selectors, the URL's `_rsc` and the
+ * request type in the props. The request keeps the client's other headers,
+ * minus those that would make the fetch conditional or partial. No client
+ * waits on a document fetched this way, so it is rendered whole, marked by a
+ * header that, unlike the props, does not key its entry.
+ */
+function otherPagePartDispatch(request: Request, props: unknown): ResponseStageDispatch | null {
+  const isRscRequest = isCanonicalAppPage(props, true);
+  if (!isRscRequest && !isCanonicalAppPage(props, false)) return null;
+
+  const headers = new Headers(request.headers);
+  for (const name of FRAMEWORK_RESPONSE_VARY_FIELDS) headers.delete(name);
+  for (const name of [
+    "If-Match",
+    "If-Modified-Since",
+    "If-None-Match",
+    "If-Range",
+    "If-Unmodified-Since",
+    "Range",
+  ]) {
+    headers.delete(name);
+  }
+  if (isRscRequest) {
+    const url = new URL(request.url);
+    stripRscCacheBustingSearchParam(url);
+    // Only the client's RSC requests name the deployment they expect.
+    headers.delete("x-deployment-id");
+    headers.set("Accept", "text/html");
+    headers.set(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER, "1");
+    return {
+      props: { ...(props as Record<string, unknown>), isRscRequest: false },
+      request: withRequestCf(new Request(url, { headers }), request),
+    };
+  }
+  for (const [name, value] of createCanonicalRscRequestHeaders()) headers.set(name, value);
+  return {
+    props: { ...(props as Record<string, unknown>), isRscRequest: true, renderMode: "navigation" },
+    request: withRequestCf(
+      new Request(new URL(createCanonicalRscRequestUrl(request.url), request.url), { headers }),
+      request,
+    ),
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function pathAndSearch(url: URL): string {
+  return `${url.pathname}${url.search}`;
+}
+
+/**
+ * What a shared dispatch's host-free identity replaced: the request URL, and
+ * the top-level props that name the host. Null when the identity is anything
+ * else, so the dispatch keys itself, host and all.
+ */
+function getDispatchRestore(
+  request: Request,
+  props: unknown,
+  identity: NonNullable<VinextResponseStageDispatchOptions["cacheIdentity"]>,
+): ResponseStageDispatchRestore | null {
+  // Workers Cache keys the dispatched path and query, so the identity may
+  // differ from the dispatch only in its origin and props.
+  if (
+    identity.request.method !== request.method ||
+    pathAndSearch(new URL(identity.request.url)) !== pathAndSearch(new URL(request.url))
+  ) {
+    return null;
+  }
+  // Props cross the entrypoint boundary as JSON, so compare them as JSON.
+  const dispatched: unknown = JSON.parse(JSON.stringify(props) ?? "null");
+  const keyed: unknown = JSON.parse(JSON.stringify(identity.props) ?? "null");
+  if (!isPlainObject(dispatched) || !isPlainObject(keyed)) return null;
+  if (Object.keys(keyed).some((name) => !Object.hasOwn(dispatched, name))) return null;
+  const replaced: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(dispatched)) {
+    if (JSON.stringify(value) === JSON.stringify(keyed[name])) continue;
+    // Only the host may differ: a render from any other unkeyed prop would
+    // store it under a key that doesn't name it.
+    if (!HOST_BEARING_PROPS.has(name)) return null;
+    replaced[name] = value;
+  }
+  return { props: replaced, requestUrl: request.url };
+}
+
+/**
+ * Rebuild the dispatch a host-free invocation keys from the restore header
+ * the gateway sent. Null when an identity invocation has no valid restore.
+ */
+function restoreDispatchInvocation(
+  request: Request,
+  invocation: CloudflareResponseStageInvocation,
+): CloudflareResponseStageInvocation | null {
+  if (!invocation.restoresDispatch) return invocation;
+  const serialized = request.headers.get(DISPATCH_TRANSPORT_HEADER);
+  if (serialized === null || !isPlainObject(invocation.props)) return null;
+  let restore: unknown;
+  try {
+    restore = JSON.parse(decodeURIComponent(serialized));
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(restore) || !isPlainObject(restore.props)) return null;
+  if (Object.keys(restore.props).some((name) => !HOST_BEARING_PROPS.has(name))) return null;
+  const requestUrl = restore.requestUrl;
+  if (typeof requestUrl !== "string") return null;
+  let url: URL;
+  try {
+    url = new URL(requestUrl);
+  } catch {
+    return null;
+  }
+  // The restore names the host, never another page under this entry's key.
+  if (pathAndSearch(url) !== pathAndSearch(new URL(invocation.requestUrl))) return null;
+  const { restoresDispatch: _restoresDispatch, ...dispatch } = invocation;
+  return { ...dispatch, props: { ...invocation.props, ...restore.props }, requestUrl };
 }
 
 async function invokeResponseStage(
@@ -596,12 +835,38 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     ) {
       return stampResponseStageBuildIdentity(responseStageUnavailable());
     }
+    const dispatch = restoreDispatchInvocation(request, invocation);
+    if (!dispatch) {
+      return stampResponseStageBuildIdentity(
+        new Response("Invalid vinext response-stage invocation", {
+          status: 400,
+          headers: { "Cache-Control": "no-store" },
+        }),
+      );
+    }
     const restored = restoreResponseStageRequest(
       request,
-      invocation.requestUrl,
-      invocation.requestMethod,
+      dispatch.requestUrl,
+      dispatch.requestMethod,
     );
-    const response = await invokeResponseStage(restored.request, this.env, context, invocation);
+    // As in Next.js, which renders a static page whole, a document no client
+    // waits on has its streamed metadata in <head>.
+    const isAppPageDocument = isAppPageDocumentInvocation(dispatch);
+    const isPagesPage = isPagesPageInvocation(dispatch);
+    const response = await invokeResponseStage(
+      restored.request,
+      this.env,
+      context,
+      isAppPageDocument && rendersWholeDocument(request)
+        ? { ...dispatch, options: { ...dispatch.options, renderWholeDocument: true } }
+        : // Only a successful Pages render is stored with a validator, so a
+          // conditional revalidation proves the entry stored for this build
+          // was admitted, and Next.js regenerates such a path without
+          // calling getStaticPaths().
+          isPagesPage && revalidatesStoredEntry(request)
+          ? { ...dispatch, options: { ...dispatch.options, regeneratesStoredEntry: true } }
+          : dispatch,
+    );
     // Workers Cache variants share one purge identity and therefore must carry
     // exactly the same Cache-Tag values. Application-defined Vary fields can
     // also influence cacheTag() calls, and this boundary cannot prove that the
@@ -611,21 +876,29 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     return stampResponseStageBuildIdentity(
       restored.didAccessRequestCf() || hasTaggedCustomVary(response)
         ? preventResponseCaching(response)
-        : response,
+        : isAppPageDocument
+          ? withRevalidationValidator(response)
+          : isPagesPage
+            ? withPagesRevalidationValidator(response)
+            : response,
     );
   }
 
   async purge(options: CachePurgeOptions): Promise<unknown> {
     const cache = Reflect.get(this.ctx, "cache");
-    if (!hasPurge(cache)) return undefined;
+    if (!hasCacheMethod(cache, "purge")) return undefined;
     return cache.purge(options);
+  }
+
+  async invalidate(options: CachePurgeOptions): Promise<unknown> {
+    return invalidateOrPurge(Reflect.get(this.ctx, "cache"), options);
   }
 }
 
 /** Uncached response entrypoint retained for deployment readiness probes. */
 export class VinextUncachedResponse extends WorkerEntrypoint<unknown, unknown> {
   async fetch(request: Request): Promise<Response> {
-    const context = withResponseStagePurge(withWorkerHostRuntime(this.ctx, this.env));
+    const context = withResponseStageCache(withWorkerHostRuntime(this.ctx, this.env));
     const invocation = getResponseStageInvocation(context.props, "bypass");
     if (!invocation) {
       return stampResponseStageBuildIdentity(
@@ -655,56 +928,150 @@ export default {
     context: CloudflareStageContext | undefined,
   ): Promise<Response> {
     request = stripUntrustedTransportHeaders(request);
-    const sharedResponseStageProvenance = crypto.randomUUID();
-    const stageContext = withResponseStagePurge(withWorkerHostRuntime(context, env));
+    const sharedResponses = new Map<string, SharedResponseStage>();
+    const stageContext = withResponseStageCache(withWorkerHostRuntime(context, env));
+    const createInvocation = (
+      stageRequest: Request,
+      props: unknown,
+      options: VinextResponseStageDispatchOptions,
+    ): CloudflareResponseStageInvocation => {
+      const expectedResponseStageBuildIdentity = getVinextCdnBuildIdentity();
+      // The identity is the key's, not the render's, and holds a Request.
+      const { cacheIdentity: _cacheIdentity, ...stageOptions } = options;
+      return {
+        ...(expectedResponseStageBuildIdentity === null
+          ? {}
+          : { expectedResponseStageBuildIdentity }),
+        options: stageOptions,
+        props,
+        requestMethod: stageRequest.method,
+        requestUrl: stageRequest.url,
+      };
+    };
+    /** Fetch a response stage through its named entrypoint, the cached one for a shared dispatch. */
+    const fetchResponseStageEntrypoint = async (
+      stageRequest: Request,
+      props: unknown,
+      options: VinextResponseStageDispatchOptions,
+    ): Promise<Response> => {
+      const invocation = createInvocation(stageRequest, props, options);
+      const usesSharedCache = options.cache === "shared";
+      // Workers Cache keys ctx.props, so a shared dispatch with a host-free
+      // identity passes the identity as props and restores the host the
+      // render needs from a header, as Next.js keys its response cache by
+      // pathname for every host.
+      const { cacheIdentity } = options;
+      const dispatchRestore =
+        usesSharedCache && cacheIdentity
+          ? getDispatchRestore(stageRequest, props, cacheIdentity)
+          : null;
+      const keyedRequest = dispatchRestore ? cacheIdentity!.request : stageRequest;
+      const serializedInvocation = JSON.stringify({
+        ...invocation,
+        ...(dispatchRestore
+          ? {
+              props: cacheIdentity!.props,
+              requestMethod: keyedRequest.method,
+              requestUrl: keyedRequest.url,
+              restoresDispatch: true,
+            }
+          : {}),
+        options:
+          invocation.expectedResponseStageBuildIdentity === undefined
+            ? invocation.options
+            : {
+                ...invocation.options,
+                cache: RESPONSE_STAGE_WIRE_CACHE[options.cache] satisfies ResponseStageWireCache,
+              },
+      });
+      const binding = getResponseStageBinding(
+        stageContext,
+        usesSharedCache ? CACHED_RESPONSE_STAGE_EXPORT : UNCACHED_RESPONSE_STAGE_EXPORT,
+        serializedInvocation,
+      );
+      if (!binding) {
+        return responseStageUnavailable();
+      }
+      const entrypointRequest = usesSharedCache
+        ? await createCacheFacingRequest(
+            stageRequest,
+            serializedInvocation,
+            keyedRequest,
+            dispatchRestore,
+          )
+        : stageRequest;
+      return validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
+    };
+    /**
+     * Fetch the other part of a canonical App page part Workers Cache just
+     * rendered, so its entry is filled or refreshed too. Workers Cache stores
+     * only what its entrypoint returns, so the other part renders on its own.
+     * A deployment warm-up already requests both parts, and this fetch reaches
+     * the entrypoint directly, so it never fetches another part itself.
+     */
+    const storeOtherPagePart = (
+      stageRequest: Request,
+      props: unknown,
+      options: VinextResponseStageDispatchOptions,
+      cacheStatus: string | null,
+    ): void => {
+      if (
+        cacheStatus === null ||
+        !RENDERED_ENTRY_CACHE_STATUSES.has(cacheStatus) ||
+        stageRequest.headers.get("user-agent") === WARMUP_USER_AGENT ||
+        typeof stageContext.waitUntil !== "function"
+      ) {
+        return;
+      }
+      stageContext.waitUntil(
+        (async () => {
+          const otherPart = otherPagePartDispatch(stageRequest, props);
+          if (!otherPart) return;
+          // A host-free identity differs from its dispatch only in the host,
+          // so the other part's identity is the identity's other part, the
+          // one a request for that part from any host is keyed by.
+          const { cacheIdentity, ...otherOptions } = options;
+          const otherIdentity = cacheIdentity
+            ? otherPagePartDispatch(cacheIdentity.request, cacheIdentity.props)
+            : null;
+          const response = await fetchResponseStageEntrypoint(
+            otherPart.request,
+            otherPart.props,
+            otherIdentity ? { ...otherOptions, cacheIdentity: otherIdentity } : otherOptions,
+          );
+          // Workers Cache stores a response once its body has been read.
+          await response.body?.pipeTo(new WritableStream());
+        })().catch((error: unknown) => {
+          console.error("[vinext] Workers Cache could not store a page's other part:", error);
+        }),
+      );
+    };
     const dispatchResponseStage: VinextResponseStageTransport = async (
       stageRequest,
       props,
       options,
     ) => {
-      const expectedResponseStageBuildIdentity = getVinextCdnBuildIdentity();
-      const invocation = {
-        ...(expectedResponseStageBuildIdentity === null
-          ? {}
-          : { expectedResponseStageBuildIdentity }),
-        options,
-        props,
-        requestMethod: stageRequest.method,
-        requestUrl: stageRequest.url,
-      };
       const usesSharedCache = options.cache === "shared";
       try {
         // Readiness must still verify that the named response entrypoint is available.
         if (!usesSharedCache && !isResponseStageReadinessRequest(stageRequest)) {
           return stampResponseStageBuildIdentity(
-            await invokeResponseStage(stageRequest, env, stageContext, invocation),
+            await invokeResponseStage(
+              stageRequest,
+              env,
+              stageContext,
+              createInvocation(stageRequest, props, options),
+            ),
           );
         }
-        const serializedInvocation = JSON.stringify({
-          ...invocation,
-          options:
-            expectedResponseStageBuildIdentity === null
-              ? options
-              : {
-                  ...options,
-                  cache: RESPONSE_STAGE_WIRE_CACHE[options.cache] satisfies ResponseStageWireCache,
-                },
+        const response = await fetchResponseStageEntrypoint(stageRequest, props, options);
+        if (!usesSharedCache) return response;
+        storeOtherPagePart(stageRequest, props, options, response.headers.get("CF-Cache-Status"));
+        const shared = markSharedResponseStage(response, crypto.randomUUID(), props, true);
+        sharedResponses.set(shared.headers.get(SHARED_RESPONSE_STAGE_HEADER)!, {
+          headers: new Headers(shared.headers),
         });
-        const binding = getResponseStageBinding(
-          stageContext,
-          usesSharedCache ? CACHED_RESPONSE_STAGE_EXPORT : UNCACHED_RESPONSE_STAGE_EXPORT,
-          serializedInvocation,
-        );
-        if (!binding) {
-          return responseStageUnavailable();
-        }
-        const entrypointRequest = usesSharedCache
-          ? await createCacheFacingRequest(stageRequest, serializedInvocation)
-          : stageRequest;
-        const response = validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
-        return usesSharedCache
-          ? markSharedResponseStage(response, sharedResponseStageProvenance, props, true)
-          : response;
+        return shared;
       } catch (error) {
         if (isResponseStageReadinessRequest(stageRequest)) return responseStageUnavailable();
         throw error;
@@ -713,7 +1080,7 @@ export default {
     const { handleRequestStage } = await loadVinextRequestStage<unknown, CloudflareStageContext>();
     return finalizeGatewayResponse(
       await handleRequestStage(request, env, stageContext, dispatchResponseStage),
-      sharedResponseStageProvenance,
+      sharedResponses,
     );
   },
 };

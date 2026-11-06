@@ -3,12 +3,18 @@ import {
   createSupplementalRefreshCoordinator,
   mergeRefreshedParallelSlot,
   requireCompleteSupplementalRefresh,
+  resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
   SupplementalRefreshError,
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
 import { AppElementsWire, type AppElements } from "../packages/vinext/src/server/app-elements.js";
+import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
+import type {
+  BrowserRouteManifest,
+  BrowserRouteManifestInterception,
+} from "../packages/vinext/src/routing/browser-route-manifest.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -61,6 +67,70 @@ describe("parallel route supplemental refreshes", () => {
         },
       }),
     ).toEqual(["/docs/nested-revalidate/drawer", "/docs/nested-revalidate?view=current"]);
+  });
+
+  it("keeps a route segment that repeats the basePath when adding it back", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        activeRoutePaths: ["/docs/guide"],
+        basePath: "/docs",
+        refreshUrl: new URL("https://example.com/docs/docs/guide/modal"),
+        state: {
+          previousNextUrl: null,
+          slotBindings: [],
+        },
+      }),
+    ).toEqual(["/docs/docs/guide"]);
+  });
+
+  it("keeps a route segment that repeats the basePath in a persisted interception target", () => {
+    const interception: BrowserRouteManifestInterception = {
+      id: "interception:slot:modal:/docs/feed->/docs/guide",
+      ownerLayoutId: "layout:/",
+      slotId: "slot:modal:/",
+      sourcePatternParts: ["docs", "feed"],
+      targetPatternParts: ["docs", "guide"],
+      targetRouteId: "route:/docs/guide",
+    };
+    const routeManifest: BrowserRouteManifest = {
+      graphVersion: "test",
+      segmentGraph: {
+        interceptions: new Map([[interception.id, interception]]),
+        interceptionsBySlotId: new Map(),
+        layouts: new Map(),
+        rootBoundaries: new Map(),
+        routes: new Map(),
+        slotBindings: new Map(),
+      },
+    };
+
+    expect(
+      resolvePersistedRefreshInterceptions({
+        basePath: "/docs",
+        refreshUrl: new URL("https://example.com/docs/docs/feed?tab=new"),
+        requestInterceptionContext: null,
+        routeManifest,
+        state: {
+          interception: null,
+          slotBindings: [
+            {
+              activeRouteId: "route:/docs/guide",
+              interceptionId: interception.id,
+              interceptionSourceMatchedUrl: "/docs/feed",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:modal:/",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      {
+        interception,
+        interceptionContext: "/docs/feed",
+        targetPathname: "/docs/docs/guide?tab=new",
+      },
+    ]);
   });
 
   it("uses the traversed-to history entry instead of routes from the page being left", () => {
@@ -167,8 +237,14 @@ describe("parallel route supplemental refreshes", () => {
   });
 
   it("merges every active slot from a supplemental route response", () => {
+    const modalSegmentId = createNestedBfcacheSlotSegmentId("slot:modal:/nested", 1);
     const current: AppElements = {
       ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [modalSegmentId]: "modal segment mounted",
+          "slot:children:/nested": "page stale",
+          "slot:modal:/nested": "modal mounted",
+        },
         interceptionContext: null,
         layoutIds: ["layout:/", "layout:/nested"],
         rootLayoutTreePath: "/",
@@ -182,6 +258,7 @@ describe("parallel route supplemental refreshes", () => {
           },
         ],
       }),
+      [modalSegmentId]: "mounted modal segment",
       "slot:children:/nested": "stale page",
       "slot:drawer:/nested": "stale drawer",
       "slot:modal:/nested": "fresh modal",
@@ -190,6 +267,13 @@ describe("parallel route supplemental refreshes", () => {
     };
     const refreshed: AppElements = {
       ...AppElementsWire.createMetadataEntries({
+        // The refreshed tree describes the modal slot by its default.
+        bfcacheSegmentIdentities: {
+          [modalSegmentId]: "modal segment default",
+          "slot:children:/nested": "page fresh",
+          "slot:drawer:/nested": "drawer fresh",
+          "slot:modal:/nested": "modal default",
+        },
         interceptionContext: null,
         layoutIds: ["layout:/", "layout:/nested"],
         rootLayoutTreePath: "/",
@@ -209,6 +293,7 @@ describe("parallel route supplemental refreshes", () => {
           },
         ],
       }),
+      [modalSegmentId]: "default modal segment",
       "slot:children:/nested": "fresh page",
       "slot:drawer:/nested": "fresh drawer",
       "route:/nested": "fresh page route",
@@ -219,6 +304,14 @@ describe("parallel route supplemental refreshes", () => {
     expect(result["slot:children:/nested"]).toBe("fresh page");
     expect(result["slot:drawer:/nested"]).toBe("fresh drawer");
     expect(result["slot:modal:/nested"]).toBe("fresh modal");
+    expect(result[modalSegmentId]).toBe("mounted modal segment");
+    // The retained modal keeps the identities it was mounted with.
+    expect(AppElementsWire.readMetadata(result).bfcacheSegmentIdentities).toEqual({
+      [modalSegmentId]: "modal segment mounted",
+      "slot:children:/nested": "page fresh",
+      "slot:drawer:/nested": "drawer fresh",
+      "slot:modal:/nested": "modal mounted",
+    });
     expect(result["route:/nested"]).toBe("fresh page route");
     expect(result["route:/nested/drawer"]).toBe("fresh drawer route");
     expect(AppElementsWire.readMetadata(result).routeId).toBe("route:/nested/drawer");
@@ -309,6 +402,77 @@ describe("parallel route supplemental refreshes", () => {
     ]);
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/segment-cache/refresh/segment-cache-refresh.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/refresh/segment-cache-refresh.test.ts
+  it("takes a refreshed slot's BFCache identities with its content", () => {
+    const navbarSegmentId = createNestedBfcacheSlotSegmentId("slot:navbar:/dashboard", 1);
+    const mainSegmentId = createNestedBfcacheSlotSegmentId("slot:main:/dashboard", 1);
+    const primary: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [mainSegmentId]: "main analytics",
+          [navbarSegmentId]: "navbar default",
+          "slot:navbar:/dashboard": "navbar shell",
+        },
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/dashboard"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/dashboard/analytics",
+        slotBindings: [
+          {
+            activeRouteId: "route:/dashboard/analytics",
+            ownerLayoutId: "layout:/dashboard",
+            slotId: "slot:main:/dashboard",
+            state: "active",
+          },
+          {
+            ownerLayoutId: "layout:/dashboard",
+            slotId: "slot:navbar:/dashboard",
+            state: "default",
+          },
+        ],
+      }),
+      [mainSegmentId]: null,
+      [navbarSegmentId]: null,
+      "slot:main:/dashboard": "fresh analytics",
+    };
+    const source: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [mainSegmentId]: "main dashboard",
+          [navbarSegmentId]: "navbar active",
+          "slot:navbar:/dashboard": "navbar shell",
+        },
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/dashboard"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/dashboard",
+        slotBindings: [
+          {
+            activeRouteId: "route:/dashboard",
+            ownerLayoutId: "layout:/dashboard",
+            slotId: "slot:navbar:/dashboard",
+            state: "active",
+          },
+        ],
+      }),
+      [navbarSegmentId]: null,
+      "slot:navbar:/dashboard": "fresh navbar",
+    };
+
+    const result = mergeRefreshedParallelSlot(primary, source);
+    expect(result["slot:navbar:/dashboard"]).toBe("fresh navbar");
+    expect(Object.hasOwn(result, navbarSegmentId)).toBe(true);
+    // The kept navbar's identity matches the one mounted before the refresh,
+    // so its BFCache id and client state survive.
+    expect(AppElementsWire.readMetadata(result).bfcacheSegmentIdentities).toEqual({
+      [mainSegmentId]: "main analytics",
+      [navbarSegmentId]: "navbar active",
+      "slot:navbar:/dashboard": "navbar shell",
+    });
+  });
+
   it("replaces only the refreshed slot and its binding", () => {
     const current: AppElements = {
       ...AppElementsWire.createMetadataEntries({
@@ -354,6 +518,83 @@ describe("parallel route supplemental refreshes", () => {
     expect(AppElementsWire.readMetadata(result).slotBindings).toEqual([
       expect.objectContaining({ slotId: "slot:modal:/", state: "active" }),
     ]);
+  });
+
+  it("takes an intercepted slot's BFCache identities with its content", () => {
+    const modalSegmentId = createNestedBfcacheSlotSegmentId("slot:modal:/", 1);
+    const staleModalSegmentId = createNestedBfcacheSlotSegmentId("slot:modal:/", 2);
+    const childrenSegmentId = createNestedBfcacheSlotSegmentId("slot:children:/", 1);
+    const current: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [childrenSegmentId]: "children photo",
+          [modalSegmentId]: "modal default",
+          [staleModalSegmentId]: "modal default nested",
+          "slot:modal:/": "modal shell",
+        },
+        interception: null,
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/photo",
+        slotBindings: [
+          {
+            ownerLayoutId: "layout:/",
+            slotId: "slot:modal:/",
+            state: "default",
+          },
+        ],
+      }),
+      [childrenSegmentId]: null,
+      [modalSegmentId]: null,
+      [staleModalSegmentId]: null,
+      "slot:children:/": "fresh photo",
+    };
+    const refreshed: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [childrenSegmentId]: "children feed",
+          [modalSegmentId]: "modal photo",
+          "slot:modal:/": "modal shell",
+        },
+        interception: {
+          sourceMatchedUrl: "/",
+          sourceRouteId: "route:/",
+          slotId: "slot:modal:/",
+          targetMatchedUrl: "/photo",
+          targetRouteId: "route:/photo",
+        },
+        interceptionContext: "/",
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/",
+        slotBindings: [
+          {
+            activeRouteId: "route:/photo",
+            interceptionId: "interception:modal",
+            interceptionSourceMatchedUrl: "/",
+            ownerLayoutId: "layout:/",
+            slotId: "slot:modal:/",
+            state: "active",
+          },
+        ],
+      }),
+      [modalSegmentId]: null,
+      "slot:modal:/": "fresh modal",
+    };
+
+    const result = mergeRefreshedParallelSlot(current, refreshed);
+    expect(result["slot:modal:/"]).toBe("fresh modal");
+    expect(Object.hasOwn(result, modalSegmentId)).toBe(true);
+    // The default slot's deeper marker belongs to the content the refresh
+    // replaced, so it leaves with it.
+    expect(Object.hasOwn(result, staleModalSegmentId)).toBe(false);
+    expect(Object.hasOwn(result, childrenSegmentId)).toBe(true);
+    expect(AppElementsWire.readMetadata(result).bfcacheSegmentIdentities).toEqual({
+      [childrenSegmentId]: "children photo",
+      [modalSegmentId]: "modal photo",
+      "slot:modal:/": "modal shell",
+    });
   });
 
   it("merges all successful active branches", async () => {

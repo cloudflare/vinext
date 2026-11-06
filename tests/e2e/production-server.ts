@@ -170,13 +170,21 @@ process.once("SIGINT", shutdown);
   return waitForChildServer(child, "production server");
 }
 
-export async function startChildViteDevServer(fixtureRoot: string): Promise<ChildProductionServer> {
+export async function startChildViteDevServer(
+  fixtureRoot: string,
+  options: {
+    // A separate optimizer cache keeps this server from racing another dev
+    // server on the same fixture.
+    cacheDir?: string;
+  } = {},
+): Promise<ChildProductionServer> {
   const script = `
 import { createServer } from "vite";
 
 const server = await createServer({
   root: ${JSON.stringify(fixtureRoot)},
   configFile: ${JSON.stringify(path.join(fixtureRoot, "vite.config.ts"))},
+  cacheDir: ${JSON.stringify(options.cacheDir)},
   logLevel: "silent",
   server: { host: "127.0.0.1", port: 0 },
 });

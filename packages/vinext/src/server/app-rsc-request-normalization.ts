@@ -9,19 +9,14 @@ import {
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_URL_HEADER,
   RSC_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
-import {
-  parseClientReuseManifestHeader,
-  type ClientReuseManifestParseResult,
-} from "./client-reuse-manifest.js";
 import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
-import { stripRscSuffix, VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM } from "./app-rsc-cache-busting.js";
+import { VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
@@ -129,11 +124,9 @@ export type NormalizedRscRequest = {
   url: URL;
   /** Normalized pathname with basePath stripped. Used for all internal routing. */
   pathname: string;
-  /** Pathname with `.rsc` suffix removed. Used for route matching and navigation context. */
-  cleanPathname: string;
-  /** Original encoded request pathname with basePath and `.rsc` removed. */
-  requestCleanPathname: string;
-  /** True when the request targets a canonical `.rsc` payload URL. */
+  /** Original encoded request pathname with basePath stripped. */
+  requestPathname: string;
+  /** True when the request selects the RSC payload with `RSC: 1`. */
   isRscRequest: boolean;
   /** Sanitized X-Vinext-Interception-Context header (null bytes stripped). null when absent. */
   interceptionContextHeader: string | null;
@@ -143,8 +136,6 @@ export type NormalizedRscRequest = {
   mountedSlotsHeader: string | null;
   /** Semantic RSC payload mode. HTML requests always normalize to "navigation". */
   renderMode: AppRscRenderMode;
-  /** Parsed ClientReuseManifest hint. Verification and skip authorization happen later. */
-  clientReuseManifest: ClientReuseManifestParseResult;
   /** Whether the incoming pathname included the configured basePath. */
   hadBasePath: boolean;
 };
@@ -158,7 +149,9 @@ export type NormalizedRscRequest = {
  *
  *   1. Parse URL
  *   2. Protocol-relative URL guard — on the raw pathname, BEFORE normalizePath collapses
- *      `//` to `/`. If the guard ran after normalization, `//evil.com` → `/evil.com`
+ *      `//` to `/`. Literal repeated slashes / backslashes get Next.js's 308 to the
+ *      collapsed path; encoded leading `%2F` / `%5C` get a 404. If the guard ran after
+ *      normalization, `//evil.com` → `/evil.com`
  *      would bypass the check and reach the trailing-slash redirector, which echoes the
  *      path into a `Location` header that browsers interpret as protocol-relative.
  *   3. Strict percent-decode each segment — throws on malformed sequences (→ 400). Must
@@ -166,14 +159,13 @@ export type NormalizedRscRequest = {
  *   4. Collapse double-slashes, resolve `.` and `..` segments (normalizePath)
  *   5. basePath check + strip — 404 when pathname lacks the basePath prefix.
  *      `/__vinext/` bypasses this for internal prerender endpoints.
- *   6. RSC detection: `.rsc` suffix or Next-style `RSC: 1`. The internal
- *      `_rsc` cache-busting query is validated separately so full-route Flight
- *      responses do not share the canonical HTML URL in caches that ignore Vary.
- *   7. cleanPathname — pathname with `.rsc` suffix stripped
- *   8. Sanitize X-Vinext-Interception-Context — strip null bytes (header injection)
- *   9. Normalize x-vinext-mounted-slots — dedup and sort for canonical cache keys
- *   10. Read semantic render mode for refresh/action payload rendering
- *   11. Parse ClientReuseManifest hints on canonical RSC payload requests
+ *   6. RSC detection: `RSC: 1`, as in Next.js. A `.rsc` suffix is an ordinary
+ *      part of the pathname. The internal `_rsc` cache-busting query is
+ *      validated separately so full-route Flight responses do not share the
+ *      canonical HTML URL in caches that ignore Vary.
+ *   7. Sanitize X-Vinext-Interception-Context — strip null bytes (header injection)
+ *   8. Normalize x-vinext-mounted-slots — dedup and sort for canonical cache keys
+ *   9. Read semantic render mode for refresh/action payload rendering
  *
  * @returns A 400 or 404 Response for invalid or out-of-scope inputs,
  *          or a NormalizedRscRequest for valid requests.
@@ -186,10 +178,11 @@ export function normalizeRscRequest(
 ): Response | NormalizedRscRequest {
   const url = new URL(request.url);
 
-  // Step 2: Guard against protocol-relative open redirects on the raw pathname.
+  // Step 2: Redirect repeated slashes / backslashes (308, like Next.js) and
+  // reject encoded protocol-relative shapes on the raw pathname.
   // normalizePath (step 4) would collapse //evil.com to /evil.com, causing the
   // guard to miss it. Raw pathname must be checked first.
-  const protoGuard = guardProtocolRelativeUrl(url.pathname);
+  const protoGuard = guardProtocolRelativeUrl(url.pathname, url.search);
   if (protoGuard) return protoGuard;
 
   // Step 3: Strict segment-wise percent-decode. Preserves encoded path delimiters
@@ -229,12 +222,10 @@ export function normalizeRscRequest(
     }
   }
 
-  // Steps 6-7: RSC detection and cleanPathname.
-  const isRscRequest = pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1";
-  const cleanPathname = stripRscSuffix(pathname);
-  const requestCleanPathname = stripRscSuffix(requestPathname);
+  // Step 6: RSC detection.
+  const isRscRequest = request.headers.get(RSC_HEADER) === "1";
 
-  // Step 8: Validate and sanitize X-Vinext-Interception-Context.
+  // Step 7: Validate and sanitize X-Vinext-Interception-Context.
   //
   // The legitimate value is always a same-origin URL pathname (`/feed`,
   // `/photos/42`, …) emitted by the vinext browser entry. We strip null bytes
@@ -253,7 +244,7 @@ export function normalizeRscRequest(
   }
   const interceptionIdHeader = rawInterceptionId;
 
-  // Step 9: Normalize mounted-slots header for canonical cache keying.
+  // Step 8: Normalize mounted-slots header for canonical cache keying.
   const mountedSlotsHeader = normalizeMountedSlotsHeader(
     request.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
   );
@@ -275,7 +266,7 @@ export function normalizeRscRequest(
     );
     if (nextUrl && routerState) {
       const targetUrl = new URL(url);
-      targetUrl.pathname = cleanPathname;
+      targetUrl.pathname = pathname;
       targetUrl.searchParams.delete(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
       const routerPathAndSearch = tryNormalizeComparablePathAndSearch(
         routerState.pathAndSearch,
@@ -292,17 +283,11 @@ export function normalizeRscRequest(
       }
     }
   }
-  const clientReuseManifest = isRscRequest
-    ? parseClientReuseManifestHeader(request.headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER))
-    : ({ kind: "absent" } satisfies ClientReuseManifestParseResult);
-
   return {
-    clientReuseManifest,
     hadBasePath,
     url,
     pathname,
-    cleanPathname,
-    requestCleanPathname,
+    requestPathname,
     isRscRequest,
     interceptionContextHeader,
     interceptionIdHeader,

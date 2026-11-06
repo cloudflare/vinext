@@ -393,6 +393,20 @@ describe("metadata routes integration (App Router)", () => {
     expect(res.status).toBe(404);
   });
 
+  // Next.js 16.2.7 selects a metadata route by the pathname as sent, like any
+  // App route, so an encoded static segment does not name it.
+  it("does not serve metadata routes through an encoded static segment", async () => {
+    for (const [literal, encoded] of [
+      ["/products/sitemap/0.xml", "/%70roducts/sitemap/0.xml"],
+      ["/metadata-static/icon.png", "/%6Detadata-static/icon.png"],
+    ]) {
+      expect((await fetch(`${baseUrl}${literal}`)).status, literal).toBe(200);
+      const res = await fetch(`${baseUrl}${encoded}`);
+      expect(res.status, encoded).toBe(404);
+      expect(res.headers.get("content-type") ?? "", encoded).not.toMatch(/xml|image/);
+    }
+  });
+
   it("does not serve /products/sitemap.xml when generateSitemaps exists", async () => {
     const res = await fetch(`${baseUrl}/products/sitemap.xml`);
     // The base URL should not match — either 404 or falls through to page routing

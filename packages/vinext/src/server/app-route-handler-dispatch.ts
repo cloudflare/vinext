@@ -8,6 +8,7 @@ import {
   setCurrentForceDynamicFetchDefault,
   type FetchCacheMode,
 } from "vinext/shims/fetch-cache";
+import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import {
   consumeDynamicUsage,
@@ -23,9 +24,10 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   closeAfterResponse,
   createRequestContext,
+  getRequestContext,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
-import type { ISRCacheEntry } from "./isr-cache.js";
+import { coalesceOnDemandResponse, type ISRCacheEntry } from "./isr-cache.js";
 import {
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
@@ -98,6 +100,7 @@ type DispatchAppRouteHandlerOptions = {
   isrRouteKey: (pathname: string) => string;
   isrSet: RouteHandlerCacheSetter;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
   middlewareContext: RouteHandlerMiddlewareContext;
   middlewareRequestHeaders?: Headers | null;
   /**
@@ -146,28 +149,33 @@ async function runInRouteHandlerRevalidationContext(
   const requestContext = createRequestContext({
     headersContext,
     executionContext: getRequestExecutionContext(),
+    // Regeneration runs the handler directly, so it needs the phase that
+    // executeAppRouteHandler() would have set for a live request.
+    phase: "route-handler",
     unstableCacheRevalidation: "foreground",
   });
 
-  const revalidation = runWithRequestContext(requestContext, async () => {
-    ensureFetchPatch();
-    setCurrentFetchSoftTags(
-      buildRouteHandlerPageCacheTags(options.cleanPathname, [], options.routeSegments),
-    );
-    // The revalidation render runs in a fresh request context, so the fetch
-    // defaults applied by `dispatchAppRouteHandler` must be re-applied here.
-    setCurrentFetchCacheMode(options.fetchCacheMode);
-    setCurrentFetchRevalidate(options.revalidateSeconds);
-    setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
-    try {
-      await renderFn();
-    } finally {
-      // Stale ISR regeneration invokes the route handler directly instead of
-      // going through executeAppRouteHandler(), so its fresh request context
-      // owns and drains any synchronous next/cache invalidations here.
-      await _drainPendingRevalidations();
-    }
-  });
+  const revalidation = runWithRequestContext(requestContext, () =>
+    runInWorkStoreScope(async () => {
+      ensureFetchPatch();
+      setCurrentFetchSoftTags(
+        buildRouteHandlerPageCacheTags(options.cleanPathname, [], options.routeSegments),
+      );
+      // The revalidation render runs in a fresh request context, so the fetch
+      // defaults applied by `dispatchAppRouteHandler` must be re-applied here.
+      setCurrentFetchCacheMode(options.fetchCacheMode);
+      setCurrentFetchRevalidate(options.revalidateSeconds);
+      setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
+      try {
+        await renderFn();
+      } finally {
+        // Stale ISR regeneration invokes the route handler directly instead of
+        // going through executeAppRouteHandler(), so its fresh request context
+        // owns and drains any synchronous next/cache invalidations here.
+        await _drainPendingRevalidations();
+      }
+    }),
+  );
   try {
     await revalidation;
   } finally {
@@ -254,7 +262,13 @@ async function dispatchAppRouteHandlerImpl(
   }
 
   const resolvedHandlerFn = isAppRouteHandlerFunction(handlerFn) ? handlerFn : undefined;
-  const shouldReadRouteCache =
+  const isOnDemandRevalidate = isOnDemandRevalidateRequest(
+    options.request.headers.get(PRERENDER_REVALIDATE_HEADER),
+  );
+  // Like Next.js's ResponseCache, an authorized on-demand revalidation never
+  // serves the stored entry: it runs the handler in the foreground and stores
+  // that.
+  const isStoredRoute =
     options.bypassSharedCache !== true &&
     revalidateSeconds !== null &&
     !getRouteCacheabilityDynamicReason() &&
@@ -268,11 +282,10 @@ async function dispatchAppRouteHandlerImpl(
       method,
       revalidateSeconds,
     });
-  const revalidateReason = isOnDemandRevalidateRequest(
-    options.request.headers.get(PRERENDER_REVALIDATE_HEADER),
-  )
+  const shouldReadRouteCache = isStoredRoute && !isOnDemandRevalidate;
+  const revalidateReason = isOnDemandRevalidate
     ? "on-demand"
-    : shouldReadRouteCache
+    : shouldReadRouteCache && revalidateSeconds !== Infinity
       ? "stale"
       : undefined;
 
@@ -288,6 +301,9 @@ async function dispatchAppRouteHandlerImpl(
   setCurrentFetchRevalidate(configuredRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
 
+  // An on-demand revalidation replaces the stored entry whatever its status,
+  // as one regenerating a read entry does.
+  let isRevalidation = isStoredRoute && isOnDemandRevalidate;
   if (shouldReadRouteCache && resolvedHandlerFn) {
     const cachedRouteResponse = await readAppRouteHandlerCacheResponse({
       basePath: options.basePath,
@@ -302,10 +318,15 @@ async function dispatchAppRouteHandlerImpl(
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
       trailingSlash: options.trailingSlash,
+      skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
       isAutoHead,
       appendResponseLink,
       isrDebug: options.isrDebug,
-      isrGet: options.isrGet,
+      async isrGet(key) {
+        const entry = await options.isrGet(key);
+        isRevalidation = entry?.value.value?.kind === "APP_ROUTE";
+        return entry;
+      },
       isrRouteKey: options.isrRouteKey,
       isrSet: options.isrSet,
       markDynamicUsage,
@@ -346,7 +367,8 @@ async function dispatchAppRouteHandlerImpl(
   }
 
   if (resolvedHandlerFn) {
-    const response = await executeAppRouteHandler({
+    const handlerOptions: Parameters<typeof executeAppRouteHandler>[0] = {
+      isRevalidation,
       basePath: options.basePath,
       bypassSharedCache: options.bypassSharedCache,
       buildPageCacheTags(pathname, extraTags) {
@@ -365,6 +387,7 @@ async function dispatchAppRouteHandlerImpl(
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
       trailingSlash: options.trailingSlash,
+      skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
       isAutoHead,
       initialDraftModeCookie,
       isDraftMode,
@@ -381,13 +404,26 @@ async function dispatchAppRouteHandlerImpl(
         return reportRequestError(error, request, context);
       },
       request: options.request,
+      requestSignal: getRequestContext().requestSignal ?? undefined,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,
       revalidateReason,
       routePattern: route.pattern,
       setHeadersAccessPhase,
-    });
-    return applyCdnResponseBuildIdentityHeaders(response);
+    };
+    const runHandler = async () =>
+      applyCdnResponseBuildIdentityHeaders(await executeAppRouteHandler(handlerOptions));
+    // Concurrent on-demand revalidations of one stored entry share a single
+    // run, as Next.js batches ResponseCache work by its key and
+    // isOnDemandRevalidate.
+    if (isOnDemandRevalidate && isStoredRoute) {
+      return coalesceOnDemandResponse(
+        `${method}:${options.isrRouteKey(options.cleanPathname)}`,
+        method,
+        runHandler,
+      );
+    }
+    return runHandler();
   }
 
   return finalizeFrameworkResponse(new Response(null, { status: 405 }));

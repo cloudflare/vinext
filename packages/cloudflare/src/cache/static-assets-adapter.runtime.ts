@@ -1,6 +1,8 @@
 import type {
   CacheHandlerValue,
   CachedAppPageValue,
+  CachedPagesValue,
+  CachedRedirectValue,
   CachedRouteValue,
   IncrementalCacheValue,
 } from "vinext/shims/cache-handler";
@@ -10,6 +12,7 @@ import type {
   CdnResponseHeaders,
 } from "vinext/shims/cdn-cache";
 import { DefaultCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import type { StaticAssetsAdapterOptions } from "./static-assets-adapter.js";
 import {
   STATIC_ASSET_CACHE_PATH,
@@ -31,25 +34,57 @@ function isMetadata(value: unknown): value is StaticAssetCacheMetadata {
     value !== null &&
     typeof value === "object" &&
     "kind" in value &&
-    (value.kind === "html" || value.kind === "rsc" || value.kind === "route") &&
+    (value.kind === "html" ||
+      value.kind === "rsc" ||
+      value.kind === "route" ||
+      value.kind === "pages" ||
+      value.kind === "redirect" ||
+      value.kind === "not-found") &&
     "lastModified" in value &&
     typeof value.lastModified === "number"
   );
 }
 
 export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
+  readonly hasPrerenderedPages = true;
   readonly ownsBackgroundRevalidation = false;
-  private indexPromise: Promise<StaticAssetCacheIndex | null> | undefined;
+  private index: StaticAssetCacheIndex | null | undefined;
+  // A pending fetch belongs to the request that started it, and Workers never
+  // settles it once that request is cancelled (for example, when its client
+  // disconnects). It is only shared when the starting request's waitUntil()
+  // keeps it running, which Workers allows for up to 30 seconds after the
+  // request ends.
+  private pendingIndex: Promise<StaticAssetCacheIndex | null> | undefined;
 
-  constructor(private readonly assets: AssetFetcher) {}
+  constructor(readonly assets: AssetFetcher) {}
 
   private loadIndex(): Promise<StaticAssetCacheIndex | null> {
-    return (this.indexPromise ??= this.assets
-      .fetch(`https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/index.json`)
-      .then(async (response) => (response.ok ? ((await response.json()) as unknown) : null))
-      .then((value) =>
-        value !== null && typeof value === "object" ? (value as StaticAssetCacheIndex) : null,
-      ));
+    if (this.index !== undefined) return Promise.resolve(this.index);
+    if (this.pendingIndex) return this.pendingIndex;
+    const ctx = getRequestExecutionContext();
+    if (!ctx) return this.fetchIndex();
+    const pending = this.fetchIndex().finally(() => {
+      if (this.pendingIndex === pending) this.pendingIndex = undefined;
+    });
+    this.pendingIndex = pending;
+    ctx.waitUntil(pending.catch(() => {}));
+    return pending;
+  }
+
+  private async fetchIndex(): Promise<StaticAssetCacheIndex | null> {
+    const response = await this.assets.fetch(
+      `https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/index.json`,
+    );
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => {});
+      // The build writes no index when it packages no entries; any other
+      // failure is retried by the next request.
+      if (response.status === 404) this.index = null;
+      return null;
+    }
+    const value: unknown = await response.json();
+    return (this.index =
+      value !== null && typeof value === "object" ? (value as StaticAssetCacheIndex) : null);
   }
 
   async get(key: string): Promise<CacheHandlerValue | null> {
@@ -57,14 +92,37 @@ export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
     const metadata: unknown = (await this.loadIndex())?.[id];
     if (!isMetadata(metadata)) return null;
 
-    const extension = metadata.kind === "html" ? "html" : metadata.kind === "rsc" ? "rsc" : "route";
+    const extension = metadata.kind;
     const bodyResponse = await this.assets.fetch(
       `https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/${id}.${extension}`,
     );
     if (!bodyResponse.ok) return null;
 
-    let value: CachedAppPageValue | CachedRouteValue;
-    if (metadata.kind === "html") {
+    let value:
+      | CachedAppPageValue
+      | CachedRouteValue
+      | CachedPagesValue
+      | CachedRedirectValue
+      | null;
+    if (metadata.kind === "not-found") {
+      // The artifact only proves the snapshot exists; release its unread body.
+      await bodyResponse.body?.cancel();
+      value = null;
+    } else if (metadata.kind === "redirect") {
+      value = { kind: "REDIRECT", props: (await bodyResponse.json()) as object };
+    } else if (metadata.kind === "pages") {
+      const { html, pageData } = (await bodyResponse.json()) as Pick<
+        CachedPagesValue,
+        "html" | "pageData"
+      >;
+      value = {
+        kind: "PAGES",
+        html,
+        pageData,
+        headers: metadata.headers,
+        status: metadata.status,
+      };
+    } else if (metadata.kind === "html") {
       value = {
         kind: "APP_PAGE",
         html: await bodyResponse.text(),
@@ -79,10 +137,10 @@ export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
         kind: "APP_PAGE",
         html: "",
         rscData: await bodyResponse.arrayBuffer(),
-        headers: undefined,
+        headers: metadata.headers,
         postponed: undefined,
         prerendered: true,
-        status: undefined,
+        status: metadata.status,
       };
     } else {
       value = {

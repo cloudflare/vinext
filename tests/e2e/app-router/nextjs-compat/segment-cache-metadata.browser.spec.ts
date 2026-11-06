@@ -10,9 +10,11 @@ const ROOT = "/nextjs-compat/segment-cache-metadata";
 
 type RscResponseRecord = {
   body: string | null;
+  ok: boolean;
   pathname: string;
   prefetchHeader: string | undefined;
   renderModeHeader: string | undefined;
+  settled: boolean;
 };
 
 type ProductionApp = {
@@ -90,11 +92,13 @@ function trackRscResponses(page: Page): RscResponseRecord[] {
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (!url.searchParams.has("_rsc") || request.headers()["rsc"] !== "1") return;
-    const record = {
+    const record: RscResponseRecord = {
       body: null,
+      ok: false,
       pathname: url.pathname,
       prefetchHeader: request.headers()["next-router-prefetch"],
       renderModeHeader: request.headers()["x-vinext-rsc-render-mode"],
+      settled: false,
     };
     recordsByRequest.set(request, record);
     responses.push(record);
@@ -104,9 +108,15 @@ function trackRscResponses(page: Page): RscResponseRecord[] {
     if (!record) return;
     try {
       record.body = await response.text();
+      record.ok = response.ok();
     } catch {
       // Ignore aborted responses; successful RSC responses are what the assertions observe.
     }
+    record.settled = true;
+  });
+  page.on("requestfailed", (request) => {
+    const record = recordsByRequest.get(request);
+    if (record) record.settled = true;
   });
   return responses;
 }
@@ -117,34 +127,70 @@ async function revealAndWaitForPrefetch(
   responses: RscResponseRecord[],
   expected: string[],
 ) {
+  const before = responses.length;
   await page.locator(`input[data-link-accordion="${href}"]`).click();
-  await expect.poll(() => hasExpectedResponseSequence(responses, href, expected)).toBe(true);
+  // A prefetch={true} link makes vinext fetch the loading shell beside the full
+  // payload. Wait for that request to succeed, so the duplicate check covers a
+  // real shell, then for every request of the reveal to settle, the way
+  // router-act waits for its whole batch, so the check sees all of them.
+  await expect
+    .poll(() =>
+      responses
+        .slice(before)
+        .some(
+          (response) =>
+            response.pathname === href &&
+            response.renderModeHeader === "prefetch-loading-shell" &&
+            response.settled &&
+            response.ok,
+        ),
+    )
+    .toBe(true);
+  await expect
+    .poll(() => claimExpectedResponses(responses.slice(before), expected).claimed.length)
+    .toBe(expected.length);
+  await expect.poll(() => responses.slice(before).every((response) => response.settled)).toBe(true);
+  const { claimed, duplicate } = claimExpectedResponses(responses.slice(before), expected);
+  expect(claimed).toEqual(expected);
+  expect(duplicate).toBeNull();
 }
 
-function hasExpectedResponseSequence(
+// Mirrors Next.js's router-act matching: responses are checked in request
+// order, the expected strings must be claimed in order, and a response that
+// only repeats an already-claimed string means the server sent it more than
+// once.
+function claimExpectedResponses(
   responses: RscResponseRecord[],
-  href: string,
   expected: string[],
-): boolean {
-  let nextExpectedIndex = 0;
+): { claimed: string[]; duplicate: string | null } {
+  const claimed: string[] = [];
+  let duplicate: string | null = null;
 
   for (const response of responses) {
-    if (response.pathname !== href) continue;
     if (response.body === null) continue;
 
     let remainingBody = response.body;
-    while (nextExpectedIndex < expected.length) {
-      const expectedText = expected[nextExpectedIndex];
-      const matchIndex = remainingBody.indexOf(expectedText);
-      if (matchIndex === -1) break;
-      remainingBody = remainingBody.slice(matchIndex + expectedText.length);
-      nextExpectedIndex++;
+    let responseWasClaimed = false;
+    let firstAlreadyClaimedMatch: string | null = null;
+    for (const expectedText of expected) {
+      if (!claimed.includes(expectedText) && remainingBody.includes(expectedText)) {
+        responseWasClaimed = true;
+        remainingBody = remainingBody.slice(
+          remainingBody.indexOf(expectedText) + expectedText.length,
+        );
+        claimed.push(expectedText);
+        continue;
+      }
+      if (firstAlreadyClaimedMatch === null && remainingBody.includes(expectedText)) {
+        firstAlreadyClaimedMatch = expectedText;
+      }
     }
-
-    if (nextExpectedIndex === expected.length) return true;
+    if (!responseWasClaimed && firstAlreadyClaimedMatch !== null) {
+      duplicate ??= firstAlreadyClaimedMatch;
+    }
   }
 
-  return false;
+  return { claimed, duplicate };
 }
 
 async function revealAndExpectShellPrefetchOnly(

@@ -7,12 +7,12 @@ import {
   urlQueryToSearchParams,
 } from "../utils/query.js";
 import {
-  createPagesReqRes,
+  createPagesApiReqRes,
   markVinextStreamedApiResponse,
   parsePagesApiBody,
   type PagesRequestQuery,
   type PagesReqResRequest,
-  type PagesReqResResponse,
+  type PagesApiReqResResponse,
   PagesApiBodyParseError,
 } from "./pages-node-compat.js";
 import { resolveBodyParserConfig } from "./pages-body-parser-config.js";
@@ -29,6 +29,8 @@ import {
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
 import { NextRequest } from "vinext/shims/server";
+import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
+import { hasCdnResponsePolicy } from "./cache-control.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
 
 type PagesApiRouteConfig = {
@@ -62,7 +64,7 @@ type PagesApiRouteConfig = {
   };
 };
 
-type PagesNodeApiRouteHandler = (req: PagesReqResRequest, res: PagesReqResResponse) => unknown;
+type PagesNodeApiRouteHandler = (req: PagesReqResRequest, res: PagesApiReqResResponse) => unknown;
 
 type PagesEdgeApiRouteHandler = (request: Request) => Response | Promise<Response>;
 
@@ -114,6 +116,7 @@ type HandlePagesApiRouteOptions = {
     allowedRevalidateHeaderKeys?: readonly string[];
     i18n?: NextI18nConfig | null;
     trailingSlash?: boolean;
+    skipTrailingSlashRedirect?: boolean;
   };
   trustedRevalidateOrigin?: string;
 };
@@ -143,11 +146,33 @@ function isNodeApiRouteModule(
   return typeof module.default === "function" && !isEdgeApiRuntime(resolveModuleRuntime(module));
 }
 
-export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
-  if (options.ctx) {
-    return runWithExecutionContext(options.ctx, () => _handlePagesApiRoute(options));
+// Next.js answers an API request on a `res` that already carries the routing
+// response headers, so a response that does not go through `res` (an edge
+// handler's, or an error vinext answers with) keeps them under its own.
+function withInitialResponseHeaders(
+  response: Response,
+  initialResponseHeaders: Headers | undefined,
+): Response {
+  if (!initialResponseHeaders || !initialResponseHeaders.keys().next().value) return response;
+  const headers = new Headers(initialResponseHeaders);
+  for (const [name, value] of response.headers) {
+    if (name !== "set-cookie") headers.set(name, value);
   }
-  return _handlePagesApiRoute(options);
+  for (const cookie of response.headers.getSetCookie()) headers.append("Set-Cookie", cookie);
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
+  const run = async () => {
+    const response = await _handlePagesApiRoute(options);
+    if (hasCdnResponsePolicy(response.headers)) markRouteCacheabilityExplicitResponsePolicy();
+    return response;
+  };
+  return options.ctx ? runWithExecutionContext(options.ctx, run) : run();
 }
 
 async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
@@ -171,30 +196,17 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
                 basePath: options.nextConfig.basePath,
                 i18n: options.nextConfig.i18n ?? undefined,
                 trailingSlash: options.nextConfig.trailingSlash,
+                skipTrailingSlashRedirect: options.nextConfig.skipTrailingSlashRedirect,
               },
             }
           : undefined,
       );
       const response = await tracePagesApiHandler(route.pattern, () => handler(nextRequest));
       if (response instanceof Response) {
-        const finalized = finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker");
-        if (
-          !options.initialResponseHeaders ||
-          !options.initialResponseHeaders.keys().next().value
-        ) {
-          return finalized;
-        }
-        const headers = new Headers(options.initialResponseHeaders);
-        for (const [name, value] of finalized.headers) {
-          if (name.toLowerCase() !== "set-cookie") headers.set(name, value);
-        }
-        const finalizedCookies = finalized.headers.getSetCookie();
-        for (const cookie of finalizedCookies) headers.append("Set-Cookie", cookie);
-        return new Response(finalized.body, {
-          headers,
-          status: finalized.status,
-          statusText: finalized.statusText,
-        });
+        return withInitialResponseHeaders(
+          finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker"),
+          options.initialResponseHeaders,
+        );
       }
 
       throw new Error("Edge API route did not return a Response");
@@ -203,7 +215,10 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     // This is redundant at runtime after the edge branch for function exports, but it
     // keeps the Node handler ABI narrowed without a production type assertion.
     if (!isNodeApiRouteModule(route.module)) {
-      return new Response("API route does not export a default function", { status: 500 });
+      return withInitialResponseHeaders(
+        new Response("API route does not export a default function", { status: 500 }),
+        options.initialResponseHeaders,
+      );
     }
     const handler = route.module.default;
 
@@ -222,7 +237,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       ? await parsePagesApiBody(options.request, bodyParserConfig.sizeLimit)
       : undefined;
 
-    const { req, res, responsePromise } = createPagesReqRes({
+    const { req, res, responsePromise } = createPagesApiReqRes({
       allowedRevalidateHeaderKeys: options.nextConfig?.allowedRevalidateHeaderKeys,
       body,
       initialResponseHeaders: options.initialResponseHeaders,
@@ -268,8 +283,11 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       }
       return response;
     };
-    const destroyAfterHandlerError = (error: unknown): never => {
+    const settleHandlerError = (error: unknown): { type: "error"; error: Error } => {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
+      // Before the first write, Next.js answers on the same `res` (sendError),
+      // so headers the handler set before throwing are kept.
+      if (!res.headersSent) return { type: "error", error: normalizedError };
       // Once a handler has started writing, the Fetch Response may already be
       // on its way to the client. Error the bridge so a parked write callback
       // and the response consumer both settle instead of abandoning the
@@ -291,7 +309,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
           recordErrors: options.edgeRuntime !== "node",
         }),
       )
-      .then(() => ({ type: "handler" as const }), destroyAfterHandlerError);
+      .then(() => ({ type: "handler" as const }), settleHandlerError);
 
     // A real Node ServerResponse is consumed by the socket while the API
     // handler is still running. Mirror that concurrency at the Fetch boundary:
@@ -313,20 +331,33 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       return finalizeResponse(firstSettled.response);
     }
 
+    if (firstSettled.type === "error") {
+      await options.reportRequestError?.(firstSettled.error, route.pattern);
+      res.statusCode = 500;
+      res.end("Internal Server Error");
+      return finalizeResponse(await responsePromise);
+    }
+
     completeHandler();
     return finalizeResponse(await responsePromise);
   } catch (error) {
     if (error instanceof PagesApiBodyParseError) {
-      return new Response(error.message, {
-        status: error.statusCode,
-        statusText: error.message,
-      });
+      return withInitialResponseHeaders(
+        new Response(error.message, {
+          status: error.statusCode,
+          statusText: error.message,
+        }),
+        options.initialResponseHeaders,
+      );
     }
 
     await options.reportRequestError?.(
       error instanceof Error ? error : new Error(String(error)),
       route.pattern,
     );
-    return internalServerErrorResponse();
+    return withInitialResponseHeaders(
+      internalServerErrorResponse(),
+      options.initialResponseHeaders,
+    );
   }
 }

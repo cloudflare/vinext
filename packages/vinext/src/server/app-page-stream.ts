@@ -33,6 +33,12 @@ export type AppSsrRenderResult = {
   capturedRscData: Promise<ArrayBuffer> | null;
   shellErrorRecovered?: boolean;
   /**
+   * The special error that rejected the shell, when parallel slot not-found
+   * boundaries caught it in a second render of the same payload. The document
+   * is that error's, with its status.
+   */
+  caughtShellError?: unknown;
+  /**
    * Preload `Link` header value emitted by React during SSR (via `onHeaders`),
    * already capped to `reactMaxHeadersLength`. Empty/undefined when React
    * emitted no preload headers (or emission was disabled with `0`).
@@ -143,6 +149,10 @@ export type AppPageSsrHandler = {
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
       /** Abort signal for a build-time PPR fallback-shell static render. */
       pprFallbackShellSignal?: AbortSignal;
+      /** Aborts a streaming render whose document is given up. */
+      signal?: AbortSignal;
+      /** Route whose client references load before the render; null for none. */
+      preloadRoutePattern?: string | null;
       /** When true, wait for the full React tree before emitting bytes. */
       waitForAllReady?: boolean;
       /** Render is producing a static/prerendered HTML artifact. */
@@ -155,12 +165,18 @@ export type AppPageSsrHandler = {
       initialDevServerError?: unknown;
       /** Report an SSR/Fizz render failure through instrumentation. */
       onSsrError?: (error: unknown) => unknown;
-      /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
-      mirrorNextFlight?: boolean;
-      /** When true, an SSR-phase-only shell render error resolves to the
-       *  default `__next_error__` error-document shell (with the original
-       *  flight payload and bootstrap) instead of rejecting. See handleSsr. */
+      /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport, or start
+       *  mirroring once a function returns true. */
+      mirrorNextFlight?: boolean | (() => boolean);
+      /** When true, a shell render error other than a redirect, HTTP access
+       *  fallback or bail-out resolves to the default `__next_error__`
+       *  error-document shell (with the original flight payload and
+       *  bootstrap) instead of rejecting. See handleSsr. */
       fallbackToErrorDocumentOnShellError?: boolean;
+      /** Whether the RSC render threw the given shell error. See handleSsr. */
+      isServerComponentError?: (error: unknown) => boolean;
+      /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
+      resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
       dynamicStaleTimeSeconds?: number;
       getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
     },
@@ -199,6 +215,11 @@ type RenderAppPageHtmlStreamOptions = {
   capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
   /** Abort signal for a build-time PPR fallback-shell static render. */
   pprFallbackShellSignal?: AbortSignal;
+  /**
+   * Route whose client references load before the render, or null for a
+   * render without a route. Undefined loads every client reference.
+   */
+  preloadRoutePattern?: string | null;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
   /** Render is producing a static/prerendered HTML artifact. */
@@ -207,18 +228,20 @@ type RenderAppPageHtmlStreamOptions = {
   isForceStatic?: boolean;
   /** Production render that may be stored under a query-free key. */
   isCacheCandidate?: boolean;
-  /** Override the default shell-error recovery decision passed to handleSsr. */
+  /** Whether handleSsr answers a shell error with the error document. Off by
+   *  default: a boundary render that fails keeps rejecting. */
   fallbackToErrorDocumentOnShellError?: boolean;
+  /** Whether the RSC render threw the given shell error. See handleSsr. */
+  isServerComponentError?: (error: unknown) => boolean;
+  /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
+  resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
   /** Dev-only: original server error to surface in the browser overlay. */
   initialDevServerError?: unknown;
   /** Report an SSR/Fizz render failure through instrumentation. */
   onSsrError?: (error: unknown) => unknown;
-  /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
-  mirrorNextFlight?: boolean;
-  /** True when the app supplies a custom global-error.tsx. Disables the
-   *  default error-document shell fallback so SSR shell errors keep driving
-   *  the server-rendered global-error boundary re-render. */
-  hasCustomGlobalError?: boolean;
+  /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport, or start
+   *  mirroring once a function returns true. */
+  mirrorNextFlight?: boolean | (() => boolean);
 };
 
 type RenderAppPageHtmlResponseOptions = {
@@ -244,19 +267,39 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
   onShellRendered?: () => void;
   renderErrorBoundaryResponse: (error: unknown) => Promise<Response | null>;
   renderHtmlStream: () => Promise<ReadableStream<Uint8Array> | AppSsrRenderResult>;
-  renderSpecialErrorResponse: (specialError: TSpecialError) => Promise<Response>;
+  /**
+   * The document of a special error that rejected the shell. With
+   * `caughtDocument`, parallel slot boundaries caught it in the page's own
+   * document, which that response sends.
+   */
+  renderSpecialErrorResponse: (
+    specialError: TSpecialError,
+    caughtDocument?: AppPageCaughtShellErrorDocument,
+  ) => Promise<Response>;
   resolveSpecialError: (error: unknown) => TSpecialError | null;
+};
+
+/** The page's document, rendered with the slot boundaries that caught its shell error. */
+type AppPageCaughtShellErrorDocument = {
+  htmlStream: ReadableStream<Uint8Array>;
+  /** React-emitted preload `Link` header (already capped). */
+  linkHeader?: string;
 };
 
 type AppPageRscErrorTracker = {
   getCapturedError: () => unknown;
   /**
-   * Returns a NEXT_REDIRECT or NEXT_HTTP_ERROR_FALLBACK error captured during
-   * the RSC render. Read after the SSR shell promise resolves to swap a
-   * 307/404 in place of the streamed body when redirect()/notFound() throws
-   * synchronously inside a route-level Suspense boundary (loading.tsx).
+   * Returns the first NEXT_REDIRECT or NEXT_HTTP_ERROR_FALLBACK error captured
+   * during the RSC render, if any. Whether it set the render's status depends
+   * on whether it rejected the document's shell.
    */
   getCapturedSpecialError: () => unknown;
+  /**
+   * The special errors the RSC render threw with the digest of `error`. The
+   * SSR shell rejects with its own copy, decoded from the Flight digest, which
+   * loses server-side markers such as generateMetadata()'s.
+   */
+  getCapturedSpecialErrors: (error: unknown) => readonly unknown[];
   isCapturedError: (error: unknown) => boolean;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
 };
@@ -294,6 +337,7 @@ export async function renderAppPageHtmlStream(
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
+    preloadRoutePattern: options.preloadRoutePattern,
     waitForAllReady: options.waitForAllReady,
     isStaticGeneration: options.isStaticGeneration,
     isForceStatic: options.isForceStatic,
@@ -301,11 +345,9 @@ export async function renderAppPageHtmlStream(
     initialDevServerError: options.initialDevServerError,
     onSsrError: options.onSsrError,
     mirrorNextFlight: options.mirrorNextFlight,
-    // Only when the caller affirmatively knows there is no custom
-    // global-error.tsx; undefined (unknown) keeps reject semantics.
-    fallbackToErrorDocumentOnShellError:
-      options.fallbackToErrorDocumentOnShellError ??
-      (options.waitForAllReady !== true && options.hasCustomGlobalError === false),
+    fallbackToErrorDocumentOnShellError: options.fallbackToErrorDocumentOnShellError,
+    isServerComponentError: options.isServerComponentError,
+    resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
     dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
     getInitialNavigationCacheMetadata: options.getInitialNavigationCacheMetadata,
   };
@@ -324,7 +366,21 @@ export async function renderAppPageHtmlResponse(
   options: RenderAppPageHtmlResponseOptions,
 ): Promise<Response> {
   const { htmlStream, linkHeader: reactLinkHeader } = await renderAppPageHtmlStream(options);
+  return buildAppPageHtmlDocumentResponse(htmlStream, { ...options, reactLinkHeader });
+}
 
+export function buildAppPageHtmlDocumentResponse(
+  htmlStream: ReadableStream<Uint8Array>,
+  options: {
+    clearRequestContext: () => void;
+    fontLinkHeader?: string;
+    isEdgeRuntime?: boolean;
+    middlewareHeaders?: Headers | null;
+    reactLinkHeader?: string;
+    reactMaxHeadersLength?: number;
+    status: number;
+  },
+): Response {
   // Defer clearRequestContext() until the stream is fully consumed by the HTTP
   // layer. Calling it synchronously here would race the lazy RSC/SSR pipeline:
   // components execute while the stream is being pulled, not when the handle
@@ -342,7 +398,7 @@ export async function renderAppPageHtmlResponse(
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
   const frameworkLinkHeader = buildAppPageLinkHeader(
-    reactLinkHeader,
+    options.reactLinkHeader,
     options.fontLinkHeader,
     options.reactMaxHeadersLength,
   );
@@ -370,8 +426,24 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
       capturedRscData,
       linkHeader,
       shellErrorRecovered,
+      caughtShellError,
     } = normalizeAppSsrRenderResult(rawResult);
     options.onShellRendered?.();
+    const caughtSpecialError =
+      caughtShellError === undefined ? null : options.resolveSpecialError(caughtShellError);
+    if (caughtSpecialError) {
+      return {
+        htmlStream: null,
+        response: await options.renderSpecialErrorResponse(caughtSpecialError, {
+          htmlStream,
+          linkHeader,
+        }),
+        metadataReady: resolvedMetadataReady,
+        renderComplete: renderComplete ?? resolvedMetadataReady,
+        capturedRscData: null,
+        shellErrorRecovered: false,
+      };
+    }
     return {
       htmlStream,
       response: null,
@@ -417,6 +489,7 @@ export function createAppPageRscErrorTracker(
   let capturedSpecialError: unknown = null;
   const capturedErrors = new Set<unknown>();
   const capturedDigests = new Set<string>();
+  const specialErrorsByDigest = new Map<string, unknown[]>();
 
   return {
     getCapturedError() {
@@ -424,6 +497,10 @@ export function createAppPageRscErrorTracker(
     },
     getCapturedSpecialError() {
       return capturedSpecialError;
+    },
+    getCapturedSpecialErrors(error) {
+      const digest = getNextErrorDigest(error);
+      return (digest !== null && specialErrorsByDigest.get(digest)) || [];
     },
     isCapturedError(error) {
       if (capturedErrors.has(error)) return true;
@@ -433,12 +510,10 @@ export function createAppPageRscErrorTracker(
     onRenderError(error, requestInfo, errorContext) {
       if (isNavigationSignalError(error)) {
         // Navigation signal throws (NEXT_REDIRECT, NEXT_NOT_FOUND,
-        // NEXT_HTTP_ERROR_FALLBACK) are not real failures — keep the first one
-        // so the lifecycle can swap a 307/404 in place of a streamed "Switched
-        // to client rendering" body for routes with a route-level Suspense
-        // boundary. A bare `digest` field is NOT enough: a genuine error that
-        // happens to carry a (e.g. hashed) digest is a real failure and must
-        // reach the error boundary, not masquerade as a special response.
+        // NEXT_HTTP_ERROR_FALLBACK) are not real failures, so keep the first
+        // one apart from them. A bare `digest` field is NOT enough: a genuine
+        // error that happens to carry a (e.g. hashed) digest is a real failure
+        // and must reach the error boundary, not masquerade as a special one.
         if (capturedSpecialError === null) {
           capturedSpecialError = error;
         }
@@ -450,6 +525,8 @@ export function createAppPageRscErrorTracker(
       const digest = typeof result === "string" ? result : getNextErrorDigest(error);
       if (digest !== null && !isNavigationSignalError(error)) {
         capturedDigests.add(digest);
+      } else if (digest !== null) {
+        specialErrorsByDigest.set(digest, [...(specialErrorsByDigest.get(digest) ?? []), error]);
       }
       return result;
     },

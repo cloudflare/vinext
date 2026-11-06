@@ -1,9 +1,8 @@
-import type { LayoutFlags } from "./app-elements.js";
-import type { ClassificationReason } from "../build/layout-classification-types.js";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
   createRscRedirectLocation,
+  toPathAbsolutePathname,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
 import { VINEXT_RSC_REDIRECT_HEADER, VINEXT_RSC_REDIRECT_TYPE_HEADER } from "./headers.js";
@@ -11,16 +10,13 @@ import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   copyLinkHeaderProvenance,
-  hasFrameworkLinkHeaders,
+  getFrameworkLinkHeader,
   markFrameworkLinkHeaders,
 } from "./app-response-header-provenance.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
-import { isPromiseLike } from "../utils/promise.js";
 import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
-import { runWithConnectionProbe } from "vinext/shims/headers";
-
-export type { LayoutFlags };
+import { isHTTPAccessFallbackError, isThrownNavigationError } from "vinext/shims/navigation-errors";
 
 /**
  * Marker we tag onto a thrown redirect/notFound error when it originates from
@@ -60,6 +56,106 @@ export function tagAppPageMetadataError<T>(error: T): T {
   return error;
 }
 
+/**
+ * Marker we tag onto an error a parallel slot's page or default component
+ * threw, holding the index of the layout that renders the slot. Next.js
+ * attaches HTTP access fallback boundaries only to each segment's `children`,
+ * so a slot's `notFound()` is caught by the boundary above that layout, not
+ * by the route's deepest boundary as the page's is.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+const APP_PAGE_SLOT_ERROR_LAYOUT_INDEX = Symbol.for("vinext.appPage.slotErrorLayoutIndex");
+
+/**
+ * Marker holding the id of the slot's own not-found boundary that catches the
+ * slot's `notFound()` on the client, when one does. The document then renders
+ * that boundary caught (see `resolveAppPageCaughtNotFoundBoundaries`).
+ */
+const APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY = Symbol.for(
+  "vinext.appPage.slotErrorNotFoundBoundary",
+);
+
+/**
+ * Marker we tag onto an error the route's page component threw, so that the
+ * document's fallback can tell it from one a layout or a template threw,
+ * which no slot tag marks either.
+ */
+const APP_PAGE_PAGE_ERROR = Symbol.for("vinext.appPage.pageError");
+
+/**
+ * Marker we tag onto an error a route layout's own component threw, holding
+ * that layout's index. Its boundaries wrap only its `children`, so the
+ * boundary above the layout catches it, as for a slot the layout renders.
+ */
+const APP_PAGE_LAYOUT_ERROR_LAYOUT_INDEX = Symbol.for("vinext.appPage.layoutErrorLayoutIndex");
+
+function tagAppPageHttpAccessFallbackError<T>(error: T, tags: PropertyDescriptorMap): T {
+  // Only an HTTP access fallback reads the tag. A thrown error can be shared
+  // across slots, renders and requests (a module-scoped rejected promise), so
+  // each throw gets its own tagged copy instead of marking the shared error.
+  if (!isHTTPAccessFallbackError(error)) return error;
+  const source = error as object;
+  const tagged = Object.setPrototypeOf(
+    new Error(String(Reflect.get(source, "message"))),
+    Object.getPrototypeOf(source),
+  );
+  Object.defineProperties(tagged, {
+    ...Object.getOwnPropertyDescriptors(source),
+    stack: { value: Reflect.get(source, "stack"), configurable: true, writable: true },
+    ...tags,
+  });
+  return tagged as T;
+}
+
+export function tagAppPageSlotError<T>(
+  error: T,
+  layoutIndex: number,
+  notFoundBoundary?: string,
+): T {
+  return tagAppPageHttpAccessFallbackError(error, {
+    [APP_PAGE_SLOT_ERROR_LAYOUT_INDEX]: { value: layoutIndex },
+    [APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY]: { value: notFoundBoundary },
+  });
+}
+
+export function tagAppPagePageError<T>(error: T): T {
+  return tagAppPageHttpAccessFallbackError(error, { [APP_PAGE_PAGE_ERROR]: { value: true } });
+}
+
+export function tagAppPageLayoutError<T>(error: T, layoutIndex: number): T {
+  return tagAppPageHttpAccessFallbackError(error, {
+    [APP_PAGE_LAYOUT_ERROR_LAYOUT_INDEX]: { value: layoutIndex },
+  });
+}
+
+function isAppPagePageError(error: unknown): boolean {
+  return !!error && typeof error === "object" && Reflect.get(error, APP_PAGE_PAGE_ERROR) === true;
+}
+
+function getAppPageLayoutErrorLayoutIndex(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const layoutIndex: unknown = Reflect.get(error, APP_PAGE_LAYOUT_ERROR_LAYOUT_INDEX);
+  return typeof layoutIndex === "number" ? layoutIndex : null;
+}
+
+function getAppPageSlotErrorLayoutIndex(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const layoutIndex: unknown = Reflect.get(error, APP_PAGE_SLOT_ERROR_LAYOUT_INDEX);
+  return typeof layoutIndex === "number" ? layoutIndex : null;
+}
+
+/**
+ * The id of the not-found boundary that catches the route page's notFound():
+ * the page-level boundary, or the segment one it passes the signal up to.
+ */
+export const APP_PAGE_NOT_FOUND_BOUNDARY_ID = "page";
+
+function getAppPageSlotErrorNotFoundBoundary(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const boundary: unknown = Reflect.get(error, APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY);
+  return typeof boundary === "string" ? boundary : null;
+}
+
 export type AppPageSpecialError =
   | {
       kind: "redirect";
@@ -68,7 +164,24 @@ export type AppPageSpecialError =
       type?: "push" | "replace";
       fromMetadata?: boolean;
     }
-  | { kind: "http-access-fallback"; statusCode: number; fromMetadata?: boolean };
+  | {
+      kind: "http-access-fallback";
+      statusCode: number;
+      fromMetadata?: boolean;
+      /** Set when a parallel slot threw it: the layout rendering the outermost such slot. */
+      slotLayoutIndex?: number;
+      /**
+       * Set when a route layout's own component threw it, above any slot that
+       * did: the outermost such layout, whose boundary above catches it.
+       */
+      layoutIndex?: number;
+      /**
+       * Set when the render threw a copy nothing tagged: a server component
+       * that a layout, the page or a template renders. The document's
+       * fallback then finds out whether a layout's subtree threw it.
+       */
+      unattributed?: boolean;
+    };
 
 export type AppPageFontPreload = {
   href: string;
@@ -135,64 +248,6 @@ type BuildAppPageSpecialErrorResponseOptions = {
   specialError: AppPageSpecialError;
 };
 
-type ProbeAppPageLayoutsResult = {
-  response: Response | null;
-  layoutFlags: LayoutFlags;
-};
-
-export type LayoutClassificationOptions = {
-  /** Build-time classifications from segment config or module graph, keyed by layout index. */
-  buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
-  /**
-   * Per-layout classification reasons keyed by layout index. Requires
-   * `VINEXT_DEBUG_CLASSIFICATION` at BOTH lifecycle points: at build time so
-   * the plugin patches the `__VINEXT_CLASS_REASONS` dispatch stub, and at
-   * runtime so the route object actually calls it. Setting the flag only at
-   * runtime leaves the stub returning `null`, and every build-time classified
-   * layout will fall through to `{ layer: "no-classifier" }` in the debug
-   * channel. The hot path never reads this and the wire payload is unchanged.
-   */
-  buildTimeReasons?: ReadonlyMap<number, ClassificationReason> | null;
-  /**
-   * Emits one log line per layout with the classification reason, keyed by
-   * layout ID. Set by the generator when `VINEXT_DEBUG_CLASSIFICATION` is
-   * active. When undefined, the probe loop skips debug emission entirely.
-   */
-  debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
-  /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
-  getLayoutId: (layoutIndex: number) => string;
-  /**
-   * Returns whether the completed per-layout observation makes static reuse
-   * unsafe even if the older dynamic scope did not report dynamic usage.
-   */
-  isLayoutObservationDynamic?: (layoutId: string) => boolean;
-  /** Runs a function with isolated dynamic usage tracking per layout. */
-  runWithIsolatedDynamicScope: <T>(
-    fn: () => T | Promise<T>,
-  ) => Promise<{ result: T; dynamicDetected: boolean }>;
-};
-
-type ProbeAppPageLayoutsOptions = {
-  layoutCount: number;
-  onLayoutError: (error: unknown, layoutIndex: number) => Promise<Response | null>;
-  probeLayoutAt: (layoutIndex: number) => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-  /** When provided, enables per-layout static/dynamic classification. */
-  classification?: LayoutClassificationOptions | null;
-};
-
-type ProbeAppPageComponentOptions = {
-  awaitAsyncResult: boolean;
-  onError: (error: unknown) => Promise<Response | null>;
-  probePage: () => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-};
-
-type ProbeAppPageThrownErrorOptions = {
-  probePage: () => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-};
-
 function getAppPageStatusText(statusCode: number): string {
   return statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
 }
@@ -201,9 +256,7 @@ function mergeAppPageSpecialErrorHeaders(
   response: Response,
   middlewareContext: { headers: Headers | null } | undefined,
 ): Response {
-  const frameworkLink = hasFrameworkLinkHeaders(response.headers)
-    ? response.headers.get("link")
-    : null;
+  const frameworkLink = getFrameworkLinkHeader(response.headers);
   const headers = new Headers(response.headers);
   if (frameworkLink) headers.delete("link");
   mergeMiddlewareResponseHeaders(headers, middlewareContext?.headers ?? null);
@@ -250,6 +303,128 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
 }
 
 /**
+ * Resolve the special error that rejected an SSR shell. An error from the RSC
+ * render reaches the shell decoded from its Flight digest, so whether
+ * generateMetadata() threw it comes from the errors the RSC render threw with
+ * that digest. When the page threw one too, the page's decides. An error a
+ * client component threw during SSR is the page's, since generateMetadata()
+ * runs only in the RSC render. A notFound() / forbidden() / unauthorized()
+ * a parallel slot's page threw is caught above the layout rendering it,
+ * unless the slot's own not-found catches its notFound() and every other copy
+ * is the page's or another slot's. One a route layout threw is caught above
+ * that layout, and the outermost such layout wins. A copy nothing tagged,
+ * such as a template's or one from a component a layout or the page renders,
+ * marks the error unattributed.
+ */
+export function resolveAppPageShellSpecialError(
+  error: unknown,
+  renderedSpecialErrors: readonly unknown[],
+): AppPageSpecialError | null {
+  const specialError = resolveAppPageSpecialError(error);
+  if (!specialError || specialError.fromMetadata === true) return specialError;
+  if (isThrownNavigationError(error)) return specialError;
+  const fromMetadata =
+    renderedSpecialErrors.length > 0 &&
+    renderedSpecialErrors.every(
+      (rendered) => resolveAppPageSpecialError(rendered)?.fromMetadata === true,
+    );
+  if (fromMetadata) return { ...specialError, fromMetadata: true };
+  if (specialError.kind !== "http-access-fallback") return specialError;
+  // The boundary above a slot's layout is never below the page's, so the
+  // outermost slot's replaces the page's when both threw. A slot's own
+  // not-found boundary catches its notFound() inside the slot, leaving that
+  // layout and the page's boundary in place.
+  const skipsSlotCaughtNotFound =
+    specialError.statusCode === 404 &&
+    renderedSpecialErrors.every(
+      (rendered) =>
+        isAppPagePageError(rendered) || getAppPageSlotErrorLayoutIndex(rendered) !== null,
+    );
+  let slotLayoutIndex: number | null = null;
+  let layoutIndex: number | null = null;
+  let unattributed = false;
+  for (const rendered of renderedSpecialErrors) {
+    const throwingLayoutIndex = getAppPageLayoutErrorLayoutIndex(rendered);
+    if (throwingLayoutIndex !== null) {
+      if (layoutIndex === null || throwingLayoutIndex < layoutIndex) {
+        layoutIndex = throwingLayoutIndex;
+      }
+      continue;
+    }
+    if (skipsSlotCaughtNotFound && getAppPageSlotErrorNotFoundBoundary(rendered) !== null) {
+      continue;
+    }
+    const slotOwnerIndex = getAppPageSlotErrorLayoutIndex(rendered);
+    if (slotOwnerIndex !== null) {
+      if (slotLayoutIndex === null || slotOwnerIndex < slotLayoutIndex) {
+        slotLayoutIndex = slotOwnerIndex;
+      }
+      continue;
+    }
+    if (
+      !isAppPagePageError(rendered) &&
+      resolveAppPageSpecialError(rendered)?.fromMetadata !== true
+    ) {
+      unattributed = true;
+    }
+  }
+  // The boundary above the outermost layout catches it. A layout's own signal
+  // wins over its slot's, which renders inside it.
+  if (layoutIndex !== null && slotLayoutIndex !== null) {
+    if (layoutIndex <= slotLayoutIndex) slotLayoutIndex = null;
+    else layoutIndex = null;
+  }
+  if (slotLayoutIndex === null && layoutIndex === null && !unattributed) return specialError;
+  return {
+    ...specialError,
+    ...(slotLayoutIndex !== null ? { slotLayoutIndex } : {}),
+    ...(layoutIndex !== null ? { layoutIndex } : {}),
+    ...(unattributed ? { unattributed: true } : {}),
+  };
+}
+
+/**
+ * The parallel slot not-found boundaries that catch the `notFound()` that
+ * rejected an SSR shell, or null when any copy the RSC render threw isn't
+ * caught inside its slot. On the client, each slot's own not-found boundary
+ * catches its signal while the rest of the route renders, as in Next.js,
+ * which sends an empty error shell and renders them in the browser. A copy
+ * no slot threw is caught by the page's boundary beside them when the page
+ * threw it, including from a component the page renders, which nothing tags.
+ * One a layout or a template threw renders outside the caught boundaries, so
+ * the document's render from the same payload throws it again and takes the
+ * fallback, which keeps it above the slot's layout (see
+ * `resolveAppPageShellSpecialError`). Without a slot's, that fallback renders.
+ */
+export function resolveAppPageCaughtNotFoundBoundaries(
+  error: unknown,
+  renderedSpecialErrors: readonly unknown[],
+): readonly string[] | null {
+  const specialError = resolveAppPageSpecialError(error);
+  if (specialError?.kind !== "http-access-fallback" || specialError.statusCode !== 404) {
+    return null;
+  }
+  if (isThrownNavigationError(error) || renderedSpecialErrors.length === 0) return null;
+  const boundaries = new Set<string>();
+  let caughtInSlot = false;
+  for (const rendered of renderedSpecialErrors) {
+    if (resolveAppPageSpecialError(rendered)?.fromMetadata === true) return null;
+    // A layout's own signal renders outside every slot's boundary.
+    if (getAppPageLayoutErrorLayoutIndex(rendered) !== null) return null;
+    const boundary = getAppPageSlotErrorNotFoundBoundary(rendered);
+    if (boundary !== null) {
+      caughtInSlot = true;
+      boundaries.add(boundary);
+    } else if (getAppPageSlotErrorLayoutIndex(rendered) === null) {
+      boundaries.add(APP_PAGE_NOT_FOUND_BOUNDARY_ID);
+    } else {
+      return null;
+    }
+  }
+  return caughtInSlot ? Array.from(boundaries) : null;
+}
+
+/**
  * Resolves a redirect() target against the request URL and prepends the
  * configured basePath when the target is an app-internal absolute path.
  *
@@ -273,22 +448,87 @@ function applyAppPageRedirectBasePath(location: string, basePath: string | undef
 }
 
 /**
- * Returns a path-relative form (`/foo?bar`) of an absolute URL when it shares
- * the request's origin; otherwise returns the URL verbatim. Used so the digest
- * we embed in the flight payload matches Next.js's convention — the digest
- * stores the path the developer passed to `redirect("/about")`, not a
- * fully-qualified URL like `https://example.com/about`.
+ * The response headers stored with a page's special-error entries: a
+ * redirect's own `location`, not the response's, which middleware may have
+ * replaced for this request.
  */
-function sameOriginPathOrAbsolute(location: string, requestUrl: string): string {
+export function resolveAppPageSpecialErrorStoredHeaders(
+  specialError: AppPageSpecialError,
+  basePath: string | undefined,
+): Record<string, string> | undefined {
+  if (specialError.kind !== "redirect") return undefined;
+  return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
+}
+
+const REDIRECT_BASES = [
+  { host: "a.redirect-base.vinext.invalid", protocol: "https:" },
+  { host: "b.redirect-base.vinext.invalid", protocol: "http:" },
+];
+
+function resolveAgainstPlaceholder(
+  location: string,
+  requestUrl: string,
+  placeholder: (typeof REDIRECT_BASES)[number],
+) {
+  const base = new URL(requestUrl);
+  base.protocol = placeholder.protocol;
+  base.host = placeholder.host;
+  base.port = "";
+  const resolved = new URL(location, base);
+  return { relative: resolved.origin === base.origin, resolved };
+}
+
+/**
+ * A URL reference as the URL parser reads it, with every byte a header value
+ * cannot carry percent-encoded. The parser trims C0 controls and spaces and
+ * drops tabs and newlines; percent-decoding reverses the rest, including in a
+ * host, so the client resolves it as it would the raw target.
+ */
+function toHeaderSafeUrlReference(location: string): string {
+  return (
+    location
+      // oxlint-disable-next-line no-control-regex -- the URL parser trims these
+      .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "")
+      .replace(/[\t\n\r]/g, "")
+      .replace(/[^\u0021-\u007e]+/g, (chars) =>
+        Array.from(
+          new TextEncoder().encode(chars),
+          (byte) => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`,
+        ).join(""),
+      )
+  );
+}
+
+/**
+ * The redirect target embedded in the flight digest and its streamed
+ * side-channel header. An absolute target stays in the digest as `redirect()`
+ * received it, as in Next.js's digest, so every host that shares the cache
+ * entry is sent to the same place; the header carries the same reference made
+ * header-safe, so a protocol-relative or scheme-relative target still resolves
+ * against the page each client fetched. A relative target resolves against the
+ * request's path to a path-only form, which the client resolves against its
+ * own origin; a resolved pathname that begins with "//" keeps a "/." prefix
+ * so that form stays a path rather than naming another host. Resolving
+ * against two placeholder origins tells these apart the way the URL parser
+ * does, never depends on the request's origin, and cannot mistake an absolute
+ * target naming one placeholder for a relative one.
+ */
+function resolveRedirectTargets(
+  location: string,
+  requestUrl: string,
+): { digestUrl: string; headerUrl: string } {
   try {
-    const resolved = new URL(location, requestUrl);
-    const requestOrigin = new URL(requestUrl).origin;
-    if (resolved.origin !== requestOrigin) {
-      return resolved.toString();
+    const [first, second] = REDIRECT_BASES.map((placeholder) =>
+      resolveAgainstPlaceholder(location, requestUrl, placeholder),
+    );
+    if (!first.relative || !second.relative) {
+      return { digestUrl: location, headerUrl: toHeaderSafeUrlReference(location) };
     }
-    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+    const { pathname, search, hash } = first.resolved;
+    const target = `${toPathAbsolutePathname(pathname)}${search}${hash}`;
+    return { digestUrl: target, headerUrl: target };
   } catch {
-    return location;
+    return { digestUrl: location, headerUrl: toHeaderSafeUrlReference(location) };
   }
 }
 
@@ -332,7 +572,7 @@ export async function buildAppPageSpecialErrorResponse(
       options.specialError.location,
       options.basePath,
     );
-    const digestUrl = sameOriginPathOrAbsolute(prefixedLocation, options.request.url);
+    const { digestUrl, headerUrl } = resolveRedirectTargets(prefixedLocation, options.request.url);
     const digest = formatNextRedirectDigest({
       type: options.specialError.type ?? "replace",
       url: digestUrl,
@@ -366,11 +606,6 @@ export async function buildAppPageSpecialErrorResponse(
       Boolean(options.buildRscRedirectFlightStream) && options.isRscRequest;
 
     if (shouldEmbedRedirectInFlight && options.buildRscRedirectFlightStream) {
-      // Reduce the resolved (absolute) URL back to a path-only form for
-      // same-origin redirects. Next.js's digest stores the raw URL passed to
-      // `redirect()` (typically a path like "/about"), and the client router's
-      // `router.push(url)` happily accepts paths. Cross-origin targets keep
-      // their absolute form, matching Next.js's external-redirect handling.
       const stream = options.buildRscRedirectFlightStream({ digest });
 
       const headers = new Headers({
@@ -388,7 +623,7 @@ export async function buildAppPageSpecialErrorResponse(
       // Framework-owned redirect semantics must win over middleware headers.
       // The Flight digest remains authoritative; these headers are only the
       // early client side-channel for following it without decoding first.
-      headers.set(VINEXT_RSC_REDIRECT_HEADER, digestUrl);
+      headers.set(VINEXT_RSC_REDIRECT_HEADER, headerUrl);
       headers.set(VINEXT_RSC_REDIRECT_TYPE_HEADER, options.specialError.type ?? "replace");
       const pendingCookies = options.getAndClearPendingCookies?.() ?? [];
       for (const cookie of pendingCookies) {
@@ -472,164 +707,6 @@ export async function buildAppPageSpecialErrorResponse(
     }),
     options.middlewareContext,
   );
-}
-
-/** See `LayoutFlags` type docblock in app-elements.ts for lifecycle. */
-export async function probeAppPageLayouts(
-  options: ProbeAppPageLayoutsOptions,
-): Promise<ProbeAppPageLayoutsResult> {
-  const layoutFlags: Record<string, "s" | "d"> = {};
-  const cls = options.classification ?? null;
-
-  const response = await options.runWithSuppressedHookWarning(async () => {
-    for (let layoutIndex = options.layoutCount - 1; layoutIndex >= 0; layoutIndex--) {
-      const buildTimeResult = cls?.buildTimeClassifications?.get(layoutIndex);
-
-      if (cls && buildTimeResult) {
-        const layoutId = cls.getLayoutId(layoutIndex);
-        // Build-time classified (Layer 1 or Layer 2): skip dynamic isolation,
-        // but still probe for special errors (redirects, not-found). Record the
-        // build-time flag up front so it survives a short-circuit if the error
-        // probe returns a special-error response below.
-        layoutFlags[layoutId] = buildTimeResult === "static" ? "s" : "d";
-        const errorResponse = await probeLayoutForErrors(options, layoutIndex);
-        if (errorResponse) return errorResponse;
-        // Compute the final flag before reporting so the emitted debug reason
-        // always agrees with `layoutFlags[layoutId]`. A runtime observation can
-        // override a build-time `static` decision to dynamic; in that case we
-        // report a `runtime-probe` reason rather than the stale build-time one.
-        const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
-        const layoutDynamic = buildTimeResult === "dynamic" || observationDynamic;
-        layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
-        if (cls.debugClassification) {
-          if (observationDynamic && buildTimeResult === "static") {
-            cls.debugClassification(layoutId, {
-              layer: "runtime-probe",
-              outcome: "dynamic",
-            });
-          } else {
-            // `no-classifier` is the documented fallback for a layout that was
-            // build-time classified but whose reason payload is absent — either
-            // because the build was run without `VINEXT_DEBUG_CLASSIFICATION` or
-            // because no Layer 1/2 classifier attached a reason. This is the sole
-            // producer of the variant; see `layout-classification-types.ts`.
-            cls.debugClassification(
-              layoutId,
-              cls.buildTimeReasons?.get(layoutIndex) ?? { layer: "no-classifier" },
-            );
-          }
-        }
-        continue;
-      }
-
-      if (cls) {
-        const layoutId = cls.getLayoutId(layoutIndex);
-        // Layer 3: probe with isolated dynamic scope to detect per-layout
-        // dynamic API usage (headers(), cookies(), connection(), etc.)
-        try {
-          const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(async () => {
-            const outcome = await runWithConnectionProbe(() => options.probeLayoutAt(layoutIndex));
-            return outcome.completed ? outcome.result : null;
-          });
-          const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
-          const layoutDynamic = dynamicDetected || observationDynamic;
-          layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
-          if (cls.debugClassification) {
-            cls.debugClassification(layoutId, {
-              layer: "runtime-probe",
-              outcome: layoutDynamic ? "dynamic" : "static",
-            });
-          }
-        } catch (error) {
-          // Probe failed — conservatively treat as dynamic.
-          layoutFlags[layoutId] = "d";
-          if (cls.debugClassification) {
-            cls.debugClassification(layoutId, {
-              layer: "runtime-probe",
-              outcome: "dynamic",
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-          const errorResponse = await options.onLayoutError(error, layoutIndex);
-          if (errorResponse) return errorResponse;
-        }
-        continue;
-      }
-
-      // No classification options — original behavior
-      const errorResponse = await probeLayoutForErrors(options, layoutIndex);
-      if (errorResponse) return errorResponse;
-    }
-
-    return null;
-  });
-
-  return { response, layoutFlags };
-}
-
-async function probeLayoutForErrors(
-  options: ProbeAppPageLayoutsOptions,
-  layoutIndex: number,
-): Promise<Response | null> {
-  const outcome = await runWithConnectionProbe(async () => {
-    try {
-      const layoutResult = options.probeLayoutAt(layoutIndex);
-      if (isPromiseLike(layoutResult)) {
-        await layoutResult;
-      }
-    } catch (error) {
-      return options.onLayoutError(error, layoutIndex);
-    }
-    return null;
-  });
-
-  return outcome.completed ? outcome.result : null;
-}
-
-export async function probeAppPageComponent(
-  options: ProbeAppPageComponentOptions,
-): Promise<Response | null> {
-  return options.runWithSuppressedHookWarning(async () => {
-    const outcome = await runWithConnectionProbe(async () => {
-      try {
-        const pageResult = options.probePage();
-        if (isPromiseLike(pageResult)) {
-          if (options.awaitAsyncResult) {
-            await pageResult;
-          } else {
-            void Promise.resolve(pageResult).catch(() => {});
-          }
-        }
-      } catch (error) {
-        return options.onError(error);
-      }
-
-      return null;
-    });
-
-    return outcome.completed ? outcome.result : null;
-  });
-}
-
-export async function probeAppPageThrownError(
-  options: ProbeAppPageThrownErrorOptions,
-): Promise<unknown> {
-  return options.runWithSuppressedHookWarning(async () => {
-    const outcome = await runWithConnectionProbe(async () => {
-      try {
-        const pageResult = options.probePage();
-        if (isPromiseLike(pageResult)) {
-          await pageResult;
-        }
-      } catch (error) {
-        return { error, thrown: true } as const;
-      }
-
-      return { error: null, thrown: false } as const;
-    });
-
-    return outcome.completed && outcome.result.thrown ? outcome.result.error : null;
-  });
 }
 
 export async function readAppPageBinaryStream(

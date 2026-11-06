@@ -18,7 +18,7 @@ import {
   type CacheHandlerValue,
   type IncrementalCacheValue,
 } from "../packages/vinext/src/shims/cache.js";
-import { appIsrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
+import { appIsrCacheKey, appIsrFallbackShellKey } from "../packages/vinext/src/server/isr-cache.js";
 import { getRenderedConcreteUrlPathsForRoute } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
 
@@ -286,6 +286,42 @@ describe("seedMemoryCacheFromPrerender", () => {
       kind: "APP_PAGE",
       headers: { link: "</font.woff2>; rel=preload; as=font" },
     });
+  });
+
+  // As in Next.js, a page's special error that escaped the shell is seeded
+  // with its status, and a redirect with its location, on both entries.
+  it.each([
+    { status: 404, headers: undefined },
+    { status: 307, headers: { location: "/target" } },
+  ])("seeds a prerendered $status special error on both entries", async ({ status, headers }) => {
+    const buildId = `test-build-special-error-${status}`;
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/special-error",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            responseStatus: status,
+            ...(headers ? { headers } : {}),
+          },
+        ],
+      },
+      {
+        "special-error.html": headers ? "" : "<html><body>not found</body></html>",
+        "special-error.rsc": "RSC payload with digest",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    for (const kind of ["html", "rsc"] as const) {
+      const entry = await getCacheHandler().get(appIsrCacheKey("/special-error", kind, buildId));
+      expect(entry?.value).toMatchObject({ kind: "APP_PAGE", status, headers });
+    }
   });
 
   it("seeds the index route correctly", async () => {
@@ -963,6 +999,48 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(paths!.has("/en/blog/known-post")).toBe(true);
     expect(paths!.has("/en/blog/[slug]")).toBe(false);
     expect(paths!.size).toBe(1);
+  });
+
+  it("seeds fallback shells apart from the page of their literal path", async () => {
+    const buildId = "fallback-shell-key-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/en/blog/:slug",
+            status: "rendered",
+            router: "app",
+            path: "/en/blog/[slug]",
+            revalidate: 60,
+            fallback: true,
+          },
+        ],
+      },
+      {
+        "en/blog/[slug].html": "<html>shell</html>",
+        "en/blog/[slug].rsc": "shell-flight-data",
+      },
+    );
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    // The shell is seeded apart from the page a literal `/en/blog/%5Bslug%5D`
+    // request renders, which decodes to the same pathname.
+    const shellEntry = await getCacheHandler().get(
+      appIsrFallbackShellKey("/en/blog/[slug]", "html", buildId),
+    );
+    expect(shellEntry?.value).toMatchObject({ kind: "APP_PAGE", html: "<html>shell</html>" });
+    const shellRscEntry = await getCacheHandler().get(
+      appIsrFallbackShellKey("/en/blog/[slug]", "rsc", buildId),
+    );
+    expect(shellRscEntry?.value).toMatchObject({ kind: "APP_PAGE" });
+    await expect(
+      getCacheHandler().get(appIsrCacheKey("/en/blog/[slug]", "html", buildId)),
+    ).resolves.toBeNull();
+    await expect(
+      getCacheHandler().get(appIsrCacheKey("/en/blog/[slug]", "rsc", buildId)),
+    ).resolves.toBeNull();
   });
 
   it("retains empty static-param route markers without seeding an artifact", async () => {

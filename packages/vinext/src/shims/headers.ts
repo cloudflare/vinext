@@ -19,6 +19,7 @@ import { serializeSetCookie, validateCookieName } from "./internal/cookie-serial
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
   ensureRenderDynamicLatch,
+  getRequestContext,
   isInsideUnifiedScope,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
@@ -155,43 +156,33 @@ function mergeMiddlewareSetCookies(ctx: HeadersContext, rawHeader: string | null
 }
 
 /**
- * Measure dynamic usage in a child async scope without clearing the parent.
- * Concurrent work that already belongs to the request (such as deferred
- * metadata) keeps writing to the parent state and therefore remains visible
- * to the final cache policy.
+ * Run a layout probe without letting its dynamic API usage, fetch tags or
+ * cacheLife reach the request. Next.js has no probe: only the render decides
+ * whether a page is dynamic and how long it is cached.
  */
-export async function runWithIsolatedDynamicUsage<T>(
-  fn: () => T | Promise<T>,
-): Promise<{ result: T; dynamicDetected: boolean }> {
-  const runInChildState = async (childState: VinextHeadersShimState) => {
-    const result = await fn();
-    return { result, dynamicDetected: childState.dynamicUsageDetected };
-  };
-
+export async function runWithDetachedDynamicUsage<T>(fn: () => T | Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {
-    let childState: VinextHeadersShimState | null = null;
-    return await runWithUnifiedStateMutation(
-      (context) => {
-        context.dynamicUsageDetected = false;
-        childState = context;
-      },
-      () => {
-        if (!childState) {
-          throw new Error("Dynamic usage scope was not initialized");
-        }
-        return runInChildState(childState);
-      },
-    );
+    return await runWithUnifiedStateMutation((context) => {
+      context.dynamicUsageDetected = false;
+      context.renderDynamicLatch = createRenderDynamicLatch();
+      context.renderRequestApiUsage = new Set();
+      // cacheForRequest() values would hand the probe's result to the render
+      // without the dynamic API calls that produced it.
+      context.requestCache = new WeakMap();
+      // The render records its own fetches, tags and cacheLife.
+      context.currentRequestTags = [];
+      context.dynamicFetchUrls = new Set();
+      context.requestScopedCacheLife = null;
+    }, fn);
   }
 
-  const parentState = _getState();
   const childState: VinextHeadersShimState = {
-    ...parentState,
-    // Share the parent's latch, creating it first on a stale fallback state.
-    renderDynamicLatch: ensureRenderDynamicLatch(parentState),
+    ..._getState(),
     dynamicUsageDetected: false,
+    renderDynamicLatch: createRenderDynamicLatch(),
+    renderRequestApiUsage: new Set(),
   };
-  return await _als.run(childState, () => runInChildState(childState));
+  return await _als.run(childState, fn);
 }
 
 export async function runWithConnectionProbe<T>(
@@ -213,10 +204,6 @@ export async function runWithConnectionProbe<T>(
       probe.interrupted = true;
       interruptProbe();
     },
-    // `connection()` suspends forever inside speculative probes, matching
-    // Next.js's prerender/probe contract: code after `await connection()`
-    // must not run while classifying a route.
-    pending: new Promise<never>(() => {}),
   };
 
   const runInChildState = async (childState: VinextHeadersShimState) => {
@@ -227,11 +214,18 @@ export async function runWithConnectionProbe<T>(
       return await Promise.race([completed, interrupted]);
     } finally {
       probe.active = false;
-      // Async resources created inside this ALS scope retain `childState` after
-      // the probe returns. Restore the inherited probe when nested; otherwise
-      // retain this inactive probe so late dynamic usage can still propagate
-      // to its parent without suspending. Reading the parent at cleanup time
-      // preserves the right lifecycle if an outer probe completed separately.
+      // Async resources created inside this ALS scope retain `childState`, and
+      // through it this probe, after the probe returns. A completed probe would
+      // otherwise leave `interrupted` pending forever, holding Promise.race's
+      // reaction, which captured the caller's async context. workerd holds
+      // async context values through strong handles, so that cycle is never
+      // collected and retained every request's context. The race is already
+      // decided here, so settling `interrupted` only drops the reaction.
+      interruptProbe();
+      // Restore the inherited probe when nested; otherwise retain this inactive
+      // probe so late dynamic usage can still propagate to its parent without
+      // suspending. Reading the parent at cleanup time preserves the right
+      // lifecycle if an outer probe completed separately.
       childState.connectionProbe = parentState.connectionProbe ?? probe;
 
       // Dynamic usage discovered by a speculative probe still classifies the
@@ -281,7 +275,12 @@ export function suspendConnectionProbe(): Promise<never> | null {
   if (!probe?.active) return null;
 
   probe.interrupt();
-  return probe.pending;
+  // `connection()` suspends forever inside speculative probes, matching
+  // Next.js's prerender/probe contract: code after `await connection()` must
+  // not run while classifying a route. Each call gets its own promise that
+  // the probe does not keep, so the suspended code (and the async context its
+  // continuation captured) is collected with the request.
+  return new Promise<never>(() => {});
 }
 
 export function peekRenderRequestApiUsage(): RenderRequestApiKind[] {
@@ -423,6 +422,11 @@ export function restoreDraftModeTransition(cookieHeader: string): void {
   state.draftModeCookieHeader = cookieHeader;
 }
 
+/** Replace request API inputs while retaining dynamic usage and pending mutations. */
+export function replaceHeadersContext(ctx: HeadersContext): void {
+  _getState().headersContext = ctx;
+}
+
 export function setHeadersContext(ctx: HeadersContext | null): void {
   const state = _getState();
   if (ctx !== null) {
@@ -434,6 +438,12 @@ export function setHeadersContext(ctx: HeadersContext | null): void {
     state.draftModeCookieHeader = null;
     state.phase = "render";
   } else {
+    // Clearing the context does not end the request: its render can still
+    // be running and its after() callbacks are yet to run, and both must
+    // keep the request's draft-mode cache bypass.
+    if (state.headersContext && isInsideUnifiedScope()) {
+      getRequestContext().draftModeAtHeadersClear = getActiveDraftModeState() === true;
+    }
     state.headersContext = null;
     state.phase = "render";
   }
@@ -549,7 +559,7 @@ class ReadonlyHeadersError extends Error {
     );
   }
 
-  static callable(): never {
+  static callable(this: void): never {
     throw new ReadonlyHeadersError();
   }
 }
@@ -564,7 +574,7 @@ class ReadonlyRequestCookiesError extends Error {
     );
   }
 
-  static callable(): never {
+  static callable(this: void): never {
     throw new ReadonlyRequestCookiesError();
   }
 }
@@ -697,10 +707,12 @@ function _wrapMutableCookies(cookies: RequestCookies): RequestCookies {
 }
 
 function _sealCookies(cookies: RequestCookies): RequestCookies {
+  // Like Next.js's RequestCookiesAdapter.seal, the mutating methods throw when
+  // called, not when read.
   return new Proxy(cookies, {
     get(target, prop) {
-      if (prop === "set" || prop === "delete") {
-        throw new ReadonlyRequestCookiesError();
+      if (prop === "set" || prop === "delete" || prop === "clear") {
+        return ReadonlyRequestCookiesError.callable;
       }
 
       const value = Reflect.get(target, prop, target);
@@ -936,6 +948,11 @@ const DRAFT_MODE_COOKIE = "__prerender_bypass";
  * Get any Set-Cookie header generated by draftMode().enable()/disable().
  * Called by the framework after rendering to attach the header to the response.
  */
+/** Check a pending draft transition without consuming its outgoing cookie. */
+export function hasDraftModeCookieHeader(): boolean {
+  return _getState().draftModeCookieHeader !== null;
+}
+
 export function getDraftModeCookieHeader(): string | null {
   const state = _getState();
   const header = state.draftModeCookieHeader;
@@ -998,10 +1015,14 @@ export function getActiveDraftModeState(): boolean | null {
 /**
  * Read the active request's draft-mode state without recording request API usage.
  * Internal cache implementations use this to bypass persistent reads and writes,
- * matching Next.js's request-level `workStore.isDraftMode` guard.
+ * matching Next.js's request-level `workStore.isDraftMode` guard. Once the
+ * headers context is cleared, the request keeps the state it had then.
  */
 export function isDraftModeEnabled(): boolean {
-  return getActiveDraftModeState() ?? false;
+  return (
+    getActiveDraftModeState() ??
+    (isInsideUnifiedScope() && getRequestContext().draftModeAtHeadersClear === true)
+  );
 }
 
 type DraftModeResult = {
@@ -1093,8 +1114,11 @@ export async function draftMode(): Promise<DraftModeResult> {
 // RequestCookies implementation
 // ---------------------------------------------------------------------------
 
-const APPLY_RESPONSE_COOKIE = Symbol("vinext.apply-response-cookie");
-const SYNCHRONIZE_REQUEST_COOKIES = Symbol("vinext.synchronize-request-cookies");
+// Registered symbols: the request context (and its RequestCookies) is shared
+// through globalThis, so another headers module instance — e.g. Vite's
+// prebundled `next/headers` in dev — must be able to call these methods.
+const APPLY_RESPONSE_COOKIE = Symbol.for("vinext.apply-response-cookie");
+const SYNCHRONIZE_REQUEST_COOKIES = Symbol.for("vinext.synchronize-request-cookies");
 
 class RequestCookies {
   private _cookies: Map<string, string>;
@@ -1109,7 +1133,8 @@ class RequestCookies {
       : null;
   }
 
-  get(name: string): ResponseCookie | undefined {
+  get(nameOrOptions: string | { name: string }): ResponseCookie | undefined {
+    const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
     if (this._responseCookies) return this._responseCookies.get(name);
     const value = this._cookies.get(name);
     if (value === undefined) return undefined;

@@ -79,8 +79,6 @@ describe("App Router static-sibling info on the server response", () => {
           return Promise.resolve(params);
         },
         matchedParams: { id: "123" },
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null, null],
@@ -116,8 +114,6 @@ describe("App Router static-sibling info on the server response", () => {
           return Promise.resolve(params);
         },
         matchedParams: {},
-        resolvedMetadata: null,
-        resolvedViewport: {},
         route: {
           error: null,
           errors: [null],

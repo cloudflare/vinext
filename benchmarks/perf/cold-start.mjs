@@ -10,17 +10,26 @@ const repositoryRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
 const benchmarkDir = join(repositoryRoot, "benchmarks");
 const targetUser = process.env.VINEXT_PERF_TARGET_USER;
 const profiling = process.env.VINEXT_PERF_PROFILE === "true";
-const framework = process.argv[2];
-const route = process.argv[3] ?? "/";
+const positional = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
+const options = process.argv.slice(2).filter((argument) => argument.startsWith("--"));
+const framework = positional[0];
+const route = positional[1] ?? "/";
+const appOption = options.find((option) => option.startsWith("--app="));
 const expectedText = process.env.VINEXT_PERF_EXPECTED_TEXT ?? "Benchmark App";
 
 if (framework !== "vinext" && framework !== "nextjs") {
-  console.error("Usage: node benchmarks/perf/cold-start.mjs <vinext|nextjs> [route]");
+  console.error(
+    "Usage: node benchmarks/perf/cold-start.mjs <vinext|nextjs> [route] [--app=<name>]",
+  );
   process.exit(1);
 }
 
 const projectDir = join(benchmarkDir, framework);
-const timeoutMs = Number(process.env.VINEXT_PERF_TIMEOUT_MS ?? 60_000);
+// --app=<name> runs the dev server in benchmarks/<name>/<framework> with binaries from projectDir.
+const appDir = appOption
+  ? join(benchmarkDir, appOption.slice("--app=".length), framework)
+  : projectDir;
+const timeoutMs = Number(process.env.VINEXT_PERF_TIMEOUT_MS ?? 120_000);
 const benchmarkEnvironmentNames = Object.keys(process.env).filter((name) =>
   name.startsWith("VINEXT_PERF_"),
 );
@@ -54,8 +63,8 @@ async function allocatePort() {
 async function cleanFrameworkCache() {
   const paths =
     framework === "vinext"
-      ? [join(projectDir, "node_modules/.vite"), join(projectDir, ".vite")]
-      : [join(projectDir, ".next")];
+      ? [join(appDir, "node_modules/.vite"), join(appDir, ".vite")]
+      : [join(appDir, ".next")];
   await Promise.all(paths.map(clearDirectory));
 }
 
@@ -101,7 +110,11 @@ async function waitForRoute(url, child, output, getSpawnError) {
     }
 
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+      // Let an accepted request run until the overall deadline. A large app can compile
+      // its first route for longer than any short per-request timeout, and aborting and
+      // retrying would measure overlapping cancelled requests instead of one cold request.
+      const signal = AbortSignal.timeout(Math.max(1, Math.ceil(deadline - performance.now())));
+      const response = await fetch(url, { signal });
       if (response.ok) {
         const body = await response.text();
         if (body.includes(expectedText)) return;
@@ -153,7 +166,7 @@ async function main() {
   let spawnError = null;
   const startedAt = performance.now();
   const child = spawn(command, args, {
-    cwd: projectDir,
+    cwd: appDir,
     detached: true,
     env: targetEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],

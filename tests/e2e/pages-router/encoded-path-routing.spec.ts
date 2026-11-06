@@ -72,3 +72,36 @@ test("decodes Pages dynamic params exactly once in dev", async () => {
   expect(encodedSlash.status).toBe(200);
   expect(encodedSlash.body).toMatch(/Post: (?:<!-- -->)?b\/c/);
 });
+
+// Next.js builds each catch-all element separately, so `["value", "nested"]`
+// is `/value/nested` and `["encoded/value"]` is `/encoded%2Fvalue`.
+test("admits only listed catch-all elements for fallback false paths in dev", async () => {
+  const listed = await getRawPath("/catchall-optional/value/nested");
+  expect(listed.status).toBe(200);
+  expect(listed.body).toMatch(/Catch all: (?:<!-- -->)?\[(?:<!-- -->)?value, nested/);
+
+  const listedSlash = await getRawPath("/catchall-optional/encoded%2Fvalue");
+  expect(listedSlash.status).toBe(200);
+  expect(listedSlash.body).toMatch(/Catch all: (?:<!-- -->)?\[(?:<!-- -->)?encoded\/value/);
+
+  for (const path of ["/catchall-optional/value%2Fnested", "/catchall-optional/encoded/value"]) {
+    const unlisted = await getRawPath(path);
+    expect({ path, status: unlisted.status }).toEqual({ path, status: 404 });
+    expect(unlisted.body).not.toContain("Catch all");
+  }
+
+  const buildId = listed.body.match(/"buildId":"([^"]+)"/)?.[1];
+  expect(buildId).toBeTruthy();
+  for (const path of ["value/nested", "encoded%2Fvalue"]) {
+    const data = await getRawPath(`/_next/data/${buildId}/catchall-optional/${path}.json`);
+    expect({ path, status: data.status }).toEqual({ path, status: 200 });
+  }
+  for (const path of ["value%2Fnested", "encoded/value"]) {
+    const data = await getRawPath(`/_next/data/${buildId}/catchall-optional/${path}.json`);
+    expect({ path, status: data.status, body: data.body }).toEqual({
+      path,
+      status: 404,
+      body: '{"notFound":true}',
+    });
+  }
+});

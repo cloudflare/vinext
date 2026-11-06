@@ -9,10 +9,25 @@ type VinextHydrateRootErrorInfo = {
 
 type HydrateRootErrorHandler = (error: unknown, errorInfo: VinextHydrateRootErrorInfo) => void;
 
-function isImplicitRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boolean {
-  if (!isUnknownRecord(errorInfo.errorBoundary)) return false;
+function getErrorBoundaryProps(errorInfo: VinextHydrateRootErrorInfo): Record<string, unknown> {
+  if (!isUnknownRecord(errorInfo.errorBoundary)) return {};
   const props = errorInfo.errorBoundary.props;
-  return isUnknownRecord(props) && props.isImplicitRootErrorBoundary === true;
+  return isUnknownRecord(props) ? props : {};
+}
+
+function isImplicitRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boolean {
+  return getErrorBoundaryProps(errorInfo).isImplicitRootErrorBoundary === true;
+}
+
+// The implicit root boundary or a global-error boundary: the boundaries that
+// stand in for Next.js's dev overlay boundary, which holds the whole page. An
+// implicit root boundary around the user's global-error boundary only catches
+// what that boundary's fallback threw, which React reports in place of the
+// page's error, so it doesn't count.
+function isRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boolean {
+  const props = getErrorBoundaryProps(errorInfo);
+  if (props.isGlobalErrorBoundary === true) return true;
+  return props.isImplicitRootErrorBoundary === true && props.wrapsGlobalErrorBoundary !== true;
 }
 
 function logCaughtError(error: unknown, errorInfo: VinextHydrateRootErrorInfo): void {
@@ -31,11 +46,27 @@ function reportGlobalError(error: unknown): void {
   console.error(error);
 }
 
+// Ported from Next.js's next-devtools coerceError/isError. The dev overlay only
+// reports window error events that carry a value, so dev wraps non-Error
+// values (e.g. `throw undefined` from a crashing global-error.tsx) before
+// reporting them.
+// Navigation signals pass through untouched so their digest stays readable.
+function coerceError(value: unknown): unknown {
+  if (isNavigationSignalError(value)) return value;
+  if (typeof value === "object" && value !== null && "name" in value && "message" in value) {
+    return value;
+  }
+  return new Error(String(value));
+}
+
 // Match Next.js's root callback: report the error globally. The optional
 // navigation-failure listener handles the resulting error event when enabled.
-export function createOnUncaughtError(): HydrateRootErrorHandler {
+// Dev coerces non-Error values first, like Next.js's decorateDevError.
+export function createOnUncaughtError(
+  options: { coerceToError?: boolean } = {},
+): HydrateRootErrorHandler {
   return (error) => {
-    reportGlobalError(error);
+    reportGlobalError(options.coerceToError ? coerceError(error) : error);
   };
 }
 
@@ -66,8 +97,12 @@ export function createProdOnCaughtError(
 export function createDevOnCaughtError(
   onCaughtError: HydrateRootErrorHandler,
   onImplicitRootError: HydrateRootErrorHandler,
+  onRootErrorBoundaryCatch?: () => void,
 ): HydrateRootErrorHandler {
   return (error, errorInfo) => {
+    if (!isNavigationSignalError(error) && isRootErrorBoundary(errorInfo)) {
+      onRootErrorBoundaryCatch?.();
+    }
     if (isImplicitRootErrorBoundary(errorInfo)) {
       onImplicitRootError(error, errorInfo);
       return;

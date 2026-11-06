@@ -111,12 +111,14 @@ describe("next-view-transitions", () => {
 describe("nuqs", () => {
   let proc: ChildProcess | null = null;
   let fetchPage: (path: string) => Promise<{ html: string; status: number }>;
+  let baseUrl: string;
   const fixtureRoot = path.join(FIXTURES_DIR, "nuqs");
 
   beforeAll(async () => {
     const fixture = await startFixture("nuqs", 4402);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
+    baseUrl = fixture.baseUrl;
   }, FIXTURE_HOOK_TIMEOUT_MS);
 
   afterAll(() => stopFixtureDevServer(proc));
@@ -146,7 +148,7 @@ describe("nuqs", () => {
     expect(html).toContain('data-testid="next-page"');
   });
 
-  it("prebundles next/navigation.js imports against vinext shims", async () => {
+  it("resolves next/navigation.js imports in prebundled deps to vinext's shim", async () => {
     await fetchPage("/");
 
     const depsDir = path.join(fixtureRoot, "node_modules", ".vite", "deps");
@@ -159,9 +161,16 @@ describe("nuqs", () => {
 
     const optimizedAdapter = readFileSync(path.join(depsDir, optimizedAdapterFile!), "utf8");
 
-    expect(optimizedAdapter).toContain("vinext.navigationRuntime");
-    expect(optimizedAdapter).toContain("vinext.navigation.readonlySearchParams");
+    // A pre-bundled copy of the shim would carry its own navigation state, so
+    // the import stays bare instead of inlining the shim or real Next.
+    expect(optimizedAdapter).toContain('from "next/navigation.js"');
+    expect(optimizedAdapter).not.toContain("vinext.navigationRuntime");
     expect(optimizedAdapter).not.toContain("node_modules/.pnpm/next@");
+
+    // Served to the browser, the bare import resolves to vinext's shim module.
+    const served = await fetch(`${baseUrl}/node_modules/.vite/deps/${optimizedAdapterFile}`);
+    expect(served.status).toBe(200);
+    expect(await served.text()).toMatch(/from "[^"]*\/vinext\/dist\/shims\/navigation\.js"/);
   });
 });
 
@@ -203,6 +212,39 @@ describe("next-intl", () => {
     expect(html).toContain('data-testid="title"');
     expect(html).toContain("Hallo Welt");
     expect(html).toContain("Diese Seite verwendet next-intl zur Internationalisierung.");
+  });
+
+  it("renders German SSR content for a page with generateMetadata()", async () => {
+    // generateMetadata() runs inside the render and shares its React cache(),
+    // so it must not freeze the layout's messages before the page sets the
+    // request locale.
+    const { html, status } = await fetchPage("/de/metadata");
+    expect(status).toBe(200);
+    expect(html).toContain('<html lang="de"');
+    expect(html).toContain("<title>Hallo Welt</title>");
+    expect(html).toMatch(/data-testid="client-greeting"[^>]*>Hallo Welt</);
+    expect(html).not.toContain("Hello World");
+  });
+
+  it("renders a server component below a layout that sets the request locale", async () => {
+    // next-intl's static rendering setup (#3671): Nav reads the locale the
+    // layout stored through React cache().
+    const { html, status } = await fetchPage("/ssg/de/about");
+    expect(status).toBe(200);
+    expect(html).toContain('<html lang="de"');
+    expect(html).toMatch(/data-testid="nav"[^>]*>Startseite</);
+    expect(html).toMatch(/data-testid="about-title"[^>]*>Über</);
+  });
+
+  it("renders the built-in 404 when the locale layout calls notFound()", async () => {
+    // Issue #4045: [locale]/not-found.tsx sits inside the [locale] layout, so it
+    // cannot catch that layout's notFound(). It also needs the layout's
+    // NextIntlClientProvider. Next.js renders the boundary above the layout,
+    // here the built-in not-found.
+    const { html, status } = await fetchPage("/missing.webp");
+    expect(status).toBe(404);
+    expect(html).toContain("This page could not be found.");
+    expect(html).not.toContain("locale-not-found");
   });
 });
 

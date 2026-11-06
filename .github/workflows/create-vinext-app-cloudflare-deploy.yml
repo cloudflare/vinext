@@ -85,6 +85,13 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
           vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/cloudflare-workers-response-store-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          # Install the @vitejs/plugin-rsc and React versions the repo is tested
+          # with. An unversioned install can resolve an older release under
+          # pnpm's minimumReleaseAge default, which vinext rejects.
+          RSC_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('@vitejs/plugin-rsc/package.json').version")
+          vp add -D "@vitejs/plugin-rsc@$RSC_VERSION"
+          REACT_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('react-server-dom-webpack/package.json').version")
+          vp add "react@$REACT_VERSION" "react-dom@$REACT_VERSION" "react-server-dom-webpack@$REACT_VERSION"
 
       - name: Configure generated Cloudflare deployment
         working-directory: ${{ runner.temp }}/cva-cloudflare

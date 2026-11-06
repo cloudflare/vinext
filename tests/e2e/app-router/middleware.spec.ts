@@ -4,7 +4,6 @@
  * Ported from:
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/middleware.redirect.test.ts
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/middleware.rewrite.test.ts
- * Tests: ON-11 in TRACKING.md
  */
 import { test, expect } from "@playwright/test";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
@@ -145,6 +144,56 @@ test.describe("Middleware Block (OpenNext compat)", () => {
   }
 });
 
+// vinext renders the interception source's tree, so it authorizes that source
+// like a direct request. `/admin` owns `@modal/(...)photos/[id]` and only its
+// exact path is guarded. A source below it with no route of its own must not
+// fall back to rendering the guarded owner page, which Next.js never renders
+// for an intercepted request.
+test.describe("Middleware-guarded interception slot owner", () => {
+  const interceptionHeaders = (source: string) => ({
+    Accept: "text/x-component",
+    RSC: "1",
+    "X-Vinext-Interception-Context": source,
+  });
+
+  test("does not render the guarded owner for a nonexistent descendant source", async ({
+    request,
+  }) => {
+    const direct = await request.get(`${BASE}/admin`, { headers: { RSC: "1" } });
+    expect(direct.status()).toBe(403);
+    expect(await direct.text()).not.toContain("Protected admin content");
+
+    const missing = await request.get(`${BASE}/admin/missing`);
+    expect(missing.status()).toBe(404);
+
+    const owner = await request.get(`${BASE}/photos/1`, {
+      headers: interceptionHeaders("/admin"),
+    });
+    expect(owner.status()).toBe(403);
+    expect(await owner.text()).not.toContain("Protected admin content");
+
+    for (const source of ["/admin/missing", "/admin/missing/deeper"]) {
+      const response = await request.get(`${BASE}/photos/1`, {
+        headers: interceptionHeaders(source),
+      });
+      const body = await response.text();
+      expect({
+        source,
+        status: response.status(),
+        rendersPhoto:
+          body.includes(`"data-testid":"photo-page"`) ||
+          body.includes(`"data-testid":"admin-photo-modal"`),
+        exposesOwner: body.includes("Protected admin content"),
+      }).toEqual({
+        source,
+        status: 200,
+        rendersPhoto: true,
+        exposesOwner: false,
+      });
+    }
+  });
+});
+
 test.describe("encoded App route parity", () => {
   test("keeps encoded aliases out of slash and config-header identity in dev", async () => {
     const literal = await getRawPath("/about");
@@ -206,6 +255,28 @@ test.describe("encoded App route parity", () => {
       expect(response.status()).toBe(200);
       expect(await response.text()).toContain('["a%2561","b%2Fc"]');
     }
+  });
+
+  // Next.js 16.2.7 routes a rewrite destination exactly like a direct request
+  // to it, so an encoded static segment does not name the literal one.
+  test("routes middleware rewrite destinations on their raw static segments", async () => {
+    const literal = await getRawPath("/encoded-parity/rewrite-any/member/bob/settings");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("settings for bob");
+    expect(literal.body).not.toContain("tab settings");
+
+    const encoded = await getRawPath("/encoded-parity/rewrite-any/member/bob/%73ettings");
+    expect(encoded.status).toBe(200);
+    expect(encoded.body).toContain("tab settings for bob");
+
+    const forceDynamic = await getRawPath("/encoded-parity/rewrite-any/sibling/%6Cive");
+    expect(forceDynamic.status).toBe(200);
+    expect(forceDynamic.body).toContain("dynamic sibling live");
+    expect(forceDynamic.body).not.toContain("forced dynamic page");
+
+    const unmatched = await getRawPath("/encoded-parity/rewrite-any/%6Dember/bob/settings");
+    expect(unmatched.status).toBe(404);
+    expect(unmatched.body).not.toContain("settings for bob");
   });
 
   test("dynamicParams=false only accepts the encoded literal static value", async () => {

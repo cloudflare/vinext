@@ -72,3 +72,34 @@ test.describe("interception-dynamic-segment-middleware", () => {
     }
   });
 });
+
+// Extends the upstream test with a dynamic source below the locale root, so
+// the source itself is rewritten. Next.js keeps App Router params encoded as
+// they appear in the URL, except that an escaped ASCII character renders
+// unescaped (`%61` as `a`, `%7e` as `~`), and opens the modal from each of these
+// sources.
+test.describe("interception-dynamic-segment-middleware from an encoded source", () => {
+  for (const [segment, tag] of [
+    ["plain", "plain"],
+    ["caf%C3%A9", "caf%C3%A9"],
+    ["a%2Fb", "a%2Fb"],
+    ["%2561", "%2561"],
+    ["%252561", "%252561"],
+    ["100%25", "100%25"],
+    ["%61", "a"],
+    ["%7e", "~"],
+  ]) {
+    test(`intercepts from /interception-mw/tags/${segment}`, async ({ page }) => {
+      await page.goto(`${HOME}/tags/${segment}`);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator("#tag-param")).toHaveText(tag);
+
+      await page.click("#link-foo-p-1");
+
+      await expect(page.locator("#modal")).toContainText("intercepted");
+      await expect(page).toHaveURL(`${HOME}/foo/p/1`);
+      // The source page stays mounted under the modal with its params intact.
+      await expect(page.locator("#tag-param")).toHaveText(tag);
+    });
+  }
+});

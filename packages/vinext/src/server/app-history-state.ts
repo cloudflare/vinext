@@ -70,6 +70,13 @@ export class HistoryStateSnapshotCache<TState> {
     }
   }
 
+  /** Point every entry that remembered `previous` at `next` instead. */
+  replaceState(previous: TState, next: TState): void {
+    for (const snapshot of this.#snapshots.values()) {
+      if (snapshot.state === previous) snapshot.state = next;
+    }
+  }
+
   resolveRestore(options: {
     currentBfcacheVersion: number;
     guarded: boolean;
@@ -159,6 +166,10 @@ export class RestorableClientStateController<TState> {
       historyIndex: options.historyIndex,
       state: options.state,
     });
+  }
+
+  replaceHistoryStateSnapshots(previous: TState, next: TState): void {
+    this.#snapshots.replaceState(previous, next);
   }
 
   resolveHistoryStateSnapshotRestore(
@@ -318,11 +329,11 @@ export function createAppOwnedHistoryState(state: unknown): unknown {
 
 export function createHistoryStateWithTreeSnapshotId(
   state: unknown,
-  treeSnapshotId: number | null,
+  treeSnapshotId: string | null,
 ): unknown {
   const nextState = cloneHistoryState(state);
   const previousTreeSnapshotId = readHistoryStateTreeSnapshotId(nextState);
-  if (isNonNegativeSafeInteger(treeSnapshotId)) {
+  if (isTreeSnapshotId(treeSnapshotId)) {
     nextState[VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY] = treeSnapshotId;
     if (previousTreeSnapshotId !== treeSnapshotId) {
       delete nextState[VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY];
@@ -352,9 +363,13 @@ export function clearHistoryStateTreeSnapshotId(state: unknown): unknown {
   return createHistoryStateWithTreeSnapshotId(state, null);
 }
 
-export function readHistoryStateTreeSnapshotId(state: unknown): number | null {
+export function readHistoryStateTreeSnapshotId(state: unknown): string | null {
   const value = readHistoryStateRecord(state)?.[VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY];
-  return isNonNegativeSafeInteger(value) ? value : null;
+  return isTreeSnapshotId(value) ? value : null;
+}
+
+function isTreeSnapshotId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 export function readHistoryStateActiveRoutePaths(state: unknown): readonly string[] | null {

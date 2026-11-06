@@ -9,6 +9,9 @@ export { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
+/** The policy Next.js sends on every Server Action response. */
+export const SERVER_ACTION_CACHE_CONTROL = "no-cache, no-store, max-age=0, must-revalidate";
+
 export const BROWSER_REVALIDATE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
 export const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
@@ -138,7 +141,7 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
     headers.set(name, value);
   }
   if (useNextDeployPolicy) {
-    headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
+    headers.set("Cache-Control", input.browserCacheControl ?? BROWSER_REVALIDATE_CACHE_CONTROL);
   }
 }
 
@@ -162,24 +165,16 @@ export function reconcileCdnResponseHeadersAfterOuterPolicy(
     return;
   }
   const cacheControl = outerPolicyHeaders.get("cache-control");
-  if (cacheControl !== null) {
-    applyCdnResponseHeaders(headers, { cacheControl });
-    // Preserve any explicit provider-specific policy authored alongside the
-    // generic middleware policy after the adapter has derived its defaults.
-    for (const [name, value] of outerPolicyHeaders) {
-      if (name === "cache-control") continue;
-      if (isCdnResponsePolicyHeader(name)) headers.set(name, value);
-    }
-    return;
-  }
+  if (cacheControl !== null) headers.set("Cache-Control", cacheControl);
   for (const [name, value] of outerPolicyHeaders) {
-    if (isCdnResponsePolicyHeader(name) && isNonCacheableCdnResponsePolicy(name, value)) {
+    if (
+      name !== "cache-control" &&
+      isCdnResponsePolicyHeader(name) &&
+      isNonCacheableCdnResponsePolicy(name, value)
+    ) {
       applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
       return;
     }
-  }
-  if (hasExplicitNonCacheableResponsePolicy(outerPolicyHeaders)) {
-    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   }
 }
 

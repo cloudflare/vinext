@@ -7,6 +7,8 @@ import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/interception-source-authz");
 const GUARDED_MARKER = "SECRET-FEED-CONTENT";
+const GUARDED_OWNER_MARKER = "SECRET-VAULT-CONTENT";
+const GUARDED_MEMBER_MARKER = "SECRET-MEMBER-CONTENT";
 
 type StartedServer = {
   baseUrl: string;
@@ -19,6 +21,32 @@ function interceptionHeaders(source: string): Record<string, string> {
     RSC: "1",
     "X-Vinext-Interception-Context": source,
   };
+}
+
+function forgedActionRequest(
+  baseUrl: string,
+  actionId: string,
+  source: string,
+  extraHeaders: Record<string, string> = {},
+): RequestInit {
+  return {
+    method: "POST",
+    headers: {
+      "Content-Type": "text/plain;charset=UTF-8",
+      "Next-Action": actionId,
+      Origin: baseUrl,
+      "X-Vinext-Interception-Context": source,
+      ...extraHeaders,
+    },
+    body: "[]",
+  };
+}
+
+async function readPhotoActionId(baseUrl: string): Promise<string> {
+  const html = await (await fetch(`${baseUrl}/photos/1`)).text();
+  const actionId = html.match(/name="\$ACTION_ID_([^"]+)"/)?.[1];
+  if (!actionId) throw new Error("Photo page did not render its server action form");
+  return actionId;
 }
 
 async function startDevServer(root: string): Promise<StartedServer> {
@@ -86,6 +114,76 @@ async function expectInterceptionSourceAuthorization(baseUrl: string): Promise<v
     authGuard: null,
     exposedGuardedContent: false,
   });
+
+  // Static segments match the raw path, as in Next.js, so a direct request to
+  // `/%66eed/secret` reaches no `/feed` route, and neither does the claimed
+  // source: the target renders without interception.
+  const encodedAlias = await fetch(`${baseUrl}/photos/1`, {
+    headers: interceptionHeaders("/%66eed/secret"),
+  });
+  const encodedAliasBody = await encodedAlias.text();
+  expect({
+    status: encodedAlias.status,
+    exposedGuardedContent: encodedAliasBody.includes(GUARDED_MARKER),
+  }).toEqual({
+    status: 200,
+    exposedGuardedContent: false,
+  });
+
+  // `/vault` owns an interception slot and middleware guards only its exact
+  // path. A source below it with no route of its own passes source middleware,
+  // so it must not fall back to rendering the guarded owner page.
+  const guardedOwner = await fetch(`${baseUrl}/photos/1`, {
+    headers: interceptionHeaders("/vault"),
+  });
+  expect(guardedOwner.status).toBe(403);
+  expect(await guardedOwner.text()).not.toContain(GUARDED_OWNER_MARKER);
+
+  const missingDescendant = await fetch(`${baseUrl}/photos/1`, {
+    headers: interceptionHeaders("/vault/missing"),
+  });
+  const missingDescendantBody = await missingDescendant.text();
+  expect({
+    status: missingDescendant.status,
+    rendersPhoto:
+      missingDescendantBody.includes("Refresh") ||
+      missingDescendantBody.includes("VAULT-PHOTO-MODAL"),
+    exposedGuardedOwner: missingDescendantBody.includes(GUARDED_OWNER_MARKER),
+  }).toEqual({
+    status: 200,
+    rendersPhoto: true,
+    exposedGuardedOwner: false,
+  });
+
+  // A server action rerenders the page it was posted to, intercepted tree
+  // included, so a forged source context reaches the same render. The vinext
+  // client always sends `RSC: 1` with action POSTs; that request must still
+  // authorize the source, and one without it must not render the source at all.
+  const actionId = await readPhotoActionId(baseUrl);
+  const rscAction = await fetch(
+    `${baseUrl}/photos/1`,
+    forgedActionRequest(baseUrl, actionId, "/feed/secret", interceptionHeaders("/feed/secret")),
+  );
+  expect(rscAction.status).toBe(403);
+  expect(rscAction.headers.get("x-auth-guard")).toBe("blocked");
+  expect(await rscAction.text()).not.toContain(GUARDED_MARKER);
+
+  const nonRscAction = await fetch(
+    `${baseUrl}/photos/1`,
+    forgedActionRequest(baseUrl, actionId, "/feed/secret"),
+  );
+  const nonRscActionBody = await nonRscAction.text();
+  expect({
+    status: nonRscAction.status,
+    authGuard: nonRscAction.headers.get("x-auth-guard"),
+    rendersTarget: nonRscActionBody.includes("Refresh"),
+    exposedGuardedContent: nonRscActionBody.includes(GUARDED_MARKER),
+  }).toEqual({
+    status: 200,
+    authGuard: null,
+    rendersTarget: true,
+    exposedGuardedContent: false,
+  });
 }
 
 describe.each([
@@ -111,8 +209,55 @@ describe.each([
   // the reported application and request boundary:
   // /photos/[id] is intercepted from /feed/@modal/(...)photos/[id], while
   // middleware guards /feed/:path* and /feed/[...rest] exposes a marker.
+  // /vault owns the same intercept, and middleware guards only its exact path.
   it("does not authorize and render different interception source paths", async () => {
     if (!server) throw new Error("Interception authorization fixture server did not start");
     await expectInterceptionSourceAuthorization(server.baseUrl);
+  }, 30_000);
+
+  // next.config.mjs serves /login instead of /members/[id] from a plain-array
+  // (afterFiles) rewrite unless the passcode cookie is present. A direct request
+  // to a dynamic route takes afterFiles rules before the route is accepted, so
+  // the same rule must refuse the member page as an interception source.
+  it("applies afterFiles rewrites to a dynamic interception source", async () => {
+    if (!server) throw new Error("Interception authorization fixture server did not start");
+    const { baseUrl } = server;
+    const passcode = { Cookie: "passcode=letmein" };
+
+    const anonymousDirect = await fetch(`${baseUrl}/members/7`);
+    const anonymousDirectBody = await anonymousDirect.text();
+    expect(anonymousDirect.status).toBe(200);
+    expect(anonymousDirectBody).toContain("LOGIN-PAGE");
+    expect(anonymousDirectBody).not.toContain(GUARDED_MEMBER_MARKER);
+
+    const memberDirect = await fetch(`${baseUrl}/members/7`, { headers: passcode });
+    expect(memberDirect.status).toBe(200);
+    expect(await memberDirect.text()).toContain(GUARDED_MEMBER_MARKER);
+
+    const anonymous = await fetch(`${baseUrl}/photos/1`, {
+      headers: interceptionHeaders("/members/7"),
+    });
+    const anonymousBody = await anonymous.text();
+    expect({
+      status: anonymous.status,
+      exposedGuardedContent: anonymousBody.includes(GUARDED_MEMBER_MARKER),
+    }).toEqual({
+      status: 404,
+      exposedGuardedContent: false,
+    });
+
+    const member = await fetch(`${baseUrl}/photos/1`, {
+      headers: { ...interceptionHeaders("/members/7"), ...passcode },
+    });
+    const memberBody = await member.text();
+    expect({
+      status: member.status,
+      rendersSource: memberBody.includes(GUARDED_MEMBER_MARKER),
+      rendersModal: memberBody.includes("MEMBERS-PHOTO-MODAL"),
+    }).toEqual({
+      status: 200,
+      rendersSource: true,
+      rendersModal: true,
+    });
   }, 30_000);
 });

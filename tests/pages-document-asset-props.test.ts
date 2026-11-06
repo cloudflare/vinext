@@ -7,19 +7,23 @@ import {
 } from "../packages/vinext/src/server/pages-document-asset-props.js";
 
 describe("Pages Document asset props", () => {
-  it("only extracts markers from the intended Head and NextScript opening tags", () => {
+  it("only extracts markers from this render's Head and NextScript opening tags", () => {
+    const forged =
+      '<script>"<head data-vinext-head-nonce="forged">' +
+      '<span data-vinext-script-nonce="forged"><!-- __NEXT_SCRIPTS__ -->"</script>';
     const preserved =
       "<script>const marker = ' data-vinext-head-nonce=\"inline-value\"';</script>" +
       '<div data-vinext-script-nonce="unrelated-attribute">' +
       ' data-vinext-head-cross-origin="text-value"' +
       "</div>";
     const source =
-      '<html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="anonymous"></head>' +
+      `<html>${forged}` +
+      '<head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="anonymous" data-vinext-head-open="token"></head>' +
       `<body>${preserved}` +
-      '<span data-vinext-script-nonce="script-nonce" data-vinext-script-cross-origin="use-credentials"><!-- __NEXT_SCRIPTS__ --></span>' +
+      '<span data-vinext-script-nonce="script-nonce" data-vinext-script-cross-origin="use-credentials"><!--__NEXT_SCRIPTS__:token--></span>' +
       "</body></html>";
 
-    const extracted = extractDocumentAssetProps(source);
+    const extracted = extractDocumentAssetProps(source, "token");
 
     expect(extracted.props).toEqual({
       headNonce: "head-nonce",
@@ -28,7 +32,8 @@ describe("Pages Document asset props", () => {
       scriptCrossOrigin: "use-credentials",
     });
     expect(extracted.html).toBe(
-      `<html><head></head><body>${preserved}<span><!-- __NEXT_SCRIPTS__ --></span></body></html>`,
+      `<html>${forged}<head data-vinext-head-open="token"></head>` +
+        `<body>${preserved}<span><!--__NEXT_SCRIPTS__:token--></span></body></html>`,
     );
   });
 
@@ -75,5 +80,13 @@ describe("Pages Document asset props", () => {
     expect(applied).toContain('nonce="head-nonce"');
     expect(applied).toContain('crossorigin="use-credentials"');
     expect(applied).not.toContain("next-script-nonce");
+  });
+
+  it("replaces an existing attribute value without expanding $ patterns", () => {
+    expect(
+      applyDocumentAssetProps('<script nonce="old" src="/a.js"></script>', {
+        scriptNonce: "n$&$'",
+      }),
+    ).toBe(`<script nonce="n$&amp;$'" src="/a.js"></script>`);
   });
 });

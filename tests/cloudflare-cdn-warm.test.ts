@@ -268,53 +268,6 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
-  it("preserves opt-in prerender fallback-shell warming", () => {
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-    writeFile(
-      "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({
-        buildId: "build-a",
-        excludedWarmPaths: ["/blog/[slug]"],
-        paths: ["/", "/cached/intro"],
-      }),
-    );
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "build-a",
-        routes: [
-          { route: "/", status: "rendered", router: "app", fallback: false },
-          {
-            route: "/blog/:slug",
-            path: "/blog/[slug]",
-            status: "rendered",
-            router: "app",
-            fallback: true,
-          },
-        ],
-      }),
-    );
-
-    expect(readPrerenderWarmPlan(tmpDir, { includeFallbackShells: true }).paths).toEqual(["/"]);
-  });
-
-  it("falls back to discovered paths when fallback shells were not locally rendered", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-    writeFile(
-      "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({ buildId: "build-a", paths: ["/", "/cached/intro"] }),
-    );
-
-    expect(readPrerenderWarmPlan(tmpDir, { includeFallbackShells: true }).paths).toEqual([
-      "/",
-      "/cached/intro",
-    ]);
-    expect(warn).toHaveBeenCalledWith(
-      "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
-    );
-  });
-
   it("rejects a stale discovery manifest in strict mode", () => {
     writeFile("dist/server/BUILD_ID", "build-b\n");
     writeFile(
@@ -1035,6 +988,46 @@ describe("Cloudflare CDN warmup", () => {
       }),
     ).resolves.toMatchObject({ warmed: 2, skipped: 0, failed: 0 });
   });
+
+  // A page's forbidden() or unauthorized() is stored with its status, as
+  // Next.js stores it, so its admitted response is a warmed terminal response.
+  it.each([
+    { cfCacheStatus: "MISS", status: 401, expected: { warmed: 2, skipped: 0, failed: 0 } },
+    { cfCacheStatus: "MISS", status: 403, expected: { warmed: 2, skipped: 0, failed: 0 } },
+    // The edge didn't admit it, so the warm still fails.
+    { cfCacheStatus: "DYNAMIC", status: 403, expected: { warmed: 0, skipped: 0, failed: 2 } },
+  ])(
+    "warms a same-build $status with CF-Cache-Status $cfCacheStatus only if admitted",
+    async ({ cfCacheStatus, status, expected }) => {
+      const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const isRsc = new Headers(init?.headers).get("rsc") === "1";
+        return new Response(isRsc ? "flight with digest" : "boundary document", {
+          status,
+          headers: {
+            "cache-control": "public, max-age=0, must-revalidate",
+            "cdn-cache-control": "public, max-age=60",
+            "cf-cache-status": cfCacheStatus,
+            "content-type": isRsc ? "text/x-component" : "text/html",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+            ...(isRsc ? { [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-a" } : {}),
+            ...(isRsc ? { vary: VINEXT_RSC_VARY_HEADER } : {}),
+          },
+        });
+      });
+
+      await expect(
+        warmCdnCache({
+          expectedBuildId: "build-a",
+          expectedRscBuildId: "rsc-build-a",
+          fetchImpl: fetchImpl as typeof fetch,
+          paths: ["/forbidden"],
+          rscPaths: ["/forbidden"],
+          strict: false,
+          targetUrl: "https://app.example.com",
+        }),
+      ).resolves.toMatchObject(expected);
+    },
+  );
 
   it("accepts custom Vary fields on cacheable terminal responses", async () => {
     const fetchImpl = vi.fn(async () => {

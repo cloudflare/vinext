@@ -1,6 +1,7 @@
 import {
   createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
+  type PprFallbackShellState,
 } from "./ppr-fallback-shell.js";
 import {
   isOwnPropertyCheck,
@@ -17,8 +18,43 @@ export type ThenableParams<T extends Record<string, unknown>> = Promise<T> &
 
 export type ThenableParamsObserver = Readonly<{
   observeParamAccess: (keys: readonly string[]) => void;
-  observeReactPromiseStatus?: boolean;
+  /**
+   * Runs when `then` is read, and when `catch` or `finally` is called (they
+   * read `then` on a native promise). Throwing here fails the read itself
+   * before React counts any pending work, as Next.js does.
+   */
+  observeThenRead?: () => void;
 }>;
+
+const paramsState = new WeakMap<
+  object,
+  {
+    plain: Record<string, unknown>;
+    observer: ThenableParamsObserver | undefined;
+    fallbackShellState: PprFallbackShellState | null;
+  }
+>();
+
+function getParamsState(value: unknown) {
+  return value !== null && typeof value === "object" ? paramsState.get(value) : undefined;
+}
+
+/** Serialize backing values without reading a framework fallback-key proxy. */
+export function getFallbackParamsSnapshot(
+  value: unknown,
+): Promise<Record<string, unknown>> | undefined {
+  const state = getParamsState(value);
+  return state?.fallbackShellState ? Promise.resolve(state.plain) : undefined;
+}
+
+/** Reattach only framework metadata; argument values always come from the decoder. */
+export function restoreThenableParams<T extends Record<string, unknown>>(
+  decoded: T,
+  original: unknown,
+): ThenableParams<T> {
+  const state = getParamsState(original);
+  return createThenableParams(decoded, state?.observer, state?.fallbackShellState ?? null);
+}
 
 function observeParamKeys(
   observer: ThenableParamsObserver | undefined,
@@ -148,8 +184,15 @@ export function makeThenableParams<T extends Record<string, unknown>>(
   obj: T,
   observer?: ThenableParamsObserver,
 ): ThenableParams<T> {
+  return createThenableParams(obj, observer, getPprFallbackShellState());
+}
+
+function createThenableParams<T extends Record<string, unknown>>(
+  obj: T,
+  observer: ThenableParamsObserver | undefined,
+  fallbackShellState: PprFallbackShellState | null,
+): ThenableParams<T> {
   const plain = { ...obj };
-  const fallbackShellState = getPprFallbackShellState();
   const fallbackParamNames =
     fallbackShellState &&
     Object.keys(plain).some((key) => fallbackShellState.fallbackParamNames.has(key))
@@ -206,21 +249,35 @@ export function makeThenableParams<T extends Record<string, unknown>>(
   const handler: ProxyHandler<Promise<T>> = {
     get(target, prop, receiver) {
       if (isPromiseContinuation(prop)) {
+        if (prop === "then") observer?.observeThenRead?.();
         const value = Reflect.get(target, prop, receiver);
         if (typeof value !== "function") return value;
         return (...args: unknown[]) => {
+          if (prop !== "then") observer?.observeThenRead?.();
           // Only observe all keys when NOT in fallback-shell mode.
           // In fallback-shell mode, let the resolved params proxy report
           // actual property access lazily.
           if (!fallbackParamNames) {
-            observeAllParamKeys(observer, plain);
+            try {
+              observeAllParamKeys(observer, plain);
+            } catch (error) {
+              // Reject like a native promise instead of throwing. React counts
+              // a pending chunk before it calls `then` (when it serializes a
+              // promise prop, and when its dev build serializes component
+              // props), so a synchronous throw leaves that chunk open and the
+              // stream never closes.
+              return Reflect.apply(value, Promise.reject(error), args);
+            }
           }
           return Reflect.apply(value, target, args);
         };
       }
 
-      if (prop === "status" && observer?.observeReactPromiseStatus === true) {
-        observeAllParamKeys(observer, plain);
+      if (prop === "reason" && Object.hasOwn(target, prop)) {
+        // React writes a rejected thenable's `reason` onto it and reads it back
+        // after counting a pending chunk. Like Next.js, return what React
+        // wrote without counting a param access.
+        return Reflect.get(target, prop);
       }
 
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
@@ -282,7 +339,20 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       observeReadableParamKeys(observer, plain);
       return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
     },
+    set(target, prop, value) {
+      // Write straight to the promise. Without this trap, a write such as
+      // React's `thenable.reason = error` reads the descriptor through the
+      // getOwnPropertyDescriptor trap and counts as a param access, which can
+      // throw inside React's settle callback.
+      return Reflect.set(target, prop, value);
+    },
   };
 
-  return createThenableParamsProxy(promise, handler);
+  const params = createThenableParamsProxy(promise, handler);
+  paramsState.set(params, {
+    plain,
+    observer,
+    fallbackShellState: fallbackParamNames ? fallbackShellState : null,
+  });
+  return params;
 }

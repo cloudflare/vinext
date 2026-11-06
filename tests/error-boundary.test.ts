@@ -291,7 +291,7 @@ describe("ErrorBoundary digest classification (actual class)", () => {
     });
   });
 
-  it("keeps caught errors when the semantic reset key is unchanged", () => {
+  it("resets caught errors when the pathname changes under an unchanged reset key", () => {
     expect(ErrorBoundaryInner).not.toBeNull();
     if (!ErrorBoundaryInner) {
       throw new Error("Expected ErrorBoundaryInner export");
@@ -318,7 +318,7 @@ describe("ErrorBoundary digest classification (actual class)", () => {
     );
 
     expect(state).toEqual({
-      error: { thrownValue: error },
+      error: null,
       previousPathname: "/products/next",
       previousResetKey: "product-a",
     });
@@ -474,6 +474,76 @@ describe("RedirectBoundary digest classification", () => {
   });
 });
 
+describe("isRedirectToCurrentUrl", () => {
+  // A page whose redirect() targets its own URL would refetch forever, so the
+  // page and slot boundaries don't follow it.
+  it("matches only a redirect to the URL the browser is at", async () => {
+    const { isRedirectToCurrentUrl } =
+      await import("../packages/vinext/src/shims/error-boundary-navigation.js");
+    vi.stubGlobal("window", { location: { href: "https://example.test/self?x=1" } });
+    try {
+      expect(isRedirectToCurrentUrl("/self?x=1")).toBe(true);
+      expect(isRedirectToCurrentUrl("https://example.test/self?x=1")).toBe(true);
+      expect(isRedirectToCurrentUrl("?x=1")).toBe(true);
+      expect(isRedirectToCurrentUrl("/self")).toBe(false);
+      expect(isRedirectToCurrentUrl("/self?x=1#top")).toBe(false);
+      expect(isRedirectToCurrentUrl("https://other.test/self?x=1")).toBe(false);
+      expect(isRedirectToCurrentUrl("javascript:alert(1)")).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // Only the exact URL, hash included, refetches the page; a hash change scrolls.
+  it("compares the hash exactly", async () => {
+    const { isRedirectToCurrentUrl } =
+      await import("../packages/vinext/src/shims/error-boundary-navigation.js");
+    vi.stubGlobal("window", { location: { href: "https://example.test/self#section" } });
+    try {
+      expect(isRedirectToCurrentUrl("/self#section")).toBe(true);
+      expect(isRedirectToCurrentUrl("https://example.test/self#section")).toBe(true);
+      expect(isRedirectToCurrentUrl("/self")).toBe(false);
+      expect(isRedirectToCurrentUrl("/self#other")).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("RedirectBoundary reset", () => {
+  type RedirectState = {
+    redirect: string | null;
+    redirectType: "push" | "replace" | null;
+    previousResetKey: string | null;
+  };
+  let getDerivedStateFromProps:
+    | ((props: { resetKey?: string | null }, state: RedirectState) => RedirectState | null)
+    | null = null;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/error-boundary.js");
+    getDerivedStateFromProps = (props, state) =>
+      mod.RedirectErrorBoundary.getDerivedStateFromProps(props, state);
+  });
+
+  // A javascript: redirect is refused by the router, so HandleRedirect never
+  // resets the boundary; navigating to another route must clear it.
+  it("drops a pending redirect when the route reset key changes", () => {
+    const state: RedirectState = {
+      redirect: "javascript:alert(1)",
+      redirectType: "replace",
+      previousResetKey: "/redirecting",
+    };
+
+    expect(getDerivedStateFromProps?.({ resetKey: "/redirecting" }, state)).toBeNull();
+    expect(getDerivedStateFromProps?.({ resetKey: "/trigger" }, state)).toEqual({
+      redirect: null,
+      redirectType: null,
+      previousResetKey: "/trigger",
+    });
+  });
+});
+
 // Test the actual ForbiddenBoundary.getDerivedStateFromError classification.
 // Catches NEXT_HTTP_ERROR_FALLBACK;403 and re-throws everything else.
 describe("ForbiddenBoundary digest classification", () => {
@@ -565,5 +635,125 @@ describe("UnauthorizedBoundary digest classification", () => {
     const e = new Error("oops");
     expect(UnauthorizedBoundaryInnerClass).not.toBeNull();
     expect(() => UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
+});
+
+// Next.js's HTTPAccessFallbackErrorBoundary clears on any visible pathname
+// change, and its LayoutRouter remounts it when the segment below it changes.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/http-access-fallback/error-boundary.tsx
+describe("HTTP access boundary reset", () => {
+  type AccessBoundaryInner = {
+    getDerivedStateFromProps(
+      props: { children: null; fallback: null; pathname: string; resetKey?: string | null },
+      state: Record<string, unknown>,
+    ): Record<string, unknown> | null;
+  };
+  const boundaries: [string, string][] = [
+    ["NotFoundBoundaryInner", "notFound"],
+    ["ForbiddenBoundaryInner", "forbidden"],
+    ["UnauthorizedBoundaryInner", "unauthorized"],
+  ];
+  let mod: Record<string, unknown>;
+
+  beforeAll(async () => {
+    mod = await import("../packages/vinext/src/shims/error-boundary.js");
+  });
+
+  function readBoundary(name: string): AccessBoundaryInner {
+    const boundary = Reflect.get(mod, name) as AccessBoundaryInner | undefined;
+    if (!boundary) throw new Error(`Expected ${name} export`);
+    return boundary;
+  }
+
+  it("clears on a pathname change when the reset key stays the same", () => {
+    // An intercepted navigation keeps the source route's reset key while the
+    // visible pathname moves from /feed/photo/999 to /feed/photo/1.
+    for (const [name, flag] of boundaries) {
+      const state = readBoundary(name).getDerivedStateFromProps(
+        { children: null, fallback: null, pathname: "/feed/photo/1", resetKey: '["feed"]' },
+        { [flag]: true, previousPathname: "/feed/photo/999", previousResetKey: '["feed"]' },
+      );
+      expect(state).toEqual({
+        [flag]: false,
+        previousPathname: "/feed/photo/1",
+        previousResetKey: '["feed"]',
+      });
+    }
+  });
+
+  it("clears on a reset key change when the pathname stays the same", () => {
+    // A search-only change that rewrites to a sibling page changes the segment
+    // below the boundary, which Next.js remounts.
+    for (const [name, flag] of boundaries) {
+      const state = readBoundary(name).getDerivedStateFromProps(
+        { children: null, fallback: null, pathname: "/alias", resetKey: '["docs","present"]' },
+        { [flag]: true, previousPathname: "/alias", previousResetKey: '["docs","missing"]' },
+      );
+      expect(state).toEqual({
+        [flag]: false,
+        previousPathname: "/alias",
+        previousResetKey: '["docs","present"]',
+      });
+    }
+  });
+
+  it("stays caught when neither the pathname nor the reset key changes", () => {
+    for (const [name, flag] of boundaries) {
+      const state = readBoundary(name).getDerivedStateFromProps(
+        { children: null, fallback: null, pathname: "/alias", resetKey: '["docs"]' },
+        { [flag]: true, previousPathname: "/alias", previousResetKey: '["docs"]' },
+      );
+      expect(state).toEqual({
+        [flag]: true,
+        previousPathname: "/alias",
+        previousResetKey: '["docs"]',
+      });
+    }
+  });
+});
+
+// Fizz has no error boundaries, so the document renders the parallel slot
+// boundaries that catch a slot's notFound() caught, from the same payload.
+describe("NotFoundBoundary caught in the document", () => {
+  it("renders its fallback when its id is caught, and its children otherwise", async () => {
+    const React = await import("react");
+    const { renderToString } = await import("react-dom/server");
+    const { NotFoundBoundary } = await import("../packages/vinext/src/shims/error-boundary.js");
+    const { withCaughtNotFoundBoundaries } =
+      await import("../packages/vinext/src/shims/caught-not-found-boundaries.js");
+    const Boundary = NotFoundBoundary as React.ComponentType<{
+      caughtId?: string;
+      children?: React.ReactNode;
+      fallback: React.ReactNode;
+    }>;
+    const boundary = (caughtId?: string) =>
+      React.createElement(
+        Boundary,
+        { caughtId, fallback: React.createElement("p", null, "slot not found") },
+        React.createElement("p", null, "slot page"),
+      );
+    const caught = {
+      ids: new Set(["slot:team:/:0", "slot:team:/:1"]),
+      rendered: new Set<string>(),
+    };
+    const render = (element: React.ReactElement) =>
+      renderToString(withCaughtNotFoundBoundaries(caught, element));
+
+    expect(render(boundary("slot:team:/:0"))).toContain("slot not found");
+    expect(render(boundary("slot:team:/:0"))).not.toContain("slot page");
+    expect(render(boundary("slot:team:/:2"))).toContain("slot page");
+    expect(render(boundary())).toContain("slot page");
+    expect(renderToString(boundary("slot:team:/:0"))).toContain("slot page");
+    expect([...caught.rendered]).toEqual(["slot:team:/:0"]);
+
+    // A caught boundary inside another never renders, so its id isn't sent.
+    caught.rendered.clear();
+    const outer = React.createElement(
+      Boundary,
+      { caughtId: "slot:team:/:0", fallback: React.createElement("p", null, "outer not found") },
+      boundary("slot:team:/:1"),
+    );
+    expect(render(outer)).toContain("outer not found");
+    expect([...caught.rendered]).toEqual(["slot:team:/:0"]);
   });
 });

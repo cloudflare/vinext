@@ -36,9 +36,9 @@ test.describe("middleware extras", () => {
   test("preserves image parameters from a beforeFiles rewrite", async ({ request }) => {
     const response = await request.get("/legacy/image-alias", { maxRedirects: 0 });
     // The configured source is intentionally absent, so reaching the image
-    // optimizer produces its source 404. Losing the rewritten query instead
-    // fails parameter validation with 400 before that fetch.
-    expect(response.status()).toBe(404);
-    expect(await response.text()).toBe("Image not found");
+    // optimizer produces its invalid-source 400. Losing the rewritten query
+    // instead fails parameter validation with "Bad Request" before that fetch.
+    expect(response.status()).toBe(400);
+    expect(await response.text()).toBe("The requested resource isn't a valid image.");
   });
 });

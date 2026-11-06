@@ -11,10 +11,20 @@
  *
  */
 import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-storage";
+import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import { isRouteCacheabilityProbe } from "vinext/shims/cacheability-classification";
 import { NO_STORE_CACHE_CONTROL } from "./cache-control.js";
 
 export function runWithPrerenderWorkUnit(
+  fn: () => Promise<Response>,
+  options?: { cacheComponents?: boolean; route?: string | (() => string) },
+): Promise<Response> {
+  // Like Next.js's work store, the scope covers App Router work and middleware.
+  // The Pages fallback leaves it.
+  return runInWorkStoreScope(() => runWithWorkUnit(fn, options));
+}
+
+function runWithWorkUnit(
   fn: () => Promise<Response>,
   options?: { cacheComponents?: boolean; route?: string | (() => string) },
 ): Promise<Response> {

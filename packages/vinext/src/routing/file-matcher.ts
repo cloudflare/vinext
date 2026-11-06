@@ -3,7 +3,7 @@ import { glob } from "node:fs/promises";
 import path, { toSlash } from "pathslash";
 import { escapeRegExp } from "../utils/regex.js";
 
-const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
+export const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
 const DEFAULT_VINEXT_RESOLVE_EXTENSIONS = [
   ".tsx",
   ".ts",

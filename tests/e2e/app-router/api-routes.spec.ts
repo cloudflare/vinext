@@ -146,7 +146,6 @@ test.describe("App Router API Route Handlers", () => {
  * OpenNext Compat: Exhaustive HTTP method tests for route handlers.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/methods.test.ts
- * Tests: ON-3 in TRACKING.md
  *
  * OpenNext tests every HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)
  * plus formData, cookies, redirects, dynamic segments, and query params. These
@@ -261,7 +260,6 @@ test.describe("Route Handler HTTP Methods (OpenNext compat)", () => {
  * OpenNext Compat: Route handler Cache-Control headers.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/methods.test.ts
- * Tests: ON-3 #13-14 in TRACKING.md
  *
  * In Next.js, a GET-only route handler with `export const revalidate = N`
  * receives Cache-Control: s-maxage=N, stale-while-revalidate.

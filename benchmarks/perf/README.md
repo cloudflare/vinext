@@ -74,7 +74,9 @@ VINEXT_PERF_SAMPLES="$PWD/benchmarks/results/perf-samples.jsonl" \
 ```
 
 Main CI records five unprofiled timing rounds for every benchmark. Pull request
-comparisons use six alternating base/head timing rounds by default.
+comparisons use six alternating base/head timing rounds by default. A scenario
+can set `rounds` to use fewer rounds in both modes when each sample is
+expensive; the large Pages Router cold start uses three.
 Implementations marked with `profile: true` then run once more under Samply
 solely to capture a diagnostic profile. The profiled value is discarded and
 does not contribute to the reported timing statistics.

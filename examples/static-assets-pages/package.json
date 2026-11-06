@@ -1,0 +1,24 @@
+{
+  "name": "static-assets-pages",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "wrangler dev --config dist/server/wrangler.json"
+  },
+  "dependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
+    "@vinext/cloudflare": "workspace:*",
+    "@vitejs/plugin-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:",
+    "wrangler": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

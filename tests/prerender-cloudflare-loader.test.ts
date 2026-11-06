@@ -4,9 +4,12 @@ import { registerPrerenderCloudflareLoader } from "../packages/vinext/src/build/
 
 vi.mock("node:module", () => ({ register: vi.fn() }));
 
+// The loader registers once per process, and Vitest clears mock calls between
+// tests, so capture the registered loader URL before any test runs.
+registerPrerenderCloudflareLoader();
+const [[loaderUrl]] = vi.mocked(register).mock.calls;
+
 it("rejects binding access and presence checks during prerender", async () => {
-  registerPrerenderCloudflareLoader();
-  const [[loaderUrl]] = vi.mocked(register).mock.calls;
   const loader = await import(/* @vite-ignore */ String(loaderUrl));
   const { url } = await loader.resolve("cloudflare:workers", {}, () => {
     throw new Error("native Worker import should be intercepted");
@@ -20,8 +23,6 @@ it("rejects binding access and presence checks during prerender", async () => {
 });
 
 it("links Worker base classes but rejects their use during Node prerender", async () => {
-  registerPrerenderCloudflareLoader();
-  const [[loaderUrl]] = vi.mocked(register).mock.calls;
   const loader = await import(/* @vite-ignore */ String(loaderUrl));
   const { url } = await loader.resolve("cloudflare:workers", {}, () => {
     throw new Error("native Worker import should be intercepted");

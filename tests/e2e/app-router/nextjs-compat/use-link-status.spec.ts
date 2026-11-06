@@ -65,4 +65,27 @@ test.describe("useLinkStatus navigation ownership", () => {
     await expect(page.locator("#post-2-loading")).toHaveText("(Loading)");
     await expect(page.locator("#post-2-page")).toBeVisible({ timeout: 10_000 });
   });
+
+  test("shallow routing discards a pending link navigation", async ({ page }) => {
+    // Ported from Next.js: test/e2e/use-link-status/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/use-link-status/index.test.ts
+    await page.goto(`${BASE}/nextjs-compat/use-link-status`);
+    await waitForAppRouterHydration(page);
+
+    // The post page streams its response right away but takes 1.5s to render,
+    // so the navigation is still pending in React when pushState runs.
+    await page.locator("#post-1-link").click({ noWaitAfter: true });
+    await expect(page.locator("#post-1-loading")).toHaveText("(Loading)");
+
+    await page.locator("#enable-debug-btn").click();
+    await expect(page.locator('[data-testid="debug-mode"]')).toHaveText("Debug Mode Enabled");
+    await expect(page.locator("#post-1-loading")).toHaveCount(0);
+
+    // Next.js discards the pending navigation, so the post page never commits
+    // and the URL keeps the shallow update.
+    await page.waitForTimeout(2_500);
+    await expect(page.locator("#post-1-page")).toHaveCount(0);
+    expect(new URL(page.url()).pathname).toBe("/nextjs-compat/use-link-status");
+    expect(new URL(page.url()).search).toBe("?debug=1");
+  });
 });

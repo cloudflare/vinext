@@ -1,6 +1,7 @@
 import type { ExecutionContextLike } from "vinext/shims/request-context";
+import type { VinextRequestStageContext } from "./multi-stage.js";
 
-type PlatformExecutionContext = Partial<ExecutionContextLike>;
+type PlatformExecutionContext = Partial<ExecutionContextLike> & VinextRequestStageContext;
 
 function deriveExecutionContext(
   base: PlatformExecutionContext | undefined,
@@ -25,9 +26,11 @@ function deriveExecutionContext(
       : {}),
     hostRuntime: base?.hostRuntime ?? defaultHostRuntime,
     ...(base?.cache === undefined ? {} : { cache: base.cache }),
+    ...(base?.assets === undefined ? {} : { assets: base.assets }),
     ...(base?.trustedRevalidateOrigin === undefined
       ? {}
       : { trustedRevalidateOrigin: base.trustedRevalidateOrigin }),
+    ...(base?.middlewareOrigin === undefined ? {} : { middlewareOrigin: base.middlewareOrigin }),
     dispatchPagesRevalidate,
     isInternalPagesRevalidation,
   };

@@ -27,7 +27,7 @@
  *   page.tsx      — calls notFound(), triggering renderHTTPAccessFallbackPage()
  *   not-found.tsx — rendered by renderHTTPAccessFallbackPage() inside the layout
  *
- * The test sends a canonical .rsc request with x-rsc-context-test: <sentinel>
+ * The test sends an RSC request with x-rsc-context-test: <sentinel>
  * and asserts the sentinel value appears in the RSC flight response, proving
  * the layout's headers() call ran successfully during lazy stream consumption.
  *
@@ -67,7 +67,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { APP_FIXTURE_DIR, startFixtureServer } from "../helpers.js";
+import { APP_FIXTURE_DIR, fetchRsc, startFixtureServer } from "../helpers.js";
 
 // ── Shared server ─────────────────────────────────────────────────────────────
 //
@@ -87,12 +87,8 @@ beforeAll(async () => {
   // Warm up both fixtures so the first real test in each suite doesn't pay
   // the cold-start compilation cost.
   await Promise.all([
-    fetch(`${_baseUrl}/nextjs-compat/rsc-context-lazy-stream.rsc`, {
-      headers: {
-        Accept: "text/x-component",
-        RSC: "1",
-        "x-rsc-context-test": "warmup",
-      },
+    fetchRsc(_baseUrl, "/nextjs-compat/rsc-context-lazy-stream", {
+      headers: { "x-rsc-context-test": "warmup" },
     }),
     fetch(`${_baseUrl}/nextjs-compat/nav-context-hydration`),
   ]);
@@ -127,7 +123,7 @@ describe("RSC lazy stream: headers() context survives until stream is consumed",
   //
   // This is the path where the bug manifested. The flow is:
   //
-  //   1. Request arrives with Accept: text/x-component → isRscRequest = true
+  //   1. Request arrives with RSC: 1 → isRscRequest = true
   //   2. page.tsx calls notFound() → throws NEXT_NOT_FOUND digest
   //   3. vinext catches it → calls renderHTTPAccessFallbackPage(route, 404, true, ...)
   //   4. Builds element: not-found.tsx wrapped in ancestor layouts (including
@@ -142,18 +138,17 @@ describe("RSC lazy stream: headers() context survives until stream is consumed",
   // correct context and SENTINEL appears in the RSC flight response.
 
   it("RSC request: layout headers() context survives lazy stream consumption (regression)", async () => {
-    const res = await fetch(`${_baseUrl}${LAZY_ROUTE}.rsc`, {
-      headers: {
-        Accept: "text/x-component",
-        RSC: "1",
-        "x-rsc-context-test": SENTINEL,
-      },
+    const res = await fetchRsc(_baseUrl, LAZY_ROUTE, {
+      headers: { "x-rsc-context-test": SENTINEL },
     });
 
-    expect(res.status).toBe(404);
+    // As in Next.js dev, the page's notFound() streams as a digest in a 200
+    // flight rather than replacing the response.
+    expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
 
     const body = await res.text();
+    expect(body).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
 
     // The layout sets data-request-id from headers("x-rsc-context-test").
     // In the RSC flight format this appears as a prop in the serialized tree.
@@ -166,12 +161,8 @@ describe("RSC lazy stream: headers() context survives until stream is consumed",
   });
 
   it("RSC request: data-request-id is not 'missing' (context was not null)", async () => {
-    const res = await fetch(`${_baseUrl}${LAZY_ROUTE}.rsc`, {
-      headers: {
-        Accept: "text/x-component",
-        RSC: "1",
-        "x-rsc-context-test": SENTINEL,
-      },
+    const res = await fetchRsc(_baseUrl, LAZY_ROUTE, {
+      headers: { "x-rsc-context-test": SENTINEL },
     });
 
     const body = await res.text();

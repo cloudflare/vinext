@@ -231,6 +231,48 @@ test.describe("Next.js compat: streamed metadata icons", () => {
     });
   }
 
+  test("keeps replacement patterns in the pathname out of streamed icon markup", async ({
+    page,
+    request,
+    consoleErrors,
+  }) => {
+    // `$&` is a String.prototype.replace pattern. If the request pathname ever
+    // reaches a replacement string, it splices the matched markup into the
+    // icon key and turns the rest of the pathname into link attributes.
+    const pathname =
+      "/metadata-icons-stream/x$&%20rel=preload%20as=image%20href=missing.png%20onerror=document.documentElement.dataset.vinextXss=1%20x";
+    const response = await request.get(pathname);
+    expect(response.status()).toBe(200);
+    const html = await response.text();
+    const markers = [...html.matchAll(/<link data-vinext-streamed-icon="([^"]+)"/g)].map(
+      ([, marker]) => marker,
+    );
+    expect(markers.length).toBeGreaterThan(0);
+    for (const marker of markers) {
+      expect(marker).toMatch(/^vi[a-z0-9]+:\d+$/);
+    }
+
+    // Hydration removes icons it does not own, so whether an injected handler
+    // runs is a race. Parse the server HTML without executing it instead.
+    await page.goto(pathname);
+    const injected = await page.evaluate(
+      (source) =>
+        [...new DOMParser().parseFromString(source, "text/html").querySelectorAll("link")]
+          .filter(
+            (link) =>
+              link.hasAttribute("onerror") ||
+              (link.rel === "preload" && link.getAttribute("as") === "image"),
+          )
+          .map((link) => link.outerHTML),
+      html,
+    );
+    expect(injected).toEqual([]);
+
+    await waitForAppRouterHydration(page);
+    await expect.poll(() => ownedIcons(page)).toEqual(heartIcons);
+    expect(consoleErrors).toEqual([]);
+  });
+
   test("keeps distinct icon ownership across paths that collide under a 32-bit hash", async ({
     page,
     consoleErrors,

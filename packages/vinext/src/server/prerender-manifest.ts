@@ -17,6 +17,12 @@ export type PrerenderManifestRoute = {
   fallback?: boolean;
   headers?: Record<string, string | string[]>;
   responseStatus?: number;
+  /** Pages source returned notFound, rather than rendering a custom 404 document. */
+  notFound?: true;
+  /** Original Pages redirect props, including client navigation semantics. */
+  redirectProps?: object;
+  /** Pages locale rendered for this public pathname. */
+  locale?: string;
   routeSegments?: string[];
   tags?: string[];
 };
@@ -29,7 +35,6 @@ export type PrerenderManifest = {
 };
 
 export type PrerenderedPathSelectionOptions = {
-  includeFallbackShells?: boolean;
   includeErrorDocuments?: boolean;
 };
 
@@ -140,8 +145,9 @@ export function buildPregeneratedConcretePathTable(
  * This intentionally includes both App Router and Pages Router entries because
  * deploy-time cache warmup should exercise the same URLs the prerender phase
  * proved are statically renderable. PPR fallback-shell placeholder artifacts
- * and known error documents are excluded by default so warmup does not request
- * synthetic bracket paths or treat a healthy 404 response as a failed warmup.
+ * are always excluded, and known error documents by default, so warmup does not
+ * request synthetic bracket paths or treat a healthy 404 response as a failed
+ * warmup.
  */
 export function getPrerenderedConcretePaths(
   manifest: PrerenderManifest,
@@ -153,11 +159,10 @@ export function getPrerenderedConcretePaths(
   const paths: string[] = [];
   const seen = new Set<string>();
   for (const route of routes) {
-    if (route.status !== "rendered") continue;
+    // A Pages getStaticProps notFound result is a 404 snapshot, not a page URL.
+    if (route.status !== "rendered" || route.notFound) continue;
     const pathname = route.path ?? route.route;
-    if (!options?.includeFallbackShells && isFallbackShellArtifactPath(pathname, route)) {
-      continue;
-    }
+    if (isFallbackShellArtifactPath(pathname, route)) continue;
     if (!options?.includeErrorDocuments && isErrorDocumentRoute(pathname, route)) {
       continue;
     }

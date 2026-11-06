@@ -21,6 +21,8 @@ test.describe("Standalone Output", () => {
     for (const [file, content] of [
       ["index.html", "Hello, standalone!"],
       ["about.html", "Static props from the standalone fixture."],
+      // Like Next.js, the `/index` slug gets its own file instead of sharing `/`'s.
+      ["index/index.html", "Standalone slug page: <!-- -->index"],
     ]) {
       const artifact = `server/prerendered-routes/${file}`;
       const html = await readFile(path.join(output, "standalone/dist", artifact), "utf8");
@@ -46,6 +48,10 @@ test.describe("Standalone Output", () => {
     const response = await request.get(`${BASE}/about`);
     expect(response.status()).toBe(200);
     expect(await response.text()).toContain("Static props from the standalone fixture.");
+
+    const home = await request.get(`${BASE}/`);
+    expect(home.status()).toBe(200);
+    expect(await home.text()).toContain("Hello, standalone!");
   });
 
   test("index page renders with correct content", async ({ page }) => {

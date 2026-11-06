@@ -110,7 +110,11 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
     return;
   }
 
-  const handlerStart = Math.round(timing.handlerStart);
+  // The dev request logger runs in Node, but this handler may run in workerd,
+  // where performance.now() is epoch-based (it returns Date.now()) rather than
+  // process-relative. Send handlerStart as wall-clock time so the logger can
+  // compare it against its own Date.now() whichever runtime the handler is in.
+  const handlerStart = Math.round(Date.now() - (performance.now() - timing.handlerStart));
   const compileMs =
     timing.compileEnd !== undefined ? Math.round(timing.compileEnd - timing.handlerStart) : -1;
   const renderMs =
@@ -134,9 +138,10 @@ function applyDynamicStaleTimeHeader(headers: Headers, dynamicStaleTimeSeconds?:
 }
 
 /**
- * Only ever set from a *completed* render's cacheLife (cache replay or
- * prerender seed) — `use cache` scopes keep resolving after headers commit,
- * so a streaming response can never carry it.
+ * Only ever set from a *completed* render's cacheLife (cache replay,
+ * prerender seed, or a layout probe's early redirect) — `use cache` scopes
+ * keep resolving after headers commit, so a streaming response can never
+ * carry it.
  */
 export function applyClientStaleTimeHeader(
   headers: Headers,

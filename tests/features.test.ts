@@ -20,6 +20,7 @@ import {
   PAGES_I18N_DOMAINS_BASEPATH_FIXTURE_DIR,
   PAGES_I18N_DOMAINS_FIXTURE_DIR,
   createIsolatedFixture,
+  fetchRsc,
   requestNodeServerWithHost,
   startFixtureServer,
 } from "./helpers.js";
@@ -666,7 +667,7 @@ describe("ISR (Pages Router)", () => {
     const res = await fetch(`${baseUrl}/about`);
     expect(res.status).toBe(200);
     expect(res.headers.get("x-vinext-cache")).toBeNull();
-    expect(res.headers.get("cache-control")).toBeNull();
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
   });
 });
 
@@ -713,10 +714,8 @@ describe("ISR (App Router)", () => {
     expect(res2.headers.get("x-vinext-cache")).toBeNull();
   });
 
-  it("dev: RSC requests (.rsc suffix) return RSC stream with Cache-Control but no X-Vinext-Cache", async () => {
-    const res = await fetch(`${baseUrl}/isr-test.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+  it("dev: RSC requests return RSC stream with Cache-Control but no X-Vinext-Cache", async () => {
+    const res = await fetchRsc(baseUrl, "/isr-test");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
     // ISR cache reads/writes are prod-only, so no X-Vinext-Cache in dev
@@ -727,8 +726,8 @@ describe("ISR (App Router)", () => {
   });
 
   it("dev: RSC prefetch requests (Next-Router-Prefetch header) return RSC stream with Cache-Control", async () => {
-    const res = await fetch(`${baseUrl}/isr-test.rsc`, {
-      headers: { Accept: "text/x-component", "Next-Router-Prefetch": "1" },
+    const res = await fetchRsc(baseUrl, "/isr-test", {
+      headers: { "Next-Router-Prefetch": "1" },
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
@@ -809,6 +808,92 @@ describe("ISR cache internals", () => {
     // Should return null (hard invalidation, not stale)
     const result = await handler.get("test-tag");
     expect(result).toBeNull();
+  });
+
+  it("MemoryCacheHandler serves entries of a tag revalidated with a profile stale until it expires, like Next.js", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+      const handler = new MemoryCacheHandler();
+      const value = {
+        kind: "FETCH" as const,
+        data: { headers: {}, body: "test", url: "" },
+        tags: ["mytag"],
+        revalidate: 3600,
+      };
+      await handler.set("tagged", value, { revalidate: 3600, tags: ["mytag"] });
+      await handler.set("soft-tagged", { ...value, tags: [] }, { revalidate: 3600 });
+
+      vi.advanceTimersByTime(1000);
+      await handler.revalidateTag("mytag", { expire: 60 });
+
+      await expect(handler.get("tagged")).resolves.toMatchObject({ cacheState: "stale" });
+      await expect(handler.get("soft-tagged", { softTags: ["mytag"] })).resolves.toMatchObject({
+        cacheState: "stale",
+      });
+
+      // An entry written after the revalidation is fresh.
+      vi.advanceTimersByTime(1000);
+      await handler.set("fresh", value, { revalidate: 3600, tags: ["mytag"] });
+      const fresh = await handler.get("fresh");
+      expect(fresh?.cacheState).toBeUndefined();
+
+      // Once the profile's expire time passes, every entry written before it
+      // is gone, as in Next.js's areTagsExpired. One written later is kept.
+      vi.advanceTimersByTime(60_000);
+      await handler.set("after-expiry", value, { revalidate: 3600, tags: ["mytag"] });
+      vi.advanceTimersByTime(1);
+      await expect(handler.get("tagged")).resolves.toBeNull();
+      await expect(handler.get("soft-tagged", { softTags: ["mytag"] })).resolves.toBeNull();
+      await expect(handler.get("fresh")).resolves.toBeNull();
+      await expect(handler.get("after-expiry")).resolves.not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Next.js dates a "use cache" entry from when its generation started:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it("MemoryCacheHandler dates an entry from the generation start it is given, like Next.js", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+      const handler = new MemoryCacheHandler();
+      const set = (key: string, tags: string[], timestamp?: unknown, revalidate = 3600) =>
+        handler.set(
+          key,
+          { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags, revalidate },
+          { revalidate, tags, timestamp },
+        );
+
+      // Each generation starts before the revalidation and is stored after it.
+      vi.advanceTimersByTime(1000);
+      await handler.revalidateTag("stale-tag", { expire: 60 });
+      await handler.revalidateTag("expired-tag");
+      vi.advanceTimersByTime(1000);
+      await set("stale", ["stale-tag"], 1_000_000);
+      await set("expired", ["expired-tag"], 1_000_000);
+      await set("aged", [], 1_000_000, 1);
+      // One that started after the revalidation, and writes without a valid start.
+      await set("fresh", ["stale-tag"], 1_001_500);
+      await set("unset", ["stale-tag"]);
+      await set("future", ["stale-tag"], 1_003_000);
+      await set("malformed", ["stale-tag"], Number.NaN);
+
+      await expect(handler.get("stale")).resolves.toMatchObject({
+        cacheState: "stale",
+        lastModified: 1_000_000,
+      });
+      await expect(handler.get("expired")).resolves.toBeNull();
+      // Its revalidate period counts from the generation start too.
+      await expect(handler.get("aged")).resolves.toMatchObject({ cacheState: "stale" });
+      for (const key of ["fresh", "unset", "future", "malformed"]) {
+        const entry = await handler.get(key);
+        expect(entry?.cacheState, key).toBeUndefined();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("MemoryCacheHandler skips storage when data.revalidate is 0", async () => {
@@ -1602,6 +1687,27 @@ describe("i18n domain routing with basePath (Pages Router)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toContain('href="http://example.fr/app/about" id="switch-locale"');
+  });
+
+  // Next.js renders the shared getStaticProps /404 for "/404", keeping the
+  // request's trailing slash even when a locale prefix is stripped.
+  it("renders the shared /404 for its own path under a locale prefix", async () => {
+    // A locale-prefixed miss, a direct status request and a rewritten miss.
+    for (const [path, host, requestToken] of [
+      ["/app/en/missing-share-token/", "example.fr", "missing-share-token"],
+      ["/app/fr/404/", "example.com", "/fr/404"],
+      ["/app/missing-alias/", "example.com", "missing-alias"],
+    ]) {
+      const res = await requestNodeServerWithHost(domainPort, path, host);
+
+      if (requestToken === "missing-share-token") expect(res.status).toBe(404);
+      // Vite's dev html-proxy script URLs carry the request path, so check the
+      // rendered router state rather than the whole document.
+      expect({ path, body: res.body.match(/<p id="as-path">[^<]*<\/p>/)?.[0] }).toEqual({
+        path,
+        body: '<p id="as-path">/404/</p>',
+      });
+    }
   });
 });
 
@@ -2401,6 +2507,81 @@ describe("metadata title templates", () => {
     expect(result).toEqual({});
   });
 
+  it("clears the template after a title without one, as Next.js's resolved title does", async () => {
+    // Next.js stashes the resolved title's own template, which a plain string,
+    // or a title object without a template, resets to null.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-title.ts
+    const { mergeParentMetadataEntries } = await import("../packages/vinext/src/shims/metadata.js");
+    const site = { title: { template: "%s | Site", default: "Site" } };
+    expect(mergeMetadata([site, { title: "Mid" }, { title: "Leaf" }]).title).toBe("Leaf");
+    expect(mergeMetadata([site, { title: { default: "Blog" } }, { title: "Post" }]).title).toBe(
+      "Post",
+    );
+    expect(
+      mergeParentMetadataEntries([{ metadata: site }, { metadata: { title: "Mid" } }]).title,
+    ).toEqual({ absolute: "Mid | Site", template: null });
+  });
+
+  it("gives openGraph and twitter titles their own templates, as Next.js does", async () => {
+    // Next.js keeps a template per title (`titleTemplates.openGraph` and
+    // `.twitter`), each from the last resolved value's own title. Those values
+    // replace the whole object, so one without a title clears its template.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-opengraph.ts
+    const { mergeParentMetadataEntries } = await import("../packages/vinext/src/shims/metadata.js");
+    const social = {
+      openGraph: { title: { template: "%s | OG", default: "OG" } },
+      twitter: { title: { template: "%s | TW", default: "TW" } },
+    };
+    const page = { openGraph: { title: "Page" }, twitter: { title: "Page" } };
+
+    let result = mergeMetadata([social, page]);
+    expect(result.openGraph?.title).toBe("Page | OG");
+    expect(result.twitter?.title).toBe("Page | TW");
+    // A layout's own default isn't wrapped, and a page without them inherits it.
+    result = mergeMetadata([social, {}]);
+    expect(result.openGraph?.title).toBe("OG");
+    expect(result.twitter?.title).toBe("TW");
+    // A plain-string title, or a value without a title, clears the template.
+    result = mergeMetadata([
+      social,
+      { openGraph: { title: "Mid" }, twitter: { description: "Mid" } },
+      page,
+    ]);
+    expect(result.openGraph?.title).toBe("Page");
+    expect(result.twitter?.title).toBe("Page");
+    // A missing twitter title comes from the resolved openGraph title, not
+    // twitter's template.
+    result = mergeMetadata([
+      social,
+      { openGraph: { title: "Page" }, twitter: { card: "summary" } },
+    ]);
+    expect(result.twitter?.title).toBe("Page | OG");
+    // `parent` sees each resolved title as `{ absolute, template }`.
+    const parent = mergeParentMetadataEntries([{ metadata: social }]);
+    expect(parent.openGraph?.title).toEqual({ absolute: "OG", template: "%s | OG" });
+    expect(parent.twitter?.title).toEqual({ absolute: "TW", template: "%s | TW" });
+    expect(
+      mergeParentMetadataEntries([{ metadata: parent }, { metadata: page }]).openGraph?.title,
+    ).toEqual({ absolute: "Page | OG", template: null });
+    // `parent` keeps an empty template as `""`, which wraps nothing.
+    const empty = {
+      title: { template: "", default: "E" },
+      openGraph: { title: { template: "", default: "E OG" } },
+      twitter: { title: { template: "", default: "E TW" } },
+    };
+    const emptyParent = mergeParentMetadataEntries([{ metadata: empty }]);
+    expect(emptyParent.title).toEqual({ absolute: "E", template: "" });
+    expect(emptyParent.openGraph?.title).toEqual({ absolute: "E OG", template: "" });
+    expect(emptyParent.twitter?.title).toEqual({ absolute: "E TW", template: "" });
+    result = mergeMetadata([empty, { title: "C", ...page }]);
+    expect([result.title, result.openGraph?.title, result.twitter?.title]).toEqual([
+      "C",
+      "Page",
+      "Page",
+    ]);
+  });
+
   it("uses explicit page markers instead of assuming the last entry is the page", () => {
     const result = mergeMetadataEntries([
       {
@@ -2411,7 +2592,6 @@ describe("metadata title templates", () => {
         metadata: { description: "Page", title: { default: "Page", template: "%s | Page" } },
       },
       {
-        contributesTitle: false,
         metadata: {
           openGraph: { title: "Slot OG title" },
           title: { default: "Slot", template: "%s | Slot" },
@@ -2421,11 +2601,12 @@ describe("metadata title templates", () => {
 
     // mergeMetadataEntries does raw segment merging only; post-processing is
     // applied separately by postProcessMetadata (called by mergeMetadata and by
-    // resolveAppPageHead after file-based metadata is applied).
+    // resolveAppPageHead after file-based metadata is applied). The page's
+    // template does not wrap the later slot title.
     expect(result).toEqual({
       description: "Page",
       openGraph: { title: "Slot OG title" },
-      title: "Page | Root",
+      title: "Slot | Root",
     });
   });
 });
@@ -3476,6 +3657,30 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     );
   });
 
+  it("body placement: keeps replacement patterns in the pathname out of icon markup", () => {
+    const render = (pathname: string) =>
+      renderToStaticMarkup(
+        createAppPageRouteBodyMetadata(
+          { icons: { icon: "/favicon.ico", apple: "/apple.png" } },
+          pathname,
+          "body",
+        ) as React.ReactElement,
+      );
+
+    // `$<` matters because attribute escaping turns `<` into `&lt;`, producing `$&`.
+    for (const pattern of ["$&", "$'", "$<"]) {
+      const html = render(`/blog/x${pattern} onerror=alert(1) x`);
+      expect(html).not.toContain("onerror");
+      const markers = [...html.matchAll(/data-vinext-streamed-icon="([^"]+)"/g)].map(
+        ([, marker]) => marker,
+      );
+      expect(markers).toHaveLength(2);
+      for (const marker of markers) {
+        expect(marker).toMatch(/^vi[a-z0-9]+:\d$/);
+      }
+    }
+  });
+
   it("body placement: serializes icon-bearing metadata once", () => {
     let titleReads = 0;
     const title = 'data-vinext-streamed-icon="vinext-pending-streamed-icon-key:0';
@@ -4363,16 +4568,30 @@ describe("production server compression", () => {
     expect(negotiateEncoding(req as any)).toBe("identity");
   });
 
-  it("COMPRESSIBLE_TYPES includes expected content types", async () => {
-    const { COMPRESSIBLE_TYPES } = await import("../packages/vinext/src/server/prod-server.js");
-    expect(COMPRESSIBLE_TYPES.has("text/html")).toBe(true);
-    expect(COMPRESSIBLE_TYPES.has("application/javascript")).toBe(true);
-    expect(COMPRESSIBLE_TYPES.has("application/json")).toBe(true);
-    expect(COMPRESSIBLE_TYPES.has("text/css")).toBe(true);
-    expect(COMPRESSIBLE_TYPES.has("image/svg+xml")).toBe(true);
-    // Binary formats should not be compressible
-    expect(COMPRESSIBLE_TYPES.has("image/png")).toBe(false);
-    expect(COMPRESSIBLE_TYPES.has("image/jpeg")).toBe(false);
+  it("isCompressibleContentType matches Next.js's compressible() rules", async () => {
+    const { isCompressibleContentType } =
+      await import("../packages/vinext/src/server/prod-server.js");
+    expect(isCompressibleContentType("text/html")).toBe(true);
+    expect(isCompressibleContentType("application/javascript")).toBe(true);
+    expect(isCompressibleContentType("application/json")).toBe(true);
+    expect(isCompressibleContentType("text/css")).toBe(true);
+    expect(isCompressibleContentType("image/svg+xml")).toBe(true);
+    // RSC payloads, through the text/* rule.
+    expect(isCompressibleContentType("text/x-component")).toBe(true);
+    // Parameters, surrounding whitespace, and case are ignored.
+    expect(isCompressibleContentType(" Text/HTML ; charset=utf-8")).toBe(true);
+    // Structured-syntax suffixes and mime-db's compressible entries.
+    expect(isCompressibleContentType("application/x-custom+json")).toBe(true);
+    expect(isCompressibleContentType("application/vnd.api+xml")).toBe(true);
+    expect(isCompressibleContentType("font/ttf")).toBe(true);
+    expect(isCompressibleContentType("image/x-icon")).toBe(true);
+    // Binary formats, and responses without a Content-Type, are not.
+    expect(isCompressibleContentType("image/png")).toBe(false);
+    expect(isCompressibleContentType("image/jpeg")).toBe(false);
+    expect(isCompressibleContentType("font/woff2")).toBe(false);
+    expect(isCompressibleContentType("application/octet-stream")).toBe(false);
+    expect(isCompressibleContentType("")).toBe(false);
+    expect(isCompressibleContentType(null)).toBe(false);
   });
 
   it("COMPRESS_THRESHOLD is a reasonable minimum", async () => {
@@ -4575,10 +4794,11 @@ describe("production server compression", () => {
     sendCompressed(req as any, res as any, body, "text/html", 200, {}, true);
 
     expect(writtenStatus).toBe(200);
-    // Headers match what a GET would send (negotiated compression announced)…
-    expect(writtenHeaders["Content-Encoding"]).toBe("gzip");
+    // Like Next.js's compression middleware, HEAD responses are never
+    // compressed: they vary by Accept-Encoding and keep the identity length.
+    expect(writtenHeaders["Content-Encoding"]).toBeUndefined();
+    expect(writtenHeaders["Content-Length"]).toBe(String(Buffer.byteLength(body)));
     expect(writtenHeaders["Vary"]).toBe("Accept-Encoding");
-    // …but no body is written and the compressor is never spun up.
     expect(ended).toBe(true);
     expect(chunks).toEqual([]);
   });
@@ -4849,6 +5069,133 @@ describe("Set-Cookie header preservation in prod-server", () => {
     });
   }
 
+  it("sendWebResponse compresses RSC responses", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+    const payload = '0:["$","div",null,{"children":"' + "x".repeat(2000) + '"}]\n';
+    const response = new Response(payload, {
+      headers: { "content-type": "text/x-component" },
+    });
+    const req = {
+      method: "GET",
+      headers: { "accept-encoding": "gzip" },
+    };
+    const res = new CapturingNodeResponse();
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+
+    await sendWebResponse(response, req as any, res as any, true);
+    await finished(res);
+
+    const rawBody = Buffer.concat(chunks);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["Content-Encoding"]).toBe("gzip");
+    expect(String(res.headers["Vary"])).toContain("Accept-Encoding");
+    expect(rawBody.byteLength).toBeLessThan(Buffer.byteLength(payload));
+    expect(zlib.gunzipSync(rawBody).toString("utf8")).toBe(payload);
+  });
+
+  // The following ports the response filter of Next.js's compression middleware
+  // (next/dist/compiled/compression, installed by server/lib/router-server.ts).
+  async function sendWebResponseWithGzip(response: Response) {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+    const req = { method: "GET", headers: { "accept-encoding": "gzip" } };
+    const res = new CapturingNodeResponse();
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+    await sendWebResponse(response, req as any, res as any, true);
+    await finished(res);
+    return { res, body: Buffer.concat(chunks) };
+  }
+
+  it("sendWebResponse keeps a Content-Length below the threshold uncompressed", async () => {
+    const payload = "x".repeat(1023);
+    const { res, body } = await sendWebResponseWithGzip(
+      new Response(payload, {
+        headers: { "content-type": "text/x-component", "content-length": "1023" },
+      }),
+    );
+    expect(res.headers["Content-Encoding"]).toBeUndefined();
+    expect(res.headers["content-length"]).toBe("1023");
+    expect(res.headers["Vary"]).toBe("Accept-Encoding");
+    expect(body.toString()).toBe(payload);
+  });
+
+  it("sendWebResponse compresses streamed bodies of unknown length regardless of size", async () => {
+    const { res, body } = await sendWebResponseWithGzip(
+      new Response("small", { headers: { "content-type": "text/x-component" } }),
+    );
+    expect(res.headers["Content-Encoding"]).toBe("gzip");
+    expect(zlib.gunzipSync(body).toString()).toBe("small");
+  });
+
+  it("sendWebResponse honors Cache-Control: no-transform", async () => {
+    const payload = "x".repeat(2000);
+    const { res, body } = await sendWebResponseWithGzip(
+      new Response(payload, {
+        headers: { "content-type": "text/html", "cache-control": "public, no-transform" },
+      }),
+    );
+    expect(res.headers["Content-Encoding"]).toBeUndefined();
+    expect(res.headers["Vary"]).toBeUndefined();
+    expect(body.toString()).toBe(payload);
+  });
+
+  it("sendWebResponse varies empty compressible responses without encoding them", async () => {
+    const { res } = await sendWebResponseWithGzip(
+      new Response(null, { status: 204, headers: { "content-type": "text/html" } }),
+    );
+    expect(res.statusCode).toBe(204);
+    expect(res.headers["Content-Encoding"]).toBeUndefined();
+    expect(res.headers["Vary"]).toBe("Accept-Encoding");
+  });
+
+  it("sendWebResponse does not compress or vary non-compressible types", async () => {
+    const { res } = await sendWebResponseWithGzip(
+      new Response("x".repeat(2000), { headers: { "content-type": "image/png" } }),
+    );
+    expect(res.headers["Content-Encoding"]).toBeUndefined();
+    expect(res.headers["Vary"]).toBeUndefined();
+  });
+
+  it("sendWebResponse does not compress when compression is disabled", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+    const req = { method: "GET", headers: { "accept-encoding": "gzip" } };
+    const res = new CapturingNodeResponse();
+    res.resume();
+    await sendWebResponse(
+      new Response("x".repeat(2000), { headers: { "content-type": "text/x-component" } }),
+      req as any,
+      res as any,
+      false,
+    );
+    await finished(res);
+    expect(res.headers["Content-Encoding"]).toBeUndefined();
+    expect(res.headers["Vary"]).toBeUndefined();
+  });
+
+  it("sendCompressed does not re-encode a body that already has a Content-Encoding", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+    const encoded = zlib.gzipSync("x".repeat(2000));
+    const req = { method: "GET", headers: { "accept-encoding": "gzip" } };
+    const res = new CapturingNodeResponse();
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+    sendCompressed(
+      req as any,
+      res as any,
+      encoded,
+      "application/json",
+      200,
+      { "content-encoding": "gzip" },
+      true,
+    );
+    await finished(res);
+    expect(res.headers["content-encoding"]).toBe("gzip");
+    expect(res.headers["Content-Encoding"]).toBeUndefined();
+    expect(res.headers["Vary"]).toBe("Accept-Encoding");
+    expect(Buffer.concat(chunks).equals(encoded)).toBe(true);
+  });
+
   it("sendWebResponse cancels streamed bodies for HEAD requests", async () => {
     const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
 
@@ -4891,7 +5238,8 @@ describe("Set-Cookie header preservation in prod-server", () => {
 
     expect(status).toBe(200);
     expect(writtenHeaders["content-type"]).toBe("text/html; charset=utf-8");
-    expect(writtenHeaders["Content-Encoding"]).toBe("br");
+    // HEAD responses are never compressed, matching Next.js.
+    expect(writtenHeaders["Content-Encoding"]).toBeUndefined();
     expect(writtenHeaders["Vary"]).toContain("Accept-Encoding");
     expect(ended).toBe(true);
     expect(chunks).toEqual([]);
@@ -4918,7 +5266,10 @@ describe("Set-Cookie header preservation in prod-server", () => {
     await finished(res);
 
     expect(res.statusCode).toBe(200);
-    expect(res.headers["Vary"]).toBeUndefined();
+    expect(res.headers["content-encoding"]).toBe("br");
+    // Next.js's compression middleware adds Vary before it sees the
+    // existing encoding.
+    expect(res.headers["Vary"]).toBe("Accept-Encoding");
     expect(Buffer.concat(chunks).toString()).toBe("encoded");
   });
 

@@ -7,11 +7,13 @@
   "assets": {
     "not_found_handling": "none",
     "binding": "ASSETS",
+    // Public files under /protected/ reach the Worker so middleware gates them.
+    "run_worker_first": ["/protected/*"],
   },
   "images": {
     "binding": "IMAGES",
   },
-  "cache": { "enabled": true },
+  "cache": { "enabled": false },
   "exports": {
     "default": { "type": "worker", "cache": { "enabled": false } },
     "ResponseStoreBinding": { "type": "worker", "cache": { "enabled": true } },

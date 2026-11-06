@@ -31,13 +31,32 @@ export enum RedirectType {
   replace = "replace",
 }
 
+// Set on the errors the navigation functions below throw. React decodes an
+// RSC render's error into a new Error that carries only its digest, so an
+// error with this marker was thrown in the render that caught it.
+const THROWN_NAVIGATION_ERROR_MARKER = Symbol.for("vinext.navigationError.thrown");
+
 class VinextNavigationError extends Error {
   readonly digest: string;
+  readonly [THROWN_NAVIGATION_ERROR_MARKER] = true;
 
   constructor(message: string, digest: string) {
     super(message);
     this.digest = digest;
   }
+}
+
+/**
+ * Whether `error` was thrown by redirect(), notFound() or another navigation
+ * function in the render that caught it, rather than decoded from an RSC
+ * render's digest.
+ */
+export function isThrownNavigationError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    Reflect.get(error, THROWN_NAVIGATION_ERROR_MARKER) === true
+  );
 }
 
 /**

@@ -95,7 +95,12 @@ test.describe("Dynamic Metadata (generateMetadata)", () => {
       "Local not found description",
     );
     await expect(page.locator('meta[name="keywords"]')).toHaveAttribute("content", "parent");
-    await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex");
+    // As in Next.js, the server-inserted HTML and the boundary's metadata both
+    // add the noindex robots tag.
+    await expect(page.locator('meta[name="robots"]')).toHaveCount(2);
+    for (const robots of await page.locator('meta[name="robots"]').all()) {
+      await expect(robots).toHaveAttribute("content", "noindex");
+    }
     await expect
       .poll(() =>
         page.evaluate(() => (window as Window & { __next_f?: unknown[] }).__next_f?.length ?? 0),

@@ -1,16 +1,19 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vite-plus/test";
 
 import type {
   ResponseStoreMutationResult,
   WorkersResponseStore,
 } from "@cloudflare/workers-response-store";
 import {
+  captureResponseStoreDataRegeneration,
   captureResponseStoreRscData,
   deferResponseStoreAdmission,
   runWithResponseStoreInvocation,
+  trackResponseStoreRegenerationWork,
   WorkersResponseStoreCacheHandler,
   type ResponseStoreInvocationCapture,
 } from "../src/cache/response-store-data.runtime";
+import { encodeCloudflareCacheTag } from "../src/cache/cdn-adapter.runtime";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 
 class TestStore implements WorkersResponseStore {
@@ -57,6 +60,11 @@ class TestStore implements WorkersResponseStore {
     return this.mutationResult;
   }
 
+  async invalidate(): Promise<ResponseStoreMutationResult> {
+    if (this.mutationError) throw this.mutationError;
+    return this.mutationResult;
+  }
+
   async purge(): Promise<ResponseStoreMutationResult> {
     if (this.mutationError) throw this.mutationError;
     return this.mutationResult;
@@ -97,6 +105,46 @@ test("treats a failed cached body read as a miss", async () => {
   await expect(new WorkersResponseStoreCacheHandler(store).get("key")).resolves.toBeNull();
 });
 
+test("dates a use cache entry from when its generation started, like Next.js", async () => {
+  vi.useFakeTimers({ toFake: ["Date"], now: 1_000_000 });
+  try {
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    const cacheControl = { revalidate: 60, expire: 120 };
+    await handler.set("generated", null, { cacheControl, timestamp: 1_000_000 - 2_500 });
+    expect(store.response?.headers.get("X-Workers-Response-Store-Generated-At")).toBe("997500");
+    // The Store ages it from then, including any wait before the write reaches it.
+    expect(store.response?.headers.has("Age")).toBe(false);
+    expect(store.response?.headers.get("Cache-Control")).toBe(
+      "public, max-age=60, stale-while-revalidate=60",
+    );
+    const entry = await handler.get("generated");
+    expect(entry?.lastModified).toBe(997_500);
+
+    // A generation that ran without I/O starts on the write's own frozen clock; the Store's
+    // invalidation clock may still have moved past it.
+    await handler.set("instant", null, { cacheControl, timestamp: 1_000_000 });
+    expect(store.response?.headers.get("X-Workers-Response-Store-Generated-At")).toBe("1000000");
+
+    // Writes without a valid generation start are dated now, as before.
+    for (const timestamp of [undefined, Number.NaN, 0, 1_000_001, "997500"]) {
+      await handler.set("written", null, { cacheControl, timestamp });
+      expect(
+        store.response?.headers.get("X-Workers-Response-Store-Generated-At"),
+        String(timestamp),
+      ).toBeNull();
+      await expect(handler.get("written")).resolves.toMatchObject({ lastModified: 1_000_000 });
+    }
+
+    // A revalidatePath() during its generation expires it, as Next.js's implicit tags do.
+    await handler.set("generated", null, { cacheControl, timestamp: 997_500 });
+    store.tagExpiration = 998_000;
+    await expect(handler.get("generated", { softTags: ["_N_T_/page"] })).resolves.toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("only attaches loopback regeneration to replayable requests", async () => {
   const store = new TestStore();
   const handler = new WorkersResponseStoreCacheHandler(store);
@@ -108,15 +156,89 @@ test("only attaches loopback regeneration to replayable requests", async () => {
     coalesce: true,
     purgeExisting: true,
     revalidator: { id: "vinext:data", args: ["get", "safe-get"] },
+    // A page replay never runs for a read that finds the entry expired.
+    expiryBehavior: "miss",
   });
   expect(store.response?.headers.get("X-Vinext-Response-Store-Replayable")).toBe("1");
 
   await runWithResponseStoreInvocation("unsafe-post", false, () =>
     handler.set("post", null, { cacheControl: { revalidate: 1, expire: 2 } }),
   );
-  expect(store.options).toEqual({ coalesce: true, purgeExisting: true });
+  // Nothing can regenerate it, so a read past `expire` misses and the caller recomputes it.
+  expect(store.options).toEqual({ coalesce: true, expiryBehavior: "miss", purgeExisting: true });
   expect(store.response?.headers.get("X-Vinext-Response-Store-Replayable")).toBeNull();
-  expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
+  // Like a replayable entry, it goes stale at `revalidate`, which also ends its edge copy.
+  expect(store.response?.headers.get("Cache-Control")).toBe(
+    "public, max-age=1, stale-while-revalidate=1",
+  );
+});
+
+test("stores the other entries a regeneration recomputes before returning its target", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  const stored: string[] = [];
+  const put = store.put.bind(store);
+  vi.spyOn(store, "put").mockImplementation(async (request, response, options) => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    stored.push(options?.revalidator?.args[0] as string);
+    return put(request, response, options);
+  });
+  const cacheControl = { revalidate: 1, expire: 2 };
+
+  const captured = await captureResponseStoreDataRegeneration("target", () =>
+    runWithResponseStoreInvocation("page", true, async () => {
+      // Cached fetch doesn't await its write.
+      void handler.set("sibling", null, { cacheControl });
+      await handler.set("target", null, { cacheControl });
+    }),
+  );
+
+  expect(captured.headers.get("X-Vinext-Response-Store-Replayable")).toBe("1");
+  expect(stored).toEqual(["sibling"]);
+
+  // A replay that fails after starting a side write still finishes the write.
+  await expect(
+    captureResponseStoreDataRegeneration("target", () =>
+      runWithResponseStoreInvocation("page", true, async () => {
+        void handler.set("failed-sibling", null, { cacheControl });
+        throw new Error("render failed");
+      }),
+    ),
+  ).rejects.toThrow("render failed");
+  expect(stored).toEqual(["sibling", "failed-sibling"]);
+});
+
+test("captures a target that a delegating handler writes after the regeneration returns", async () => {
+  const handler = new WorkersResponseStoreCacheHandler(new TestStore());
+  const cacheControl = { revalidate: 1, expire: 2 };
+
+  const captured = await captureResponseStoreDataRegeneration("target", () =>
+    runWithResponseStoreInvocation("page", true, async () => {
+      // A miss in a render hands its write to waitUntil, and a wrapping handler
+      // reaches the Store's handler later.
+      const write = new Promise((resolve) => setTimeout(resolve, 20)).then(() =>
+        handler.set("target", null, { cacheControl }),
+      );
+      trackResponseStoreRegenerationWork(write);
+    }),
+  );
+
+  expect(captured.headers.get("X-Vinext-Response-Store-Replayable")).toBe("1");
+});
+
+test("skips a regenerated entry the Store could not regenerate itself", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  const put = vi.spyOn(store, "put");
+  const cacheControl = { revalidate: 1, expire: 2 };
+
+  // A cache function call has no page invocation to fall back to.
+  await captureResponseStoreDataRegeneration("target", async () => {
+    await handler.set("sibling", null, { cacheControl });
+    await handler.set("target", null, { cacheControl });
+  });
+
+  expect(put).not.toHaveBeenCalled();
 });
 
 test("prefers a cache function invocation over route replay", async () => {
@@ -139,6 +261,8 @@ test("prefers a cache function invocation over route replay", async () => {
     id: "vinext:cache-function",
     args: ["key", JSON.stringify(invocation)],
   });
+  // Calling the function can't replay the page, so the Store keeps regenerating it on expiry.
+  expect(store.options).not.toHaveProperty("expiryBehavior");
 });
 
 test("captures App page RSC data for one-request warmup", async () => {
@@ -465,6 +589,201 @@ test("rejects a candidate older than the latest soft-tag invalidation", async ()
   }
 });
 
+test("stores data entries without expire as stale indefinitely, like Next.js", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  const policy = async (context: Record<string, unknown>) => {
+    await runWithResponseStoreInvocation("route", true, () => handler.set("key", null, context));
+    return store.response?.headers.get("Cache-Control");
+  };
+
+  // unstable_cache and cached fetch pass `revalidate` without `expire`.
+  expect(await policy({ revalidate: 1 })).toBe(
+    "public, max-age=1, stale-while-revalidate=315360000",
+  );
+  expect(await policy({ cacheControl: { revalidate: 1, expire: 2 } })).toBe(
+    "public, max-age=1, stale-while-revalidate=1",
+  );
+  expect(await policy({ revalidate: false })).toBe("public, max-age=315360000");
+  expect(await policy({ cacheControl: { revalidate: 1.5, expire: 2 } })).toBe(
+    "public, max-age=1, stale-while-revalidate=1",
+  );
+  expect(await policy({ cacheControl: { revalidate: 0.5, expire: 2.2 } })).toBe(
+    "public, max-age=1, stale-while-revalidate=2",
+  );
+
+  // So does an entry written by a request the Store can't replay, e.g. one with a cookie.
+  await runWithResponseStoreInvocation("signed-in", false, () =>
+    handler.set("key", null, { revalidate: 60 }),
+  );
+  expect(store.options).not.toHaveProperty("revalidator");
+  expect(store.response?.headers.get("Cache-Control")).toBe(
+    "public, max-age=60, stale-while-revalidate=315360000",
+  );
+
+  // An indefinite ISR policy uses Infinity, which neither Cache-Control nor JSON can hold.
+  await runWithResponseStoreInvocation("signed-in", false, () =>
+    handler.set("key", null, { cacheControl: { revalidate: Infinity, expire: Infinity } }),
+  );
+  expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
+  expect(JSON.parse(await store.response!.clone().text()).cacheControl).toEqual({
+    revalidate: false,
+  });
+  expect(await policy({ cacheControl: { revalidate: 60, expire: Infinity } })).toBe(
+    "public, max-age=60, stale-while-revalidate=315360000",
+  );
+  // One that never goes stale still hard-expires at a finite `expire`, e.g. from cacheLife.
+  expect(await policy({ cacheControl: { revalidate: Infinity, expire: 600 } })).toBe(
+    "public, max-age=600",
+  );
+  expect(await policy({ cacheControl: { revalidate: false, expire: 2.2 } })).toBe(
+    "public, max-age=3",
+  );
+});
+
+test("leaves a stale replayable hit to the Store's own refresh", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    await runWithResponseStoreInvocation("route", true, () =>
+      handler.set("key", null, { revalidate: 60 }),
+    );
+
+    vi.setSystemTime(12_000);
+    // A fresh Store hit older than a shorter requested revalidate is still stale for the caller.
+    await expect(handler.get("key", { revalidate: 1 })).resolves.toMatchObject({
+      cacheState: "stale",
+    });
+    // A stale Store hit has already scheduled the Store's refresh.
+    store.response?.headers.set("X-Workers-Response-Store", "BLOB-STALE");
+    await expect(handler.get("key", { revalidate: 1 })).resolves.not.toHaveProperty("cacheState");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("revalidates an invalidated entry the Store cannot regenerate", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  await handler.set("key", null);
+  await expect(handler.get("key")).resolves.not.toHaveProperty("cacheState");
+
+  store.response?.headers.set("X-Workers-Response-Store", "BLOB-STALE");
+  await expect(handler.get("key")).resolves.toMatchObject({ cacheState: "stale" });
+});
+
+test("revalidates an entry the Store cannot regenerate once the Store reports it stale", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    await runWithResponseStoreInvocation("signed-in", false, () =>
+      handler.set("key", null, { revalidate: 60 }),
+    );
+
+    // A hit the Store still marks fresh just past revalidate (its freshness starts after the
+    // write's latency) is fresh: refreshing it now would replace a copy Workers Cache serves.
+    vi.setSystemTime(70_500);
+    await expect(handler.get("key")).resolves.not.toHaveProperty("cacheState");
+    await expect(handler.get("key", { revalidate: 60 })).resolves.not.toHaveProperty("cacheState");
+    // A shorter requested revalidate is stale before the Store's own freshness ends.
+    await expect(handler.get("key", { revalidate: 30 })).resolves.toMatchObject({
+      cacheState: "stale",
+    });
+
+    // A copy marked fresh well past revalidate came from a Store that kept it longer.
+    vi.setSystemTime(75_001);
+    await expect(handler.get("key")).resolves.toMatchObject({ cacheState: "stale" });
+
+    vi.setSystemTime(70_500);
+    store.response?.headers.set("X-Workers-Response-Store", "BLOB-STALE");
+    await expect(handler.get("key")).resolves.toMatchObject({ cacheState: "stale" });
+    await expect(handler.get("key", { revalidate: 60 })).resolves.toMatchObject({
+      cacheState: "stale",
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("refreshes the revision behind the stale entry a write passes as staleEntry", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    const readAs = async (
+      status: string,
+      revision: string | null,
+      revalidate?: number,
+      softTags?: string[],
+    ) => {
+      store.response?.headers.set("X-Workers-Response-Store", status);
+      if (revision === null) store.response?.headers.delete("X-Workers-Response-Store-Revision");
+      else store.response?.headers.set("X-Workers-Response-Store-Revision", revision);
+      const entry = await handler.get("key", {
+        ...(revalidate === undefined ? {} : { revalidate }),
+        ...(softTags ? { softTags } : {}),
+      });
+      expect(entry).not.toBeNull();
+      return entry!;
+    };
+    const write = async (staleEntry?: unknown) => {
+      store.options = undefined;
+      await handler.set("key", null, { revalidate: 60, ...(staleEntry ? { staleEntry } : {}) });
+      expect(store.options).toBeDefined();
+      return store.options;
+    };
+    await write();
+
+    const stale = await readAs("BLOB-STALE", "7");
+    expect(stale).toMatchObject({ cacheState: "stale" });
+    // Reads and writes in between, even the request's own invalidation, leave the refresh
+    // of that entry a refresh, and every other write an ordinary one.
+    const fresh = await readAs("BLOB-FRESH", "8");
+    expect(fresh).not.toHaveProperty("cacheState");
+    expect(await write()).not.toHaveProperty("replacesRevision");
+    expect(await write(fresh)).not.toHaveProperty("replacesRevision");
+    await handler.revalidateTag("tag", { expire: 0 });
+    expect(await write(stale)).toMatchObject({ replacesRevision: 7 });
+    expect(await write(stale)).not.toHaveProperty("replacesTagExpiration");
+    expect(await write("7")).not.toHaveProperty("replacesRevision");
+
+    // The Store can't see soft tags expire, so the refresh carries the expiration it read.
+    store.tagExpiration = 5_000;
+    const softStale = await readAs("BLOB-STALE", "9", undefined, ["_N_T_/b", "_N_T_/a"]);
+    expect(await write(softStale)).toMatchObject({
+      replacesRevision: 9,
+      replacesTagExpiration: { tags: store.tagExpirationCalls.at(-1), expiration: 5_000 },
+    });
+    store.tagExpiration = 0;
+
+    // A copy stale only to its caller may be an edge copy: replacing it must purge it.
+    vi.setSystemTime(40_000);
+    const callerStale = await readAs("BLOB-FRESH", "14", 10);
+    expect(callerStale).toMatchObject({ cacheState: "stale" });
+    expect(await write(callerStale)).not.toHaveProperty("replacesRevision");
+
+    // A stale read without a usable revision leaves its refresh an ordinary write.
+    for (const revision of [null, "0", "-1", "1.5", "abc"]) {
+      const entry = await readAs("BLOB-STALE", revision);
+      expect(entry).toMatchObject({ cacheState: "stale" });
+      expect(await write(entry), String(revision)).not.toHaveProperty("replacesRevision");
+    }
+
+    // The Store regenerates a replayable entry itself, so its caller's write is no refresh.
+    store.response?.headers.set("X-Vinext-Response-Store-Replayable", "1");
+    const replayable = await readAs("BLOB-STALE", "16");
+    expect(replayable).not.toHaveProperty("cacheState");
+    expect(await write(replayable)).not.toHaveProperty("replacesRevision");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("honors a shorter revalidate requested by a later read", async () => {
   vi.useFakeTimers();
   try {
@@ -480,6 +799,27 @@ test("honors a shorter revalidate requested by a later read", async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("invalidates stale tag invalidations and purges expired ones, as Next.js classifies them", async () => {
+  const store = new TestStore();
+  const invalidate = vi.spyOn(store, "invalidate");
+  const purge = vi.spyOn(store, "purge");
+  const handler = new WorkersResponseStoreCacheHandler(store);
+
+  await handler.revalidateTag("max-profile", { expire: 31_536_000 });
+  await handler.revalidateTag("no-expire", {});
+  await handler.revalidateTag("expired");
+  await handler.revalidateTag("expire-zero", { expire: 0 });
+
+  expect(invalidate.mock.calls).toEqual([
+    [{ tags: [encodeCloudflareCacheTag("max-profile")], expire: 31_536_000 }],
+    [{ tags: [encodeCloudflareCacheTag("no-expire")] }],
+  ]);
+  expect(purge.mock.calls).toEqual([
+    [{ tags: [encodeCloudflareCacheTag("expired")] }],
+    [{ tags: [encodeCloudflareCacheTag("expire-zero")] }],
+  ]);
 });
 
 test("propagates mutation errors without treating an unavailable local edge cache as fatal", async () => {

@@ -8,7 +8,11 @@ export type KvDataAdapterOptions = {
   binding?: string;
   /** Namespace prefix for cache keys (isolates multiple apps in one namespace). */
   appPrefix?: string;
-  /** Default KV `expirationTtl` in seconds. @default 2592000 (30 days) */
+  /**
+   * Default KV `expirationTtl` in seconds. An entry whose `expire` is longer,
+   * such as one cached with `cacheLife("max")`, keeps it for its `expire`.
+   * @default 2592000 (30 days)
+   */
   ttlSeconds?: number;
   /** TTL in milliseconds for the in-memory tag-invalidation cache. @default 5000 */
   tagCacheTtlMs?: number;

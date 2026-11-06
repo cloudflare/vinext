@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 
 /**
@@ -54,6 +55,10 @@ export default function ShallowTestPage() {
       >
         Push combined params
       </button>
+
+      <Link href="/shallow-test/on-mount" data-testid="on-mount-link">
+        Shallow write on mount
+      </Link>
     </main>
   );
 }

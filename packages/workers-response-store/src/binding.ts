@@ -2,7 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { deriveCachePolicy, edgeCacheControl, representationAge } from "./cache-policy";
 import { IsolateNegativeCache } from "./isolate-negative-cache";
-import type { CacheMetadataStub } from "./metadata-do";
+import type { CacheMetadataStub, PurgeReservation, RefreshedRevision } from "./metadata-do";
 
 type RevalidatorDescriptor = {
   id: string;
@@ -20,13 +20,45 @@ export type SerializableValue =
 export type ResponseStorePutOptions = {
   /** @internal Collapse overlapping framework writes for the same cache key. */
   coalesce?: boolean;
+  /**
+   * @internal The revision a stale read returned (`X-Workers-Response-Store-Revision`)
+   * that this write refreshes. While another refresh of that revision is published and
+   * fresh, and the key hasn't been invalidated or purged since, the write is dropped instead
+   * of replacing (and purging) it, and returns
+   * `{ backingStoreUpdated: false, edgePurgeAccepted: false }`. A value that isn't a
+   * positive integer is ignored.
+   */
+  replacesRevision?: number;
+  /**
+   * @internal With `replacesRevision`: tags the caller checks itself when reading (soft
+   * tags), and the `getTagExpiration()` of those tags that the stale read saw. Once they
+   * have expired since, the write isn't dropped. A malformed value leaves an ordinary write.
+   */
+  replacesTagExpiration?: { tags: string[]; expiration: number };
   revalidator?: RevalidatorDescriptor;
   purgeExisting?: boolean;
+  /**
+   * What a read does once the entry is past its stale-while-revalidate window.
+   * `"regenerate"` (the default) waits for the revalidator. `"miss"` returns a
+   * Response Store miss so the caller regenerates the value itself; `refresh()`
+   * still regenerates the entry through its revalidator.
+   */
+  expiryBehavior?: ExpiryBehavior;
 };
+
+export type ExpiryBehavior = "regenerate" | "miss";
 
 export type ResponseStoreRefreshOptions = {
   tags?: string[];
   pathPrefixes?: string[];
+};
+
+export type ResponseStoreInvalidateOptions = ResponseStoreRefreshOptions & {
+  /**
+   * Seconds after the invalidation when matching entries stop being served
+   * stale. Without it, entries keep their stored stale-while-revalidate window.
+   */
+  expire?: number;
 };
 
 export type ResponseStorePurgeOptions = ResponseStoreRefreshOptions & {
@@ -57,6 +89,7 @@ export type WorkersResponseStore = {
     options?: ResponseStorePutOptions,
   ): Promise<ResponseStoreMutationResult>;
   refresh(options: ResponseStoreRefreshOptions): Promise<ResponseStoreMutationResult>;
+  invalidate(options: ResponseStoreInvalidateOptions): Promise<ResponseStoreMutationResult>;
   purge(options: ResponseStorePurgeOptions): Promise<ResponseStoreMutationResult>;
 };
 
@@ -67,11 +100,14 @@ type EntryMetadata = {
   freshUntil: number;
   swrUntil: number;
   revalidator: RevalidatorDescriptor | null;
+  expiryBehavior: ExpiryBehavior;
   cacheTags: string[];
 };
 
 export type CandidateMetadata = EntryMetadata & {
   fenceTags: string[];
+  /** When the response's generation started (`GENERATED_AT_HEADER`). */
+  generatedAt?: number;
 };
 
 export type StoredEntry = EntryMetadata & {
@@ -79,6 +115,8 @@ export type StoredEntry = EntryMetadata & {
   cacheKey: string;
   activeRevision: number;
   latestRevision: number;
+  /** Set on entries read from R2, whose metadata records only whether a revalidator exists. */
+  hasRevalidator?: boolean;
 };
 
 export type RefreshCandidate = Pick<
@@ -95,6 +133,8 @@ export type PurgedEntry = {
   cacheKey: string;
   objectKey: string;
   revision: number;
+  /** Invalidate rather than purge the edge response: the entry was marked stale. */
+  edgeInvalidate?: boolean;
 };
 
 export type RevalidationService = {
@@ -119,13 +159,26 @@ type StoreResult = {
   published: boolean;
   entry: StoredEntry | null;
   response?: Response;
+  /** The revision a published refresh replaced. */
+  replacedRevision?: number;
+  /** When the published response's generation started, if the write said. */
+  generatedAt?: number;
+  /** When it was published, on this isolate's clock. */
+  publishedAt?: number;
+  /** The metadata DO published it stale, or expired. */
+  publishedStale?: true;
+  /** When its own cache policy, derived on this isolate's clock, made it stale. */
+  policyFreshUntil?: number;
 };
 
 type PublicationResult = {
   edgePurgeRequired: boolean;
   entry: StoredEntry | null;
   published: boolean;
+  publishedStale?: true;
 };
+
+type EdgeCacheOperation = "purge" | "invalidate";
 
 class R2PublicationError extends Error {
   constructor(cause: unknown) {
@@ -238,6 +291,13 @@ export class ResponseStoreService extends WorkerEntrypoint<
     return this.getStore(invocation).refresh(options);
   }
 
+  invalidate(
+    options: ResponseStoreInvalidateOptions,
+    invocation: ResponseStoreServiceInvocation,
+  ): Promise<ResponseStoreMutationResult> {
+    return this.getStore(invocation).invalidate(options);
+  }
+
   purge(
     options: ResponseStorePurgeOptions,
     invocation: ResponseStoreServiceInvocation,
@@ -248,7 +308,7 @@ export class ResponseStoreService extends WorkerEntrypoint<
 
 export type ResponseStoreServiceBinding = Pick<
   ResponseStoreService,
-  "read" | "getTagExpiration" | "put" | "refresh" | "purge"
+  "read" | "getTagExpiration" | "put" | "refresh" | "invalidate" | "purge"
 >;
 
 const MISS_HEADERS = {
@@ -268,7 +328,22 @@ const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const R2_CUSTOM_METADATA_SAFE_BYTES = 7 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
-const STORAGE_LAYOUT_VERSION = "r2-v1";
+/**
+ * @internal When a response's generation started (ms since epoch), on a put or a
+ * revalidator's response. Like Next.js "use cache", the entry is published stale if its
+ * tags were invalidated after that, and expired if they were purged, or an `expire` deadline
+ * passed, after it. Its freshness and stale-while-revalidate windows also count from then.
+ * A value that isn't a positive finite number is ignored, a fractional one is rounded down,
+ * and one in the future, e.g. from a skewed clock, counts as when the Store received it. It
+ * isn't stored.
+ */
+const GENERATED_AT_HEADER = "X-Workers-Response-Store-Generated-At";
+
+function generatedAtFromResponse(response: Response): number | undefined {
+  const value = Math.floor(Number(response.headers.get(GENERATED_AT_HEADER) ?? undefined));
+  return Number.isSafeInteger(value) && value > 0 ? Math.min(value, Date.now()) : undefined;
+}
+const STORAGE_LAYOUT_VERSION = "r2-v2";
 const pendingPuts = new Map<string, Promise<StoreResult>>();
 const pendingR2Reads = new Map<string, Promise<boolean>>();
 const entryReads = new IsolateNegativeCache<string>(
@@ -397,6 +472,10 @@ async function readBodyPrefix(
   };
 }
 
+function hasRevalidator(entry: StoredEntry): boolean {
+  return entry.hasRevalidator ?? entry.revalidator !== null;
+}
+
 function purgeTagForEntry(entry: Pick<StoredEntry, "keyHash">): string {
   return `runtime-cache-${entry.keyHash}`;
 }
@@ -516,14 +595,23 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return { cacheKey, keyHash };
   }
 
-  private async purgeEdgeCache(options: CachePurgeOptions): Promise<boolean> {
+  /**
+   * `purge` deletes matching edge responses. `invalidate` marks them stale so
+   * Workers Cache keeps serving them while it refetches from this binding in
+   * the background.
+   */
+  private async updateEdgeCache(
+    options: CachePurgeOptions,
+    operation: EdgeCacheOperation = "purge",
+  ): Promise<boolean> {
     if (this.env.WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE === "disabled") {
       return false;
     }
-    if (!this.ctx.cache) {
+    const cache = this.ctx.cache;
+    if (!cache) {
       console.error(
         JSON.stringify({
-          message: "Workers Response Store cache purge is unavailable",
+          message: `Workers Response Store cache ${operation} is unavailable`,
           reason: "ctx.cache is absent",
         }),
       );
@@ -531,18 +619,23 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     try {
-      const result = await this.ctx.cache.purge(options);
+      // Local Miniflare does not implement invalidate() yet, so fall back to a
+      // hard purge there.
+      const result =
+        operation === "invalidate" && typeof cache.invalidate === "function"
+          ? await cache.invalidate(options)
+          : await cache.purge(options);
       if (!result.success) {
         throw new Error(
           result.errors.map(({ code, message }) => `${code}: ${message}`).join(", ") ||
-            "Workers Response Store cache purge was rejected",
+            `Workers Response Store cache ${operation} was rejected`,
         );
       }
       return true;
     } catch (error) {
       console.error(
         JSON.stringify({
-          message: "Workers Response Store cache purge failed",
+          message: `Workers Response Store cache ${operation} failed`,
           error: error instanceof Error ? error.message : String(error),
         }),
       );
@@ -550,11 +643,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
   }
 
-  private async purgeEdgeCacheByTags(tags: string[]): Promise<boolean> {
+  private async updateEdgeCacheByTags(
+    tags: string[],
+    operation: EdgeCacheOperation = "purge",
+  ): Promise<boolean> {
     let accepted = true;
 
     for (const batch of batches(tags, CACHE_PURGE_BATCH_SIZE)) {
-      if (!(await this.purgeEdgeCache({ tags: batch }))) {
+      if (!(await this.updateEdgeCache({ tags: batch }, operation))) {
         accepted = false;
       }
     }
@@ -562,8 +658,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return accepted;
   }
 
+  /**
+   * Update drained entries' edge responses. Stale entries with a revalidator
+   * are invalidated, so Workers Cache keeps serving them while it refetches.
+   * Tombstones are purged, as are stale entries the Store cannot regenerate,
+   * so their next read reaches R2 and sees `BLOB-STALE`.
+   */
   async purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<boolean> {
-    return await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry));
+    const invalidated = entries.filter((entry) => entry.edgeInvalidate);
+    const purged = entries.filter((entry) => !entry.edgeInvalidate);
+    const accepted = await Promise.all([
+      !purged.length || this.updateEdgeCacheByTags(purged.map(purgeTagForEntry)),
+      !invalidated.length ||
+        this.updateEdgeCacheByTags(invalidated.map(purgeTagForEntry), "invalidate"),
+    ]);
+    return accepted.every(Boolean);
   }
 
   private async purgePendingEdgeEntries(
@@ -576,7 +685,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         tombstoneSequence,
       );
       if (!entries.length) return true;
-      if (!(await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
+      if (!(await this.purgeR2TombstoneEdges(entries))) {
         return false;
       }
       await metadata.markTombstonesEdgePurged(entries);
@@ -637,6 +746,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       freshUntil,
       swrUntil,
       revalidator: null,
+      hasRevalidator: metadata.noRevalidator !== "1",
+      expiryBehavior: metadata.expiryBehavior === "miss" ? "miss" : "regenerate",
       cacheTags: [],
       activeRevision: latestRevision,
       latestRevision,
@@ -679,10 +790,19 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       () => true,
     );
     pendingR2Reads.set(readKey, pending);
+    // Later reads of this key await the pending read. workerd drops a canceled
+    // call's I/O, so keep this call alive until the read is cleared from the map.
+    let cleared!: () => void;
+    this.ctx.waitUntil(
+      new Promise<void>((resolve) => {
+        cleared = resolve;
+      }),
+    );
     try {
       return await read;
     } finally {
       if (pendingR2Reads.get(readKey) === pending) pendingR2Reads.delete(readKey);
+      cleared();
     }
   }
 
@@ -740,6 +860,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         freshUntil: String(entry.freshUntil),
         swrUntil: String(entry.swrUntil),
         latestRevision: String(entry.activeRevision),
+        ...(entry.expiryBehavior === "miss" ? { expiryBehavior: "miss" } : {}),
+        ...(hasRevalidator(entry) ? {} : { noRevalidator: "1" }),
       };
       if (customMetadataSize(customMetadata) > R2_CUSTOM_METADATA_SAFE_BYTES) {
         const responseMetadata = new TextEncoder().encode(
@@ -754,6 +876,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           freshUntil: String(entry.freshUntil),
           swrUntil: String(entry.swrUntil),
           latestRevision: String(entry.activeRevision),
+          ...(entry.expiryBehavior === "miss" ? { expiryBehavior: "miss" } : {}),
+          ...(hasRevalidator(entry) ? {} : { noRevalidator: "1" }),
         };
       }
       return await this.writeR2Revision(
@@ -823,7 +947,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     headers.set("Age", String(representationAge(createdAt, initialAge, now)));
     headers.set(
       "Cloudflare-CDN-Cache-Control",
-      edgeCacheControl(entry.freshUntil, entry.swrUntil, now),
+      edgeCacheControl(entry.freshUntil, entry.swrUntil, now, hasRevalidator(entry)),
     );
     headers.set("Cache-Tag", cacheTagHeader(entry));
     headers.set("X-Workers-Response-Store", now < entry.freshUntil ? "BLOB-FRESH" : "BLOB-STALE");
@@ -901,27 +1025,33 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     request: Request,
     response: Response,
     revalidator: ResponseStorePutOptions["revalidator"],
+    expiryBehavior: ExpiryBehavior,
     reservation?: WriteReservation,
     cacheTags = cacheTagsFromResponse(response),
     expectedR2Etag?: string | null,
+    replaces?: RefreshedRevision,
+    // A put's own, read when it was admitted.
+    generatedAt = generatedAtFromResponse(response),
   ): Promise<StoreResult> {
     const cacheKey = reservation ?? (await this.deriveCacheKey(request));
     const write = reservation ?? (await this.reserveWrite(metadata, cacheKey, cacheTags));
     const { keyHash, objectKey: reservationObjectKey, revision } = write;
 
     let publication: PublicationResult;
+    let publishedAt: number;
     let body: ArrayBuffer;
     let policy: ReturnType<typeof deriveCachePolicy>;
     try {
       const now = Date.now();
-      policy = deriveCachePolicy(response.headers, now);
+      policy = deriveCachePolicy(response.headers, now, generatedAt);
       const responseHeaders = [...response.headers].filter(([name]) => {
         const lower = name.toLowerCase();
         return (
           lower !== "age" &&
           lower !== "cache-tag" &&
           lower !== "cf-cache-status" &&
-          lower !== "content-length"
+          lower !== "content-length" &&
+          lower !== GENERATED_AT_HEADER.toLowerCase()
         );
       });
       const candidate: CandidateMetadata = {
@@ -932,7 +1062,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         freshUntil: policy.freshUntil,
         swrUntil: policy.swrUntil,
         revalidator: revalidator ?? null,
+        expiryBehavior,
         cacheTags,
+        ...(generatedAt !== undefined ? { generatedAt } : {}),
       };
 
       // RPC-transferred Response streams do not retain the fixed-length marker
@@ -945,7 +1077,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         candidate,
         write.claimId,
         reservationObjectKey,
+        replaces,
       );
+      publishedAt = Date.now();
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
       throw error;
@@ -985,7 +1119,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         const reconciliationFailures = reconciliation.failures.map((failure) => new Error(failure));
         if (reconciliation.purged.length) {
           try {
-            if (await this.purgeEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry))) {
+            if (await this.updateEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry))) {
               await metadata.markTombstonesEdgePurged(reconciliation.purged);
             }
           } catch (reconciliationError) {
@@ -1014,6 +1148,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       edgePurgeRequired: publication.edgePurgeRequired,
       published: true,
       entry,
+      ...(replaces ? { replacedRevision: replaces.revision } : {}),
+      ...(generatedAt !== undefined ? { generatedAt } : {}),
+      publishedAt,
+      ...(publication.publishedStale ? { publishedStale: true } : {}),
+      policyFreshUntil: policy.freshUntil,
       ...(stored && entry
         ? {
             response: this.createStoredResponse(
@@ -1074,6 +1213,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       cacheRequest,
       response,
       entry.revalidator,
+      entry.expiryBehavior,
       writeReservation,
       undefined,
       expectedR2Etag,
@@ -1146,13 +1286,15 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     // (both background SWR and blocking expiry). Return its fresh replacement
     // instead of starting another SWR cycle. A fresh R2 revision can still fill
     // the edge immediately; unconditional reads retain the stale fast path.
+    // An entry without a revalidator is served stale until its writer replaces it.
     const revalidateStale =
+      hasRevalidator(entry) &&
       now >= entry.freshUntil &&
       (request.headers.has("If-None-Match") || request.headers.has("If-Modified-Since"));
     if (now < entry.swrUntil && !revalidateStale) {
       const stored = await this.readStoredResponse(entry, now, r2Read?.object);
       if (stored) {
-        if (now < entry.freshUntil) {
+        if (now < entry.freshUntil || !hasRevalidator(entry)) {
           return stored;
         }
 
@@ -1167,6 +1309,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     await r2Read?.object?.body.cancel().catch(() => {});
+    // The writer asked for a miss instead of a regeneration once the entry expires.
+    if (now >= entry.swrUntil && entry.expiryBehavior === "miss") {
+      return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+    }
     const metadata = this.getMetadata(keyHash);
     let regenerated: StoreResult;
     if (revalidateStale && now < entry.swrUntil) {
@@ -1230,11 +1376,34 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     response: Response,
     options: ResponseStorePutOptions = {},
   ): Promise<ResponseStoreMutationResult> {
+    // Read on admission, so any later wait counts towards the response's age.
+    const generatedAt = generatedAtFromResponse(response);
     const cacheKey = await this.deriveCacheKey(request);
     const { keyHash } = cacheKey;
     const metadata = this.getMetadata(keyHash);
     const cacheTags = cacheTagsFromResponse(response);
     const pendingPutKey = `${this.getVersionId()}:${this.shardCount}:${keyHash}:${Boolean(options.purgeExisting)}`;
+    const tagExpiration = options.replacesTagExpiration;
+    const validTagExpiration =
+      tagExpiration === undefined ||
+      (Array.isArray(tagExpiration?.tags) &&
+        tagExpiration.tags.every((tag) => typeof tag === "string") &&
+        Number.isFinite(tagExpiration.expiration));
+    const replacesRevision =
+      Number.isSafeInteger(options.replacesRevision) &&
+      options.replacesRevision! > 0 &&
+      validTagExpiration
+        ? options.replacesRevision
+        : undefined;
+    const replaces: RefreshedRevision | undefined =
+      replacesRevision === undefined
+        ? undefined
+        : {
+            revision: replacesRevision,
+            ...(tagExpiration
+              ? { tags: tagExpiration.tags, tagExpiration: tagExpiration.expiration }
+              : {}),
+          };
     let reservation: WriteReservation | undefined;
     if (options.coalesce) {
       for (;;) {
@@ -1269,6 +1438,31 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           continue;
         }
         if (result?.published && result.entry) {
+          // A leader no newer than the revision this refresh read, e.g. one published before
+          // an invalidate(), can't stand in for it. Behind another refresh of that revision,
+          // only the metadata DO knows whether the key was invalidated since: it drops a
+          // duplicate before any R2 call. Any other leader stands in, as for any coalesced write.
+          if (
+            replaces !== undefined &&
+            (result.entry.activeRevision <= replaces.revision ||
+              result.replacedRevision === replaces.revision)
+          ) {
+            break;
+          }
+          // A leader that is stale can't stand in for a write generated after it. The metadata
+          // DO's publication says whether it landed stale, by its own clock. One that went stale
+          // since, e.g. while its edge purge ran, did so by its cache policy, derived in this
+          // isolate (pending puts are per isolate), so on this clock. A write without
+          // `generatedAt` is dated at publication; two such writes coalesce as before.
+          if (
+            (result.publishedStale ||
+              (result.policyFreshUntil ?? Number.POSITIVE_INFINITY) <= Date.now()) &&
+            (generatedAt !== undefined || result.generatedAt !== undefined) &&
+            (generatedAt ?? Number.POSITIVE_INFINITY) >
+              (result.generatedAt ?? result.publishedAt ?? Number.POSITIVE_INFINITY)
+          ) {
+            break;
+          }
           const objectKey = reservation.objectKey;
           await metadata
             .finishPendingObjects([objectKey])
@@ -1278,7 +1472,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             backingStoreUpdated: true,
             edgePurgeAccepted:
               options.purgeExisting && result.edgePurgeRequired
-                ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+                ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
                 : true,
           };
         }
@@ -1295,11 +1489,26 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         request,
         response,
         options.revalidator,
+        options.expiryBehavior === "miss" ? "miss" : "regenerate",
         reservation,
         cacheTags,
+        undefined,
+        replaces,
+        generatedAt,
       );
     })();
-    if (options.coalesce) pendingPuts.set(pendingPutKey, write);
+    let cleared = () => {};
+    if (options.coalesce) {
+      pendingPuts.set(pendingPutKey, write);
+      // Later coalesced puts of this key await the write, and treat a published
+      // one as their own. workerd drops a canceled call's I/O, so keep this call
+      // alive until the write is cleared from the map.
+      this.ctx.waitUntil(
+        new Promise<void>((resolve) => {
+          cleared = resolve;
+        }),
+      );
+    }
     try {
       const result = await write;
       if (!result.published || !result.entry) {
@@ -1309,13 +1518,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         backingStoreUpdated: true,
         edgePurgeAccepted:
           options.purgeExisting && result.edgePurgeRequired
-            ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+            ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
             : true,
       };
     } finally {
       if (options.coalesce && pendingPuts.get(pendingPutKey) === write) {
         pendingPuts.delete(pendingPutKey);
       }
+      cleared();
     }
   }
 
@@ -1384,8 +1594,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       }
     }
 
+    // Refresh is stale-while-revalidate: R2 already holds the new revisions,
+    // so let Workers Cache keep serving the prior responses while it refills.
     const edgePurgeAccepted = refreshed.length
-      ? await this.purgeEdgeCacheByTags(refreshed.map((entry) => purgeTagForEntry(entry)))
+      ? await this.updateEdgeCacheByTags(
+          refreshed.map((entry) => purgeTagForEntry(entry)),
+          "invalidate",
+        )
       : false;
 
     if (failures.length) {
@@ -1398,15 +1613,52 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     };
   }
 
-  async purge(options: ResponseStorePurgeOptions): Promise<ResponseStoreMutationResult> {
-    if (!options.purgeEverything && !options.tags?.length && !options.pathPrefixes?.length) {
-      throw new TypeError("purge() requires tags, pathPrefixes, or purgeEverything");
+  /**
+   * Marks matching entries stale. Reads keep serving them within their
+   * stale-while-revalidate window (capped by `expire`) while the next read
+   * regenerates them, instead of `refresh()` regenerating every match now.
+   */
+  async invalidate(options: ResponseStoreInvalidateOptions): Promise<ResponseStoreMutationResult> {
+    if (!options.tags?.length && !options.pathPrefixes?.length) {
+      throw new TypeError("invalidate() requires tags or pathPrefixes");
+    }
+    if (
+      options.expire !== undefined &&
+      !(typeof options.expire === "number" && options.expire >= 0)
+    ) {
+      throw new TypeError("invalidate() expire must be a non-negative number of seconds");
     }
 
     const invalidatedAt = Date.now();
-    const settled = await Promise.allSettled(
-      this.getMetadataShards().map((metadata) => metadata.purgeMatching(options, invalidatedAt)),
+    const expiresAt =
+      options.expire === undefined || !Number.isFinite(options.expire)
+        ? undefined
+        : invalidatedAt + Math.ceil(options.expire * 1000);
+    const selectors = { tags: options.tags, pathPrefixes: options.pathPrefixes };
+    const { failures, reservations } = await this.drainReservations(
+      await Promise.allSettled(
+        this.getMetadataShards().map((metadata) =>
+          metadata.invalidateMatching(selectors, invalidatedAt, expiresAt),
+        ),
+      ),
     );
+    const edgePurgeAccepted = await this.updatePendingEdges(reservations, failures);
+
+    if (failures.length) {
+      throw new AggregateError(failures, "One or more metadata shards failed to invalidate");
+    }
+
+    return {
+      backingStoreUpdated: reservations.some(({ reservation }) => reservation.backingStoreUpdated),
+      edgePurgeAccepted,
+    };
+  }
+
+  /** Write each shard's queued R2 tombstones and stale rewrites in bounded batches. */
+  private async drainReservations(settled: PromiseSettledResult<PurgeReservation>[]): Promise<{
+    failures: unknown[];
+    reservations: { metadata: CacheMetadataStub; reservation: PurgeReservation }[];
+  }> {
     const failures: unknown[] = settled.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
     );
@@ -1433,11 +1685,48 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         }
       }
     }
+    return { failures, reservations };
+  }
+
+  /** Update the edge responses of drained entries, collecting failures. */
+  private async updatePendingEdges(
+    reservations: { metadata: CacheMetadataStub; reservation: PurgeReservation }[],
+    failures: unknown[],
+  ): Promise<boolean> {
+    let edgePurgeAccepted = true;
+    const acknowledged = await Promise.allSettled(
+      reservations
+        .filter(({ reservation }) => reservation.pendingTombstones > 0)
+        .map(({ metadata, reservation }) =>
+          this.purgePendingEdgeEntries(metadata, reservation.tombstoneSequence),
+        ),
+    );
+    for (const result of acknowledged) {
+      if (result.status === "rejected") {
+        failures.push(result.reason);
+      } else if (!result.value) {
+        edgePurgeAccepted = false;
+      }
+    }
+    return edgePurgeAccepted;
+  }
+
+  async purge(options: ResponseStorePurgeOptions): Promise<ResponseStoreMutationResult> {
+    if (!options.purgeEverything && !options.tags?.length && !options.pathPrefixes?.length) {
+      throw new TypeError("purge() requires tags, pathPrefixes, or purgeEverything");
+    }
+
+    const invalidatedAt = Date.now();
+    const { failures, reservations } = await this.drainReservations(
+      await Promise.allSettled(
+        this.getMetadataShards().map((metadata) => metadata.purgeMatching(options, invalidatedAt)),
+      ),
+    );
     let edgePurgeAccepted = true;
 
     if (options.purgeEverything && failures.length === 0) {
       try {
-        edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
+        edgePurgeAccepted = await this.updateEdgeCache({ purgeEverything: true });
         if (edgePurgeAccepted) {
           const acknowledged = await Promise.allSettled(
             reservations.map(({ metadata, reservation }) =>
@@ -1453,21 +1742,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         failures.push(error);
       }
     } else {
-      if (options.purgeEverything) edgePurgeAccepted = false;
-      const acknowledged = await Promise.allSettled(
-        reservations
-          .filter(({ reservation }) => reservation.pendingTombstones > 0)
-          .map(({ metadata, reservation }) =>
-            this.purgePendingEdgeEntries(metadata, reservation.tombstoneSequence),
-          ),
-      );
-      for (const result of acknowledged) {
-        if (result.status === "rejected") {
-          failures.push(result.reason);
-        } else if (!result.value) {
-          edgePurgeAccepted = false;
-        }
-      }
+      edgePurgeAccepted =
+        (await this.updatePendingEdges(reservations, failures)) && !options.purgeEverything;
     }
 
     if (failures.length) {

@@ -1,10 +1,26 @@
 import fs from "node:fs";
 import path, { toSlash } from "pathslash";
-import { collapseDuplicateBase, manifestFileWithBase } from "../utils/manifest-paths.js";
+import {
+  collapseDuplicateBase,
+  isSharedClientChunkName,
+  manifestFileWithBase,
+  SSR_MANIFEST_SHARED_CHUNKS_KEY,
+} from "../utils/manifest-paths.js";
+
+const PAGES_CLIENT_ENTRY_ID = "virtual:vinext-client-entry";
+
+function isPagesClientEntryFacade(facadeModuleId: string | null | undefined): boolean {
+  if (!facadeModuleId) return false;
+  const id = toSlash(facadeModuleId.startsWith("\0") ? facadeModuleId.slice(1) : facadeModuleId);
+  return id === PAGES_CLIENT_ENTRY_ID || id.endsWith(`/${PAGES_CLIENT_ENTRY_ID}`);
+}
 
 export type BundleBackfillChunk = {
   type: "chunk";
   fileName: string;
+  name?: string;
+  isEntry?: boolean;
+  facadeModuleId?: string | null;
   imports?: string[];
   modules?: Record<string, unknown>;
   viteMetadata?: {
@@ -29,15 +45,18 @@ function isWindowsAbsolutePath(candidate: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(candidate) || candidate.startsWith("\\\\");
 }
 
-export function relativeWithinRoot(root: string, moduleId: string): string | null {
+/** Forward-slash `path.relative(root, moduleId)`, which may escape with `../`. */
+export function relativeToRoot(root: string, moduleId: string): string {
   // pathslash's `relative` emits forward slashes and (via native win32
   // semantics) tolerates mixed separators / drive-letter casing on Windows.
   // On POSIX it is plain posix.relative, so Windows-style absolute inputs
   // still need routing through the (also slash-emitting) win32 variant.
   const useWindowsPath = isWindowsAbsolutePath(root) || isWindowsAbsolutePath(moduleId);
-  const relativeId = useWindowsPath
-    ? path.win32.relative(root, moduleId)
-    : path.relative(root, moduleId);
+  return useWindowsPath ? path.win32.relative(root, moduleId) : path.relative(root, moduleId);
+}
+
+export function relativeWithinRoot(root: string, moduleId: string): string | null {
+  const relativeId = relativeToRoot(root, moduleId);
   // path.relative(root, root) returns "", which is not a usable manifest key and should be
   // treated the same as "outside root" for this helper.
   if (!relativeId || relativeId === ".." || relativeId.startsWith("../")) return null;
@@ -98,6 +117,7 @@ export function augmentSsrManifestFromBundle(
   base = "/",
 ): Record<string, string[]> {
   const nextManifest = {} as Record<string, Set<string>>;
+  const sharedChunkFiles = new Set<string>();
 
   for (const [key, files] of Object.entries(ssrManifest)) {
     const normalizedKey = normalizeManifestModuleId(key, root);
@@ -107,13 +127,46 @@ export function augmentSsrManifestFromBundle(
     }
   }
 
+  // A chunk's static imports must all load before it evaluates, so preload
+  // them transitively: the browser would otherwise find each level only after
+  // fetching the one above it.
+  const staticImportClosures = new Map<string, string[]>();
+  const getStaticImportClosure = (fileName: string): string[] => {
+    let closure = staticImportClosures.get(fileName);
+    if (closure) return closure;
+    const files = new Set<string>();
+    const visit = (importer: string) => {
+      const chunk = bundle[importer];
+      if (chunk?.type !== "chunk") return;
+      for (const importedFile of (chunk as BundleBackfillChunk).imports ?? []) {
+        if (importedFile === fileName || files.has(importedFile)) continue;
+        files.add(importedFile);
+        visit(importedFile);
+      }
+    };
+    visit(fileName);
+    closure = [...files];
+    staticImportClosures.set(fileName, closure);
+    return closure;
+  };
+
   for (const item of Object.values(bundle)) {
     if (item.type !== "chunk") continue;
     const chunk = item as BundleBackfillChunk;
 
+    if (chunk.fileName.endsWith(".js") && isSharedClientChunkName(chunk.name)) {
+      sharedChunkFiles.add(manifestFileWithBase(chunk.fileName, base));
+    }
+    if (chunk.isEntry && isPagesClientEntryFacade(chunk.facadeModuleId)) {
+      sharedChunkFiles.add(manifestFileWithBase(chunk.fileName, base));
+      for (const importedFile of getStaticImportClosure(chunk.fileName)) {
+        sharedChunkFiles.add(manifestFileWithBase(importedFile, base));
+      }
+    }
+
     const files = new Set<string>();
     files.add(manifestFileWithBase(chunk.fileName, base));
-    for (const importedFile of chunk.imports ?? []) {
+    for (const importedFile of getStaticImportClosure(chunk.fileName)) {
       files.add(manifestFileWithBase(importedFile, base));
     }
     for (const cssFile of chunk.viteMetadata?.importedCss ?? []) {
@@ -132,6 +185,10 @@ export function augmentSsrManifestFromBundle(
         nextManifest[key].add(file);
       }
     }
+  }
+
+  if (sharedChunkFiles.size > 0) {
+    nextManifest[SSR_MANIFEST_SHARED_CHUNKS_KEY] = sharedChunkFiles;
   }
 
   return Object.fromEntries(

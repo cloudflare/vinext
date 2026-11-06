@@ -1,6 +1,9 @@
 export default {
   basePath: "/app",
   trailingSlash: true,
+  async rewrites() {
+    return [{ source: "/missing-alias", destination: "/404" }];
+  },
   i18n: {
     locales: ["en", "fr"],
     defaultLocale: "en",
