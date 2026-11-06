@@ -85,7 +85,6 @@ export default defineConfig({
     name: "my-app",
     entrypoint: "vinext/server/fetch-handler",
     compatibilityDate: "2026-11-02",
-    compatibilityFlags: ["nodejs_compat"],
     assets: {
       htmlHandling: "none",
       notFoundHandling: "none",
