@@ -145,4 +145,21 @@ test.describe("image optimization endpoint behind middleware", () => {
       );
     }
   });
+
+  test("answers 413 for a source past images.maximumResponseBody", async ({ request }) => {
+    // next.config.ts sets the limit to 2,000,000 bytes; these sources, a PNG and
+    // an SVG named .png, are past it. Next.js answers 413 for a source past the
+    // limit before typing it (fetchInternalImage).
+    for (const source of ["/logo/too-large.png", "/logo/too-large-svg.png"]) {
+      const response = await request.get(imagePath("/_next/image", source));
+      expect(response.status(), source).toBe(413);
+      expect(await response.text(), source).toBe(
+        '"url" parameter is valid but internal response is invalid',
+      );
+    }
+    // Next.js requests the source with the endpoint's method, so the static
+    // file's 405 comes first.
+    const post = await request.post(imagePath("/_next/image", "/logo/too-large.png"));
+    expect(post.status()).toBe(405);
+  });
 });

@@ -8,8 +8,8 @@ export default {
       { pathname: "/vinext-image.png", search: "?members-only" },
       { pathname: "/vinext-image.png", search: "?redirect" },
     ],
-    // Small enough for a checked-in source to pass it; image-too-large.gif
-    // does. Coverage: tests/e2e/cloudflare-workers/image-optimizer.spec.ts
+    // Small enough for a checked-in source to pass it; the image-too-large.*
+    // sources do. Coverage: tests/e2e/cloudflare-workers/image-optimizer.spec.ts
     maximumResponseBody: 2_000_000,
   },
   async headers() {
