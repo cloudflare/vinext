@@ -94,7 +94,11 @@ import {
   setStampInitialHistoryState,
 } from "./pages-router-runtime.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
-import { interpolateDynamicRouteHref, resolveDynamicRouteHref } from "./internal/interpolate-as.js";
+import {
+  interpolateDynamicRouteHref,
+  matchesDynamicRoute,
+  resolveDynamicRouteHref,
+} from "./internal/interpolate-as.js";
 import { formatUrlObject, formatUrlObjectWithValidation } from "./internal/format-url-object.js";
 import { normalizeRouterHref, resolvePagesRouterHref } from "./internal/normalize-router-href.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
@@ -658,6 +662,29 @@ function getHrefInterpolationError(
     : null;
 }
 
+/**
+ * Next.js `Router.change()` re-matches an interpolated `as` against its route
+ * and rejects it when a required param is empty. Without this check an empty
+ * leading param (`/[zone]/item` with `zone: ""`) yields `//item`, which the
+ * browser would treat as a protocol-relative URL on another host.
+ */
+function getIncompatibleDynamicAsError(
+  routeHref: string,
+  asHref: string,
+): HrefInterpolationError | null {
+  const routePathname = stripHash(routeHref).split("?", 1)[0];
+  const asPathname = stripHash(asHref).split("?", 1)[0];
+  if (matchesDynamicRoute(routePathname, asPathname)) return null;
+  if (
+    !getHrefInterpolationError(routeHref, routePathname, parseQueryString(stripHash(routeHref)))
+  ) {
+    return null;
+  }
+  return new HrefInterpolationError(
+    `The provided \`as\` value (${asPathname}) is incompatible with the \`href\` value (${routePathname}). Read more: https://nextjs.org/docs/messages/incompatible-href-as`,
+  );
+}
+
 type CurrentDynamicRoute = { href: string; as: string | null };
 
 function resolveCurrentDynamicRoute(
@@ -697,6 +724,8 @@ function resolveCurrentDynamicRoute(
       if (error) throw error;
       return null;
     }
+    const incompatibleAsError = getIncompatibleDynamicAsError(href, dynamicRoute.as);
+    if (incompatibleAsError) throw incompatibleAsError;
 
     const targetLocale = getLocalePathPrefix(target.pathname, window.__VINEXT_LOCALES__);
     return {
@@ -3346,6 +3375,13 @@ async function performNavigation(
     !isHydrationQueryUpdate && as === undefined && localRouteHref !== null
       ? resolveDynamicRouteHref(localRouteHref)
       : null;
+  if (implicitDynamicRoute) {
+    const incompatibleAsError = getIncompatibleDynamicAsError(
+      implicitDynamicRoute.href,
+      implicitDynamicRoute.as,
+    );
+    if (incompatibleAsError) throw incompatibleAsError;
+  }
   const routeForNavigation = implicitDynamicRoute?.as ?? unlocalizedRouteHref;
   let resolved = isHydrationQueryUpdate
     ? normalizeHydrationNavigationUrl(as ?? resolveUrl(url))
@@ -3391,6 +3427,14 @@ async function performNavigation(
   if (isExternalUrl(resolvedRoute)) {
     const localPath = toPreparedSameOriginPath(resolvedRoute);
     if (localPath == null) {
+      // An interpolated route is an app path, but a catch-all whose first
+      // segment is empty still matches and yields `//host/...`. Next.js fails
+      // that navigation at history.pushState; never hard-navigate off-origin.
+      if (routeIdentityHref !== undefined && /^[/\\]{2}/.test(resolvedRoute)) {
+        throw new Error(
+          `The interpolated route path (${stripHash(resolvedRoute).split("?", 1)[0]}) for the \`href\` value (${stripHash(routeIdentityHref).split("?", 1)[0]}) starts with "//" and would leave the current origin.`,
+        );
+      }
       window.location.href = resolvedRoute;
       return false;
     }
@@ -3432,6 +3476,21 @@ async function performNavigation(
   // merely inherit the current pathname keep their existing display fallback.
   let interpolatedRoute = resolvedRoute;
   if (resolvedRoute.includes("[")) {
+    const hasExplicitHrefPathname = typeof url === "string" || !urlInheritsCurrentPath;
+    const isMiddlewareMatch = () =>
+      options?.shallow !== true &&
+      getPagesMiddlewareDataHref(resolved, __basePath, { locale: navigationLocale }) !== null;
+    // Next.js Router.change() matches an explicit `as` against the route
+    // before it interpolates, so the href query can't rebuild a mismatched
+    // `as` (an empty `id` would otherwise turn `/[id]/details` into
+    // `//details`).
+    if (as !== undefined && hasExplicitHrefPathname) {
+      const incompatibleAsError = getIncompatibleDynamicAsError(
+        removeNavigationLocalePrefix(resolvedRoute),
+        removeNavigationLocalePrefix(resolved),
+      );
+      if (incompatibleAsError && !isMiddlewareMatch()) throw incompatibleAsError;
+    }
     const projection = interpolateDynamicRouteHref(
       resolvedRoute,
       resolved,
@@ -3468,11 +3527,7 @@ async function performNavigation(
       const hrefInterpolationError = projection
         ? getHrefInterpolationError(resolvedRoute, projection.routePathname, projection.query)
         : null;
-      const hasExplicitHrefPathname = typeof url === "string" || !urlInheritsCurrentPath;
-      const isMiddlewareMatch =
-        options?.shallow !== true &&
-        getPagesMiddlewareDataHref(resolved, __basePath, { locale: navigationLocale }) !== null;
-      if (hrefInterpolationError && hasExplicitHrefPathname && !isMiddlewareMatch) {
+      if (hrefInterpolationError && hasExplicitHrefPathname && !isMiddlewareMatch()) {
         const asPathname = stripHash(resolved).split("?", 1)[0];
         const routePathname =
           projection?.routePathname ?? stripHash(resolvedRoute).split("?", 1)[0];
