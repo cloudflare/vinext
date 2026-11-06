@@ -45,6 +45,48 @@ async function holdRscRequests(page: Page, pathname: string): Promise<(index: nu
 }
 
 /**
+ * Withholds the body of each RSC response for `pathname` until released: the
+ * router accepts the response, but can't decode its Flight payload yet.
+ */
+async function withholdRscBodies(page: Page, pathname: string): Promise<() => Promise<void>> {
+  await page.addInitScript((target) => {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Reflect.set(window, "__releaseRscBodies", release);
+    const originalFetch = window.fetch;
+    window.fetch = async (input, init) => {
+      const response = await originalFetch(input, init);
+      const url = new URL(response.url);
+      if (url.pathname !== target || !url.searchParams.has("_rsc") || !response.body) {
+        return response;
+      }
+      const body = response.body;
+      const withheld = new Response(
+        new ReadableStream({
+          async start(controller) {
+            await released;
+            const reader = body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              controller.enqueue(value);
+            }
+            controller.close();
+          },
+        }),
+        { status: response.status, statusText: response.statusText, headers: response.headers },
+      );
+      Object.defineProperty(withheld, "url", { value: response.url });
+      Object.defineProperty(withheld, "redirected", { value: response.redirected });
+      return withheld;
+    };
+  }, pathname);
+  return () => page.evaluate(() => (Reflect.get(window, "__releaseRscBodies") as () => void)());
+}
+
+/**
  * Records every client abort of an RSC fetch. Playwright's requestfailed is no
  * use here: in dev it reports ERR_ABORTED for streamed responses as they end.
  */
@@ -319,6 +361,41 @@ test.describe("router.refresh() during an in-flight navigation", () => {
     releaseDestination(0);
     // Only the superseded navigation was cancelled.
     expect(await readAborts()).toEqual([DESTINATION]);
+    await expectClientNavigationsOnly();
+  });
+
+  // A raw history.pushState with a URL discards the navigation in flight, as
+  // Next.js's restore action does, and takes over the queue: the refresh
+  // queued behind the navigation runs at once, on the URL just written.
+  test("runs a queued refresh when a shallow pushState discards the navigation", async ({
+    page,
+  }) => {
+    const releaseBodies = await withholdRscBodies(page, DESTINATION);
+    const { expectClientNavigationsOnly, readAborts } = await openStartPage(page);
+    const renderedAt = await page.locator("#start-rendered-at").textContent();
+    const started = recordRscRequests(page);
+
+    // Accepted, so the discard can't abort it, but its payload hasn't decoded.
+    const accepted = page.waitForResponse((response) =>
+      isAppRouterRscRequestForPath(response.request(), DESTINATION),
+    );
+    await page.locator("#destination-link").click();
+    await accepted;
+    await page.locator("#refresh-button").click();
+    await page.evaluate(() => window.history.pushState(null, "", "?shallow=1"));
+
+    // The refresh doesn't wait for the discarded navigation's payload.
+    await expect.poll(() => started).toEqual([DESTINATION, START]);
+    await expect(page.locator("#start-rendered-at")).not.toHaveText(renderedAt ?? "");
+    await expect(page).toHaveURL(`${BASE}${START}?shallow=1`);
+
+    // The discarded navigation's payload decodes without committing.
+    await releaseBodies();
+    await page.waitForTimeout(500);
+    expect(await page.locator("#destination-page").count()).toBe(0);
+    await expect(page.locator("#start-page")).toBeVisible();
+    await expect(page).toHaveURL(`${BASE}${START}?shallow=1`);
+    expect(await readAborts()).toEqual([]);
     await expectClientNavigationsOnly();
   });
 
