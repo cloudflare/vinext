@@ -34,6 +34,7 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_NOT_FOUND_PATH,
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -1191,6 +1192,38 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       staticParamsMap: options.staticParamsMap,
     });
     if (prerenderEndpointResponse) return prerenderEndpointResponse;
+  }
+
+  // Only its unprefixed form, the one the prerender server's secret gate checks.
+  if (url.pathname === VINEXT_PRERENDER_NOT_FOUND_PATH && process.env.VINEXT_PRERENDER === "1") {
+    // Like `next build` prerendering `/_not-found`, render the root not-found
+    // page for `/404` on its own, never through redirects, middleware,
+    // rewrites or a route that would answer a nonexistent path.
+    setFrameworkRequestRoute("/404", false);
+    options.setNavigationContext({
+      pathname: "/404",
+      searchParams: new URLSearchParams(),
+      params: {},
+    });
+    setRootParams({});
+    const notFoundRequest = cloneRequestWithUrl(
+      request,
+      new URL(`${options.basePath}/404`, url).toString(),
+    );
+    const renderedNotFoundResponse = await traceAppPageRender("/404", "render", () =>
+      options.renderNotFound({
+        isRscRequest: false,
+        middlewareContext,
+        request: notFoundRequest,
+        route: null,
+        scriptNonce: undefined,
+      }),
+    );
+    if (renderedNotFoundResponse) {
+      return withUnmatchedRouteCacheControl(renderedNotFoundResponse);
+    }
+    options.clearRequestContext();
+    return withUnmatchedRouteCacheControl(notFoundResponse());
   }
 
   // `skipTrailingSlashRedirect` drops these redirects entirely, like Next.js

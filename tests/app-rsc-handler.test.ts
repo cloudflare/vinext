@@ -30,6 +30,7 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_PRERENDER_NOT_FOUND_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -457,6 +458,73 @@ describe("createAppRscHandler", () => {
         parentType: "BaseServer.handleRequest",
       },
     ]);
+  });
+
+  // Like `next build` prerendering `/_not-found`, the build's 404 renders
+  // without routing, so no middleware or catch-all route answers for it.
+  it("renders the prerender not-found endpoint without routing", async () => {
+    const catchAll = createPageRoute({ isDynamic: true, pattern: "/:path+" });
+    const matchRoute = vi.fn((pathname: string) => ({
+      params: { path: pathname.slice(1).split("/") },
+      route: catchAll,
+    }));
+    const runMiddleware = vi.fn(async ({ cleanPathname }: { cleanPathname: string }) => ({
+      kind: "continue" as const,
+      cleanPathname,
+      rewritten: false,
+      search: null,
+    }));
+    const renderNotFound = vi.fn(
+      async (_options: Parameters<HandlerOptions["renderNotFound"]>[0]) =>
+        new Response("not found page", { status: 404 }),
+    );
+    const setNavigationContext = vi.fn();
+    const handler = createHandler({
+      matchRoute,
+      runMiddleware,
+      renderNotFound,
+      setNavigationContext,
+    });
+    const request = () => new Request(`https://example.test${VINEXT_PRERENDER_NOT_FOUND_PATH}`);
+    const prefixedUrl = `https://example.test/docs${VINEXT_PRERENDER_NOT_FOUND_PATH}`;
+
+    const expectRouted = async (url: string) => {
+      runMiddleware.mockClear();
+      matchRoute.mockClear();
+      const response = await handler(new Request(url), null);
+      expect(await response.text()).toBe("page");
+      expect(runMiddleware).toHaveBeenCalled();
+      expect(matchRoute).toHaveBeenCalled();
+      expect(renderNotFound).not.toHaveBeenCalled();
+    };
+
+    try {
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      // The build requests it without the basePath, as its other endpoints.
+      const response = await handler(request(), null);
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe("not found page");
+      expect(renderNotFound).toHaveBeenCalledOnce();
+      expect(renderNotFound.mock.calls[0][0]).toMatchObject({ isRscRequest: false, route: null });
+      expect(new URL(renderNotFound.mock.calls[0][0].request.url).pathname).toBe("/docs/404");
+      expect(setNavigationContext).toHaveBeenCalledWith(
+        expect.objectContaining({ pathname: "/404", params: {} }),
+      );
+      expect(runMiddleware).not.toHaveBeenCalled();
+      expect(matchRoute).not.toHaveBeenCalled();
+      renderNotFound.mockClear();
+
+      // The prerender server's secret gate only checks the unprefixed form.
+      await expectRouted(prefixedUrl);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    // Outside the prerender, the path is an ordinary request.
+    await expectRouted(prefixedUrl);
+    const outsideBasePath = await handler(request(), null);
+    expect(outsideBasePath.status).toBe(404);
+    expect(renderNotFound).not.toHaveBeenCalled();
   });
 
   // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts

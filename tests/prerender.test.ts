@@ -30,6 +30,7 @@ import {
 import { handleAppPrerenderEndpoint } from "../packages/vinext/src/server/app-prerender-endpoints.js";
 import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
 import {
+  VINEXT_PRERENDER_NOT_FOUND_PATH,
   VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_REWRITTEN_HEADER,
@@ -554,7 +555,7 @@ describe("prerenderApp — RSC extraction", () => {
         return;
       }
 
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      if (req.url === VINEXT_PRERENDER_NOT_FOUND_PATH) {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
@@ -620,7 +621,7 @@ describe("prerenderApp — RSC extraction", () => {
     const server = createServer((req, res) => {
       const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
 
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      if (req.url === VINEXT_PRERENDER_NOT_FOUND_PATH) {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
@@ -690,7 +691,7 @@ describe("prerenderApp — RSC extraction", () => {
     const server = createServer((req, res) => {
       const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
 
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      if (req.url === VINEXT_PRERENDER_NOT_FOUND_PATH) {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
@@ -753,7 +754,7 @@ describe("prerenderApp — RSC extraction", () => {
     const server = createServer((req, res) => {
       const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
 
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      if (req.url === VINEXT_PRERENDER_NOT_FOUND_PATH) {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
@@ -864,7 +865,7 @@ describe("prerenderApp — special errors that escape the shell", () => {
       "export const revalidate = 60;\nexport default function Page() { return null; }\n",
     );
     const server = createServer((req, res) => {
-      if (req.url === "/__vinext_nonexistent_for_404__") {
+      if (req.url === VINEXT_PRERENDER_NOT_FOUND_PATH) {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
@@ -1028,7 +1029,7 @@ describe("prerender — a 404 page whose render reports an error", () => {
         config: await resolveNextConfig({}),
         _prodServer: { server, port },
       });
-      expect(requestedPaths).toContain("/__vinext_nonexistent_for_404__");
+      expect(requestedPaths).toContain(VINEXT_PRERENDER_NOT_FOUND_PATH);
       return {
         route: findRoute(result.routes, "/404"),
         has404: fs.existsSync(path.join(outDir, "404.html")),
@@ -1066,15 +1067,68 @@ describe("prerender — a 404 page whose render reports an error", () => {
     }
   }
 
-  it("fails the App Router's /404", async () => {
-    const failed = await prerenderAppNotFound(VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR);
-    expect(failed.route).toMatchObject({ status: "error", fatal: true });
-    expect(failed.has404).toBe(false);
+  // Rendered without routing, any error is the not-found page's own, even
+  // one the server reports before rendering it.
+  it.each([VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR, "1"])(
+    "fails the App Router's /404 marked %s",
+    async (marker) => {
+      const failed = await prerenderAppNotFound(marker);
+      expect(failed.route).toMatchObject({ status: "error", fatal: true });
+      expect(failed.has404).toBe(false);
+    },
+  );
 
-    // Not for a dynamic page the nonexistent path reached.
-    const page = await prerenderAppNotFound("1");
-    expect(page.route).toMatchObject({ status: "rendered" });
-  });
+  // Unmarked, any status is one the page answered itself, e.g. a 500 or a
+  // `forbidden()` 403 when Next.js wouldn't prerender it.
+  it.each([
+    [
+      403,
+      "1",
+      {
+        status: "error",
+        error: expect.stringContaining("refused to render the 404 page"),
+        fatal: true,
+      },
+    ],
+    [403, "not-found", { status: "error", error: "Error occurred prerendering page", fatal: true }],
+    [403, null, undefined],
+    [500, null, undefined],
+    [307, null, undefined],
+    [200, null, undefined],
+  ])(
+    "fails the App Router's /404 answered %i only when it's marked (%s)",
+    async (status, marker, expected) => {
+      const outDir = tmpDir("vinext-prerender-app-404-status-");
+      const requestedPaths: string[] = [];
+      const server = createServer((req, res) => {
+        requestedPaths.push(req.url ?? "");
+        res.statusCode = status;
+        if (marker) res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, marker);
+        res.setHeader("location", "/elsewhere");
+        res.end();
+      });
+      const port = await listen(server);
+      try {
+        const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+        const result = await prerenderApp({
+          mode: "default",
+          rscBundlePath: path.join(outDir, "dist", "server", "index.js"),
+          routes: [],
+          outDir,
+          config: await resolveNextConfig({}),
+          _prodServer: { server, port },
+        });
+        expect(requestedPaths).toContain(VINEXT_PRERENDER_NOT_FOUND_PATH);
+        if (expected) expect(findRoute(result.routes, "/404")).toMatchObject(expected);
+        else expect(findRoute(result.routes, "/404")).toBeUndefined();
+        expect(fs.existsSync(path.join(outDir, "404.html"))).toBe(false);
+      } finally {
+        await closeServer(server);
+        fs.rmSync(outDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("fails the Pages Router's /404", async () => {
     const failed = await prerenderPagesNotFound(PAGES_FIXTURE, "1");
@@ -1102,6 +1156,202 @@ describe("prerender — a 404 page whose render reports an error", () => {
     const page = await prerenderPagesNotFound(errorPageFixture, "1");
     expect(page.route).toMatchObject({ status: "rendered" });
   });
+});
+
+// Like `next build`, which prerenders `/_not-found` and `/404` on their own,
+// a route that would answer any nonexistent path doesn't become the 404 page.
+describe("prerender — the 404 page is rendered without routing", () => {
+  it("renders the App Router's not-found page beside root dynamic routes", async () => {
+    // Root `app/[id]` and `app/[...path]`, without an `app/not-found`.
+    const fixture = path.resolve(import.meta.dirname, "./fixtures/use-params-app-pages");
+    const rscBundlePath = await buildAppFixture(fixture);
+    const outDir = tmpDir("vinext-prerender-app-direct-404-");
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath,
+        routes: await appRouter(path.join(fixture, "app")),
+        outDir,
+        config: await resolveNextConfig({}),
+      });
+
+      expect(findRoute(result.routes, "/404")).toMatchObject({ status: "rendered" });
+      const html = fs.readFileSync(path.join(outDir, "404.html"), "utf-8");
+      expect(html).toContain("This page could not be found.");
+      expect(html).not.toContain('id="param-id"');
+      expect(html).not.toContain('id="params"');
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it.each([
+    { i18n: undefined, pages: { "404.html": "none" } },
+    {
+      i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      pages: { "404.html": "en", "fr/404.html": "fr" },
+    },
+  ])(
+    "renders the Pages Router's _error beside a root catch-all page (%#)",
+    async ({ i18n, pages }) => {
+      const fixture = path.resolve(import.meta.dirname, "./fixtures/pages-root-dynamic-404");
+      const pagesBundlePath = await buildPagesFixture(fixture, i18n ? { i18n } : undefined);
+      const outDir = tmpDir("vinext-prerender-pages-direct-404-");
+      try {
+        const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+        const { pagesRouter, apiRouter } =
+          await import("../packages/vinext/src/routing/pages-router.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+        const pagesDir = path.join(fixture, "pages");
+        const result = await prerenderPages({
+          mode: "default",
+          pagesBundlePath,
+          routes: await pagesRouter(pagesDir),
+          apiRoutes: await apiRouter(pagesDir),
+          pagesDir,
+          outDir,
+          config: await resolveNextConfig(i18n ? { i18n } : {}),
+        });
+
+        expect(findRoute(result.routes, "/404")).toMatchObject({ status: "rendered" });
+        for (const [file, locale] of Object.entries(pages)) {
+          const html = fs.readFileSync(path.join(outDir, file), "utf-8");
+          expect(html).toContain("custom error page");
+          expect(html).toContain(`<p id="locale">${locale}</p>`);
+          expect(html).not.toContain("dynamic page");
+        }
+      } finally {
+        fs.rmSync(outDir, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
+
+  it("doesn't pass the build's prerender secret to the 404 page", async () => {
+    const fixture = path.resolve(import.meta.dirname, "./fixtures/pages-404-request-headers");
+    const pagesBundlePath = await buildPagesFixture(fixture);
+    const outDir = tmpDir("vinext-prerender-pages-direct-404-secret-");
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { pagesRouter, apiRouter } =
+        await import("../packages/vinext/src/routing/pages-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const pagesDir = path.join(fixture, "pages");
+      const result = await prerenderPages({
+        mode: "default",
+        pagesBundlePath,
+        routes: await pagesRouter(pagesDir),
+        apiRoutes: await apiRouter(pagesDir),
+        pagesDir,
+        outDir,
+        config: await resolveNextConfig({}),
+      });
+
+      expect(findRoute(result.routes, "/404")).toMatchObject({ status: "rendered" });
+      const html = fs.readFileSync(path.join(outDir, "404.html"), "utf-8");
+      expect(html).toContain('<p id="secret">none</p>');
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("fails the build on a 404 page the prerender server refuses to render", async () => {
+    const fixture = path.resolve(import.meta.dirname, "./fixtures/pages-root-dynamic-404");
+    const pagesBundlePath = await buildPagesFixture(fixture);
+    // A build without its prerender secret, which the endpoint answers with 403.
+    fs.rmSync(path.join(path.dirname(pagesBundlePath), "vinext-server.json"));
+    const outDir = tmpDir("vinext-prerender-pages-direct-404-refused-");
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { pagesRouter, apiRouter } =
+        await import("../packages/vinext/src/routing/pages-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const pagesDir = path.join(fixture, "pages");
+      const result = await prerenderPages({
+        mode: "default",
+        pagesBundlePath,
+        routes: await pagesRouter(pagesDir),
+        apiRoutes: await apiRouter(pagesDir),
+        pagesDir,
+        outDir,
+        config: await resolveNextConfig({}),
+      });
+
+      expect(findRoute(result.routes, "/404")).toMatchObject({
+        status: "error",
+        error: expect.stringContaining("prerender secret is missing or stale"),
+        fatal: true,
+      });
+      expect(fs.existsSync(path.join(outDir, "404.html"))).toBe(false);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it.each([
+    ["a pages/404 that throws, rendered without routing", "pages-throwing-404"],
+    ["a 404 page the server fails before rendering", "pages-failing-server-init"],
+  ])(
+    "fails the build on %s",
+    async (_name, fixtureName) => {
+      const fixture = path.resolve(import.meta.dirname, "./fixtures", fixtureName);
+      const pagesBundlePath = await buildPagesFixture(fixture);
+      const outDir = tmpDir("vinext-prerender-pages-direct-404-error-");
+      try {
+        const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+        const { pagesRouter, apiRouter } =
+          await import("../packages/vinext/src/routing/pages-router.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+        const pagesDir = path.join(fixture, "pages");
+        const result = await prerenderPages({
+          mode: "default",
+          pagesBundlePath,
+          routes: await pagesRouter(pagesDir),
+          apiRoutes: await apiRouter(pagesDir),
+          pagesDir,
+          outDir,
+          config: await resolveNextConfig({}),
+        });
+
+        expect(findRoute(result.routes, "/404")).toMatchObject({ status: "error", fatal: true });
+        expect(fs.existsSync(path.join(outDir, "404.html"))).toBe(false);
+      } finally {
+        fs.rmSync(outDir, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
+
+  it("doesn't fail the build on a throwing 404 page an _app with getInitialProps makes dynamic", async () => {
+    const fixture = path.resolve(import.meta.dirname, "./fixtures/pages-dynamic-throwing-404");
+    const pagesBundlePath = await buildPagesFixture(fixture);
+    const outDir = tmpDir("vinext-prerender-pages-dynamic-404-");
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { pagesRouter, apiRouter } =
+        await import("../packages/vinext/src/routing/pages-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const pagesDir = path.join(fixture, "pages");
+      const result = await prerenderPages({
+        mode: "default",
+        pagesBundlePath,
+        routes: await pagesRouter(pagesDir),
+        apiRoutes: await apiRouter(pagesDir),
+        pagesDir,
+        outDir,
+        config: await resolveNextConfig({}),
+      });
+
+      expect(findRoute(result.routes, "/404")).toBeUndefined();
+      expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+      expect(fs.existsSync(path.join(outDir, "404.html"))).toBe(false);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 describe("prerenderPages — basePath export", () => {
@@ -2889,7 +3139,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
         res.end(JSON.stringify([{ locale: "en", slug: "hello" }]));
         return;
       }
-      if (url.pathname === "/__vinext_nonexistent_for_404__") {
+      if (url.pathname === VINEXT_PRERENDER_NOT_FOUND_PATH) {
         res.statusCode = 404;
         res.end("<html><body>not found</body></html>");
         return;
