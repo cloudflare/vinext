@@ -32,8 +32,10 @@ export type AppBrowserRefreshQueueNavigation = {
  * - Refreshes queued behind one navigation run once, where Next.js sends a
  *   request for each. The one request starts after all of them were made.
  * - A document load the router starts (for a navigation, a Server Action
- *   redirect, or a push to a route it can't render) drops the queued refresh. Next.js still runs it, but here a refresh in the page being unloaded
- *   can fall back to a document load of its own and replace the pending one.
+ *   redirect, or a push to a route it can't render) drops the queued
+ *   refresh. Next.js still runs it, but here a refresh in the page being
+ *   unloaded can fall back to a document load of its own and replace the
+ *   pending one.
  */
 export function createAppBrowserRefreshQueue(
   options: { queueTask?: (task: () => void) => void } = {},
