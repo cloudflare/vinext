@@ -84,6 +84,10 @@ const nextConfig: NextConfig = {
       fallback: [externalCredentialsRewrite("fallback")],
     };
   },
+  experimental: {
+    // Used by E2E: cf-app-basic/optimize-imports-node-first.spec.ts
+    optimizePackageImports: ["fake-node-first-barrel"],
+  },
 };
 
 export default nextConfig;
