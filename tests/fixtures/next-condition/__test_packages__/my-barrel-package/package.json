@@ -1,0 +1,13 @@
+{
+  "name": "my-barrel-package",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "react-server": "./src/server/index.mjs",
+      "next-js": "./src/next/index.mjs",
+      "default": "./src/default/index.mjs"
+    }
+  }
+}

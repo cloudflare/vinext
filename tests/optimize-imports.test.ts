@@ -13,10 +13,12 @@ import {
   createOptimizedImportSourceMatcher,
   createOptimizeImportsPlugin,
   DEFAULT_OPTIMIZE_PACKAGES,
+  getRootExport,
   SUBPATH_OPTIMIZE_PACKAGES,
 } from "../packages/vinext/src/plugins/optimize-imports.js";
 import type { Plugin } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
+import { hasNextJsCondition } from "../packages/vinext/src/utils/next-js-condition.js";
 import { toSlash } from "pathslash";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -1184,6 +1186,26 @@ describe("vinext:optimize-imports transform", () => {
     expect(ssrResultKnown).not.toBeNull();
     expect(ssrResultKnown!.code).not.toContain(`from "antd"`);
     expect(ssrResultKnown!.code).toContain("btn");
+  });
+});
+
+describe("hasNextJsCondition", () => {
+  it.each<{ exports: Parameters<typeof hasNextJsCondition>[0]; expected: boolean }>([
+    { exports: "./index.js", expected: false },
+    { exports: { import: "./index.mjs", default: "./index.js" }, expected: false },
+    { exports: { "next-js": "./next.js", default: "./index.js" }, expected: true },
+    { exports: { node: { "next-js": "./node-next.js", default: "./node.js" } }, expected: true },
+  ])("detects next-js in $exports", ({ exports, expected }) => {
+    expect(hasNextJsCondition(exports)).toBe(expected);
+  });
+});
+
+describe("getRootExport", () => {
+  it("reads the root export with or without the . key", () => {
+    expect(getRootExport({ ".": "./index.js", "./a": "./a.js" })).toBe("./index.js");
+    expect(getRootExport({ "./a": "./a.js" })).toBeUndefined();
+    const conditions = { "next-js": "./next.js", default: "./index.js" };
+    expect(getRootExport(conditions)).toBe(conditions);
   });
 });
 
