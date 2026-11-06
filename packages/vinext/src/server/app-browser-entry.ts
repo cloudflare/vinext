@@ -3263,7 +3263,6 @@ function bootstrapHydration(
       window.__VINEXT_RSC_PENDING__ = null;
       restoreSynchronousPopstateScrollPosition(
         {
-          getActiveNavigationId: () => browserNavigationController.getActiveNavigationId(),
           isLatestNonRefreshNavigation: (navId) =>
             browserNavigationController.isLatestNonRefreshNavigation(navId),
           markScrollRestoreConsumed: (navId) => {
@@ -3272,6 +3271,7 @@ function bootstrapHydration(
           restorePopstateScrollPosition,
         },
         event.state,
+        snapshotNavigationId,
       );
       browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
       return;

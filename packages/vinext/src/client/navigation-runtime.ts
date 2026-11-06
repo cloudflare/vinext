@@ -186,6 +186,7 @@ export function isNavigationRuntimeFunctions(value: unknown): value is Navigatio
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "queueRefresh")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "readVisitedResponseForFullPrefetch")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "claimCurrentHistoryTreeSnapshot")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite")) &&
