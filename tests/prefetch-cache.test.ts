@@ -2740,7 +2740,10 @@ describe("prefetch cache eviction", () => {
       url: largeRscUrl,
     });
 
-    prefetchRscResponse(largeRscUrl, Promise.resolve(new Response("x")));
+    prefetchRscResponse(
+      largeRscUrl,
+      Promise.resolve(new Response("x", { headers: { "content-type": "text/x-component" } })),
+    );
     await waitForPrefetchSetup(
       () =>
         getPrefetchCache().get(largeRscUrl)?.outcome === "cache-seeded" &&
