@@ -1,5 +1,27 @@
 # vinext
 
+## 1.4.4
+
+### Bug Fixes
+
+#### App Router
+
+- drop framing headers from route handler responses like Next.js (#4547)
+- hard-navigate when a payload renders another root layout (#4559)
+- keep the page mounted on same-pathname navigations after a loading-shell prefetch (#4535)
+
+#### Misc
+
+- **Dev:** remove internal request headers from rawHeaders before Pages routing (#4562)
+- **Pages Router:** keep middleware cookies on edge API responses in dev (#4550)
+- resolve a symlinked project root like Vite and Next.js (#4553)
+- **Pages Router:** drop x-middleware-set-cookie from edge API responses (#4545)
+- **Cache:** reject root params read inside unstable_cache (#4546)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.4.3
 
 ### Bug Fixes
