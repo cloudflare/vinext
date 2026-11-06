@@ -4471,6 +4471,7 @@ describe("app browser navigation controller", () => {
       expect(controller.discardPendingNavigation(visibleState)).toBe(true);
       await expect(renderPromise).resolves.toBe("no-commit");
       expect(controller.isCurrentNavigation(navId)).toBe(false);
+      expect(controller.isLatestNonRefreshNavigation(navId)).toBe(false);
       expect(setBrowserRouterState).toHaveBeenLastCalledWith(visibleState);
       // The discarded render's snapshot is released without running its URL
       // commit, and nothing is left to drain if a later render commits.
@@ -6441,6 +6442,27 @@ describe("app browser root-layout hard navigation", () => {
     } finally {
       detach();
     }
+  });
+
+  it("keeps a navigation the latest non-refresh one while only refreshes start after it", () => {
+    const controller = createAppBrowserNavigationController();
+    const navId = controller.beginNavigation();
+    expect(controller.isLatestNonRefreshNavigation(navId)).toBe(true);
+
+    const refreshId = controller.beginNavigation({ refresh: true });
+    expect(controller.isCurrentNavigation(navId)).toBe(false);
+    expect(controller.isLatestNonRefreshNavigation(navId)).toBe(true);
+
+    // A refresh that follows a redirect leaves the page.
+    controller.markNonRefreshNavigation(refreshId);
+    expect(controller.isLatestNonRefreshNavigation(navId)).toBe(false);
+    expect(controller.isLatestNonRefreshNavigation(refreshId)).toBe(true);
+
+    const newerId = controller.beginNavigation();
+    expect(controller.isLatestNonRefreshNavigation(refreshId)).toBe(false);
+    // A stale mark never moves back past a newer navigation.
+    controller.markNonRefreshNavigation(refreshId);
+    expect(controller.isLatestNonRefreshNavigation(newerId)).toBe(true);
   });
 
   it("blocks a repeated same-target hard-navigation fallback outside visible commits", () => {
@@ -8805,16 +8827,17 @@ describe("createPopstateRestoreHandler", () => {
     ).toBe(true);
   });
 
-  it("guards synchronous popstate scroll retry to the active navigation", () => {
+  it("guards synchronous popstate scroll retry to the snapshot navigation", () => {
     const scrollState = { __vinext_scrollY: 10 };
-    let activeNavigationId = 3;
+    // A layout effect in the restored tree already started a refresh (id 4),
+    // which doesn't end the snapshot navigation's scroll restore.
+    let latestNonRefreshNavigationId = 3;
     let consumedNavigationId: number | null = null;
     let shouldContinue: (() => boolean) | undefined;
 
     restoreSynchronousPopstateScrollPosition(
       {
-        getActiveNavigationId: () => activeNavigationId,
-        isCurrentNavigation: (navId) => navId === activeNavigationId,
+        isLatestNonRefreshNavigation: (navId) => navId === latestNonRefreshNavigationId,
         markScrollRestoreConsumed: (navId) => {
           consumedNavigationId = navId;
         },
@@ -8824,12 +8847,13 @@ describe("createPopstateRestoreHandler", () => {
         },
       },
       scrollState,
+      3,
     );
 
     expect(consumedNavigationId).toBe(3);
     expect(shouldContinue?.()).toBe(true);
 
-    activeNavigationId = 4;
+    latestNonRefreshNavigationId = 5;
     expect(shouldContinue?.()).toBe(false);
   });
 
@@ -8857,7 +8881,7 @@ describe("createPopstateRestoreHandler", () => {
         return () => popstate();
       },
       getPendingNavigation: () => window.__VINEXT_RSC_PENDING__,
-      isCurrentNavigation: (navId) => navId === activeNavigationId,
+      isLatestNonRefreshNavigation: (navId) => navId === activeNavigationId,
       notifyAppRouterTransitionStart: () => {},
       restorePopstateScrollPosition: (scrollState) => {
         restoreCalls.push(scrollState);
@@ -8888,6 +8912,92 @@ describe("createPopstateRestoreHandler", () => {
     expect(window.__VINEXT_RSC_PENDING__).toBeNull();
   });
 
+  it("keeps restoring scroll when only a refresh starts after the traversal", async () => {
+    const restoreCalls: unknown[] = [];
+    const navigation = createDeferred();
+    let activeNavigationId = 0;
+    let latestNonRefreshNavigationId = 0;
+    let shouldContinue: (() => boolean) | undefined;
+
+    stubWindow("https://example.com/feed");
+    window.__VINEXT_RSC_PENDING__ = null;
+
+    const handler = createPopstateRestoreHandler({
+      getActiveNavigationId: () => activeNavigationId,
+      getNavigate: () => {
+        activeNavigationId += 1;
+        latestNonRefreshNavigationId = activeNavigationId;
+        return () => navigation.promise;
+      },
+      getPendingNavigation: () => window.__VINEXT_RSC_PENDING__,
+      isLatestNonRefreshNavigation: (navId) => navId === latestNonRefreshNavigationId,
+      notifyAppRouterTransitionStart: () => {},
+      restorePopstateScrollPosition: (scrollState, options) => {
+        restoreCalls.push(scrollState);
+        shouldContinue = options?.shouldContinue;
+      },
+      setPendingNavigation: (pendingNavigation) => {
+        window.__VINEXT_RSC_PENDING__ = pendingNavigation;
+      },
+      shouldSkipScrollRestore: () => false,
+    });
+
+    handler({ state: { __vinext_scrollY: 10 } } as PopStateEvent);
+    // A refresh queued behind the traversal starts once it commits.
+    activeNavigationId += 1;
+    await Promise.resolve();
+
+    expect(restoreCalls).toEqual([{ __vinext_scrollY: 10 }]);
+    expect(shouldContinue?.()).toBe(true);
+
+    // A newer navigation ends the restore.
+    activeNavigationId += 1;
+    latestNonRefreshNavigationId = activeNavigationId;
+    expect(shouldContinue?.()).toBe(false);
+    navigation.resolve();
+  });
+
+  it("guards the deferred restore without a saved position by the traversal", async () => {
+    const navigation = createDeferred();
+    let activeNavigationId = 0;
+    let latestNonRefreshNavigationId = 0;
+    let shouldContinue: (() => boolean) | undefined;
+
+    stubWindow("https://example.com/feed#comments");
+    window.__VINEXT_RSC_PENDING__ = null;
+
+    const handler = createPopstateRestoreHandler({
+      getActiveNavigationId: () => activeNavigationId,
+      getNavigate: () => {
+        activeNavigationId += 1;
+        latestNonRefreshNavigationId = activeNavigationId;
+        return () => navigation.promise;
+      },
+      getPendingNavigation: () => window.__VINEXT_RSC_PENDING__,
+      isLatestNonRefreshNavigation: (navId) => navId === latestNonRefreshNavigationId,
+      notifyAppRouterTransitionStart: () => {},
+      restorePopstateScrollPosition: (_scrollState, options) => {
+        shouldContinue = options?.shouldContinue;
+      },
+      setPendingNavigation: (pendingNavigation) => {
+        window.__VINEXT_RSC_PENDING__ = pendingNavigation;
+      },
+      shouldSkipScrollRestore: () => false,
+    });
+
+    handler({ state: null } as PopStateEvent);
+    navigation.resolve();
+    // The refresh queued behind the traversal starts as it settles.
+    activeNavigationId += 1;
+    await navigation.promise;
+    await Promise.resolve();
+
+    expect(shouldContinue?.()).toBe(true);
+    // The refresh redirects: the hash scroll's frame must not run.
+    latestNonRefreshNavigationId = activeNavigationId;
+    expect(shouldContinue?.()).toBe(false);
+  });
+
   it("clears __VINEXT_RSC_PENDING__ when a stale popstate navigation settles", async () => {
     const restoreCalls: unknown[] = [];
     const navigation = createDeferred();
@@ -8903,7 +9013,7 @@ describe("createPopstateRestoreHandler", () => {
         return () => navigation.promise;
       },
       getPendingNavigation: () => window.__VINEXT_RSC_PENDING__,
-      isCurrentNavigation: (navId) => navId === activeNavigationId,
+      isLatestNonRefreshNavigation: (navId) => navId === activeNavigationId,
       notifyAppRouterTransitionStart: () => {},
       restorePopstateScrollPosition: (scrollState) => {
         restoreCalls.push(scrollState);
@@ -8942,7 +9052,7 @@ describe("createPopstateRestoreHandler", () => {
         return () => navigation.promise;
       },
       getPendingNavigation: () => window.__VINEXT_RSC_PENDING__,
-      isCurrentNavigation: (navId) => navId === activeNavigationId,
+      isLatestNonRefreshNavigation: (navId) => navId === activeNavigationId,
       notifyAppRouterTransitionStart: () => {},
       restorePopstateScrollPosition: (scrollState) => {
         restoreCalls.push(scrollState);
