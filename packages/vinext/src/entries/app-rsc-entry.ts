@@ -1060,7 +1060,7 @@ function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._get
 ${
   hasPagesDir
     ? `// Pages Router routes are loaded lazily from the SSR environment for internal prerender requests.
-import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};`
+import { renderPagesFallback as __renderPagesFallback, renderPagesNotFound as __renderPagesNotFound } from ${JSON.stringify(appPagesBridgePath)};`
     : ""
 }
 
@@ -2162,6 +2162,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         getDraftModeCookieHeader,
       }
     );
+  },
+  async renderPagesNotFound(request, pagesUrl) {
+    return __renderPagesNotFound(await __ensureHybridPagesApplication(), request, pagesUrl);
   },`
       : ""
   }

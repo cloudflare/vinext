@@ -80,6 +80,7 @@ import {
   createWorkerPrerenderDiscoveryContext,
   createWorkerPrerenderReadinessResponse,
   isWorkerPrerenderDiscoveryPath,
+  isWorkerPrerenderNotFoundRequest,
 } from "./worker-prerender-discovery.js";
 import {
   consumePagesResponseStagePolicyOwner,
@@ -350,6 +351,10 @@ async function handleRequestImpl(
   try {
     ctx = createWorkerPrerenderDiscoveryContext(ctx, request, pagesEntry.prerenderSecret);
     const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
+    const isPrerenderNotFound = isWorkerPrerenderNotFoundRequest(
+      request,
+      pagesEntry.prerenderSecret,
+    );
     let didValidateCdnRequest = false;
     if (readinessResponse) {
       const validationResponse = await validateCdnRequest(request);
@@ -430,6 +435,41 @@ async function handleRequestImpl(
         { cache: "bypass" },
         env,
         ctx,
+      );
+    }
+
+    if (isPrerenderNotFound) {
+      // Like `next build` prerendering `/404` from `pages/404` or `_error`,
+      // render the 404 page on its own, never through redirects, middleware,
+      // rewrites or a route that would answer a nonexistent path.
+      const { renderPagesPrerenderNotFound } = await import("./pages-prerender-not-found.js");
+      return renderPagesPrerenderNotFound(
+        request,
+        i18nConfig,
+        async (renderRequest, renderPath) =>
+          consumePagesResponseStagePolicyOwner(
+            await trackedDispatchResponseStage(
+              renderRequest,
+              {
+                buildId: pagesEntry.buildId,
+                cacheability: {
+                  policyHeaders: null,
+                  probeMode: null,
+                  resolvedRoutePathname: renderPath,
+                },
+                kind: "pages-page",
+                protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+                requestHost: url.host,
+                renderOptions: { notFoundPage: true, originalUrl: renderPath },
+                resolvedUrl: renderPath,
+                sharedAcrossHosts: false,
+                stagedHeaders: null,
+              },
+              { cache: "bypass" },
+              env,
+              ctx,
+            ),
+          ).response,
       );
     }
 

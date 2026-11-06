@@ -12,6 +12,8 @@ import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { serializeWorkerCacheabilityProbeRoute } from "../packages/vinext/src/server/cacheability-request.js";
@@ -470,6 +472,155 @@ describe("Pages Worker request stage", () => {
     const stageRequest = dispatch.mock.calls[0]?.[0];
     expect(stageRequest?.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER)).toBe("version-a");
     expect(stageRequest?.headers.get(VINEXT_PRERENDER_SECRET_HEADER)).toBeNull();
+  });
+
+  // Like `next build`, which prerenders `/404` from `pages/404` or `_error` on
+  // its own (export worker loadComponents), the prerender's not-found
+  // endpoint renders the 404 page without middleware or route matching.
+  describe("prerender not-found endpoint", () => {
+    const notFoundRequest = (
+      path = "/__vinext/prerender/not-found?locale=fr",
+      secret = "prerender-secret",
+    ) =>
+      new Request(`https://example.com${path}`, {
+        headers: { [VINEXT_PRERENDER_SECRET_HEADER]: secret },
+      });
+    const notFoundProps = (renderPath: string) => ({
+      buildId: "request-build",
+      cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: renderPath },
+      kind: "pages-page",
+      protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+      requestHost: "example.com",
+      renderOptions: { notFoundPage: true, originalUrl: renderPath },
+      resolvedUrl: renderPath,
+      sharedAcrossHosts: false,
+      stagedHeaders: null,
+    });
+
+    it.each([
+      { search: "?locale=fr", renderPath: "/fr/404" },
+      { search: "?locale=en", renderPath: "/404" },
+      { search: "", renderPath: "/404" },
+    ])("dispatches the 404 page for '$search' on its own", async ({ search, renderPath }) => {
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      try {
+        const dispatch = vi.fn<DispatchWorkerResponseStage>(
+          async () => new Response("custom 404", { status: 404 }),
+        );
+        const response = await handleRequestStage(
+          notFoundRequest(`/__vinext/prerender/not-found${search}`),
+          undefined,
+          undefined,
+          dispatch,
+        );
+
+        expect(response.status).toBe(404);
+        await expect(response.text()).resolves.toBe("custom 404");
+        expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+          expect.any(Request),
+          notFoundProps(renderPath),
+          { cache: "bypass" },
+        );
+        const stageRequest = dispatch.mock.calls[0]?.[0];
+        expect(new URL(stageRequest!.url).pathname).toBe(renderPath);
+        expect(stageRequest?.headers.get(VINEXT_PRERENDER_SECRET_HEADER)).toBeNull();
+        expect(mocks.runMiddleware).not.toHaveBeenCalled();
+        expect(mocks.matchPageRoute).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("renders the 404 page on its own in the single-stage Worker", async () => {
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      try {
+        const response = await worker.fetch(notFoundRequest());
+
+        await expect(response.text()).resolves.toBe("local");
+        expect(mocks.renderResponse).toHaveBeenCalledOnce();
+        expect(mocks.renderResponse.mock.calls[0]?.[3]).toEqual(notFoundProps("/fr/404"));
+        expect(mocks.runMiddleware).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    // The response stage's page handler marks a throwing 404 page itself.
+    it("passes the response stage's marked render error through", async () => {
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      try {
+        const dispatch = vi.fn<DispatchWorkerResponseStage>(
+          async () =>
+            new Response("Internal Server Error", {
+              status: 500,
+              headers: {
+                [VINEXT_PRERENDER_RENDER_ERROR_HEADER]: VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+              },
+            }),
+        );
+        const failed = await handleRequestStage(notFoundRequest(), undefined, undefined, dispatch);
+        expect(dispatch).toHaveBeenCalledOnce();
+        expect(failed.status).toBe(500);
+        expect(failed.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+          VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+        );
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("marks the 404 page's own render error", async () => {
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => {
+          throw new Error("404 page failed");
+        });
+        const failed = await handleRequestStage(notFoundRequest(), undefined, undefined, dispatch);
+        expect(failed.status).toBe(500);
+        expect(failed.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+          VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+        );
+
+        const badLocale = await handleRequestStage(
+          notFoundRequest("/__vinext/prerender/not-found?locale=de"),
+          undefined,
+          undefined,
+          dispatch,
+        );
+        expect(badLocale.status).toBe(400);
+        expect(dispatch).toHaveBeenCalledOnce();
+      } finally {
+        consoleError.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    });
+
+    // A deployed Worker never answers it: the path is routed like any other.
+    it.each([
+      { name: "outside the prerender", prerender: false },
+      { name: "with another secret", prerender: true, secret: "other-secret" },
+      { name: "under a locale prefix", prerender: true, path: "/fr/__vinext/prerender/not-found" },
+    ])("routes the path $name", async ({ prerender, secret, path }) => {
+      if (prerender) vi.stubEnv("VINEXT_PRERENDER", "1");
+      try {
+        const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("routed"));
+        const response = await handleRequestStage(
+          notFoundRequest(path, secret),
+          undefined,
+          undefined,
+          dispatch,
+        );
+
+        await expect(response.text()).resolves.toBe("routed");
+        expect(mocks.runMiddleware).toHaveBeenCalled();
+        for (const [, props] of dispatch.mock.calls) {
+          expect(props.kind === "pages-page" && props.renderOptions?.notFoundPage).toBeFalsy();
+        }
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
   });
 
   it("keeps pathname-eligible middleware outside shared-stage classification", async () => {

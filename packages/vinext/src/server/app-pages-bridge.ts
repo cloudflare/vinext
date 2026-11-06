@@ -32,7 +32,7 @@ export type PagesEntry = {
     query: Record<string, unknown>,
     parsedUrl: unknown,
     middlewareRequestHeaders?: Headers | null,
-    options?: { isDataReq?: boolean },
+    options?: { isDataReq?: boolean; notFoundPage?: boolean; originalUrl?: string },
     initialResponseHeaders?: Headers,
   ) => Promise<Response> | Response;
 };
@@ -288,6 +288,28 @@ export async function renderPagesFallback(
     getDraftModeCookieHeader(),
   );
   return isLocaleRedirect(pagesRes) ? markLocaleRedirect(response) : response;
+}
+
+/**
+ * Render a hybrid build's Pages Router 404 page (`pages/404`, else `_error`)
+ * for `pagesUrl` without matching it, for the prerender's not-found endpoint.
+ */
+export async function renderPagesNotFound(
+  pagesEntry: PagesEntry,
+  request: Request,
+  pagesUrl: string,
+): Promise<Response> {
+  if (typeof pagesEntry.renderPage !== "function") {
+    return new Response("This page could not be found", { status: 404 });
+  }
+  return pagesEntry.renderPage(
+    request,
+    pagesUrl,
+    {},
+    getRequestExecutionContext() ?? undefined,
+    null,
+    { notFoundPage: true, originalUrl: pagesUrl },
+  );
 }
 
 /**

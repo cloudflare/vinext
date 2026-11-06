@@ -762,6 +762,8 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   prefetchInlining?: PrefetchInliningConfig;
   renderNotFound: (options: RenderNotFoundOptions<TRoute>) => Promise<Response | null>;
   renderPagesFallback?: (options: RenderPagesFallbackOptions) => Promise<Response | null>;
+  /** Renders a hybrid build's Pages Router 404 page for `pagesUrl` without matching it. */
+  renderPagesNotFound?: (request: Request, pagesUrl: string) => Promise<Response>;
   rootParamNamesByPattern?: RootParamNamesMap;
   setNavigationContext: (context: NavigationContextValue) => void;
   /** next.config `skipProxyUrlNormalize`. */
@@ -1192,6 +1194,28 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       staticParamsMap: options.staticParamsMap,
     });
     if (prerenderEndpointResponse) return prerenderEndpointResponse;
+  }
+
+  if (
+    url.pathname === VINEXT_PRERENDER_NOT_FOUND_PATH &&
+    url.searchParams.get("router") === "pages" &&
+    process.env.VINEXT_PRERENDER === "1" &&
+    options.renderPagesNotFound
+  ) {
+    // Like `next build`, which in a hybrid build still prerenders the Pages
+    // Router's `/404` from `pages/404` or `_error` on its own (and fails on
+    // its error), render it without routing.
+    setFrameworkRequestRoute("/404", false);
+    const renderPagesNotFound = options.renderPagesNotFound;
+    const { renderPagesPrerenderNotFound } = await import("./pages-prerender-not-found.js");
+    const response = await renderPagesPrerenderNotFound(
+      request,
+      options.i18nConfig,
+      (renderRequest, renderPath) =>
+        runOutsideWorkStoreScope(() => renderPagesNotFound(renderRequest, renderPath)),
+    );
+    options.clearRequestContext();
+    return withUnmatchedRouteCacheControl(response);
   }
 
   // Only its unprefixed form, the one the prerender server's secret gate checks.
