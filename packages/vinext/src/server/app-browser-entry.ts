@@ -1702,7 +1702,7 @@ function restorePopstateScrollPosition(
 
   if (!(state && typeof state === "object" && "__vinext_scrollY" in state)) {
     if (window.location.hash) {
-      scrollToHashTargetOnNextFrame(window.location.hash);
+      scrollToHashTargetOnNextFrame(window.location.hash, shouldContinue);
     }
     return;
   }

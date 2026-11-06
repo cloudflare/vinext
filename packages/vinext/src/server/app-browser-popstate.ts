@@ -116,7 +116,11 @@ export function createPopstateRestoreHandler(
 
     void pendingNavigation.finally(() => {
       if (shouldRestoreScrollForNavigation() && !shouldRestoreSavedScroll) {
-        deps.restorePopstateScrollPosition(event.state);
+        // A refresh released after the traversal can redirect before the hash
+        // scroll's frame, so the deferred scroll checks again.
+        deps.restorePopstateScrollPosition(event.state, {
+          shouldContinue: shouldRestoreScrollForNavigation,
+        });
       }
 
       if (deps.getPendingNavigation() === pendingNavigation) {

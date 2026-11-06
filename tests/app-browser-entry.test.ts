@@ -8957,6 +8957,47 @@ describe("createPopstateRestoreHandler", () => {
     navigation.resolve();
   });
 
+  it("guards the deferred restore without a saved position by the traversal", async () => {
+    const navigation = createDeferred();
+    let activeNavigationId = 0;
+    let latestNonRefreshNavigationId = 0;
+    let shouldContinue: (() => boolean) | undefined;
+
+    stubWindow("https://example.com/feed#comments");
+    window.__VINEXT_RSC_PENDING__ = null;
+
+    const handler = createPopstateRestoreHandler({
+      getActiveNavigationId: () => activeNavigationId,
+      getNavigate: () => {
+        activeNavigationId += 1;
+        latestNonRefreshNavigationId = activeNavigationId;
+        return () => navigation.promise;
+      },
+      getPendingNavigation: () => window.__VINEXT_RSC_PENDING__,
+      isLatestNonRefreshNavigation: (navId) => navId === latestNonRefreshNavigationId,
+      notifyAppRouterTransitionStart: () => {},
+      restorePopstateScrollPosition: (_scrollState, options) => {
+        shouldContinue = options?.shouldContinue;
+      },
+      setPendingNavigation: (pendingNavigation) => {
+        window.__VINEXT_RSC_PENDING__ = pendingNavigation;
+      },
+      shouldSkipScrollRestore: () => false,
+    });
+
+    handler({ state: null } as PopStateEvent);
+    navigation.resolve();
+    // The refresh queued behind the traversal starts as it settles.
+    activeNavigationId += 1;
+    await navigation.promise;
+    await Promise.resolve();
+
+    expect(shouldContinue?.()).toBe(true);
+    // The refresh redirects: the hash scroll's frame must not run.
+    latestNonRefreshNavigationId = activeNavigationId;
+    expect(shouldContinue?.()).toBe(false);
+  });
+
   it("clears __VINEXT_RSC_PENDING__ when a stale popstate navigation settles", async () => {
     const restoreCalls: unknown[] = [];
     const navigation = createDeferred();
