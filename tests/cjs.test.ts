@@ -79,6 +79,12 @@ describe("CJS interop (App Router)", () => {
     expect(visibleTextByTestId(html, "cjs-mixed-esm")).toBe("esm");
   });
 
+  it("does not load require() in a branch the NEXT_RUNTIME define makes dead", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/cjs/dead-require");
+    expect(res.status).toBe(200);
+    expect(visibleTextByTestId(html, "cjs-dead-require")).toBe("nodejs");
+  });
+
   it("renders page that uses CJS require('server-only')", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/cjs/server-only");
     expect(res.status).toBe(200);
