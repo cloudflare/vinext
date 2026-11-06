@@ -48,6 +48,8 @@ const CACHE_METADATA_BINDING = "CACHE_METADATA";
 const CACHE_METADATA_CLASS = "CacheMetadata";
 const CACHE_METADATA_EXPORT = { type: "durable-object", storage: "sqlite" } as const;
 const CTX_EXPORTS_DEFAULT_DATE = "2025-11-17";
+// Workers enables nodejs_compat by default from this compatibility date.
+const NODEJS_COMPAT_DEFAULT_DATE = "2026-08-04";
 
 export type CloudflarePlatformSetupContext = {
   root: string;
@@ -489,7 +491,6 @@ function generateTypedCloudflareConfig(
   worker: {
     name: ${JSON.stringify(responseStoreName)},
     compatibilityDate: ${JSON.stringify(today)},
-    compatibilityFlags: ["nodejs_compat"],
   },
   bucket: ${JSON.stringify(bucket)},
 });
@@ -535,7 +536,6 @@ ${shared}export default defineConfig({
     ${cacheSpread ? `...${cacheSpread},\n    ` : ""}name: ${JSON.stringify(info.projectName)},
     entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
     compatibilityDate: ${JSON.stringify(today)},
-    compatibilityFlags: ["nodejs_compat"],
     assets: {
       ${assetLines.join(",\n      ")},
     },
@@ -607,7 +607,6 @@ export function generateWranglerConfig(
     $schema: "node_modules/wrangler/config-schema.json",
     name: info.projectName,
     compatibility_date: today,
-    compatibility_flags: ["nodejs_compat"],
     main: workerEntry,
     assets: {
       directory: "dist/client",
@@ -1220,7 +1219,10 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
     typeof appConfig.compatibility_date === "string"
       ? appConfig.compatibility_date
       : new Date().toISOString().split("T")[0];
-  const compatibilityFlags = ["nodejs_compat"];
+  const compatibilityFlags: string[] = [];
+  if (compatibilityDate < NODEJS_COMPAT_DEFAULT_DATE) {
+    compatibilityFlags.push("nodejs_compat");
+  }
   if (compatibilityDate < CTX_EXPORTS_DEFAULT_DATE) {
     compatibilityFlags.push("enable_ctx_exports");
   }
@@ -1230,7 +1232,7 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
       name: serviceName,
       main: RESPONSE_STORE_MAIN,
       compatibility_date: compatibilityDate,
-      compatibility_flags: compatibilityFlags,
+      ...(compatibilityFlags.length > 0 ? { compatibility_flags: compatibilityFlags } : {}),
       workers_dev: false,
       preview_urls: false,
       cache: { enabled: false },
