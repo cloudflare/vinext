@@ -168,7 +168,3 @@ allowBuilds:
   # @sentry/nextjs pulls in @sentry/cli for source-map upload tooling. The
   # tests only exercise the runtime SDK, so the CLI postinstall is unnecessary.
   "@sentry/cli": false
-
-minimumReleaseAgeExclude:
-  - "@voidzero-dev/*"
-  - vite-plus
