@@ -3,6 +3,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-p
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
 import {
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import {
   tagAppPageLayoutError,
   tagAppPageSlotError,
 } from "../packages/vinext/src/server/app-page-execution.js";
@@ -61,15 +68,10 @@ import {
   markRenderRequestApiUsage,
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
+import { PRERENDER_BINDINGS_UNAVAILABLE_KEY } from "../packages/vinext/src/server/prerender-bindings-unavailable.js";
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
-import {
-  VINEXT_DYNAMIC_STALE_TIME_HEADER,
-  VINEXT_INTERCEPTION_ID_HEADER,
-  VINEXT_MOUNTED_LAYOUTS_HEADER,
-  VINEXT_RSC_REDIRECT_HEADER,
-} from "../packages/vinext/src/server/headers.js";
 import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import {
   createWorkerCacheabilityAdmissionContext,
@@ -1243,6 +1245,85 @@ describe("app page dispatch", () => {
     expect(buildPageElement.mock.calls[0]?.[4]).toMatchObject({
       serveStreamingMetadata: false,
     });
+  });
+
+  it("marks the error page of a prerender whose page fails to build", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const renderErrorPage = (
+      isStaticGenerationEdgeRuntime?: boolean,
+      usesDynamicApi = false,
+      buildError: unknown = new Error("build failed"),
+    ) => {
+      const { options } = createDispatchOptions({
+        buildPageElement: async () => {
+          if (usesDynamicApi) markDynamicUsage();
+          throw buildError;
+        },
+        isStaticGenerationEdgeRuntime,
+      });
+      options.renderErrorBoundaryPage = vi.fn(async () => new Response("error", { status: 500 }));
+      return dispatchAppPage(options);
+    };
+
+    const response = await renderErrorPage();
+    expect(response.status).toBe(500);
+    expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    // Next.js doesn't prerender an edge runtime page.
+    const edgeResponse = await renderErrorPage(true);
+    expect(edgeResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    // Nor a binding the prerender can't provide.
+    const bindingError = new Error("Cloudflare bindings are unavailable");
+    Object.defineProperty(bindingError, Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY), {
+      value: true,
+    });
+    const bindingResponse = await renderErrorPage(false, false, bindingError);
+    expect(bindingResponse.status).toBe(500);
+    expect(bindingResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    // Nor a page that turned dynamic before it failed. Last, since the dynamic
+    // usage outlives this render.
+    const dynamicResponse = await renderErrorPage(false, true);
+    expect(dynamicResponse.status).toBe(500);
+    expect(dynamicResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
+  it("fails a prerendered page's build on the errors of the fallback answering its signal", async () => {
+    const renderFallback = async (isStaticGenerationEdgeRuntime?: boolean) => {
+      const { options } = createDispatchOptions({
+        buildPageElement: async () => {
+          throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+            digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+          });
+        },
+        isStaticGenerationEdgeRuntime,
+      });
+      const renderHttpAccessFallbackPage = vi.fn<DispatchOptions["renderHttpAccessFallbackPage"]>(
+        async () => new Response("<html>not found</html>", { status: 404 }),
+      );
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+      const response = await dispatchAppPage(options);
+      expect(response.status).toBe(404);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledTimes(1);
+      return renderHttpAccessFallbackPage.mock.calls[0]?.[1];
+    };
+
+    // A runtime render tracks nothing.
+    expect(await renderFallback()).not.toHaveProperty("tracksPrerenderRenderErrors");
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    expect(await renderFallback()).toMatchObject({ tracksPrerenderRenderErrors: true });
+    // Next.js doesn't prerender an edge runtime page.
+    expect(await renderFallback(true)).not.toHaveProperty("tracksPrerenderRenderErrors");
+  });
+
+  it("doesn't mark the error page of a runtime render whose page fails to build", async () => {
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => {
+        throw new Error("build failed");
+      },
+    });
+    options.renderErrorBoundaryPage = vi.fn(async () => new Response("error", { status: 500 }));
+    const response = await dispatchAppPage(options);
+    expect(response.status).toBe(500);
+    expect(response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 
   it("preserves request-time metadata placement for PPR fallback-shell prerenders", async () => {

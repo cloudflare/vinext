@@ -139,10 +139,11 @@ type RunPrerenderOptions = {
  */
 /**
  * Throw if any route is a `fatal` error (a thrown generateStaticParams /
- * getStaticPaths). These fail the build in ALL modes — default included —
- * matching `next build`, unlike intentionally-skipped dynamic/SSR routes and
- * non-fatal errors (e.g. transport failures), which only fail under
- * `output: 'export'`. Exported for direct unit testing. Refs cloudflare/vinext#1982
+ * getStaticPaths, or a render error). These fail the build in ALL modes —
+ * default included — matching `next build`, unlike intentionally-skipped
+ * dynamic/SSR routes and non-fatal errors (e.g. transport failures), which
+ * only fail under `output: 'export'`. Exported for direct unit testing. Refs
+ * cloudflare/vinext#1982
  */
 export function assertNoFatalPrerenderRoutes(routes: readonly PrerenderRouteResult[]): void {
   const fatalRoutes = routes.filter(
@@ -386,15 +387,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     progress.finish(rendered, skipped, errors);
   }
 
-  // A thrown generateStaticParams/getStaticPaths is a fatal build error in ANY
-  // mode (default included), matching Next.js — unlike intentionally-skipped
-  // dynamic/SSR routes. These are flagged `fatal` by prerenderApp/prerenderPages.
-  // Refs cloudflare/vinext#1982
-  assertNoFatalPrerenderRoutes(allRoutes);
-
   // In export mode, any error route means the build should fail — the app
-  // contains dynamic functionality that cannot be statically exported.
-  if (mode === "export" && errors > 0) {
+  // contains dynamic functionality that cannot be statically exported. When
+  // every error is fatal, the fatal check below reports them instead.
+  if (mode === "export" && allRoutes.some((r) => r.status === "error" && r.fatal !== true)) {
     const errorRoutes = allRoutes
       .filter((r): r is Extract<typeof r, { status: "error" }> => r.status === "error")
       .map((r) => `  ${r.route}: ${r.error}`)
@@ -405,6 +401,12 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         `or remove \`output: "export"\` from next.config.js.`,
     );
   }
+
+  // A thrown generateStaticParams/getStaticPaths, or a render error, fails the
+  // build in the default mode too, matching Next.js — unlike intentionally
+  // skipped dynamic/SSR routes. These are flagged `fatal` by
+  // prerenderApp/prerenderPages. Refs cloudflare/vinext#1982
+  assertNoFatalPrerenderRoutes(allRoutes);
 
   injectPregeneratedConcretePaths(root, rscBundlePath, manifestDir, [configuredRscServerDir]);
   if (fs.existsSync(rscBundlePath)) {

@@ -86,6 +86,10 @@ import {
   applyPrerenderCacheLifeHeader,
   applyPrerenderCacheTagsHeader,
 } from "./prerender-cache-life-header.js";
+import {
+  bufferPrerenderResponse,
+  createPrerenderRenderErrorTracker,
+} from "./prerender-render-error.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
@@ -739,8 +743,25 @@ async function renderAppPageLifecycleImpl(
     options.pprFallbackShellSignal === undefined
       ? getAppPageLayoutGate(options.element)
       : null;
+  // As in `next build`, a prerender of a route Next.js prerenders fails the
+  // build when its render reports an error, unless the render turned dynamic.
+  // A fallback shell's own abort ends its render on purpose.
+  // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
+  // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
+  const prerenderRenderErrors = createPrerenderRenderErrorTracker(
+    () =>
+      options.isPrerender === true &&
+      options.isStaticEligible &&
+      options.pprFallbackShellSignal?.aborted !== true,
+  );
+  const finalizePrerenderRenderError = (
+    response: Response,
+    // Peeks, so the read leaves the render's later dynamic-usage checks as they were.
+    isDynamic: () => boolean = () => dynamicUsageObserved || peekRenderDynamicUsage(),
+  ): Response => prerenderRenderErrors.finalize(response, isDynamic);
   const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
     if (renderSpan) recordAppPageRenderError(renderSpan, error);
+    prerenderRenderErrors.note(error);
     return baseOnError(error, requestInfo, errorContext);
   });
   // Defensive wrap for standalone callers. In the normal dispatch path this is
@@ -1101,8 +1122,12 @@ async function renderAppPageLifecycleImpl(
             options.consumeInvalidDynamicUsageError,
           )
         : completionResponse;
+    const rscResponseToFinalize =
+      options.isPrerender === true && devRscResponse.body
+        ? finalizePrerenderRenderError(await bufferPrerenderResponse(devRscResponse))
+        : devRscResponse;
 
-    return finalizeAppPageRscCacheResponse(devRscResponse, {
+    return finalizeAppPageRscCacheResponse(rscResponseToFinalize, {
       capturedRscDataPromise:
         options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
       bypassInterceptionContextCache: options.bypassInterceptionContextCache,
@@ -1479,6 +1504,7 @@ async function renderAppPageLifecycleImpl(
       );
       const onSsrError: AppPageBoundaryOnError = (error, requestInfo, errorContext) => {
         if (renderSpan) recordAppPageRenderError(renderSpan, error);
+        prerenderRenderErrors.note(error);
         return baseOnSsrError(error, requestInfo, errorContext);
       };
       return renderAppPageHtmlStream({
@@ -1597,11 +1623,11 @@ async function renderAppPageLifecycleImpl(
         htmlRender.response,
         shellSpecialError,
         prerenderedSpecialError,
-      );
+      ).then((response) => finalizePrerenderRenderError(response));
     }
     const response = applyIneligibleRouteCachePolicy(htmlRender.response, options);
     if (shellSpecialError) markPrerenderedDynamicShellSpecialError(response, shellSpecialError);
-    return response;
+    return finalizePrerenderRenderError(response);
   }
   let htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {
@@ -1706,7 +1732,7 @@ async function renderAppPageLifecycleImpl(
       timing: htmlResponseTiming,
     });
     applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
-    return response;
+    return finalizePrerenderRenderError(response, () => dynamicUsedDuringRender);
   }
 
   if (shouldWriteHtmlCache) {
@@ -1722,7 +1748,7 @@ async function renderAppPageLifecycleImpl(
     });
 
     if (options.isPrerender === true) {
-      return isrResponse;
+      return finalizePrerenderRenderError(isrResponse, () => dynamicUsedDuringRender);
     }
 
     return finalizeHtmlCacheWrite(isrResponse, {
@@ -1742,6 +1768,8 @@ async function renderAppPageLifecycleImpl(
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
   });
+  // Marks the response in place.
+  finalizePrerenderRenderError(response, () => dynamicUsedDuringRender);
   return finalizeAppPageCacheabilityEvaluationResponse(response, {
     capturedDynamicUsageBeforeContextCleanup() {
       return dynamicUsedBeforeContextCleanup;

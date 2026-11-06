@@ -15,6 +15,7 @@ import {
   getDraftModeCookieHeader,
   getHeadersContext,
   isDraftModeRequest,
+  isRenderDynamicLatched,
   peekDynamicUsage,
   peekRenderRequestApiUsage,
   runWithConnectionProbe,
@@ -108,6 +109,10 @@ import {
 } from "./headers.js";
 import { parseMountedLayoutsHeader } from "./app-mounted-layouts.js";
 import { buildAppPageTags } from "./implicit-tags.js";
+import {
+  isPrerenderBuildFailingError,
+  markPrerenderRenderError,
+} from "./prerender-render-error.js";
 import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
 import {
   coalesceOnDemandResponse,
@@ -470,6 +475,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
       matchedParams: AppPageParams;
       /** The route's render threw the signal, so the document keeps the route's head. */
       routeHead?: AppPageFallbackRouteHead;
+      /** The page whose signal it answers fails its prerender on the fallback's errors. */
+      tracksPrerenderRenderErrors?: boolean;
     },
     middlewareContext: AppPageMiddlewareContext | null,
   ) => Promise<Response | null>;
@@ -785,6 +792,21 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     if (patternDynamicReason) markRouteCacheabilityPatternDynamic(patternDynamicReason);
   }
   const isPrerender = process.env.VINEXT_PRERENDER === "1";
+  // As in `next build`, an error the not-found, forbidden or unauthorized page
+  // reports while it answers the signal of a page Next.js prerenders fails
+  // that page's prerender.
+  if (isPrerender && isStaticEligible) {
+    const renderHttpAccessFallbackPage = options.renderHttpAccessFallbackPage;
+    options = {
+      ...options,
+      renderHttpAccessFallbackPage: (statusCode, opts, middlewareContext) =>
+        renderHttpAccessFallbackPage(
+          statusCode,
+          { ...opts, tracksPrerenderRenderErrors: true },
+          middlewareContext,
+        ),
+    };
+  }
   let traceOperation: "prerender" | "render" = isPrerender ? "prerender" : "render";
   const serveStreamingMetadata = shouldServeStreamingMetadata(
     options.request.headers.get("user-agent") ?? "",
@@ -1476,8 +1498,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           },
         );
       },
-      renderErrorBoundaryPage(buildError) {
-        return options.renderErrorBoundaryPage(buildError);
+      async renderErrorBoundaryPage(buildError) {
+        // As in `next build`, an error building a page Next.js prerenders fails
+        // its prerender, unless the page turned dynamic first.
+        const failsPrerender =
+          isPrerender &&
+          isStaticEligible &&
+          isPrerenderBuildFailingError(buildError) &&
+          !peekDynamicUsage() &&
+          !isRenderDynamicLatched();
+        const response = await options.renderErrorBoundaryPage(buildError);
+        return response && failsPrerender ? markPrerenderRenderError(response) : response;
       },
       renderSpecialError(specialError) {
         return renderPageSpecialError(

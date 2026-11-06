@@ -1,4 +1,5 @@
 import { unstable_cache } from "next/cache";
+import { headers } from "next/headers";
 import { recordPrivateExecution } from "./state";
 
 async function readPrivateValue() {
@@ -12,5 +13,7 @@ const readSharedValue = unstable_cache(
 );
 
 export default async function PrivateInUnstableCachePage() {
+  // Keeps the page out of the prerender, whose build the error would fail.
+  await headers();
   return <p>{await readSharedValue()}</p>;
 }

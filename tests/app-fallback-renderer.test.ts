@@ -9,6 +9,7 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { VINEXT_PRERENDER_RENDER_ERROR_HEADER } from "../packages/vinext/src/server/headers.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -443,6 +444,36 @@ describe("app fallback renderer factory", () => {
     expect(html).toContain('data-layout="override"');
     expect(html).not.toContain("data-params-slug");
     expect(html).toContain('data-boundary="not-found"');
+  });
+
+  it("passes the prerender's render error tracking to a matched route's fallback", async () => {
+    const { renderer } = createRenderer({
+      rscRenderer(element, options) {
+        options.onError(new Error("boom"), undefined, undefined);
+        return renderElementToStream(element);
+      },
+    });
+    const renderNotFound = (tracksPrerenderRenderErrors?: boolean) =>
+      renderer.renderHttpAccessFallback(
+        { notFound: notFoundModule, params: {}, pattern: "/posts" },
+        404,
+        false,
+        new Request("https://example.com/posts"),
+        { tracksPrerenderRenderErrors },
+        undefined,
+        { headers: null, status: null },
+      );
+
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      const tracked = await renderNotFound(true);
+      expect(tracked?.status).toBe(404);
+      expect(tracked?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      const untracked = await renderNotFound();
+      expect(untracked?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

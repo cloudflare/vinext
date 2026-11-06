@@ -15,6 +15,7 @@
 import type { ComponentType, ReactNode } from "react";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
+import { isUnknownRecord } from "../utils/record.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { extractLocaleFromUrl, markLocaleRedirect, resolvePagesI18nRequest } from "./pages-i18n.js";
@@ -92,8 +93,12 @@ import {
   NEXTJS_CACHE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_CACHE_HEADER,
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "./headers.js";
+import { isPrerenderBindingsUnavailableError } from "./prerender-bindings-unavailable.js";
+import { isEdgeApiRuntime } from "./edge-api-runtime.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { pagesPathCacheTag } from "./pages-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -427,6 +432,27 @@ function buildI18nRenderContext(
     defaultLocale: currentDefaultLocale,
     domainLocales,
   };
+}
+
+// Next.js resolves a page's runtime as `runtime ?? config.runtime`.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/build/analysis/get-page-static-info.ts
+function getPagesPageRuntime(pageModule: object): string | undefined {
+  const config: unknown = Reflect.get(pageModule, "config");
+  const runtime: unknown =
+    Reflect.get(pageModule, "runtime") ?? (isUnknownRecord(config) ? config.runtime : undefined);
+  return typeof runtime === "string" ? runtime : undefined;
+}
+
+// Like Next.js's hasCustomGetInitialProps, for any component type, such as a
+// `React.memo()` one: `next/error`'s own getInitialProps doesn't count.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/build/utils.ts
+function hasCustomGetInitialProps(component: unknown): boolean {
+  if (typeof component !== "function" && (typeof component !== "object" || component === null)) {
+    return false;
+  }
+  return (
+    Reflect.get(component, "getInitialProps") !== Reflect.get(component, "origGetInitialProps")
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1455,9 +1481,35 @@ export function createPagesPageHandler(
       } catch (e) {
         await reportSsrError(e);
 
+        // As in `next build`, a page that throws while prerendering fails the
+        // build. Next.js doesn't prerender a getServerSideProps,
+        // getInitialProps or edge runtime page, nor a 404 rendered by an
+        // `_error` with its own getInitialProps, and a binding the prerender
+        // can't provide doesn't fail it. An error or 404 page rendered for
+        // another page leaves the decision to that page.
+        const hasPageInitialProps = isRouteMissErrorRender
+          ? hasCustomGetInitialProps(pageModule.default)
+          : pagesReadiness.gip === true;
+        const failsPrerender =
+          process.env.VINEXT_PRERENDER === "1" &&
+          options?.__forcedRoute === undefined &&
+          pagesReadiness.gssp !== true &&
+          (isStaticPropsRoute || (!hasPageInitialProps && pagesReadiness.appGip !== true)) &&
+          !isEdgeApiRuntime(getPagesPageRuntime(pageModule)) &&
+          !isPrerenderBindingsUnavailableError(e);
+        const answerError = (response: Response): Response => {
+          if (failsPrerender) {
+            response.headers.set(
+              VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+              isRouteMissErrorRender ? VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR : "1",
+            );
+          }
+          return response;
+        };
+
         // Next.js keeps a response `_app` or `_document` already sent for a
         // getStaticProps page and only reports the error.
-        if (sendsEarly && pageResponseSent()) return sentResponse;
+        if (sendsEarly && pageResponseSent()) return answerError(await sentResponse);
 
         // Data requests can't render HTML; avoid recursion if already rendering
         // the error page. Mirrors Next.js base-server.ts: render /500 or _error
@@ -1476,7 +1528,7 @@ export function createPagesPageHandler(
           }
           if (errorRoute) {
             try {
-              return await renderPage(
+              const errorPageResponse = await renderPage(
                 request,
                 url,
                 manifest,
@@ -1491,12 +1543,13 @@ export function createPagesPageHandler(
                 },
                 initialResponseHeaders,
               );
+              return answerError(errorPageResponse);
             } catch (errorPageErr) {
               console.error("[vinext] Error page render failed:", errorPageErr);
             }
           }
         }
-        return new Response("Internal Server Error", { status: 500 });
+        return answerError(new Response("Internal Server Error", { status: 500 }));
       }
     });
     if (!sendsEarly) return closeAfterResponseWithBody(await rendering, uCtx);
@@ -1514,13 +1567,14 @@ export function createPagesPageHandler(
     }
     if (!settled.rendered) {
       // The render settles into this same sent response; let it finish
-      // storing the entry without holding the visitor's response.
-      getRequestExecutionContext()?.waitUntil(
-        rendering.then(
-          () => undefined,
-          () => undefined,
-        ),
+      // storing the entry without holding the visitor's response. A prerender
+      // waits for it, so a render error still fails the build.
+      const settling = rendering.then(
+        () => undefined,
+        () => undefined,
       );
+      if (process.env.VINEXT_PRERENDER === "1") await settling;
+      else getRequestExecutionContext()?.waitUntil(settling);
     }
     return closeAfterResponseWithBody(settled.response, uCtx);
   }

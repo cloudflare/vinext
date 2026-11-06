@@ -555,6 +555,7 @@ describe("renderPagesFallback", () => {
             ["content-length", "999"],
             ["set-cookie", "session=stale; Path=/"],
             ["x-middleware-response", "present"],
+            ["x-vinext-prerender-render-error", "1"],
           ]),
           requestHeaders: null,
           status: null,
@@ -569,6 +570,8 @@ describe("renderPagesFallback", () => {
     );
 
     expect(response?.headers.get("x-middleware-response")).toBe("present");
+    // Middleware can't forge vinext's prerender render error marker.
+    expect(response?.headers.has("x-vinext-prerender-render-error")).toBe(false);
     expect(response?.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
