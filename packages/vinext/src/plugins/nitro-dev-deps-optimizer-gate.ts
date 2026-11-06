@@ -10,6 +10,10 @@ import type { Plugin } from "vite";
  * imports resolve against empty optimizer metadata and load a second copy of
  * React next to the pre-bundled renderer ("Invalid hook call"). Vite caches
  * those transforms, so every later request fails the same way.
+ *
+ * Nothing may await a server-environment transform before `listen()`, or
+ * startup waits forever. Middleware mode has no `httpServer`, so it is never
+ * gated, and a server that never listens never receives a request either.
  */
 export function createNitroDevDepsOptimizerGatePlugin(isNitro: () => boolean): Plugin {
   let listening: Promise<void> | undefined;
