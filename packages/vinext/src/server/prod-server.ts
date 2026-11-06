@@ -43,6 +43,8 @@ import {
   isImageSourceBodyStatus,
   IMAGE_TYPE_NOT_ALLOWED_MESSAGE,
   isSafeImageContentType,
+  detectImageContentType,
+  IMAGE_DETECTION_LENGTH,
   sourceImageCacheControl,
   readImageOptimizationSignal,
   DEFAULT_DEVICE_SIZES,
@@ -781,6 +783,39 @@ function withImageSourceCacheControl(
       config,
     ),
   };
+}
+
+/**
+ * The type of the file the static cache serves for an image source, from its
+ * first bytes as the image endpoint types every source rather than by its
+ * name, or undefined when the cache has no such file.
+ */
+async function detectStaticImageContentType(
+  cache: StaticFileCache,
+  pathname: string,
+): Promise<string | null | undefined> {
+  const lookupPath = staticCacheLookupPath(pathname);
+  const entry = lookupPath === null ? undefined : cache.lookup(lookupPath);
+  if (!entry) return undefined;
+  const { buffer, headers, path, size } = entry.original;
+  const label = headers["Content-Type"] ?? null;
+  if (buffer) {
+    return detectImageContentType(buffer.subarray(0, IMAGE_DETECTION_LENGTH), label, size);
+  }
+  const file = await fsp.open(path, "r");
+  try {
+    const bytes = new Uint8Array(IMAGE_DETECTION_LENGTH);
+    // A read can return fewer bytes than asked for before the end of the file.
+    let bytesRead = 0;
+    while (bytesRead < IMAGE_DETECTION_LENGTH) {
+      const read = await file.read(bytes, bytesRead, IMAGE_DETECTION_LENGTH - bytesRead, bytesRead);
+      if (read.bytesRead === 0) break;
+      bytesRead += read.bytesRead;
+    }
+    return detectImageContentType(bytes.subarray(0, bytesRead), label, size);
+  } finally {
+    await file.close();
+  }
 }
 
 /**
@@ -2047,12 +2082,23 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
     };
     // A public file passes the Cache-Control its pipeline staged, or null; a
-    // build asset passes undefined.
-    const serveSource = (
+    // build asset passes undefined. Past the extension check above, the file's
+    // bytes decide the type served, as Next.js types every source.
+    const serveSource = async (
       sourcePath: string,
       publicFileCacheControl?: string | null,
-    ): Promise<boolean> =>
-      tryServeStatic(
+    ): Promise<boolean> => {
+      const contentType = await detectStaticImageContentType(staticCache, sourcePath);
+      if (contentType === undefined) return false;
+      if (contentType === null) {
+        sendBadRequest(INVALID_IMAGE_SOURCE_MESSAGE);
+        return true;
+      }
+      if (!isSafeImageContentType(contentType, imageConfig?.dangerouslyAllowSVG)) {
+        sendUnsafeContentType();
+        return true;
+      }
+      return tryServeStatic(
         req,
         res,
         clientDir,
@@ -2061,8 +2107,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         staticCache,
         withImageSourceCacheControl(imageSecurityHeaders, publicFileCacheControl, imageConfig),
         undefined,
-        IMAGE_REPRESENTATION_HEADERS,
+        { ...IMAGE_REPRESENTATION_HEADERS, "Content-Type": contentType },
       );
+    };
 
     // Serve the source only as an anonymous direct request would receive it.
     // Build assets bypass middleware there too.
@@ -3000,12 +3047,25 @@ async function createPagesRouterRequestHandler(
                 pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
             };
             // A public file passes the Cache-Control its pipeline staged, or
-            // null; a build asset passes undefined.
-            const serveSource = (
+            // null; a build asset passes undefined. Past the extension check
+            // above, the file's bytes decide the type served, as Next.js types
+            // every source.
+            const serveSource = async (
               sourcePath: string,
               publicFileCacheControl?: string | null,
-            ): Promise<boolean> =>
-              tryServeStatic(
+            ): Promise<boolean> => {
+              const contentType = await detectStaticImageContentType(staticCache, sourcePath);
+              if (contentType === undefined) return false;
+              if (contentType === null) {
+                res.writeHead(400);
+                res.end(INVALID_IMAGE_SOURCE_MESSAGE);
+                return true;
+              }
+              if (!isSafeImageContentType(contentType, pagesImageConfig?.dangerouslyAllowSVG)) {
+                sendUnsafeContentType();
+                return true;
+              }
+              return tryServeStatic(
                 req,
                 res,
                 clientDir,
@@ -3018,8 +3078,9 @@ async function createPagesRouterRequestHandler(
                   pagesImageConfig,
                 ),
                 undefined,
-                IMAGE_REPRESENTATION_HEADERS,
+                { ...IMAGE_REPRESENTATION_HEADERS, "Content-Type": contentType },
               );
+            };
 
             // Serve the source only as an anonymous direct request would
             // receive it. Build assets bypass middleware there too.

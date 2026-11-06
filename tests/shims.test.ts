@@ -30762,7 +30762,8 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(fetchCount).toBe(2);
     expect(response.status).toBe(400);
-    expect(await response.text()).toBe('"url" parameter is valid but image type is not allowed');
+    // Like Next.js, markup is no image at all.
+    expect(await response.text()).toBe("The requested resource isn't a valid image.");
   });
 
   it("returns 400 for backslash open redirect (/\\evil.com)", async () => {
