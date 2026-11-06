@@ -131,6 +131,7 @@ import {
   type CacheabilityManifest,
   type CacheabilityRepresentation,
 } from "./cacheability-manifest.js";
+import { NEVER_CACHE_CONTROL } from "./cache-control.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { traceResponseStart } from "./response-start-tracing.js";
 import { getFrameworkLinkHeader } from "./app-response-header-provenance.js";
@@ -1470,6 +1471,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return interceptResult.response;
   }
 
+  // Whether building the page threw an error that fails its render.
+  let pageBuildFailed = false;
   const buildCurrentPageElement = () =>
     buildAppPageElement({
       buildPageElement() {
@@ -1501,15 +1504,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       },
       async renderErrorBoundaryPage(buildError) {
         // As in `next build`, an error building a page Next.js prerenders fails
-        // its prerender, unless the page turned dynamic first.
-        const failsPrerender =
-          isPrerender &&
-          isStaticEligible &&
-          isPrerenderBuildFailingError(buildError) &&
-          !peekDynamicUsage() &&
-          !isRenderDynamicLatched();
+        // its prerender, unless the page turned dynamic first. It fails an
+        // on-demand revalidation too, whose page without PPR Next.js fails
+        // anyway once it turned dynamic.
+        const failsBuild = isStaticEligible && isPrerenderBuildFailingError(buildError);
+        const turnedDynamic = peekDynamicUsage() || isRenderDynamicLatched();
+        pageBuildFailed = failsBuild && (options.pprRuntime === undefined || !turnedDynamic);
         const response = await options.renderErrorBoundaryPage(buildError);
-        return response && failsPrerender ? markPrerenderRenderError(response) : response;
+        return response && isPrerender && failsBuild && !turnedDynamic
+          ? markPrerenderRenderError(response)
+          : response;
       },
       renderSpecialError(specialError) {
         return renderPageSpecialError(
@@ -1555,6 +1559,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // Next.js's ResponseCache awaits an on-demand revalidation's writes before
   // it answers, so `await res.revalidate()` resolves once the entry is stored.
   const onDemandCacheWrites: Promise<void>[] | null = isOnDemandRevalidate ? [] : null;
+  const renderFailedRef: { value: (() => boolean) | null } = { value: null };
 
   const lifecycleOptions: Parameters<typeof renderAppPageLifecycle>[0] = {
     basePath: options.basePath,
@@ -1662,29 +1667,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     renderToReadableStream: options.renderToReadableStream,
     prerenderToReadableStream: options.prerenderToReadableStream,
     routePattern: route.pattern,
+    renderFailedRef,
     scriptNonce: options.scriptNonce,
     waitUntil(cachePromise) {
       onDemandCacheWrites?.push(cachePromise);
       getRequestExecutionContext()?.waitUntil(cachePromise);
     },
   };
-  const renderResponse = async () => {
-    const response = await renderAppPageLifecycle(lifecycleOptions);
-    // Each write reads its own branch of the render's streams, so it completes
-    // while the response's branch stays unread.
-    if (onDemandCacheWrites) await Promise.all(onDemandCacheWrites);
-    return response;
-  };
-  // Concurrent on-demand revalidations of one stored entry share a single
-  // render, as Next.js batches ResponseCache work by its key and
-  // isOnDemandRevalidate. A mounted-slots RSC variant is never stored.
-  if (
-    isOnDemandRevalidate &&
-    isStoredRender &&
-    isStaticEligible &&
-    !(options.isRscRequest && options.mountedSlotsHeader)
-  ) {
-    const cacheKey = options.isRscRequest
+  // The entry an on-demand revalidation of this request writes.
+  const onDemandCacheKey = () =>
+    options.isRscRequest
       ? options.isrRscKey(
           options.cleanPathname,
           null,
@@ -1693,8 +1685,107 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           interceptionId,
         )
       : options.isrHtmlKey(options.cleanPathname);
+  // The entries a failed on-demand revalidation re-stores: its own, and the
+  // other half of the page's entry when its render may write both. A variant's
+  // RSC payload, such as a prefetch shell or an interception, never writes
+  // the page's document, nor does a PPR route's RSC render.
+  const onDemandRestoreKeys = (): string[] => {
+    if (!options.isRscRequest) {
+      return [
+        onDemandCacheKey(),
+        options.isrRscKey(
+          options.cleanPathname,
+          null,
+          undefined,
+          options.interceptionContext,
+          interceptionId,
+        ),
+      ];
+    }
+    const writesDocument =
+      options.pprRuntime === undefined &&
+      !options.scriptNonce &&
+      !options.interceptionContext &&
+      !interceptionId &&
+      (options.renderMode === undefined || options.renderMode === APP_RSC_RENDER_MODE_NAVIGATION);
+    return writesDocument
+      ? [onDemandCacheKey(), options.isrHtmlKey(options.cleanPathname)]
+      : [onDemandCacheKey()];
+  };
+  // An on-demand revalidation of an entry this request would store. A
+  // mounted-slots RSC variant is never stored.
+  const isStoredOnDemandRevalidate =
+    isOnDemandRevalidate &&
+    isStoredRender &&
+    isStaticEligible &&
+    !(options.isRscRequest && options.mountedSlotsHeader);
+  const renderResponse = async () => {
+    // Next.js reads the previous entry before it revalidates, so a failed
+    // revalidation re-stores that one and leaves a newer write alone
+    // (ResponseCache.handleGet).
+    const previousEntries = isStoredOnDemandRevalidate
+      ? await Promise.all(
+          onDemandRestoreKeys().map(
+            async (key) => [key, await options.isrGet(key).catch(() => null)] as const,
+          ),
+        )
+      : [];
+    // Next.js re-stores the previous entry, which holds both the document and
+    // the RSC payload, with a short revalidate, so a later request regenerates
+    // it (server/response-cache/index.ts).
+    const keepPreviousEntries = async () => {
+      if (previousEntries.length === 0) return;
+      const { keepPreviousAppPageEntry } = await import("./app-page-cache.js");
+      await Promise.all(
+        previousEntries.map(async ([key, previous]) => {
+          if (previous) await keepPreviousAppPageEntry(options, key, previous);
+        }),
+      );
+    };
+    let response: Response;
+    let body: ArrayBuffer | null;
+    try {
+      response = await renderAppPageLifecycle(lifecycleOptions);
+      // A render that skipped its writes can still report an error from its
+      // lazy streams, so it is whole only once its response has been read.
+      // The coalesced response is buffered anyway, as Next.js's ResponseCache
+      // does.
+      body = isStoredOnDemandRevalidate && response.body ? await response.arrayBuffer() : null;
+    } catch (error) {
+      // An error that ends the render, such as one its page throws while its
+      // element is prepared or one its stream fails with, fails the
+      // revalidation too.
+      await keepPreviousEntries();
+      throw error;
+    }
+    // Each write reads its own branch of the render's streams.
+    if (onDemandCacheWrites) await Promise.all(onDemandCacheWrites);
+    // As in Next.js, an on-demand revalidation whose render reported an error
+    // fails, so `res.revalidate()` throws, whether or not the render got as far
+    // as its writes. So does one whose page threw as it was built.
+    // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
+    // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
+    if (isStoredOnDemandRevalidate && (pageBuildFailed || renderFailedRef.value?.())) {
+      await keepPreviousEntries();
+      return new Response(null, {
+        status: 500,
+        headers: { "Cache-Control": NEVER_CACHE_CONTROL },
+      });
+    }
+    return body === null
+      ? response
+      : new Response(body, {
+          headers: response.headers,
+          status: response.status,
+          statusText: response.statusText,
+        });
+  };
+  // Concurrent on-demand revalidations of one stored entry share a single
+  // render, as Next.js batches ResponseCache work by its key and
+  // isOnDemandRevalidate.
+  if (isStoredOnDemandRevalidate) {
     return coalesceOnDemandResponse(
-      `${options.request.method}:${cacheKey}`,
+      `${options.request.method}:${onDemandCacheKey()}`,
       options.request.method,
       renderResponse,
     );
