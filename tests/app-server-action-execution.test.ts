@@ -156,9 +156,6 @@ function createOptions(
     cleanPathname: "/action-source",
     clearRequestContext() {},
     contentType: "multipart/form-data; boundary=vinext",
-    createServerManifest() {
-      return {};
-    },
     async decodeAction() {
       return null;
     },
@@ -187,9 +184,9 @@ function createOptions(
     ...overrides,
   };
   const decodeAction = options.decodeAction;
-  options.decodeAction = async (body, serverManifest) =>
+  options.decodeAction = async (body, extraOptions) =>
     registerTestServerReference(
-      await decodeAction(body, serverManifest),
+      await decodeAction(body, extraOptions),
       getDirectTestActionId(body),
     );
   return options;
@@ -305,9 +302,6 @@ function createRscOptions(
     },
     createRscOnErrorHandler(_request, pathname, pattern) {
       return () => `${pathname}:${pattern}`;
-    },
-    createServerManifest() {
-      return {};
     },
     createTemporaryReferenceSet() {
       return { marker: "refs" };
@@ -652,13 +646,13 @@ describe("app server action execution helpers", () => {
     }
   });
 
-  it("resolves bound server references through the route-scoped manifest", async () => {
+  it("rejects bound server references to Server Actions of another route", async () => {
     const body = new FormData();
     body.set("$ACTION_REF_1", "");
-    body.set("$ACTION_1:0", JSON.stringify({ id: "selected-action", bound: "$@1" }));
+    body.set("$ACTION_1:0", JSON.stringify({ id: "selected#action", bound: "$@1" }));
     const action = vi.fn();
     const validateActionReferences = vi.fn((actionIds: readonly string[]) =>
-      actionIds.every((actionId) => actionId === "selected-action"),
+      actionIds.every((actionId) => actionId === "selected#action"),
     );
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -666,13 +660,11 @@ describe("app server action execution helpers", () => {
       const response = requireProgressiveActionResponse(
         await handleProgressiveServerActionRequest(
           createOptions({
-            createServerManifest: () =>
-              new Proxy({}, { get: (_target, id) => ({ id, name: "", chunks: [] }) }),
-            // React resolves the action and each bound `$h` reference with
-            // `serverManifest[id]`.
-            async decodeAction(_body, serverManifest) {
-              Reflect.get(serverManifest, "selected-action");
-              Reflect.get(serverManifest, "nested-action");
+            // plugin-rsc passes the action and each bound `$h` reference to
+            // `onServerReference`.
+            async decodeAction(_body, { onServerReference }) {
+              onServerReference({ id: "selected", name: "action" });
+              onServerReference({ id: "nested", name: "action" });
               return action;
             },
             forwardAction: async () => null,
@@ -683,7 +675,7 @@ describe("app server action execution helpers", () => {
       );
 
       expect(response.status).toBe(500);
-      expect(validateActionReferences).toHaveBeenCalledWith(["nested-action"]);
+      expect(validateActionReferences).toHaveBeenCalledWith(["nested#action"]);
       expect(action).not.toHaveBeenCalled();
     } finally {
       error.mockRestore();
@@ -1100,32 +1092,32 @@ describe("app server action execution helpers", () => {
     const request = createMultipartBodyRequest(formData);
     const formState = ["action-result", "key-path", "reference-id", 1] as never;
     let actionRan = false;
-    let actionManifest: object | undefined;
+    let actionDecodeOptions: object | undefined;
 
     const result = await handleProgressiveServerActionRequest(
       createOptions({
         contentType: request.headers.get("content-type") ?? "",
-        async decodeAction(_body, serverManifest) {
-          actionManifest = serverManifest;
+        async decodeAction(_body, extraOptions) {
+          actionDecodeOptions = extraOptions;
           return () => {
             actionRan = true;
             return { count: 1 };
           };
         },
-        async decodeFormState(actionResult, body, serverManifest) {
+        async decodeFormState(actionResult, body, extraOptions) {
           expect(actionResult).toEqual({ count: 1 });
           expect(body.get("$ACTION_ID_test")).toBe("");
           expect(body.get("field")).toBe("value");
           // Form state decodes the bound references again, through the same scope.
-          expect(serverManifest).toBe(actionManifest);
-          expect(() => Reflect.get(serverManifest, "foreign-action")).toThrow();
+          expect(extraOptions).toBe(actionDecodeOptions);
+          expect(() => extraOptions.onServerReference({ id: "foreign", name: "action" })).toThrow();
           return formState;
         },
         readFormDataWithLimit(readRequest) {
           return readRequest.formData();
         },
         request,
-        validateActionReferences: (actionIds) => !actionIds.includes("foreign-action"),
+        validateActionReferences: (actionIds) => !actionIds.includes("foreign#action"),
       }),
     );
 
@@ -1403,7 +1395,7 @@ describe("app server action execution helpers", () => {
         createTemporaryReferenceSet() {
           return temporaryReferences;
         },
-        decodeReply(body, _serverManifest, options) {
+        decodeReply(body, options) {
           expect(body).toBe("encoded-flight-body");
           expect(options.temporaryReferences).toBe(temporaryReferences);
           return Promise.resolve(["first", "second"]);
@@ -3204,21 +3196,19 @@ describe("app server action execution helpers", () => {
     expect(hidden).not.toHaveBeenCalled();
   });
 
-  // React resolves each argument reference with `serverManifest[id]` and throws
-  // when the entry is missing; this decoder stands in for that lookup.
+  // plugin-rsc passes each argument reference to `onServerReference`, split at
+  // its first `#`; this decoder stands in for that lookup.
   function createArgumentReferenceOptions(referenceIds: readonly string[], ownedIds: string[]) {
     const action = vi.fn(() => "saved");
     const validateActionReferences = vi.fn((actionIds: readonly string[]) =>
       actionIds.every((actionId) => ownedIds.includes(actionId)),
     );
     const options = createRscOptions({
-      createServerManifest: () =>
-        new Proxy({}, { get: (_target, id) => ({ id, name: "", chunks: [] }) }),
-      decodeReply(_body, serverManifest) {
+      decodeReply(_body, _options, { onServerReference }) {
         return referenceIds.map((referenceId) => {
-          const entry: unknown = Reflect.get(serverManifest, referenceId);
-          if (!entry) throw new Error(`Could not find the module "${referenceId}"`);
-          return () => entry;
+          const [id = "", name = ""] = referenceId.split("#");
+          onServerReference({ id, name });
+          return () => referenceId;
         });
       },
       loadServerAction: () => Promise.resolve(action),

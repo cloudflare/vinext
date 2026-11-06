@@ -98,13 +98,23 @@ type AppServerActionErrorReporter = (
   },
 ) => void;
 
-/** React's `decodeAction()`; bound references resolve through `serverManifest`. */
-type AppServerActionDecoder = (body: FormData, serverManifest: object) => Promise<unknown>;
-/** React's `decodeFormState()`, which decodes the bound references again. */
+/**
+ * plugin-rsc's decode `extraOptions`. React passes every server reference it
+ * resolves to `onServerReference`, and a throw rejects it before its module loads.
+ */
+type ServerReferenceDecodeOptions = {
+  onServerReference: (metadata: { id: string; name: string }) => void;
+};
+/** plugin-rsc's `decodeAction()`; bound references resolve through `onServerReference`. */
+type AppServerActionDecoder = (
+  body: FormData,
+  extraOptions: ServerReferenceDecodeOptions,
+) => Promise<unknown>;
+/** plugin-rsc's `decodeFormState()`, which decodes the bound references again. */
 type AppServerActionFormStateDecoder = (
   actionResult: unknown,
   body: FormData,
-  serverManifest: object,
+  extraOptions: ServerReferenceDecodeOptions,
 ) => Promise<ReactFormState | undefined>;
 
 type ReadFormDataWithLimit = (request: Request, maxBytes: number) => Promise<FormData>;
@@ -276,8 +286,6 @@ export type HandleProgressiveServerActionRequestOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   contentType: string;
-  /** plugin-rsc's server manifest, which resolves any export of a server-reference module. */
-  createServerManifest: () => object;
   decodeAction: AppServerActionDecoder;
   decodeFormState: AppServerActionFormStateDecoder;
   getAndClearPendingCookies: () => string[];
@@ -327,25 +335,22 @@ function readBoundProgressiveActionId(body: FormData, referencePrefix: string): 
 }
 
 /**
- * Scope the manifest React resolves server references through to the current
- * route's Server Actions, as Next.js scopes its server module map to the
- * current page. React then fails to resolve any other id wherever a payload
- * carries it, so that module never loads. A denied lookup throws because React
- * retries a missing `module#a#b` as module `module#a` with export `b`, which
- * would reach a non-action export of an owned module.
+ * Limit the server references React decodes to the current route's Server
+ * Actions, as Next.js scopes its server module map to the current page. React
+ * then fails to resolve any other id wherever a payload carries it, so that
+ * module never loads.
  */
-function createRouteServerManifest(
-  manifest: object,
+function createRouteServerReferenceOptions(
   validateActionReferences: (actionIds: readonly string[]) => boolean,
-): object {
-  return new Proxy(manifest, {
-    get(target, id, receiver) {
-      if (typeof id === "string" && !validateActionReferences([id])) {
-        throw new Error(`Server reference "${id}" is not a Server Action of this route.`);
+): ServerReferenceDecodeOptions {
+  return {
+    onServerReference({ id, name }) {
+      const actionId = `${id}#${name}`;
+      if (!validateActionReferences([actionId])) {
+        throw new Error(`Server reference "${actionId}" is not a Server Action of this route.`);
       }
-      return Reflect.get(target, id, receiver);
     },
-  });
+  };
 }
 
 export type HandleServerActionRscRequestOptions<
@@ -378,16 +383,14 @@ export type HandleServerActionRscRequestOptions<
     overrides?: AppRenderErrorContextOverrides,
   ) => (error: unknown) => unknown;
   createTemporaryReferenceSet: () => TTemporaryReferences;
-  /** plugin-rsc's server manifest, which resolves any export of a server-reference module. */
-  createServerManifest: () => object;
   /**
-   * React's `decodeReply()`. Every server reference in the arguments resolves
-   * through `serverManifest`, so the manifest bounds which functions can decode.
+   * plugin-rsc's `decodeReply()`. Every server reference in the arguments
+   * resolves through `onServerReference`, which bounds the functions that decode.
    */
   decodeReply: (
     body: string | FormData,
-    serverManifest: object,
     options: DecodeServerActionReplyOptions<TTemporaryReferences>,
+    extraOptions: ServerReferenceDecodeOptions,
   ) => Promise<unknown[]> | unknown[];
   draftModeSecret: string;
   /**
@@ -1317,11 +1320,8 @@ export async function handleProgressiveServerActionRequest(
       });
     }
 
-    const serverManifest = createRouteServerManifest(
-      options.createServerManifest(),
-      options.validateActionReferences,
-    );
-    const action = await loadOutsideRequestScopes(() => options.decodeAction(body, serverManifest));
+    const decodeOptions = createRouteServerReferenceOptions(options.validateActionReferences);
+    const action = await loadOutsideRequestScopes(() => options.decodeAction(body, decodeOptions));
     if (!isAppServerActionFunction(action)) {
       // A multipart POST to a *page* is always a server-action attempt; a body
       // that decodes to no action means the referenced action doesn't exist
@@ -1466,7 +1466,7 @@ export async function handleProgressiveServerActionRequest(
       }
 
       const formState = await loadOutsideRequestScopes(() =>
-        options.decodeFormState(actionResult, body, serverManifest),
+        options.decodeFormState(actionResult, body, decodeOptions),
       );
       return {
         kind: "form-state",
@@ -1715,13 +1715,10 @@ export async function handleServerActionRscRequest<
       action = loadedAction;
     }
 
-    const serverManifest = createRouteServerManifest(
-      options.createServerManifest(),
-      options.validateActionReferences,
-    );
+    const decodeOptions = createRouteServerReferenceOptions(options.validateActionReferences);
     const temporaryReferences = options.createTemporaryReferenceSet();
     const args = await loadOutsideRequestScopes(() =>
-      options.decodeReply(body, serverManifest, { temporaryReferences }),
+      options.decodeReply(body, { temporaryReferences }, decodeOptions),
     );
     let returnValue: AppServerActionReturnValue;
     let actionRedirect: AppServerActionRedirect | null = null;

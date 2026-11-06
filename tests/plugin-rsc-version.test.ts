@@ -26,14 +26,14 @@ afterEach(() => {
 });
 
 describe("assertPluginRscVersion", () => {
-  it("rejects installed versions without action-bound closure encryption", () => {
-    expect(() => assertPluginRscVersion(installPluginRsc("0.5.34"))).toThrow(
-      "vinext: App Router requires @vitejs/plugin-rsc 0.5.37 or newer (found 0.5.34).",
+  it("rejects installed versions without server reference rejection", () => {
+    expect(() => assertPluginRscVersion(installPluginRsc("0.5.38"))).toThrow(
+      "vinext: App Router requires @vitejs/plugin-rsc 0.5.39 or newer (found 0.5.38).",
     );
   });
 
-  it("returns the installed version from 0.5.37", () => {
-    expect(assertPluginRscVersion(installPluginRsc("0.5.37"))).toBe("0.5.37");
+  it("returns the installed version from 0.5.39", () => {
+    expect(assertPluginRscVersion(installPluginRsc("0.5.39"))).toBe("0.5.39");
     expect(assertPluginRscVersion(installPluginRsc("0.6.0"))).toBe("0.6.0");
   });
 });
