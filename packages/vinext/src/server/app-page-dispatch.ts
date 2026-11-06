@@ -1234,6 +1234,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               rscRenderObservation: rendered.rscRenderObservation!,
               tags: rendered.tags,
               cacheControl: rendered.cacheControl,
+              reportedError: rendered.reportedError,
               revalidateSeconds: revalidationRouteRevalidateSeconds,
               status: rendered.status,
               usedDynamicApi: rendered.usedDynamicApi,

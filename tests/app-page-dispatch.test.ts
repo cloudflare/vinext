@@ -5037,6 +5037,53 @@ describe("app page dispatch", () => {
     expect(afterRan).toBe(true);
   });
 
+  // As in `next build`, a regeneration whose render reported an error throws
+  // it, so the stale entry stays.
+  it("never stores a stale regeneration whose render reported an error", async () => {
+    const route = createRoute({ pattern: "/posts/[slug]", routeSegments: ["posts", "[slug]"] });
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn(async () => {});
+    const { options } = createDispatchOptions({
+      cleanPathname: "/posts/hello",
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream(_element, renderOptions) {
+        // A Suspense boundary's error, which the page still renders around.
+        renderOptions?.onError?.(new Error("suspended failure"), undefined, undefined);
+        return createStream(["flight"]);
+      },
+      revalidateSeconds: 60,
+      route,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await expect(response.text()).resolves.toBe("<html>stale</html>");
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+    await expect(scheduledRender()).rejects.toThrow("suspended failure");
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
   // Under PPR, Next.js renders a non-prefetch RSC request dynamically unless its
   // path was generated at build time, whose RSC request is answered from the
   // page's entry and regenerates its document too.

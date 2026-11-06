@@ -35,6 +35,8 @@ vinext({ cache: responseStoreAdapter({ shards: 4 }) });
   cached with the fallback in its HTML, and `/search-params/unwrapped/[slug]` that a call
   outside Suspense returns a 500, as in Next.js. `/search-params/dynamic` reads `headers()`, so it
   server-renders the real query and is never stored.
+- `/render-error/[slug]` verifies that an on-demand path whose render throws inside Suspense
+  (`throw-…`) is never stored, as in Next.js, while any other path is.
 - `/client-search-params/ignores` verifies that a `"use client"` page that never reads its
   `searchParams` prop is stored once for every query, and `/client-search-params/reads` that a
   client page reading it is never stored, as in Next.js.

@@ -83,6 +83,8 @@ type AppPageCacheRenderResult = {
    * matched route's read seed, as when the render regenerated that route.
    */
   revalidateSeconds?: number | null;
+  /** The first error the render reported that Next.js never stores a render with. */
+  reportedError?: { error: unknown };
   tags: string[];
   usedDynamicApi: boolean;
 };
@@ -683,6 +685,14 @@ export async function readAppPageCacheResponse(
             `Page changed from static to dynamic at runtime ${options.cleanPathname}` +
               "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
           );
+        }
+        // And, as in `next build`, one whose render reported an error throws it.
+        // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
+        // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
+        // A render that turned dynamic, as a PPR regeneration's may, is excused
+        // whichever boundary failed, as vinext's build check excuses it.
+        if (revalidatedPage.reportedError && !revalidatedPage.usedDynamicApi) {
+          throw revalidatedPage.reportedError.error;
         }
         // An RSC request whose shell's special error has no document of its
         // own stores its RSC entry alone.
