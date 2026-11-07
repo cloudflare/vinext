@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "@vitejs/plugin-rsc": "catalog:",
+    "ipaddr.js": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "react-server-dom-webpack": "catalog:",
