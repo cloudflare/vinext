@@ -28,6 +28,28 @@ test.describe("next/head client-side updates", () => {
     const charset = await page.locator('meta[charSet="utf-8"]').count();
     expect(charset).toBeGreaterThan(0);
   });
+
+  // Issue #4593: a page viewport replaces the default after hydration, and
+  // client navigation to a page without one restores the default.
+  test("page viewport replaces the default through hydration and navigation", async ({ page }) => {
+    const viewports = page.locator('head meta[name="viewport"]');
+
+    await page.goto(`${BASE}/head-custom-viewport`);
+    await expect(page).toHaveTitle("Custom viewport - vinext");
+    await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
+    await expect(viewports).toHaveCount(1);
+    await expect(viewports).toHaveAttribute("content", "width=device-width, initial-scale=1");
+
+    await page.click('a[href="/about"]');
+    await expect(page).toHaveTitle("About - vinext");
+    await expect(viewports).toHaveCount(1);
+    await expect(viewports).toHaveAttribute("content", "width=device-width");
+
+    await page.goBack();
+    await expect(page).toHaveTitle("Custom viewport - vinext");
+    await expect(viewports).toHaveCount(1);
+    await expect(viewports).toHaveAttribute("content", "width=device-width, initial-scale=1");
+  });
 });
 
 test.describe("next/dynamic", () => {

@@ -103,11 +103,7 @@ export function getSSRHeadHTML(): string {
   // (not next/head), they don't appear in this collector — so emitting
   // `defaultHead + user + initialProps` here matches Next.js's serialised
   // output up to that boundary.
-  return reduceHeadChildren([
-    ...defaultHead(),
-    ..._getSSRHeadChildren(),
-    ..._getDocumentInitialHead(),
-  ])
+  return reduceHeadChildren([..._getSSRHeadChildren(), ..._getDocumentInitialHead()], defaultHead())
     .map((child) => headChildToHTML(child.type as string, child.props as Record<string, unknown>))
     .filter(Boolean)
     .join("");
@@ -251,16 +247,28 @@ function createUniqueHeadFilter(): (child: React.ReactElement) => boolean {
   };
 }
 
-export function reduceHeadChildren(headChildren: React.ReactNode[]): React.ReactElement[] {
-  return headChildren
+/**
+ * Reduce `<Head>` children to the deduplicated list of head tags.
+ *
+ * `defaults` (normally `defaultHead()`) are placed ahead of the user tags but
+ * are deliberately NOT passed through `Children.toArray`, mirroring Next.js's
+ * `reduceComponents()`, which concatenates `defaultHead()` after flattening
+ * the user's children. That keeps their raw `key="charset"` / `key="viewport"`
+ * (no `$` separator), so the dedupe filter treats them as unkeyed and a plain
+ * user `<meta name="viewport">` replaces the default instead of rendering
+ * next to it.
+ */
+export function reduceHeadChildren(
+  headChildren: React.ReactNode[],
+  defaults: React.ReactElement[] = [],
+): React.ReactElement[] {
+  const userElements = headChildren
     .reduce<React.ReactNode[]>(
       (flattenedChildren, child) => flattenedChildren.concat(Children.toArray(child)),
       [],
     )
-    .reduce(collectHeadElements, [])
-    .reverse()
-    .filter(createUniqueHeadFilter())
-    .reverse();
+    .reduce(collectHeadElements, []);
+  return [...defaults, ...userElements].reverse().filter(createUniqueHeadFilter()).reverse();
 }
 
 /**
@@ -507,8 +515,8 @@ export function _removeClientHeadInstance(instanceId: symbol): void {
  * tags — matching the SSR path in getSSRHeadHTML() and Next.js's
  * reduceComponents(), which always concatenates defaultHead() on both server
  * and client. Without it the first <Head> mount after hydration would drop the
- * server-rendered defaults. Users can still override via key="charset" /
- * key="viewport" through the dedupe pipeline.
+ * server-rendered defaults. A user `<meta charSet>` or `<meta name="viewport">`
+ * (keyed or not) replaces the matching default through the dedupe pipeline.
  *
  * @internal — exported for unit tests; called from the Head client effect.
  */
@@ -522,7 +530,7 @@ export function _syncClientHead(): void {
   const charsetEl = headEl.querySelector("meta[charset]");
   if (charsetEl) oldTags.add(charsetEl);
 
-  const desiredHead = reduceHeadChildren([...defaultHead(), ..._clientHeadChildren.values()]);
+  const desiredHead = reduceHeadChildren([..._clientHeadChildren.values()], defaultHead());
   const title = desiredHead.find((child) => child.type === "title");
   const titleChildren = (title?.props as { children?: React.ReactNode } | undefined)?.children;
   const titleText =
