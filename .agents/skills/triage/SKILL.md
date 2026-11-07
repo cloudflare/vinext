@@ -16,8 +16,6 @@ Establish the issue's live state below, then follow [`references/rules.md`](refe
 
 Do not open a PR, post a comment, change labels or close the issue without confirmation.
 
-Claude Code loads this skill through the `.claude/skills/triage` symlink. On Windows, Git checks that symlink out as a plain text file unless symlinks are enabled (Developer Mode plus `core.symlinks=true`).
-
 ## Input
 
 Require one GitHub issue URL, passed as the `/triage` argument. If it is missing, ask for it. If it names a repository other than the current checkout, find an existing checkout of that repository before reading code.
