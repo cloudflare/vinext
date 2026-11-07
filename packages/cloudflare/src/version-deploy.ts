@@ -1,4 +1,4 @@
-import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
+import { execFileSync, spawnSync, type ExecFileSyncOptions } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -260,6 +260,28 @@ function runWranglerCommand(
   return output;
 }
 
+/**
+ * `execFileSync` that returns what the command wrote to stderr after what it wrote to stdout.
+ *
+ * `cf` writes its progress log, including the `Worker Version ID:` line and the deployed URL, to
+ * stderr when its output is not a terminal, and nothing to stdout. A failing command throws the
+ * same error `execFileSync` does (message, status, stdout and stderr).
+ */
+const execFileSyncWithStderr = ((file: string, args: readonly string[], options: object) => {
+  const result = spawnSync(file, args, { ...options, encoding: "utf-8" });
+  if (result.error) throw result.error;
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  if (result.status !== 0) {
+    const reason = result.signal ? `signal ${result.signal}` : `exit code ${result.status}`;
+    throw Object.assign(
+      new Error(`Command failed (${reason}): ${[file, ...args].join(" ")}\n${stderr}`),
+      { status: result.status, signal: result.signal, stdout, stderr },
+    );
+  }
+  return stdout + stderr;
+}) as unknown as typeof execFileSync;
+
 function runCfCommand(
   root: string,
   args: string[],
@@ -384,7 +406,7 @@ export function runCfVersionDeploy(
   versionTraffic: readonly WranglerVersionTraffic[],
   options: { name: string; env?: string; verbose?: boolean },
   _phase: "stage" | "promote-warmed" | "promote-uploaded" = "promote-uploaded",
-  execute: typeof execFileSync = execFileSync,
+  execute: typeof execFileSync = execFileSyncWithStderr,
 ): WranglerVersionDeployResult {
   const versions = versionTraffic.map(({ versionId, percentage }) => ({
     version_id: versionId,
@@ -413,7 +435,7 @@ export function runCfVersionDeploy(
 export function runCfTriggersDeploy(
   root: string,
   options: { env?: string; verbose?: boolean },
-  execute: typeof execFileSync = execFileSync,
+  execute: typeof execFileSync = execFileSyncWithStderr,
 ): WranglerVersionDeployResult {
   const output = runCfCommand(
     root,
@@ -462,7 +484,7 @@ export function runCfVersionUpload(
   options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
     previewAlias?: string;
   },
-  execute: typeof execFileSync = execFileSync,
+  execute: typeof execFileSync = execFileSyncWithStderr,
 ): WranglerVersionUploadResult {
   const workerName = readBuildOutputWorkerName(root);
   const { args, mode } = buildCfVersionUploadArgs(options);

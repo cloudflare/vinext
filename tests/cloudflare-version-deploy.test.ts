@@ -81,6 +81,82 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  describe("with the real cf command", () => {
+    // cf writes its log, "Worker Version ID" included, to stderr when its output is not a terminal, so the
+    // default executor has to read stderr as well as stdout. These run a stand-in cf under node.
+    function makeRoot(cfSource: string) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-real-"));
+      const configPath = path.join(
+        root,
+        ".cloudflare/output/v0/workers/default/worker.config.json",
+      );
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({ name: "my-worker" }));
+      fs.mkdirSync(path.join(root, "node_modules/cf/bin"), { recursive: true });
+      fs.writeFileSync(path.join(root, "node_modules/cf/bin/cf"), cfSource);
+      return root;
+    }
+    const writes = (stream: "stdout" | "stderr", text: string, exitCode = 0) =>
+      `process.${stream}.write(${JSON.stringify(text)}); process.exitCode = ${exitCode};`;
+
+    it("finds the Worker Version ID on stderr", () => {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const root = makeRoot(
+        writes(
+          "stderr",
+          "\u2502  Uploaded my-worker (3.84 sec)\n\u2502  Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22\n",
+        ),
+      );
+      try {
+        expect(runCfVersionUpload(root, {})).toMatchObject({
+          versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+          workerName: "my-worker",
+        });
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("still finds it on stdout", () => {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const root = makeRoot(
+        writes("stdout", "Worker Version ID: 195f00a7-23a7-43b7-a227-e4c97cab5f22\n"),
+      );
+      try {
+        expect(runCfVersionUpload(root, {}).versionId).toBe("195f00a7-23a7-43b7-a227-e4c97cab5f22");
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("reports a Worker that does not exist yet from a failing cf", () => {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const root = makeRoot(
+        writes("stderr", "cannot upload a new version of a Worker that does not yet exist\n", 1),
+      );
+      try {
+        expect(() => runCfVersionUpload(root, {})).toThrow(
+          "Version upload needs an existing Cloudflare Worker",
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("reads the URL cf prints on stderr when it deploys triggers", () => {
+      const root = makeRoot(
+        writes("stderr", "Deployed my-worker triggers\n  https://my-worker.example.workers.dev\n"),
+      );
+      try {
+        expect(runCfTriggersDeploy(root, {}).deployedUrl).toBe(
+          "https://my-worker.example.workers.dev",
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("reads the Build Output Worker name before uploading", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-upload-"));
