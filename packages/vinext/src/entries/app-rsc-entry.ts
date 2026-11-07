@@ -1967,11 +1967,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           __actionMatch?.route.pattern ?? null,
         );
       },
-      // Redirect targets are rendered as if the client had navigated to them,
-      // so they must route on the raw pathname a real request would use.
-      matchRoute(pathnameToMatch) {
-        return matchRequestRoute(pathnameToMatch);
-      },
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       maxActionBodySizeLabel: __MAX_ACTION_BODY_SIZE_LABEL,
       middlewareHeaders: middlewareContext.headers,
@@ -1991,7 +1986,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       resolveRouteDynamicConfig(targetRoute) {
         return __resolveRouteDynamicConfig(targetRoute);
       },
-      resolveRouteRuntime: __resolveRouteRuntime,
       request,
       dispatchRedirectTargetRequest,
       sourceConfigHeaders,
