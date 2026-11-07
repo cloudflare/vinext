@@ -668,8 +668,8 @@ describe("Head default tags (charset/viewport ordering, issue #1569)", () => {
   });
 
   it("user-supplied viewport with key='viewport' overrides the default", () => {
-    // The default viewport carries `key="viewport"`. User tags must use the
-    // same key to dedupe — matches Next.js's `key`-based merge semantics.
+    // A keyed user viewport replaces the default through the `name` dedupe,
+    // the same as an unkeyed one (see the issue #4593 tests below).
     ReactDOMServer.renderToString(
       React.createElement(
         Head,
@@ -691,6 +691,188 @@ describe("Head default tags (charset/viewport ordering, issue #1569)", () => {
     const html = getSSRHeadHTML();
     expect(html).toContain('<meta charset="utf-8"');
     expect(html).toContain('<meta name="viewport"');
+  });
+});
+
+// ─── user viewport replaces the default (issue #4593) ──────────────────────
+//
+// Next.js's `reduceComponents()` flattens only the user's <Head> children with
+// `Children.toArray` and appends `defaultHead()` afterwards, so the default
+// viewport keeps its raw `key="viewport"` (no `$` separator). The `unique()`
+// filter therefore treats it as unkeyed and dedupes it by `name`, which lets a
+// plain user `<meta name="viewport">` replace it.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/head.tsx
+
+describe("Head user viewport replaces the default (issue #4593)", () => {
+  beforeEach(() => {
+    resetSSRHead();
+    setDocumentInitialHead([]);
+  });
+
+  function countViewports(html: string): number {
+    return (html.match(/name="viewport"/g) ?? []).length;
+  }
+
+  it("renders exactly one default viewport when the user sets none", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(Head, null, React.createElement("title", null, "No viewport")),
+    );
+
+    const html = getSSRHeadHTML();
+    expect(countViewports(html)).toBe(1);
+    expect(html).toContain(
+      '<meta name="viewport" content="width=device-width" data-next-head="" />',
+    );
+  });
+
+  it("replaces the default viewport with an unkeyed user viewport", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        React.createElement("meta", {
+          name: "viewport",
+          content: "width=device-width, initial-scale=1",
+        }),
+      ),
+    );
+
+    expect(getSSRHeadHTML()).toBe(
+      '<meta charset="utf-8" data-next-head="" />' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1" data-next-head="" />',
+    );
+  });
+
+  // Ported from Next.js: test/development/pages-dir/client-navigation/rendering-head.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/development/pages-dir/client-navigation/rendering-head.test.ts
+  // (fixture: pages/head-priority.js, "should place charset element at the top of <head>")
+  it("keeps user charset, viewport and title in user order with no defaults", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        React.createElement("meta", { charSet: "iso-8859-5" }),
+        React.createElement("meta", {
+          name: "viewport",
+          content: "width=device-width,initial-scale=1",
+        }),
+        React.createElement("meta", { name: "title", content: "head title" }),
+      ),
+    );
+
+    expect(getSSRHeadHTML()).toBe(
+      '<meta charset="iso-8859-5" data-next-head="" />' +
+        '<meta name="viewport" content="width=device-width,initial-scale=1" data-next-head="" />' +
+        '<meta name="title" content="head title" data-next-head="" />',
+    );
+  });
+
+  // Ported from Next.js: test/development/pages-dir/client-navigation/rendering-head.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/development/pages-dir/client-navigation/rendering-head.test.ts
+  // (fixture: pages/head-duplicate-default-keys.js)
+  it("dedupes tags keyed like the defaults across multiple Head instances", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(
+          Head,
+          null,
+          React.createElement("meta", { charSet: "utf-8", key: "charSet" }),
+          React.createElement("meta", { charSet: "iso-8859-5", key: "charSet" }),
+          React.createElement("meta", { name: "viewport", content: "width=500", key: "viewport" }),
+        ),
+        React.createElement(
+          Head,
+          null,
+          React.createElement("meta", { charSet: "iso-8859-1", key: "charSet" }),
+        ),
+      ),
+    );
+
+    const html = getSSRHeadHTML();
+    expect((html.match(/charset=/g) ?? []).length).toBe(1);
+    expect(countViewports(html)).toBe(1);
+    expect(html).toContain('<meta charset="iso-8859-1" data-next-head="" />');
+    expect(html).toContain('<meta name="viewport" content="width=500" data-next-head="" />');
+  });
+
+  it("lets the last unkeyed viewport win across multiple Head instances", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(
+          Head,
+          null,
+          React.createElement("meta", { name: "viewport", content: "width=320" }),
+        ),
+        React.createElement(
+          Head,
+          null,
+          React.createElement("meta", { name: "viewport", content: "width=640" }),
+        ),
+      ),
+    );
+
+    const html = getSSRHeadHTML();
+    expect(countViewports(html)).toBe(1);
+    expect(html).toContain('content="width=640"');
+  });
+
+  it("replaces the default viewport from inside nested arrays and fragments", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        [
+          React.createElement(
+            React.Fragment,
+            { key: "frag" },
+            React.createElement("meta", { name: "viewport", content: "width=1024" }),
+          ),
+        ],
+        React.createElement("meta", { name: "description", content: "kept" }),
+      ),
+    );
+
+    const html = getSSRHeadHTML();
+    expect(countViewports(html)).toBe(1);
+    expect(html).toContain('content="width=1024"');
+    expect(html).toContain('<meta name="description" content="kept" data-next-head="" />');
+  });
+
+  it("does not let a user key='viewport' on another tag drop the default viewport", () => {
+    // In Next.js the default's raw key has no `$`, so it is never registered in
+    // the key set — only `name` dedupes it. A user tag that merely reuses the
+    // key "viewport" therefore leaves the default viewport in place.
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        React.createElement("meta", { name: "description", content: "d", key: "viewport" }),
+      ),
+    );
+
+    const html = getSSRHeadHTML();
+    expect(countViewports(html)).toBe(1);
+    expect(html).toContain(
+      '<meta name="viewport" content="width=device-width" data-next-head="" />',
+    );
+    expect(html).toContain('<meta name="description" content="d" data-next-head="" />');
+  });
+
+  it("replaces the default viewport with one from _document.getInitialProps", () => {
+    setDocumentInitialHead([
+      React.createElement("meta", {
+        name: "viewport",
+        content: "width=device-width, minimum-scale=1",
+      }),
+    ]);
+
+    const html = getSSRHeadHTML();
+    expect(countViewports(html)).toBe(1);
+    expect(html).toContain('content="width=device-width, minimum-scale=1"');
   });
 });
 
@@ -1094,8 +1276,8 @@ describe("Head client sync (defaults + order, issue #1569 / #1677)", () => {
 
   it("lets a user key='viewport' override the default viewport on the client", () => {
     // Mirrors the SSR override test (head.test.ts) on the client path: the
-    // default viewport carries key="viewport", so a user tag with the same key
-    // wins the dedupe in reduceHeadChildren — same precedence as Next.js.
+    // user viewport wins the dedupe in reduceHeadChildren — same precedence
+    // as Next.js.
     const { head, restore } = installFakeDocument();
     try {
       _clientHeadChildren.set(
@@ -1118,6 +1300,60 @@ describe("Head client sync (defaults + order, issue #1569 / #1677)", () => {
       expect(
         head.children.some((el) => el.tagName === "meta" && el.getAttribute("charset") === "utf-8"),
       ).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  // Issue #4593: an unkeyed user viewport must replace the default on the
+  // client too, otherwise hydration re-inserts the default viewport the server
+  // already dropped.
+  it("keeps a single user viewport after hydration and across Head updates", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    const viewportsOf = () =>
+      head.children.filter((el) => el.tagName === "meta" && el.getAttribute("name") === "viewport");
+    try {
+      // Server HTML for a page whose <Head> sets its own viewport.
+      const charset = createElement("meta");
+      charset.setAttribute("charset", "utf-8");
+      charset.setAttribute("data-next-head", "");
+      const userViewport = createElement("meta");
+      userViewport.setAttribute("name", "viewport");
+      userViewport.setAttribute("content", "width=device-width, initial-scale=1");
+      userViewport.setAttribute("data-next-head", "");
+      head.children.push(charset, userViewport);
+      for (const el of head.children) el.parentNode = head;
+
+      // Hydration: the page's <Head> mounts with the same viewport.
+      const pageHead = Symbol("page");
+      _clientHeadChildren.set(
+        pageHead,
+        React.createElement("meta", {
+          name: "viewport",
+          content: "width=device-width, initial-scale=1",
+        }),
+      );
+      _syncClientHead();
+
+      // The SSR node is reused untouched; no default viewport is added.
+      expect(head.children).toEqual([charset, userViewport]);
+
+      // The page updates its viewport (e.g. after a state change).
+      _clientHeadChildren.set(
+        pageHead,
+        React.createElement("meta", { name: "viewport", content: "width=500" }),
+      );
+      _syncClientHead();
+      expect(viewportsOf()).toHaveLength(1);
+      expect(viewportsOf()[0]?.getAttribute("content")).toBe("width=500");
+
+      // Navigating to a page without its own viewport restores the default.
+      _clientHeadChildren.delete(pageHead);
+      _clientHeadChildren.set(Symbol("next-page"), React.createElement("title", null, "Next"));
+      _syncClientHead();
+      expect(viewportsOf()).toHaveLength(1);
+      expect(viewportsOf()[0]?.getAttribute("content")).toBe("width=device-width");
+      expect(head.children.filter((el) => el.getAttribute("charset") === "utf-8")).toHaveLength(1);
     } finally {
       restore();
     }

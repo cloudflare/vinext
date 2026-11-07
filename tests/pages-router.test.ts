@@ -1812,6 +1812,20 @@ export default function Page({ value }: { value: string }) {
     );
   });
 
+  // Issue #4593. Ported from Next.js:
+  // test/development/pages-dir/client-navigation/rendering-head.test.ts ("header helper dedupes tags")
+  // https://github.com/vercel/next.js/blob/canary/test/development/pages-dir/client-navigation/rendering-head.test.ts
+  it("renders a next/head viewport in place of the default viewport", async () => {
+    const html = await (await fetch(`${baseUrl}/head-custom-viewport`)).text();
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+    expect(headContents.match(/name="viewport"/g)).toHaveLength(1);
+    expect(headContents).toContain(
+      '<meta name="viewport" content="width=device-width, initial-scale=1" data-next-head="" />',
+    );
+    expect(headContents).not.toContain('content="width=device-width" ');
+    expect(headContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
+  });
+
   it("rerenders GSP pages without carrying prior render state", async () => {
     const firstRes = await fetch(`${baseUrl}/isr-second-render-state`);
     expect(firstRes.status).toBe(200);
