@@ -1,5 +1,15 @@
 # @vinext/cloudflare
 
+## 1.3.4
+
+### Bug Fixes
+
+- **Init:** stop adding nodejs_compat now that compat dates enable it (#4580)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.3.3
 
 ### Bug Fixes
