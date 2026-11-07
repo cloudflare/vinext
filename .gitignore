@@ -44,7 +44,6 @@ reports/
 
 # Worktrees
 .worktrees/
-.claude
 
 # Next.js reference clone (for searching source/tests)
 .nextjs-ref/
@@ -54,7 +53,8 @@ reports/
 .DS_Store
 .idea/
 .vscode/
-.claude/
+**/.claude/*
+!/.claude/skills/
 .codex/
 
 # Nix
