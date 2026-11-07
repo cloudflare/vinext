@@ -1,6 +1,6 @@
 ---
 name: triage
-description: Opt-in workflow for triaging one GitHub issue without fixing it. Invoked only via `/triage <github-issue-url>` (`$triage` in Codex). Establishes live state, reproduces with our own fixtures, probes real Next.js for parity, classifies the issue, and drafts the issue reply and next action. Hands valid bugs off to `/fix`.
+description: Opt-in workflow for triaging one GitHub issue without fixing it. Invoked only via `/triage <github-issue-url>` (`$triage` in Codex). Establishes live state, reproduces with our own fixtures, probes real Next.js for parity, classifies the issue, and drafts the issue reply and next action. Hands valid bugs off to the fix step.
 argument-hint: <github-issue-url>
 disable-model-invocation: true
 metadata:
@@ -12,9 +12,11 @@ metadata:
 
 Issue: $ARGUMENTS
 
-Establish the issue's live state below, then follow [`references/rules.md`](references/rules.md) for everything else: safety, the parity check, reproducing, the verdict and the reply. Its "Automated Runs" section doesn't apply here. In those rules, "the fix step" means `/fix <url>`.
+Establish the issue's live state below, then follow [`references/rules.md`](references/rules.md) for everything else: safety, the parity check, reproducing, the verdict and the reply. Its "Automated Runs" section doesn't apply here. In those rules, "the fix step" means fixing the bug through the "Fixing Bugs" workflow in `AGENTS.md`, or through your own fix skill if you have one.
 
 Do not open a PR, post a comment, change labels or close the issue without confirmation.
+
+Claude Code loads this skill through the `.claude/skills/triage` symlink. On Windows, Git checks that symlink out as a plain text file unless symlinks are enabled (Developer Mode plus `core.symlinks=true`).
 
 ## Input
 
@@ -42,7 +44,7 @@ Report to the user:
 - the verdict, with its evidence (file:line, probe output, docs, earlier decision);
 - the main SHA you triaged against;
 - the reproduction status;
-- for valid bugs: the root-cause hypothesis, the minimal change set, the suggested fixture and test, and `/fix <url>`;
+- for valid bugs: the root-cause hypothesis, the minimal change set, the suggested fixture and test, and the hand-off to the fix step;
 - the draft reply, and the proposed labels or state change.
 
 Post the comment, change labels or close the issue only after the user confirms.
