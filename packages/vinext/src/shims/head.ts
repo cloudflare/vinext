@@ -6,8 +6,12 @@
  *   dev-server reads after render and injects into the HTML <head>.
  * - On the client: reduces all mounted <Head> instances into one deduped
  *   document.head projection and applies it with DOM manipulation.
+ *
+ * In the App Router, <Head> renders nothing and leaves the document head to
+ * the Metadata API, as in Next.js.
  */
 import React, { useEffect, useRef, Children, isValidElement } from "react";
+import { useIsAppRouterTree } from "./app-router-tree-context.js";
 
 type HeadProps = {
   children?: React.ReactNode;
@@ -596,7 +600,7 @@ export function _syncClientHead(): void {
 
 // --- Component ---
 
-function Head({ children }: HeadProps): React.ReactElement {
+function PagesRouterHead({ children }: HeadProps): React.ReactElement {
   const headInstanceIdRef = useRef<symbol | null>(null);
   if (headInstanceIdRef.current === null) {
     headInstanceIdRef.current = Symbol("vinext-head");
@@ -631,6 +635,18 @@ function Head({ children }: HeadProps): React.ReactElement {
   });
 
   return React.createElement(React.Fragment);
+}
+
+/**
+ * Next.js ignores next/head in the App Router. Server components import a
+ * no-op Head, and client components get a HeadManagerContext without
+ * `mountedInstances`, so their tags never reach the document. Skip both the
+ * SSR collection and the client head sync there, so a client component
+ * shared with the Pages Router cannot override the Metadata API's tags.
+ */
+function Head(props: HeadProps): React.ReactElement {
+  if (useIsAppRouterTree()) return React.createElement(React.Fragment);
+  return React.createElement(PagesRouterHead, props);
 }
 
 export default Head;
