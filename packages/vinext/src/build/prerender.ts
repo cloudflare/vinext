@@ -36,7 +36,11 @@ import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "vinext/shims
 import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
-import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
+import {
+  normalizeStaticPathname,
+  normalizeStaticPathsEntry,
+  type StaticPathsEntry,
+} from "../routing/route-pattern.js";
 import { extractLocaleFromUrl } from "../server/pages-i18n.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
@@ -1091,17 +1095,31 @@ export async function prerenderPages({
           } else if (item && typeof item === "object" && item.locale !== undefined) {
             locale = item.locale;
           }
-          const normalized = normalizeStaticPathsEntry(pathEntry, route.pattern);
-          if ("error" in normalized) {
-            entryError = normalized.error;
-            break;
-          }
-          if (locale !== undefined && !config.i18n?.locales.includes(locale)) {
-            entryError = `Invalid locale returned from getStaticPaths for ${route.pattern}: ${locale}`;
-            break;
-          }
-          const { params } = normalized;
           try {
+            // A string path is already encoded, so `%2E%2E` is a `..` segment
+            // too. Next.js fails the build on one even when it matches no route.
+            if (typeof pathEntry === "string") {
+              assertNormalizedPagePath(
+                normalizeStaticPathname(pathEntry)
+                  .split("/")
+                  .map((segment) => {
+                    try {
+                      return decodeURIComponent(segment);
+                    } catch {
+                      return segment;
+                    }
+                  })
+                  .join("/"),
+              );
+            }
+            const normalized = normalizeStaticPathsEntry(pathEntry, route.pattern);
+            if ("error" in normalized) throw new Error(normalized.error);
+            if (locale !== undefined && !config.i18n?.locales.includes(locale)) {
+              throw new Error(
+                `Invalid locale returned from getStaticPaths for ${route.pattern}: ${locale}`,
+              );
+            }
+            const { params } = normalized;
             const urlPath = localizePagesPath(
               buildUrlFromParams(route.pattern, params),
               locale,

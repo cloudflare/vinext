@@ -2266,6 +2266,13 @@ describe("prerenderPages — getStaticPaths dot segments (#4583)", () => {
             fatal: true,
           },
           {
+            route: "/mismatched-string-path/:a",
+            status: "error",
+            error:
+              "Requested and resolved page mismatch: /mismatched-string-path/safe/.. /mismatched-string-path",
+            fatal: true,
+          },
+          {
             route: "/object/:a/:b/:c",
             status: "error",
             error: "Requested and resolved page mismatch: /object/../../.. /",
