@@ -163,6 +163,36 @@ describe("normalizeStaticPathsEntry", () => {
     expect(normalizeStaticPathsEntry({ params }, "/docs/:slug+")).toEqual({ params });
   });
 
+  // Next.js normalizePagePath throws NormalizeError when a static path contains
+  // `.` or `..`. vinext already rejects those segments for App Router params
+  // (validateDiscoveredParams). Pages getStaticPaths must do the same, or
+  // path.join(outDir, "x/../../../index.html") writes the HTML outside outDir.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/page-path/normalize-page-path.ts
+  it("rejects dot path segments in object params", () => {
+    expect(normalizeStaticPathsEntry({ params: { slug: ".." } }, "/blog/:slug")).toMatchObject({
+      error: expect.stringMatching(/dot path segments/),
+      fatal: true,
+    });
+    expect(normalizeStaticPathsEntry({ params: { slug: "." } }, "/blog/:slug")).toMatchObject({
+      error: expect.stringMatching(/dot path segments/),
+      fatal: true,
+    });
+    expect(
+      normalizeStaticPathsEntry({ params: { slug: ["a", ".."] } }, "/docs/:slug+"),
+    ).toMatchObject({ error: expect.stringMatching(/dot path segments/), fatal: true });
+  });
+
+  it("rejects dot path segments in string entries", () => {
+    expect(normalizeStaticPathsEntry("/docs/../../x", "/docs/:slug+")).toMatchObject({
+      error: expect.stringMatching(/dot path segments/),
+      fatal: true,
+    });
+    expect(normalizeStaticPathsEntry("/blog/..", "/blog/:slug")).toMatchObject({
+      error: expect.stringMatching(/dot path segments/),
+      fatal: true,
+    });
+  });
+
   it("returns an error when an object entry has no params key", () => {
     const result = normalizeStaticPathsEntry({}, "/blog/:slug");
     expect(result).toMatchObject({ error: expect.stringMatching(/missing the `params` key/) });

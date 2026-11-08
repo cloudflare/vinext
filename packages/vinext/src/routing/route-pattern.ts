@@ -269,7 +269,7 @@ export type StaticPathsEntry =
  * Result of {@link normalizeStaticPathsEntry}: either a params object, or a
  * descriptive error string the caller can surface as a per-route error result.
  */
-type NormalizedStaticPathsEntry = { params: RoutePatternParams } | { error: string };
+type NormalizedStaticPathsEntry = { params: RoutePatternParams } | { error: string; fatal?: true };
 
 /**
  * Strip query string and a single trailing slash from a pathname.
@@ -282,6 +282,29 @@ type NormalizedStaticPathsEntry = { params: RoutePatternParams } | { error: stri
 export function normalizeStaticPathname(pathname: string): string {
   const noQuery = pathname.split("?")[0];
   return noQuery === "/" ? "/" : noQuery.replace(/\/$/, "");
+}
+
+/**
+ * `.` and `..` survive `encodeURIComponent` and become real path segments.
+ * `path.join(outDir, ...)` then writes the prerender outside the output directory.
+ * Next.js throws `NormalizeError` for the same input, and App Router already
+ * rejects these segments in `validateDiscoveredParams`. `fatal` fails the build
+ * in every mode, matching that contract.
+ */
+function rejectDotSegments(
+  result: { params: RoutePatternParams },
+  routePattern: string,
+): NormalizedStaticPathsEntry {
+  for (const [name, value] of Object.entries(result.params)) {
+    const values = Array.isArray(value) ? value : [value];
+    if (values.some((entry) => entry === "." || entry === "..")) {
+      return {
+        error: `Parameter ${name} from getStaticPaths for ${routePattern} must not contain dot path segments.`,
+        fatal: true,
+      };
+    }
+  }
+  return result;
 }
 
 /**
@@ -322,7 +345,7 @@ export function normalizeStaticPathsEntry(
         error: `The provided path \`${entry}\` from getStaticPaths does not match the route pattern \`${routePattern}\`.`,
       };
     }
-    return { params: matched };
+    return rejectDotSegments({ params: matched }, routePattern);
   }
 
   if (typeof entry !== "object") {
@@ -340,5 +363,5 @@ export function normalizeStaticPathsEntry(
     };
   }
 
-  return { params };
+  return rejectDotSegments({ params }, routePattern);
 }

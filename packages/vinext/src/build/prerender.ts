@@ -1077,6 +1077,7 @@ export async function prerenderPages({
         // the whole prerender.
         const paths: Array<StaticPathsEntry> = pathsResult?.paths ?? [];
         let entryError: string | null = null;
+        let entryFatal = false;
         const seenPaths = new Set<string>();
         for (const item of paths) {
           let locale = config.i18n?.defaultLocale;
@@ -1091,6 +1092,10 @@ export async function prerenderPages({
           const normalized = normalizeStaticPathsEntry(pathEntry, route.pattern);
           if ("error" in normalized) {
             entryError = normalized.error;
+            // Dot segments are a param-contract failure (same as App Router's
+            // InvalidStaticParamsError): fail the build in every mode, not only
+            // `output: "export"`. Other entry errors stay non-fatal.
+            entryFatal = normalized.fatal === true;
             break;
           }
           if (locale !== undefined && !config.i18n?.locales.includes(locale)) {
@@ -1114,7 +1119,12 @@ export async function prerenderPages({
           }
         }
         if (entryError) {
-          results.push({ route: route.pattern, status: "error", error: entryError });
+          results.push({
+            route: route.pattern,
+            status: "error",
+            error: entryError,
+            ...(entryFatal ? { fatal: true as const } : {}),
+          });
           continue;
         }
       } else {
