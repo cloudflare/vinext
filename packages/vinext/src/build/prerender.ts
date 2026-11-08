@@ -1098,13 +1098,14 @@ export async function prerenderPages({
           try {
             // A string path is already encoded, so `%2E%2E` is a `..` segment
             // too. Next.js fails the build on one even when it matches no route.
+            // Like its escapePathDelimiters, a decoded `/` stays in its segment.
             if (typeof pathEntry === "string") {
               assertNormalizedPagePath(
                 normalizeStaticPathname(pathEntry)
                   .split("/")
                   .map((segment) => {
                     try {
-                      return decodeURIComponent(segment);
+                      return decodeURIComponent(segment).replaceAll("/", "%2F");
                     } catch {
                       return segment;
                     }

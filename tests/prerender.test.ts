@@ -2222,12 +2222,22 @@ describe("prerenderPages — getStaticPaths dot segments (#4583)", () => {
     {
       mode: "export",
       nextConfig: { output: "export", trailingSlash: true },
-      files: ["index.html", "object/safe/slug/page/index.html", "vinext-prerender.json"],
+      files: [
+        "index.html",
+        "object/safe/slug/page/index.html",
+        "string-path/foo%2F..%2Fbar/index.html",
+        "vinext-prerender.json",
+      ],
     },
     {
       mode: "default",
       nextConfig: {},
-      files: ["index.html", "object/safe/slug/page.html", "vinext-prerender.json"],
+      files: [
+        "index.html",
+        "object/safe/slug/page.html",
+        "string-path/foo%2F..%2Fbar.html",
+        "vinext-prerender.json",
+      ],
     },
   ] as const;
 
