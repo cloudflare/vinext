@@ -68,9 +68,11 @@ import {
 } from "./prerender-server-pool.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import {
+  assertNormalizedPagePath,
   getAppRouteOutputPath,
   getOutputPath,
   getRscOutputPath,
+  PagePathMismatchError,
 } from "../utils/prerender-output-paths.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
@@ -1077,6 +1079,7 @@ export async function prerenderPages({
         // the whole prerender.
         const paths: Array<StaticPathsEntry> = pathsResult?.paths ?? [];
         let entryError: string | null = null;
+        let entryFatal = false;
         const seenPaths = new Set<string>();
         for (const item of paths) {
           let locale = config.i18n?.defaultLocale;
@@ -1104,17 +1107,26 @@ export async function prerenderPages({
               locale,
               config.i18n,
             );
+            // A `.` or `..` param would write this page outside the output
+            // directory. Next.js's normalizePagePath fails the build on it.
+            assertNormalizedPagePath(urlPath);
             if (!seenPaths.has(urlPath)) {
               seenPaths.add(urlPath);
               pagesToRender.push({ route, urlPath, params, revalidate, hasStaticProps, locale });
             }
           } catch (e) {
             entryError = (e as Error).message;
+            entryFatal = e instanceof PagePathMismatchError;
             break;
           }
         }
         if (entryError) {
-          results.push({ route: route.pattern, status: "error", error: entryError });
+          results.push({
+            route: route.pattern,
+            status: "error",
+            error: entryError,
+            ...(entryFatal ? { fatal: true as const } : {}),
+          });
           continue;
         }
       } else {

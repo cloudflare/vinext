@@ -183,6 +183,26 @@ describe("prerender output paths for /index", () => {
     expect(getAppRouteOutputPath("/")).toBe("index.route");
     expect(getAppRouteOutputPath("/index")).toBe("index/index.route");
   });
+
+  // normalizePagePath throws when posix.normalize resolves the path elsewhere,
+  // so no artifact path can climb out of its output directory.
+  it("rejects paths with dot segments", () => {
+    const mismatch = "Requested and resolved page mismatch: /x/../../.. /";
+    expect(() => getOutputPath("/x/../../..", true)).toThrow(mismatch);
+    expect(() => getOutputPath("/x/../../..", false, "/docs")).toThrow(mismatch);
+    expect(() => getRscOutputPath("/x/../../..")).toThrow(mismatch);
+    expect(() => getRscOutputPath("/x/../../..", { mode: "export", trailingSlash: true })).toThrow(
+      mismatch,
+    );
+    expect(() => getAppRouteOutputPath("/x/../../..")).toThrow(mismatch);
+    expect(() => getOutputPath("/x/.", false)).toThrow(
+      "Requested and resolved page mismatch: /x/. /x",
+    );
+    expect(getOutputPath("/x/..a/.b.", false)).toBe("x/..a/.b..html");
+    expect(() => getOutputPath("/index/..", false)).toThrow(
+      "Requested and resolved page mismatch: /index/index/.. /index",
+    );
+  });
 });
 
 describe("extractRscPayloadFromPrerenderedHtml", () => {
@@ -2177,6 +2197,98 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+// Next.js fails `next build` in every output mode when a getStaticPaths entry
+// has a `.` or `..` segment: normalizePagePath, applied to every prerendered
+// page, throws because posix.normalize resolves the path elsewhere. vinext
+// wrote those entries' HTML outside the output directory. Refs #4583
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/page-path/normalize-page-path.ts
+describe("prerenderPages — getStaticPaths dot segments (#4583)", () => {
+  const fixtureDir = path.resolve(
+    import.meta.dirname,
+    "./fixtures/pages-static-paths-dot-segments",
+  );
+
+  function listFiles(dir: string): string[] {
+    return fs
+      .readdirSync(dir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.relative(dir, path.join(entry.parentPath, entry.name)))
+      .sort();
+  }
+
+  const cases = [
+    {
+      mode: "export",
+      nextConfig: { output: "export", trailingSlash: true },
+      files: ["index.html", "object/safe/slug/page/index.html", "vinext-prerender.json"],
+    },
+    {
+      mode: "default",
+      nextConfig: {},
+      files: ["index.html", "object/safe/slug/page.html", "vinext-prerender.json"],
+    },
+  ] as const;
+
+  for (const { mode, nextConfig, files } of cases) {
+    it(`fails the routes as fatal and writes nothing outside outDir (${mode} mode)`, async () => {
+      const pagesBundlePath = await buildPagesFixture(fixtureDir, nextConfig);
+      const root = tmpDir(`vinext-prerender-dot-segments-${mode}-`);
+      // Deep enough that the `/object/../../..` entry would land inside `root`.
+      const outDir = path.join(root, "a", "b", "out");
+      try {
+        const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+        const { pagesRouter, apiRouter } =
+          await import("../packages/vinext/src/routing/pages-router.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+        const pagesDir = path.join(fixtureDir, "pages");
+
+        const result = await prerenderPages({
+          mode,
+          pagesBundlePath,
+          routes: await pagesRouter(pagesDir),
+          apiRoutes: await apiRouter(pagesDir),
+          pagesDir,
+          outDir,
+          config: await resolveNextConfig(nextConfig),
+        });
+
+        expect(listFiles(root)).toEqual(files.map((file) => path.join("a", "b", "out", file)));
+        const errors = result.routes
+          .filter((route) => route.status === "error")
+          .sort((a, b) => a.route.localeCompare(b.route));
+        expect(errors).toEqual([
+          {
+            route: "/encoded-string-path/:a",
+            status: "error",
+            error: "Requested and resolved page mismatch: /encoded-string-path/.. /",
+            fatal: true,
+          },
+          {
+            route: "/object/:a/:b/:c",
+            status: "error",
+            error: "Requested and resolved page mismatch: /object/../../.. /",
+            fatal: true,
+          },
+          {
+            route: "/single-dot/:slug",
+            status: "error",
+            error: "Requested and resolved page mismatch: /single-dot/. /single-dot",
+            fatal: true,
+          },
+          {
+            route: "/string-path/:a",
+            status: "error",
+            error: "Requested and resolved page mismatch: /string-path/.. /",
+            fatal: true,
+          },
+        ]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }, 60_000);
+  }
 });
 
 describe("prerenderApp — layout generateStaticParams", () => {
