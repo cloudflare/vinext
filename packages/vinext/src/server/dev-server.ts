@@ -843,6 +843,12 @@ export function createSSRHandler(
     }
 
     const { route, params } = match;
+    // A direct request for the custom 404 page still answers 404, like
+    // Next.js and the production handler (pages-page-handler.ts defaults the
+    // `/404` route's status the same way). A middleware rewrite status wins.
+    if (statusCode === undefined && route.pattern === "/404") {
+      statusCode = 404;
+    }
     // Implements the Next.js `req.url` contract: data-fetching methods observe
     // the original request URL. For ordinary page requests this defaults to
     // `url`, so the assignment is a no-op.
