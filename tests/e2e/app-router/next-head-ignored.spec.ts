@@ -45,11 +45,22 @@ test.describe("next/head in the App Router", () => {
     await waitForAppRouterHydration(page);
     await expect(page.locator("#next-head-layout-mounted")).toBeVisible();
 
+    // Marker survives a soft navigation but is wiped by a full page reload.
+    await page.evaluate(() => {
+      (window as { __NEXT_HEAD_SOFT_NAV_MARKER__?: string }).__NEXT_HEAD_SOFT_NAV_MARKER__ =
+        "alive";
+    });
+
     await page.click("#next-head-server-link");
     await expect(page.locator("#next-head-server-component")).toBeVisible();
     await expect(page).toHaveTitle("next-head-ignored server component metadata title");
     await expect(page.locator('meta[name="next-head-server"]')).toHaveCount(0);
     await expect(page.locator('meta[name="next-head-client"]')).toHaveCount(0);
+
+    const marker = await page.evaluate(
+      () => (window as { __NEXT_HEAD_SOFT_NAV_MARKER__?: string }).__NEXT_HEAD_SOFT_NAV_MARKER__,
+    );
+    expect(marker).toBe("alive");
   });
 
   test("the same client layout still applies next/head in the Pages Router", async ({ page }) => {
