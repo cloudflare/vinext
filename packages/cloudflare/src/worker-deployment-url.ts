@@ -65,7 +65,14 @@ function parseCustomDomainUrl(output: string): string | null {
       );
     const hostname = match?.[1];
     if (!hostname) continue;
-    if (match[2]?.split(",").some((flag) => flag.trim() === "disabled")) continue;
+    // cf flags a domain that does not serve production traffic as `production: disabled`.
+    if (
+      match[2]
+        ?.split(",")
+        .some((flag) => ["disabled", "production: disabled"].includes(flag.trim()))
+    ) {
+      continue;
+    }
 
     try {
       const url = new URL(`https://${hostname}`);

@@ -277,9 +277,16 @@ function runCfCommand(
     encoding: "utf-8",
     shell: false,
   });
-  if (result.error) throw result.error;
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
+  if (result.error) {
+    throw Object.assign(result.error, {
+      status: result.status,
+      signal: result.signal,
+      stdout,
+      stderr,
+    });
+  }
   if (result.status !== 0) {
     throw Object.assign(
       new Error(`Command failed: ${[invocation.file, ...invocation.args].join(" ")}\n${stderr}`),

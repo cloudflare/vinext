@@ -166,6 +166,27 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       },
     );
 
+    it.each([
+      ["[production: disabled]", "https://my-worker.example.workers.dev"],
+      ["[production: enabled, previews: disabled]", "https://shop.example.com"],
+    ])("honors a cf custom domain flagged %s", (flags, expected) => {
+      const root = createCfProject(
+        `process.stderr.write(${JSON.stringify(
+          [
+            "│  Deployed my-worker triggers (0.41 sec)",
+            "│    https://my-worker.example.workers.dev",
+            `│    shop.example.com (custom domain) ${flags}`,
+            "",
+          ].join("\n"),
+        )});`,
+      );
+      try {
+        expect(runCfTriggersDeploy(root, {}).deployedUrl).toBe(expected);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     it("parses the deployment list from cf's stdout only", () => {
       const deployments = {
         deployments: [
@@ -203,6 +224,29 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
         fs.rmSync(root, { recursive: true, force: true });
       }
     });
+  });
+
+  it("keeps cf's output on an execution error such as a full buffer", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-upload-"));
+    const configPath = path.join(root, ".cloudflare/output/v0/workers/default/worker.config.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ name: "my-worker" }));
+    const execute = vi.fn(() => ({
+      error: Object.assign(new Error("spawnSync node ENOBUFS"), { code: "ENOBUFS" }),
+      status: null,
+      signal: "SIGTERM",
+      stdout: "",
+      stderr: "cannot upload a new version of a Worker that does not yet exist\n",
+    }));
+
+    try {
+      expect(() => runCfVersionUpload(root, {}, execute as never)).toThrow(
+        "Version upload needs an existing Cloudflare Worker",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("reads the Build Output Worker name before uploading", () => {
