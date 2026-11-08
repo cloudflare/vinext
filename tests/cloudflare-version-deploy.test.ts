@@ -61,12 +61,14 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     const configPath = path.join(root, ".cloudflare/output/v0/workers/default/worker.config.json");
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({ name: "my-worker" }));
-    const execute = vi.fn(
-      () => `
+    const execute = vi.fn(() => ({
+      status: 0,
+      stdout: "",
+      stderr: `
       Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22
       Version Preview URL: https://095f00a7-my-worker.example.workers.dev
     `,
-    );
+    }));
 
     expect(runCfVersionUpload(root, {}, execute as never)).toMatchObject({
       versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
@@ -79,6 +81,128 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       expect.objectContaining({ cwd: root, shell: false }),
     );
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  describe("with a cf process", () => {
+    // cf writes its log, including `Worker Version ID:` and deployed URLs, to stderr and only
+    // JSON results to stdout. These run a stand-in cf package so the real streams are split.
+    function createCfProject(script: string): string {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-process-"));
+      const configPath = path.join(
+        root,
+        ".cloudflare/output/v0/workers/default/worker.config.json",
+      );
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({ name: "my-worker" }));
+      const cfDir = path.join(root, "node_modules/cf");
+      fs.mkdirSync(path.join(cfDir, "bin"), { recursive: true });
+      fs.writeFileSync(
+        path.join(cfDir, "package.json"),
+        JSON.stringify({ name: "cf", bin: { cf: "bin/cf" } }),
+      );
+      fs.writeFileSync(path.join(cfDir, "bin/cf"), script);
+      return root;
+    }
+
+    it("reads the uploaded version from cf's stderr", () => {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const root = createCfProject(
+        `process.stderr.write(${JSON.stringify(
+          [
+            "│  Uploaded my-worker (3.84 sec)",
+            "│  Worker Version ID: 10020de7-db25-45f6-9a4e-455d64ff587c",
+            "│  Version Preview URL: https://10020de7-my-worker.example.workers.dev",
+            "",
+          ].join("\n"),
+        )});`,
+      );
+      try {
+        expect(runCfVersionUpload(root, {})).toMatchObject({
+          versionId: "10020de7-db25-45f6-9a4e-455d64ff587c",
+          previewUrl: "https://10020de7-my-worker.example.workers.dev",
+          workerName: "my-worker",
+        });
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("reads the deployed URL from cf's stderr when applying triggers", () => {
+      const root = createCfProject(
+        `process.stderr.write("│  Deployed my-worker triggers\\n│    https://my-worker.example.workers.dev\\n");`,
+      );
+      try {
+        expect(runCfTriggersDeploy(root, {}).deployedUrl).toBe(
+          "https://my-worker.example.workers.dev",
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      ["custom domain", "│", "shop.example.com (custom domain)"],
+      ["catch-all route", "│", "shop.example.com/* (zone name: example.com)"],
+      // FORCE_COLOR in the environment makes cf color its gutter even when stderr is a pipe.
+      ["custom domain", "\u001B[90m│\u001B[39m", "shop.example.com (custom domain)"],
+    ])(
+      "prefers a %s over workers.dev in cf's %j-prefixed triggers log",
+      (_label, gutter, target) => {
+        const root = createCfProject(
+          `process.stderr.write(${JSON.stringify(
+            [
+              `${gutter}  Deployed my-worker triggers (0.41 sec)`,
+              `${gutter}    https://my-worker.example.workers.dev`,
+              `${gutter}    ${target}`,
+              "",
+            ].join("\n"),
+          )});`,
+        );
+        try {
+          expect(runCfTriggersDeploy(root, {}).deployedUrl).toBe("https://shop.example.com");
+        } finally {
+          fs.rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it("parses the deployment list from cf's stdout only", () => {
+      const deployments = {
+        deployments: [
+          {
+            id: "current",
+            versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+          },
+        ],
+      };
+      const root = createCfProject(
+        `process.stderr.write("Using account: Example\\n"); process.stdout.write(${JSON.stringify(
+          JSON.stringify(deployments),
+        )});`,
+      );
+      try {
+        expect(runCfDeploymentStatus(root, { name: "my-worker" })).toMatchObject({
+          deploymentId: "current",
+          versions: [{ versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("reports a missing Worker from cf's stderr when the upload fails", () => {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const root = createCfProject(
+        `process.stderr.write("You cannot upload a new version of a Worker that does not yet exist.\\n"); process.exitCode = 1;`,
+      );
+      try {
+        expect(() => runCfVersionUpload(root, {})).toThrow(
+          "Version upload needs an existing Cloudflare Worker",
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it("reads the Build Output Worker name before uploading", () => {
@@ -395,8 +519,9 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
   });
 
   it("uses cf for status, percentage deployments, and prebuilt triggers", () => {
-    const execute = vi.fn(() =>
-      JSON.stringify({
+    const execute = vi.fn(() => ({
+      status: 0,
+      stdout: JSON.stringify({
         deployments: [
           {
             id: "current",
@@ -404,7 +529,8 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
           },
         ],
       }),
-    );
+      stderr: "",
+    }));
     const root = "/tmp/app";
     const bin = path.join(root, "node_modules/cf/bin/cf");
     expect(runCfDeploymentStatus(root, { name: "my-worker" }, execute as never).deploymentId).toBe(
