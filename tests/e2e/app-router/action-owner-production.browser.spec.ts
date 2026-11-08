@@ -101,7 +101,11 @@ function findOnlyCacheActionId(source: string): string {
 }
 
 async function buildAndServeFixture(): Promise<ProductionApp> {
-  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-action-owner-e2e-"));
+  // macOS tmpdir is behind the /var -> /private/var symlink; the build hashes
+  // action ids relative to the resolved root, so the offline id must too.
+  const fixtureRoot = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "vinext-action-owner-e2e-")),
+  );
   await fs.cp(FIXTURE_DIR, fixtureRoot, { recursive: true });
   await linkFixtureNodeModules(fixtureRoot);
 
