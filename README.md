@@ -359,6 +359,8 @@ pnpm run deploy:vinext
 
 For `create-vinext-app` projects, use `build` and `deploy` instead of `build:vinext` and `deploy:vinext`. Redeploy the Response Store only when its package or config changes; normal application deployments do not deploy auxiliary Workers.
 
+To deploy from a connected Git repository, replace the default Wrangler commands in Workers Builds; see [Deploy with Workers Builds](https://vinext.dev/docs/deploying/cloudflare#deploy-with-workers-builds).
+
 The init command also auto-detects and fixes common migration issues:
 
 - Adds `"type": "module"` to package.json if missing

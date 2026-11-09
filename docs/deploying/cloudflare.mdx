@@ -144,6 +144,22 @@ As with `cf previews deploy`, the Preview name and the Vite mode are independent
 
 The subcommand accepts the optional name, `--mode`, `--skip-build`, `--vite-config`, and `--help`. Configure Preview-specific settings in `cloudflare.config.ts` using `isPreview`.
 
+### Deploy with Workers Builds
+
+[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) deploys a Worker on each push to a connected Git repository. Its default deploy command, `npx wrangler deploy`, and its default Preview command for other branches, `npx wrangler preview`, read a Wrangler config file, not `cloudflare.config.ts`, so they cannot deploy a `cloudflare.config.ts` project. Set these build settings instead (under the Worker's **Settings** > **Build**, or when you connect the repository):
+
+- **Build command**: empty. Clear it if it is set.
+- **Deploy command**: `pnpm run deploy`, or `pnpm run deploy:vinext` for projects set up with `vinext init`.
+- **Preview command**: `pnpm exec vinext-cloudflare previews deploy`. Pull request comments show the Preview URL only with `cf` 1.0.0-beta.18 or later.
+
+Use the equivalent commands for your package manager. Workers Builds runs the same build command before both the deploy and Preview commands, and each of those already builds the app. A Preview also needs a Preview build, which a normal `vite build` does not produce, so leave the build command empty rather than building separately and deploying with `--skip-build`. Without a name, `previews deploy` names the Preview after the branch.
+
+The Worker connected to the repository must have the same name as the Worker in `cloudflare.config.ts`, because the deploy command deploys to the Worker named there.
+
+A first deployment cannot use [cache warming](/docs/guides/caching#cache-warming). If the deploy script passes `--warm-cache`, deploy once without it, from your machine or with a temporary deploy command, before relying on the script.
+
+In Response Store service-binding mode, deploy the Response Store from your machine with `build:vinext` and `deploy:response-store` (`build` and `deploy:response-store` for `create-vinext-app` projects) before the first Workers Builds deployment. Until it exists, deploying the application fails because the application's `RESPONSE_STORE` service binding refers to a Worker that is not found. Workers Builds deployments do not deploy the Response Store, so redeploy it the same way when its package or config changes.
+
 ## Use Workers bindings
 
 Import `env` from `cloudflare:workers` in Server Components, Route Handlers, and Server Actions. Configure each binding in the Worker's `env` object in `cloudflare.config.ts`.
