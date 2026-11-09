@@ -484,6 +484,107 @@ test.describe("router.refresh() during an in-flight navigation", () => {
     await expectClientNavigationsOnly();
   });
 
+  // Back to an entry of the visible page (here, the same page without its
+  // hash) needs no request, but it still discards the navigation in flight, as
+  // Next.js's restore action does. The queued refresh then runs on that page.
+  test("runs a queued refresh when Back to the visible page discards the navigation", async ({
+    page,
+  }) => {
+    const { expectClientNavigationsOnly, readAborts } = await openStartPage(page);
+    const renderedAt = await page.locator("#start-rendered-at").textContent();
+    await page.evaluate(() => {
+      window.location.hash = "hash-entry";
+    });
+    await expect(page).toHaveURL(`${BASE}${START}#hash-entry`);
+    const release = await holdRscRequests(page, DESTINATION);
+    const started = recordRscRequests(page);
+
+    await page.locator("#destination-link").click();
+    await expect.poll(() => started).toEqual([DESTINATION]);
+    await page.locator("#refresh-button").click();
+    await page.evaluate(() => window.history.back());
+
+    await expect(page).toHaveURL(`${BASE}${START}`);
+    await expect.poll(() => started).toEqual([DESTINATION, START]);
+    await expect(page.locator("#start-rendered-at")).not.toHaveText(renderedAt ?? "");
+    expect(await readAborts()).toEqual([DESTINATION]);
+
+    // The discarded navigation never commits.
+    release(0);
+    await page.waitForTimeout(500);
+    expect(await page.locator("#destination-page").count()).toBe(0);
+    await expect(page.locator("#start-page")).toBeVisible();
+    await expect(page).toHaveURL(`${BASE}${START}`);
+    await expectClientNavigationsOnly();
+  });
+
+  // A native fragment navigation fires a popstate without history state,
+  // which Next.js ignores, so the navigation in flight still commits and the
+  // queued refresh runs after it.
+  test("keeps the navigation and its queued refresh across a native hash change", async ({
+    page,
+  }) => {
+    const { expectClientNavigationsOnly, readAborts } = await openStartPage(page);
+    const release = await holdRscRequests(page, DESTINATION);
+    const started = recordRscRequests(page);
+
+    await page.locator("#destination-link").click();
+    await expect.poll(() => started).toEqual([DESTINATION]);
+    await page.locator("#refresh-button").click();
+    await page.evaluate(() => {
+      window.location.hash = "native-hash";
+    });
+    await expect(page).toHaveURL(`${BASE}${START}#native-hash`);
+    await page.waitForTimeout(500);
+    expect(started).toEqual([DESTINATION]);
+
+    release(0);
+    release(1);
+    await expect(page.locator("#destination-page")).toBeVisible();
+    await expect(page).toHaveURL(`${BASE}${DESTINATION}`);
+    await expect.poll(() => started).toEqual([DESTINATION, DESTINATION]);
+    expect(await readAborts()).toEqual([]);
+    await expectClientNavigationsOnly();
+  });
+
+  // A native fragment entry stays without router state in Next.js, even once
+  // vinext saves its scroll position on it before a push. Forward to it
+  // therefore keeps the navigation in flight, as Next.js ignores it.
+  test("keeps the navigation when Forward lands on a native hash entry", async ({ page }) => {
+    const { expectClientNavigationsOnly, readAborts } = await openStartPage(page);
+    await page.evaluate(() => {
+      window.location.hash = "native-hash";
+    });
+    await expect(page).toHaveURL(`${BASE}${START}#native-hash`);
+    const release = await holdRscRequests(page, DESTINATION);
+    const started = recordRscRequests(page);
+
+    // The push saves the scroll position on the native hash entry, and Back
+    // to the start entry discards it.
+    await page.locator("#destination-link").click();
+    await expect.poll(() => started).toEqual([DESTINATION]);
+    await page.evaluate(() => window.history.back());
+    await expect(page).toHaveURL(`${BASE}${START}`);
+
+    await page.locator("#destination-link").click();
+    await expect.poll(() => started).toEqual([DESTINATION, DESTINATION]);
+    await page.locator("#refresh-button").click();
+    await page.evaluate(() => window.history.forward());
+    await expect(page).toHaveURL(`${BASE}${START}#native-hash`);
+    await page.waitForTimeout(500);
+    expect(started).toEqual([DESTINATION, DESTINATION]);
+    // Only Back aborted a navigation.
+    expect(await readAborts()).toEqual([DESTINATION]);
+
+    release(0);
+    release(1);
+    release(2);
+    await expect(page.locator("#destination-page")).toBeVisible();
+    await expect(page).toHaveURL(`${BASE}${DESTINATION}`);
+    await expect.poll(() => started).toEqual([DESTINATION, DESTINATION, DESTINATION]);
+    await expectClientNavigationsOnly();
+  });
+
   // A Server Action redirect renders over the navigation in flight without
   // waiting for it. The refresh still waits for that navigation, as everything
   // waits behind it in Next.js, then refreshes the redirect target. Next.js

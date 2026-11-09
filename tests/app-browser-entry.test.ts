@@ -117,6 +117,7 @@ import {
   isCompleteAppPayloadMetadata,
   isCacheRestorableAppPayloadMetadata,
   isHistoryStateBfcacheVersionCurrent,
+  hasRouterHistoryState,
   isExternalHistoryState,
   readHistoryStateActiveRoutePaths,
   readHistoryStateBfcacheIds,
@@ -6652,6 +6653,16 @@ describe("app browser entry previousNextUrl helpers", () => {
       caller: "state",
     });
     expect(isExternalHistoryState(state)).toBe(true);
+  });
+
+  it("recognizes router state on an entry without a traversal index", () => {
+    expect(hasRouterHistoryState(null)).toBe(false);
+    expect(hasRouterHistoryState({ caller: "state" })).toBe(false);
+    expect(hasRouterHistoryState({ __vinext_scrollX: 0, __vinext_scrollY: 240 })).toBe(false);
+    expect(hasRouterHistoryState({ __vinext_previousNextUrl: "/feed" })).toBe(true);
+    expect(hasRouterHistoryState({ __vinext_externalHistoryState: true, caller: "state" })).toBe(
+      true,
+    );
   });
 
   it("removes the external marker when an app-owned history entry commits", () => {

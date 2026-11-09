@@ -12,6 +12,19 @@ const VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY = "__vinext_treeSnapshotId";
 const VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY = "__vinext_treeSnapshotClaimed";
 const VINEXT_ACTIVE_ROUTE_PATHS_HISTORY_STATE_KEY = "__vinext_activeRoutePaths";
 
+// Every key the router writes, so not the scroll position it also saves on
+// entries it doesn't own.
+const VINEXT_ROUTER_HISTORY_STATE_KEYS = [
+  VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY,
+  VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY,
+  VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY,
+  VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY,
+  VINEXT_EXTERNAL_HISTORY_STATE_KEY,
+  VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY,
+  VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY,
+  VINEXT_ACTIVE_ROUTE_PATHS_HISTORY_STATE_KEY,
+];
+
 type HistoryStateRecord = {
   [key: string]: unknown;
 };
@@ -319,6 +332,16 @@ export function isExternalHistoryState(state: unknown): boolean {
  */
 export function isAppOwnedHistoryState(state: unknown): boolean {
   return !isExternalHistoryState(state) && readHistoryStateTraversalIndex(state) !== null;
+}
+
+/**
+ * Whether the router wrote this history entry, or copied its state into it,
+ * as Next.js marks with `__NA`. A native fragment navigation's entry has no
+ * router state, even once vinext saves its scroll position on it.
+ */
+export function hasRouterHistoryState(state: unknown): boolean {
+  const record = readHistoryStateRecord(state);
+  return record !== null && VINEXT_ROUTER_HISTORY_STATE_KEYS.some((key) => key in record);
 }
 
 export function createAppOwnedHistoryState(state: unknown): unknown {

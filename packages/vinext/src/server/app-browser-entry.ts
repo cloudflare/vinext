@@ -146,6 +146,7 @@ import {
   createInitialBfcacheIdMap,
   isCacheRestorableAppPayloadMetadata,
   isCompleteAppPayloadMetadata,
+  hasRouterHistoryState,
   isExternalHistoryState,
   readHistoryStateActiveRoutePaths,
   readHistoryStatePreviousNextUrl,
@@ -3152,6 +3153,29 @@ function bootstrapHydration(
     }
   };
 
+  /**
+   * Discards the navigation that has not committed yet when the URL changes
+   * without a navigation of its own: a raw history write, or a traversal to an
+   * entry that shows the visible tree. Next.js dispatches a restore action for
+   * both.
+   */
+  const discardPendingNavigation = (): void => {
+    if (
+      !browserNavigationController.discardPendingNavigation(
+        historyController.readCurrentTreeSnapshot(),
+      )
+    ) {
+      return;
+    }
+    // Only cancels a request still waiting for its response; a Flight body
+    // React is already decoding has released its abort handle.
+    navigationAbortCoordinator.abortActive();
+    // Like Next.js's restore action, this takes over the queue from the
+    // discarded navigation: a refresh queued behind it runs now, on the URL
+    // the browser now shows.
+    refreshQueue.beginNavigation().settle();
+  };
+
   // Exposed through one typed runtime seam so next/navigation, Link, Form, and
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
@@ -3187,21 +3211,7 @@ function bootstrapHydration(
       historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState),
     commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) =>
       historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState),
-    discardPendingNavigation: () => {
-      if (
-        browserNavigationController.discardPendingNavigation(
-          historyController.readCurrentTreeSnapshot(),
-        )
-      ) {
-        // Only cancels a request still waiting for its response; a Flight body
-        // React is already decoding has released its abort handle.
-        navigationAbortCoordinator.abortActive();
-        // Like Next.js's restore action, this takes over the queue from the
-        // discarded navigation: a refresh queued behind it runs now, on the
-        // URL just written.
-        refreshQueue.beginNavigation().settle();
-      }
-    },
+    discardPendingNavigation,
     flushCommittingNavigationUrl: () => {
       flushPendingHistoryRestoreCommit();
       browserNavigationController.flushCommittingNavigationUrl();
@@ -3248,6 +3258,10 @@ function bootstrapHydration(
     ) {
       notifyAppRouterTransitionStart(href, "traverse");
       historyController.commitTraversalIndexFromHistoryState(event.state);
+      // Next.js restores only entries carrying its router state, and ignores a
+      // native fragment navigation's entry, so that keeps the pending
+      // navigation too.
+      if (hasRouterHistoryState(event.state)) discardPendingNavigation();
       commitClientNavigationState();
       restorePopstateScrollPosition(event.state);
       return;
