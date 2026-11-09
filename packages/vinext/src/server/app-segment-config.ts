@@ -4,7 +4,7 @@ import { isEdgeApiRuntime } from "./edge-api-runtime.js";
 
 type AppRouteSegmentDynamic = "auto" | "error" | "force-dynamic" | "force-static";
 
-type AppRouteSegmentConfigModule = {
+export type AppRouteSegmentConfigModule = {
   dynamic?: unknown;
   dynamicParams?: unknown;
   fetchCache?: unknown;

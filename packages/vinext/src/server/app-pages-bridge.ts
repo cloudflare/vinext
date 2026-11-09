@@ -12,6 +12,7 @@ import type { RuntimePagesDataKind } from "./pages-route-data-kind.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { VINEXT_PRERENDER_RENDER_ERROR_HEADER } from "./headers.js";
 
 export type PagesEntry = {
   getRuntimePageDataKind?: (url: string, request: Request) => RuntimePagesDataKind;
@@ -113,7 +114,9 @@ function applyPagesMiddlewareContext(
   const middlewareHeaders: Record<string, string | string[]> = {};
   if (middlewareContext.headers) {
     for (const [key, value] of middlewareContext.headers) {
-      if (key.toLowerCase() !== "set-cookie") {
+      const lowerName = key.toLowerCase();
+      // vinext's own marker, which middleware can't forge.
+      if (lowerName !== "set-cookie" && lowerName !== VINEXT_PRERENDER_RENDER_ERROR_HEADER) {
         middlewareHeaders[key] = value;
       }
     }

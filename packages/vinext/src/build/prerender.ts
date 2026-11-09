@@ -52,6 +52,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -138,6 +139,18 @@ class PrerenderUserFunctionError extends Error {}
 // which fails `next build` in every mode, so prerenderApp marks it fatal too.
 class InvalidStaticParamsError extends Error {}
 
+// A Pages render or getStaticProps that threw, which fails `next build`. It's
+// thrown, so the route's error carries a stack like any other with
+// enablePrerenderSourceMaps.
+class PrerenderRenderError extends Error {}
+
+// Next.js's message for a page whose prerender reported an error.
+const PRERENDER_RENDER_ERROR_MESSAGE = "Error occurred prerendering page";
+
+function prerenderRenderErrorResult(route: string): PrerenderRouteResult {
+  return { route, status: "error", error: PRERENDER_RENDER_ERROR_MESSAGE, fatal: true };
+}
+
 // The prerender static-params / static-paths endpoints return the real error
 // thrown by a user's generateStaticParams/getStaticPaths as `{ error }` in a 500
 // body (app-prerender-endpoints.ts). Extract that message. For our JSON envelope
@@ -214,8 +227,8 @@ export type PrerenderRouteResult =
       /**
        * Set when the error must fail the build in ALL modes (default included),
        * not just `output: 'export'`. Used for a thrown generateStaticParams /
-       * getStaticPaths, which Next.js treats as a fatal build error rather than a
-       * silently-skipped route. Refs cloudflare/vinext#1982
+       * getStaticPaths or a render error, which Next.js treats as a fatal build
+       * error rather than a silently-skipped route. Refs cloudflare/vinext#1982
        */
       fatal?: true;
     };
@@ -1212,6 +1225,10 @@ export async function prerenderPages({
             });
             return skipped;
           }
+          if (response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1") {
+            void response.body?.cancel().catch(() => {});
+            throw new PrerenderRenderError(PRERENDER_RENDER_ERROR_MESSAGE);
+          }
           const contentType = response.headers.get("content-type");
           // getStaticProps terminal responses carry the framework's MISS marker.
           // A middleware/config/_app early response must not become a snapshot.
@@ -1303,6 +1320,7 @@ export async function prerenderPages({
             route: route.pattern,
             status: "error",
             error: config.enablePrerenderSourceMaps ? getErrorMessageWithStack(err) : err.message,
+            ...(e instanceof PrerenderRenderError ? { fatal: true as const } : {}),
           };
         }
         onProgress?.({
@@ -1337,6 +1355,17 @@ export async function prerenderPages({
           notFoundRes.headers.get(VINEXT_PRERENDER_REWRITTEN_HEADER) !== "0"
         ) {
           void notFoundRes.body?.cancel().catch(() => {});
+          continue;
+        }
+        // Like `next build`, which prerenders `/404` from `pages/404` or
+        // `_error`, only an error of theirs fails it, not one of a dynamic page
+        // the nonexistent path reached.
+        if (
+          notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) ===
+          (hasCustom404 ? "1" : VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR)
+        ) {
+          void notFoundRes.body?.cancel().catch(() => {});
+          results.push(prerenderRenderErrorResult("/404"));
           continue;
         }
         const contentType = notFoundRes.headers.get("content-type") ?? "";
@@ -2051,7 +2080,7 @@ export async function prerenderApp({
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
               tags: cacheTags,
-              fatal: false,
+              fatal,
               specialErrorLocation: specialError?.location ?? null,
               isSpecialError,
             };
@@ -2062,13 +2091,17 @@ export async function prerenderApp({
           if (isSpeculative && !htmlRender.fatal) {
             return { route: routePattern, status: "skipped", reason: "dynamic" };
           }
-          return {
-            route: routePattern,
-            status: "error",
-            error: `RSC handler returned ${htmlRender.status}`,
-            ...(htmlRender.fatal ? { fatal: true as const } : {}),
-          };
+          return htmlRender.fatal
+            ? prerenderRenderErrorResult(routePattern)
+            : {
+                route: routePattern,
+                status: "error",
+                error: `RSC handler returned ${htmlRender.status}`,
+              };
         }
+        // As in `next build`, an error the render reported fails the build,
+        // even when a Suspense or error boundary caught it.
+        if (htmlRender.fatal) return prerenderRenderErrorResult(routePattern);
 
         // Detect dynamic usage via Cache-Control header. When headers(),
         // cookies(), connection(), noStore(), or a no-store fetch are called
@@ -2120,6 +2153,10 @@ export async function prerenderApp({
           const rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
             rscHandler(rscRequest),
           );
+          if (rscRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1") {
+            await rscRes.body?.cancel();
+            return prerenderRenderErrorResult(routePattern);
+          }
           if (!rscRes.ok) {
             await rscRes.body?.cancel();
             throw new Error(
@@ -2263,7 +2300,16 @@ export async function prerenderApp({
         headersContextFromRequest(notFoundRequest),
         () => rscHandler(notFoundRequest),
       );
-      if (notFoundRes.status === 404) {
+      // Like `next build`, which prerenders `/_not-found` on its own, only an
+      // error of the not-found page fails it, not one of a dynamic page the
+      // nonexistent path reached.
+      if (
+        notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) ===
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR
+      ) {
+        await notFoundRes.body?.cancel();
+        results.push(prerenderRenderErrorResult("/404"));
+      } else if (notFoundRes.status === 404) {
         const html404 = await notFoundRes.text();
         results.push({
           route: "/404",

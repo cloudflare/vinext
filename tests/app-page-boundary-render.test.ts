@@ -10,6 +10,16 @@ import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
+import { PRERENDER_BINDINGS_UNAVAILABLE_KEY } from "../packages/vinext/src/server/prerender-bindings-unavailable.js";
+import {
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import {
+  headersContextFromRequest,
+  markDynamicUsage,
+  runWithHeadersContext,
+} from "../packages/vinext/src/shims/headers.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -168,6 +178,10 @@ type TestModule = {
   generateViewport?: (props: any) => unknown;
   metadata?: { description?: string; title?: string };
   viewport?: Record<string, unknown>;
+  dynamic?: string;
+  fetchCache?: string;
+  revalidate?: number;
+  runtime?: string;
 };
 
 const rootLayoutModule = {
@@ -261,6 +275,314 @@ describe("app page boundary render helpers", () => {
     expect(response).toBeNull();
     expect(common.loadSsrHandler).not.toHaveBeenCalled();
     expect(common.clearRequestContext).not.toHaveBeenCalled();
+  });
+
+  it("marks a prerender of the root not-found page whose render reports an error", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const renderNotFound = (
+      route: { pattern: string; params: Record<string, string> } | null,
+      tracksPrerenderRenderErrors?: boolean,
+    ) =>
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        matchedParams: { slug: "missing" },
+        rootLayouts: [rootLayoutModule],
+        rootNotFoundModule: notFoundModule,
+        renderToReadableStream(element, options) {
+          options?.onError?.(new Error("not-found render failed"), undefined, undefined);
+          return renderElementToStream(element);
+        },
+        route,
+        statusCode: 404,
+        tracksPrerenderRenderErrors,
+      });
+    try {
+      const response = await renderNotFound(null);
+      expect(response?.status).toBe(404);
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+      expect(await response?.text()).toContain("Missing page");
+
+      // A matched route's fallback fails the prerender of the page whose
+      // signal it answers, when that page's dispatch tracks its errors.
+      const route = { pattern: "/posts/[slug]", params: { slug: "missing" } };
+      const routed = await renderNotFound(route, true);
+      expect(routed?.status).toBe(404);
+      expect(routed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      const untracked = await renderNotFound(route);
+      expect(untracked?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    // A runtime render is never marked.
+    const runtime = await renderNotFound(null);
+    expect(runtime?.status).toBe(404);
+    expect(runtime?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
+  it("fails a prerender on a matched route fallback that throws only for a build-failing error", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const renderNotFound = (error: Error, tracksPrerenderRenderErrors?: boolean) =>
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        matchedParams: { slug: "missing" },
+        rootLayouts: [rootLayoutModule],
+        rootNotFoundModule: notFoundModule,
+        renderToReadableStream() {
+          throw error;
+        },
+        route: { pattern: "/posts/[slug]", params: { slug: "missing" } },
+        statusCode: 404,
+        tracksPrerenderRenderErrors,
+      });
+    const bindingError = new Error("Cloudflare bindings are unavailable");
+    Object.defineProperty(bindingError, Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY), {
+      value: true,
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const failed = await renderNotFound(new Error("not-found shell failed"), true);
+      expect(failed?.status).toBe(500);
+      expect(failed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      const binding = await renderNotFound(bindingError, true);
+      expect(binding?.status).toBe(500);
+      expect(binding?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      const untracked = await renderNotFound(new Error("not-found shell failed"));
+      expect(untracked?.status).toBe(500);
+      expect(untracked?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      // Each is logged, as the prerender server's catch-all logged it.
+      expect(consoleError).toHaveBeenCalledTimes(3);
+      expect(consoleError).toHaveBeenCalledWith("[vinext] Server error:", bindingError);
+    } finally {
+      consoleError.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("buffers a prerendered fallback's RSC payload to catch an error reported late", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        isRscRequest: true,
+        matchedParams: { slug: "missing" },
+        renderToReadableStream(element, options) {
+          let pulls = 0;
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              pulls++;
+              if (pulls === 1) {
+                controller.enqueue(new TextEncoder().encode(JSON.stringify(element)));
+                return;
+              }
+              options?.onError?.(new Error("late render error"), undefined, undefined);
+              controller.close();
+            },
+          });
+        },
+        rootLayouts: [rootLayoutModule],
+        route: {
+          layoutTreePositions: [0],
+          layouts: [rootLayoutModule],
+          notFound: notFoundModule,
+          params: { slug: "missing" },
+          pattern: "/posts/[slug]",
+          routeSegments: ["posts", "[slug]"],
+        },
+        statusCode: 404,
+        tracksPrerenderRenderErrors: true,
+      });
+      expect(response?.status).toBe(404);
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      expect(await response?.text()).toContain("route:/posts/missing");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps a prerender's error when a redirect replaces the root not-found page", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        matchedParams: {},
+        rootLayouts: [rootLayoutModule],
+        rootNotFoundModule: notFoundModule,
+        renderToReadableStream(element, options) {
+          options?.onError?.(new Error("not-found render failed"), undefined, undefined);
+          options?.onError?.(
+            Object.assign(new Error("NEXT_REDIRECT"), {
+              digest: "NEXT_REDIRECT;replace;/login;307;",
+            }),
+            undefined,
+            undefined,
+          );
+          return renderElementToStream(element);
+        },
+        route: null,
+        statusCode: 404,
+      });
+      expect(response?.status).toBe(307);
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("marks a prerender of the root not-found page whose SSR reports an error", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const renderNotFound = (shellError?: unknown) => {
+      const common = createCommonOptions();
+      common.loadSsrHandler.mockImplementation(async () => ({
+        async handleSsr(
+          rscStream: ReadableStream<Uint8Array>,
+          _navContext?: unknown,
+          _fontData?: unknown,
+          options?: { onSsrError?: (error: unknown) => unknown },
+        ) {
+          options?.onSsrError?.(new Error("not-found SSR failed"));
+          if (shellError) throw shellError;
+          return rscStream;
+        },
+      }));
+      return renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: {},
+        rootLayouts: [rootLayoutModule],
+        rootNotFoundModule: notFoundModule,
+        route: null,
+        statusCode: 404,
+      });
+    };
+    try {
+      const response = await renderNotFound();
+      expect(response?.status).toBe(404);
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+
+      // A redirect that rejects the shell afterwards doesn't hide it.
+      const redirected = await renderNotFound(
+        Object.assign(new Error("NEXT_REDIRECT"), {
+          digest: "NEXT_REDIRECT;replace;/login;307;",
+        }),
+      );
+      expect(redirected?.status).toBe(307);
+      expect(redirected?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("fails a prerender of the root not-found page with an invalid segment config", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        matchedParams: {},
+        rootLayouts: [{ ...rootLayoutModule, fetchCache: "default-no-store" }],
+        rootNotFoundModule: { ...notFoundModule, fetchCache: "force-cache" },
+        route: null,
+        statusCode: 404,
+      });
+      expect(response?.status).toBe(500);
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("leaves a dynamic root not-found page out of the prerender", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const renderNotFound = (options: {
+      notFound?: TestModule;
+      rootLayouts?: TestModule[];
+      skipLayoutWrapping?: boolean;
+      usesDynamicApi?: boolean;
+      throwsShell?: boolean;
+    }) =>
+      runWithHeadersContext(headersContextFromRequest(new Request("http://localhost/x")), () =>
+        renderAppPageHttpAccessFallback<TestModule>({
+          ...createCommonOptions(),
+          matchedParams: {},
+          rootLayouts: options.rootLayouts ?? [rootLayoutModule],
+          rootNotFoundModule: options.notFound ?? notFoundModule,
+          renderToReadableStream(element, renderOptions) {
+            if (options.usesDynamicApi) markDynamicUsage();
+            if (options.throwsShell) throw new Error("not-found shell failed");
+            renderOptions?.onError?.(new Error("not-found render failed"), undefined, undefined);
+            return renderElementToStream(element);
+          },
+          route: null,
+          skipLayoutWrapping: options.skipLayoutWrapping,
+          statusCode: 404,
+        }),
+      );
+    try {
+      // Next.js doesn't prerender `/_not-found` under a dynamic root layout.
+      const forceDynamic = await renderNotFound({
+        rootLayouts: [{ ...rootLayoutModule, dynamic: "force-dynamic" }],
+      });
+      expect(forceDynamic?.status).toBe(404);
+      expect(forceDynamic?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      // Unless the page renders outside it.
+      const unwrapped = await renderNotFound({
+        rootLayouts: [{ ...rootLayoutModule, dynamic: "force-dynamic" }],
+        skipLayoutWrapping: true,
+      });
+      expect(unwrapped?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+      const revalidateZero = await renderNotFound({
+        rootLayouts: [{ ...rootLayoutModule, revalidate: 0 }],
+      });
+      expect(revalidateZero?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      // Nor under an edge runtime one.
+      const edge = await renderNotFound({
+        rootLayouts: [{ ...rootLayoutModule, runtime: "edge" }],
+      });
+      expect(edge?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      // Nor one whose render used a dynamic API.
+      const dynamic = await renderNotFound({ usesDynamicApi: true });
+      expect(dynamic?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+
+      // One that couldn't render at all fails the build, unless it's dynamic.
+      const failed = await renderNotFound({ throwsShell: true });
+      expect(failed?.status).toBe(500);
+      expect(failed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+      const dynamicFailed = await renderNotFound({ throwsShell: true, usesDynamicApi: true });
+      expect(dynamicFailed?.status).toBe(500);
+      expect(dynamicFailed?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      const throwingMetadataNotFound = {
+        ...notFoundModule,
+        generateMetadata: () => {
+          throw new Error("metadata failed");
+        },
+      };
+      const metadataFailed = await renderNotFound({ notFound: throwingMetadataNotFound });
+      expect(metadataFailed?.status).toBe(500);
+      expect(metadataFailed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+      const dynamicMetadataFailed = await renderNotFound({
+        notFound: throwingMetadataNotFound,
+        rootLayouts: [{ ...rootLayoutModule, dynamic: "force-dynamic" }],
+      });
+      expect(dynamicMetadataFailed?.status).toBe(500);
+      expect(dynamicMetadataFailed?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("converts redirects thrown while rendering HTTP access fallbacks into redirect responses", async () => {

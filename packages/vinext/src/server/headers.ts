@@ -123,6 +123,12 @@ export const VINEXT_PRERENDER_REWRITTEN_HEADER = "x-vinext-prerender-rewritten";
 export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
 
 /**
+ * The render error marker's value for the not-found page's own render, which
+ * fails the build's 404, unlike a page route the 404's request reaches.
+ */
+export const VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR = "not-found";
+
+/**
  * Prerender-only marker: the response's 401, 403, 404 or redirect is its page's
  * notFound(), forbidden(), unauthorized() or redirect(), which escaped the shell.
  * Its value is the JSON of the headers to store: a redirect's own location, or

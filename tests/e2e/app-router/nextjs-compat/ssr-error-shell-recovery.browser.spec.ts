@@ -124,12 +124,16 @@ export default function Client() {
   );
 
   // Genuine RSC/server error: the same error document, from whose payload the
-  // browser renders the built-in global-error.
+  // browser renders the built-in global-error. `cookies()` keeps the page out
+  // of the prerender, whose build the error would fail.
   const serverErrorDir = path.join(appDir, "server-error");
   await fs.mkdir(serverErrorDir, { recursive: true });
   await fs.writeFile(
     path.join(serverErrorDir, "page.tsx"),
-    `export default function ServerErrorPage(): never {
+    `import { cookies } from "next/headers";
+
+export default async function ServerErrorPage(): Promise<never> {
+  await cookies();
   throw new Error("genuine server digest error");
 }
 `,

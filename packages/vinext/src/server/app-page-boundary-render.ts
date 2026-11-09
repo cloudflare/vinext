@@ -9,6 +9,7 @@ import {
 } from "vinext/shims/error-boundary";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { withUseCacheLayoutMarker } from "vinext/shims/internal/app-page-props-cache-key";
+import { peekDynamicUsage } from "vinext/shims/headers";
 import { MetadataHead, ViewportHead, type Metadata, type Viewport } from "vinext/shims/metadata";
 import type { NavigationContext } from "vinext/shims/navigation";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
@@ -66,6 +67,18 @@ import {
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
+import {
+  bufferPrerenderResponse,
+  createPrerenderRenderErrorTracker,
+  isPrerenderBuildFailingError,
+  markPrerenderRenderError,
+} from "./prerender-render-error.js";
+import {
+  isAppPageStaticEligible,
+  isEdgeRuntime,
+  resolveAppPageSegmentConfig,
+  type AppRouteSegmentConfigModule,
+} from "./app-segment-config.js";
 import {
   createAppPageLayoutEntries,
   createAppPageRouteBodyMetadata,
@@ -144,9 +157,10 @@ function failOnLateAccessError(
 // `{ error: unknown; reset }` fallback contract, so the cast bridges the
 // contravariant mismatch the same way user global-error components do.
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageComponent;
-type AppPageModule = Record<string, unknown> & {
-  default?: AppPageComponent | null | undefined;
-};
+type AppPageModule = Record<string, unknown> &
+  AppRouteSegmentConfigModule & {
+    default?: AppPageComponent | null | undefined;
+  };
 type AppPageBoundaryOnError = (
   error: unknown,
   requestInfo: unknown,
@@ -262,6 +276,11 @@ type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppP
   intercept?: AppPageInterceptOptions<TModule> | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   matchedParams: AppPageParams;
+  /**
+   * Whether a matched route's fallback answers the signal of a page the
+   * prerender renders and Next.js prerenders, whose build its errors fail.
+   */
+  tracksPrerenderRenderErrors?: boolean;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
@@ -533,6 +552,10 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     route?: AppPageBoundaryRoute<TModule> | null;
     routePattern?: string;
     status: number;
+    /** Whether a prerender's build fails on an error this render reports. */
+    tracksPrerenderRenderErrors?: boolean;
+    /** Whether the render is the root not-found page's own, the build's 404. */
+    isPrerenderNotFoundPage?: boolean;
   },
 ): Promise<Response> {
   const requestUrl = new URL(options.requestUrl);
@@ -549,12 +572,26 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     pathname,
     options.routePattern ?? pathname,
   );
-  const rscErrorTracker = createAppPageRscErrorTracker(baseRscOnErrorHandler);
+  const prerenderRenderErrors = createPrerenderRenderErrorTracker(
+    () => options.tracksPrerenderRenderErrors === true,
+    options.isPrerenderNotFoundPage === true,
+  );
+  const isPrerenderRenderDynamic = () => peekDynamicUsage() || isRenderDynamicLatched();
+  const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
+    prerenderRenderErrors.note(error);
+    return baseRscOnErrorHandler(error, requestInfo, errorContext);
+  });
   const resolveCapturedSpecialError = (error?: unknown) =>
     resolveAppPageSpecialError(error) ??
     resolveAppPageSpecialError(rscErrorTracker.getCapturedSpecialError());
   const renderSpecialErrorResponse = (specialError: AppPageSpecialError) =>
     renderBoundarySpecialErrorResponse(options, specialError);
+  // A redirect or access signal doesn't hide an error that fails the build.
+  const finalizeSpecialErrorResponse = async (specialError: AppPageSpecialError) =>
+    prerenderRenderErrors.finalize(
+      await renderSpecialErrorResponse(specialError),
+      isPrerenderRenderDynamic,
+    );
   const handleSpecialErrors = options.handleSpecialErrors === true;
 
   let response: Response;
@@ -567,11 +604,15 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
           getStyles: options.getFontStyles,
         });
         const ssrHandler = await options.loadSsrHandler();
-        const onSsrError = options.createRscOnErrorHandler(
+        const baseOnSsrError = options.createRscOnErrorHandler(
           pathname,
           options.routePattern ?? pathname,
           { renderSource: "server-rendering" },
         );
+        const onSsrError: typeof baseOnSsrError = (error, requestInfo, errorContext) => {
+          prerenderRenderErrors.note(error);
+          return baseOnSsrError(error, requestInfo, errorContext);
+        };
         return renderAppPageHtmlResponse({
           clearRequestContext: options.clearRequestContext,
           fontData,
@@ -608,9 +649,16 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
   } catch (error) {
     const specialError = handleSpecialErrors ? resolveCapturedSpecialError(error) : null;
     if (specialError !== null) {
-      return renderSpecialErrorResponse(specialError);
+      return finalizeSpecialErrorResponse(specialError);
     }
     throw error;
+  }
+
+  if (options.tracksPrerenderRenderErrors === true && response.body) {
+    response = prerenderRenderErrors.finalize(
+      await bufferPrerenderResponse(response),
+      isPrerenderRenderDynamic,
+    );
   }
 
   if (!handleSpecialErrors) {
@@ -656,11 +704,56 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     }
   }
 
-  return renderSpecialErrorResponse(specialError);
+  return finalizeSpecialErrorResponse(specialError);
+}
+
+// Whether Next.js prerenders a root boundary page, such as `/_not-found`, from
+// the segment config of its layouts and its own module.
+function isRootBoundaryStaticEligible(
+  layoutModules: readonly (AppRouteSegmentConfigModule | null | undefined)[],
+  boundaryModule: AppRouteSegmentConfigModule | null | undefined,
+): boolean {
+  const config = resolveAppPageSegmentConfig({ layouts: layoutModules, page: boundaryModule });
+  return isAppPageStaticEligible({
+    dynamicConfig: config.dynamicConfig,
+    hasGenerateStaticParams: false,
+    isDynamicRoute: false,
+    isStaticGenerationEdgeRuntime: isEdgeRuntime(config.runtime),
+    revalidateSeconds: config.revalidateSeconds,
+  });
 }
 
 export async function renderAppPageHttpAccessFallback<TModule extends AppPageModule>(
   options: RenderAppPageHttpAccessFallbackOptions<TModule>,
+): Promise<Response | null> {
+  if (process.env.VINEXT_PRERENDER !== "1") return renderHttpAccessFallback(options, null);
+  // As in `next build`, an error the not-found, forbidden or unauthorized page
+  // reports fails the prerender of the page whose signal it answers. Without a
+  // route, it's the root not-found page's own prerender (`/_not-found`),
+  // unless Next.js doesn't prerender the page. Neither fails once the render
+  // turned dynamic. That includes an error, such as one from its metadata,
+  // that leaves no page to answer with.
+  const prerender = options.route
+    ? { isNotFoundPage: false, tracksRenderErrors: options.tracksPrerenderRenderErrors === true }
+    : { isNotFoundPage: true, tracksRenderErrors: false };
+  try {
+    return await renderHttpAccessFallback(options, prerender);
+  } catch (error) {
+    // Logged like the prerender server's own catch-all, which this replaces.
+    console.error("[vinext] Server error:", error);
+    const response = new Response("Internal Server Error", { status: 500 });
+    return prerender.tracksRenderErrors &&
+      isPrerenderBuildFailingError(error) &&
+      !peekDynamicUsage() &&
+      !isRenderDynamicLatched()
+      ? markPrerenderRenderError(response, prerender.isNotFoundPage)
+      : response;
+  }
+}
+
+async function renderHttpAccessFallback<TModule extends AppPageModule>(
+  options: RenderAppPageHttpAccessFallbackOptions<TModule>,
+  prerender: { isNotFoundPage: boolean; tracksRenderErrors: boolean } | null,
 ): Promise<Response | null> {
   const resolvedBoundaryModule = resolveAppPageHttpAccessBoundaryModule({
     rootForbiddenModule: options.rootForbiddenModule,
@@ -683,6 +776,14 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   }
 
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
+  if (prerender?.isNotFoundPage) {
+    // Tracked until it resolves, so an invalid segment config fails it too.
+    prerender.tracksRenderErrors = true;
+    prerender.tracksRenderErrors = isRootBoundaryStaticEligible(
+      options.skipLayoutWrapping ? [] : layoutModules,
+      boundaryModule,
+    );
+  }
   const pathname = new URL(options.requestUrl).pathname;
   const routePathname = options.routePathname ?? stripBasePath(pathname, options.basePath ?? "");
   const headBoundaryModule = options.headBoundaryModule ?? boundaryModule;
@@ -1147,6 +1248,8 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     route: skipLayoutWrapping ? null : options.route,
     routePattern: options.route?.pattern,
     status: options.statusCode,
+    tracksPrerenderRenderErrors: prerender?.tracksRenderErrors === true,
+    isPrerenderNotFoundPage: prerender?.isNotFoundPage === true,
   });
   return failOnLateAccessError(response, lateAccessErrors);
 }

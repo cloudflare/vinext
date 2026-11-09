@@ -50,6 +50,7 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import {
   NEXTJS_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "./headers.js";
 import { isPageNotModified } from "./http-conditional.js";
@@ -536,6 +537,8 @@ function applyGsspHeaders(
   for (const key of Object.keys(gsspHeaders)) {
     const value = gsspHeaders[key];
     const lowerKey = key.toLowerCase();
+    // vinext's own marker, which user code can't forge.
+    if (lowerKey === VINEXT_PRERENDER_RENDER_ERROR_HEADER) continue;
     if (lowerKey === "set-cookie" && Array.isArray(value)) {
       for (const cookie of value) {
         headers.append("set-cookie", String(cookie));

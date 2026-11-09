@@ -30,6 +30,9 @@ import {
 import { handleAppPrerenderEndpoint } from "../packages/vinext/src/server/app-prerender-endpoints.js";
 import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
 import {
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -820,6 +823,50 @@ describe("prerenderApp — RSC extraction", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // As in `next build`, a page whose render reported an error fails the build,
+  // also when its RSC payload comes from the middleware short-circuit fallback.
+  it("fails the build on a middleware short-circuit fallback RSC response that reports an error", async () => {
+    const outDir = tmpDir("vinext-prerender-rsc-fallback-marked-");
+    const server = createServer((req, res) => {
+      const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
+      if (isRsc) {
+        res.setHeader("content-type", "text/x-component");
+        res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+        res.end("0:null\n");
+        return;
+      }
+      res.statusCode = req.url === "/static-test" ? 200 : 404;
+      res.setHeader("content-type", "text/html");
+      res.end("<html><body>middleware short-circuit</body></html>");
+    });
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = (await appRouter(path.join(APP_FIXTURE, "app"))).filter(
+        (route) => route.pattern === "/static-test",
+      );
+      expect(routes).toHaveLength(1);
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(outDir, "dist", "server", "index.js"),
+        routes,
+        outDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+      expect(findRoute(result.routes, "/static-test")).toMatchObject({
+        status: "error",
+        fatal: true,
+      });
+      expect(fs.existsSync(path.join(outDir, "static-test.rsc"))).toBe(false);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // As in Next.js's build, a page whose notFound(), forbidden(), unauthorized()
@@ -964,6 +1011,118 @@ describe("prerenderApp — special errors that escape the shell", () => {
 });
 
 // ─── Pages Router ─────────────────────────────────────────────────────────────
+
+// As in `next build`, a 404 page whose render reported an error fails the build.
+describe("prerender — a 404 page whose render reports an error", () => {
+  function createMarkedNotFoundServer(
+    marker: string,
+    rewritten = "0",
+  ): {
+    server: Server;
+    requestedPaths: string[];
+  } {
+    const requestedPaths: string[] = [];
+    const server = createServer((req, res) => {
+      requestedPaths.push(req.url ?? "");
+      res.statusCode = 404;
+      res.setHeader("content-type", "text/html");
+      res.setHeader(VINEXT_PRERENDER_REWRITTEN_HEADER, rewritten);
+      res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, marker);
+      res.end("<html><body>not found</body></html>");
+    });
+    return { server, requestedPaths };
+  }
+
+  async function prerenderAppNotFound(marker: string) {
+    const outDir = tmpDir("vinext-prerender-app-404-error-");
+    const { server, requestedPaths } = createMarkedNotFoundServer(marker);
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(outDir, "dist", "server", "index.js"),
+        routes: [],
+        outDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+      expect(requestedPaths).toContain("/__vinext_nonexistent_for_404__");
+      return {
+        route: findRoute(result.routes, "/404"),
+        has404: fs.existsSync(path.join(outDir, "404.html")),
+      };
+    } finally {
+      await closeServer(server);
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  }
+
+  async function prerenderPagesNotFound(fixture: string, marker: string, rewritten?: string) {
+    const outDir = tmpDir("vinext-prerender-pages-404-error-");
+    const { server, requestedPaths } = createMarkedNotFoundServer(marker, rewritten);
+    const port = await listen(server);
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderPages({
+        mode: "default",
+        routes: [],
+        apiRoutes: [],
+        pagesDir: path.join(fixture, "pages"),
+        outDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+      return {
+        requestedPaths,
+        route: findRoute(result.routes, "/404"),
+        has404: fs.existsSync(path.join(outDir, "404.html")),
+      };
+    } finally {
+      await closeServer(server);
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  }
+
+  it("fails the App Router's /404", async () => {
+    const failed = await prerenderAppNotFound(VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR);
+    expect(failed.route).toMatchObject({ status: "error", fatal: true });
+    expect(failed.has404).toBe(false);
+
+    // Not for a dynamic page the nonexistent path reached.
+    const page = await prerenderAppNotFound("1");
+    expect(page.route).toMatchObject({ status: "rendered" });
+  });
+
+  it("fails the Pages Router's /404", async () => {
+    const failed = await prerenderPagesNotFound(PAGES_FIXTURE, "1");
+    expect(failed.requestedPaths).toContain("/404");
+    expect(failed.route).toMatchObject({ status: "error", fatal: true });
+    expect(failed.has404).toBe(false);
+
+    // Not for the page a conditional rewrite of `/404` reaches.
+    const rewritten = await prerenderPagesNotFound(PAGES_FIXTURE, "1", "1");
+    expect(rewritten.requestedPaths).toContain("/404");
+    expect(rewritten.route).toBeUndefined();
+
+    // Without `pages/404`, `_error` renders the nonexistent path, unless it
+    // reached a dynamic page.
+    const errorPageFixture = path.resolve(
+      import.meta.dirname,
+      "./fixtures/pages-i18n-public-rewrite",
+    );
+    const errorPage = await prerenderPagesNotFound(
+      errorPageFixture,
+      VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+    );
+    expect(errorPage.requestedPaths).toContain("/__vinext_nonexistent_for_404__");
+    expect(errorPage.route).toMatchObject({ status: "error", fatal: true });
+    const page = await prerenderPagesNotFound(errorPageFixture, "1");
+    expect(page.route).toMatchObject({ status: "rendered" });
+  });
+});
 
 describe("prerenderPages — basePath export", () => {
   it("requests and writes Pages exports under basePath", async () => {
@@ -1185,6 +1344,12 @@ describe("prerenderPages — default mode (pages-basic)", () => {
     if (errored && errored.status === "error") {
       expect(errored.error).toMatch(/missing the `params` key|params is undefined/);
     }
+  });
+
+  // As in `next build`, a page that throws while rendering fails the build.
+  it("fails the prerender of a page whose render throws", () => {
+    expect(findRoute(results, "/error-throw")).toMatchObject({ status: "error", fatal: true });
+    expect(fs.existsSync(path.join(outDir, "error-throw.html"))).toBe(false);
   });
 
   // ── ISR page ───────────────────────────────────────────────────────────────
@@ -1436,11 +1601,51 @@ describe("prerenderApp — default mode (app-basic)", () => {
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
-  // As in Next.js, whose build fails on a prerender error, a page that throws
-  // is not stored, even when an error.tsx catches the error (#4394).
-  it("does not store a page whose render error an error.tsx catches", () => {
-    expect(findRoute(results, "/error-server-test")).toMatchObject({ status: "skipped" });
+  // As in `next build`, a render error fails the build, even when an
+  // error.tsx catches it (#4394).
+  it("fails the prerender of a page whose render error an error.tsx catches", () => {
+    expect(findRoute(results, "/error-server-test")).toMatchObject({
+      status: "error",
+      fatal: true,
+    });
     expect(fs.existsSync(path.join(outDir, "error-server-test.html"))).toBe(false);
+  });
+
+  it("fails the prerender of a page whose metadata throws", () => {
+    expect(
+      findRoute(results, "/nextjs-compat/layout-metadata-error-without-boundary"),
+    ).toMatchObject({ status: "error", fatal: true });
+  });
+
+  it("fails the prerender of a page whose error a Suspense boundary catches", () => {
+    // A server component, then a client component, that throws inside
+    // Suspense: the document is a 200 that renders the error in the browser.
+    for (const route of ["/react19-dev-rsc-error", "/nextjs-compat/dynamic/loading-error/ssr"]) {
+      expect(findRoute(results, route)).toMatchObject({
+        status: "error",
+        error: "Error occurred prerendering page",
+        fatal: true,
+      });
+    }
+    expect(fs.existsSync(path.join(outDir, "react19-dev-rsc-error.html"))).toBe(false);
+  });
+
+  it("skips a page that throws after turning dynamic", () => {
+    expect(findRoute(results, "/prerender-dynamic-throw")).toMatchObject({
+      status: "skipped",
+      reason: "dynamic",
+    });
+  });
+
+  it("doesn't fail the build on a throwing page Next.js doesn't prerender", () => {
+    // An edge runtime page, which throws without its env var.
+    expect(
+      findRoute(results, "/nextjs-compat/app-static-stale-cache-serving-edge/app-page"),
+    ).toEqual({
+      route: "/nextjs-compat/app-static-stale-cache-serving-edge/app-page",
+      status: "skipped",
+      reason: "dynamic",
+    });
   });
 
   // ── Static routes with explicit config ────────────────────────────────────

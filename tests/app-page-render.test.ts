@@ -16,6 +16,7 @@ import {
   RSC_PAYLOAD_SCHEMA_VERSION,
 } from "../packages/vinext/src/server/artifact-compatibility.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import { PRERENDER_BINDINGS_UNAVAILABLE_KEY } from "../packages/vinext/src/server/prerender-bindings-unavailable.js";
 import {
   createAppPageLayoutGate,
   registerAppPageLayoutGate,
@@ -55,6 +56,7 @@ import {
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
@@ -425,6 +427,288 @@ describe("form state rendering", () => {
 });
 
 describe("app page render lifecycle", () => {
+  it("marks a prerender HTML response whose render reports an error", async () => {
+    const renderHtml = (isPrerender: boolean, revalidateSeconds: number | null = null) =>
+      renderAppPageLifecycle({
+        ...createCommonOptions().options,
+        isPrerender,
+        isProduction: true,
+        revalidateSeconds,
+        renderToReadableStream(_element, options) {
+          // A Suspense boundary's error, which the page still renders around.
+          options?.onError?.(new Error("suspended failure"), undefined, undefined);
+          return createStream(["flight-data"]);
+        },
+      });
+
+    for (const revalidateSeconds of [null, 60]) {
+      const response = await renderHtml(true, revalidateSeconds);
+      expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      await response.text();
+    }
+
+    const runtimeResponse = await renderHtml(false);
+    expect(runtimeResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    await runtimeResponse.text();
+
+    // And when the error boundary recovers the shell's error.
+    const recovered = await renderAppPageLifecycle({
+      ...createCommonOptions().options,
+      isPrerender: true,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(
+          _rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: { onSsrError?: (error: unknown) => unknown },
+        ) {
+          options?.onSsrError?.(new Error("shell failure"));
+          return {
+            htmlStream: createStream(['<html id="__next_error__"></html>']),
+            metadataReady: Promise.resolve(),
+            capturedRscData: null,
+            shellErrorRecovered: true,
+          };
+        },
+      }),
+    });
+    expect(recovered.status).toBe(500);
+    expect(recovered.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    await recovered.text();
+  });
+
+  it("leaves unmarked a prerender that turned dynamic or a PPR fallback shell's aborted render", async () => {
+    const reportError = (usesDynamicApi: boolean) => ({
+      renderToReadableStream(
+        _element: unknown,
+        options?: { onError?: (error: unknown, ...rest: unknown[]) => unknown },
+      ) {
+        if (usesDynamicApi) markDynamicUsage();
+        options?.onError?.(new Error("suspended failure"), undefined, undefined);
+        return createStream(["flight-data"]);
+      },
+    });
+    const inRequest = <T>(render: () => Promise<T>) =>
+      runWithHeadersContext(
+        headersContextFromRequest(new Request("https://example.test/posts/post")),
+        render,
+      );
+
+    for (const revalidateSeconds of [null, 60]) {
+      const dynamic = await inRequest(() =>
+        renderAppPageLifecycle({
+          ...createCommonOptions().options,
+          isPrerender: true,
+          isProduction: true,
+          revalidateSeconds,
+          ...reportError(true),
+        }),
+      );
+      expect(dynamic.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      await dynamic.text();
+    }
+
+    const recovered = await inRequest(() =>
+      renderAppPageLifecycle({
+        ...createCommonOptions().options,
+        isPrerender: true,
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          async handleSsr(
+            _rscStream: ReadableStream<Uint8Array>,
+            _navContext: unknown,
+            _fontData: unknown,
+            options?: { onSsrError?: (error: unknown) => unknown },
+          ) {
+            markDynamicUsage();
+            options?.onSsrError?.(new Error("shell failure"));
+            return {
+              htmlStream: createStream(['<html id="__next_error__"></html>']),
+              metadataReady: Promise.resolve(),
+              capturedRscData: null,
+              shellErrorRecovered: true,
+            };
+          },
+        }),
+      }),
+    );
+    expect(recovered.status).toBe(500);
+    expect(recovered.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    await recovered.text();
+
+    // A fallback shell's render is marked until its abort ends it on purpose.
+    for (const [signal, marker] of [
+      [new AbortController().signal, "1"],
+      [AbortSignal.abort(), null],
+    ] as const) {
+      const shell = await renderAppPageLifecycle({
+        ...createCommonOptions().options,
+        isPrerender: true,
+        isProduction: true,
+        pprFallbackShellSignal: signal,
+        ...reportError(false),
+      });
+      expect(shell.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(marker);
+      await shell.text();
+    }
+  });
+
+  it("marks the error page of a speculative prerender whose shell throws", async () => {
+    const renderPage = (usesDynamicApi = false) => {
+      const common = createCommonOptions();
+      common.renderErrorBoundaryResponse.mockImplementation(
+        async () => new Response("error page", { status: 500 }),
+      );
+      return renderAppPageLifecycle({
+        ...common.options,
+        isPrerender: true,
+        isProduction: true,
+        isSpeculativePrerender: true,
+        loadSsrHandler: async () => ({
+          async handleSsr(
+            _rscStream: ReadableStream<Uint8Array>,
+            _navContext: unknown,
+            _fontData: unknown,
+            options?: { onSsrError?: (error: unknown) => unknown },
+          ) {
+            if (usesDynamicApi) markDynamicUsage();
+            const error = new Error("shell failed");
+            options?.onSsrError?.(error);
+            throw error;
+          },
+        }),
+      });
+    };
+
+    const response = await renderPage();
+    expect(response.status).toBe(500);
+    expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+
+    // Not once the render turned dynamic.
+    await runWithHeadersContext(
+      headersContextFromRequest(new Request("https://example.test/posts/post")),
+      async () => {
+        const dynamic = await renderPage(true);
+        expect(dynamic.status).toBe(500);
+        expect(dynamic.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      },
+    );
+  });
+
+  it("keeps a prerender's error when a redirect replaces the page's shell", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isPrerender: true,
+      isProduction: true,
+      renderPageSpecialError: async (specialError) =>
+        new Response(null, { status: specialError.statusCode }),
+      renderToReadableStream(_element, options) {
+        options?.onError?.(new Error("render failed"), undefined, undefined);
+        return createStream(["flight-data"]);
+      },
+      loadSsrHandler: async () => ({
+        async handleSsr(
+          _rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          ssrOptions?: {
+            sideStream?: ReadableStream<Uint8Array>;
+            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+          },
+        ) {
+          // Captured as the SSR entry does, so an ISR render prerenders the redirect.
+          if (ssrOptions?.capturedRscDataRef && ssrOptions.sideStream) {
+            ssrOptions.capturedRscDataRef.value = new Response(ssrOptions.sideStream).arrayBuffer();
+          }
+          throw Object.assign(new Error("NEXT_REDIRECT"), {
+            digest: "NEXT_REDIRECT;replace;/login;307;",
+          });
+        },
+      }),
+    });
+    expect(response.status).toBe(307);
+    expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+  });
+
+  it("leaves to the RSC render an error SSR relays from it", async () => {
+    // As in Next.js, which recovers the server error behind the digest of the
+    // error the Flight client rebuilds.
+    const renderPage = (rscError: Error) => {
+      const common = createCommonOptions();
+      common.createRscOnErrorHandler.mockImplementation(() => () => "rsc-digest");
+      return renderAppPageLifecycle({
+        ...common.options,
+        isPrerender: true,
+        isProduction: true,
+        renderToReadableStream(_element, options) {
+          options?.onError?.(rscError, undefined, undefined);
+          return createStream(["flight-data"]);
+        },
+        loadSsrHandler: async () => ({
+          async handleSsr(
+            _rscStream: ReadableStream<Uint8Array>,
+            _navContext: unknown,
+            _fontData: unknown,
+            options?: { onSsrError?: (error: unknown) => unknown },
+          ) {
+            options?.onSsrError?.(
+              Object.assign(new Error("An error occurred in the Server Components render."), {
+                digest: "rsc-digest",
+              }),
+            );
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+      });
+    };
+
+    const bindingError = new Error("Cloudflare bindings are unavailable");
+    Object.defineProperty(bindingError, Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY), {
+      value: true,
+    });
+    const binding = await renderPage(bindingError);
+    expect(binding.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    await binding.text();
+
+    const failed = await renderPage(new Error("render failed"));
+    expect(failed.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    await failed.text();
+  });
+
+  it("marks a prerender RSC response whose render reports an error late", async () => {
+    const renderRsc = (isPrerender: boolean) =>
+      renderAppPageLifecycle({
+        ...createCommonOptions().options,
+        isPrerender,
+        isRscRequest: true,
+        renderToReadableStream(_element, options) {
+          let sent = false;
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (sent) {
+                // A Suspense boundary's error, after the response started.
+                options?.onError?.(new Error("late failure"), undefined, undefined);
+                controller.close();
+                return;
+              }
+              controller.enqueue(new TextEncoder().encode("flight-data"));
+              sent = true;
+            },
+          });
+        },
+      });
+
+    const response = await renderRsc(true);
+    expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    await expect(response.text()).resolves.toContain("flight-data");
+
+    const runtimeResponse = await renderRsc(false);
+    expect(runtimeResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    await runtimeResponse.text();
+  });
+
   it("answers an RSC request with the special response of a layout that threw in the render", async () => {
     const common = createCommonOptions();
     const { element, gate } = createGatedElements(["layout:/", "layout:/posts"]);

@@ -6,7 +6,10 @@ import {
   type MiddlewareResult,
   type PagesRenderOptions,
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
-import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  MIDDLEWARE_SKIP_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { NextRequest } from "../packages/vinext/src/shims/server.js";
@@ -1066,6 +1069,34 @@ describe("config headers", () => {
     if (result.type !== "response") return;
     expect(result.response.headers.get("X-Custom")).toBe("test");
   });
+
+  it.each(["middleware", "a config header"])(
+    "drops a prerender render error marker that %s sets",
+    async (source) => {
+      const marker = { key: "X-Vinext-Prerender-Render-Error", value: "1" };
+      const result = await runPagesRequest(
+        makeRequest("/foo"),
+        baseDeps(
+          source === "middleware"
+            ? {
+                hasMiddleware: true,
+                runMiddleware: makeMiddleware({
+                  responseHeaders: new Headers([[marker.key, marker.value]]),
+                }),
+                renderPage: makeRenderPage(200),
+              }
+            : {
+                configHeaders: [{ source: "/foo", headers: [marker] }],
+                renderPage: makeRenderPage(200),
+              },
+        ),
+      );
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.status).toBe(200);
+      expect(result.response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    },
+  );
 
   it("does not match percent-encoded static aliases", async () => {
     const result = await runPagesRequest(

@@ -1,4 +1,5 @@
 import { register } from "node:module";
+import { PRERENDER_BINDINGS_UNAVAILABLE_KEY } from "../server/prerender-bindings-unavailable.js";
 
 let registered = false;
 
@@ -8,8 +9,13 @@ export function registerPrerenderCloudflareLoader(): void {
   registered = true;
   const stub = `
     export const tracing = undefined;
+    function unavailableError(message) {
+      const error = new Error(message);
+      Object.defineProperty(error, Symbol.for(${JSON.stringify(PRERENDER_BINDINGS_UNAVAILABLE_KEY)}), { value: true });
+      return error;
+    }
     function unavailable() {
-      throw new Error("Cloudflare bindings are unavailable during build-time prerendering. Use cache warming for binding-dependent routes.");
+      throw unavailableError("Cloudflare bindings are unavailable during build-time prerendering. Use cache warming for binding-dependent routes.");
     }
     const inaccessible = new Proxy({}, {
       get: unavailable,
@@ -35,7 +41,7 @@ export function registerPrerenderCloudflareLoader(): void {
     export function withExports() { unavailable(); }
     export function withEnvAndExports() { unavailable(); }
     export function waitUntil() {
-      throw new Error("Cloudflare waitUntil is unavailable during build-time prerendering.");
+      throw unavailableError("Cloudflare waitUntil is unavailable during build-time prerendering.");
     }
   `;
   register(
