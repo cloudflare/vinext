@@ -51,6 +51,7 @@ import {
   type ImageOptimizationSignal,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
+import { closeServerOnTerminationSignals, trackBackgroundWork } from "./prod-server-shutdown.js";
 import { registerPrerenderCloudflareLoader } from "../build/prerender-cloudflare-loader.js";
 import {
   canonicalizeRequestPathname,
@@ -1538,29 +1539,31 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     process.exit(1);
   }
 
-  if (isAppRouter) {
-    return startAppRouterServer({
-      port,
-      host,
-      clientDir,
-      serverDir,
-      rscEntryPath,
-      compress,
-      purpose,
-      silent,
-    });
-  }
-
-  return startPagesRouterServer({
-    port,
-    host,
-    clientDir,
-    serverDir,
-    serverEntryPath,
-    compress,
-    purpose,
-    silent,
-  });
+  const started = isAppRouter
+    ? await startAppRouterServer({
+        port,
+        host,
+        clientDir,
+        serverDir,
+        rscEntryPath,
+        compress,
+        purpose,
+      })
+    : await startPagesRouterServer({
+        port,
+        host,
+        clientDir,
+        serverDir,
+        serverEntryPath,
+        compress,
+        purpose,
+      });
+  // Build-time servers run inside the build process, which owns its signals.
+  // Register before announcing readiness, so a supervisor that signals as
+  // soon as it sees the server up still gets a graceful shutdown.
+  if (purpose !== "prerender") closeServerOnTerminationSignals(started.server);
+  if (!silent) logProdServerStarted(host, started.port, purpose);
+  return started;
 }
 
 // ─── App Router Production Server ─────────────────────────────────────────────
@@ -1573,7 +1576,6 @@ type AppRouterServerOptions = {
   rscEntryPath: string;
   compress: boolean;
   purpose?: ProdServerOptions["purpose"];
-  silent?: boolean;
 };
 
 type WorkerAppRouterEntry = {
@@ -1590,12 +1592,12 @@ function createNodeExecutionContext(
 ): ExecutionContextLike {
   return {
     hostRuntime: "node",
+    skipsPagesApiHandlerWaitUntil: true,
     requestSignal,
     waitUntil(promise: Promise<unknown>) {
-      // Node doesn't provide a Workers lifecycle, but we still attach a
-      // rejection handler so background waitUntil work doesn't surface as an
-      // unhandled rejection when a Worker-style entry is used with vinext start.
-      void Promise.resolve(promise).catch(() => {});
+      // Node has no Workers lifecycle. The work runs on its own; tracking it
+      // lets a graceful shutdown wait for it, as `next start` does.
+      trackBackgroundWork(promise);
     },
     passThroughOnException() {},
     trustedRevalidateOrigin,
@@ -1884,7 +1886,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     rscEntryPath,
     compress: compressOption,
     purpose,
-    silent,
   } = options;
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
@@ -2346,7 +2347,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   disablePrerenderKeepAliveTimeout(server, purpose);
 
   const actualPort = await listen(server, port, host);
-  if (!silent) logProdServerStarted(host, actualPort, purpose);
   return { server, port: actualPort };
 }
 
@@ -2360,7 +2360,6 @@ type PagesRouterServerOptions = {
   serverEntryPath: string;
   compress: boolean;
   purpose?: ProdServerOptions["purpose"];
-  silent?: boolean;
 };
 
 type PagesServerEntryPageRoute = {
@@ -2398,13 +2397,12 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  * - vinextConfig — embedded next.config.js settings
  */
 async function startPagesRouterServer(options: PagesRouterServerOptions) {
-  const { port, host, purpose, silent } = options;
+  const { port, host, purpose } = options;
   const handler = await createPagesRouterRequestHandler(options);
   const server = createServer(handler);
   disablePrerenderKeepAliveTimeout(server, purpose);
 
   const actualPort = await listen(server, port, host);
-  if (!silent) logProdServerStarted(host, actualPort, purpose);
   return { server, port: actualPort };
 }
 
@@ -2889,7 +2887,7 @@ async function createPagesRouterRequestHandler(
         hasMiddleware,
         middlewareRequest,
         dataNotFoundResponse,
-        ctx: undefined, // Node has no platform ExecutionContext; middleware gets middlewareCtx
+        ctx: undefined, // Node has no platform ExecutionContext; each handler below creates its own
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
         authorizeOnDemandRevalidate:
@@ -2918,7 +2916,9 @@ async function createPagesRouterRequestHandler(
                   request,
                   resolvedUrl,
                   ssrManifest,
-                  undefined,
+                  // Background ISR work goes to its waitUntil, which a
+                  // graceful shutdown waits for.
+                  createNodeExecutionContext(),
                   stagedHeaders,
                   {
                     ...options,
