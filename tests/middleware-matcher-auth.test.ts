@@ -338,6 +338,48 @@ async function assertHybridPagesEncodedAliasAuthGuard(baseUrl: string): Promise<
   }
 }
 
+async function assertHybridPagesEncodedDataAliasAuthGuard(baseUrl: string): Promise<void> {
+  // `_next/data` requests reach the same hybrid Pages routing, so a `%25xx`
+  // alias must not decode twice into the page's props.
+  const page = await fetch(`${baseUrl}/staff/panel`);
+  const html = await page.text();
+  expect(page.status, html).toBe(200);
+  const buildId = /"buildId":"([^"]+)"/.exec(html)?.[1];
+  expect(buildId).toBeTruthy();
+  const dataHeaders = { "x-nextjs-data": "1" };
+  const guardHeaders = { "x-hybrid-pages-auth": "1" };
+  const dataPath = (pathname: string) => `/_next/data/${buildId}${pathname}.json`;
+
+  const data = await fetch(`${baseUrl}${dataPath("/staff/panel")}`, { headers: dataHeaders });
+  const dataBody = await data.text();
+  expect(data.status, dataBody).toBe(200);
+  expect(data.headers.get("x-auth-guard")).toBeNull();
+  expect(dataBody).toContain("protected pages staff props");
+
+  const guarded = [
+    { headers: { ...guardHeaders, ...dataHeaders }, pathname: dataPath("/staff/panel") },
+    { headers: { ...guardHeaders, ...dataHeaders }, pathname: dataPath("/%73taff/panel") },
+  ];
+  for (const { headers, pathname } of guarded) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+
+  // Next.js answers 404 here. vinext answers an unmatched hybrid `_next/data`
+  // URL with `200 {}`, so only the missing page props and middleware header
+  // are asserted.
+  const aliasPath = dataPath("/%2573taff/panel");
+  const alias = await fetch(`${baseUrl}${aliasPath}`, {
+    headers: { ...guardHeaders, ...dataHeaders },
+  });
+  const aliasBody = await alias.text();
+  expect(alias.headers.get("x-auth-guard"), aliasPath).toBeNull();
+  expect(aliasBody, aliasPath).not.toContain("protected pages staff");
+}
+
 async function assertCaseSensitiveMatcherAuthGuard(baseUrl: string): Promise<void> {
   // Next.js compiles matchers case-sensitively, so exclusions such as `api` or
   // `js(?!on)` must not skip middleware for case variants that still route.
@@ -433,6 +475,10 @@ describe("valid middleware matcher auth guards", () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
     }, 30_000);
 
+    it("keeps double-encoded aliases out of hybrid Pages data requests", async () => {
+      await assertHybridPagesEncodedDataAliasAuthGuard(baseUrl);
+    }, 30_000);
+
     it("matches middleware paths case-sensitively", async () => {
       await assertCaseSensitiveMatcherAuthGuard(baseUrl);
     }, 30_000);
@@ -503,6 +549,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
+    });
+
+    it("keeps double-encoded aliases out of hybrid Pages data requests", async () => {
+      await assertHybridPagesEncodedDataAliasAuthGuard(baseUrl);
     });
 
     it("matches middleware paths case-sensitively", async () => {
@@ -600,6 +650,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
+    });
+
+    it("keeps double-encoded aliases out of hybrid Pages data requests", async () => {
+      await assertHybridPagesEncodedDataAliasAuthGuard(baseUrl);
     });
 
     it("matches middleware paths case-sensitively", async () => {
