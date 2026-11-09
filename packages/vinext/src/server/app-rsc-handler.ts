@@ -2695,8 +2695,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Next.js skips a route it already tried, whatever the params.
   const rejectedRoutes = new Set<TRoute>();
   let shouldResumeRoutingAfterMiss = false;
+  const canResumeRoutingAfterMiss = (): boolean =>
+    nextFallbackRewriteIndex < options.configRewrites.fallback.length;
   const resumeRoutingAfterMiss = (): boolean => {
-    if (nextFallbackRewriteIndex >= options.configRewrites.fallback.length) return false;
+    if (!canResumeRoutingAfterMiss()) return false;
     shouldResumeRoutingAfterMiss = true;
     return true;
   };
@@ -2981,20 +2983,24 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const resolvedSearchParams = getResolvedSearchParams();
     const isRouteTreePrefetch = isRouteTreePrefetchRequest(request) && !route.routeHandler;
     // Next.js rejects a dynamicParams = false miss while routing, outside draft
-    // mode, so route discovery gets the unmatched route's 404 rather than this
-    // route's tree.
+    // mode, so a fallback rewrite can claim the URL's route tree. Without one
+    // that could, vinext doesn't run the route's generators for each prefetched
+    // link: the tree holds only the route's segments, and the prefetch of its
+    // content gets the 404, where Next.js 404s the tree too.
     if (
       isRouteTreePrefetch &&
+      !isFinalRouteMatch &&
+      canResumeRoutingAfterMiss() &&
       !isActiveDraftMode() &&
       options.isDynamicParamsMiss &&
       (await runStaticParamsCheckDetached(() => options.isDynamicParamsMiss!(route, params)))
     ) {
       // The rejected match seeded its root params before routing finished.
       setRootParams(null);
-      // A fallback rewrite that claims the URL answers with its own route's tree.
-      if (!isFinalRouteMatch && resumeRoutingAfterMiss())
-        return new Response(null, { status: 404 });
-      return renderUnmatchedRoute();
+      // A fallback rewrite that claims the URL answers with its own route's
+      // tree; otherwise the URL gets the unmatched route's 404.
+      resumeRoutingAfterMiss();
+      return new Response(null, { status: 404 });
     }
     setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
     if (isRouteTreePrefetch) {

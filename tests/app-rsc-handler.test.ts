@@ -5118,7 +5118,40 @@ describe("createAppRscHandler", () => {
       },
     ];
 
-    it("answers a route-tree prefetch with the unmatched route's 404", async () => {
+    // A fallback rewrite could claim a rejected URL, so the tree's check runs.
+    const unclaimedFallbackRewrites = {
+      afterFiles: [],
+      beforeFiles: [],
+      fallback: [{ source: "/elsewhere/:slug", destination: "/products/:slug" }],
+    };
+
+    it("answers a route-tree prefetch from the route alone without fallback rewrites", async () => {
+      const isDynamicParamsMiss = vi.fn(async () => true);
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        isDynamicParamsMiss,
+        matchRoute,
+      });
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/products/rejected", headers);
+
+      const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+
+      // The tree names the route's segments, not the param or anything the
+      // route renders for it. The prefetch of the content gets the 404.
+      expect(tree.status).toBe(200);
+      const body = await tree.text();
+      expect(body).toContain('"tree"');
+      expect(body).not.toContain("rejected");
+      expect(isDynamicParamsMiss).not.toHaveBeenCalled();
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    it("answers a route-tree prefetch that no fallback rewrite claims with the unmatched route's 404", async () => {
       const isDynamicParamsMiss = vi.fn(
         async (_route: TestRoute, params: Record<string, unknown>) => params.slug !== "allowed",
       );
@@ -5126,6 +5159,7 @@ describe("createAppRscHandler", () => {
       const dispatchMatchedPage = vi.fn(async () => new Response("page"));
       const handler = createHandler({
         configHeaders,
+        configRewrites: unclaimedFallbackRewrites,
         dispatchMatchedPage,
         isDynamicParamsMiss,
         matchRoute,
@@ -5165,6 +5199,7 @@ describe("createAppRscHandler", () => {
       const cachedRequestData = cacheForRequest(readRequestData);
       const handler = createHandler({
         configHeaders: [],
+        configRewrites: unclaimedFallbackRewrites,
         async isDynamicParamsMiss() {
           cachedRequestData();
           return true;
@@ -5190,6 +5225,7 @@ describe("createAppRscHandler", () => {
       const isDynamicParamsMiss = vi.fn(async () => true);
       const handler = createHandler({
         configHeaders: [],
+        configRewrites: unclaimedFallbackRewrites,
         isDynamicParamsMiss,
         matchRoute,
         middlewareModule: {
@@ -5224,6 +5260,7 @@ describe("createAppRscHandler", () => {
       let notFoundLang: unknown = "not rendered";
       const handler = createHandler({
         configHeaders: [],
+        configRewrites: unclaimedFallbackRewrites,
         isDynamicParamsMiss: async () => true,
         matchRequestRoute: localizedMatch,
         matchRoute: localizedMatch,

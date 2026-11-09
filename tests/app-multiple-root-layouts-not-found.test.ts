@@ -175,23 +175,25 @@ describe("multiple root layouts: not-found boundaries stay in their root layout'
   );
 
   it.each([
-    ["a dynamicParams = false miss", "/docs/b"],
-    ["an unmatched URL", "/no/such/route"],
-  ])("renders %s without any root layout", async (_, pathname) => {
+    ["a dynamicParams = false miss", "/docs/b", 200],
+    ["an unmatched URL", "/no/such/route", 404],
+  ])("renders %s without any root layout", async (_, pathname, treeStatus) => {
     const treePrefetch = await fetchRsc(baseUrl, pathname, {
       headers: { "Next-Router-Prefetch": "1", "Next-Router-Segment-Prefetch": "/_tree" },
     });
-    for (const res of [
-      await fetch(`${baseUrl}${pathname}`),
-      await fetchRsc(baseUrl, pathname),
-      treePrefetch,
-    ]) {
+    for (const res of [await fetch(`${baseUrl}${pathname}`), await fetchRsc(baseUrl, pathname)]) {
       expect(res.status).toBe(404);
       const body = await res.text();
       expect(body).toContain("This page could not be found.");
       expect(body).not.toContain("docs-root-layout");
       expect(body).not.toContain("locale-root-layout");
     }
+    // Next.js 404s a dynamicParams = false miss's route tree too. vinext builds
+    // the tree from the route's segments alone, so nothing renders for it.
+    expect(treePrefetch.status).toBe(treeStatus);
+    const tree = await treePrefetch.text();
+    expect(tree).not.toContain("docs-root-layout");
+    expect(tree).not.toContain("locale-root-layout");
   });
 
   it("keeps the [locale] not-found for the [locale] tree", async () => {
