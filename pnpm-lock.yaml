@@ -2431,8 +2431,45 @@ importers:
         specifier: 'catalog:'
         version: 1.3.0(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.0.5(vitest@5.0.5))(@vitest/ui@5.0.5(vitest@5.0.5))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.63.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
 
+  tests/fixtures/standalone-bundled-react:
+    dependencies:
+      react:
+        specifier: 'catalog:'
+        version: 19.3.1
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.3.1(react@19.3.1)
+      vinext:
+        specifier: workspace:*
+        version: link:../../../packages/vinext
+    devDependencies:
+      '@vitejs/plugin-rsc':
+        specifier: 'catalog:'
+        version: 0.5.38(@voidzero-dev/vite-plus-core@1.3.0(@types/node@25.9.2)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react-server-dom-webpack@19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react@19.3.1)
+      react-server-dom-webpack:
+        specifier: 'catalog:'
+        version: 19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      vite:
+        specifier: 'catalog:'
+        version: '@voidzero-dev/vite-plus-core@1.3.0(@types/node@25.9.2)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)'
+      vite-plus:
+        specifier: 'catalog:'
+        version: 1.3.0(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.0.5(vitest@5.0.5))(@vitest/ui@5.0.5(vitest@5.0.5))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.63.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
   tests/fixtures/standalone-output:
     dependencies:
+      fake-cjs-theme-lib:
+        specifier: file:./__test_packages__/fake-cjs-theme-lib
+        version: file:tests/fixtures/standalone-output/__test_packages__/fake-cjs-theme-lib(fake-theme-tokens@file:tests/fixtures/standalone-output/__test_packages__/fake-theme-tokens)
+      fake-style-engine:
+        specifier: file:./__test_packages__/fake-style-engine
+        version: file:tests/fixtures/standalone-output/__test_packages__/fake-style-engine
+      fake-styled-lib:
+        specifier: file:./__test_packages__/fake-styled-lib
+        version: file:tests/fixtures/standalone-output/__test_packages__/fake-styled-lib(fake-style-engine@file:tests/fixtures/standalone-output/__test_packages__/fake-style-engine)
+      fake-theme-tokens:
+        specifier: file:./__test_packages__/fake-theme-tokens
+        version: file:tests/fixtures/standalone-output/__test_packages__/fake-theme-tokens
       react:
         specifier: 'catalog:'
         version: 19.3.1
@@ -8612,6 +8649,14 @@ packages:
   extendable-error@0.1.7:
     resolution: {integrity: sha512-UOiS2in6/Q0FK0R0q6UY9vYpQ21mr/Qn1KOnte7vsACuNJf514WvCCUHSRCPcgjPT2bAhNIJdlE6bVap1GKmeg==}
 
+  fake-cjs-theme-lib@file:tests/fixtures/standalone-output/__test_packages__/fake-cjs-theme-lib:
+    resolution: {directory: tests/fixtures/standalone-output/__test_packages__/fake-cjs-theme-lib, type: directory}
+    peerDependencies:
+      fake-theme-tokens: '*'
+    peerDependenciesMeta:
+      fake-theme-tokens:
+        optional: true
+
   fake-client-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-client-barrel:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-client-barrel, type: directory}
 
@@ -8623,6 +8668,20 @@ packages:
 
   fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-module-lib, type: directory}
+
+  fake-style-engine@file:tests/fixtures/standalone-output/__test_packages__/fake-style-engine:
+    resolution: {directory: tests/fixtures/standalone-output/__test_packages__/fake-style-engine, type: directory}
+
+  fake-styled-lib@file:tests/fixtures/standalone-output/__test_packages__/fake-styled-lib:
+    resolution: {directory: tests/fixtures/standalone-output/__test_packages__/fake-styled-lib, type: directory}
+    peerDependencies:
+      fake-style-engine: '*'
+    peerDependenciesMeta:
+      fake-style-engine:
+        optional: true
+
+  fake-theme-tokens@file:tests/fixtures/standalone-output/__test_packages__/fake-theme-tokens:
+    resolution: {directory: tests/fixtures/standalone-output/__test_packages__/fake-theme-tokens, type: directory}
 
   fake-tsconfig-exact-lib@file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib, type: directory}
@@ -17216,6 +17275,10 @@ snapshots:
 
   extendable-error@0.1.7: {}
 
+  fake-cjs-theme-lib@file:tests/fixtures/standalone-output/__test_packages__/fake-cjs-theme-lib(fake-theme-tokens@file:tests/fixtures/standalone-output/__test_packages__/fake-theme-tokens):
+    dependencies:
+      fake-theme-tokens: file:tests/fixtures/standalone-output/__test_packages__/fake-theme-tokens
+
   fake-client-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-client-barrel: {}
 
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib: {}
@@ -17223,6 +17286,14 @@ snapshots:
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib: {}
 
   fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib: {}
+
+  fake-style-engine@file:tests/fixtures/standalone-output/__test_packages__/fake-style-engine: {}
+
+  fake-styled-lib@file:tests/fixtures/standalone-output/__test_packages__/fake-styled-lib(fake-style-engine@file:tests/fixtures/standalone-output/__test_packages__/fake-style-engine):
+    dependencies:
+      fake-style-engine: file:tests/fixtures/standalone-output/__test_packages__/fake-style-engine
+
+  fake-theme-tokens@file:tests/fixtures/standalone-output/__test_packages__/fake-theme-tokens: {}
 
   fake-tsconfig-exact-lib@file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib: {}
 

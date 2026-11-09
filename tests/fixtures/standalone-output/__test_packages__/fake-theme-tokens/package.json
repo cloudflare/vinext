@@ -1,0 +1,10 @@
+{
+  "name": "fake-theme-tokens",
+  "version": "1.0.0",
+  "private": true,
+  "exports": {
+    "./*": {
+      "require": "./cjs/*.cjs"
+    }
+  }
+}

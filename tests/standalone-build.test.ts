@@ -211,6 +211,58 @@ describe("emitStandaloneOutput", () => {
     ).toBe(true);
   });
 
+  it("copies dot-named packages that a manifest package requires", () => {
+    // Prisma's default generator writes node_modules/.prisma/client, and
+    // @prisma/client requires ".prisma/client/default". Node resolves names
+    // that start with a dot but are not relative paths through node_modules.
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["db-client"]));
+
+    writePackage(appRoot, "db-client");
+    writeFile(
+      appRoot,
+      "node_modules/db-client/index.js",
+      'module.exports = require(".db/client/default");\n',
+    );
+    writeFile(
+      appRoot,
+      "node_modules/.db/client/package.json",
+      JSON.stringify({
+        name: "db-client-generated",
+        exports: { "./package.json": "./package.json", "./default": "./default.js" },
+      }),
+    );
+    writeFile(appRoot, "node_modules/.db/client/default.js", "module.exports = {};\n");
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify({ name: "vinext", type: "module" }, null, 2),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+
+    const result = emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    expect(result.copiedPackages).toContain(".db/client");
+    expect(
+      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/.db/client/default.js")),
+    ).toBe(true);
+  });
+
   it("falls back gracefully when vinext-externals.json is missing (no manifest)", () => {
     const appRoot = path.join(tmpDir, "app");
     fs.mkdirSync(appRoot, { recursive: true });

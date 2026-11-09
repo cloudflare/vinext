@@ -6,8 +6,8 @@ import { packageNameFromSpecifier } from "../utils/package-name.js";
 /**
  * vinext:server-externals-manifest
  *
- * A `writeBundle` plugin that collects the packages left external by the
- * SSR/RSC bundler and writes them to `<outDir>/vinext-externals.json`.
+ * A `writeBundle` plugin that collects the package imports left external by
+ * the SSR/RSC bundler and writes them to `<outDir>/vinext-externals.json`.
  *
  * With `noExternal: true`, Vite bundles almost everything — only packages
  * explicitly listed in `ssr.external` / `resolve.external` remain as live
@@ -17,11 +17,13 @@ import { packageNameFromSpecifier } from "../utils/package-name.js";
  * Using the bundler's own import graph (`chunk.imports` + `chunk.dynamicImports`)
  * is authoritative: no text parsing, no regex, no guessing.
  *
- * The written JSON is an array of package-name strings, e.g.:
- *   ["react", "react-dom", "react-dom/server"]
+ * The written JSON is an array of the bare specifiers the server bundle
+ * imports, e.g.:
+ *   ["react", "react-dom/server", "@scope/pkg/subpath"]
  *
- * `emitStandaloneOutput` reads this file and uses it as the seed list for the
- * BFS `node_modules/` copy, replacing the old regex-scan approach.
+ * `emitStandaloneOutput` copies the packages these specifiers name into
+ * `node_modules/` and traces the files they resolve to, so it also ships the
+ * packages those files import (peer dependencies included).
  */
 export function createServerExternalsManifestPlugin(): Plugin {
   // Accumulate external specifiers across all server environments (rsc + ssr).
@@ -73,14 +75,12 @@ export function createServerExternalsManifestPlugin(): Plugin {
           // chunks in the bundle. But externalized packages remain as bare npm
           // specifiers (e.g. "react", "@mdx-js/react") since they were never
           // bundled into chunk files. packageNameFromSpecifier filters out chunk
-          // filenames (relative/absolute paths) and extracts the package name from
-          // bare specifiers — which is exactly what the standalone BFS needs.
+          // filenames (relative/absolute paths), virtual ids, and builtins.
           for (const specifier of [...item.imports, ...item.dynamicImports]) {
             if (bundleFiles.has(specifier)) {
               continue;
             }
-            const pkg = packageNameFromSpecifier(specifier);
-            if (pkg) externals.add(pkg);
+            if (packageNameFromSpecifier(specifier)) externals.add(specifier);
           }
         }
 
