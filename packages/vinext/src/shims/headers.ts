@@ -63,6 +63,11 @@ export type HeadersContext = {
   headers: Headers;
   cookies: Map<string, string>;
   accessError?: Error;
+  /**
+   * No HTTP request exists, as in `generateStaticParams`: `connection()` and
+   * `draftMode()` reject with `accessError` too.
+   */
+  noRequest?: boolean;
   draftModeEnabled?: boolean;
   forceStatic?: boolean;
   mutableCookies?: RequestCookies;
@@ -1091,6 +1096,7 @@ export async function draftMode(): Promise<DraftModeResult> {
   if (!context) {
     throw createDraftModeScopeError("draftMode()");
   }
+  if (context.noRequest && context.accessError) throw context.accessError;
   // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
   // getter and merely calling `draftMode()` does not require bailing out
   // of static prerendering. Only `enable()`/`disable()` mutate state and

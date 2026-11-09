@@ -159,8 +159,9 @@ function runStaticParamsGeneration<T>(
     ctx.headersContext = {
       headers: new Headers(),
       cookies: new Map(),
+      noRequest: true,
       accessError: new Error(
-        `Route ${pattern} used a request API such as \`headers()\` or \`cookies()\` inside \`generateStaticParams\`. ` +
+        `Route ${pattern} used a request API such as \`headers()\`, \`cookies()\`, \`connection()\` or \`draftMode()\` inside \`generateStaticParams\`. ` +
           "This is not supported because `generateStaticParams` runs at build time without an HTTP request. " +
           "Read more: https://nextjs.org/docs/messages/next-dynamic-api-wrong-context",
       ),

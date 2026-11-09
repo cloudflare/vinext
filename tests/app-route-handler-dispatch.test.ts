@@ -30,7 +30,7 @@ import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
 import { VINEXT_ROUTE_MISS_HEADER } from "../packages/vinext/src/server/headers.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
-import { after } from "../packages/vinext/src/shims/server.js";
+import { after, connection } from "../packages/vinext/src/shims/server.js";
 import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   getRevalidateSecret,
@@ -832,7 +832,17 @@ describe("app route handler dispatch", () => {
               (requestCookies) => requestCookies.get("slug")?.value,
               (error: Error) => (errors.push(error.message), null),
             );
-            return [{ slug: fromHeader ?? fromCookie ?? "listed" }];
+            const fromConnection = await connection().then(
+              () => "unlisted",
+              (error: Error) => (errors.push(error.message), null),
+            );
+            const fromDraftMode = await draftMode().then(
+              (draft) => (draft.isEnabled ? "listed" : "unlisted"),
+              (error: Error) => (errors.push(error.message), null),
+            );
+            return [
+              { slug: fromHeader ?? fromCookie ?? fromConnection ?? fromDraftMode ?? "listed" },
+            ];
           },
           params: { slug: "unlisted" },
           pathname: "/posts/unlisted",
@@ -841,7 +851,7 @@ describe("app route handler dispatch", () => {
         return { status: (await closed.response).status, handlerCalls: closed.handlerCalls };
       });
       expect(result).toEqual({ status: 404, handlerCalls: [] });
-      expect(errors).toHaveLength(2);
+      expect(errors).toHaveLength(4);
       for (const message of errors) {
         expect(message).toContain("inside `generateStaticParams`");
       }

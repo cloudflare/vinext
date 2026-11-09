@@ -1471,7 +1471,9 @@ export async function connection(): Promise<void> {
     suspendConnectionProbe,
     throwIfInsideCacheScope,
   } = await import("./headers.js");
-  if (getHeadersContext()?.forceStatic) {
+  const headersContext = getHeadersContext();
+  if (headersContext?.noRequest && headersContext.accessError) throw headersContext.accessError;
+  if (headersContext?.forceStatic) {
     return;
   }
   markRenderRequestApiUsage("connection");
