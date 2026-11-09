@@ -8,6 +8,7 @@ import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseSync, type ESTree, type ParserOptions } from "vite";
 import {
+  EMPTY_EXPORT_PRESCAN,
   forEachAstChild,
   isIdentifierNamed,
   quotedStringAt,
@@ -198,8 +199,11 @@ function resolveDirectoryIndex(dir: string): string | null {
 
 /** CommonJS file lookup, following Node's LOAD_AS_FILE then LOAD_AS_DIRECTORY. */
 function resolveFileCandidate(basePath: string): string | null {
-  const file = resolveFileWithExtensions(basePath);
-  if (file) return file;
+  return resolveFileWithExtensions(basePath) ?? resolveDirectoryCandidate(basePath);
+}
+
+/** Node's LOAD_AS_DIRECTORY: the directory's package.json main, then its index. */
+function resolveDirectoryCandidate(basePath: string): string | null {
   const packageJsonPath = path.join(basePath, "package.json");
   const main = isFile(packageJsonPath) ? readPackageJson(packageJsonPath).main : undefined;
   if (main) {
@@ -394,6 +398,13 @@ function collectFileImports(filePath: string): TracedImport[] {
         imports.push({ specifier: entry.moduleRequest.value, kind: "import" });
     }
   }
+  if (EMPTY_EXPORT_PRESCAN.test(code)) {
+    for (const statement of result.program.body) {
+      if (statement.type !== "ExportNamedDeclaration" || !statement.source) continue;
+      if (statement.specifiers.length > 0 || statement.exportKind === "type") continue;
+      imports.push({ specifier: statement.source.value, kind: "import" });
+    }
+  }
   for (const dynamicImport of result.module.dynamicImports) {
     const specifier = quotedStringAt(code, dynamicImport.moduleRequest);
     if (specifier !== null) imports.push({ specifier, kind: "import" });
@@ -495,7 +506,10 @@ function traceRuntimePackages(
       return;
     }
     if (/^\.\.?(?:\/|$)/.test(specifier) || path.isAbsolute(specifier)) {
-      enqueueFile(resolveFileCandidate(path.resolve(path.dirname(importer), specifier)));
+      const target = path.resolve(path.dirname(importer), specifier);
+      // A trailing slash, "." or ".." names a directory, never a sibling file.
+      const isDirectory = specifier.endsWith("/") || /(?:^|\/)\.\.?$/.test(specifier);
+      enqueueFile(isDirectory ? resolveDirectoryCandidate(target) : resolveFileCandidate(target));
       return;
     }
     if (specifier.startsWith("#")) {

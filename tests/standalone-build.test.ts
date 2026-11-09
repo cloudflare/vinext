@@ -379,6 +379,24 @@ describe("emitStandaloneOutput", () => {
         "",
       ].join("\n"),
     },
+    {
+      // oxc's module record omits empty re-exports, but Node still loads the source.
+      name: "empty re-exports",
+      packageJson: { name: "lib", type: "module", main: "index.js" },
+      entry: "index.js",
+      code: 'export {} from "lib-peer";\n',
+    },
+    {
+      // A trailing slash names the directory, never the sibling feature.js.
+      name: "a directory require with a trailing slash",
+      packageJson: { name: "lib", main: "index.js" },
+      entry: "index.js",
+      code: 'module.exports = require("./feature/");\n',
+      extraFiles: {
+        "feature.js": "module.exports = {};\n",
+        "feature/index.js": 'module.exports = require("lib-peer");\n',
+      },
+    },
   ])("traces $name", ({ packageJson, entry, code, extraFiles }) => {
     const appRoot = path.join(tmpDir, "app");
     fs.mkdirSync(appRoot, { recursive: true });
