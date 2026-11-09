@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { dispatchAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-dispatch.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
@@ -27,7 +29,10 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
-import { setCurrentFetchSoftTags } from "../packages/vinext/src/shims/fetch-cache.js";
+import {
+  ensureFetchPatch,
+  setCurrentFetchSoftTags,
+} from "../packages/vinext/src/shims/fetch-cache.js";
 import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
 import { VINEXT_ROUTE_MISS_HEADER } from "../packages/vinext/src/server/headers.js";
@@ -1006,6 +1011,69 @@ describe("app route handler dispatch", () => {
       expect(result.status).toBe(404);
       expect(result.generatorValue).not.toBe(result.requestValue);
       expect(result.readsAfter).toBe(true);
+    });
+
+    async function withCountingServer(run: (url: string) => Promise<void>): Promise<number> {
+      // The request handler installs it before user code runs.
+      ensureFetchPatch();
+      let hits = 0;
+      const server = createServer((_request, response) => {
+        hits += 1;
+        response.end(String(hits));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        await run(`http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`);
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      return hits;
+    }
+
+    it("memoizes a mixed-method route generator's repeated fetches, as a GET-only one does", async () => {
+      const hits = await withCountingServer(async (url) => {
+        const response = await runWithRequestContext(
+          createRequestContext(),
+          async () =>
+            dispatchClosedRoute({
+              async generateStaticParams() {
+                await (await fetch(url)).text();
+                await (await fetch(url)).text();
+                return [{ slug: "listed" }];
+              },
+              handlerConfig: { POST: () => new Response("post") },
+              params: { slug: "unlisted" },
+              pathname: "/posts/unlisted",
+              pattern: "/posts/:slug",
+            }).response,
+        );
+        expect(response.status).toBe(200);
+      });
+      expect(hits).toBe(1);
+    });
+
+    it("keeps an on-demand revalidation from refreshing generateStaticParams' cached data", async () => {
+      const hits = await withCountingServer(async (url) => {
+        for (const isOnDemandRevalidate of [false, true]) {
+          const response = await runWithRequestContext(
+            createRequestContext({ isOnDemandRevalidate }),
+            async () =>
+              dispatchClosedRoute({
+                async generateStaticParams() {
+                  await (await fetch(url, { cache: "force-cache" })).text();
+                  return [{ slug: "listed" }];
+                },
+                params: { slug: "unlisted" },
+                pathname: "/posts/unlisted",
+                pattern: "/posts/:slug",
+              }).response,
+          );
+          expect(response.status).toBe(404);
+        }
+      });
+      // Next.js runs generateStaticParams outside the revalidation, so the
+      // generator reads its cached fetch.
+      expect(hits).toBe(1);
     });
 
     it("keeps middleware's draft-mode disable on a rejected param's rendered 404", async () => {

@@ -202,6 +202,13 @@ function runStaticParamsGeneration<T>(
     ctx.rootParams = {};
     ctx.currentRequestTags = [];
     ctx.dynamicFetchUrls = new Set<string>();
+    // Like a page's check, the generator memoizes its own fetches, whichever
+    // branch runs it. Next.js' build store reads cached data even during an
+    // on-demand revalidation.
+    ctx.isFetchDedupeActive = true;
+    ctx.currentFetchDedupeEntries = new Map();
+    ctx.nextFetchId = 1;
+    ctx.isOnDemandRevalidate = false;
     // `cacheForRequest()` values belong to the request, not the generator.
     ctx.requestCache = new WeakMap();
     ctx.headersContext = {
