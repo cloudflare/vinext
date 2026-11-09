@@ -94,6 +94,17 @@ function scheduleRevalidation(promise: Promise<void>): undefined {
 // Public API — what app code imports from 'next/cache'
 // ---------------------------------------------------------------------------
 
+// Next.js rejects revalidation inside `generateStaticParams`.
+function throwIfGeneratingStaticParams(expression: string): void {
+  const store = workUnitAsyncStorage.getStore();
+  if (store?.type !== "generate-static-params") return;
+  throw new Error(
+    `Route ${store.route} used "${expression}" inside \`generateStaticParams\` which is unsupported. ` +
+      "To ensure revalidation is performed consistently it must always happen outside of renders and cached functions. " +
+      "See more info here: https://nextjs.org/docs/app/building-your-application/rendering/static-and-dynamic#dynamic-rendering",
+  );
+}
+
 /**
  * Revalidate cached data associated with a specific cache tag.
  *
@@ -107,17 +118,6 @@ function scheduleRevalidation(promise: Promise<void>): undefined {
  * @param tag - Cache tag to revalidate
  * @param profile - cacheLife profile name (e.g. 'max', 'hours') or inline { expire: number }
  */
-// Next.js rejects revalidation inside `generateStaticParams`.
-function throwIfGeneratingStaticParams(expression: string): void {
-  const store = workUnitAsyncStorage.getStore();
-  if (store?.type !== "generate-static-params") return;
-  throw new Error(
-    `Route ${store.route} used "${expression}" inside \`generateStaticParams\` which is unsupported. ` +
-      "To ensure revalidation is performed consistently it must always happen outside of renders and cached functions. " +
-      "See more info here: https://nextjs.org/docs/app/building-your-application/rendering/static-and-dynamic#dynamic-rendering",
-  );
-}
-
 export function revalidateTag(tag: string, profile?: string | { expire?: number }): undefined {
   throwIfGeneratingStaticParams(`revalidateTag ${tag}`);
   if (isStagedCacheabilityProbeActive()) {
