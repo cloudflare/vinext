@@ -1199,11 +1199,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         cacheTags: metadata.cacheTags,
       };
 
-      // Like a first write, replacing a stale entry without a revalidator needs no purge:
-      // its edge copy ended when it went stale. One an invalidate() made stale early still
-      // needs it while invalidate()'s own purge of the earlier copies is queued.
+      // Like a first write, replacing a stale entry needs no purge: its edge copy went stale
+      // with it. One without a revalidator ended there; Workers Cache revalidates one with a
+      // revalidator on its next read, and gets this replacement. One an invalidate() made
+      // stale early still needs it while invalidate()'s own edge update is queued.
       const replacedEdgeCopyExpired =
-        current.revalidator_id === null &&
         !current.tombstoned &&
         current.fresh_until !== null &&
         now >= current.fresh_until &&
