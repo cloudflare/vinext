@@ -378,6 +378,59 @@ describe("emitStandaloneOutput", () => {
     expect(result.copiedPackages).toContain("lib-peer");
   });
 
+  it("resolves a bare #imports target from the package scope", () => {
+    // lib/lib/node_modules/dep would shadow the top-level dep if "dep" were
+    // resolved from the importing file; Node resolves it from lib's package.json.
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["lib"]));
+
+    writeFile(
+      appRoot,
+      "node_modules/lib/package.json",
+      JSON.stringify({ name: "lib", main: "lib/index.js", imports: { "#dep": "dep" } }),
+    );
+    writeFile(appRoot, "node_modules/lib/lib/index.js", 'module.exports = require("#dep");\n');
+    for (const [dir, version] of [
+      ["node_modules/lib/lib/node_modules/dep", "1.0.0"],
+      ["node_modules/dep", "2.0.0"],
+    ]) {
+      writeFile(
+        appRoot,
+        `${dir}/package.json`,
+        JSON.stringify({ name: "dep", version, main: "index.js" }),
+      );
+      writeFile(appRoot, `${dir}/index.js`, "module.exports = {};\n");
+    }
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify({ name: "vinext", type: "module" }, null, 2),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+
+    emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    const dep = JSON.parse(
+      fs.readFileSync(path.join(appRoot, "dist/standalone/node_modules/dep/package.json"), "utf-8"),
+    ) as { version: string };
+    expect(dep.version).toBe("2.0.0");
+  });
+
   it("ships the copy of a package that vinext's prod server loads over an external's copy", () => {
     // The app bundles react, so the manifest omits it. An external resolves its
     // own nested react, while vinext's prod server resolves a different one.

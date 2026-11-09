@@ -482,7 +482,8 @@ function traceRuntimePackages(
           const targetPath = packageTargetPath(scopePackageJson, target);
           if (targetPath) enqueueFile(resolveFileCandidate(targetPath));
         } else {
-          traceSpecifier(target, importer, kind);
+          // Node resolves a bare target from the package scope, not the importer.
+          traceSpecifier(target, scopePackageJson, kind);
         }
       }
       return;
