@@ -35,7 +35,10 @@ import {
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import { Main, NextScript } from "../packages/vinext/src/shims/document.js";
-import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_REVALIDATED_CACHE_TAG_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { pagesPathCacheTag } from "../packages/vinext/src/server/pages-cache-tag.js";
 import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
@@ -600,6 +603,71 @@ describe("createPagesPageHandler — no default export", () => {
     const handler = createPagesPageHandler(makeOpts({ pageRoutes: routes }));
     const res = await handler(makeRequest("/"), "/", null, null, null);
     expect(res.status).toBe(500);
+    expect(res.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// The prerenderer keeps a 500 from the custom `/500` page as its rendered
+// output, so a `/500` that could not render must be marked.
+describe("createPagesPageHandler — prerender render errors", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("marks the plain 500 for a page without a default export", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const routes = [makeRoute("/500", {})]; // no `default`
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: routes }));
+    const res = await handler(makeRequest("/500"), "/500", null, null, null);
+    expect(res.status).toBe(500);
+    expect(res.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+  });
+
+  it("marks the plain 500 for a rejected getStaticProps redirect", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const route = makeRoute(
+      "/500",
+      makePageModule({
+        getStaticProps: async () => ({
+          redirect: { destination: "javascript:alert(1)", permanent: false },
+        }),
+      }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const res = await handler(makeRequest("/500"), "/500", null, null, null);
+    expect(res.status).toBe(500);
+    expect(await res.text()).toBe("Invalid redirect destination");
+    expect(res.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("createPagesPageHandler — status pages", () => {
+  it.each([
+    ["/404", 404],
+    ["/500", 500],
+  ])("answers a direct %s request with %i", async (pattern, status) => {
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [makeRoute(pattern)] }));
+    const res = await handler(makeRequest(pattern), pattern, null, null, null);
+    expect(res.status).toBe(status);
+  });
+
+  // Next.js only seeds the status page's res, so a status `_app` sets wins.
+  it.each(["/404", "/500"])("keeps a status _app sets on a direct %s request", async (pattern) => {
+    const AppComponent = Object.assign(() => null, {
+      getInitialProps: async ({ ctx }: { ctx: { res: { statusCode: number } } }) => {
+        ctx.res.statusCode = 202;
+        return { pageProps: {} };
+      },
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({ pageRoutes: [makeRoute(pattern)], AppComponent }),
+    );
+    const res = await handler(makeRequest(pattern), pattern, null, null, null);
+    expect(res.status).toBe(202);
   });
 });
 

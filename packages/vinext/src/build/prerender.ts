@@ -1223,12 +1223,12 @@ export async function prerenderPages({
           const redirect =
             isStaticPropsResponse && [301, 302, 303, 307, 308].includes(response.status);
           // A custom `/500` answers with status 500, like Next.js, but is still
-          // a rendered page. A plain-text 500 means `/500` itself failed.
+          // a rendered page. A marked render error means `/500` itself failed.
           const renderedOk =
             response.ok ||
             (route.pattern === "/500" &&
               response.status === 500 &&
-              contentType?.includes("text/html") === true);
+              response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) !== "1");
           let redirectProps: object | undefined;
           if (redirect) {
             const props: unknown = await response.json();

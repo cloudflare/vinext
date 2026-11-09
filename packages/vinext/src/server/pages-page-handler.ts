@@ -26,6 +26,7 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import {
+  markPagesPrerenderRenderError,
   mergePagesNotFoundSourceHeaders,
   resolvePagesPageData,
   resolvePagesStatusPageRenderPath,
@@ -292,6 +293,12 @@ type VinextConfigSubset = {
   disableOptimizedLoading: boolean;
   crossOrigin?: string;
 };
+
+function renderErrorResponse(body: string): Response {
+  const headers = new Headers();
+  markPagesPrerenderRenderError(headers);
+  return new Response(body, { headers, status: 500 });
+}
 
 export function shouldEmitPagesClientTraceMetadata(
   pageModule: PagesPageModule,
@@ -913,7 +920,7 @@ export function createPagesPageHandler(
 
         const PageComponent = pageModule.default as ComponentType | undefined;
         if (!PageComponent) {
-          return new Response("Page has no default export", { status: 500 });
+          return renderErrorResponse("Page has no default export");
         }
 
         // Reject non-GET/HEAD on static (no getServerSideProps) routes with
@@ -1114,7 +1121,12 @@ export function createPagesPageHandler(
             initialStylesheetHrefs,
             crossOrigin: vinextConfig.crossOrigin,
             disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
-            statusCode: renderStatusCode,
+            // The status-page default only seeds the page's res, so a status
+            // `_app` writes there wins, like Next.js. getStaticProps and
+            // auto-export renders have no res status to read and keep it.
+            statusCode:
+              renderStatusCodeOverride ??
+              (isStaticPropsRoute || !render.documentReqRes ? renderStatusCode : undefined),
             nextData: serializedPagesNextData,
           };
         };
@@ -1499,7 +1511,7 @@ export function createPagesPageHandler(
             }
           }
         }
-        return new Response("Internal Server Error", { status: 500 });
+        return renderErrorResponse("Internal Server Error");
       }
     });
     if (!sendsEarly) return closeAfterResponseWithBody(await rendering, uCtx);
