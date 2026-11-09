@@ -31,6 +31,7 @@ import {
   createRenderDynamicLatch,
   getHeadersShimState as _getState,
   headersShimAls as _als,
+  isInsideAnyCacheScope,
   markDynamicUsage,
   markRenderRequestApiUsage,
   throwIfInsideCacheScope,
@@ -1097,7 +1098,10 @@ export async function draftMode(): Promise<DraftModeResult> {
   if (!context) {
     throw createDraftModeScopeError("draftMode()");
   }
-  if (context.staticParamsRoute !== undefined && context.accessError) throw context.accessError;
+  // A cache scope reads disabled draft mode, even in generateStaticParams.
+  if (context.staticParamsRoute !== undefined && context.accessError && !isInsideAnyCacheScope()) {
+    throw context.accessError;
+  }
   // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
   // getter and merely calling `draftMode()` does not require bailing out
   // of static prerendering. Only `enable()`/`disable()` mutate state and

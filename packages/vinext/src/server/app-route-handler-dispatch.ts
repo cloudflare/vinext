@@ -212,8 +212,10 @@ function runStaticParamsGeneration<T>(
     ctx.currentFetchDedupeEntries = new Map();
     ctx.nextFetchId = 1;
     ctx.isOnDemandRevalidate = false;
-    // `cacheForRequest()` values belong to the request, not the generator.
+    // `cacheForRequest()` and "use cache: private" values belong to the
+    // request, not the generator.
     ctx.requestCache = new WeakMap();
+    ctx._privateCache = new Map();
     ctx.headersContext = {
       headers: new Headers(),
       cookies: new Map(),

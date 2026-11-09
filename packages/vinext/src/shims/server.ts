@@ -1475,6 +1475,8 @@ export async function connection(): Promise<void> {
   } = await import("./headers.js");
   const headersContext = getHeadersContext();
   if (headersContext?.staticParamsRoute !== undefined && headersContext.accessError) {
+    // A cache scope still fails to store what it computed after the error.
+    throwIfInsideCacheScope("connection()");
     throw headersContext.accessError;
   }
   if (headersContext?.forceStatic) {

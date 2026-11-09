@@ -651,6 +651,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       if (unstableCacheContextStorage.getStore() === true) {
         throwPrivateUseCacheInsideUnstableCacheError();
       }
+      if (workUnitAsyncStorage.getStore()?.type === "generate-static-params") {
+        throwPrivateUseCacheOutsideRequestError();
+      }
       // Next.js decides that a private cache requires request-time execution at
       // the cache boundary, before key serialization or any private user code.
       markDynamicUsage();
@@ -1152,6 +1155,13 @@ function throwPrivateUseCacheInsidePublicUseCacheError(): never {
 
 function throwPrivateUseCacheInsideUnstableCacheError(): never {
   const error = new Error('"use cache: private" must not be used within `unstable_cache()`.');
+  const ctx = getRequestContext();
+  if (ctx) ctx.invalidDynamicUsageError = error;
+  throw error;
+}
+
+function throwPrivateUseCacheOutsideRequestError(): never {
+  const error = new Error('"use cache: private" cannot be used outside of a request context.');
   const ctx = getRequestContext();
   if (ctx) ctx.invalidDynamicUsageError = error;
   throw error;

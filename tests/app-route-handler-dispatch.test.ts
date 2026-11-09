@@ -38,6 +38,7 @@ import { withResponseStageCacheability } from "../packages/vinext/src/server/res
 import { VINEXT_ROUTE_MISS_HEADER } from "../packages/vinext/src/server/headers.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import { after, connection } from "../packages/vinext/src/shims/server.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   getRevalidateSecret,
@@ -1098,6 +1099,89 @@ describe("app route handler dispatch", () => {
         }
       });
       expect(hits).toBe(2);
+    });
+
+    it("lets a cached function generateStaticParams calls read draft mode, as Next.js does", async () => {
+      const readDraftMode = registerCachedFunction(
+        async () => (await draftMode()).isEnabled,
+        "test:static-params-draft-mode",
+      );
+      let isEnabled: unknown;
+      const status = await runWithRequestContext(createRequestContext(), async () => {
+        const listed = dispatchClosedRoute({
+          async generateStaticParams() {
+            isEnabled = await readDraftMode();
+            return [{ slug: "listed" }];
+          },
+          params: { slug: "listed" },
+          pathname: "/posts/listed",
+          pattern: "/posts/:slug",
+        });
+        return (await listed.response).status;
+      });
+      expect(status).toBe(200);
+      // Without a request, draft mode is disabled.
+      expect(isEnabled).toBe(false);
+    });
+
+    it("fails a cached function that catches connection() in generateStaticParams, as Next.js does", async () => {
+      const readConnection = registerCachedFunction(async () => {
+        try {
+          await connection();
+        } catch {
+          // Catching the error does not make the result cacheable.
+        }
+        return "cached";
+      }, "test:static-params-caught-connection");
+      let outcome = "";
+      const status = await runWithRequestContext(createRequestContext(), async () => {
+        const listed = dispatchClosedRoute({
+          async generateStaticParams() {
+            outcome = await readConnection().then(
+              () => "stored",
+              (error: Error) => error.message,
+            );
+            return [{ slug: "listed" }];
+          },
+          params: { slug: "listed" },
+          pathname: "/posts/listed",
+          pattern: "/posts/:slug",
+        });
+        return (await listed.response).status;
+      });
+      expect(status).toBe(200);
+      expect(outcome).toContain('`connection()` cannot be called inside "use cache"');
+    });
+
+    it('rejects "use cache: private" in generateStaticParams, as Next.js does', async () => {
+      let calls = 0;
+      const readPrivate = registerCachedFunction(
+        async () => `private ${++calls}`,
+        "test:static-params-private-cache",
+        "private",
+      );
+      let outcome = "";
+      const status = await runWithRequestContext(createRequestContext(), async () => {
+        // The request's own private cache entry.
+        expect(await readPrivate()).toBe("private 1");
+        const listed = dispatchClosedRoute({
+          async generateStaticParams() {
+            try {
+              outcome = await readPrivate();
+            } catch (error) {
+              outcome = (error as Error).message;
+            }
+            return [{ slug: "listed" }];
+          },
+          params: { slug: "listed" },
+          pathname: "/posts/listed",
+          pattern: "/posts/:slug",
+        });
+        return (await listed.response).status;
+      });
+      expect(status).toBe(200);
+      expect(outcome).toBe('"use cache: private" cannot be used outside of a request context.');
+      expect(calls).toBe(1);
     });
 
     it("keeps middleware's draft-mode disable on a rejected param's rendered 404", async () => {
