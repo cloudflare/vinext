@@ -172,7 +172,7 @@ const UNTRACED_FILE_RE = /\.(?:json|node)$/;
 // mention "require" as a keyword without calling it. Over-matching only costs
 // a walk. Whitespace before the `(` is allowed; a comment there would hide the
 // call, but published code does not write one.
-const REQUIRE_PRESCAN_RE = /\brequire\s*(?:\?\.\s*)?(?:\(|\.\s*resolve\b)/;
+const REQUIRE_PRESCAN_RE = /\brequire\s*(?:\(|\??\.\s*(?:\(|resolve\b))|\bcreateRequire\b/;
 
 type TracedImport = { specifier: string; kind: ImportKind };
 
@@ -320,8 +320,13 @@ function resolvePackageFile(
     return filePath && isFile(filePath) ? filePath : null;
   }
   if (subpath === ".") {
-    const mainFile = pkg.main ? resolveFileCandidate(path.join(packageRoot, pkg.main)) : null;
-    return mainFile ?? resolveFileCandidate(path.join(packageRoot, "index"));
+    // Node's LOAD_AS_DIRECTORY: main as a file or directory index (never as a
+    // nested package), then the package's own index.
+    const mainPath = pkg.main ? path.join(packageRoot, pkg.main) : null;
+    const mainFile = mainPath
+      ? (resolveFileWithExtensions(mainPath) ?? resolveDirectoryIndex(mainPath))
+      : null;
+    return mainFile ?? resolveDirectoryIndex(packageRoot);
   }
   return resolveFileCandidate(path.join(packageRoot, subpath));
 }
@@ -396,24 +401,51 @@ function collectFileImports(filePath: string): TracedImport[] {
   if (REQUIRE_PRESCAN_RE.test(code)) {
     // Iterative: published code can nest expressions thousands of levels deep
     // (long concatenation chains), which overflows a recursive walk.
+    // As nft does: require(), require.resolve(), module.require(), and the
+    // same calls on a binding of createRequire() or module.createRequire().
+    const requireNames = new Set(["require"]);
+    const calls: { requireName: string; specifier: string }[] = [];
     const pending: ESTree.Node[] = [result.program];
     while (pending.length > 0) {
       const node = pending.pop();
       if (!node) continue;
       forEachAstChild(node, (child) => pending.push(child));
+      if (node.type === "VariableDeclarator" && node.id.type === "Identifier") {
+        const init = unwrapExpression(node.init);
+        const initCallee = init?.type === "CallExpression" ? unwrapExpression(init.callee) : null;
+        if (
+          isIdentifierNamed(initCallee, "createRequire") ||
+          (initCallee?.type === "MemberExpression" &&
+            isIdentifierNamed(initCallee.property, "createRequire"))
+        ) {
+          requireNames.add(node.id.name);
+        }
+        continue;
+      }
       if (node.type !== "CallExpression") continue;
       const callee = unwrapExpression(node.callee);
-      // require(), require.resolve() and module.require(), as nft recognizes.
-      const isRequire =
-        isIdentifierNamed(callee, "require") ||
-        (callee?.type === "MemberExpression" &&
-          ((isIdentifierNamed(callee.object, "require") &&
-            isIdentifierNamed(callee.property, "resolve")) ||
-            (isIdentifierNamed(callee.object, "module") &&
-              isIdentifierNamed(callee.property, "require"))));
-      if (!isRequire) continue;
+      let requireName: string | null = null;
+      if (callee?.type === "Identifier") {
+        requireName = callee.name;
+      } else if (callee?.type === "MemberExpression") {
+        if (
+          isIdentifierNamed(callee.object, "module") &&
+          isIdentifierNamed(callee.property, "require")
+        ) {
+          requireName = "require";
+        } else if (
+          callee.object.type === "Identifier" &&
+          isIdentifierNamed(callee.property, "resolve")
+        ) {
+          requireName = callee.object.name;
+        }
+      }
+      if (requireName === null) continue;
       const specifier = staticStringValue(unwrapExpression(node.arguments[0]));
-      if (specifier !== null) imports.push({ specifier, kind: "require" });
+      if (specifier !== null) calls.push({ requireName, specifier });
+    }
+    for (const { requireName, specifier } of calls) {
+      if (requireNames.has(requireName)) imports.push({ specifier, kind: "require" });
     }
   }
   return imports;

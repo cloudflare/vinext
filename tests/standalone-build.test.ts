@@ -350,9 +350,36 @@ describe("emitStandaloneOutput", () => {
       name: "the index.js an extensionless main falls back to",
       packageJson: { name: "lib", main: "entry" },
       entry: "index.js",
-      extraFile: "entry.cjs",
+      extraFiles: { "entry.cjs": "module.exports = {};\n" },
     },
-  ])("traces $name", ({ packageJson, entry, code, extraFile }) => {
+    {
+      // Node resolves a main directory by its index only, never as a nested package.
+      name: "the package index when main names a directory with its own package.json",
+      packageJson: { name: "lib", main: "dir" },
+      entry: "index.js",
+      extraFiles: {
+        "dir/package.json": JSON.stringify({ main: "nested.js" }),
+        "dir/nested.js": "module.exports = {};\n",
+      },
+    },
+    {
+      name: "optional require?.resolve() calls",
+      packageJson: { name: "lib", main: "index.js" },
+      entry: "index.js",
+      code: 'module.exports = require?.resolve("lib-peer");\n',
+    },
+    {
+      name: "calls on a createRequire() binding",
+      packageJson: { name: "lib", type: "module", main: "index.js" },
+      entry: "index.js",
+      code: [
+        'import { createRequire } from "node:module";',
+        "const load = createRequire(import.meta.url);",
+        'export default load("lib-peer");',
+        "",
+      ].join("\n"),
+    },
+  ])("traces $name", ({ packageJson, entry, code, extraFiles }) => {
     const appRoot = path.join(tmpDir, "app");
     fs.mkdirSync(appRoot, { recursive: true });
 
@@ -362,8 +389,11 @@ describe("emitStandaloneOutput", () => {
     writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["lib"]));
 
     writeFile(appRoot, "node_modules/lib/package.json", JSON.stringify(packageJson));
-    for (const file of ["other.js", ...(extraFile ? [extraFile] : [])]) {
-      writeFile(appRoot, `node_modules/lib/${file}`, "module.exports = {};\n");
+    for (const [file, content] of Object.entries({
+      "other.js": "module.exports = {};\n",
+      ...extraFiles,
+    })) {
+      writeFile(appRoot, `node_modules/lib/${file}`, content);
     }
     writeFile(
       appRoot,
