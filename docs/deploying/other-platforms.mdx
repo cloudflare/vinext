@@ -28,6 +28,12 @@ Set `output: "standalone"` in `next.config`. A production build then emits a sel
 
 Set `PORT` and `HOST` to change the default bind address. Unlike Next.js standalone output, vinext uses `HOST`, not `HOSTNAME`.
 
+### Graceful shutdown
+
+Like `next start`, the Node server (`vinext start`, standalone output, and custom entries that call `startProdServer`) shuts down gracefully on `SIGTERM` and `SIGINT`. It stops accepting new connections, lets in-flight requests finish, and waits for pending `after()` callbacks before it exits. Give your platform a drain period long enough for that work, such as Kubernetes' `terminationGracePeriodSeconds`. To handle the signals yourself, set `NEXT_MANUAL_SIG_HANDLE=true`; a custom entry that already closes the server on these signals should drop its handlers or set it.
+
+In Pages Router API routes, `res.revalidate()` sends its revalidation request to the server's own address. During shutdown the server no longer accepts connections, so a `res.revalidate()` call made then fails.
+
 ### Behind a reverse proxy
 
 Any client can send forwarding headers, so by default the Node server (`vinext start`, standalone output, and `vinext dev`) ignores them. If the server only receives traffic through a reverse proxy or load balancer you control, set one of these environment variables:
