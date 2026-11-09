@@ -1490,17 +1490,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   ensureRouteLoaded: __ensureRouteLoaded,
   async isDynamicParamsMiss(route, params) {
     if (!route.isDynamic) return false;
-    if (route.routeHandler) {
-      const { isAppRouteHandlerParamsMiss: __isAppRouteHandlerParamsMiss } =
-        await __loadAppRouteHandlerDispatch();
-      return __isAppRouteHandlerParamsMiss({
-        handler: route.routeHandler,
-        isProduction: process.env.NODE_ENV === "production",
-        params,
-        pattern: route.pattern,
-        routeSegments: route.routeSegments,
-      });
-    }
     const __segmentConfig = __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route));
     if (__segmentConfig.dynamicParamsConfig !== false) return false;
     return (await __validateAppPageRouteDynamicParams({
@@ -1553,6 +1542,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     pprFallbackCacheShells,
     pprFallbackShell,
     renderedConcreteUrlPaths,
+    resumeRoutingAfterMiss,
     skipStaticParamsValidation,
     staticParamsValidationParams,
     rootParams,
@@ -1665,6 +1655,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       pprFallbackShell,
       pprRuntime: ${cacheComponents ? "__appPagePprRuntime" : "undefined"},
       renderedConcreteUrlPaths,
+      resumeRoutingAfterMiss,
       skipStaticParamsValidation,
       staticParamsValidationParams,
       rootParams,
@@ -1745,9 +1736,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     params,
     renderNotFound,
     request,
+    resumeRoutingAfterMiss,
     route,
     searchParams,
-    skipStaticParamsValidation,
   }) {
     const { dispatchAppRouteHandler: __dispatchAppRouteHandler } =
       await __loadAppRouteHandlerDispatch();
@@ -1778,9 +1769,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         routeHandler: route.routeHandler,
         routeSegments: route.routeSegments,
       },
+      resumeRoutingAfterMiss,
       scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
       searchParams,
-      skipStaticParamsValidation,
     });
   },
   ${

@@ -448,6 +448,11 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
    * has a transient gap. Falls through to a fresh render instead.
    */
   renderedConcreteUrlPaths?: ReadonlySet<string>;
+  /**
+   * Called on a dynamicParams = false miss. When it returns true, routing
+   * resumes with the fallback rewrites, so the miss renders no 404.
+   */
+  resumeRoutingAfterMiss?: () => boolean;
   skipStaticParamsValidation?: boolean;
   staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
@@ -1279,6 +1284,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       setCurrentFetchCacheMode(null);
       setCurrentFetchRevalidate(null);
       setCurrentForceDynamicFetchDefault(false);
+      // Routing discards this response, so it marks nothing for the request.
+      if (options.resumeRoutingAfterMiss?.()) return new Response(null, { status: 404 });
       const renderedNotFound = await options.renderHttpAccessFallbackPage(
         404,
         { matchedParams: {}, routeMiss: true },

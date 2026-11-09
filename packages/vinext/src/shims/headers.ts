@@ -984,6 +984,11 @@ export function getDraftModeCookieHeader(): string | null {
   return header;
 }
 
+/** Put back a draft-mode `Set-Cookie` header a dispatch took for a response it won't send. */
+export function restoreDraftModeCookieHeader(header: string): void {
+  _getState().draftModeCookieHeader = header;
+}
+
 function validateDraftModeSecret(secret: string): string {
   if (secret.length === 0) {
     throw new Error("[vinext] draft mode secret must be a non-empty string.");

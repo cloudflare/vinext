@@ -58,8 +58,6 @@ import {
   draftMode,
   getHeadersContext,
   headers as requestHeaders,
-  markDynamicUsage,
-  peekDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
 import { readImageOptimizationSignal } from "../packages/vinext/src/server/image-optimization.js";
@@ -70,6 +68,7 @@ import {
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
 import {
+  beginRouteCacheability,
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
@@ -156,6 +155,7 @@ type TestHandlerOptions = HandlerOptions & {
   isMiddlewareProxy?: boolean;
   middlewareModule?: MiddlewareModule | null;
 };
+type DispatchMatchedPage = HandlerOptions["dispatchMatchedPage"];
 type DispatchMatchedRouteHandler = HandlerOptions["dispatchMatchedRouteHandler"];
 
 function createPageRoute(overrides: Partial<TestRoute> = {}): TestRoute {
@@ -5118,7 +5118,40 @@ describe("createAppRscHandler", () => {
       },
     ];
 
-    it("answers a route-tree prefetch with the unmatched route's 404", async () => {
+    // A fallback rewrite could claim a rejected URL, so the tree's check runs.
+    const unclaimedFallbackRewrites = {
+      afterFiles: [],
+      beforeFiles: [],
+      fallback: [{ source: "/elsewhere/:slug", destination: "/products/:slug" }],
+    };
+
+    it("answers a route-tree prefetch from the route alone without fallback rewrites", async () => {
+      const isDynamicParamsMiss = vi.fn(async () => true);
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        isDynamicParamsMiss,
+        matchRoute,
+      });
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/products/rejected", headers);
+
+      const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+
+      // The tree names the route's segments, not the param or anything the
+      // route renders for it. The prefetch of the content gets the 404.
+      expect(tree.status).toBe(200);
+      const body = await tree.text();
+      expect(body).toContain('"tree"');
+      expect(body).not.toContain("rejected");
+      expect(isDynamicParamsMiss).not.toHaveBeenCalled();
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    it("answers a route-tree prefetch that no fallback rewrite claims with the unmatched route's 404", async () => {
       const isDynamicParamsMiss = vi.fn(
         async (_route: TestRoute, params: Record<string, unknown>) => params.slug !== "allowed",
       );
@@ -5126,6 +5159,7 @@ describe("createAppRscHandler", () => {
       const dispatchMatchedPage = vi.fn(async () => new Response("page"));
       const handler = createHandler({
         configHeaders,
+        configRewrites: unclaimedFallbackRewrites,
         dispatchMatchedPage,
         isDynamicParamsMiss,
         matchRoute,
@@ -5165,6 +5199,7 @@ describe("createAppRscHandler", () => {
       const cachedRequestData = cacheForRequest(readRequestData);
       const handler = createHandler({
         configHeaders: [],
+        configRewrites: unclaimedFallbackRewrites,
         async isDynamicParamsMiss() {
           cachedRequestData();
           return true;
@@ -5186,92 +5221,11 @@ describe("createAppRscHandler", () => {
       expect(readRequestData).toHaveBeenCalledTimes(2);
     });
 
-    it("checks an admitted route-tree prefetch once with fallback rewrites", async () => {
-      const isDynamicParamsMiss = vi.fn(async () => false);
-      const handler = createHandler({
-        configHeaders: [],
-        configRewrites: {
-          afterFiles: [],
-          beforeFiles: [],
-          fallback: [{ source: "/products/:slug", destination: "/fallback/:slug" }],
-        },
-        isDynamicParamsMiss,
-        matchRoute,
-      });
-      const headers = createRscRequestHeaders();
-      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
-      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
-      const url = await createRscRequestUrl("/docs/products/allowed", headers);
-
-      const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
-
-      expect(tree.status).toBe(200);
-      // Routing already admitted the params, so the generators run once.
-      expect(isDynamicParamsMiss).toHaveBeenCalledOnce();
-    });
-
-    it("keeps a rejected route's generator fetches out of the fallback rewrite's render", async () => {
-      const fallbackRoute = createPageRoute({ pattern: "/fallback/:slug" });
-      const readRequestData = vi.fn(() => ({}));
-      const cachedRequestData = cacheForRequest(readRequestData);
-      const isDynamicParamsMiss = vi.fn(async () => {
-        cachedRequestData();
-        // What a tagged, uncached fetch in generateStaticParams records.
-        const ctx = getRequestContext();
-        ctx.currentRequestTags.push("rejected-route");
-        ctx.dynamicFetchUrls?.add("https://api.example.test/slugs");
-        markDynamicUsage();
-        return true;
-      });
-      let fallbackRender: unknown;
-      const dispatchMatchedPage = vi.fn(async () => {
-        cachedRequestData();
-        const ctx = getRequestContext();
-        fallbackRender = {
-          dynamic: peekDynamicUsage(),
-          dynamicFetchUrls: [...(ctx.dynamicFetchUrls ?? [])],
-          tags: [...ctx.currentRequestTags],
-        };
-        return new Response("fallback");
-      });
-      const handler = createHandler({
-        configHeaders: [],
-        configRewrites: {
-          afterFiles: [],
-          beforeFiles: [],
-          fallback: [{ source: "/products/:slug", destination: "/fallback/:slug" }],
-        },
-        dispatchMatchedPage,
-        isDynamicParamsMiss,
-        matchRoute(pathname: string) {
-          const slug = /^\/fallback\/([^/]+)$/.exec(pathname)?.[1];
-          return slug ? { params: { slug }, route: fallbackRoute } : matchRoute(pathname);
-        },
-      });
-
-      const response = await handler(
-        new Request("https://example.test/docs/products/rejected"),
-        null,
-      );
-
-      expect(await response.text()).toBe("fallback");
-      expect(isDynamicParamsMiss).toHaveBeenCalledOnce();
-      expect(fallbackRender).toEqual({ dynamic: false, dynamicFetchUrls: [], tags: [] });
-      // The rewrite target computes its own cacheForRequest() value.
-      expect(readRequestData).toHaveBeenCalledTimes(2);
-    });
-
-    it("keeps an unlisted param when middleware enables draft mode, as Next.js does", async () => {
+    it("answers a route-tree prefetch when middleware enables draft mode, as Next.js does", async () => {
       const isDynamicParamsMiss = vi.fn(async () => true);
-      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
       const handler = createHandler({
         configHeaders: [],
-        configRewrites: {
-          afterFiles: [],
-          beforeFiles: [],
-          fallback: [{ source: "/products/:slug", destination: "/fallback/:slug" }],
-        },
-        dispatchMatchedPage,
+        configRewrites: unclaimedFallbackRewrites,
         isDynamicParamsMiss,
         matchRoute,
         middlewareModule: {
@@ -5281,12 +5235,6 @@ describe("createAppRscHandler", () => {
           },
         },
       });
-
-      const document = await handler(
-        new Request("https://example.test/docs/products/rejected"),
-        null,
-      );
-      expect(await document.text()).toBe("page");
 
       const headers = createRscRequestHeaders();
       headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
@@ -5312,6 +5260,7 @@ describe("createAppRscHandler", () => {
       let notFoundLang: unknown = "not rendered";
       const handler = createHandler({
         configHeaders: [],
+        configRewrites: unclaimedFallbackRewrites,
         isDynamicParamsMiss: async () => true,
         matchRequestRoute: localizedMatch,
         matchRoute: localizedMatch,
@@ -5330,6 +5279,401 @@ describe("createAppRscHandler", () => {
 
       expect(response.status).toBe(404);
       expect(notFoundLang).toBeUndefined();
+    });
+
+    describe("with fallback rewrites", () => {
+      const localizedRoute = createPageRoute({
+        isDynamic: true,
+        params: ["lang", "slug"],
+        pattern: "/:lang/products/:slug",
+        rootParamNames: ["lang"],
+        routeSegments: ["[lang]", "products", "[slug]"],
+      });
+      const fallbackRoute = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/fallback/:slug",
+        routeSegments: ["fallback", "[slug]"],
+      });
+      const apiRoute = createPageRoute({
+        __loadPage: undefined,
+        isDynamic: true,
+        page: undefined,
+        params: ["slug"],
+        pattern: "/api/:slug",
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["api", "[slug]"],
+      });
+      const matchFallbackRoutes = (
+        pathname: string,
+      ): { params: Record<string, string>; route: TestRoute } | null => {
+        const localized = /^\/([^/]+)\/products\/([^/]+)$/.exec(pathname);
+        if (localized) {
+          return { params: { lang: localized[1], slug: localized[2] }, route: localizedRoute };
+        }
+        const fallback = /^\/fallback\/([^/]+)$/.exec(pathname)?.[1];
+        if (fallback) return { params: { slug: fallback }, route: fallbackRoute };
+        const api = /^\/api\/([^/]+)$/.exec(pathname)?.[1];
+        return api ? { params: { slug: api }, route: apiRoute } : null;
+      };
+      const configRewrites = {
+        afterFiles: [],
+        beforeFiles: [],
+        fallback: [
+          { source: "/:lang/products/:slug", destination: "/fallback/:slug" },
+          { source: "/api/:slug", destination: "/fallback/:slug" },
+        ],
+      };
+      // A dispatch's miss: a bare 404 when routing resumes, else the marked one.
+      const rejectedMiss = (resume: (() => boolean) | undefined) =>
+        resume?.()
+          ? new Response(null, { status: 404 })
+          : markRouteMissResponse(new Response(null, { status: 404 }));
+
+      it("answers a route-tree prefetch with the tree of the fallback rewrite that claims the URL", async () => {
+        const isDynamicParamsMiss = vi.fn(
+          async (missRoute: TestRoute) => missRoute === localizedRoute,
+        );
+        const dispatchMatchedPage = vi.fn<DispatchMatchedPage>(async () => new Response("page"));
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites,
+          dispatchMatchedPage,
+          isDynamicParamsMiss,
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+        });
+        const headers = createRscRequestHeaders();
+        headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+        const url = await createRscRequestUrl("/docs/fr/products/rejected", headers);
+
+        const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+
+        expect(tree.status).toBe(200);
+        const body = await tree.text();
+        expect(body).toContain('"fallback"');
+        expect(body).not.toContain('"products"');
+        expect(isDynamicParamsMiss).toHaveBeenCalledTimes(2);
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+      });
+
+      it("resumes routing after the dispatch rejects the params", async () => {
+        let fallbackRender: unknown = "not rendered";
+        let navigationParams: unknown;
+        const cacheability: RouteCacheabilityState = {
+          captureDeadlineAt: Date.now() + 10_000,
+          mode: "admit",
+        };
+        const dispatchMatchedPage = vi.fn<DispatchMatchedPage>(async (options) => {
+          if (options.route === localizedRoute) {
+            beginRouteCacheability("app-page", localizedRoute.pattern);
+            expect(options.resumeRoutingAfterMiss?.()).toBe(true);
+            return new Response(null, { status: 404 });
+          }
+          const { getRootParam } = await import("../packages/vinext/src/shims/root-params.js");
+          fallbackRender = {
+            cacheabilityRoute: cacheability.route,
+            lang: await getRootParam("lang"),
+            navigationParams,
+          };
+          return new Response(`fallback ${String(options.params.slug)}`);
+        });
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites,
+          dispatchMatchedPage,
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+          setNavigationContext(context) {
+            navigationParams = context.params;
+          },
+        });
+
+        const { result: response, route: tracedRoute } = await captureFrameworkRequestRoute(() =>
+          handler(
+            new Request("https://example.test/docs/fr/products/rejected"),
+            cacheabilityContext(cacheability),
+          ),
+        );
+
+        expect(await response.text()).toBe("fallback rejected");
+        expect(dispatchMatchedPage).toHaveBeenCalledTimes(2);
+        // Traced and rendered as the fallback rewrite's route, with nothing of
+        // the rejected match.
+        expect(tracedRoute).toBe("/fallback/[slug]");
+        expect(fallbackRender).toEqual({
+          cacheabilityRoute: undefined,
+          lang: undefined,
+          navigationParams: { slug: "rejected" },
+        });
+      });
+
+      it("renders an unclaimed route handler miss without the rejected params", async () => {
+        let navigationParams: unknown;
+        let notFoundNavigationParams: unknown = "not rendered";
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites: {
+            afterFiles: [],
+            beforeFiles: [],
+            fallback: [{ source: "/:lang/products/:slug", destination: "/fallback/:slug" }],
+          },
+          dispatchMatchedRouteHandler: async (options) =>
+            rejectedMiss(options.resumeRoutingAfterMiss),
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+          async renderNotFound() {
+            notFoundNavigationParams = navigationParams;
+            return new Response("not found", { status: 404 });
+          },
+          setNavigationContext(context) {
+            navigationParams = context.params;
+          },
+        });
+
+        const response = await handler(new Request("https://example.test/docs/api/rejected"), null);
+
+        expect(response.status).toBe(404);
+        expect(notFoundNavigationParams).toEqual({});
+      });
+
+      it("resumes routing after a route handler rejects the params", async () => {
+        const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(async (options) => {
+          expect(options.resumeRoutingAfterMiss?.()).toBe(true);
+          return new Response(null, { status: 404 });
+        });
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites,
+          dispatchMatchedPage: async (options) =>
+            new Response(`fallback ${String(options.params.slug)}`),
+          dispatchMatchedRouteHandler,
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+        });
+
+        const response = await handler(new Request("https://example.test/docs/api/rejected"), null);
+
+        expect(await response.text()).toBe("fallback rejected");
+        expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+      });
+
+      it("resumes routing at each later fallback rewrite", async () => {
+        const resumed: unknown[] = [];
+        const dispatchMatchedPage = vi.fn<DispatchMatchedPage>(async (options) => {
+          const resume = options.resumeRoutingAfterMiss;
+          return rejectedMiss(() => {
+            const isResumed = resume?.() ?? false;
+            resumed.push(isResumed);
+            return isResumed;
+          });
+        });
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites,
+          dispatchMatchedPage,
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+        });
+
+        const response = await handler(
+          new Request("https://example.test/docs/fr/products/rejected"),
+          null,
+        );
+
+        // The second fallback rewrite doesn't claim the first one's
+        // destination, so the URL gets the unmatched route's 404.
+        expect(response.status).toBe(404);
+        expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+        expect(resumed).toEqual([true, true]);
+      });
+
+      it("resumes routing after the fallback rewrite that reached the rejected route", async () => {
+        const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+          async () => new Response("route"),
+        );
+        const resumed: unknown[] = [];
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites: {
+            afterFiles: [],
+            beforeFiles: [],
+            fallback: [
+              { source: "/fallback/:slug", destination: "/api/:slug" },
+              { source: "/start/:slug", destination: "/fallback/:slug" },
+            ],
+          },
+          dispatchMatchedPage: async (options) =>
+            rejectedMiss(() => {
+              const isResumed = options.resumeRoutingAfterMiss?.() ?? false;
+              resumed.push(isResumed);
+              return isResumed;
+            }),
+          dispatchMatchedRouteHandler,
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+        });
+
+        const response = await handler(
+          new Request("https://example.test/docs/start/rejected"),
+          null,
+        );
+
+        // An earlier fallback rewrite never reaches the rejected route's URL.
+        expect(response.status).toBe(404);
+        expect(resumed).toEqual([false]);
+        expect(dispatchMatchedRouteHandler).not.toHaveBeenCalled();
+      });
+
+      it("doesn't route a resumed request back to the rejected route", async () => {
+        const dispatchMatchedPage = vi.fn<DispatchMatchedPage>(async (options) =>
+          options.params.slug === "listed"
+            ? new Response("fallback listed")
+            : rejectedMiss(options.resumeRoutingAfterMiss),
+        );
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites: {
+            afterFiles: [],
+            beforeFiles: [],
+            fallback: [
+              { source: "/start/:slug", destination: "/fallback/:slug" },
+              { source: "/fallback/:slug", destination: "/fallback/listed" },
+            ],
+          },
+          dispatchMatchedPage,
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+        });
+
+        const response = await handler(
+          new Request("https://example.test/docs/start/rejected"),
+          null,
+        );
+
+        // Next.js skips the route it already tried, even for listed params.
+        expect(response.status).toBe(404);
+        expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      });
+
+      it("drops the rejected route's cache bypass when routing resumes", async () => {
+        const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(async (options) => {
+          expect(options.bypassInterceptionContextCache).toBe(true);
+          expect(options.resumeRoutingAfterMiss?.()).toBe(true);
+          return new Response(null, { status: 404 });
+        });
+        const dispatchMatchedPage = vi.fn<DispatchMatchedPage>(
+          async (options) =>
+            new Response(`fallback ${String(options.params.slug)}`, {
+              headers: { "Cache-Control": "public, s-maxage=60" },
+            }),
+        );
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites,
+          dispatchMatchedPage,
+          dispatchMatchedRouteHandler,
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+        });
+
+        // A route handler sees the raw spelling, so its match bypasses the cache.
+        const response = await handler(
+          new Request("https://example.test/docs/api/rej%65cted"),
+          null,
+        );
+
+        expect(await response.text()).toBe("fallback rej%65cted");
+        expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+        expect(dispatchMatchedPage).toHaveBeenCalledWith(
+          expect.objectContaining({ bypassInterceptionContextCache: false }),
+        );
+        expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+      });
+
+      it("doesn't resume routing for an intercepted route", async () => {
+        const dispatchMatchedPage = vi.fn<DispatchMatchedPage>(async (options) => {
+          expect(options.resumeRoutingAfterMiss).toBeUndefined();
+          return rejectedMiss(options.resumeRoutingAfterMiss);
+        });
+        const renderPagesFallback = vi.fn(async () => new Response("pages"));
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites: {
+            afterFiles: [],
+            beforeFiles: [],
+            fallback: [{ source: "/en/intercepted", destination: "/pages-only" }],
+          },
+          dispatchMatchedPage,
+          matchInterceptRoute(pathname, sourcePathname) {
+            if (pathname !== "/en/intercepted" || sourcePathname !== "/en/products/recent") {
+              return null;
+            }
+            return {
+              interceptionSourceIsConcrete: true,
+              params: { lang: "en", slug: "recent" },
+              route: localizedRoute,
+            };
+          },
+          matchRoute: () => null,
+          renderPagesFallback,
+        });
+
+        const headers = createRscRequestHeaders({ interceptionContext: "/en/products/recent" });
+        const rscUrl = await createRscRequestUrl("/docs/en/intercepted", headers);
+        const response = await handler(
+          new Request(`https://example.test${rscUrl}`, { headers }),
+          null,
+        );
+
+        expect(response.status).toBe(404);
+        expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+        expect(renderPagesFallback).not.toHaveBeenCalled();
+      });
+
+      it("doesn't resume routing for a page an action rendered", async () => {
+        const dispatchMatchedPage = vi.fn<DispatchMatchedPage>(async (options) => {
+          expect(options.resumeRoutingAfterMiss).toBeUndefined();
+          return rejectedMiss(options.resumeRoutingAfterMiss);
+        });
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites,
+          dispatchMatchedPage,
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+        });
+
+        const response = await handler(
+          new Request("https://example.test/docs/fr/products/rejected", {
+            method: "POST",
+            headers: { "next-action": "action-id", "content-type": "text/plain" },
+          }),
+          null,
+        );
+
+        expect(response.status).toBe(404);
+        expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      });
+    });
+
+    it("doesn't resume routing without fallback rewrites", async () => {
+      let resumed: unknown;
+      const dispatchMatchedPage = vi.fn<DispatchMatchedPage>(async (options) => {
+        resumed = options.resumeRoutingAfterMiss?.();
+        return markRouteMissResponse(new Response(null, { status: 404 }));
+      });
+      const handler = createHandler({ configHeaders: [], dispatchMatchedPage, matchRoute });
+
+      const response = await handler(
+        new Request("https://example.test/docs/products/rejected"),
+        null,
+      );
+
+      expect(response.status).toBe(404);
+      expect(resumed).toBe(false);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
     });
 
     it("keeps the never-cache policy of the page render's not-found over config headers", async () => {

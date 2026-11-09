@@ -33,9 +33,9 @@ describe("app route handler policy helpers", () => {
       // Dev checks every dynamicParams = false route with generateStaticParams.
       expect(resolve({ ...closed, ...bailout }, false)).toBe("enforce");
     }
-    // These bail out only while a generated path prerenders.
+    // Once these list a param, Next.js serves every param.
     for (const methods of [{ POST: GET }, { OPTIONS: GET }]) {
-      expect(resolve({ ...closed, ...methods }, true)).toBe("enforce-when-none-generated");
+      expect(resolve({ ...closed, ...methods }, true)).toBe("skip");
       expect(resolve({ ...closed, ...methods }, false)).toBe("enforce");
     }
 
