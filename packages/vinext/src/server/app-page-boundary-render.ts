@@ -158,6 +158,7 @@ type AppPageBoundaryRscPayloadOptions<TModule extends AppPageModule = AppPageMod
   layoutModules: readonly (TModule | null | undefined)[];
   pathname: string;
   route?: AppPageBoundaryRoute<TModule> | null;
+  rootLayoutTreePath?: string | null;
   sourcePageSegments?: readonly string[] | null;
 };
 
@@ -248,6 +249,8 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
     params: AppPageParams,
   ) => string[];
   rootLayouts: readonly (TModule | null | undefined)[];
+  /** The tree path of a root layout the document renders outside `layoutModules`. */
+  rootLayoutTreePath?: string | null;
   scriptNonce?: string;
   sourcePageSegments?: readonly string[] | null;
 };
@@ -465,7 +468,7 @@ function createAppPageBoundaryRscPayload<TModule extends AppPageModule>(
   const layoutEntries = createAppPageBoundaryLayoutEntries(options.route, options.layoutModules);
   const sourcePageSegments = options.sourcePageSegments ?? options.route?.routeSegments;
 
-  const rootLayoutTreePath = layoutEntries[0]?.treePath ?? null;
+  const rootLayoutTreePath = layoutEntries[0]?.treePath ?? options.rootLayoutTreePath ?? null;
 
   return {
     ...AppElementsWire.createMetadataEntries({
@@ -541,6 +544,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     element: options.element,
     layoutModules: options.layoutModules,
     pathname,
+    rootLayoutTreePath: options.rootLayoutTreePath,
     route: options.route,
     sourcePageSegments: options.sourcePageSegments,
   });

@@ -370,6 +370,10 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         resolveChildSegments,
         rootForbiddenModule,
         rootLayouts: useStandaloneNotFound ? [] : rootLayouts,
+        // Next.js' default layout is /_not-found's root layout, at the app
+        // root, so navigating to a route group's root layout loads a new
+        // document.
+        rootLayoutTreePath: useStandaloneNotFound && !hasAppRootLayout ? "/" : null,
         rootNotFoundModule: routeMissRootNotFoundModule,
         rootUnauthorizedModule,
         route: useStandaloneNotFound ? null : route,
