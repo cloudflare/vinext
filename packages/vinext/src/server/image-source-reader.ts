@@ -1,7 +1,7 @@
 /**
  * Streamed reads of an image source for the image optimization endpoint.
  *
- * Animation detection parses a GIF, PNG or WebP source as it streams in rather
+ * Animation detection parses an image source as it streams in rather
  * than buffering it, so a large source cannot exhaust a Worker isolate's
  * memory. Only the source's first bytes are kept, to replay without a refetch.
  */
