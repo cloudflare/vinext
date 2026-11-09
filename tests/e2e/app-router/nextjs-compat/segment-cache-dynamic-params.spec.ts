@@ -97,15 +97,12 @@ test.describe("Next.js compat: segment cache closed params (dynamicParams = fals
     const allowedPath = `${ROOT}/products/allowed`;
     const rejectedStatuses: number[] = [];
     const allowedPrefetchStatuses: number[] = [];
-    let allowedNavigationRequests = 0;
+    // Every request for the allowed path once its prefetch settled, documents included.
+    let countAllowedRequests = false;
+    let allowedRequestsAfterPrefetch = 0;
     page.on("request", (request) => {
-      const headers = request.headers();
-      if (
-        headers.rsc === "1" &&
-        headers["next-router-prefetch"] !== "1" &&
-        new URL(request.url()).pathname === allowedPath
-      ) {
-        allowedNavigationRequests++;
+      if (countAllowedRequests && new URL(request.url()).pathname === allowedPath) {
+        allowedRequestsAfterPrefetch++;
       }
     });
     page.on("response", (response) => {
@@ -126,12 +123,16 @@ test.describe("Next.js compat: segment cache closed params (dynamicParams = fals
     await page.locator(`input[data-link-accordion="${allowedPath}"]`).click();
     await expect.poll(() => allowedPrefetchStatuses).toContain(200);
     await page.waitForLoadState("networkidle");
+    countAllowedRequests = true;
+    await page.evaluate(() => Reflect.set(window, "__prefetchDocument", true));
     await page.locator(`a[href="${allowedPath}"]`).click();
 
     await expect(page.locator("#product-page")).toHaveText("Allowed product page");
     await expect(page.getByText(ROOT_NOT_FOUND)).toHaveCount(0);
-    // As in Next.js, the click reuses the allowed prefetch, not the rejected 404.
-    expect(allowedNavigationRequests).toBe(0);
+    // As in Next.js, the click reuses the allowed prefetch, not the rejected
+    // 404, in the same document.
+    expect(await page.evaluate(() => Reflect.get(window, "__prefetchDocument"))).toBe(true);
+    expect(allowedRequestsAfterPrefetch).toBe(0);
   });
 
   test("does not reuse an allowed route for a parameter value that must 404", async ({ page }) => {
