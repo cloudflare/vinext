@@ -69,9 +69,8 @@ import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
-  createServerActionNotFoundResponse,
-  getServerActionNotFoundMessage,
   isServerActionNotFoundError,
+  respondServerActionNotFound,
 } from "./server-action-not-found.js";
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
 import { hasDigest } from "./app-rsc-errors.js";
@@ -1224,9 +1223,7 @@ function createActionNotFoundResponse(
   },
 ): Response {
   options.getAndClearPendingCookies();
-  console.warn(getServerActionNotFoundMessage(actionId));
-  options.clearRequestContext();
-  return createServerActionNotFoundResponse();
+  return respondServerActionNotFound(actionId, options.clearRequestContext);
 }
 
 export function isProgressiveServerActionRequest(

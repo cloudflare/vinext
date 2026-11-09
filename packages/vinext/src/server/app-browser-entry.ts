@@ -697,20 +697,6 @@ function isSettledPrefetchCacheEntry(
   );
 }
 
-function parsePrefetchCacheKey(cacheKey: string): {
-  interceptionContext: string | null;
-  rscUrl: string;
-} {
-  const separatorIndex = cacheKey.indexOf("\0");
-  if (separatorIndex === -1) {
-    return { interceptionContext: null, rscUrl: cacheKey };
-  }
-  return {
-    interceptionContext: cacheKey.slice(separatorIndex + 1),
-    rscUrl: cacheKey.slice(0, separatorIndex),
-  };
-}
-
 async function learnOptimisticRouteTemplateFromPrefetch(options: {
   cacheKey: string;
   entry: PrefetchCacheEntry & { snapshot: CachedRscResponse };
@@ -718,7 +704,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   mountedSlotsHeader: string | null;
   routeManifest: BrowserRouteManifest;
 }): Promise<LearnedOptimisticRouteTemplate | null> {
-  const source = parsePrefetchCacheKey(options.cacheKey);
+  const source = AppElementsWire.decodeCacheKey(options.cacheKey);
   if (source.interceptionContext !== options.interceptionContext) return null;
   if (resolvePrefetchCacheEntryMountedSlotsHeader(options.entry) !== options.mountedSlotsHeader) {
     return null;

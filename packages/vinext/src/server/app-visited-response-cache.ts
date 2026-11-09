@@ -89,20 +89,6 @@ function normalizeVisitedResponseCacheLookupUrl(rscUrl: string): string | null {
   }
 }
 
-function parseVisitedResponseCacheKey(cacheKey: string): {
-  interceptionContext: string | null;
-  rscUrl: string;
-} {
-  const separatorIndex = cacheKey.indexOf("\0");
-  if (separatorIndex === -1) {
-    return { interceptionContext: null, rscUrl: cacheKey };
-  }
-  return {
-    interceptionContext: cacheKey.slice(separatorIndex + 1),
-    rscUrl: cacheKey.slice(0, separatorIndex),
-  };
-}
-
 export function findVisitedResponseCacheEntry(
   cache: Map<string, VisitedResponseCacheEntry>,
   rscUrl: string,
@@ -118,7 +104,7 @@ export function findVisitedResponseCacheEntry(
   if (normalizedTarget === null) return null;
 
   for (const [cacheKey, entry] of cache) {
-    const source = parseVisitedResponseCacheKey(cacheKey);
+    const source = AppElementsWire.decodeCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeVisitedResponseCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
     return { cacheKey, entry };
