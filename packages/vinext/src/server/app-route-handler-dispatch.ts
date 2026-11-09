@@ -142,18 +142,32 @@ function encodeAppRouteParams(params: AppRouteParams): AppRouteParams {
 /**
  * Runs a route's generateStaticParams as Next.js does, in a work store of its
  * own: root params come only from parent params, which a route handler's
- * generator has none of, and its fetches leave the request's tags, revalidate
- * and dynamic-fetch observations alone.
+ * generator has none of, request APIs throw because there is no request, and
+ * its fetches leave the request's tags, revalidate and dynamic-usage
+ * observations alone.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
  */
 function runStaticParamsGeneration<T>(
   handler: AppRouteHandlerModule,
+  pattern: string,
   fn: () => Promise<T>,
 ): Promise<T> {
   return runWithUnifiedStateMutation((ctx) => {
     ctx.rootParams = {};
     ctx.currentRequestTags = [];
     ctx.dynamicFetchUrls = new Set<string>();
+    ctx.headersContext = {
+      headers: new Headers(),
+      cookies: new Map(),
+      accessError: new Error(
+        `Route ${pattern} used a request API such as \`headers()\` or \`cookies()\` inside \`generateStaticParams\`. ` +
+          "This is not supported because `generateStaticParams` runs at build time without an HTTP request. " +
+          "Read more: https://nextjs.org/docs/messages/next-dynamic-api-wrong-context",
+      ),
+    };
+    ctx.dynamicUsageDetected = false;
+    ctx.renderDynamicLatch = { dynamic: false, listeners: new Set() };
+    ctx.renderRequestApiUsage = new Set();
     // Next.js applies only the segment's fetchCache to the generator.
     ctx.currentFetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
     ctx.currentFetchRevalidate = null;
@@ -178,7 +192,7 @@ export async function isAppRouteHandlerParamsMiss(options: {
   if (enforcement === "skip") return false;
   const patternParts = options.pattern.split("/");
   if (enforcement === "enforce-when-none-generated") {
-    const generated = await runStaticParamsGeneration(handler, async () =>
+    const generated = await runStaticParamsGeneration(handler, options.pattern, async () =>
       (handler.generateStaticParams as (context: { params: object }) => unknown)({ params: {} }),
     );
     // A route listed without params rejects every param.
@@ -189,7 +203,7 @@ export async function isAppRouteHandlerParamsMiss(options: {
     routePatternParamNames,
     validateAppPageDynamicParams,
   } = await import("./app-page-request.js");
-  const notFound = await runStaticParamsGeneration(handler, () =>
+  const notFound = await runStaticParamsGeneration(handler, options.pattern, () =>
     validateAppPageDynamicParams({
       enforceStaticParamsOnly: true,
       generateStaticParams:

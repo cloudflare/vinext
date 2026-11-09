@@ -12,7 +12,13 @@ import {
   getCdnCacheAdapter,
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
-import { draftMode, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
+import {
+  cookies,
+  draftMode,
+  headers,
+  markDynamicUsage,
+  setHeadersContext,
+} from "../packages/vinext/src/shims/headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
   createRequestContext,
@@ -785,6 +791,60 @@ describe("app route handler dispatch", () => {
       });
       expect(ctx.currentRequestTags).not.toContain("generator-tag");
       expect([...ctx.dynamicFetchUrls]).toEqual([]);
+    });
+
+    it("keeps generateStaticParams' dynamic usage out of the request", async () => {
+      const ctx = createRequestContext();
+      await runWithRequestContext(ctx, async () => {
+        const result = dispatchClosedRoute({
+          generateStaticParams() {
+            // What a no-store fetch records.
+            markDynamicUsage();
+            return [{ slug: "listed" }];
+          },
+          params: { slug: "listed" },
+          pathname: "/posts/listed",
+          pattern: "/posts/:slug",
+        });
+        expect((await result.response).status).toBe(200);
+      });
+      expect(ctx.dynamicUsageDetected).toBe(false);
+      expect(ctx.renderDynamicLatch?.dynamic).toBe(false);
+    });
+
+    it("rejects request APIs in generateStaticParams, as Next.js does", async () => {
+      const errors: string[] = [];
+      const ctx = createRequestContext({
+        headersContext: {
+          headers: new Headers({ "x-listed-slug": "unlisted" }),
+          cookies: new Map([["slug", "unlisted"]]),
+        },
+      });
+      const result = await runWithRequestContext(ctx, async () => {
+        const closed = dispatchClosedRoute({
+          async generateStaticParams() {
+            // A generator must not list the requested param from the request.
+            const fromHeader = await headers().then(
+              (requestHeaders) => requestHeaders.get("x-listed-slug"),
+              (error: Error) => (errors.push(error.message), null),
+            );
+            const fromCookie = await cookies().then(
+              (requestCookies) => requestCookies.get("slug")?.value,
+              (error: Error) => (errors.push(error.message), null),
+            );
+            return [{ slug: fromHeader ?? fromCookie ?? "listed" }];
+          },
+          params: { slug: "unlisted" },
+          pathname: "/posts/unlisted",
+          pattern: "/posts/:slug",
+        });
+        return { status: (await closed.response).status, handlerCalls: closed.handlerCalls };
+      });
+      expect(result).toEqual({ status: 404, handlerCalls: [] });
+      expect(errors).toHaveLength(2);
+      for (const message of errors) {
+        expect(message).toContain("inside `generateStaticParams`");
+      }
     });
 
     it("compares decoded params as Next.js does", async () => {
