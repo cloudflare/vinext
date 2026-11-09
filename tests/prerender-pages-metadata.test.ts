@@ -6,6 +6,7 @@ import { createServer, type RequestListener, type Server } from "node:http";
 import { localizePagesPath, prerenderPages } from "../packages/vinext/src/build/prerender.js";
 import { pagesRouter } from "../packages/vinext/src/routing/pages-router.js";
 import { resolveNextConfig, type NextConfig } from "../packages/vinext/src/config/next-config.js";
+import { VINEXT_PRERENDER_NOT_FOUND_PATH } from "../packages/vinext/src/server/headers.js";
 
 let root: string;
 let server: Server | undefined;
@@ -128,18 +129,26 @@ describe("Pages prerender response metadata", () => {
     expect(fs.existsSync(path.join(root, "out/billing.html"))).toBe(false);
   });
 
-  it("does not package a rewritten 404 response as the custom 404", async () => {
+  // Like `next build`, the 404 page renders without routing, so no rewrite of
+  // `/404` can reach another response.
+  it("packages the 404 page rendered without routing", async () => {
     page("404.tsx");
+    const requested: string[] = [];
     const result = await render((req, res) => {
-      // e.g. a conditional rewrite of /404 to a public file returns early.
-      if (req.url === "/404") res.removeHeader("x-vinext-prerender-rewritten");
+      requested.push(req.url ?? "");
+      res.removeHeader("x-vinext-prerender-rewritten");
       res.statusCode = 404;
       res.setHeader("Content-Type", "text/html");
-      res.end("<html>Not the custom 404</html>");
+      res.end("<html>Custom 404</html>");
     });
 
-    expect(result.routes.find((route) => route.route === "/404")).toBeUndefined();
-    expect(fs.existsSync(path.join(root, "out/404.html"))).toBe(false);
+    expect(requested).toEqual([`${VINEXT_PRERENDER_NOT_FOUND_PATH}?router=pages`]);
+    expect(result.routes.find((route) => route.route === "/404")).toMatchObject({
+      status: "rendered",
+    });
+    expect(fs.readFileSync(path.join(root, "out/404.html"), "utf8")).toBe(
+      "<html>Custom 404</html>",
+    );
   });
 
   // Next.js: test/e2e/prerender.test.ts and test/e2e/i18n-data-fetching-redirect/redirect.test.ts
@@ -321,8 +330,9 @@ describe("Pages prerender locales", () => {
           );
           return;
         }
-        requested.push(url.pathname);
-        if (url.pathname.endsWith("/404")) res.statusCode = 404;
+        const isNotFound = url.pathname === VINEXT_PRERENDER_NOT_FOUND_PATH;
+        requested.push(isNotFound ? `${url.pathname}${url.search}` : url.pathname);
+        if (isNotFound) res.statusCode = 404;
         res.setHeader("Content-Type", "text/html");
         res.end(`<html>${url.pathname}</html>`);
       },
@@ -334,9 +344,9 @@ describe("Pages prerender locales", () => {
     expect(requested.sort()).toEqual(
       [
         "/",
-        "/404",
+        `${VINEXT_PRERENDER_NOT_FOUND_PATH}?router=pages&locale=en`,
         "/fr",
-        "/fr/404",
+        `${VINEXT_PRERENDER_NOT_FOUND_PATH}?router=pages&locale=fr`,
         "/fr/posts/fr-object",
         "/fr/posts/fr-string",
         "/posts/default",

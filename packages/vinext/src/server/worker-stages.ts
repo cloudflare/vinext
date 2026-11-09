@@ -6,7 +6,7 @@ import {
   type VinextResponseStageTransport,
 } from "./multi-stage.js";
 
-export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 6;
+export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 7;
 export const PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER =
   "x-vinext-pages-response-stage-policy-owner";
 export type PagesResponseStagePolicyOwner = "request-time" | "static";
@@ -154,6 +154,7 @@ export function isPagesResponseStageProps(value: unknown): value is WorkerRespon
     (options.isDataReq === undefined || typeof options.isDataReq === "boolean") &&
     (options.renderErrorPageOnMiss === undefined ||
       typeof options.renderErrorPageOnMiss === "boolean") &&
-    (options.originalUrl === undefined || typeof options.originalUrl === "string")
+    (options.originalUrl === undefined || typeof options.originalUrl === "string") &&
+    (options.notFoundPage === undefined || typeof options.notFoundPage === "boolean")
   );
 }

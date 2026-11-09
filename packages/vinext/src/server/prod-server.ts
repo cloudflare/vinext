@@ -95,7 +95,6 @@ import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret, readServerCompress } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_NOT_FOUND_PATH,
-  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -2663,40 +2662,19 @@ async function createPagesRouterRequestHandler(
         res.end("This page could not be found");
         return;
       }
-      const locale = new URL(rawUrl, "http://localhost").searchParams.get("locale");
-      if (locale !== null && !i18nConfig?.locales.includes(locale)) {
-        res.writeHead(400);
-        res.end("Bad Request");
-        return;
-      }
-      const renderPath =
-        locale !== null && locale !== i18nConfig?.defaultLocale ? `/${locale}/404` : "/404";
-      const headers = filterInternalHeaders(nodeHeadersToWebHeaders(req.headers));
-      // Like the Pages request stage, never pass the build's secret to user code.
-      headers.delete(VINEXT_PRERENDER_SECRET_HEADER);
-      try {
-        const response = await renderPage(
-          new Request(new URL(renderPath, `http://${resolveHost(req, `${host}:${port}`)}`), {
-            headers,
+      const { renderPagesPrerenderNotFound } = await import("./pages-prerender-not-found.js");
+      const response = await renderPagesPrerenderNotFound(
+        new Request(new URL(rawUrl, `http://${resolveHost(req, `${host}:${port}`)}`), {
+          headers: filterInternalHeaders(nodeHeadersToWebHeaders(req.headers)),
+        }),
+        i18nConfig,
+        (renderRequest, renderPath) =>
+          renderPage(renderRequest, renderPath, ssrManifest, undefined, undefined, {
+            notFoundPage: true,
+            originalUrl: renderPath,
           }),
-          renderPath,
-          ssrManifest,
-          undefined,
-          undefined,
-          { notFoundPage: true, originalUrl: renderPath },
-        );
-        await sendWebResponse(response, req, res, compress);
-      } catch (e) {
-        console.error("[vinext] Server error:", e);
-        if (!res.headersSent) {
-          res.setHeader(
-            VINEXT_PRERENDER_RENDER_ERROR_HEADER,
-            VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
-          );
-          res.writeHead(500);
-          res.end("Internal Server Error");
-        }
-      }
+      );
+      await sendWebResponse(response, req, res, compress);
       return;
     }
 

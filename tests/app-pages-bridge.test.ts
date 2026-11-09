@@ -6,6 +6,7 @@ import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesFallback,
+  renderPagesNotFound,
   type PagesEntry,
 } from "../packages/vinext/src/server/app-pages-bridge.js";
 import type { AppMiddlewareContext } from "../packages/vinext/src/server/app-middleware.js";
@@ -1062,5 +1063,30 @@ describe("renderPagesFallback", () => {
 
     expect(renderPage).toHaveBeenCalledTimes(1);
     expect(res).toBeNull();
+  });
+});
+
+describe("renderPagesNotFound", () => {
+  it("renders the Pages 404 page for the URL without matching it", async () => {
+    const renderPage = vi.fn(async () => new Response("pages 404", { status: 404 }));
+    const request = new Request("http://localhost/fr/404");
+
+    const res = await renderPagesNotFound({ renderPage } as PagesEntry, request, "/fr/404");
+
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("pages 404");
+    expect(renderPage).toHaveBeenCalledWith(request, "/fr/404", {}, undefined, null, {
+      notFoundPage: true,
+      originalUrl: "/fr/404",
+    });
+  });
+
+  it("answers a plain 404 without a Pages renderer", async () => {
+    const res = await renderPagesNotFound(
+      {} as PagesEntry,
+      new Request("http://localhost/404"),
+      "/404",
+    );
+    expect(res.status).toBe(404);
   });
 });
