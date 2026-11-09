@@ -1641,7 +1641,7 @@ export async function resolvePagesPageData(
         undefined,
         options.expireSeconds,
         cached.value.cacheControl,
-        cachedValue.status,
+        options.statusCode ?? cachedValue.status,
         cachedValue.headers,
       );
       return finalizeCachedPagesResponse(hitResponse, options, cachedValue.html);
@@ -1711,7 +1711,7 @@ export async function resolvePagesPageData(
         undefined,
         options.expireSeconds,
         cached.value.cacheControl,
-        cachedValue.status,
+        options.statusCode ?? cachedValue.status,
         cachedValue.headers,
       );
       return finalizeCachedPagesResponse(staleResponse, options, cachedValue.html);

@@ -669,6 +669,35 @@ describe("createPagesPageHandler — status pages", () => {
     const res = await handler(makeRequest(pattern), pattern, null, null, null);
     expect(res.status).toBe(202);
   });
+
+  // Next.js stores no status for a Pages entry, so a cached status page still
+  // answers with its own status, even from an entry stored with 200.
+  it.each(["HIT", "STALE"])("answers a cached getStaticProps /500 %s with 500", async (state) => {
+    const adapter = new DefaultCdnCacheAdapter();
+    vi.spyOn(adapter, "get").mockResolvedValue({
+      lastModified: 0,
+      ...(state === "STALE" ? { cacheState: "stale" as const } : {}),
+      cacheControl: { revalidate: state === "STALE" ? 1 : false },
+      value: {
+        kind: "PAGES",
+        html: "<html><body>cached 500</body></html>",
+        pageData: { pageProps: {} },
+        status: 200,
+        headers: undefined,
+      },
+    });
+    vi.spyOn(adapter, "set").mockResolvedValue();
+    setCdnCacheAdapter(adapter);
+    const route = makeRoute(
+      "/500",
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 1 }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const res = await handler(makeRequest("/500"), "/500", null, null, null);
+    expect(res.headers.get("x-vinext-cache")).toBe(state);
+    expect(res.status).toBe(500);
+    expect(await res.text()).toContain("cached 500");
+  });
 });
 
 // ---------------------------------------------------------------------------
