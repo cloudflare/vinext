@@ -10,6 +10,7 @@
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { toSlash } from "pathslash";
+import { getWithHost } from "../helpers";
 
 test("loads, styles, and hydrates a page", async ({ page }) => {
   const failed: string[] = [];
@@ -78,6 +79,24 @@ test("keeps sending unreferenced project files and routes to the Worker", async 
 
   const route = await request.get("/api/hello");
   expect(route.status()).toBe(200);
+});
+
+test("redirects a path that parses as an invalid host", async ({ baseURL }) => {
+  // `//` and `/\` start a host when parsed as a URL, and a request client would
+  // normalize them, so send the raw request target. vinext's dev server
+  // collapses the slashes like Next.js does.
+  const host = new URL(baseURL!).host;
+  for (const [target, location] of [
+    ["//", "/"],
+    ["//:80", "/:80"],
+    ["//%", "/%"],
+    ["/\\", "/"],
+    ["//x", "/x"],
+  ]) {
+    const res = await getWithHost(baseURL!, target, host);
+    expect(res.status, target).toBe(308);
+    expect(res.headers.location, target).toBe(location);
+  }
 });
 
 test("refuses cross-site requests for module URLs", async ({ request }) => {
