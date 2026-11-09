@@ -162,7 +162,9 @@ const CONDITION_SETS: Record<ImportKind, string[][]> = {
   require: runtimeConditionSets("require"),
 };
 const FILE_EXTENSIONS = [".js", ".cjs", ".mjs", ".json", ".node"];
-const TRACEABLE_FILE_RE = /\.[cm]?js$/;
+// Node's CommonJS loader runs any other file as JavaScript, and nft parses
+// every file but these.
+const UNTRACED_FILE_RE = /\.(?:json|node)$/;
 // Gates the AST walk for require calls. Deserializing the AST costs far more
 // than the parse, and large data modules (such as Shiki's grammars) often
 // mention "require" as a keyword without calling it. Over-matching only costs
@@ -206,18 +208,31 @@ function resolveFileCandidate(basePath: string): string | null {
   return resolveDirectoryIndex(basePath);
 }
 
+/**
+ * Node's PACKAGE_TARGET_RESOLVE validity check: exports targets must be
+ * package-relative, while imports targets may also name another package.
+ */
+function isValidPackageTarget(target: string, isImports: boolean): boolean {
+  if (target.startsWith("./")) return true;
+  if (!isImports || target.startsWith("../") || target.startsWith("/")) return false;
+  return !URL.canParse(target);
+}
+
 /** Resolve an `exports`/`imports` target value against a condition set. */
 function resolveConditionalTarget(
   target: unknown,
   conditions: readonly string[],
   patternMatch: string | null,
+  isImports: boolean,
 ): string | null {
   if (typeof target === "string") {
+    // Node skips an invalid target to try the next array item.
+    if (!isValidPackageTarget(target, isImports)) return null;
     return patternMatch === null ? target : target.replaceAll("*", patternMatch);
   }
   if (Array.isArray(target)) {
     for (const item of target) {
-      const resolved = resolveConditionalTarget(item, conditions, patternMatch);
+      const resolved = resolveConditionalTarget(item, conditions, patternMatch, isImports);
       if (resolved !== null) return resolved;
     }
     return null;
@@ -225,7 +240,7 @@ function resolveConditionalTarget(
   if (target !== null && typeof target === "object") {
     for (const [condition, value] of Object.entries(target)) {
       if (!conditions.includes(condition)) continue;
-      const resolved = resolveConditionalTarget(value, conditions, patternMatch);
+      const resolved = resolveConditionalTarget(value, conditions, patternMatch, isImports);
       if (resolved !== null) return resolved;
     }
   }
@@ -240,9 +255,10 @@ function resolveSubpathMap(
   map: Record<string, unknown>,
   key: string,
   conditions: readonly string[],
+  isImports: boolean,
 ): string | null {
   if (Object.hasOwn(map, key) && !key.includes("*")) {
-    return resolveConditionalTarget(map[key], conditions, null);
+    return resolveConditionalTarget(map[key], conditions, null, isImports);
   }
   let best: { pattern: string; match: string } | null = null;
   for (const pattern of Object.keys(map)) {
@@ -262,7 +278,9 @@ function resolveSubpathMap(
     }
     best = { pattern, match: key.slice(base.length, key.length - trailer.length) };
   }
-  return best ? resolveConditionalTarget(map[best.pattern], conditions, best.match) : null;
+  return best
+    ? resolveConditionalTarget(map[best.pattern], conditions, best.match, isImports)
+    : null;
 }
 
 function exportsSubpathMap(exports: unknown): Record<string, unknown> {
@@ -282,7 +300,7 @@ function resolvePackageFile(
   conditions: readonly string[],
 ): string | null {
   if (pkg.exports !== undefined) {
-    const target = resolveSubpathMap(exportsSubpathMap(pkg.exports), subpath, conditions);
+    const target = resolveSubpathMap(exportsSubpathMap(pkg.exports), subpath, conditions, false);
     if (target === null || !target.startsWith("./")) return null;
     const filePath = path.join(packageRoot, target);
     return isFile(filePath) ? filePath : null;
@@ -325,10 +343,11 @@ function parseTracedFile(filePath: string, code: string) {
     : filePath.endsWith(".cjs")
       ? "commonjs"
       : "unambiguous";
-  const result = parseSync(filePath, code, { lang: "js", sourceType });
+  const lang = filePath.endsWith(".jsx") ? "jsx" : "js";
+  const result = parseSync(filePath, code, { lang, sourceType });
   if (result.errors.length === 0 || sourceType === "commonjs") return result;
   // Scripts that use CommonJS-only syntax such as a top-level `return`.
-  const commonJsResult = parseSync(filePath, code, { lang: "js", sourceType: "commonjs" });
+  const commonJsResult = parseSync(filePath, code, { lang, sourceType: "commonjs" });
   return commonJsResult.errors.length === 0 ? commonJsResult : result;
 }
 
@@ -411,7 +430,7 @@ function traceRuntimePackages(
   };
 
   const enqueueFile = (filePath: string | null) => {
-    if (!filePath || !TRACEABLE_FILE_RE.test(filePath)) return;
+    if (!filePath || UNTRACED_FILE_RE.test(filePath)) return;
     const realPath = fs.realpathSync(filePath);
     if (visitedFiles.has(realPath)) return;
     visitedFiles.add(realPath);
@@ -438,7 +457,7 @@ function traceRuntimePackages(
       if (!scopePackageJson || imports === null || typeof imports !== "object") return;
       const targets = new Set(
         conditionSets.map((conditions) =>
-          resolveSubpathMap(imports as Record<string, unknown>, specifier, conditions),
+          resolveSubpathMap(imports as Record<string, unknown>, specifier, conditions, true),
         ),
       );
       for (const target of targets) {

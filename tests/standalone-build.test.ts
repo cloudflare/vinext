@@ -308,6 +308,57 @@ describe("emitStandaloneOutput", () => {
     expect(result.copiedPackages).toContain("legacy-peer");
   });
 
+  it.each([
+    {
+      // Node 22.12+ loads valid.js; older runtimes load other.js.
+      name: "past an invalid exports array target",
+      packageJson: {
+        name: "lib",
+        exports: { ".": { "module-sync": ["../invalid.js", "./valid.js"], default: "./other.js" } },
+      },
+      entry: "valid.js",
+    },
+    {
+      // Node's CommonJS loader runs an exactly resolved extensionless main as JavaScript.
+      name: "into an extensionless CommonJS main",
+      packageJson: { name: "lib", main: "server" },
+      entry: "server",
+    },
+  ])("traces $name", ({ packageJson, entry }) => {
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["lib"]));
+
+    writeFile(appRoot, "node_modules/lib/package.json", JSON.stringify(packageJson));
+    writeFile(appRoot, "node_modules/lib/other.js", "module.exports = {};\n");
+    writeFile(appRoot, `node_modules/lib/${entry}`, 'module.exports = require("lib-peer");\n');
+    writePackage(appRoot, "lib-peer");
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify({ name: "vinext", type: "module" }, null, 2),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+
+    const result = emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    expect(result.copiedPackages).toContain("lib-peer");
+  });
+
   it("ships the copy of a package that vinext's prod server loads over an external's copy", () => {
     // The app bundles react, so the manifest omits it. An external resolves its
     // own nested react, while vinext's prod server resolves a different one.
