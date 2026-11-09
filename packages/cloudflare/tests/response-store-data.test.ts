@@ -784,6 +784,59 @@ test("refreshes the revision behind the stale entry a write passes as staleEntry
   }
 });
 
+test("fills the revision a read in the same request missed", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  const missAs = (revision: string | null) => {
+    vi.spyOn(store, "fetch").mockResolvedValueOnce(
+      new Response("miss", {
+        status: 404,
+        headers: {
+          "X-Workers-Response-Store": "MISS",
+          ...(revision === null ? {} : { "X-Workers-Response-Store-Revision": revision }),
+        },
+      }),
+    );
+  };
+  const write = async () => {
+    store.options = undefined;
+    await handler.set("key", null, { revalidate: 60 });
+    expect(store.options).toBeDefined();
+    return store.options;
+  };
+
+  await runWithRequestContext(createRequestContext(), async () => {
+    // Concurrent requests that miss a key each fill it: the Store drops all but the first.
+    for (const revision of ["0", "4"]) {
+      missAs(revision);
+      await expect(handler.get("key")).resolves.toBeNull();
+      expect(await write()).toMatchObject({ replacesRevision: Number(revision) });
+      // Only the write filling that miss.
+      expect(await write()).not.toHaveProperty("replacesRevision");
+    }
+
+    // A later read of the key replaces the miss it recorded.
+    missAs("3");
+    await expect(handler.get("key")).resolves.toBeNull();
+    await expect(handler.get("key")).resolves.not.toBeNull();
+    expect(await write()).not.toHaveProperty("replacesRevision");
+
+    // A miss without a revision leaves an ordinary write.
+    missAs(null);
+    await expect(handler.get("key")).resolves.toBeNull();
+    expect(await write()).not.toHaveProperty("replacesRevision");
+  });
+
+  // Another request's miss is not this one's.
+  await runWithRequestContext(createRequestContext(), async () => {
+    missAs("0");
+    await expect(handler.get("key")).resolves.toBeNull();
+  });
+  await runWithRequestContext(createRequestContext(), async () => {
+    expect(await write()).not.toHaveProperty("replacesRevision");
+  });
+});
+
 test("honors a shorter revalidate requested by a later read", async () => {
   vi.useFakeTimers();
   try {
