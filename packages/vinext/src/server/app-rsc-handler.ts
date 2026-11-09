@@ -627,6 +627,8 @@ type DispatchMatchedRouteHandlerOptions<TRoute> = {
   params: AppPageParams | null;
   /** Render the not-found page Next.js serves for an unmatched URL. */
   renderNotFound: () => Promise<Response>;
+  /** Routing already admitted these params. */
+  skipStaticParamsValidation?: boolean;
   request: Request;
   route: TRoute;
   searchParams: URLSearchParams;
@@ -758,9 +760,9 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
    */
   ensureRouteLoaded?: (route: TRoute) => unknown;
   /**
-   * Whether a loaded page route rejects these params under
+   * Whether a loaded page or route handler rejects these params under
    * `dynamicParams = false`. Absent in the request-only stage, which has no
-   * page modules and sends route tree prefetches to the full graph.
+   * route modules and sends route tree prefetches to the full graph.
    */
   isDynamicParamsMiss?: (route: TRoute, params: AppPageParams) => Promise<boolean>;
   ensureInstrumentation?: (ctx: ExecutionContextLike | null) => Promise<void>;
@@ -2686,8 +2688,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         options.ensureRouteLoaded!(routedRoute),
       );
     }
-    // Draft mode renders an unlisted param on demand, as the dispatch does.
-    if (!routedRoute.routeHandler && !isActiveDraftMode()) {
+    // Draft mode skips the check, as each dispatch does.
+    const skipsAdmission = routedRoute.routeHandler
+      ? isDraftModeRequest(request, options.draftModeSecret) || isDraftModeEnabled()
+      : isActiveDraftMode();
+    if (!skipsAdmission) {
       const isDynamicParamsMiss = options.isDynamicParamsMiss;
       if (
         await runStaticParamsCheckDetached(() =>
@@ -3118,6 +3123,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
       route,
       searchParams: resolvedSearchParams,
+      skipStaticParamsValidation: isDynamicParamsAdmitted,
     });
     if (routeHandlerResponse.headers.has(VINEXT_ROUTE_MISS_HEADER)) {
       // The not-found render is application code, so a redirect it throws

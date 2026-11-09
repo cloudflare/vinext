@@ -698,26 +698,31 @@ describe("app route handler dispatch", () => {
     });
 
     it("runs generateStaticParams with the route's fetchCache before an auto-OPTIONS response", async () => {
-      const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
-      const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
-      let modeAtGenerateTime: unknown = "unset";
-      try {
-        const result = dispatchClosedRoute({
+      let fetchStateAtGenerateTime: unknown = "unset";
+      const result = await runWithRequestContext(createRequestContext(), async () => {
+        const closed = dispatchClosedRoute({
           generateStaticParams() {
-            modeAtGenerateTime = modeSpy.mock.calls.at(-1)?.[0];
+            const ctx = getRequestContext();
+            fetchStateAtGenerateTime = {
+              mode: ctx.currentFetchCacheMode,
+              revalidate: ctx.currentFetchRevalidate,
+            };
             return [{ slug: "listed" }];
           },
-          handlerConfig: { fetchCache: "only-cache" },
+          // Next.js applies only the segment's fetchCache to the generator.
+          handlerConfig: { fetchCache: "only-cache", revalidate: 60 },
           method: "OPTIONS",
           params: { slug: "listed" },
           pathname: "/posts/listed",
           pattern: "/posts/:slug",
         });
-        expect((await result.response).status).toBe(204);
-        expect(modeAtGenerateTime).toBe("only-cache");
-      } finally {
-        modeSpy.mockRestore();
-      }
+        return (await closed.response).status;
+      });
+      expect(result).toBe(204);
+      expect(fetchStateAtGenerateTime).toEqual({
+        mode: "only-cache",
+        revalidate: null,
+      });
     });
 
     it.each([
