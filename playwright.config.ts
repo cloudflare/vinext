@@ -102,6 +102,7 @@ const projectServers = {
       "app-router-prod/image-get-image-props.spec.ts",
       "app-router-prod/image-default-qualities.spec.ts",
       "app-router-prod/image-config-chunk.spec.ts",
+      "app-router-prod/pages-navigation-chunk.spec.ts",
       "app-router-prod/pages-res-revalidate.spec.ts",
       "app-router-prod/client-reference-groups.spec.ts",
       "app-router-prod/route-manifest-chunk.spec.ts",

@@ -9238,7 +9238,13 @@ export const loadServerActionClient = ${
           : {
               isAlwaysLoadedClientModule(id) {
                 const chunkName = appClientManualChunks(id);
-                return chunkName === "framework" || chunkName === "vinext";
+                // The App Router browser entry imports the navigation runtime
+                // chunk, so every App Router page loads it too.
+                return (
+                  chunkName === "framework" ||
+                  chunkName === "vinext" ||
+                  chunkName === "vinext-app-router"
+                );
               },
               ownClientChunkGroups: new Set([
                 ...appClientCodeSplittingConfig.groups,

@@ -4649,8 +4649,7 @@ if (typeof window !== "undefined") {
 // Register the Pages Router compat shim source for `next/navigation` hooks
 // (useParams / useSearchParams / usePathname). The accessor is exposed
 // through a well-known Symbol.for so navigation.ts can read it without
-// importing this module — that avoids triggering navigation.ts's
-// `window.history.pushState` patch in tests that only need next/router.
+// importing this module, and pages that use those hooks don't load it.
 //
 // Mirrors Next.js's behavior where the pages-router server (render.tsx) and
 // client (client/index.tsx) wrap pages with SearchParamsContext /

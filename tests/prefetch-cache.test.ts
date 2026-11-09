@@ -30,9 +30,9 @@ import {
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import { VINEXT_INTERCEPTION_CONTEXT_HEADER } from "../packages/vinext/src/server/app-rsc-vary.js";
 import { decodeBrowserRouteManifest } from "../packages/vinext/src/routing/browser-route-manifest.js";
-import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
+import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/app-router-navigation.js";
 
-type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
+type Navigation = typeof import("../packages/vinext/src/shims/app-router-navigation.js");
 let consumePrefetchResponse: Navigation["consumePrefetchResponse"];
 let getPrefetchCache: Navigation["getPrefetchCache"];
 let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
@@ -73,7 +73,7 @@ beforeEach(async () => {
     dispatchEvent: () => {},
   };
   vi.resetModules();
-  const nav = await import("../packages/vinext/src/shims/navigation.js");
+  const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
   consumePrefetchResponse = nav.consumePrefetchResponse;
   getPrefetchCache = nav.getPrefetchCache;
   getPrefetchedUrls = nav.getPrefetchedUrls;
@@ -211,7 +211,7 @@ describe("prefetch cache eviction", () => {
   it("full router.prefetch uses the contextual trailing-slash path", async () => {
     vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
     vi.resetModules();
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("flight", { headers: { "content-type": "text/x-component" } }),
@@ -240,7 +240,7 @@ describe("prefetch cache eviction", () => {
     vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
     vi.stubEnv("__VINEXT_TRAILING_SLASH", "false");
     vi.resetModules();
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("flight", { headers: { "content-type": "text/x-component" } }),
@@ -270,7 +270,7 @@ describe("prefetch cache eviction", () => {
       },
     ];
     vi.resetModules();
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("flight", { headers: { "content-type": "text/x-component" } }),
@@ -303,7 +303,7 @@ describe("prefetch cache eviction", () => {
       },
     ];
     vi.resetModules();
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("flight", { headers: { "content-type": "text/x-component" } }),
@@ -335,7 +335,7 @@ describe("prefetch cache eviction", () => {
       { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
     ];
     vi.resetModules();
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("flight", {
@@ -372,7 +372,7 @@ describe("prefetch cache eviction", () => {
       { canPrefetchLoadingShell: false, patternParts: ["dashboard"], isDynamic: false },
     ];
     vi.resetModules();
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
     let respond!: () => void;
     const fetch = vi.fn(
       (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -412,7 +412,7 @@ describe("prefetch cache eviction", () => {
     // Ported from Next.js: test/e2e/app-dir/segment-cache/force-stale/force-stale.test.ts
     // ("during a "full" prefetch, read from bfcache before issuing new prefetch request")
     vi.resetModules();
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const now = 1_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
     const fetch = vi.fn(
@@ -465,7 +465,7 @@ describe("prefetch cache eviction", () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/optimistic-route-cache-keying-regression/optimistic-route-cache-keying-regression.test.ts
     vi.resetModules();
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("fresh", { headers: { "content-type": "text/x-component" } }),
@@ -520,7 +520,7 @@ describe("prefetch cache eviction", () => {
 
   it("router.prefetch kind full fetches when the byte budget evicts the visited response it seeded", async () => {
     vi.resetModules();
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const now = 1_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
     const fetch = vi.fn(
@@ -2766,7 +2766,7 @@ describe("prefetch cache eviction", () => {
   // Regression for issue #1490: experimental.staleTimes.static should be
   // honored as the prefetch cache freshness window. The plugin injects
   // `process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME` (in seconds) at
-  // build time; navigation.ts reads it when computing PREFETCH_CACHE_TTL.
+  // build time; app-router-navigation.ts reads it when computing PREFETCH_CACHE_TTL.
   describe("staleTimes (#1490)", () => {
     const ORIGINAL_TTL_ENV = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
     const ORIGINAL_DYNAMIC_TTL_ENV = process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME;
@@ -2787,14 +2787,14 @@ describe("prefetch cache eviction", () => {
     it("uses 30s when __NEXT_CLIENT_ROUTER_STATIC_STALETIME is unset", async () => {
       delete process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
       vi.resetModules();
-      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
       expect(nav.PREFETCH_CACHE_TTL).toBe(30_000);
     });
 
     it("converts seconds from __NEXT_CLIENT_ROUTER_STATIC_STALETIME into ms", async () => {
       process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "180";
       vi.resetModules();
-      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
       expect(nav.PREFETCH_CACHE_TTL).toBe(180_000);
     });
 
@@ -2802,7 +2802,7 @@ describe("prefetch cache eviction", () => {
       process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME = "30";
       process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "180";
       vi.resetModules();
-      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       expect(nav.DYNAMIC_NAVIGATION_CACHE_TTL).toBe(30_000);
       expect(nav.PREFETCH_CACHE_TTL).toBe(180_000);
@@ -2811,7 +2811,7 @@ describe("prefetch cache eviction", () => {
     it("treats a freshly prefetched entry as reusable up to the configured TTL", async () => {
       process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "180";
       vi.resetModules();
-      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const cache = nav.getPrefetchCache();
       const prefetched = nav.getPrefetchedUrls();
@@ -2837,7 +2837,7 @@ describe("prefetch cache eviction", () => {
     it("treats a stale entry as expired once the configured TTL elapses", async () => {
       process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "180";
       vi.resetModules();
-      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const cache = nav.getPrefetchCache();
       const prefetched = nav.getPrefetchedUrls();
@@ -2869,7 +2869,7 @@ describe("prefetch cache eviction", () => {
       process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME = "0";
       process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "300";
       vi.resetModules();
-      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const rscUrl = "/dashboard.rsc";
       const now = 1_000_000;
@@ -2904,7 +2904,7 @@ describe("prefetch cache eviction", () => {
       // on navigation whatever staleTimes.dynamic is.
       process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "300";
       vi.resetModules();
-      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
       const now = 1_000_000;
       vi.spyOn(Date, "now").mockReturnValue(now);
       const prefetch = (rscUrl: string, headers: Record<string, string>) => {
@@ -2945,7 +2945,7 @@ describe("prefetch cache eviction", () => {
 
     it("discards a learning-only prefetch only from the same mounted-slot context", async () => {
       vi.resetModules();
-      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
       const rscUrl = "/dashboard.rsc?_rsc=slot-a";
       nav.prefetchRscResponse(
         rscUrl,
