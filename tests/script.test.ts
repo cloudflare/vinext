@@ -759,16 +759,20 @@ describe("Script beforeInteractive registry (#2016)", () => {
  */
 function runHoistedLoader(
   html: string,
-  { withCurrentScript = true }: { withCurrentScript?: boolean } = {},
+  {
+    withCurrentScript = true,
+    readyState = "loading",
+  }: { withCurrentScript?: boolean; readyState?: "loading" | "interactive" } = {},
 ): {
   attributes: Record<string, string>;
   text: string;
-  placement: "replaced-loader" | "appended-to-head";
+  placement: "replaced-loader" | "appended-to-head" | "after-dom-content-loaded";
 } {
   const loader = /^<script\b[^>]*>([^<]*)<\/script>$/i.exec(html)?.[1];
   if (loader === undefined) throw new Error(`not a single hoisted loader: ${html}`);
   const created = { attributes: {} as Record<string, string>, text: "" };
-  let placement: "replaced-loader" | "appended-to-head" | undefined;
+  let placement: "replaced-loader" | "appended-to-head" | "after-dom-content-loaded" | undefined;
+  let domContentLoaded: (() => void) | undefined;
   const element = {
     hasAttribute: (name: string) => name.toLowerCase() in created.attributes,
     setAttribute(name: string, value: string) {
@@ -779,21 +783,31 @@ function runHoistedLoader(
     },
   };
   const fakeDocument = {
+    readyState,
+    addEventListener(type: string, listener: () => void) {
+      if (type === "DOMContentLoaded") domContentLoaded = listener;
+    },
     currentScript: withCurrentScript
       ? {
+          parentNode: {},
           replaceWith(node: unknown) {
-            if (node === element) placement = "replaced-loader";
+            if (node === element) placement ??= "replaced-loader";
           },
         }
       : null,
     createElement: (tag: string) => (tag === "script" ? element : null),
     head: {
       appendChild(node: unknown) {
-        if (node === element) placement = "appended-to-head";
+        if (node === element) placement ??= "appended-to-head";
       },
     },
   };
   runInNewContext(loader, { document: fakeDocument });
+  if (domContentLoaded) {
+    if (placement) throw new Error("deferred loader inserted the script early");
+    placement = "after-dom-content-loaded";
+    domContentLoaded();
+  }
   if (!placement) throw new Error("loader did not insert the script");
   return { ...created, placement };
 }
@@ -867,6 +881,23 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
       { id: "x", content: "1", nonce: "first", attributes: { Nonce: "second" } },
     ]);
     expect(runHoistedLoader(html).attributes.nonce).toBe("first");
+  });
+
+  it("defers non-async inline module scripts until the document has parsed", () => {
+    const render = (attributes: Record<string, string | boolean>) =>
+      renderBeforeInteractiveInlineScripts([{ id: "m", content: "1", attributes }]);
+    expect(runHoistedLoader(render({ type: " Module " })).placement).toBe(
+      "after-dom-content-loaded",
+    );
+    // Once parsing is done there is nothing to wait for.
+    expect(
+      runHoistedLoader(render({ type: "module" }), { readyState: "interactive" }).placement,
+    ).toBe("replaced-loader");
+    // async modules and classic scripts run as soon as they are inserted.
+    expect(runHoistedLoader(render({ type: "module", async: true })).placement).toBe(
+      "replaced-loader",
+    );
+    expect(runHoistedLoader(render({ type: "text/javascript" })).placement).toBe("replaced-loader");
   });
 
   it("emits a <script src> tag (with no body) for registered src scripts", () => {

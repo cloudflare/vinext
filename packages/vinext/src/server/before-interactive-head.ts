@@ -23,14 +23,32 @@ const EVENT_HANDLER_ATTR_NAME = /^on/i;
 // the body and attributes the same way, so no part of the body can be read
 // as markup by the browser or by the stream transform's string searches
 // (`</head>`, `</body></html>`, stylesheet links). The loader carries its own
-// payload (`[[name, value], ...]` attribute pairs plus the body) and swaps
-// itself for the real script element. A classic script runs on insertion, at
-// the same point in the parse as a parser-inserted tag; like the elements
-// Next.js re-creates, a `type="module"` script runs once parsing finishes.
-// The first of any case-insensitive duplicate attribute wins, as when the
-// parser reads the tag.
+// payload (`[[name, value], ...]` attribute pairs, the body, and a deferral
+// flag) and swaps itself for the real script element. A classic script runs on
+// insertion, at the same point in the parse as a parser-inserted tag. A
+// created module script would run as soon as it is ready, possibly before the
+// rest of the document has parsed, so a non-`async` module waits for
+// DOMContentLoaded and keeps registration order, like the scripts Next.js
+// re-creates from its post-parse bootstrap. The first of any case-insensitive
+// duplicate attribute wins, as when the parser reads the tag.
 const INLINE_SCRIPT_LOADER =
-  '(function(c,p,s){s=document.createElement("script");p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});s.text=p[1];c?c.replaceWith(s):document.head.appendChild(s)})';
+  '(function(c,p,s,f){s=document.createElement("script");p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});s.text=p[1];f=function(){(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s)};p[2]?document.readyState=="loading"?document.addEventListener("DOMContentLoaded",f):f():f()})';
+
+/**
+ * Whether the loader must wait for parsing to finish: a module script without
+ * `async`, which the parser would defer. Reads attributes the way the loader
+ * applies them, so the first case-insensitive match wins.
+ */
+function isDeferredModule(attrs: readonly [string, string][]): boolean {
+  let type: string | undefined;
+  let isAsync = false;
+  for (const [key, value] of attrs) {
+    const name = key.toLowerCase();
+    if (name === "type") type ??= value;
+    if (name === "async") isAsync = true;
+  }
+  return !isAsync && type?.trim().toLowerCase() === "module";
+}
 
 /**
  * Collect the attributes that go on a hoisted `<script>`, in emit order: id,
@@ -96,7 +114,9 @@ export function renderBeforeInteractiveInlineScripts(
       html += `<script${attrHtml}></script>`;
       continue;
     }
-    const payload = safeJsonStringify([attrs, script.content]);
+    const payload = safeJsonStringify(
+      isDeferredModule(attrs) ? [attrs, script.content, 1] : [attrs, script.content],
+    );
     html += `<script${createNonceAttribute(script.nonce)}>${INLINE_SCRIPT_LOADER}(document.currentScript,${payload})</script>`;
   }
   return html;
