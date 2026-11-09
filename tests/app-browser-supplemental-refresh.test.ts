@@ -322,6 +322,46 @@ describe("parallel route supplemental refreshes", () => {
     ]);
   });
 
+  it("takes each refreshed route's head with the route", () => {
+    const metadata = (routeId: string, slotId: string, activeRouteId: string) =>
+      AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+        slotBindings: [{ activeRouteId, ownerLayoutId: "layout:/", slotId, state: "active" }],
+      });
+    const current: AppElements = {
+      ...metadata("route:/", "slot:drawer:/", "route:/drawer"),
+      "slot:drawer:/": "stale drawer",
+      "route:/": "page route",
+      "route:/drawer": "stale drawer route",
+      "__vinext_route_head:route:/": "page head",
+      "__vinext_route_head:route:/drawer": "stale drawer head",
+    };
+
+    const drawerRefresh = mergeRefreshedParallelSlot(current, {
+      ...metadata("route:/drawer", "slot:drawer:/", "route:/drawer"),
+      "slot:drawer:/": "fresh drawer",
+      "route:/drawer": "fresh drawer route",
+      "__vinext_route_head:route:/drawer": "fresh drawer head",
+    });
+    expect(drawerRefresh["route:/drawer"]).toBe("fresh drawer route");
+    expect(drawerRefresh["__vinext_route_head:route:/drawer"]).toBe("fresh drawer head");
+    expect(drawerRefresh["__vinext_route_head:route:/"]).toBe("page head");
+
+    // A source-tree refresh keeps the routes it does not carry, heads included.
+    const sourceRefresh = mergeRefreshedParallelSlot(current, {
+      ...metadata("route:/other", "slot:children:/", "route:/other"),
+      "slot:children:/": "fresh page",
+      "route:/other": "fresh other route",
+      "__vinext_route_head:route:/other": "fresh other head",
+    });
+    expect(sourceRefresh["__vinext_route_head:route:/other"]).toBe("fresh other head");
+    expect(sourceRefresh["route:/drawer"]).toBe("stale drawer route");
+    expect(sourceRefresh["__vinext_route_head:route:/drawer"]).toBe("stale drawer head");
+  });
+
   it("promotes a supplemental source page into the mounted nested children slot", () => {
     const primary: AppElements = {
       ...AppElementsWire.createMetadataEntries({

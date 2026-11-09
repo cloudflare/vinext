@@ -4,6 +4,7 @@ import {
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_HEAD_ID_PREFIX,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   APP_STATIC_SIBLINGS_KEY,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
@@ -2493,14 +2494,21 @@ export function buildAppPageElements<
     </GlobalErrorBoundary>
   );
 
+  // The head is its own entry, so a payload can leave it out for the client to
+  // keep the one it holds while the layout tree beside it re-renders.
+  const routeHeadId = `${APP_ROUTE_HEAD_ID_PREFIX}${routeId}`;
+  const routeHead = createAppPageRouteHead(
+    options.resolveHead,
+    options.resolvedMetadataPathname ?? options.routePath,
+    metadataPlacement,
+    options.trailingSlash,
+  );
+  elements[routeHeadId] = pageRenderDependency
+    ? renderAfterAppDependencies(routeHead, [pageRenderDependency])
+    : routeHead;
   const routeElement = (
     <>
-      {createAppPageRouteHead(
-        options.resolveHead,
-        options.resolvedMetadataPathname ?? options.routePath,
-        metadataPlacement,
-        options.trailingSlash,
-      )}
+      <Slot id={routeHeadId} />
       {routeChildren}
       {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
     </>
