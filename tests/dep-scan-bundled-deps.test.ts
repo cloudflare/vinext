@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import { createIsolatedFixture } from "./helpers.js";
 
 // vinext inlines some dependencies (for example ua-parser-js behind the
 // next/server userAgent shim) into dist/deps, already converted to ESM. Source
@@ -326,12 +327,12 @@ try {
 // optimizers, where Pages Router modules load, find at startup. Cloudflare's
 // Worker environments discover dependencies; Node dev's do not.
 const CF_APP_BASIC_DIR = path.resolve(import.meta.dirname, "fixtures/cf-app-basic");
-function startupDepsProbe(cacheDir: string): string {
+function startupDepsProbe(root: string): string {
   return `import { createLogger, createServer } from "vite";
 const server = await createServer({
-  root: ${JSON.stringify(CF_APP_BASIC_DIR)},
-  configFile: ${JSON.stringify(path.join(CF_APP_BASIC_DIR, "vite.config.ts"))},
-  cacheDir: ${JSON.stringify(cacheDir)},
+  root: ${JSON.stringify(root)},
+  configFile: ${JSON.stringify(path.join(root, "vite.config.ts"))},
+  cacheDir: ${JSON.stringify(path.join(root, ".vite"))},
   customLogger: createLogger("silent"),
   server: { host: "127.0.0.1", port: 0 },
 });
@@ -410,12 +411,18 @@ describe("hybrid dependency scan", () => {
   // With both routers, a dependency only pages/ imports would otherwise be
   // found on the first request for its page, re-optimizing and reloading.
   it("discovers dependencies only Pages Router pages import at startup", async () => {
-    const cacheDir = fs.mkdtempSync(path.join(CF_APP_BASIC_DIR, "node_modules/.vite-dep-scan-"));
-    roots.push(cacheDir);
-    const deps = await runProbe<Record<"client" | "ssr", string[]>>(CF_APP_BASIC_DIR, [
+    // Wrangler writes local state into the project, which other tests copy.
+    const root = await createIsolatedFixture(
+      CF_APP_BASIC_DIR,
+      "vinext-hybrid-dep-scan-",
+      undefined,
+      path.join(CF_APP_BASIC_DIR, "node_modules"),
+    );
+    roots.push(root);
+    const deps = await runProbe<Record<"client" | "ssr", string[]>>(root, [
       "--input-type=module",
       "--eval",
-      startupDepsProbe(cacheDir),
+      startupDepsProbe(root),
     ]);
     expect(deps.client).toContain("pages-only-dependency");
     expect(deps.ssr).toContain("pages-only-dependency");
