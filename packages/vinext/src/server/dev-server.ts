@@ -843,11 +843,12 @@ export function createSSRHandler(
     }
 
     const { route, params } = match;
-    // Like Next.js base-server.ts, a direct /404 page request answers 404,
-    // except for data requests. As in the prod handler, a middleware rewrite
-    // status wins.
-    if (statusCode === undefined && !isDataReq && route.pattern === "/404") {
-      res.statusCode = 404;
+    // Like Next.js base-server.ts, a direct /404 or /500 page request answers
+    // with that status. Next exempts only /404 data requests. As in the prod
+    // handler, a middleware rewrite status wins.
+    if (statusCode === undefined) {
+      if (route.pattern === "/404" && !isDataReq) res.statusCode = 404;
+      else if (route.pattern === "/500") res.statusCode = 500;
     }
     // Implements the Next.js `req.url` contract: data-fetching methods observe
     // the original request URL. For ordinary page requests this defaults to
@@ -1520,8 +1521,9 @@ export function createSSRHandler(
         // expect the full Pages props object as JSON. We have renderProps; skip the React
         // tree render and the _document shell entirely. Headers set on `res`
         // by getServerSideProps (cookies, status codes, etc.) are preserved
-        // because we already let gSSP mutate `res` above.
-        if (isDataReq) {
+        // because we already let gSSP mutate `res` above. `/500` answers its
+        // HTML document instead, as in Next.js.
+        if (isDataReq && route.pattern !== "/500") {
           const dataHeaders: Record<string, string | string[] | number> = {
             "Content-Type": "application/json",
           };
@@ -1543,10 +1545,9 @@ export function createSSRHandler(
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
-          // protection). Next.js skips the success path for /_error and /500
-          // (`!isErrorPage && !is500Page`). Fixes #1829.
-          const dataRoutePattern = patternToNextFormat(route.pattern);
-          if (dataRoutePattern !== "/_error" && dataRoutePattern !== "/500") {
+          // protection). Next.js skips the success path for /_error, and
+          // renders /500 as HTML (`!isErrorPage && !is500Page`). Fixes #1829.
+          if (patternToNextFormat(route.pattern) !== "/_error") {
             const deploymentId =
               process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
             if (deploymentId) {

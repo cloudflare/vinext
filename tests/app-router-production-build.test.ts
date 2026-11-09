@@ -157,6 +157,13 @@ describe("App Router Production build", () => {
       expect(clientJs).not.toContain(devOnlyNeedle);
     }
 
+    // A "use cache" module that a Client Component imports reaches the
+    // browser as server references, `.mts` modules included: neither its
+    // function bodies nor its module-scope values are bundled.
+    expect(clientJs).toContain("call-client-imported-mts-cache");
+    expect(clientJs).not.toContain("mts-cache-server-marker");
+    expect(clientJs).not.toContain("client-mts-cache:");
+
     // Ported from the client-reference chunk ownership covered by Next.js:
     // test/e2e/app-dir/client-reference-chunking/client-reference-chunking.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/client-reference-chunking/client-reference-chunking.test.ts

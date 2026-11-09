@@ -1727,6 +1727,38 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.doesNotMatch(serialized, /first-secret|second-secret/);
   });
 
+  // A 206 holds the part one request's Range selected, and Range is not part
+  // of the key. Next.js never stores a Pages API response at all.
+  test("never stores a Pages API's partial response to a Range request", async () => {
+    const pathname = "/api/byte-range";
+    for (const [range, contentRange, body] of [
+      ["bytes=2-4", "bytes 2-4/10", "234"],
+      ["bytes=5-7", "bytes 5-7/10", "567"],
+    ]) {
+      const partial = await request(pathname, { headers: { range } });
+      assert.equal(partial.status, 206);
+      assert.notEqual(partial.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(partial.headers.get("content-range"), contentRange);
+      assert.equal(await partial.text(), body);
+    }
+    await assertNeverStored(pathname);
+
+    // The same route is stored for a request without Range, so the ranged
+    // requests above were rejected for their partial responses alone.
+    const whole = await request(pathname);
+    assert.equal(whole.status, 200);
+    assert.equal(whole.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(await whole.text(), "0123456789");
+    await waitForResponseEntries(pathname, 1);
+    // A stored response answers a Range request whole, as Next.js answers a
+    // cached page or route handler.
+    const hit = await request(pathname, { headers: { range: "bytes=2-4" } });
+    assert.equal(hit.status, 200);
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(hit.headers.get("content-range"), null);
+    assert.equal(await hit.text(), "0123456789");
+  });
+
   test.each(["authorization", "cookie", "proxy-authorization", "x-api-key"])(
     "never stores a public Pages API response for a request carrying %s",
     async (header) => {

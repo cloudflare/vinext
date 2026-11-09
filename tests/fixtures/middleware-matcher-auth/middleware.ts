@@ -70,6 +70,17 @@ export const config = {
       has: [{ type: "header", key: "x-rsc-dot-segment-auth", value: "1" }],
     },
     {
+      // Exact metadata route paths. Next.js runs middleware for every spelling
+      // of them, including encoded `.rsc` suffixes, which it routes as part of
+      // the file name.
+      source: "/sitemap.xml",
+      has: [{ type: "header", key: "x-metadata-route-auth", value: "1" }],
+    },
+    {
+      source: "/robots.txt",
+      has: [{ type: "header", key: "x-metadata-route-auth", value: "1" }],
+    },
+    {
       source: "/staff/:path*",
       has: [{ type: "header", key: "x-hybrid-pages-auth", value: "1" }],
     },
