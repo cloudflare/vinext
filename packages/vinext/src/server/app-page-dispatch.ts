@@ -828,7 +828,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const placeGeneratedMetadataInBody =
     (!isPrerender || options.pprFallbackShell !== undefined) && serveStreamingMetadata;
   const isPrefetchDynamicShell = options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
-  const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
+  // Middleware can enable or disable draft mode for this request.
+  const isDraftMode =
+    getActiveDraftModeState() ?? isDraftModeRequest(options.request, options.draftModeSecret);
   const requestHeadersContext = getHeadersContext();
   const shouldUseEmptySearchParams = isForceStatic || isPrefetchDynamicShell;
   const hasRequestSearchParams =
@@ -1267,10 +1269,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  // Next.js renders an unlisted param on demand in draft mode, including
-  // draft mode that middleware enabled for this request.
+  // Next.js renders an unlisted param on demand in draft mode.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
-  if (options.skipStaticParamsValidation !== true && !(getActiveDraftModeState() ?? isDraftMode)) {
+  if (options.skipStaticParamsValidation !== true && !isDraftMode) {
     const dynamicParamsResponse = await validateAppPageRouteDynamicParams({
       dynamicConfig,
       dynamicParamsConfig: options.dynamicParamsConfig,

@@ -1570,18 +1570,28 @@ describe("app page dispatch", () => {
   });
 
   it("renders an unlisted param in draft mode, also when middleware enabled it", async () => {
-    for (const draft of ["cookie", "middleware"] as const) {
+    for (const [draft, dynamicConfig] of [
+      ["cookie", undefined],
+      ["middleware", undefined],
+      ["middleware", "force-static"],
+    ] as const) {
       const renderHttpAccessFallbackPage = vi.fn(
         async () => new Response("not found", { status: 404 }),
       );
+      const isrGet = vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>")),
+      );
       const { options } = createDispatchOptions({
+        dynamicConfig,
         async generateStaticParams() {
           return [{ slug: "known" }];
         },
         isProduction: true,
+        isrGet,
         request: new Request("https://example.com/posts/unknown", {
           headers: draft === "cookie" ? { cookie: "__prerender_bypass=draft-secret" } : {},
         }),
+        revalidateSeconds: 60,
         route: createRoute({ isDynamic: true, params: ["slug"] }),
       });
       options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
@@ -1591,7 +1601,10 @@ describe("app page dispatch", () => {
 
       const response = await dispatchAppPage({ ...options, dynamicParamsConfig: false });
 
+      // Draft mode bypasses the cache and renders the param on demand.
       expect(response.status).toBe(200);
+      expect(await response.text()).not.toBe("<html>cached</html>");
+      expect(isrGet).not.toHaveBeenCalled();
       expect(renderHttpAccessFallbackPage).not.toHaveBeenCalled();
       setHeadersContext(null);
     }
