@@ -6,6 +6,7 @@
  * initScriptLoader). Only SSR-testable behaviors are verified here;
  * client-side loading strategies require a browser environment.
  */
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
@@ -752,6 +753,51 @@ describe("Script beforeInteractive registry (#2016)", () => {
   });
 });
 
+/**
+ * Run a hoisted inline loader against a minimal DOM stand-in and return the
+ * script element it creates, plus where it put it.
+ */
+function runHoistedLoader(
+  html: string,
+  { withCurrentScript = true }: { withCurrentScript?: boolean } = {},
+): {
+  attributes: Record<string, string>;
+  text: string;
+  placement: "replaced-loader" | "appended-to-head";
+} {
+  const loader = /^<script\b[^>]*>([^<]*)<\/script>$/.exec(html)?.[1];
+  if (loader === undefined) throw new Error(`not a single hoisted loader: ${html}`);
+  const created = { attributes: {} as Record<string, string>, text: "" };
+  let placement: "replaced-loader" | "appended-to-head" | undefined;
+  const element = {
+    hasAttribute: (name: string) => name.toLowerCase() in created.attributes,
+    setAttribute(name: string, value: string) {
+      created.attributes[name.toLowerCase()] = value;
+    },
+    set text(value: string) {
+      created.text = value;
+    },
+  };
+  const fakeDocument = {
+    currentScript: withCurrentScript
+      ? {
+          replaceWith(node: unknown) {
+            if (node === element) placement = "replaced-loader";
+          },
+        }
+      : null,
+    createElement: (tag: string) => (tag === "script" ? element : null),
+    head: {
+      appendChild(node: unknown) {
+        if (node === element) placement = "appended-to-head";
+      },
+    },
+  };
+  runInNewContext(loader, { document: fakeDocument });
+  if (!placement) throw new Error("loader did not insert the script");
+  return { ...created, placement };
+}
+
 describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
   it("drops event-handler attributes from hoisted scripts", () => {
     const captured: BeforeInteractiveInlineScript[] = [];
@@ -772,17 +818,55 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
     );
 
     expect(captured).toHaveLength(1);
-    const html = renderBeforeInteractiveInlineScripts(captured);
-    expect(html).not.toMatch(/\sonload=/i);
-    expect(html).not.toMatch(/\sonerror=/i);
-    expect(html).toContain('data-onload="diagnostic"');
+    const { attributes } = runHoistedLoader(renderBeforeInteractiveInlineScripts(captured));
+    expect(Object.keys(attributes).filter((name) => /^on/i.test(name))).toEqual([]);
+    expect(attributes["data-onload"]).toBe("diagnostic");
   });
 
   it('marks every hoisted script with data-nscript="beforeInteractive"', () => {
-    const html = renderBeforeInteractiveInlineScripts([{ id: "x", innerHTML: "console.log(1)" }]);
-    expect(html).toContain('data-nscript="beforeInteractive"');
-    expect(html).toContain('id="x"');
-    expect(html).toContain("console.log(1)");
+    const inline = runHoistedLoader(
+      renderBeforeInteractiveInlineScripts([{ id: "x", content: "console.log(1)" }]),
+    );
+    expect(inline).toEqual({
+      attributes: { id: "x", "data-nscript": "beforeInteractive" },
+      text: "console.log(1)",
+      placement: "replaced-loader",
+    });
+    expect(renderBeforeInteractiveInlineScripts([{ src: "/x.js" }])).toContain(
+      'data-nscript="beforeInteractive"',
+    );
+  });
+
+  // Next.js serializes App Router beforeInteractive bodies with
+  // htmlEscapeJsonString, so markup in the body never reaches the HTML.
+  // .nextjs-ref/packages/next/src/client/script.tsx
+  it("keeps markup in inline bodies out of the HTML and restores it exactly", () => {
+    const content =
+      'self.data = {"a":"</head><p id=\\"x\\">&amp;</p></body></html>","b":"<!--<script></script>"};';
+    const html = renderBeforeInteractiveInlineScripts([{ id: "data", content, nonce: "n1" }]);
+    // Only the loader's own tags are markup.
+    expect(html.match(/</g)).toHaveLength(2);
+    expect(html).not.toContain("&");
+    expect(html.startsWith('<script nonce="n1">')).toBe(true);
+    expect(runHoistedLoader(html)).toEqual({
+      attributes: { id: "data", nonce: "n1", "data-nscript": "beforeInteractive" },
+      text: content,
+      placement: "replaced-loader",
+    });
+  });
+
+  it("appends to <head> when the loader runs without a currentScript", () => {
+    // Optimizers that defer or re-insert inline scripts can run the loader
+    // where `document.currentScript` is null.
+    const html = renderBeforeInteractiveInlineScripts([{ id: "x", content: "1" }]);
+    expect(runHoistedLoader(html, { withCurrentScript: false }).placement).toBe("appended-to-head");
+  });
+
+  it("keeps the first of case-insensitively duplicated attributes, like the HTML parser", () => {
+    const html = renderBeforeInteractiveInlineScripts([
+      { id: "x", content: "1", nonce: "first", attributes: { Nonce: "second" } },
+    ]);
+    expect(runHoistedLoader(html).attributes.nonce).toBe("first");
   });
 
   it("emits a <script src> tag (with no body) for registered src scripts", () => {
@@ -806,16 +890,24 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
   // (the "/multiple" route asserting multiple beforeInteractive scripts each
   // render with the correct `class` attribute, never `classname`).
   it("renders multiple hoisted beforeInteractive scripts with correct class attributes", () => {
-    const html = renderBeforeInteractiveInlineScripts([
-      { id: "first", innerHTML: "1", attributes: { class: "first-script" } },
+    const first = renderBeforeInteractiveInlineScripts([
+      { id: "first", content: "1", attributes: { class: "first-script" } },
+    ]);
+    const second = renderBeforeInteractiveInlineScripts([
       { id: "second", src: "/second.js", attributes: { class: "second-script" } },
     ]);
-    expect(html).toContain('class="first-script"');
-    expect(html).toContain('class="second-script"');
-    expect(html).not.toContain('classname="first-script"');
-    expect(html).not.toContain('classname="second-script"');
+    expect(runHoistedLoader(first).attributes).toEqual({
+      id: "first",
+      class: "first-script",
+      "data-nscript": "beforeInteractive",
+    });
+    expect(second).toContain('class="second-script"');
+    expect(second).not.toContain("classname=");
     // Both are tagged and emitted in registration order.
-    expect((html.match(/data-nscript="beforeInteractive"/g) ?? []).length).toBe(2);
-    expect(html.indexOf("first-script")).toBeLessThan(html.indexOf("second-script"));
+    const html = renderBeforeInteractiveInlineScripts([
+      { id: "first", content: "1", attributes: { class: "first-script" } },
+      { id: "second", src: "/second.js", attributes: { class: "second-script" } },
+    ]);
+    expect(html).toBe(first + second);
   });
 });

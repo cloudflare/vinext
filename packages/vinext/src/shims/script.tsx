@@ -189,10 +189,9 @@ function stringifyInlineContent(value: string | TrustedHTML): string {
  * `children` value nor a valid `dangerouslySetInnerHTML.__html` payload — in
  * that case the caller should fall through to React's regular rendering path.
  *
- * The returned string is the raw author-supplied JavaScript content. Callers
- * are responsible for passing it through `escapeInlineContent(..., "script")`
- * before emitting it inside a `<script>` tag (we keep that escape adjacent
- * to the emit point so the rule is obvious at the boundary).
+ * The returned string is the raw author-supplied JavaScript content. It must
+ * never be concatenated into HTML as-is: the hoisted renderer encodes it as
+ * HTML-safe JSON (server/before-interactive-head.ts).
  */
 function extractBeforeInteractiveInlineContent(
   children: React.ReactNode,
@@ -234,7 +233,7 @@ const REACT_TO_HTML_ATTR: Record<string, string> = {
 
 /**
  * Convert the residual `<Script>` props into a plain string-attributes record
- * for emission inside a hoisted `<script>` tag. Drops React-only props
+ * for the hoisted `<script>` (tag or loader-created element). Drops React-only props
  * (event handlers, children, etc.) and reserved keys already handled by the
  * pre-head-injection emitter (id, nonce). Skips `undefined`/`null` so they
  * round-trip as "attribute absent" rather than `attr="undefined"`.
@@ -607,12 +606,10 @@ function Script(props: ScriptProps): React.ReactElement | null {
         const registered: BeforeInteractiveInlineScript = {
           id,
           src: src ?? undefined,
-          // Escape `<script`/`</script` sequences exactly as the inline render path does
-          // (see buildBeforeInteractiveScriptProps); keep the escape colocated
-          // with the emit boundary so it never gets accidentally skipped. src
-          // scripts have no inline body.
-          innerHTML:
-            inlineContent !== null ? escapeInlineContent(inlineContent, "script") : undefined,
+          // Raw content: the hoisted renderer encodes it as HTML-safe JSON
+          // (see server/before-interactive-head.ts). src scripts have no
+          // inline body.
+          content: inlineContent ?? undefined,
           nonce: resolvedNonce,
           attributes: collectBeforeInteractiveAttributes(rest),
         };
