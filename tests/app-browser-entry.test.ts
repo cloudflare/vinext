@@ -79,7 +79,9 @@ import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
   AppElementsWire,
   APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_HEAD_ID_PREFIX,
   APP_ROUTE_KEY,
+  APP_STREAMING_METADATA_BODY_ID_PREFIX,
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   UNMATCHED_SLOT,
@@ -132,6 +134,7 @@ import {
   type OperationLane,
 } from "../packages/vinext/src/server/app-browser-state.js";
 import { createInitialBfcacheMaps } from "../packages/vinext/src/server/app-bfcache-identity.js";
+import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
 import {
   HistoryStateSnapshotCache,
@@ -155,6 +158,7 @@ import {
   createNavigationTrace,
 } from "../packages/vinext/src/server/navigation-trace.js";
 import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
+import { resolveHeldRetainedElementIds } from "../packages/vinext/src/server/app-retained-elements.js";
 import { createCacheEntryReuseProof } from "../packages/vinext/src/server/cache-proof.js";
 import {
   ACTION_REVALIDATED_HEADER,
@@ -10653,5 +10657,542 @@ describe("resolveServerActionRequestState", () => {
 
     expect(headers.has("X-Vinext-Interception-Context")).toBe(false);
     expect(headers.has("X-Vinext-Mounted-Slots")).toBe(false);
+  });
+});
+
+describe("elements an intercepted payload leaves for the client to keep", () => {
+  // An intercepted soft navigation keeps the source page it shows beneath the
+  // intercepting slot, as Next.js reuses the active source segment
+  // (reuseActiveSegmentInDefaultSlot in client/components/router-reducer/ppr-navigations.ts).
+  const ROUTE_ID = "route:/members/7";
+  const PAGE_ID = "page:/members/7";
+  const HEAD_ID = `${APP_ROUTE_HEAD_ID_PREFIX}${ROUTE_ID}`;
+  const BODY_ID = `${APP_STREAMING_METADATA_BODY_ID_PREFIX}${ROUTE_ID}`;
+  const MODAL_ID = "slot:modal:/members";
+  const SIDEBAR_ID = "slot:sidebar:/members";
+  const SIDEBAR_SEGMENT_ID = createNestedBfcacheSlotSegmentId(SIDEBAR_ID, 1);
+  const LAYOUT_IDS = ["layout:/", "layout:/members"];
+  const RETAINED_IDS = [PAGE_ID, SIDEBAR_ID, HEAD_ID];
+
+  const interception: AppElementsInterception = {
+    sourceMatchedUrl: "/members/7",
+    sourceRouteId: ROUTE_ID,
+    slotId: MODAL_ID,
+    targetMatchedUrl: "/photos/1",
+    targetRouteId: "route:/photos/1",
+  };
+
+  const sourceIdentities = {
+    "layout:/": "identity:layout:/",
+    "layout:/members": "identity:layout:/members",
+    [MODAL_ID]: "identity:modal shell",
+    [PAGE_ID]: "identity:member 7",
+    [SIDEBAR_ID]: "identity:sidebar shell",
+  };
+
+  function createElements(options: {
+    entries: Record<string, unknown>;
+    identities?: Record<string, string>;
+    interception?: AppElementsInterception | null;
+    routeId?: string;
+    slotBindings: readonly AppElementsSlotBinding[];
+  }): AppElements {
+    return normalizeAppElements({
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: options.identities ?? sourceIdentities,
+        interception: options.interception ?? null,
+        interceptionContext: options.interception ? "/members/7" : null,
+        layoutIds: LAYOUT_IDS,
+        rootLayoutTreePath: "/",
+        routeId: options.routeId ?? ROUTE_ID,
+        slotBindings: options.slotBindings,
+      }),
+      ...options.entries,
+    });
+  }
+
+  const page = React.createElement("main", null, "member 7");
+  const head = React.createElement("title", null, "member 7");
+  const sidebar = React.createElement("aside", null, "member sidebar");
+
+  function createSourceState(routeId: string = ROUTE_ID): AppRouterState {
+    return {
+      activeOperation: null,
+      bfcacheIds: {
+        "layout:/": "_b_1_",
+        "layout:/members": "_b_2_",
+        [MODAL_ID]: "_b_3_",
+        [PAGE_ID]: "_b_4_",
+        [SIDEBAR_ID]: "_b_5_",
+      },
+      elements: createElements({
+        entries: {
+          [HEAD_ID]: head,
+          "layout:/": "root layout",
+          "layout:/members": "members layout",
+          [MODAL_ID]: null,
+          [PAGE_ID]: page,
+          [routeId]: "source route",
+          [SIDEBAR_ID]: sidebar,
+        },
+        routeId,
+        slotBindings: [
+          { ownerLayoutId: "layout:/members", slotId: MODAL_ID, state: "default" },
+          {
+            activeRouteId: routeId,
+            ownerLayoutId: "layout:/members",
+            slotId: SIDEBAR_ID,
+            state: "active",
+          },
+        ],
+      }),
+      interception: null,
+      interceptionContext: null,
+      layoutIds: LAYOUT_IDS,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/members/7", {}),
+      previousNextUrl: null,
+      renderId: 0,
+      rootLayoutTreePath: "/",
+      routeId,
+      slotBindings: [
+        { ownerLayoutId: "layout:/members", slotId: MODAL_ID, state: "default" },
+        {
+          activeRouteId: routeId,
+          ownerLayoutId: "layout:/members",
+          slotId: SIDEBAR_ID,
+          state: "active",
+        },
+      ],
+      visibleCommitVersion: 0,
+    };
+  }
+
+  function createInterceptedElements(
+    options: {
+      entries?: Record<string, unknown>;
+      identities?: Record<string, string>;
+      interception?: AppElementsInterception | null;
+    } = {},
+  ): AppElements {
+    return createElements({
+      entries: {
+        [AppElementsWire.keys.retainedElementIds]: RETAINED_IDS,
+        "layout:/": "fresh root layout",
+        "layout:/members": "fresh members layout",
+        [MODAL_ID]: "photo modal",
+        [ROUTE_ID]: "intercepted route",
+        ...options.entries,
+      },
+      identities: options.identities,
+      interception: options.interception === undefined ? interception : options.interception,
+      slotBindings: [
+        {
+          activeRouteId: "route:/photos/1",
+          interceptionId: "interception:modal",
+          interceptionSourceMatchedUrl: "/members/7",
+          ownerLayoutId: "layout:/members",
+          slotId: MODAL_ID,
+          state: "active",
+        },
+        { ownerLayoutId: "layout:/members", slotId: SIDEBAR_ID, state: "default" },
+      ],
+    });
+  }
+
+  async function approve(
+    currentState: AppRouterState,
+    nextElements: AppElements,
+    options: {
+      navigationCommitKind?: "authoritative" | "detached";
+      operationLane?: OperationLane;
+      previousNextUrl?: string;
+      reuseCurrentBfcacheIds?: boolean;
+      type?: "navigate" | "replace" | "traverse";
+    } = {},
+  ) {
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationCommitKind: options.navigationCommitKind,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/1", {}),
+      nextElements: Promise.resolve(nextElements),
+      operationLane: options.operationLane ?? "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      previousNextUrl: options.previousNextUrl ?? "/members/7",
+      renderId: 1,
+      reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds,
+      type: options.type ?? "navigate",
+    });
+    return approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      startedNavigationId: 1,
+      targetHref: "https://example.com/photos/1",
+    });
+  }
+
+  it.each<{ name: string; operationLane: OperationLane; type: "navigate" | "replace" }>([
+    { name: "a navigation", operationLane: "navigation", type: "navigate" },
+    { name: "a refresh", operationLane: "refresh", type: "replace" },
+    { name: "a server action", operationLane: "server-action", type: "replace" },
+  ])("keeps the source page the state shows on $name", async (testCase) => {
+    const currentState = createSourceState();
+    const approval = await approve(currentState, createInterceptedElements(), testCase);
+
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(nextState.elements[PAGE_ID]).toBe(page);
+    expect(nextState.elements[HEAD_ID]).toBe(head);
+    expect(nextState.elements[SIDEBAR_ID]).toBe(sidebar);
+    expect(nextState.elements[MODAL_ID]).toBe("photo modal");
+    expect(nextState.elements[ROUTE_ID]).toBe("intercepted route");
+    expect(nextState.slotBindings).toContainEqual(
+      expect.objectContaining({ slotId: SIDEBAR_ID, state: "active" }),
+    );
+    expect(nextState.slotBindings).toContainEqual(
+      expect.objectContaining({ slotId: MODAL_ID, state: "active" }),
+    );
+    // The kept page keeps its BFCache id, so its client state survives.
+    expect(nextState.bfcacheIds[PAGE_ID]).toBe("_b_4_");
+    expect(nextState.bfcacheIds[SIDEBAR_ID]).toBe("_b_5_");
+    expect(nextState.interception).toEqual(interception);
+  });
+
+  it("commits a payload that already carries what it retains", async () => {
+    const currentState = createSourceState();
+    const supplied = createInterceptedElements({
+      entries: { [HEAD_ID]: "fresh head", [PAGE_ID]: "fresh page", [SIDEBAR_ID]: "fresh sidebar" },
+    });
+    expect(resolveHeldRetainedElementIds(currentState, supplied, "/members/7")).toEqual([]);
+
+    const approval = await approve(currentState, supplied);
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(nextState.elements[PAGE_ID]).toBe("fresh page");
+    expect(nextState.elements[HEAD_ID]).toBe("fresh head");
+  });
+
+  // The body holds the head's streamed tags only when the head's own render
+  // placed them there, as a request-time render can and a prerender doesn't.
+  it("keeps a head whose render streamed no body", async () => {
+    const currentState = createSourceState();
+    const nextElements = createInterceptedElements({
+      entries: { [AppElementsWire.keys.retainedElementIds]: [...RETAINED_IDS, BODY_ID] },
+    });
+    expect(resolveHeldRetainedElementIds(currentState, nextElements, "/members/7")).toEqual(
+      RETAINED_IDS,
+    );
+
+    const approval = await approve(currentState, nextElements);
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(nextState.elements[HEAD_ID]).toBe(head);
+    expect(Object.hasOwn(nextState.elements, BODY_ID)).toBe(false);
+  });
+
+  it("keeps the streamed body beside the head it belongs to", async () => {
+    const sourceState = createSourceState();
+    const body = React.createElement("title", null, "streamed member 7");
+    const currentState = {
+      ...sourceState,
+      elements: { ...sourceState.elements, [BODY_ID]: body },
+    };
+    const nextElements = createInterceptedElements({
+      entries: { [AppElementsWire.keys.retainedElementIds]: [...RETAINED_IDS, BODY_ID] },
+    });
+
+    const approval = await approve(currentState, nextElements);
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(nextState.elements[HEAD_ID]).toBe(head);
+    expect(nextState.elements[BODY_ID]).toBe(body);
+  });
+
+  async function commitIntercepted(nextElements: AppElements): Promise<AppRouterState> {
+    const sourceState = createSourceState();
+    const approval = await approve(sourceState, nextElements);
+    if (approval.approvedCommit === null) throw new Error("expected a commit");
+    return applyApprovedVisibleCommit(sourceState, approval.approvedCommit);
+  }
+
+  it("keeps the source's head an intercepted state kept", async () => {
+    const currentState = await commitIntercepted(createInterceptedElements());
+
+    expect(currentState.elements[HEAD_ID]).toBe(head);
+    expect(
+      resolveHeldRetainedElementIds(currentState, createInterceptedElements(), "/members/7"),
+    ).toEqual(RETAINED_IDS);
+  });
+
+  it("keeps no head an intercepted state's own payload carried", async () => {
+    const currentState = await commitIntercepted(
+      createInterceptedElements({
+        entries: {
+          [AppElementsWire.keys.retainedElementIds]: [PAGE_ID, SIDEBAR_ID],
+          [HEAD_ID]: "photo head",
+        },
+      }),
+    );
+
+    expect(currentState.elements[HEAD_ID]).toBe("photo head");
+    expect(
+      resolveHeldRetainedElementIds(currentState, createInterceptedElements(), "/members/7"),
+    ).toBeNull();
+  });
+
+  it("keeps no streamed body beside a head the payload carries", () => {
+    const sourceState = createSourceState("route:/members/8");
+    const currentState = {
+      ...sourceState,
+      elements: { ...sourceState.elements, [BODY_ID]: "another render's body" },
+    };
+    const supplied = createInterceptedElements({
+      entries: {
+        [AppElementsWire.keys.retainedElementIds]: [...RETAINED_IDS, BODY_ID],
+        [HEAD_ID]: "fresh head",
+        [PAGE_ID]: "fresh page",
+        [SIDEBAR_ID]: "fresh sidebar",
+      },
+    });
+
+    expect(resolveHeldRetainedElementIds(currentState, supplied, "/members/7")).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: "shows another route",
+      state: () => createSourceState("route:/members/8"),
+      elements: () => createInterceptedElements(),
+    },
+    {
+      name: "holds a page with another identity",
+      state: () => createSourceState(),
+      elements: () =>
+        createInterceptedElements({
+          identities: { ...sourceIdentities, [PAGE_ID]: "identity:member 7 elsewhere" },
+        }),
+    },
+    {
+      name: "holds a branch inside a slot with another identity",
+      state: () => {
+        const state = createSourceState();
+        return {
+          ...state,
+          elements: {
+            ...state.elements,
+            [SIDEBAR_SEGMENT_ID]: null,
+            [AppElementsWire.keys.bfcacheSegmentIdentities]: {
+              ...sourceIdentities,
+              [SIDEBAR_SEGMENT_ID]: "identity:sidebar members",
+            },
+          },
+        };
+      },
+      elements: () =>
+        createInterceptedElements({
+          identities: { ...sourceIdentities, [SIDEBAR_SEGMENT_ID]: "identity:sidebar photos" },
+        }),
+    },
+    {
+      name: "doesn't hold the head",
+      state: () => {
+        const state = createSourceState();
+        const { [HEAD_ID]: _head, ...elements } = state.elements;
+        return { ...state, elements };
+      },
+      elements: () => createInterceptedElements(),
+    },
+    {
+      name: "holds a loading shell's empty page",
+      state: () => {
+        const state = createSourceState();
+        return { ...state, elements: { ...state.elements, [PAGE_ID]: null } };
+      },
+      elements: () => createInterceptedElements(),
+    },
+    {
+      name: "holds a loading shell's empty children slot page",
+      state: () => {
+        const state = createSourceState();
+        const identities = AppElementsWire.readMetadata(state.elements).bfcacheSegmentIdentities;
+        return {
+          ...state,
+          elements: {
+            ...state.elements,
+            [AppElementsWire.keys.bfcacheSegmentIdentities]: {
+              ...identities,
+              "slot:children:/members": "identity:member 7 children",
+            },
+            "slot:children:/members": null,
+          },
+        };
+      },
+      elements: () =>
+        createInterceptedElements({
+          entries: {
+            [AppElementsWire.keys.retainedElementIds]: [
+              "slot:children:/members",
+              SIDEBAR_ID,
+              HEAD_ID,
+            ],
+          },
+          identities: {
+            ...sourceIdentities,
+            "slot:children:/members": "identity:member 7 children",
+          },
+        }),
+    },
+    {
+      name: "receives a payload for no interception",
+      state: () => createSourceState(),
+      elements: () => createInterceptedElements({ interception: null }),
+    },
+    {
+      name: "shows the source page with another query",
+      state: () => ({
+        ...createSourceState(),
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/members/7?tab=b",
+          {},
+        ),
+      }),
+      elements: () => createInterceptedElements(),
+      previousNextUrl: "/members/7?tab=a",
+    },
+    {
+      name: "holds only another route's head",
+      state: () => {
+        const state = createSourceState();
+        return {
+          ...state,
+          elements: { ...state.elements, [`${APP_ROUTE_HEAD_ID_PREFIX}route:/members/8`]: head },
+        };
+      },
+      elements: () =>
+        createInterceptedElements({
+          entries: {
+            [AppElementsWire.keys.retainedElementIds]: [
+              PAGE_ID,
+              SIDEBAR_ID,
+              `${APP_ROUTE_HEAD_ID_PREFIX}route:/members/8`,
+            ],
+          },
+        }),
+    },
+  ])("loads the document when the state $name", async (testCase) => {
+    const currentState = testCase.state();
+    const nextElements = testCase.elements();
+    const previousNextUrl = testCase.previousNextUrl ?? "/members/7";
+    expect(resolveHeldRetainedElementIds(currentState, nextElements, previousNextUrl)).toBeNull();
+
+    const approval = await approve(currentState, nextElements, { previousNextUrl });
+    expect(approval.approvedCommit).toBeNull();
+    expect(approval.decision.disposition).toBe("hard-navigate");
+  });
+
+  it("leaves a detached commit it can't complete to its navigation's payload", async () => {
+    const state = createSourceState();
+    const { [HEAD_ID]: _head, ...elements } = state.elements;
+    const approval = await approve({ ...state, elements }, createInterceptedElements(), {
+      navigationCommitKind: "detached",
+    });
+
+    expect(approval.approvedCommit).toBeNull();
+    expect(approval.decision.disposition).toBe("no-commit");
+  });
+
+  it("leaves the scroll intent to the navigation's payload when its shell can't commit", async () => {
+    const state = createSourceState();
+    const { [HEAD_ID]: _head, ...elements } = state.elements;
+    const initialState = { ...state, elements };
+    const nextElements = createInterceptedElements();
+    const routeManifest = createRouteManifestForPendingCommit(
+      initialState,
+      await createPendingNavigationCommit({
+        currentState: initialState,
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/photos/1",
+          {},
+        ),
+        nextElements: Promise.resolve(nextElements),
+        operationLane: "navigation",
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        previousNextUrl: "/members/7",
+        renderId: 1,
+        type: "navigate",
+      }),
+    );
+    const performHardNavigation = vi.fn(() => true);
+    const { controller, detach } = createControllerHarness(initialState, {
+      getRouteManifest: () => routeManifest,
+      performHardNavigation,
+    });
+    const scrollIntent = beginAppRouterScrollIntent("#photo");
+
+    try {
+      const navId = controller.beginNavigation();
+      await expect(
+        controller.renderNavigationPayload({
+          actionType: "navigate",
+          createNavigationCommitEffect: () => createCommitEffectMock(),
+          historyUpdateMode: "push",
+          navigationCommitKind: "detached",
+          navigationInitiationState: initialState,
+          navigationSnapshot: createClientNavigationRenderSnapshot(
+            "https://example.com/photos/1",
+            {},
+          ),
+          navId,
+          nextElements: Promise.resolve(nextElements),
+          operationLane: "navigation",
+          params: {},
+          payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+          pendingRouterState: null,
+          previousNextUrl: "/members/7",
+          scrollIntent,
+          targetHref: "https://example.com/photos/1#photo",
+        }),
+      ).resolves.toBe("no-commit");
+      expect(performHardNavigation).not.toHaveBeenCalled();
+      expect(getPendingAppRouterScrollIntent()?.id).toBe(scrollIntent.id);
+    } finally {
+      clearAppRouterScrollIntent();
+      detach();
+    }
+  });
+
+  it("loads the document for a traversal that can't reuse the state's segments", async () => {
+    const approval = await approve(createSourceState(), createInterceptedElements(), {
+      operationLane: "traverse",
+      reuseCurrentBfcacheIds: false,
+      type: "traverse",
+    });
+
+    expect(approval.approvedCommit).toBeNull();
+    expect(approval.decision.disposition).toBe("hard-navigate");
+  });
+
+  it("never classifies a payload that retains elements as complete", () => {
+    expect(
+      isCompleteAppPayloadMetadata(AppElementsWire.readMetadata(createInterceptedElements())),
+    ).toBe(false);
+  });
+
+  it("rejects a retained id that names no element", () => {
+    expect(() =>
+      AppElementsWire.readMetadata({
+        ...createInterceptedElements(),
+        [AppElementsWire.keys.retainedElementIds]: ["__route"],
+      }),
+    ).toThrow(/__retainedElementIds/);
   });
 });

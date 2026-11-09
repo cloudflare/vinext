@@ -8,6 +8,7 @@ import {
   APP_SKIPPED_LAYOUT_IDS_KEY,
   APP_STATIC_SIBLINGS_KEY,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
+  APP_STREAMING_METADATA_OUTLET_ID_PREFIX,
   normalizeAppElementsSlotBindings,
   type AppElementValue,
   type AppElements,
@@ -1008,7 +1009,7 @@ export function buildAppPageElements<
   // Head resolution can fail after the render has started, so every resolved
   // head gets an outlet that rethrows inside the route's boundaries.
   const streamingMetadataOutletId = options.resolveHead
-    ? `__vinext_streaming_metadata_outlet:${routeId}`
+    ? `${APP_STREAMING_METADATA_OUTLET_ID_PREFIX}${routeId}`
     : null;
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);

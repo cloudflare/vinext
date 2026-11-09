@@ -8,6 +8,7 @@ import {
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
   SupplementalRefreshError,
+  supplyRetainedElements,
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
 import { AppElementsWire, type AppElements } from "../packages/vinext/src/server/app-elements.js";
 import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
@@ -635,6 +636,343 @@ describe("parallel route supplemental refreshes", () => {
       [modalSegmentId]: "modal photo",
       "slot:modal:/": "modal shell",
     });
+  });
+
+  it("supplies the elements an intercepted payload left for the client to keep", () => {
+    const interception = {
+      sourceMatchedUrl: "/members/7",
+      sourceRouteId: "route:/members/7",
+      slotId: "slot:modal:/members",
+      targetMatchedUrl: "/photos/1",
+      targetRouteId: "route:/photos/1",
+    };
+    const retainedElementIds = [
+      "page:/members/7",
+      "slot:sidebar:/members",
+      "__vinext_route_head:route:/members/7",
+    ];
+    const sidebarSegmentId = createNestedBfcacheSlotSegmentId("slot:sidebar:/members", 1);
+    const primary: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          "layout:/members": "members layout",
+          "page:/members/7": "member 7",
+          "slot:sidebar:/members": "sidebar shell",
+        },
+        interception,
+        interceptionContext: "/members/7",
+        layoutIds: ["layout:/", "layout:/members"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/members/7",
+        slotBindings: [
+          {
+            activeRouteId: "route:/photos/1",
+            interceptionId: "interception:modal",
+            interceptionSourceMatchedUrl: "/members/7",
+            ownerLayoutId: "layout:/members",
+            slotId: "slot:modal:/members",
+            state: "active",
+          },
+          { ownerLayoutId: "layout:/members", slotId: "slot:sidebar:/members", state: "default" },
+        ],
+      }),
+      [AppElementsWire.keys.retainedElementIds]: retainedElementIds,
+      "layout:/members": "members layout",
+      "route:/members/7": "route",
+      "slot:modal:/members": "photo modal",
+    };
+    const source: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [sidebarSegmentId]: "sidebar members",
+          "layout:/members": "members layout",
+          "page:/members/7": "member 7",
+          "slot:sidebar:/members": "sidebar shell",
+        },
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/members"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/members/7",
+        slotBindings: [
+          { ownerLayoutId: "layout:/members", slotId: "slot:modal:/members", state: "default" },
+          {
+            activeRouteId: "route:/members/7",
+            ownerLayoutId: "layout:/members",
+            slotId: "slot:sidebar:/members",
+            state: "active",
+          },
+        ],
+      }),
+      [sidebarSegmentId]: null,
+      "__vinext_route_head:route:/members/7": "member head",
+      "layout:/members": "source layout",
+      "page:/members/7": "member page",
+      "route:/members/7": "source route",
+      "slot:modal:/members": "modal default",
+      "slot:sidebar:/members": "member sidebar",
+    };
+
+    const result = mergeRefreshedParallelSlot(primary, source);
+    expect(result["page:/members/7"]).toBe("member page");
+    expect(result["__vinext_route_head:route:/members/7"]).toBe("member head");
+    expect(result["slot:sidebar:/members"]).toBe("member sidebar");
+    expect(Object.hasOwn(result, sidebarSegmentId)).toBe(true);
+    // The intercepted payload's own render wins over the source's.
+    expect(result["slot:modal:/members"]).toBe("photo modal");
+    expect(result["layout:/members"]).toBe("members layout");
+    const metadata = AppElementsWire.readMetadata(result);
+    expect(metadata.interception).toEqual(interception);
+    expect(metadata.slotBindings).toEqual([
+      expect.objectContaining({ slotId: "slot:modal:/members", state: "active" }),
+      expect.objectContaining({ slotId: "slot:sidebar:/members", state: "active" }),
+    ]);
+    expect(metadata.bfcacheSegmentIdentities[sidebarSegmentId]).toBe("sidebar members");
+  });
+
+  // A source render that refreshes the source's slots fills in only what the
+  // intercepted payload left out, whichever slot it refreshes, even where it
+  // matches the intercepted slot from its own URL.
+  it.each(["slot:sidebar:/members", "slot:children:/members"])(
+    "keeps the intercepted payload's own head and modal when a source render refreshes %s",
+    (refreshedSlotId) => {
+      const interception = {
+        sourceMatchedUrl: "/members/7",
+        sourceRouteId: "route:/members/7",
+        slotId: "slot:modal:/members",
+        targetMatchedUrl: "/photos/1",
+        targetRouteId: "route:/photos/1",
+      };
+      const primary: AppElements = {
+        ...AppElementsWire.createMetadataEntries({
+          interception,
+          interceptionContext: "/members/7",
+          layoutIds: ["layout:/", "layout:/members"],
+          rootLayoutTreePath: "/",
+          routeId: "route:/members/7",
+          slotBindings: [
+            {
+              activeRouteId: "route:/photos/1",
+              interceptionId: "interception:modal",
+              interceptionSourceMatchedUrl: "/members/7",
+              ownerLayoutId: "layout:/members",
+              slotId: "slot:modal:/members",
+              state: "active",
+            },
+          ],
+        }),
+        [AppElementsWire.keys.retainedElementIds]: ["page:/members/7"],
+        "__vinext_route_head:route:/members/7": "photo head",
+        "route:/members/7": "intercepted route",
+        "slot:modal:/members": "photo modal",
+      };
+      const source: AppElements = {
+        ...AppElementsWire.createMetadataEntries({
+          interceptionContext: null,
+          layoutIds: ["layout:/", "layout:/members"],
+          rootLayoutTreePath: "/",
+          routeId: "route:/members/7",
+          slotBindings: [
+            {
+              activeRouteId: "route:/members/7",
+              ownerLayoutId: "layout:/members",
+              slotId: "slot:modal:/members",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/members/7",
+              ownerLayoutId: "layout:/members",
+              slotId: refreshedSlotId,
+              state: "active",
+            },
+          ],
+        }),
+        "__vinext_route_head:route:/members/7": "member head",
+        "__vinext_streaming_metadata_body:route:/members/7": "member body",
+        "page:/members/7": "member page",
+        "route:/members/7": "source route",
+        "slot:modal:/members": "modal catch-all",
+        [refreshedSlotId]: "member slot",
+      };
+
+      const result = mergeRefreshedParallelSlot(primary, source);
+      expect(result["page:/members/7"]).toBe("member page");
+      expect(result["slot:modal:/members"]).toBe("photo modal");
+      expect(result["__vinext_route_head:route:/members/7"]).toBe("photo head");
+      expect(Object.hasOwn(result, "__vinext_streaming_metadata_body:route:/members/7")).toBe(
+        false,
+      );
+      expect(result["route:/members/7"]).toBe("intercepted route");
+      const metadata = AppElementsWire.readMetadata(result);
+      expect(metadata.slotBindings).toContainEqual(
+        expect.objectContaining({
+          activeRouteId: "route:/photos/1",
+          slotId: "slot:modal:/members",
+        }),
+      );
+      expect(metadata.retainedElementIds).toEqual(["page:/members/7"]);
+    },
+  );
+
+  // A source whose @modal matches a catch-all renders it active from its own
+  // URL, and an intercepted payload carries its own head when its metadata
+  // differs. Neither may replace the intercepted payload's own render.
+  it("supplies only the retained elements from a source render", () => {
+    const interception = {
+      sourceMatchedUrl: "/members/7",
+      sourceRouteId: "route:/members/7",
+      slotId: "slot:modal:/members",
+      targetMatchedUrl: "/photos/1",
+      targetRouteId: "route:/photos/1",
+    };
+    const primary: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: { "slot:modal:/members": "photo modal" },
+        interception,
+        interceptionContext: "/members/7",
+        layoutIds: ["layout:/", "layout:/members"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/members/7",
+        slotBindings: [
+          {
+            activeRouteId: "route:/photos/1",
+            interceptionId: "interception:modal",
+            interceptionSourceMatchedUrl: "/members/7",
+            ownerLayoutId: "layout:/members",
+            slotId: "slot:modal:/members",
+            state: "active",
+          },
+        ],
+      }),
+      [AppElementsWire.keys.retainedElementIds]: ["page:/members/7"],
+      "__vinext_route_head:route:/members/7": "photo head",
+      "route:/members/7": "intercepted route",
+      "slot:modal:/members": "photo modal",
+    };
+    const source: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          "page:/members/7": "member 7",
+          "slot:modal:/members": "modal catch-all",
+        },
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/members"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/members/7",
+        slotBindings: [
+          {
+            activeRouteId: "route:/members/7",
+            ownerLayoutId: "layout:/members",
+            slotId: "slot:modal:/members",
+            state: "active",
+          },
+        ],
+      }),
+      "__vinext_route_head:route:/members/7": "member head",
+      "page:/members/7": "member page",
+      "route:/members/7": "source route",
+      "slot:modal:/members": "modal catch-all",
+    };
+
+    const result = supplyRetainedElements(primary, source);
+    expect(result["page:/members/7"]).toBe("member page");
+    expect(result["slot:modal:/members"]).toBe("photo modal");
+    expect(result["__vinext_route_head:route:/members/7"]).toBe("photo head");
+    expect(result["route:/members/7"]).toBe("intercepted route");
+    const metadata = AppElementsWire.readMetadata(result);
+    expect(metadata.interception).toEqual(interception);
+    expect(metadata.slotBindings).toEqual([
+      expect.objectContaining({ activeRouteId: "route:/photos/1", slotId: "slot:modal:/members" }),
+    ]);
+    expect(metadata.bfcacheSegmentIdentities).toEqual({
+      "page:/members/7": "member 7",
+      "slot:modal:/members": "photo modal",
+    });
+  });
+
+  it("supplies no streamed body beside a head the intercepted payload carries", () => {
+    const metadata = (interception: boolean) =>
+      AppElementsWire.createMetadataEntries({
+        interception: interception
+          ? {
+              sourceMatchedUrl: "/members/7",
+              sourceRouteId: "route:/members/7",
+              slotId: "slot:modal:/members",
+              targetMatchedUrl: "/photos/1",
+              targetRouteId: "route:/photos/1",
+            }
+          : null,
+        interceptionContext: interception ? "/members/7" : null,
+        layoutIds: ["layout:/", "layout:/members"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/members/7",
+        slotBindings: [],
+      });
+    const bodyId = "__vinext_streaming_metadata_body:route:/members/7";
+    const source: AppElements = {
+      ...metadata(false),
+      "__vinext_route_head:route:/members/7": "member head",
+      [bodyId]: "member tags",
+      "page:/members/7": "member page",
+    };
+
+    const withHead = supplyRetainedElements(
+      {
+        ...metadata(true),
+        [AppElementsWire.keys.retainedElementIds]: ["page:/members/7", bodyId],
+        "__vinext_route_head:route:/members/7": "photo head",
+      },
+      source,
+    );
+    expect(withHead["page:/members/7"]).toBe("member page");
+    expect(withHead["__vinext_route_head:route:/members/7"]).toBe("photo head");
+    expect(Object.hasOwn(withHead, bodyId)).toBe(false);
+
+    // A payload that leaves the head to the client takes the pair together.
+    const withoutHead = supplyRetainedElements(
+      {
+        ...metadata(true),
+        [AppElementsWire.keys.retainedElementIds]: [
+          "page:/members/7",
+          "__vinext_route_head:route:/members/7",
+          bodyId,
+        ],
+      },
+      source,
+    );
+    expect(withoutHead["__vinext_route_head:route:/members/7"]).toBe("member head");
+    expect(withoutHead[bodyId]).toBe("member tags");
+  });
+
+  it("supplies retained elements only from a render of the same route", () => {
+    const primary: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interception: {
+          sourceMatchedUrl: "/members/7",
+          sourceRouteId: "route:/members/7",
+          slotId: "slot:modal:/members",
+          targetMatchedUrl: "/photos/1",
+          targetRouteId: "route:/photos/1",
+        },
+        interceptionContext: "/members/7",
+        layoutIds: ["layout:/", "layout:/members"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/members/7",
+        slotBindings: [],
+      }),
+      [AppElementsWire.keys.retainedElementIds]: ["page:/members/7"],
+    };
+    const other: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/members"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/members/8",
+        slotBindings: [],
+      }),
+      "page:/members/7": "stale member page",
+    };
+
+    expect(mergeRefreshedParallelSlot(primary, other)).toBe(primary);
   });
 
   it("merges all successful active branches", async () => {
