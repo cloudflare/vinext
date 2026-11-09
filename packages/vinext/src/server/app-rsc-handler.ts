@@ -2679,7 +2679,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         options.ensureRouteLoaded!(routedRoute),
       );
     }
-    if (!routedRoute.routeHandler) {
+    // Draft mode renders an unlisted param on demand, as the dispatch does.
+    if (!routedRoute.routeHandler && !isDraftModeRequest(request, options.draftModeSecret)) {
       if (await options.isDynamicParamsMiss(routedRoute, routedMatch.params)) {
         // The rejected match seeded its root params before routing finished.
         setRootParams(null);
@@ -2953,9 +2954,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
   const resolvedSearchParams = getResolvedSearchParams();
   const isRouteTreePrefetch = isRouteTreePrefetchRequest(request) && !route.routeHandler;
-  // Next.js rejects a dynamicParams = false miss while routing, so route
-  // discovery gets the unmatched route's 404 rather than this route's tree.
-  if (isRouteTreePrefetch && (await options.isDynamicParamsMiss?.(route, params))) {
+  // Next.js rejects a dynamicParams = false miss while routing, outside draft
+  // mode, so route discovery gets the unmatched route's 404 rather than this
+  // route's tree.
+  if (
+    isRouteTreePrefetch &&
+    !isDraftModeRequest(request, options.draftModeSecret) &&
+    (await options.isDynamicParamsMiss?.(route, params))
+  ) {
     // The rejected match seeded its root params before routing finished.
     setRootParams(null);
     return renderUnmatchedRoute();

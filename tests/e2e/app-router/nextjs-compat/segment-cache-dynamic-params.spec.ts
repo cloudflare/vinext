@@ -89,6 +89,25 @@ test.describe("Next.js compat: segment cache closed params (dynamicParams = fals
     expect(body).toContain("fallback target unlisted");
   });
 
+  test("renders a page's unlisted param in draft mode, as Next.js does", async ({ request }) => {
+    const enable = await request.get("/nextjs-compat/api/draft-enable");
+    expect(enable.status()).toBe(200);
+    try {
+      // Draft mode skips the check, so neither the fallback rewrite nor the
+      // not-found replaces the page.
+      const draft = await request.get("/nextjs-compat/dynamic-params-fallback/unlisted");
+      expect(draft.status()).toBe(200);
+      expect(await draft.text()).toContain("listed page unlisted");
+
+      const draftTree = await request.get(`${ROOT}/products/rejected`, {
+        headers: treePrefetchHeaders,
+      });
+      expect(draftTree.status()).toBe(200);
+    } finally {
+      await request.get("/nextjs-compat/api/draft-disable");
+    }
+  });
+
   test("does not reuse a prefetched 404 for an allowed parameter value", async ({
     page,
   }, testInfo) => {
