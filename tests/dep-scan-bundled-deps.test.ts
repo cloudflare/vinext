@@ -150,9 +150,9 @@ const LINKED_CLIENT_SHIM_SPECIFIERS = [
   "next/web-vitals",
 ];
 
-function runProbe<T = { errors: string[] }>(root: string): Promise<T> {
+function runProbe<T = { errors: string[] }>(root: string, args = ["probe.mjs"]): Promise<T> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["probe.mjs"], {
+    const child = spawn(process.execPath, args, {
       cwd: root,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -322,6 +322,34 @@ try {
   return root;
 }
 
+// Reports the dependencies the Cloudflare hybrid fixture's client and ssr
+// optimizers, where Pages Router modules load, find at startup. Cloudflare's
+// Worker environments discover dependencies; Node dev's do not.
+const CF_APP_BASIC_DIR = path.resolve(import.meta.dirname, "fixtures/cf-app-basic");
+function startupDepsProbe(cacheDir: string): string {
+  return `import { createLogger, createServer } from "vite";
+const server = await createServer({
+  root: ${JSON.stringify(CF_APP_BASIC_DIR)},
+  configFile: ${JSON.stringify(path.join(CF_APP_BASIC_DIR, "vite.config.ts"))},
+  cacheDir: ${JSON.stringify(cacheDir)},
+  customLogger: createLogger("silent"),
+  server: { host: "127.0.0.1", port: 0 },
+});
+try {
+  await server.listen();
+  const deps = {};
+  for (const name of ["client", "ssr"]) {
+    const optimizer = server.environments[name].depsOptimizer;
+    await optimizer.scanProcessing;
+    deps[name] = [...Object.keys(optimizer.metadata.optimized), ...Object.keys(optimizer.metadata.discovered)];
+  }
+  console.log("probe:" + JSON.stringify(deps));
+} finally {
+  await server.close();
+}
+`;
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
@@ -375,5 +403,21 @@ describe("client dependency scan", () => {
     // One browser module instance: the same URL, version query included.
     expect(navigationUrls.app).toMatch(/\/dist\/shims\/navigation\.js\?v=/);
     expect(navigationUrls.runtime).toBe(navigationUrls.app);
+  }, 60_000);
+});
+
+describe("hybrid dependency scan", () => {
+  // With both routers, a dependency only pages/ imports would otherwise be
+  // found on the first request for its page, re-optimizing and reloading.
+  it("discovers dependencies only Pages Router pages import at startup", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(CF_APP_BASIC_DIR, "node_modules/.vite-dep-scan-"));
+    roots.push(cacheDir);
+    const deps = await runProbe<Record<"client" | "ssr", string[]>>(CF_APP_BASIC_DIR, [
+      "--input-type=module",
+      "--eval",
+      startupDepsProbe(cacheDir),
+    ]);
+    expect(deps.client).toContain("pages-only-dependency");
+    expect(deps.ssr).toContain("pages-only-dependency");
   }, 60_000);
 });

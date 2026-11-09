@@ -41,10 +41,9 @@ const nextConfig: NextConfig = {
   // call site inside this package only gets preload metadata when the package
   // is transpiled, matching Turbopack's foreign-code rule.
   //
-  // fake-tsconfig-exact-lib and fake-pages-only-lib stay in the Pages server
-  // bundle, so builds into a temporary outDir don't need node_modules next to
-  // the output.
-  transpilePackages: ["fake-css-module-lib", "fake-tsconfig-exact-lib", "fake-pages-only-lib"],
+  // fake-tsconfig-exact-lib stays in the Pages server bundle, so builds into a
+  // temporary outDir don't need node_modules next to the output.
+  transpilePackages: ["fake-css-module-lib", "fake-tsconfig-exact-lib"],
 
   // Used by E2E: app-router-prod/image-local-patterns.spec.ts — every local
   // path without a query string (the Next.js default), plus one query string
