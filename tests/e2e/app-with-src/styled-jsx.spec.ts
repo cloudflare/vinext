@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
-const BASE = "http://localhost:4174";
+const BASE = "http://localhost:4181";
 
 test.describe("styled-jsx", () => {
   // styled-jsx is CommonJS. In dev the browser must load the prebundled copy,
