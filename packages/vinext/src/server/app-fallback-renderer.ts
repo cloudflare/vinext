@@ -7,7 +7,10 @@ import {
   type AppPageBoundaryRoute,
 } from "./app-page-boundary-render.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
-import { DEFAULT_GLOBAL_NOT_FOUND_MODULE } from "./default-global-not-found-module.js";
+import {
+  DEFAULT_GLOBAL_NOT_FOUND_MODULE,
+  withDefaultLayout,
+} from "./default-global-not-found-module.js";
 import { DEFAULT_NOT_FOUND_MODULE } from "./default-http-access-fallback-modules.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
@@ -63,7 +66,7 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
   globalNotFoundEnabled?: boolean;
   /** Whether the app has a root `app/layout`, rather than only route-group root layouts. */
   hasAppRootLayout?: boolean;
-  /** `app/not-found` in an app without `app/layout`, which renders without a layout. */
+  /** `app/not-found` in an app without `app/layout`, which renders in a default layout. */
   appNotFoundModule?: TModule | null;
   /**
    * Loader for the user's `app/global-not-found.tsx` module. When provided,
@@ -200,6 +203,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
 
   const { rootForbiddenModule, rootLayouts, rootNotFoundModule, rootUnauthorizedModule } =
     rootBoundaries;
+  const standaloneAppNotFoundModule = appNotFoundModule && withDefaultLayout(appNotFoundModule);
 
   // When the app does not define `app/global-error.tsx`, fall back to vinext's
   // built-in default global error component so that uncaught render errors
@@ -271,9 +275,9 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
       const useGlobalNotFound =
         statusCode === 404 && globalNotFoundEnabled && !route && !opts?.boundaryComponent;
-      // Without app/layout, Next.js' /_not-found page renders app/not-found
-      // with no layout, or the built-in not-found in a default document,
-      // rather than a route group's root layout. Every 404 without a matched
+      // Without app/layout, Next.js' /_not-found page renders app/not-found,
+      // or the built-in not-found, in its default layout rather than a route
+      // group's root layout. Every 404 without a matched
       // route renders that page, so a route-group root layout and its
       // not-found never wrap it.
       // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
@@ -328,7 +332,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       }
 
       const routeMissRootNotFoundModule = useStandaloneNotFound
-        ? ((useGlobalNotFound ? null : appNotFoundModule) ??
+        ? ((useGlobalNotFound ? null : standaloneAppNotFoundModule) ??
           (DEFAULT_GLOBAL_NOT_FOUND_MODULE as unknown as TModule))
         : effectiveRootNotFoundModule;
 

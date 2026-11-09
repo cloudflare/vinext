@@ -72,8 +72,9 @@ for (const pathname of ["/no/such/route", "/closed/unlisted"] as const) {
     expect(response.status()).toBe(404);
     const html = await response.text();
     expect(html).toContain('id="app-not-found"');
-    // app/not-found owns the document.
+    // The default layout supplies the document.
     expect(html.match(/<html/g)).toHaveLength(1);
+    expect(html.match(/<body/g)).toHaveLength(1);
     expect(html).not.toContain('id="site-root"');
     expect(html).not.toContain('id="pin-root"');
   });
