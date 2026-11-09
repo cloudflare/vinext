@@ -174,8 +174,18 @@ describe("multiple root layouts: not-found boundaries stay in their root layout'
     },
   );
 
-  it("renders a dynamicParams = false miss without any root layout", async () => {
-    for (const res of [await fetch(`${baseUrl}/docs/b`), await fetchRsc(baseUrl, "/docs/b")]) {
+  it.each([
+    ["a dynamicParams = false miss", "/docs/b"],
+    ["an unmatched URL", "/no/such/route"],
+  ])("renders %s without any root layout", async (_, pathname) => {
+    const treePrefetch = await fetchRsc(baseUrl, pathname, {
+      headers: { "Next-Router-Prefetch": "1", "Next-Router-Segment-Prefetch": "/_tree" },
+    });
+    for (const res of [
+      await fetch(`${baseUrl}${pathname}`),
+      await fetchRsc(baseUrl, pathname),
+      treePrefetch,
+    ]) {
       expect(res.status).toBe(404);
       const body = await res.text();
       expect(body).toContain("This page could not be found.");

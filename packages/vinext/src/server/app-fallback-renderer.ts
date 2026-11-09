@@ -151,8 +151,6 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
       matchedParams?: AppPageParams;
       /** The route's render threw the signal, so the document keeps the route's head. */
       routeHead?: AppPageFallbackRouteHead | null;
-      /** A routing-level not-found for params a `dynamicParams = false` route rejects. */
-      routeMiss?: boolean;
     },
     scriptNonce: string | undefined,
     middlewareContext: AppPageMiddlewareContext,
@@ -272,16 +270,12 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         statusCode === 404 && globalNotFoundEnabled && !route && !opts?.boundaryComponent;
       // Without app/layout, Next.js' /_not-found page wraps the built-in
       // not-found in a default document rather than a route group's root
-      // layout. A routing-level miss renders that page, so a route-group root
-      // layout and its not-found never wrap it.
+      // layout. Every 404 without a matched route renders that page, so a
+      // route-group root layout and its not-found never wrap it.
       // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
       const useStandaloneNotFound =
         useGlobalNotFound ||
-        (statusCode === 404 &&
-          !route &&
-          opts?.routeMiss === true &&
-          !hasAppRootLayout &&
-          !opts.boundaryComponent);
+        (statusCode === 404 && !route && !hasAppRootLayout && !opts?.boundaryComponent);
 
       if (useGlobalNotFound && loadGlobalNotFoundModule) {
         const globalNotFoundModule = await resolveGlobalNotFoundModule();

@@ -69,9 +69,17 @@ function findRootBoundaryRoute(routes: readonly AppRoute[]): AppRoute | undefine
   );
 }
 
+// Tree position 0 is the app directory itself.
+function hasAppDirectoryLayout(route: AppRoute): boolean {
+  return route.layouts.length > 0 && route.layoutTreePositions[0] === 0;
+}
+
+// With app/layout, Next.js' /_not-found page holds only the app directory's
+// own layout and boundaries, even when / sits in a route group with its own.
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
 function rootRouteLayoutPaths(route: AppRoute | undefined): readonly string[] {
   if (!route) return [];
-  if (route.pattern === "/") return route.layouts;
+  if (route.pattern === "/" && !hasAppDirectoryLayout(route)) return route.layouts;
 
   const rootPosition = route.layoutTreePositions[0];
   return route.layouts.filter((_, index) => route.layoutTreePositions[index] === rootPosition);
@@ -83,6 +91,8 @@ function rootRouteBoundaryPath(
   fallbackPath: string | null | undefined,
 ): string | null {
   if (!route) return null;
+  // Boundary arrays are aligned with layouts, so the first entry is app/'s.
+  if (hasAppDirectoryLayout(route)) return boundaryPaths?.[0] ?? null;
   if (route.pattern === "/") return fallbackPath ?? null;
   // Boundary arrays are ordered from the root layout outward by the route
   // scanner, so the first entry is the root boundary for non-root routes.
@@ -682,10 +692,7 @@ export function buildAppRscManifestCode(
   const rootLayoutVars = rootRouteLayoutPaths(rootRoute).map((layoutPath) =>
     imports.getImportVar(layoutPath),
   );
-  // Tree position 0 is the app directory itself.
-  const hasAppRootLayout = options.routes.some(
-    (route) => route.layouts.length > 0 && route.layoutTreePositions[0] === 0,
-  );
+  const hasAppRootLayout = options.routes.some(hasAppDirectoryLayout);
   const globalErrorVar = options.globalErrorPath
     ? imports.getImportVar(options.globalErrorPath)
     : null;

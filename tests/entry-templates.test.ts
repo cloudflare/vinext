@@ -16,7 +16,10 @@ import {
   toLinkPrefetchRoute,
   toLinkPrefetchRoutes,
 } from "../packages/vinext/src/entries/app-browser-entry.js";
-import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
+import {
+  buildAppRscManifestCode,
+  rootBoundaryRouteFiles,
+} from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import {
   isAppInterceptRenderedDynamically,
   isAppPageRouteRenderedDynamically,
@@ -1490,6 +1493,50 @@ describe("App Router generated manifest construction", () => {
     expect(routeEntry).toContain("errors: [null, null]");
     expect(routeEntry).toContain("__loadErrors: [load_");
     expect(routeEntry).toContain("errorTreePositions: [0,1]");
+  });
+
+  it("keeps a grouped root page's layout and not-found out of the root boundaries", () => {
+    const routes = [
+      {
+        pattern: "/",
+        patternParts: [],
+        pagePath: "/tmp/test/app/(marketing)/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx", "/tmp/test/app/(marketing)/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null, null],
+        notFoundPath: "/tmp/test/app/(marketing)/not-found.tsx",
+        notFoundPaths: ["/tmp/test/app/not-found.tsx", "/tmp/test/app/(marketing)/not-found.tsx"],
+        forbiddenPath: null,
+        forbiddenPaths: [null, null],
+        unauthorizedPath: null,
+        unauthorizedPaths: [null, null],
+        routeSegments: ["(marketing)"],
+        templateTreePositions: [],
+        layoutTreePositions: [0, 1],
+        isDynamic: false,
+        params: [],
+        siblingIntercepts: [],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({ routes, metadataRoutes: [], globalErrorPath: null });
+    const imports = manifest.imports.join("\n");
+
+    expect(rootBoundaryRouteFiles(routes)).toEqual([
+      "/tmp/test/app/layout.tsx",
+      "/tmp/test/app/not-found.tsx",
+    ]);
+    expect(manifest.rootLayoutVars).toHaveLength(1);
+    expect(imports).toContain(
+      `import * as ${manifest.rootLayoutVars[0]} from "/tmp/test/app/layout.tsx";`,
+    );
+    expect(imports).toContain(
+      `import * as ${manifest.rootNotFoundVar} from "/tmp/test/app/not-found.tsx";`,
+    );
   });
 
   it("derives route-miss root boundaries when the app has no root page", () => {
