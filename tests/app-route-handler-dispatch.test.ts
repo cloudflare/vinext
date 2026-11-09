@@ -594,6 +594,7 @@ describe("app route handler dispatch", () => {
       pathname: string;
       pattern: string;
       renderNotFound?: () => Promise<Response>;
+      skipStaticParamsValidation?: boolean;
     }) {
       const handlerCalls: unknown[] = [];
       const renderNotFound = vi.fn(
@@ -631,6 +632,7 @@ describe("app route handler dispatch", () => {
         },
         scheduleBackgroundRegeneration() {},
         searchParams: new URLSearchParams(),
+        skipStaticParamsValidation: options.skipStaticParamsValidation,
       });
       return { handlerCalls, renderNotFound, response };
     }
@@ -695,6 +697,20 @@ describe("app route handler dispatch", () => {
         pattern: "/x/:__proto__",
       });
       expect((await unlisted.response).status).toBe(404);
+    });
+
+    it("does not run generateStaticParams again for params routing admitted", async () => {
+      const generateStaticParams = vi.fn(() => [{ slug: "listed" }]);
+      const admitted = dispatchClosedRoute({
+        generateStaticParams,
+        params: { slug: "listed" },
+        pathname: "/posts/listed",
+        pattern: "/posts/:slug",
+        skipStaticParamsValidation: true,
+      });
+      expect((await admitted.response).status).toBe(200);
+      expect(admitted.handlerCalls).toEqual([{ slug: "listed" }]);
+      expect(generateStaticParams).not.toHaveBeenCalled();
     });
 
     it("runs generateStaticParams with the route's fetchCache before an auto-OPTIONS response", async () => {

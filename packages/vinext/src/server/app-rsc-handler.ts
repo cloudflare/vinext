@@ -2689,10 +2689,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
     }
     // Draft mode skips the check, as each dispatch does.
-    const skipsAdmission = routedRoute.routeHandler
-      ? isDraftModeRequest(request, options.draftModeSecret) || isDraftModeEnabled()
-      : isActiveDraftMode();
-    if (!skipsAdmission) {
+    if (!isActiveDraftMode()) {
       const isDynamicParamsMiss = options.isDynamicParamsMiss;
       if (
         await runStaticParamsCheckDetached(() =>

@@ -1,3 +1,5 @@
+// Used by E2E: nextjs-compat/segment-cache-dynamic-params.spec.ts. next.config
+// has a fallback rewrite for this route's unlisted params.
 export const dynamicParams = false;
 
 export function generateStaticParams() {

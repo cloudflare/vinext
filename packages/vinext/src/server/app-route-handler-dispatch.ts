@@ -343,7 +343,8 @@ async function dispatchAppRouteHandlerImpl(
   // Next.js rejects params outside generateStaticParams before it resolves
   // the method, and falls through to the unmatched-URL 404. Draft mode
   // skips the check. This build only caches admitted params, so a cache read
-  // runs first and spares a hit the generateStaticParams call. An entry a
+  // runs first and spares a hit the generateStaticParams call, unless routing
+  // already ran it for the app's fallback rewrites. An entry a
   // previous deploy stored under a pinned build ID is served without the
   // check, as docs/reference/differences.mdx notes.
   const rejectUnlistedParams = async (): Promise<Response | null> => {
