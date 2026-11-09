@@ -160,8 +160,19 @@ function runStaticParamsGeneration<T>(
   let afterTaskError: { error: unknown } | null = null;
   let generatorContext: UnifiedRequestContext | undefined;
   const generate = async () => {
-    // Next.js' generate-static-params work unit, where io() resolves.
-    const result = await workUnitAsyncStorage.run({ type: "generate-static-params" }, fn);
+    let result: T;
+    try {
+      // Next.js' generate-static-params work unit, where io() resolves.
+      result = await workUnitAsyncStorage.run({ type: "generate-static-params" }, fn);
+    } catch (error) {
+      // Next.js never runs a failed generator's after() callbacks. Drop them,
+      // so the request's waitUntil doesn't wait on them.
+      if (generatorContext) {
+        generatorContext.afterContext.callbacks.length = 0;
+        void closeAfterResponse(generatorContext);
+      }
+      throw error;
+    }
     if (generatorContext) {
       await closeAfterResponse(generatorContext);
       while (afterPromises.length > 0) {

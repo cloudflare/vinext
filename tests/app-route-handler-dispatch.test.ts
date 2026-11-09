@@ -948,6 +948,37 @@ describe("app route handler dispatch", () => {
       }
     });
 
+    it("drops a failed generateStaticParams' after() callbacks, as Next.js does", async () => {
+      const waitUntil: Promise<unknown>[] = [];
+      const callback = vi.fn();
+      const ctx = createRequestContext({
+        executionContext: { waitUntil: (promise) => waitUntil.push(promise) },
+      });
+      const error = await runWithRequestContext(ctx, () => {
+        const closed = dispatchClosedRoute({
+          generateStaticParams() {
+            after(callback);
+            throw new Error("generation failed");
+          },
+          params: { slug: "unlisted" },
+          pathname: "/posts/unlisted",
+          pattern: "/posts/:slug",
+        });
+        return closed.response.then(
+          () => null,
+          (reason: unknown) => (reason as Error).message,
+        );
+      });
+      expect(error).toBe("generation failed");
+      // Nothing the generator registered keeps the request waiting.
+      const settled = await Promise.race([
+        Promise.all(waitUntil).then(() => true),
+        new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+      ]);
+      expect(settled).toBe(true);
+      expect(callback).not.toHaveBeenCalled();
+    });
+
     it("keeps generateStaticParams' cacheForRequest values out of the request", async () => {
       const readSlug = cacheForRequest(() => ({ slug: "unlisted" }));
       const ctx = createRequestContext();
