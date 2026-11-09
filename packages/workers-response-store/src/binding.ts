@@ -21,12 +21,12 @@ export type ResponseStorePutOptions = {
   /** @internal Collapse overlapping framework writes for the same cache key. */
   coalesce?: boolean;
   /**
-   * @internal The revision a stale read returned (`X-Workers-Response-Store-Revision`)
-   * that this write refreshes. While another refresh of that revision is published and
-   * fresh, and the key hasn't been invalidated or purged since, the write is dropped instead
-   * of replacing (and purging) it, and returns
+   * @internal The revision a stale read or a miss returned
+   * (`X-Workers-Response-Store-Revision`) that this write refreshes or fills. While another
+   * write of that revision is published and fresh, and the key hasn't been invalidated or
+   * purged since, the write is dropped instead of replacing (and purging) it, and returns
    * `{ backingStoreUpdated: false, edgePurgeAccepted: false }`. A value that isn't a
-   * positive integer is ignored.
+   * non-negative integer is ignored.
    */
   replacesRevision?: number;
   /**
@@ -316,6 +316,18 @@ const MISS_HEADERS = {
   "Content-Type": "text/plain; charset=utf-8",
   "X-Workers-Response-Store": "MISS",
 };
+
+// A miss carries the revision it read, 0 for none, so a write filling it can pass it as
+// `replacesRevision`.
+function missResponse(revision?: number): Response {
+  return new Response("Workers Response Store miss", {
+    status: 404,
+    headers:
+      revision === undefined
+        ? MISS_HEADERS
+        : { ...MISS_HEADERS, "X-Workers-Response-Store-Revision": String(revision) },
+  });
+}
 
 const BACKGROUND_REVALIDATION_LEASE_MS = 30_000;
 const CACHE_PURGE_BATCH_SIZE = 100;
@@ -756,6 +768,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
   private async readR2Metadata(cacheKey: CacheKey): Promise<{
     entry: StoredEntry | null;
+    missRevision?: number;
     object?: R2ObjectBody;
   }> {
     const object = await this.env.CACHE_BODIES.get(this.r2ObjectKey(cacheKey.keyHash));
@@ -763,11 +776,22 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     if (!entry && object) {
       await object.body.cancel();
     }
-    return { entry, ...(entry && object ? { object } : {}) };
+    // Only a read of R2 knows the revision it missed: none, or a tombstone's.
+    const missRevision = !object
+      ? 0
+      : !entry && object.customMetadata?.tombstoned === "1"
+        ? metadataInteger(object.customMetadata.latestRevision)
+        : undefined;
+    return {
+      entry,
+      ...(!entry && missRevision !== undefined ? { missRevision } : {}),
+      ...(entry && object ? { object } : {}),
+    };
   }
 
   private async readR2MetadataCached(cacheKey: CacheKey): Promise<{
     entry: StoredEntry | null;
+    missRevision?: number;
     object?: R2ObjectBody;
   }> {
     const readKey = this.entryReadKey(cacheKey.keyHash);
@@ -1278,7 +1302,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const entry = r2Read.entry;
     const expectedR2Etag = r2Read.object?.etag;
     if (!entry) {
-      return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+      return missResponse(r2Read.missRevision);
     }
 
     const now = Date.now();
@@ -1311,7 +1335,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     await r2Read?.object?.body.cancel().catch(() => {});
     // The writer asked for a miss instead of a regeneration once the entry expires.
     if (now >= entry.swrUntil && entry.expiryBehavior === "miss") {
-      return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+      return missResponse(entry.activeRevision);
     }
     const metadata = this.getMetadata(keyHash);
     let regenerated: StoreResult;
@@ -1332,7 +1356,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         now,
       );
       if (!regeneration) {
-        return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+        return missResponse();
       }
       regenerated = await this.regenerateEntry(
         metadata,
@@ -1391,7 +1415,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         Number.isFinite(tagExpiration.expiration));
     const replacesRevision =
       Number.isSafeInteger(options.replacesRevision) &&
-      options.replacesRevision! > 0 &&
+      options.replacesRevision! >= 0 &&
       validTagExpiration
         ? options.replacesRevision
         : undefined;

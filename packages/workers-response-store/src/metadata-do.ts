@@ -1157,10 +1157,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
         metadata.expiryBehavior === "miss" ? "miss" : null,
         JSON.stringify(metadata.cacheTags),
-        // Only a revision the key has reached is one this write can have replaced.
-        replaces !== undefined &&
-          current.active_revision !== null &&
-          replaces.revision <= current.active_revision
+        // Only a revision the key has reached is one this write can have replaced; 0 is a
+        // miss of a key without one.
+        replaces !== undefined && replaces.revision <= (current.active_revision ?? 0)
           ? replaces.revision
           : null,
         keyHash,
