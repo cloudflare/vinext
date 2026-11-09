@@ -30,7 +30,7 @@ Set `PORT` and `HOST` to change the default bind address. Unlike Next.js standal
 
 ### Graceful shutdown
 
-Like `next start`, the Node server (`vinext start`, standalone output, and custom entries that call `startProdServer`) shuts down gracefully on `SIGTERM` and `SIGINT`. It stops accepting new connections, lets in-flight requests finish, and waits for pending `after()` callbacks before it exits. Give your platform a drain period long enough for that work, such as Kubernetes' `terminationGracePeriodSeconds`. To handle the signals yourself, set `NEXT_MANUAL_SIG_HANDLE=true`; a custom entry that already closes the server on these signals should drop its handlers or set it.
+Like `next start`, the Node server (`vinext start`, standalone output, and custom entries that call `startProdServer`) shuts down gracefully on `SIGTERM` and `SIGINT`. It stops accepting new connections, lets in-flight requests finish, and waits for background work such as `after()` callbacks, ISR regeneration and cache writes before it exits. Give your platform a drain period long enough for that work, such as Kubernetes' `terminationGracePeriodSeconds`. To handle the signals yourself, set `NEXT_MANUAL_SIG_HANDLE=true`; a custom entry that already closes the server on these signals should drop its handlers or set it.
 
 In Pages Router API routes, `res.revalidate()` sends its revalidation request to the server's own address. During shutdown the server no longer accepts connections, so a `res.revalidate()` call made then fails.
 
