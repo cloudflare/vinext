@@ -109,16 +109,19 @@ export function hasNonStaticAppRouteHandlerMethods(handler: RouteHandlerModule):
  * manifest entry. Dev writes that entry from `generateStaticParams`.
  * A production build leaves out routes that bail out of static generation,
  * and lists a route without `generateStaticParams` only when it is static.
- * Non-static methods bail out only while a generated path prerenders, so a
- * route whose generator returns no params stays listed.
  * Edge routes never prerender, so they have no entry.
+ *
+ * Non-static methods bail out only while a generated path prerenders, so
+ * Next.js still lists such a route when its generator returns no params.
+ * vinext doesn't run the generator per request to find that case: as soon
+ * as it lists one param, Next.js serves every param too.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/index.ts
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-route.ts
  */
 export function resolveAppRouteHandlerStaticParamsEnforcement(
   handler: AppRouteHandlerModule,
   isProduction: boolean,
-): "enforce" | "enforce-when-none-generated" | "skip" {
+): "enforce" | "skip" {
   if (handler.dynamicParams !== false) return "skip";
   const hasGenerateStaticParams = typeof handler.generateStaticParams === "function";
   if (!isProduction) return hasGenerateStaticParams ? "enforce" : "skip";
@@ -128,7 +131,7 @@ export function resolveAppRouteHandlerStaticParamsEnforcement(
   if (!hasGenerateStaticParams) {
     return handler.dynamic === "force-static" || handler.dynamic === "error" ? "enforce" : "skip";
   }
-  return hasNonStaticAppRouteHandlerMethods(handler) ? "enforce-when-none-generated" : "enforce";
+  return hasNonStaticAppRouteHandlerMethods(handler) ? "skip" : "enforce";
 }
 
 export function resolveAppRouteHandlerMethod(

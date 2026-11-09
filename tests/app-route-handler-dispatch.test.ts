@@ -652,44 +652,32 @@ describe("app route handler dispatch", () => {
     }
 
     // Verified against next@16.2.7 `next build` / `next start`: a POST export
-    // bails out only while a generated path prerenders.
-    it("404s every param of a mixed-method route whose generator returns none", async () => {
+    // takes the route out of static generation once it lists a param.
+    it("serves a mixed-method route without running its generator in production", async () => {
       const POST = () => new Response("post");
-      const emptyGenerator = vi.fn(() => []);
-      const empty = dispatchClosedRoute({
-        generateStaticParams: emptyGenerator,
-        handlerConfig: { POST },
-        params: { slug: "any" },
-        pathname: "/posts/any",
-        pattern: "/posts/:slug",
-      });
-      expect((await empty.response).status).toBe(404);
-      expect(empty.handlerCalls).toEqual([]);
-      expect(emptyGenerator).toHaveBeenCalledTimes(1);
-
       const generator = vi.fn(() => [{ slug: "listed" }]);
-      const generated = dispatchClosedRoute({
+      const production = dispatchClosedRoute({
         generateStaticParams: generator,
         handlerConfig: { POST },
         params: { slug: "unlisted" },
         pathname: "/posts/unlisted",
         pattern: "/posts/:slug",
       });
-      expect((await generated.response).status).toBe(200);
-      expect(generated.handlerCalls).toEqual([{ slug: "unlisted" }]);
-      expect(generator).toHaveBeenCalledTimes(1);
+      expect((await production.response).status).toBe(200);
+      expect(production.handlerCalls).toEqual([{ slug: "unlisted" }]);
+      expect(generator).not.toHaveBeenCalled();
 
-      // Next.js skips a row with an empty required segment, so it lists no
-      // path either.
-      const emptySegment = dispatchClosedRoute({
-        generateStaticParams: () => [{ slug: "" }],
+      // Dev checks every dynamicParams = false route with generateStaticParams.
+      const development = dispatchClosedRoute({
+        generateStaticParams: generator,
         handlerConfig: { POST },
-        params: { slug: "any" },
-        pathname: "/posts/any",
+        isProduction: false,
+        params: { slug: "unlisted" },
+        pathname: "/posts/unlisted",
         pattern: "/posts/:slug",
       });
-      expect((await emptySegment.response).status).toBe(404);
-      expect(emptySegment.handlerCalls).toEqual([]);
+      expect((await development.response).status).toBe(404);
+      expect(development.handlerCalls).toEqual([]);
     });
 
     it("admits a listed param named __proto__", async () => {
@@ -755,31 +743,24 @@ describe("app route handler dispatch", () => {
       });
     });
 
-    it.each([
-      { name: "a GET-only route", handlerConfig: {} },
-      { name: "a mixed-method route", handlerConfig: { POST: () => new Response("post") } },
-    ])(
-      "runs generateStaticParams without the request's root params on $name",
-      async ({ handlerConfig }) => {
-        const result = await runWithRequestContext(
-          createRequestContext({ rootParams: { lang: "fr" } }),
-          async () => {
-            const closed = dispatchClosedRoute({
-              async generateStaticParams() {
-                const lang = await getRootParam("lang");
-                return lang ? [{ lang }] : [];
-              },
-              handlerConfig,
-              params: { lang: "fr" },
-              pathname: "/fr/data",
-              pattern: "/:lang/data",
-            });
-            return { status: (await closed.response).status, handlerCalls: closed.handlerCalls };
-          },
-        );
-        expect(result).toEqual({ status: 404, handlerCalls: [] });
-      },
-    );
+    it("runs generateStaticParams without the request's root params", async () => {
+      const result = await runWithRequestContext(
+        createRequestContext({ rootParams: { lang: "fr" } }),
+        async () => {
+          const closed = dispatchClosedRoute({
+            async generateStaticParams() {
+              const lang = await getRootParam("lang");
+              return lang ? [{ lang }] : [];
+            },
+            params: { lang: "fr" },
+            pathname: "/fr/data",
+            pattern: "/:lang/data",
+          });
+          return { status: (await closed.response).status, handlerCalls: closed.handlerCalls };
+        },
+      );
+      expect(result).toEqual({ status: 404, handlerCalls: [] });
+    });
 
     it("keeps generateStaticParams' fetch state out of the request", async () => {
       const ctx = createRequestContext();
@@ -1031,7 +1012,7 @@ describe("app route handler dispatch", () => {
       return hits;
     }
 
-    it("memoizes a mixed-method route generator's repeated fetches, as a GET-only one does", async () => {
+    it("memoizes a route generator's repeated fetches", async () => {
       const hits = await withCountingServer(async (url) => {
         const response = await runWithRequestContext(
           createRequestContext(),
@@ -1042,13 +1023,12 @@ describe("app route handler dispatch", () => {
                 await (await fetch(url)).text();
                 return [{ slug: "listed" }];
               },
-              handlerConfig: { POST: () => new Response("post") },
               params: { slug: "unlisted" },
               pathname: "/posts/unlisted",
               pattern: "/posts/:slug",
             }).response,
         );
-        expect(response.status).toBe(200);
+        expect(response.status).toBe(404);
       });
       expect(hits).toBe(1);
     });
