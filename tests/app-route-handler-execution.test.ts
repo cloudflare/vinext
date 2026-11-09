@@ -1089,6 +1089,71 @@ describe("app route handler execution helpers", () => {
     expect(state.explicitResponseCachePolicy === true).toBe(finalPolicy !== undefined);
   });
 
+  it.each([false, true])(
+    "records a redirect after a request read as dynamic (read: %s)",
+    async (readRequest) => {
+      const request = new Request("https://example.com/api/redirect");
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        request,
+        JSON.stringify({ buildId: "build-a", routes: {}, version: 1 }),
+        "build-a",
+        true,
+      );
+      const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+      state.route = { kind: "app-route", pattern: "/api/redirect" };
+      const dynamicUsage = createDynamicUsageState();
+
+      const response = await runWithExecutionContext(context, () =>
+        executeAppRouteHandler({
+          buildPageCacheTags() {
+            return [];
+          },
+          cleanPathname: "/api/redirect",
+          clearRequestContext() {},
+          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+          executionContext: null,
+          getAndClearPendingCookies() {
+            return [];
+          },
+          getCollectedFetchTags() {
+            return [];
+          },
+          getDraftModeCookieHeader() {
+            return null;
+          },
+          handler: { dynamic: "auto", revalidate: 60 },
+          handlerFn() {
+            if (readRequest) dynamicUsage.markDynamicUsage();
+            throw { digest: "NEXT_REDIRECT;replace;/target;307;" };
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return pathname;
+          },
+          async isrSet() {},
+          markDynamicUsage: dynamicUsage.markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: null,
+          reportRequestError() {},
+          request,
+          revalidateSeconds: 60,
+          routePattern: "/api/redirect",
+          setHeadersAccessPhase() {
+            return "render";
+          },
+        }),
+      );
+
+      expect(response.status).toBe(307);
+      expect(state.outcome).toEqual(
+        readRequest ? { cacheable: false, dynamicUsage: true } : undefined,
+      );
+    },
+  );
+
   it("falls back to private streaming and defers cleanup when completion times out", async () => {
     const request = new Request("https://example.com/api/large", {
       headers: { Accept: "*/*" },
@@ -1323,6 +1388,146 @@ describe("app route handler execution helpers", () => {
     },
   );
 
+  it("purges CDN tags queued while the completed response body is produced", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const cdnCalls: string[][] = [];
+    let cdnCallsAtClear: string[][] | undefined;
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), {
+        async revalidateTag(tags: string | string[]) {
+          cdnCalls.push(Array.isArray(tags) ? tags : [tags]);
+        },
+      }),
+    );
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      executeAppRouteHandler({
+        buildPageCacheTags(pathname, extraTags) {
+          return [pathname, ...extraTags];
+        },
+        cleanPathname: "/api/body-revalidate",
+        clearRequestContext() {
+          cdnCallsAtClear = [...cdnCalls];
+        },
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        executionContext: null,
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handler: { dynamic: "auto", revalidate: 60 },
+        handlerFn() {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              async pull(controller) {
+                // Run after the handler's eager drain, while completion reads.
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                revalidateTag("from-body");
+                controller.enqueue(new TextEncoder().encode("done"));
+                controller.close();
+              },
+            }),
+          );
+        },
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {},
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        params: {},
+        reportRequestError() {},
+        request: new Request("https://example.com/api/body-revalidate"),
+        revalidateSeconds: 60,
+        routePattern: "/api/body-revalidate",
+        setHeadersAccessPhase,
+      }),
+    );
+
+    await expect(response.text()).resolves.toBe("done");
+    expect(cdnCallsAtClear).toEqual([["from-body"]]);
+  });
+
+  it("purges CDN tags queued by a response body that fails during completion", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const cdnCalls: string[][] = [];
+    let cdnCallsAtClear: string[][] | undefined;
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), {
+        async revalidateTag(tags: string | string[]) {
+          cdnCalls.push(Array.isArray(tags) ? tags : [tags]);
+        },
+      }),
+    );
+
+    try {
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        executeAppRouteHandler({
+          buildPageCacheTags(pathname, extraTags) {
+            return [pathname, ...extraTags];
+          },
+          cleanPathname: "/api/body-fails",
+          clearRequestContext() {
+            cdnCallsAtClear = [...cdnCalls];
+          },
+          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+          executionContext: null,
+          getAndClearPendingCookies() {
+            return [];
+          },
+          getCollectedFetchTags() {
+            return [];
+          },
+          getDraftModeCookieHeader() {
+            return null;
+          },
+          handler: { dynamic: "auto", revalidate: 60 },
+          handlerFn() {
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                async pull(controller) {
+                  // Run after the handler's eager drain, while completion reads.
+                  await new Promise((resolve) => setTimeout(resolve, 0));
+                  revalidateTag("from-failed-body");
+                  controller.error(new Error("body failed"));
+                },
+              }),
+            );
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          async isrSet() {},
+          markDynamicUsage: dynamicUsage.markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: {},
+          reportRequestError() {},
+          request: new Request("https://example.com/api/body-fails"),
+          revalidateSeconds: 60,
+          routePattern: "/api/body-fails",
+          setHeadersAccessPhase,
+        }),
+      );
+
+      expect(response.status).toBe(500);
+      expect(cdnCallsAtClear).toEqual([["from-failed-body"]]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("skips cache writes and marks the route dynamic when a revalidating handler fetches with no-store", async () => {
     // Regression test for the patched fetch's explicit no-store branch
     // calling markDynamicUsage() (upstream patch-fetch parity, where
@@ -1458,7 +1663,7 @@ describe("app route handler execution helpers", () => {
     });
 
     expect(redirectResponse.status).toBe(308);
-    expect(redirectResponse.headers.get("location")).toBe("https://example.com/target");
+    expect(redirectResponse.headers.get("location")).toBe("/target");
     expect(redirectResponse.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );

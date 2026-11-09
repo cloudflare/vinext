@@ -42,9 +42,10 @@ vinext({ cache: responseStoreAdapter({ shards: 4 }) });
 - `/dynamic-segment/[slug]` verifies that a dynamic-segment route without `generateStaticParams`
   bypasses response-cache lookup, as in Next.js.
 - `/dynamic` and `/vary` verify that unsafe completed responses bypass shared storage.
+- `/vary-cookie` verifies that a `next.config` `Vary: Cookie` policy keeps sessions apart.
 
 Canonical App Router RSC requests use the same response-stage transport:
 
 ```sh
-curl 'https://response-store-demo.vinext.workers.dev/cached/intro.rsc?_rsc=' -H 'Accept: text/x-component' -H 'RSC: 1'
+curl 'https://response-store-demo.vinext.workers.dev/cached/intro?_rsc=' -H 'Accept: text/x-component' -H 'RSC: 1'
 ```

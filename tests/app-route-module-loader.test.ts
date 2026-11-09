@@ -184,11 +184,13 @@ describe("ensureAppRouteModulesLoaded", () => {
     const slotNotFound = { default: () => null, metadata: { title: "slot not found" } };
     const nestedSlotLayout = { default: () => null, revalidate: 30 };
     const nestedSlotLoading = { default: () => null };
+    const nestedSlotNotFound = { default: () => null };
     const __loadPage = vi.fn(async () => slotPage);
     const __loadLayout = vi.fn(async () => slotLayout);
     const __loadNotFound = vi.fn(async () => slotNotFound);
     const __loadConfigLayout = vi.fn(async () => nestedSlotLayout);
     const __loadSlotLoading = vi.fn(async () => nestedSlotLoading);
+    const __loadSlotNotFound = vi.fn(async () => nestedSlotNotFound);
     const route: LazyLoadableRoute = {
       slots: {
         "@modal": {
@@ -196,11 +198,13 @@ describe("ensureAppRouteModulesLoaded", () => {
           layout: null,
           configLayouts: [null],
           loadings: [null],
+          notFounds: [null],
           __loadPage,
           __loadLayout,
           __loadNotFound,
           __loadConfigLayouts: [__loadConfigLayout],
           __loadLoadings: [__loadSlotLoading],
+          __loadNotFounds: [__loadSlotNotFound],
         },
       },
     };
@@ -212,25 +216,30 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(route.slots?.["@modal"].notFound).toBe(slotNotFound);
     expect(route.slots?.["@modal"].configLayouts).toEqual([nestedSlotLayout]);
     expect(route.slots?.["@modal"].loadings).toEqual([nestedSlotLoading]);
+    expect(route.slots?.["@modal"].notFounds).toEqual([nestedSlotNotFound]);
   });
 });
 
 describe("loadAppInterceptLayouts", () => {
-  it("hydrates intercept layouts from their loaders and returns the array", async () => {
+  it("hydrates intercept layouts, loadings and not-founds from their loaders and returns the layouts", async () => {
     const layoutA = { default: () => null };
     const layoutB = { default: () => null };
     const loading = { default: () => null };
+    const notFound = { default: () => null };
     const intercept = {
       interceptLayouts: [null, null],
       __loadInterceptLayouts: [async () => layoutA, async () => layoutB],
       interceptLoadings: [null],
       __loadInterceptLoadings: [async () => loading],
+      interceptNotFounds: [null],
+      __loadInterceptNotFounds: [async () => notFound],
     };
 
     const result = await loadAppInterceptLayouts(intercept);
 
     expect(intercept.interceptLayouts).toEqual([layoutA, layoutB]);
     expect(intercept.interceptLoadings).toEqual([loading]);
+    expect(intercept.interceptNotFounds).toEqual([notFound]);
     expect(result).toBe(intercept.interceptLayouts);
   });
 
@@ -356,7 +365,81 @@ describe("lazy hydration request-context isolation", () => {
 
     expect(moduleScopeExecutionContext).toBeNull();
     expect(moduleScopeAfter).toBe("`after()` was called outside a request scope");
-    // Nothing was attached to the first request's lifecycle.
-    expect(waitUntil).not.toHaveBeenCalled();
+    // The module attached nothing to the request's lifecycle. The only
+    // waitUntil() is the one keeping the shared load itself alive.
+    expect(waitUntil).toHaveBeenCalledOnce();
+  });
+});
+
+describe("lazy hydration request lifetime", () => {
+  function deferred<T>() {
+    let resolve: (value: T) => void = () => {};
+    let reject: (error: unknown) => void = () => {};
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  // workerd drops a canceled request's pending I/O, so a load shared with later
+  // requests must keep the request that started it alive until it settles.
+  it.each<[string, (load: () => Promise<unknown>) => unknown]>([
+    [
+      "route modules",
+      (load: () => Promise<unknown>) =>
+        ensureAppRouteModulesLoaded({ page: null, __loadPage: load } as LazyLoadableRoute),
+    ],
+    [
+      "intercept layouts",
+      (load: () => Promise<unknown>) =>
+        loadAppInterceptLayouts({
+          interceptLayouts: [null],
+          __loadInterceptLayouts: [load],
+          __loadState: { interceptLayoutsLoading: null },
+        }),
+    ],
+    [
+      "an intercept page",
+      (load: () => Promise<unknown>) =>
+        loadAppInterceptPage({
+          page: null,
+          __pageLoader: load,
+          __loadState: { interceptLayoutsLoading: null },
+        }),
+    ],
+  ])("keeps the request that starts loading %s alive until it settles", async (_label, start) => {
+    const load = deferred<unknown>();
+    const creator = { waitUntil: vi.fn() };
+    const loading = runWithExecutionContext(creator, () => start(() => load.promise));
+
+    expect(creator.waitUntil).toHaveBeenCalledOnce();
+    let kept = false;
+    void creator.waitUntil.mock.calls[0][0].then(() => {
+      kept = true;
+    });
+    await Promise.resolve();
+    expect(kept).toBe(false);
+
+    load.reject(new Error("chunk load failed"));
+    await expect(loading).rejects.toThrow("chunk load failed");
+    // waitUntil() only extends the request; it never sees the rejection.
+    await creator.waitUntil.mock.calls[0][0];
+    expect(kept).toBe(true);
+  });
+
+  it("does not extend a request that joins a load already in flight", async () => {
+    const load = deferred<unknown>();
+    const route: LazyLoadableRoute = { page: null, __loadPage: () => load.promise };
+    const creator = { waitUntil: vi.fn() };
+    const joiner = { waitUntil: vi.fn() };
+
+    const first = runWithExecutionContext(creator, () => ensureAppRouteModulesLoaded(route));
+    const second = runWithExecutionContext(joiner, () => ensureAppRouteModulesLoaded(route));
+    load.resolve({ default: () => null });
+    await Promise.all([first, second]);
+
+    expect(creator.waitUntil).toHaveBeenCalledOnce();
+    expect(joiner.waitUntil).not.toHaveBeenCalled();
   });
 });

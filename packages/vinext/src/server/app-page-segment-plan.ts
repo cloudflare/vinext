@@ -14,6 +14,8 @@ import type {
   AppPageTemplateEntry,
 } from "./app-page-route-wiring.js";
 import {
+  APP_PAGE_DEFAULT_SEGMENT_KEY,
+  APP_PAGE_SEGMENT_KEY,
   resolveAppPageRouteStateKey,
   resolveAppPageSemanticSegmentStateKey,
   resolveAppPageTemplateStateKey,
@@ -279,6 +281,18 @@ export function createAppPageSegmentPlan<
           identityKey: JSON.stringify(boundSegmentKeys),
           stateKey: boundSegmentKeys[index]!,
           treePosition,
+        });
+      }
+      // Like Next.js, the last segment keeps its own list, keyed by the page
+      // (or the default) it renders, so a slot page and a page in a child
+      // segment are two entries there instead of replacing each other.
+      if (semanticSegments.length > 0) {
+        const leafKey =
+          slotBinding.state === "default" ? APP_PAGE_DEFAULT_SEGMENT_KEY : APP_PAGE_SEGMENT_KEY;
+        semanticSegments.push({
+          identityKey: JSON.stringify([...boundSegmentKeys, leafKey]),
+          stateKey: leafKey,
+          treePosition: branchSegments.length,
         });
       }
     }

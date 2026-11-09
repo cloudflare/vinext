@@ -29,14 +29,17 @@ export const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".ico": "image/x-icon",
+  ".icns": "image/x-icns",
   ".jpeg": "image/jpeg",
   ".jpg": "image/jpeg",
   ".json": "application/json; charset=utf-8",
+  ".jxl": "image/jxl",
   ".map": "application/json; charset=utf-8",
   ".mp3": "audio/mpeg",
   ".mp4": "video/mp4",
   ".ogg": "audio/ogg",
   ".ogv": "video/ogg",
+  ".otf": "font/otf",
   ".pdf": "application/pdf",
   ".png": "image/png",
   ".rsc": "text/x-component",
@@ -55,6 +58,18 @@ export const CONTENT_TYPES: Record<string, string> = {
 /** Resolve a path's MIME type with case-insensitive extension matching. */
 export function contentTypeForPath(filePath: string): string {
   return CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
+}
+
+/**
+ * Default `Cache-Control` for a file in the client build directory. Hashed
+ * build assets never change at their URL. Every other file (`public/`) must be
+ * revalidated on each reuse, as Next.js's `send` serves it with `max-age=0`:
+ * middleware may admit it per request, so a shared cache must not reuse it
+ * without asking the origin. A `Cache-Control` set by middleware or config
+ * headers replaces this default.
+ */
+export function staticFileCacheControl(isHashed: boolean): string {
+  return isHashed ? "public, max-age=31536000, immutable" : "public, max-age=0";
 }
 
 /**
@@ -165,9 +180,7 @@ export class StaticFileCache {
 
       const ext = path.extname(relativePath);
       const contentType = contentTypeForPath(relativePath);
-      const cacheControl = isHashed
-        ? "public, max-age=31536000, immutable"
-        : "public, max-age=3600";
+      const cacheControl = staticFileCacheControl(isHashed);
       const etag =
         (isHashed && etagFromFilenameHash(relativePath, ext)) ||
         `W/"${fileInfo.size}-${Math.floor(fileInfo.mtimeMs / 1000)}"`;
@@ -222,24 +235,11 @@ export class StaticFileCache {
         entry.notModifiedHeaders["Vary"] = "Accept-Encoding";
       }
 
-      // Register under the URL pathname (leading /)
-      // NOTE: aliases below share the same entry by reference, so all header
-      // mutations (e.g. Vary above) must happen before registration.
+      // Register under the URL pathname (leading /). Like Next.js, a file is
+      // served only at its own pathname: `/about` does not serve `about.html`
+      // and `/blog` does not serve `blog/index.html`.
       const pathname = "/" + relativePath;
       entries.set(pathname, entry);
-
-      // Register HTML fallback aliases (same entry object — no duplication)
-      if (ext === ".html") {
-        if (relativePath.endsWith("/index.html")) {
-          const dirPath = "/" + relativePath.slice(0, -"/index.html".length);
-          if (dirPath !== "/") {
-            entries.set(dirPath, entry);
-          }
-        } else {
-          const withoutExt = "/" + relativePath.slice(0, -ext.length);
-          entries.set(withoutExt, entry);
-        }
-      }
     }
 
     // Third pass: buffer small files in memory for zero-syscall serving.
@@ -247,15 +247,8 @@ export class StaticFileCache {
     // res.end(buffer) is ~2x faster than createReadStream().pipe() because
     // it skips fd open/close and stream plumbing overhead.
     // Reads are chunked at 64 concurrent to avoid fd exhaustion on large projects.
-    // Deduplicate at the entry level first: HTML aliases share the same
-    // StaticFileEntry by reference, so entries.values() yields duplicates for
-    // paths like /about and /about.html. Deduping entries avoids iterating
-    // their variants multiple times on sites with many HTML pages.
     const toBuffer: FileVariant[] = [];
-    const seenEntries = new Set<StaticFileEntry>();
     for (const entry of entries.values()) {
-      if (seenEntries.has(entry)) continue;
-      seenEntries.add(entry);
       for (const variant of [entry.original, entry.br, entry.gz, entry.zst]) {
         if (!variant || variant.size > BUFFER_THRESHOLD) continue;
         toBuffer.push(variant);
@@ -288,6 +281,19 @@ export class StaticFileCache {
   }
 }
 
+const MANAGED_CHUNKS_SEGMENT = `${ASSET_PREFIX_URL_DIR}/chunks/`;
+const MANAGED_CSS_SEGMENT = `${ASSET_PREFIX_URL_DIR}/css/`;
+const MANAGED_WORKERS_SEGMENT = `${ASSET_PREFIX_URL_DIR}/workers/`;
+const MANAGED_MEDIA_SEGMENT = `${ASSET_PREFIX_URL_DIR}/media/`;
+const HASH_ONLY_BASENAME_RE = /^[A-Za-z0-9_-]{8}$/;
+// Worker entries and chunks: `<module-id-hash>-<content-hash>` (see
+// createWorkerFileNames).
+const WORKER_BASENAME_RE = /^[0-9a-f]{8}-[A-Za-z0-9_-]{8}$/;
+
+function isInManagedDir(normalizedPath: string, segment: string): boolean {
+  return normalizedPath.startsWith(segment) || normalizedPath.includes(`/${segment}`);
+}
+
 /**
  * Extract a stable weak ETag from a Vite hashed filename (e.g. `app-DqZc3R4n.js`).
  * The hash is a content hash computed by the bundler — deterministic across
@@ -300,6 +306,30 @@ export class StaticFileCache {
  */
 export function etagFromFilenameHash(relativePath: string, ext: string): string | null {
   const basename = path.basename(relativePath, ext);
+
+  // vinext's default client JS and CSS names are hash-only (`chunks/[hash].js`,
+  // `css/[hash].css`), and worker names put an opaque module id before the
+  // hash. Rolldown's 8-char base64url hash can itself contain `-`, so match the
+  // whole basename before the `name-<hash>` split below would take only a
+  // fragment of it. The length checks keep `name-<hash>` files off the
+  // path-normalization work.
+  if (basename.length === 8 && HASH_ONLY_BASENAME_RE.test(basename)) {
+    const normalizedPath = toSlash(relativePath);
+    if (
+      isInManagedDir(normalizedPath, MANAGED_CHUNKS_SEGMENT) ||
+      isInManagedDir(normalizedPath, MANAGED_CSS_SEGMENT)
+    ) {
+      return `W/"${basename}"`;
+    }
+  }
+  if (
+    basename.length === 17 &&
+    WORKER_BASENAME_RE.test(basename) &&
+    isInManagedDir(toSlash(relativePath), MANAGED_WORKERS_SEGMENT)
+  ) {
+    return `W/"${basename}"`;
+  }
+
   const lastDash = basename.lastIndexOf("-");
   if (lastDash !== -1 && lastDash !== basename.length - 1) {
     const suffix = basename.slice(lastDash + 1);
@@ -314,12 +344,7 @@ export function etagFromFilenameHash(relativePath: string, ext: string): string 
   // `_next/static/media/name.<sha256-8>.<ext>`. Restrict this alternate form
   // to that managed directory so arbitrary static files such as
   // `_next/static/config.deadbeef.json` cannot receive a stale hash ETag.
-  const normalizedPath = toSlash(relativePath);
-  const managedMediaSegment = `${ASSET_PREFIX_URL_DIR}/media/`;
-  const isManagedMedia =
-    normalizedPath.startsWith(managedMediaSegment) ||
-    normalizedPath.includes(`/${managedMediaSegment}`);
-  if (isManagedMedia) {
+  if (isInManagedDir(toSlash(relativePath), MANAGED_MEDIA_SEGMENT)) {
     const lastDot = basename.lastIndexOf(".");
     if (lastDot !== -1) {
       const suffix = basename.slice(lastDot + 1);

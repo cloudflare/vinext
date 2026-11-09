@@ -25,7 +25,7 @@ export function getRevalidateSecret(): string {
   return secret;
 }
 
-function safeEqual(first: string, second: string): boolean {
+export function safeEqual(first: string, second: string): boolean {
   if (first.length !== second.length) return false;
   let mismatch = 0;
   for (let index = 0; index < first.length; index++) {

@@ -307,6 +307,7 @@ describe("App Router route graph builder", () => {
         id: "slot:children:/nested",
         ownerTreePath: "/nested",
         state: "default",
+        synthetic: true,
       });
       const subBar = subroute.parallelSlots.find((slot) => slot.name === "bar");
       const subFoo = subroute.parallelSlots.find((slot) => slot.name === "foo");
@@ -361,6 +362,7 @@ describe("App Router route graph builder", () => {
         id: "slot:children:/nested",
         ownerTreePath: "/nested",
         state: "default",
+        synthetic: true,
       });
     });
   });
@@ -395,6 +397,7 @@ describe("App Router route graph builder", () => {
         id: "slot:children:/dashboard/team",
         ownerTreePath: "/dashboard/team",
         state: "default",
+        synthetic: true,
       });
       expect(
         graph.routeManifest.segmentGraph.slotBindings.get(
@@ -632,6 +635,11 @@ describe("App Router route graph builder", () => {
 
         // Children fall through to the sibling catch-all (not null → no hang).
         expect(baz.pagePath).toBe(canonical(appDir, "[...catchAll]/page.tsx"));
+        // Its children slot is active, but its segments name the slot page,
+        // not the catch-all, unlike a real page's.
+        expect(baz.childrenSlot).toMatchObject({ state: "active", synthetic: true });
+        expect(findRoute(graph.routes, "/foo").childrenSlot).toMatchObject({ state: "active" });
+        expect(findRoute(graph.routes, "/foo").childrenSlot?.synthetic).toBeUndefined();
 
         // The @slot slot resolves to the explicit @slot/baz page, not the
         // slot's catch-all.
@@ -1213,6 +1221,34 @@ describe("App Router route graph builder", () => {
         rootBoundaryId: "root-boundary:/",
       });
       expect(graph.routeManifest.segmentGraph.boundaries.has("boundary:error:/docs")).toBe(false);
+    });
+  });
+
+  it("exposes layoutless HTTP access boundary facts", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "not-found.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/not-found.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/forbidden.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/[id]/unauthorized.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/[id]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const { boundaries } = graph.routeManifest.segmentGraph;
+
+      expect(boundaries.get("boundary:notFound:/shop")).toEqual({
+        id: "boundary:notFound:/shop",
+        outcome: "notFound",
+        treePath: "/shop",
+        ownerLayoutId: null,
+        rootBoundaryId: "root-boundary:/",
+      });
+      expect(boundaries.get("boundary:forbidden:/shop")).toMatchObject({ ownerLayoutId: null });
+      expect(boundaries.get("boundary:unauthorized:/shop/[id]")).toMatchObject({
+        ownerLayoutId: null,
+      });
+      // The root boundary sits beside the root layout and keeps its owner.
+      expect(boundaries.get("boundary:notFound:/")).toMatchObject({ ownerLayoutId: "layout:/" });
     });
   });
 

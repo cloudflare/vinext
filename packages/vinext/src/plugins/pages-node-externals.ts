@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "pathslash";
-import { parseAst, type ESTree, type Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
 import {
   mayContainDynamicImport,
+  parseProgram,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   staticStringValue,
@@ -16,7 +17,10 @@ type PagesNodeExternalsOptions = {
   getRoot: () => string;
   getPagesDir: () => string | null;
   getAliases: () => Readonly<Record<string, string>>;
+  // Trailing `/*` tsconfig patterns, keyed by prefix.
   getTsconfigAliases: () => Readonly<Record<string, string>>;
+  // tsconfig keys without `*`, which match only the exact specifier.
+  getTsconfigExactAliases: () => Readonly<Record<string, string>>;
   getBundledPackages: () => ReadonlySet<string>;
   isEnabled: () => boolean;
 };
@@ -68,9 +72,9 @@ function matchesAlias(id: string, aliases: Readonly<Record<string, string>>): bo
 }
 
 function moduleDependencySpecifiers(code: string, id: string): string[] {
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code, { lang: scriptParserLanguage(id) ?? "jsx" });
+    ast = parseProgram(code, { lang: scriptParserLanguage(id) ?? "jsx" });
   } catch {
     return [];
   }
@@ -239,7 +243,8 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
 
         if (
           matchesAlias(id, options.getAliases()) ||
-          matchesAlias(id, options.getTsconfigAliases())
+          matchesAlias(id, options.getTsconfigAliases()) ||
+          Object.hasOwn(options.getTsconfigExactAliases(), id)
         ) {
           const aliased = await this.resolve(id, importer, { skipSelf: true });
           if (aliased && !aliased.external) {

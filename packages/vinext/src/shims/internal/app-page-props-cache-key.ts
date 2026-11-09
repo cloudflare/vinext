@@ -1,4 +1,3 @@
-const APP_PAGE_PROPS_CACHE_KEY_MARKER = Symbol.for("vinext.appPagePropsCacheKeyMarker");
 // Set by cache-runtime.ts on every wrapper returned by registerCachedFunction.
 const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
 const SERVER_REFERENCE_TAG = Symbol.for("react.server.reference");
@@ -16,20 +15,8 @@ const USE_CACHE_SERVER_REFERENCE_ID_RE = /#\$\$vinext_cache_[0-9a-f]{64}$/;
  * props before a server component is invoked.
  */
 export const APP_PAGE_USE_CACHE_MARKER = "$$isPage";
-
-export function markAppPagePropsForUseCache<T extends object>(props: T): T {
-  Object.defineProperty(props, APP_PAGE_PROPS_CACHE_KEY_MARKER, {
-    configurable: false,
-    enumerable: false,
-    value: true,
-    writable: false,
-  });
-  return props;
-}
-
-export function isMarkedAppPagePropsObject(value: object): boolean {
-  return Reflect.get(value, APP_PAGE_PROPS_CACHE_KEY_MARKER) === true;
-}
+/** Layout marker, matching Next.js's `$$isLayout` prop (create-component-tree.tsx). */
+const APP_LAYOUT_USE_CACHE_MARKER = "$$isLayout";
 
 /**
  * Whether `fn` is a transformed `"use cache"` function, including a bound
@@ -63,6 +50,16 @@ export function withUseCachePageMarker<T extends Record<string, unknown>>(
   return isUseCacheFunctionReference(fn) ? { ...props, [APP_PAGE_USE_CACHE_MARKER]: true } : props;
 }
 
+/** Layout components and their metadata resolvers retain framework params too. */
+export function withUseCacheLayoutMarker<T extends Record<string, unknown>>(
+  fn: unknown,
+  props: T,
+): T {
+  return isUseCacheFunctionReference(fn)
+    ? { ...props, [APP_LAYOUT_USE_CACHE_MARKER]: true }
+    : props;
+}
+
 /**
  * Whether `value` is page props carrying the `$$isPage` marker. Only plain
  * objects qualify: the framework always passes a plain props object, and
@@ -70,10 +67,32 @@ export function withUseCachePageMarker<T extends Record<string, unknown>>(
  * observed as a param access.
  */
 export function hasUseCachePageMarker(value: unknown): value is Record<string, unknown> {
+  return hasUseCacheSegmentMarker(value, APP_PAGE_USE_CACHE_MARKER);
+}
+
+export function hasUseCacheLayoutMarker(value: unknown): value is Record<string, unknown> {
+  return hasUseCacheSegmentMarker(value, APP_LAYOUT_USE_CACHE_MARKER);
+}
+
+/** Remove only this invocation's marker before Flight keys and decodes props. */
+export function withoutUseCacheSegmentMarker(
+  props: Record<string, unknown>,
+  isPage: boolean,
+): Record<string, unknown> {
+  const marker = isPage ? APP_PAGE_USE_CACHE_MARKER : APP_LAYOUT_USE_CACHE_MARKER;
+  if (props[marker] !== true) return props;
+  const { [marker]: _marker, ...segmentProps } = props;
+  return segmentProps;
+}
+
+function hasUseCacheSegmentMarker(
+  value: unknown,
+  marker: string,
+): value is Record<string, unknown> {
   if (value === null || typeof value !== "object") return false;
   const prototype = Object.getPrototypeOf(value);
   return (
     (prototype === Object.prototype || prototype === null) &&
-    (value as Record<string, unknown>)[APP_PAGE_USE_CACHE_MARKER] === true
+    (value as Record<string, unknown>)[marker] === true
   );
 }

@@ -15,6 +15,8 @@ const CDN_ORIGIN = "https://cdn.atlas-fixture.test";
 type SiteDocumentProps = {
   palette?: PaletteName | null;
   htmlLang: string;
+  route: string;
+  campaign: string | null;
 } & DocumentInitialProps;
 
 class SiteDocument extends Document<SiteDocumentProps> {
@@ -27,6 +29,8 @@ class SiteDocument extends Document<SiteDocumentProps> {
       ...initialProps,
       palette: paletteForPath(ctx.req?.url || "/"),
       htmlLang: htmlLangFor(zone.language),
+      route: ctx.asPath ?? "/",
+      campaign: typeof ctx.query.utm_campaign === "string" ? ctx.query.utm_campaign : null,
     };
   }
 
@@ -67,7 +71,11 @@ class SiteDocument extends Document<SiteDocumentProps> {
           />
         </Head>
 
-        <body data-stack="atlas" data-palette={this.props.palette ?? undefined}>
+        <body
+          data-stack="atlas"
+          data-palette={this.props.palette ?? undefined}
+          data-route={this.props.route}
+        >
           <script
             type="text/javascript"
             dangerouslySetInnerHTML={{
@@ -86,6 +94,15 @@ class SiteDocument extends Document<SiteDocumentProps> {
                 "  };",
                 "}",
               ].join("\n"),
+            }}
+          />
+          <script
+            type="text/javascript"
+            dangerouslySetInnerHTML={{
+              __html: `window.__ATLAS_CAMPAIGN__ = ${JSON.stringify(this.props.campaign).replace(
+                /<\/script/gi,
+                "<\\/script",
+              )};`,
             }}
           />
           <Main />

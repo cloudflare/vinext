@@ -257,6 +257,8 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("return __isrHtmlKey(pathname)");
     expect(code).toContain("buildAppPageRscKey(pathname)");
     expect(code).toContain("return __isrRscKey(pathname)");
+    expect(code).toContain("buildAppPageFallbackShellKey(pathname, suffix)");
+    expect(code).toContain("return __isrFallbackShellKey(pathname, suffix)");
     expect(code).toContain("writeAppPageEntry(key, data, metadata)");
     expect(code).toContain("return __isrSetPrerenderedAppPage(key, data, metadata)");
   });

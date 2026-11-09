@@ -72,6 +72,10 @@ function mockRes(): MockResponse {
   const headers: Record<string, string | string[]> = {};
   const res = {
     statusCode: 200,
+    // Edge API requests derive their abort signal from the response lifetime.
+    once() {
+      return res;
+    },
     _body: "",
     _headers: headers,
     _statusCode: 200,

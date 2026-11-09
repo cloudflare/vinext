@@ -46,6 +46,18 @@ async function fetchCacheHit(url: string): Promise<{ response: Response; html: s
   throw new Error(`Timed out waiting for an ISR cache hit from ${url}`);
 }
 
+function nextDataRouteUrl(html: string): unknown {
+  const match = html.match(/<script id="__NEXT_DATA__"[^>]*>([^<]*)<\/script>/);
+  if (!match) throw new Error("Missing __NEXT_DATA__");
+  return JSON.parse(match[1]).__vinext?.routeUrl;
+}
+
+function expectSharedStatusDocument(html: string, statusPathname: string, token: string): void {
+  expect(html).not.toContain(token);
+  expect(html).toContain(`<p id="as-path">${statusPathname}</p>`);
+  expect(nextDataRouteUrl(html)).toBe(statusPathname);
+}
+
 function expectStableStaticRouterState(html: string): void {
   expect(html).toContain('<p id="ready">false</p>');
   expect(html).toContain('<p id="navigation-params">null</p>');
@@ -165,5 +177,64 @@ describe("Pages ISR request query context in production", () => {
     expect(html).toContain('<p id="as-path">/dynamic/known</p>');
     expect(html).toContain('<p id="navigation-pathname">/dynamic/known</p>');
     expect(html).toContain('<p id="navigation-params">null</p>');
+  });
+
+  // Next.js caches a getStaticProps status page under its own pathname and
+  // renders it for that pathname, never for the request that missed:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+  it("does not store a missing request's path in the shared /404 document", async () => {
+    const token = "SHARED_404_PATH_TOKEN";
+    const victim = await fetch(`${baseUrl}${BASE_PATH}/share/${token}`);
+    expect(victim.status).toBe(404);
+    expectSharedStatusDocument(await victim.text(), "/404", token);
+
+    const attacker = await fetchCacheHit(`${baseUrl}${BASE_PATH}/missing/attacker`);
+    expect(attacker.response.status).toBe(404);
+    expectSharedStatusDocument(attacker.html, "/404", token);
+  });
+
+  it("does not apply the request that triggers /404 regeneration", async () => {
+    const renderedAt = (html: string) => html.match(/<p id="rendered-at">(\d+)<\/p>/)?.[1];
+    const cached = await fetchCacheHit(`${baseUrl}${BASE_PATH}/missing/seed`);
+    const cachedRenderedAt = renderedAt(cached.html);
+    expect(cachedRenderedAt).toBeDefined();
+
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const token = "STALE_404_PATH_TOKEN";
+    const trigger = await fetch(`${baseUrl}${BASE_PATH}/share/${token}`);
+    expect(trigger.status).toBe(404);
+    expect(trigger.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(await trigger.text()).not.toContain(token);
+
+    const deadline = Date.now() + 5_000;
+    let regenerated: string | undefined;
+    do {
+      const { html } = await fetchCacheHit(`${baseUrl}${BASE_PATH}/missing/attacker`);
+      if (renderedAt(html) !== cachedRenderedAt) regenerated = html;
+      else await new Promise((resolve) => setTimeout(resolve, 50));
+    } while (!regenerated && Date.now() < deadline);
+    if (!regenerated) throw new Error("Timed out waiting for the regenerated /404 document");
+    expectSharedStatusDocument(regenerated, "/404", token);
+  });
+
+  it("keeps a locale-prefixed miss out of the shared /404 document", async () => {
+    const token = "LOCALIZED_404_PATH_TOKEN";
+    const victim = await fetch(`${baseUrl}${BASE_PATH}/fr/share/${token}`);
+    expect(victim.status).toBe(404);
+    expectSharedStatusDocument(await victim.text(), "/404", token);
+
+    const attacker = await fetchCacheHit(`${baseUrl}${BASE_PATH}/fr/missing/attacker`);
+    expectSharedStatusDocument(attacker.html, "/404", token);
+  });
+
+  it("does not store the failing request's path in the shared /500 document", async () => {
+    const token = "SHARED_500_PATH_TOKEN";
+    const victim = await fetch(`${baseUrl}${BASE_PATH}/throws/${token}`);
+    expect(victim.status).toBe(500);
+    expectSharedStatusDocument(await victim.text(), "/500", token);
+
+    const attacker = await fetchCacheHit(`${baseUrl}${BASE_PATH}/throws/attacker`);
+    expect(attacker.response.status).toBe(500);
+    expectSharedStatusDocument(attacker.html, "/500", token);
   });
 });

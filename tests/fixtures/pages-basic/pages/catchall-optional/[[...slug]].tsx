@@ -13,7 +13,12 @@ export default function OptionalCatchAll({ slug }: { slug: string[] }) {
 
 export async function getStaticPaths() {
   return {
-    paths: [{ params: { slug: [] } }, { params: { slug: ["value"] } }],
+    paths: [
+      { params: { slug: [] } },
+      { params: { slug: ["value"] } },
+      { params: { slug: ["value", "nested"] } },
+      { params: { slug: ["encoded/value"] } },
+    ],
     fallback: false,
   };
 }

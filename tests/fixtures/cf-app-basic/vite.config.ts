@@ -42,6 +42,11 @@ export default defineConfig({
     simulateLegacyWorkerdModuleIdentity(),
     cloudflare({
       viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+      // The encoded-path e2e suite runs the Worker before public files, like
+      // the runWorkerFirst default that `vinext init` generates.
+      config: process.env.CF_APP_BASIC_RUN_WORKER_FIRST
+        ? { assets: { run_worker_first: ["/*", "!/_next/static/*"] } }
+        : undefined,
     }),
   ],
 });

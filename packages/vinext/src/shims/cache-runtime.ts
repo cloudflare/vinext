@@ -19,15 +19,13 @@
  * and all RSC-serializable types — unlike JSON.stringify which silently
  * drops $$typeof Symbols and function values.
  *
- * When RSC APIs are unavailable (e.g. in unit tests), falls back to
- * JSON.stringify/parse with the same stableStringify cache key generation.
- *
  * Cache variants:
  * - "use cache"           — shared cache (default profile)
  * - "use cache: remote"   — shared cache (explicit)
  * - "use cache: private"  — per-request cache (not shared across requests)
  */
 
+import { cache as reactCache } from "react";
 import {
   getDataCacheHandler,
   type CachedFetchValue,
@@ -37,6 +35,7 @@ import {
 import {
   cacheLifeProfiles,
   _hasPendingRevalidatedTag,
+  _isOnDemandRevalidate,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
   runWithDetachedCacheObservations,
@@ -50,23 +49,27 @@ import {
   runWithDetachedFetchObservations,
 } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { isWellKnownProperty } from "./internal/thenable-well-known-properties.js";
+import {
+  createUseCacheAccessError,
+  recordInvalidDynamicUsageError,
+} from "./internal/headers-state.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
-import { isDraftModeEnabled, markDynamicUsage, throwIfInsideCacheScope } from "./headers.js";
-import { makeThenableParams } from "./thenable-params.js";
+import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
+import { getFallbackParamsSnapshot, restoreThenableParams } from "./thenable-params.js";
 import {
   createPprFallbackShellSuspensePromise,
   trackPprFallbackShellCacheTask,
 } from "./ppr-fallback-shell.js";
 import {
-  APP_PAGE_USE_CACHE_MARKER,
   hasUseCachePageMarker,
-  isMarkedAppPagePropsObject,
+  hasUseCacheLayoutMarker,
   isUseCacheFunctionReference,
-  markAppPagePropsForUseCache,
+  withoutUseCacheSegmentMarker,
 } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
 import {
@@ -76,8 +79,23 @@ import {
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { suppressHangingPromiseAbortRejections } from "./internal/make-hanging-promise.js";
 import type { VinextCacheFunctionInvocation } from "../server/multi-stage.js";
+import { shareIsolatePromise } from "../server/isolate-shared-promise.js";
+import { isInsideWorkStoreScope } from "./internal/work-store-scope.js";
 
-export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
+import {
+  snapshotFlightReply,
+  restoreFlightReply,
+  flightArgumentsKey,
+  type CacheFlightArguments,
+} from "./cache-flight-arguments.js";
+
+const replayableFunctions = new WeakMap<object, (args: CacheFlightArguments) => Promise<unknown>>();
+
+export function replayCachedFunction(fn: object, args: CacheFlightArguments): Promise<unknown> {
+  const replay = replayableFunctions.get(fn);
+  if (!replay || args.version !== 1) throw new Error("Invalid cache function arguments");
+  return replay(args);
+}
 
 // ---------------------------------------------------------------------------
 // Constants for nested-dynamic cache life detection
@@ -151,6 +169,8 @@ export type CacheContext = {
   tags: string[];
   /** Cache life configs collected via cacheLife() — minimum-wins rule applies */
   lifeConfigs: CacheLifeConfig[];
+  /** Resolved lives of nested caches; they only constrain fields cacheLife() left unset */
+  nestedLifeConfigs: CacheLifeConfig[];
   /** Cache variant: "default" | "remote" | "private" */
   variant: string;
   /** Root params observed while producing this public cache entry. */
@@ -198,14 +218,13 @@ export function getCacheContext(): CacheContext | null {
 
 /**
  * RSC serialization APIs from @vitejs/plugin-rsc/react/rsc.
- * Lazily loaded because these are only available in the Vite RSC environment
- * (they depend on virtual modules set up by @vitejs/plugin-rsc).
- * In test environments, the import fails and we fall back to JSON.
+ * Lazily loaded because they require the `react-server` condition, which only
+ * the Vite RSC environment has; other environments may import this module.
  */
 type RscModule = {
   renderToReadableStream: (
     data: unknown,
-    options?: { onError?: (error: unknown) => string | undefined },
+    options?: { onError?: (error: unknown) => string | undefined; temporaryReferences?: unknown },
   ) => ReadableStream<Uint8Array>;
   createFromReadableStream: <T>(
     stream: ReadableStream<Uint8Array>,
@@ -271,17 +290,12 @@ export function buildUseCacheKey(
   return argsKey === undefined ? `use-cache:${scopedId}` : `use-cache:${scopedId}:${argsKey}`;
 }
 
-const NOT_LOADED = Symbol("not-loaded");
-let _rscModule: RscModule | null | typeof NOT_LOADED = NOT_LOADED;
+let _rscModule: Promise<RscModule> | undefined;
 
-async function getRscModule(): Promise<RscModule | null> {
-  if (_rscModule !== NOT_LOADED) return _rscModule;
-  try {
-    _rscModule = (await import("@vitejs/plugin-rsc/react/rsc")) as RscModule;
-  } catch {
-    _rscModule = null;
-  }
-  return _rscModule;
+function getRscModule(): Promise<RscModule> {
+  return (_rscModule ??= shareIsolatePromise(
+    import("@vitejs/plugin-rsc/react/rsc") as Promise<RscModule>,
+  ));
 }
 
 // ---------------------------------------------------------------------------
@@ -330,122 +344,93 @@ function uint8ToStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
 }
 
 async function serializeCacheResult<TResult>(
-  result: TResult,
-  rsc: RscModule | null,
-): Promise<SerializedCacheResult<TResult> | null> {
-  if (rsc) {
-    let serializationError: { value: unknown } | undefined;
-    const stream = rsc.renderToReadableStream(result, {
-      onError(error) {
-        serializationError ??= { value: error };
-        return undefined;
-      },
-    });
-    const [returnStream, savedStream] = stream.tee();
+  result: PromiseLike<TResult>,
+  rsc: RscModule,
+): Promise<SerializedCacheResult<TResult>> {
+  let serializationError: { value: unknown } | undefined;
+  const stream = rsc.renderToReadableStream(result, {
+    onError(error) {
+      serializationError ??= { value: error };
+      return undefined;
+    },
+  });
+  const [returnStream, savedStream] = stream.tee();
 
-    try {
-      // Decode the value that the caller receives from the same Flight stream
-      // whose other branch is persisted. This matches Next.js and ensures an
-      // errored Flight row rejects the callable-cache invocation instead of
-      // returning the original, unserializable object.
-      const [deserializedResult, bytes] = await Promise.all([
-        rsc.createFromReadableStream<TResult>(returnStream, {}, { preserveServerReferences: true }),
-        // Draining the saved branch is part of cache entry generation: lazy
-        // Server Components may execute here and contribute tags, cache life,
-        // or root param dependencies to the active cache scope.
-        collectStream(savedStream),
-      ]);
-      return {
-        result: deserializedResult,
-        cacheEntry: serializationError
-          ? null
-          : {
-              body: uint8ToBase64(bytes),
-              headers: { [VINEXT_RSC_MARKER_HEADER]: "1" },
-            },
-      };
-    } catch (error) {
-      throw serializationError?.value ?? error;
-    }
+  try {
+    // Decode the value that the caller receives from the same Flight stream
+    // whose other branch is persisted. This matches Next.js and ensures an
+    // errored Flight row rejects the callable-cache invocation instead of
+    // returning the original, unserializable object.
+    const [deserializedResult, bytes] = await Promise.all([
+      rsc.createFromReadableStream<TResult>(returnStream, {}, { preserveServerReferences: true }),
+      // Draining the saved branch is part of cache entry generation: lazy
+      // Server Components may execute here and contribute tags, cache life,
+      // or root param dependencies to the active cache scope.
+      collectStream(savedStream),
+    ]);
+    return {
+      result: deserializedResult,
+      cacheEntry: serializationError
+        ? null
+        : {
+            body: uint8ToBase64(bytes),
+            headers: { [VINEXT_RSC_MARKER_HEADER]: "1" },
+          },
+    };
+  } catch (error) {
+    throw serializationError?.value ?? error;
   }
-
-  const body = JSON.stringify(result);
-  return body === undefined ? null : { result, cacheEntry: { body, headers: {} } };
-}
-
-/**
- * Convert an encodeReply result (string | FormData) to a cache key string.
- * For FormData (binary args), produces a deterministic SHA-256 hash over
- * the sorted entries. We can't hash `new Response(formData).arrayBuffer()`
- * because multipart boundaries are non-deterministic across serializations.
- *
- * Exported for testing.
- */
-export async function replyToCacheKey(reply: string | FormData): Promise<string> {
-  if (typeof reply === "string") return reply;
-
-  // Collect entries in stable order (sorted by name, then by value for
-  // entries with the same name) so the hash is deterministic.
-  const entries: [string, FormDataEntryValue][] = [...reply.entries()];
-  const valStr = (v: FormDataEntryValue): string => (typeof v === "string" ? v : v.name);
-  entries.sort((a, b) => a[0].localeCompare(b[0]) || valStr(a[1]).localeCompare(valStr(b[1])));
-
-  const parts: string[] = [];
-  for (const [name, value] of entries) {
-    if (typeof value === "string") {
-      parts.push(`${name}=s:${value}`);
-    } else {
-      // Blob/File: include type, size, and content bytes
-      const bytes = new Uint8Array(await value.arrayBuffer());
-      parts.push(`${name}=b:${value.type}:${value.size}:${Buffer.from(bytes).toString("base64")}`);
-    }
-  }
-
-  const payload = new TextEncoder().encode(parts.join("\0"));
-  const hashBuffer = await crypto.subtle.digest("SHA-256", payload);
-  return Buffer.from(new Uint8Array(hashBuffer)).toString("base64url");
 }
 
 // ---------------------------------------------------------------------------
-// Minimum-wins resolution for cacheLife
+// Cache life resolution
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve collected cacheLife configs into a single effective config.
- * The "minimum-wins" rule: if multiple cacheLife() calls are made,
- * each field takes the smallest value across all calls.
- */
-function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
-  if (configs.length === 0) {
-    // Default profile
-    return { ...cacheLifeProfiles.default };
-  }
+const CACHE_LIFE_FIELDS = ["stale", "revalidate", "expire"] as const;
 
-  if (configs.length === 1) {
-    return { ...configs[0] };
-  }
-
-  // Minimum-wins across all fields
+/** Per field, the smallest value any config sets. */
+function minimumCacheLife(configs: readonly CacheLifeConfig[]): CacheLifeConfig {
   const result: CacheLifeConfig = {};
-
   for (const config of configs) {
-    if (config.stale !== undefined) {
-      result.stale =
-        result.stale !== undefined ? Math.min(result.stale, config.stale) : config.stale;
-    }
-    if (config.revalidate !== undefined) {
-      result.revalidate =
-        result.revalidate !== undefined
-          ? Math.min(result.revalidate, config.revalidate)
-          : config.revalidate;
-    }
-    if (config.expire !== undefined) {
-      result.expire =
-        result.expire !== undefined ? Math.min(result.expire, config.expire) : config.expire;
+    for (const field of CACHE_LIFE_FIELDS) {
+      const value = config[field];
+      const current = result[field];
+      if (value !== undefined && (current === undefined || value < current)) {
+        result[field] = value;
+      }
     }
   }
-
   return result;
+}
+
+/**
+ * Resolve a cache scope's effective life, like Next.js's `collectResult`
+ * (use-cache-wrapper.ts). A field set by `cacheLife()` takes the minimum
+ * across those calls and wins over nested caches. Any other field takes the
+ * minimum of the default profile and the nested caches' lives.
+ */
+function resolveCacheLife(ctx: CacheContext): CacheLifeConfig {
+  const explicit = minimumCacheLife(ctx.lifeConfigs);
+  const collected = minimumCacheLife([cacheLifeProfiles.default, ...ctx.nestedLifeConfigs]);
+  const result: CacheLifeConfig = {};
+  for (const field of CACHE_LIFE_FIELDS) {
+    const value = explicit[field] ?? collected[field];
+    if (value !== undefined) result[field] = value;
+  }
+  return result;
+}
+
+/**
+ * Hand a finished cache scope's life to what encloses it, like Next.js's
+ * `propagateCacheEntryMetadata`: an enclosing cache collects it as a nested
+ * life, and only an outermost cache reaches the request.
+ */
+function propagateCacheLife(parentCtx: CacheContext | undefined, life: CacheLifeConfig): void {
+  if (parentCtx) {
+    parentCtx.nestedLifeConfigs.push(life);
+  } else {
+    _setRequestScopedCacheLife(life);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -582,8 +567,13 @@ export type RegisterCachedFunctionOptions = {
   acceptsSecondArgument?: boolean;
   /** Number of declared arguments supplied by the directive transform. */
   argumentCount?: number;
-  decryptCaptures?: (value: unknown) => Promise<unknown[] | undefined>;
-  encodeInvocationArgs?: (args: unknown[]) => Promise<string>;
+  /**
+   * Set only for an inline function that closes over values. It decrypts the
+   * capture envelope bound ahead of the call arguments and must reject any
+   * other first argument.
+   */
+  decryptCaptures?: (value: unknown) => Promise<unknown[]>;
+  encodeInvocation?: (args: CacheFlightArguments) => Promise<string>;
   serverReferenceId?: string;
 };
 
@@ -652,7 +642,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // it's scoped to a single request and doesn't persist across HMR.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
-  const cachedFn = (...args: TArgs): Promise<TResult> => {
+  const invoke = (args: TArgs, replay?: CacheFlightArguments): Promise<TResult> => {
     if (cacheVariant === "private") {
       const parentCtx = cacheContextStorage.getStore();
       if (parentCtx && parentCtx.variant !== "private") {
@@ -696,9 +686,29 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     }
 
     return trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
-      const rsc = await getRscModule();
+      const codec = await getRscModule();
+      const clientReferences = codec.createClientTemporaryReferenceSet();
+      const serverReferences = codec.createTemporaryReferenceSet();
+      const rsc: RscModule = {
+        ...codec,
+        renderToReadableStream: (value, options) =>
+          codec.renderToReadableStream(value, {
+            ...options,
+            temporaryReferences: serverReferences,
+          }),
+        createFromReadableStream: (stream, options, context) =>
+          codec.createFromReadableStream(
+            stream,
+            {
+              ...options,
+              temporaryReferences: clientReferences,
+            },
+            context,
+          ),
+      };
       const keySeed = getUseCacheKeySeed();
-      const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
+      const captures =
+        !replay && options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
       const hasCaptureEnvelope = captures !== undefined;
       // Like Next.js (use-cache-wrapper.ts, `isPageSegmentFunction`), page
       // semantics come only from the invocation: the page component, page
@@ -712,84 +722,117 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // user code with `.bind(null, ...)`. So locate the marked props instead
       // of assuming an index. Positions are the same in `args`/`admittedArgs`
       // (envelope) and `executionArgs` (captures).
-      const pagePropsArgIndex = args.findIndex(hasUseCachePageMarker);
-      const isPageInvocation = pagePropsArgIndex !== -1;
-      const invocationArgs = isPageInvocation
-        ? replaceArgument(
-            args,
-            pagePropsArgIndex,
-            withoutUseCachePageMarker(args[pagePropsArgIndex] as Record<string, unknown>),
-          )
-        : args;
-      const admittedArgs =
+      // Discard unused props before locating framework markers. A zero-argument
+      // cached page/layout must neither serialize nor reconstruct its props.
+      const limitedArgs =
         options.argumentCount === undefined
-          ? invocationArgs
+          ? args
           : hasCaptureEnvelope
-            ? [invocationArgs[0], ...invocationArgs.slice(1, 1 + options.argumentCount)]
-            : invocationArgs.slice(0, options.argumentCount);
+            ? [args[0], ...args.slice(1, 1 + options.argumentCount)]
+            : args.slice(0, options.argumentCount);
+      const pagePropsArgIndex =
+        replay?.pagePropsIndex ?? limitedArgs.findIndex(hasUseCachePageMarker);
+      const layoutPropsArgIndex =
+        replay?.layoutPropsIndex ?? limitedArgs.findIndex(hasUseCacheLayoutMarker);
+      const isPageInvocation = pagePropsArgIndex !== -1;
+      const segmentPropsIndex = isPageInvocation ? pagePropsArgIndex : layoutPropsArgIndex;
+      const admittedArgs =
+        segmentPropsIndex !== -1 && !replay
+          ? replaceArgument(
+              limitedArgs,
+              segmentPropsIndex,
+              withoutUseCacheSegmentMarker(
+                limitedArgs[segmentPropsIndex] as Record<string, unknown>,
+                isPageInvocation,
+              ),
+            )
+          : limitedArgs;
       const executionArgs = hasCaptureEnvelope
         ? [captures, ...admittedArgs.slice(1)]
         : admittedArgs;
+      const outerParams =
+        !replay && segmentPropsIndex !== -1
+          ? (executionArgs[segmentPropsIndex] as Record<string, unknown>).params
+          : undefined;
+      const fallbackParams = getFallbackParamsSnapshot(outerParams);
+      const serializationArgs = fallbackParams
+        ? replaceArgument(executionArgs, segmentPropsIndex, {
+            ...(executionArgs[segmentPropsIndex] as Record<string, unknown>),
+            params: fallbackParams,
+          })
+        : executionArgs;
       const pagePropsIndex =
         omitAppPageSearchParams && isPageInvocation ? pagePropsArgIndex : undefined;
-      // Rendered page props carry searchParams that throw inside a public cache
-      // scope. When they are absent, as on a Response Store replay of the
-      // encoded args, access must still fail like Next's erroring searchParams.
-      const callArgs = (
+      // React owns argument semantics. Execute and persist exactly the same
+      // multipart snapshot, including native File metadata; key it like Next.js.
+      const keyArgs =
         pagePropsIndex === undefined
-          ? executionArgs
-          : withErroringPageSearchParams(executionArgs, pagePropsIndex)
-      ) as TArgs;
+          ? serializationArgs
+          : toReplayablePageArgs(serializationArgs, pagePropsIndex);
+      const flightArguments =
+        replay ??
+        (await snapshotFlightReply(
+          await rsc.encodeReply(keyArgs, { temporaryReferences: clientReferences }),
+          isPageInvocation ? pagePropsArgIndex : undefined,
+        ));
+      if (!replay && layoutPropsArgIndex !== -1) {
+        flightArguments.layoutPropsIndex = layoutPropsArgIndex;
+      }
+      let cacheKey = buildUseCacheKey(
+        cacheFunctionId,
+        keySeed,
+        flightArgumentsKey(flightArguments),
+      );
+      let callArgs = (await rsc.decodeReply(restoreFlightReply(flightArguments), {
+        temporaryReferences: serverReferences,
+      })) as TArgs;
 
-      // Build the cache key. Use encodeReply (RSC protocol) when available —
-      // it correctly handles React elements as temporary references (excluded
-      // from key). Falls back to stableStringify when RSC is unavailable.
-      let cacheKey: string;
-      try {
-        const processedArgs =
-          executionArgs.length > 0
-            ? unwrapThenableObjectArray(executionArgs, {
-                pagePropsIndex,
-                omitMarkedAppPageSearchParams: omitAppPageSearchParams,
-              })
-            : [];
-        if (rsc && executionArgs.length > 0) {
-          // Temporary references let encodeReply handle non-serializable values
-          // (like React elements in args) by excluding them from the key.
-          const tempRefs = rsc.createClientTemporaryReferenceSet();
-          // Unwrap Promise-augmented objects before encoding.
-          // Next.js 16 params/searchParams are created via
-          // Object.assign(Promise.resolve(obj), obj) — a Promise with own
-          // enumerable properties. encodeReply treats Promises as temporary
-          // references (excluded from the key), which means different param
-          // values (e.g., section:"sports" vs section:"electronics") produce
-          // identical cache keys. We must extract the plain data so the actual
-          // values are included in the cache key.
-          const encoded = await rsc.encodeReply(processedArgs, {
-            temporaryReferences: tempRefs,
-          });
-          cacheKey = buildUseCacheKey(cacheFunctionId, keySeed, await replyToCacheKey(encoded));
-        } else {
-          const argsKey = processedArgs.length > 0 ? stableStringify(processedArgs) : undefined;
-          cacheKey = buildUseCacheKey(cacheFunctionId, keySeed, argsKey);
-        }
-      } catch {
-        // Non-serializable arguments — run without caching
-        return (await executeWithContext(fn, callArgs, cacheVariant)).result;
+      if (segmentPropsIndex !== -1) {
+        const props = callArgs[segmentPropsIndex] as Record<string, unknown>;
+        callArgs = replaceArgument(callArgs, segmentPropsIndex, {
+          ...props,
+          params: restoreThenableParams(
+            (await props.params) as Record<string, string | string[]>,
+            outerParams,
+          ),
+        }) as TArgs;
+      }
+      // The encoded args omit a public page's searchParams. Access must still
+      // fail like Next's erroring searchParams, including on a replay.
+      const callFn =
+        segmentPropsIndex !== -1 && pagePropsIndex !== undefined
+          ? withErroringPageSearchParams(fn, pagePropsIndex)
+          : fn;
+
+      if (fallbackParams) {
+        // Speculative shell params are incomplete: a placeholder must not hit
+        // a concrete route's entry or become an unguarded persisted replay.
+        // Keep decoded values plus lazy framework suspension for execution;
+        // concrete params still follow the normal cache path below.
+        return (await executeWithContext(callFn, callArgs, cacheVariant, rsc)).result;
       }
 
       // "use cache: private" uses per-request in-memory cache
       if (cacheVariant === "private") {
         const privateCache = _getPrivateState()._privateCache!;
-        const privateHit = privateCache.get(cacheKey);
+        const privateHit = privateCache.get(cacheKey) as
+          | { result: TResult; serialized?: SerializedCacheResult["cacheEntry"] }
+          | undefined;
         if (privateHit !== undefined) {
           // The private cache is heterogeneous across cached functions; the key
           // includes this function's stable id, so a hit belongs to this TResult.
-          return privateHit as TResult;
+          if (privateHit.serialized) {
+            return rsc.createFromReadableStream<TResult>(
+              uint8ToStream(base64ToUint8(privateHit.serialized.body)),
+              {},
+              { preserveServerReferences: true },
+            );
+          }
+          return privateHit.result;
         }
 
-        const execution = await executeWithContext(fn, callArgs, cacheVariant, rsc);
-        if (execution.cacheable) privateCache.set(cacheKey, execution.result);
+        const execution = await executeWithContext(callFn, callArgs, cacheVariant, rsc);
+        if (execution.cacheable) privateCache.set(cacheKey, execution);
         return execution.result;
       }
 
@@ -798,7 +841,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // preview request would otherwise seed unpublished content into an entry
       // later served to public requests. Mirrors Next.js's `isDraftMode` guard.
       if (isDev || isDraftModeEnabled()) {
-        return (await executeWithContext(fn, callArgs, cacheVariant, rsc)).result;
+        return (await executeWithContext(callFn, callArgs, cacheVariant, rsc)).result;
       }
 
       // Shared cache ("use cache" / "use cache: remote")
@@ -821,8 +864,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // execution so control-flow signals like notFound()/redirect() thrown by
       // `fn` still propagate with their digest intact instead of being masked
       // by the handler's own exception.
+      //
+      // Like Next.js's `shouldForceRevalidate`, an on-demand revalidation
+      // (`res.revalidate()`) ignores the existing entry but still executes and
+      // stores the fresh result below.
       let existing: CacheHandlerValue | null = null;
-      if (!_hasPendingRevalidatedTag(softTags)) {
+      if (!_hasPendingRevalidatedTag(softTags) && !_isOnDemandRevalidate()) {
         try {
           existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
         } catch (error) {
@@ -830,6 +877,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       }
       const redirectValue = existing?.value;
+      // A redirect read stale and followed, which the redirect's own write refreshes.
+      let staleRedirect: CacheHandlerValue | undefined;
       if (
         isRootParamRedirect(existing) &&
         isServableCacheState(existing?.cacheState) &&
@@ -840,6 +889,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         const redirectNames = rootParamNamesFromTags(redirectValue.tags);
         const combinedNames = addKnownRootParamNames(id, redirectNames);
         cacheKey = coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, combinedNames);
+        if (existing?.cacheState) staleRedirect = existing;
         try {
           existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
         } catch (error) {
@@ -848,10 +898,16 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       }
       // Execute the function and store its result. A background regeneration doesn't
-      // propagate: the request already used the stale value.
-      const generate = async (propagate: boolean): Promise<TResult> => {
+      // propagate: the request already used the stale value, which it passes as staleEntry.
+      const generate = async (
+        propagate: boolean,
+        staleEntry?: CacheHandlerValue,
+      ): Promise<TResult> => {
+        // Like Next.js, an entry is dated from when its generation started, so a tag
+        // invalidated while it ran still covers it.
+        const timestamp = Date.now();
         const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
-          fn,
+          callFn,
           callArgs,
           cacheVariant,
           (value) => serializeCacheResult(value, rsc),
@@ -863,7 +919,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             : knownRootParamsByFunctionId.get(id);
 
         if (propagate) {
-          recordRequestScopedCacheLife(effectiveLife);
           // Bubble the cache scope's tags up to the surrounding request so the
           // enclosing page / route-handler ISR entry is tagged for on-demand
           // revalidation (issue #1453). `ctx.tags` already includes any nested
@@ -878,17 +933,13 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         if (collectedResult?.cacheEntry) {
           try {
             let cacheFunctionInvocation: VinextCacheFunctionInvocation | undefined;
-            if (options.serverReferenceId && options.encodeInvocationArgs) {
+            if (options.serverReferenceId && options.encodeInvocation) {
               try {
                 cacheFunctionInvocation = {
                   // Like the cache key, a public page cache replays without the
                   // page's searchParams: encoding them would read search params
                   // and turn every cached page render dynamic.
-                  encryptedArgs: await options.encodeInvocationArgs(
-                    pagePropsIndex === undefined
-                      ? admittedArgs
-                      : toReplayablePageArgs(admittedArgs, pagePropsIndex),
-                  ),
+                  encryptedArgs: await options.encodeInvocation(flightArguments),
                   referenceId: options.serverReferenceId,
                   rootParams: Object.fromEntries(
                     Object.entries(rootParams ?? {}).filter((entry) => entry[1] !== undefined),
@@ -913,6 +964,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             const cacheContext = {
               fetchCache: true,
               tags: ctx.tags,
+              timestamp,
               ...(cacheFunctionInvocation ? { cacheFunctionInvocation } : {}),
               cacheControl: {
                 revalidate: revalidateSeconds,
@@ -923,6 +975,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
               },
             };
 
+            let write: Promise<unknown>;
             if (rootParamNames && rootParamNames.size > 0 && rootParams) {
               const specificCacheKey =
                 coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames);
@@ -930,26 +983,62 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
                 ...ctx.tags,
                 ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
               ];
-              await handler.set(
-                coarseCacheKey,
-                {
-                  kind: "FETCH",
-                  data: {
-                    headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
-                    body: "",
-                    url: coarseCacheKey,
+              // Write the useful entry last, once the redirect's write settles. A
+              // bounded LRU that can retain only one of the pair must keep the
+              // specific value, not the redirect. A failed redirect write still
+              // stores the specific value.
+              try {
+                await handler.set(
+                  coarseCacheKey,
+                  {
+                    kind: "FETCH",
+                    data: {
+                      headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
+                      body: "",
+                      url: coarseCacheKey,
+                    },
+                    tags: redirectTags,
+                    revalidate: revalidateSeconds,
                   },
-                  tags: redirectTags,
-                  revalidate: revalidateSeconds,
-                },
-                { ...cacheContext, tags: redirectTags },
-              );
-              // Write the useful entry last. A bounded LRU that can retain only
-              // one of the pair must keep the specific value, not the redirect.
+                  {
+                    ...cacheContext,
+                    tags: redirectTags,
+                    // A cold isolate reads the coarse key first.
+                    ...(coarseCacheKey === cacheKey
+                      ? staleEntry && { staleEntry }
+                      : staleRedirect && { staleEntry: staleRedirect }),
+                  },
+                );
+              } catch {
+                // The specific entry is still worth storing.
+              }
               cacheValue.data.url = specificCacheKey;
-              await handler.set(specificCacheKey, cacheValue, cacheContext);
+              write = handler.set(specificCacheKey, cacheValue, {
+                ...cacheContext,
+                // The stale entry this write refreshes, so a handler can tell a refresh
+                // from a write.
+                ...(staleEntry && specificCacheKey === cacheKey ? { staleEntry } : {}),
+              });
             } else {
-              await handler.set(cacheKey, cacheValue, cacheContext);
+              write = handler.set(cacheKey, cacheValue, {
+                ...cacheContext,
+                ...(staleEntry ? { staleEntry } : {}),
+              });
+            }
+            const stored = write.then(
+              () => undefined,
+              () => {
+                // A handler failure skips caching but must not fail the render.
+              },
+            );
+            // Like Next.js, which queues the write on the work store, a call in a
+            // render, Server Action or route handler returns once the (specific
+            // entry's) write has started, and the request keeps it alive. A
+            // background regeneration is the write, so it waits.
+            if (propagate && isInsideWorkStoreScope()) {
+              if (isInsideUnifiedScope()) getRequestContext().executionContext?.waitUntil(stored);
+            } else {
+              await stored;
             }
           } catch {
             // A handler failure skips caching but must not fail the render.
@@ -962,6 +1051,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       if (
         existing?.value &&
         existing.value.kind === "FETCH" &&
+        existing.value.data.headers[VINEXT_RSC_MARKER_HEADER] === "1" &&
         isServableCacheState(existing.cacheState) &&
         !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
       ) {
@@ -972,31 +1062,28 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           // cache HIT — otherwise `revalidateTag()` could not evict the rendered
           // output that embeds this cached value (issue #1453).
           propagateCacheTagsToRequest(existing.value.tags);
-          let result: TResult;
-          if (rsc && existing.value.data.headers[VINEXT_RSC_MARKER_HEADER] === "1") {
-            // RSC-serialized entry: base64 → bytes → stream → deserialize
-            const bytes = base64ToUint8(existing.value.data.body);
-            const stream = uint8ToStream(bytes);
-            result = await rsc.createFromReadableStream<TResult>(
-              stream,
-              {},
-              { preserveServerReferences: true },
-            );
-          } else {
-            // JSON-serialized entry (legacy or no RSC available)
-            result = JSON.parse(existing.value.data.body);
-          }
+          const result = await rsc.createFromReadableStream<TResult>(
+            uint8ToStream(base64ToUint8(existing.value.data.body)),
+            {},
+            { preserveServerReferences: true },
+          );
           recordRequestScopedCacheControl(existing.cacheControl);
-          if (existing.cacheState === "stale") regenerateInBackground(id, () => generate(false));
+          if (existing.cacheState === "stale") {
+            const staleEntry = existing;
+            regenerateInBackground(id, () => generate(false, staleEntry));
+          }
           return result;
         } catch {
           // Corrupted entry, fall through to re-execute
         }
       }
 
-      return generate(true);
+      return generate(true, existing?.cacheState ? existing : undefined);
     }, cacheVariant);
   };
+
+  const cachedFn = memoizeInCacheScope((...args: TArgs) => invoke(args));
+  replayableFunctions.set(cachedFn, (data) => invoke([] as unknown as TArgs, data));
 
   // Preserve the original function's arity on the wrapper. The wrapper is
   // declared as `(...args)` (arity 0), which hides the original signature.
@@ -1019,6 +1106,27 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   }
 
   return cachedFn;
+}
+
+/** Memoize in one React render without skipping cache guards or scoped serialization. */
+export function memoizeInCacheScope<TArgs extends unknown[], TResult>(
+  fn: (...args: TArgs) => TResult,
+): (...args: TArgs) => TResult {
+  const memoized = reactCache(
+    (
+      _parent: CacheContext | undefined,
+      _workUnit: ReturnType<typeof workUnitAsyncStorage.getStore>,
+      _unstable: boolean,
+      ...args: TArgs
+    ) => fn(...args),
+  );
+  return (...args) =>
+    memoized(
+      cacheContextStorage.getStore(),
+      workUnitAsyncStorage.getStore(),
+      unstableCacheContextStorage.getStore() === true,
+      ...args,
+    );
 }
 
 /** @internal Symbol used to identify "use cache" wrapper functions. */
@@ -1051,10 +1159,10 @@ function throwPrivateUseCacheInsideUnstableCacheError(): never {
 
 function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
   if (cacheControl === undefined) return;
-  // A hit must contribute the same claim its producing execution did — both to
-  // the request scope and, when nested, to the enclosing cache scope (like the
-  // MISS path's `parentCtx.lifeConfigs.push`); otherwise the inner claim
-  // vanishes once the outer entry goes warm.
+  // A hit must contribute the same claim its producing execution did — to the
+  // enclosing cache scope when nested, else to the request (like the MISS
+  // path's `propagateCacheLife`); otherwise the inner claim vanishes once the
+  // outer entry goes warm.
   const life: CacheLifeConfig = {
     // `false` is an indefinite lifetime and does not constrain the enclosing
     // scope's finite revalidation window.
@@ -1063,7 +1171,7 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
     stale: cacheControl.stale,
   };
   const parentCtx = cacheContextStorage.getStore();
-  parentCtx?.lifeConfigs.push(life);
+  propagateCacheLife(parentCtx, life);
 
   // A warm nested HIT must preserve the same dynamic-cache validation as the
   // MISS that produced it. The persisted cache-control fields already contain
@@ -1083,11 +1191,6 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
     }
     parentCtx.dynamicNestedCacheError ??= error;
   }
-  _setRequestScopedCacheLife(life);
-}
-
-function recordRequestScopedCacheLife(cacheLife: CacheLifeConfig): void {
-  _setRequestScopedCacheLife(cacheLife);
 }
 
 /**
@@ -1129,23 +1232,20 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   args: any[],
   variant: string,
-  rsc?: RscModule | null,
-): Promise<{ result: Awaited<ReturnType<T>>; cacheable: boolean }> {
-  const {
-    result,
-    ctx: _ctx,
-    effectiveLife,
-    collectedResult,
-  } = await runCachedFunctionWithContext<T, SerializedCacheResult<Awaited<ReturnType<T>>> | null>(
-    fn,
-    args,
-    variant,
-    rsc ? (value) => serializeCacheResult(value, rsc) : undefined,
-  );
-  recordRequestScopedCacheLife(effectiveLife);
+  rsc: RscModule,
+): Promise<{
+  result: Awaited<ReturnType<T>>;
+  cacheable: boolean;
+  serialized?: SerializedCacheResult["cacheEntry"];
+}> {
+  const { result, collectedResult } = await runCachedFunctionWithContext<
+    T,
+    SerializedCacheResult<Awaited<ReturnType<T>>> | null
+  >(fn, args, variant, (value) => serializeCacheResult(value, rsc));
   return {
     result: collectedResult ? collectedResult.result : result,
     cacheable: collectedResult?.cacheEntry !== null,
+    serialized: collectedResult?.cacheEntry,
   };
 }
 
@@ -1164,7 +1264,7 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
  * Callers and propagation paths:
  * - Shared cache MISS (`registerCachedFunction`, production): allocates the
  *   eager error only when the inner is nested inside a public parent, and
- *   propagates lifeConfigs/dynamicNestedCacheError up to the parent.
+ *   propagates its cache life/dynamicNestedCacheError up to the parent.
  * - Private variant (`"use cache: private"`): always reaches here via
  *   `executeWithContext`. The variant is excluded from being a *parent* that
  *   throws (see the `parentCtx.variant !== "private"` guard below). Entry into
@@ -1173,11 +1273,10 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
  * - Dev mode (`registerCachedFunction`, NODE_ENV=development): skips the
  *   shared cache and always reaches here via `executeWithContext`.
  *
- * In all three paths, `recordRequestScopedCacheLife(effectiveLife)` is called
- * by `executeWithContext`/`registerCachedFunction` after this helper returns.
- * The request-scoped store uses minimum-wins accumulation, so the order of
- * inner-vs-outer recording does not affect correctness — the final request
- * stale/revalidate/expire is the min across all caches encountered.
+ * In all three paths, this helper propagates the resolved life to the
+ * enclosing cache scope, or to the request when there is none. The
+ * request-scoped store uses minimum-wins accumulation, so the order of
+ * sibling caches does not affect correctness.
  */
 type CachedFunctionResult<T, TCollected> = {
   result: T;
@@ -1195,7 +1294,10 @@ async function runCachedFunctionWithContext<
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   args: any[],
   variant: string,
-  collectResult?: (result: Awaited<ReturnType<T>>, context: CacheContext) => Promise<TCollected>,
+  collectResult?: (
+    result: PromiseLike<Awaited<ReturnType<T>>>,
+    context: CacheContext,
+  ) => Promise<TCollected>,
 ): Promise<CachedFunctionResult<Awaited<ReturnType<T>>, TCollected>> {
   const parentCtx = cacheContextStorage.getStore();
 
@@ -1228,6 +1330,7 @@ async function runCachedFunctionWithContext<
   const ctx: CacheContext = {
     tags: [],
     lifeConfigs: [],
+    nestedLifeConfigs: [],
     variant: variant || "default",
     readRootParamNames: new Set(),
     hasExplicitRevalidate: false,
@@ -1238,55 +1341,61 @@ async function runCachedFunctionWithContext<
 
   let collectedResult: TCollected | undefined;
   const workUnitType: "cache" | "private-cache" = variant === "private" ? "private-cache" : "cache";
-  const result = await workUnitAsyncStorage.run({ type: workUnitType }, () =>
-    cacheContextStorage.run(ctx, async () => {
-      const value = await fn(...args);
-      if (collectResult) {
-        collectedResult = await collectResult(value, ctx);
-      }
-      return value;
-    }),
-  );
+  let result: Awaited<ReturnType<T>>;
+  let effectiveLife: CacheLifeConfig;
+  try {
+    result = await workUnitAsyncStorage.run({ type: workUnitType }, () =>
+      cacheContextStorage.run(ctx, async () => {
+        if (!collectResult) return await fn(...args);
+        // Like Next.js's `createLazyResult`, the function only runs once the
+        // collector awaits it. Serialization awaits it inside its Flight render,
+        // so the function body and the components it returns share that
+        // render's React.cache scope.
+        let value: Promise<Awaited<ReturnType<T>>> | undefined;
+        const lazyValue: PromiseLike<Awaited<ReturnType<T>>> = {
+          // oxlint-disable-next-line unicorn/no-thenable
+          then: (onFulfilled, onRejected) =>
+            (value ??= new Promise((resolve) => resolve(fn(...args)))).then(
+              onFulfilled,
+              onRejected,
+            ),
+        };
+        collectedResult = await collectResult(lazyValue, ctx);
+        return await lazyValue;
+      }),
+    );
+  } finally {
+    // Sequencing invariant: this must run after `fn(...args)` settles. By
+    // then every nested cache has finished and pushed its own life into
+    // `ctx.nestedLifeConfigs` (it sees `ctx` as its `parentCtx`). Like
+    // Next.js, whose `collectResult` also reads an errored stream, a failed
+    // function still propagates: a cached page that calls `cacheLife()` and
+    // then `notFound()` keeps its lifetime.
+    effectiveLife = resolveCacheLife(ctx);
+    propagateCacheLife(parentCtx, effectiveLife);
+    // Propagate the eager error to the parent if this inner cache resolved
+    // dynamic, alongside the life it explains. `??=` keeps the first dynamic
+    // child as the cause, matching Next.js: see `dynamicNestedCacheError ??=`
+    // in packages/next/src/server/use-cache/use-cache-wrapper.ts.
+    if (
+      parentCtx &&
+      eagerError &&
+      (effectiveLife.revalidate === 0 ||
+        (effectiveLife.expire !== undefined && effectiveLife.expire < DYNAMIC_EXPIRE))
+    ) {
+      parentCtx.dynamicNestedCacheError ??= eagerError;
+    }
+  }
 
   if (ctx.invalidDynamicUsageError) {
     throw ctx.invalidDynamicUsageError;
   }
 
-  // Resolve effective cache life from collected configs.
-  //
-  // Sequencing invariant: this must run after `fn(...args)` returns. By that
-  // point, any nested inner cache's `runCachedFunctionWithContext` has
-  // already completed (its `await` in `fn` resolved), and during its own
-  // post-execution it pushed its `effectiveLife` into THIS context's
-  // `lifeConfigs` (via the `parentCtx.lifeConfigs.push` block below — `ctx`
-  // here is `parentCtx` from the inner's perspective). Don't refactor the
-  // `await` away or move this resolveCacheLife before the inner's post-
-  // execution propagation, or the outer's `lifeConfigs` will be missing the
-  // inner's contribution and minimum-wins will silently produce a stale
-  // result. Tests in tests/shims.test.ts under "use cache runtime" cover
-  // this; the first-child-wins and minimum-wins documenting tests will fail
-  // if this invariant is broken.
-  //
-  // This invariant holds for both sequential inner calls (`await innerA();
-  // await innerB()`) and parallel ones (`await Promise.all([innerA(),
-  // innerB()])`), because `await cacheContextStorage.run(ctx, () =>
-  // fn(...args))` only resolves after `fn`'s returned promise settles —
-  // and that promise itself awaits all nested inner calls.
-  const effectiveLife = resolveCacheLife(ctx.lifeConfigs);
-
-  // Propagate the inner's resolved cache life into the parent's lifeConfigs so
-  // the outer's minimum-wins computation includes the inner's values. This
-  // matches Next.js, which propagates the inner's resolved metadata into the
-  // outer's revalidate store via `propagateCacheLifeAndTagsToRevalidateStore`
-  // (see use-cache-wrapper.ts: minimum-wins on revalidate/expire/stale). It is
-  // also load-bearing for the nested-dynamic error detection below: without
-  // this propagation, the outer's `effectiveLife` would not reflect the
-  // inner's dynamic values, the `revalidate === 0` / `expire < DYNAMIC_EXPIRE`
-  // threshold checks below would evaluate false, and the throw would never
-  // fire. (The `hasExplicit*` guards then independently decide whether to
-  // suppress the throw — see the longer comment below.)
+  // Like the sequencing invariant above, this holds for both sequential inner
+  // calls (`await innerA(); await innerB()`) and parallel ones
+  // (`await Promise.all([innerA(), innerB()])`): `fn`'s returned promise only
+  // settles once every nested call it awaits has propagated.
   if (parentCtx) {
-    parentCtx.lifeConfigs.push(effectiveLife);
     // Bubble this inner cache's tags into the parent cache scope so the
     // outer entry (and ultimately the request) is invalidated when a tag
     // declared by a nested `"use cache"` is revalidated. Matches Next.js's
@@ -1304,38 +1413,15 @@ async function runCachedFunctionWithContext<
     }
   }
 
-  // Propagate the eager error to the parent if this inner cache resolved
-  // dynamic. `??=` keeps the first dynamic child as the cause, matching
-  // Next.js: see `dynamicNestedCacheError ??=` in
-  // packages/next/src/server/use-cache/use-cache-wrapper.ts.
-  if (
-    parentCtx &&
-    eagerError &&
-    (effectiveLife.revalidate === 0 ||
-      (effectiveLife.expire !== undefined && effectiveLife.expire < DYNAMIC_EXPIRE))
-  ) {
-    parentCtx.dynamicNestedCacheError ??= eagerError;
-  }
-
   // If a nested inner cache propagated a dynamic life into this context,
   // and this outer cache lacks an explicit cacheLife for the relevant field,
   // throw the nested-dynamic error now.
   //
-  // This block is tightly coupled with the `lifeConfigs.push(effectiveLife)`
-  // above: it relies on the inner's dynamic values being merged into this
-  // outer's `effectiveLife` via minimum-wins. When the outer has its own
-  // explicit `cacheLife()`, the effective life may still be dynamic
-  // (e.g., `Math.min(60, 0) === 0`), so the threshold checks (`revalidate
-  // === 0` / `expire < DYNAMIC_EXPIRE`) below remain `true`. What actually
-  // suppresses the throw is the `!ctx.hasExplicitRevalidate` /
-  // `!ctx.hasExplicitExpire` guard: those flags are set whenever the
-  // outer calls `cacheLife()` at all (see cache.ts), so the outer's
-  // explicit choice opts it out of the error even though the merged
-  // effective life remains dynamic. The captured `cause` is then silently
-  // discarded, which is the desired behavior — the outer made an explicit
-  // choice that overrides the dynamic child. Do not remove the
-  // `hasExplicit*` guards under the assumption that minimum-wins alone
-  // gates the throw; it does not.
+  // Like Next.js, this checks the entry's resolved `revalidate`/`expire`
+  // together with `hasExplicitRevalidate`/`hasExplicitExpire`, per field. An
+  // explicit field is the entry's value (it wins over nested lives), so a
+  // dynamic value without one can only come from a nested cache, while an
+  // outer that explicitly chose a dynamic value itself is allowed.
   //
   // If both `revalidate === 0` and `expire < DYNAMIC_EXPIRE` are true,
   // only the revalidate error is thrown (the expire branch is unreachable),
@@ -1348,30 +1434,11 @@ async function runCachedFunctionWithContext<
   // use-cache-wrapper.ts cases 'prerender'/'request' at the read site).
   // Production dynamic SSR is not subject to the throw — a runtime request
   // that nests a dynamic cache inside a non-cacheLife() outer will just run
-  // both functions; the outer simply won't be cached (minimum-wins resolves
-  // its effective revalidate to 0). The error messages explicitly say "not
+  // both functions; the outer simply won't be cached (its effective
+  // revalidate resolves to the nested 0). The error messages explicitly say "not
   // allowed during prerendering" — outside prerendering/dev, surfacing the
   // throw would be misleading and would diverge from Next.js.
   //
-  // Semantic note on `effectiveLife.revalidate === 0`: this checks the
-  // *outer's merged* effective life after minimum-wins, not the *inner's
-  // entry metadata* directly (as Next.js does via `rdcResult.entry.revalidate`
-  // at the read site). The behavior is functionally equivalent in all
-  // observable cases because the `hasExplicitRevalidate`/`hasExplicitExpire`
-  // guards cover the scenarios where the merge could mask the inner's
-  // contribution:
-  //   - Outer no cacheLife, inner revalidate:0 → merged effective is 0,
-  //     hasExplicit is false, throw fires. (Same outcome as checking inner.)
-  //   - Outer cacheLife({ revalidate: 60 }), inner revalidate:0 → merged
-  //     effective is 0 (min), hasExplicit is true, throw is suppressed.
-  //     (Same outcome — Next.js also suppresses via hasExplicit.)
-  //   - Outer cacheLife({ revalidate: 0 }), inner revalidate:0 → merged
-  //     effective is 0, hasExplicit is true, throw is suppressed.
-  //     (Same outcome.)
-  // We use `effectiveLife` here rather than tracking the inner entry's
-  // revalidate separately because vinext doesn't model a CacheResultMetadata
-  // type — the inner's contribution lives in `parentCtx.lifeConfigs` and
-  // gets resolved as part of the outer's minimum-wins on the next iteration.
   const shouldThrow =
     typeof process !== "undefined" &&
     (process.env.VINEXT_PRERENDER === "1" || process.env.NODE_ENV === "development");
@@ -1395,98 +1462,6 @@ async function runCachedFunctionWithContext<
   return { result, ctx, effectiveLife, collectedResult };
 }
 
-// ---------------------------------------------------------------------------
-// Unwrap Promise-augmented objects for cache key generation
-// ---------------------------------------------------------------------------
-
-/**
- * Recursively unwrap "thenable objects" — values created by
- * `Object.assign(Promise.resolve(obj), obj)` — into plain objects.
- *
- * Next.js 16 params and searchParams are passed as Promise-augmented objects
- * that work both as `await params` and `params.key`. When these are fed to
- * `encodeReply` with `temporaryReferences`, the Promise is treated as a
- * temporary reference and its actual values are **excluded** from the
- * serialized output. This means different param values (e.g.,
- * `section:"sports"` vs `section:"electronics"`) produce identical cache keys.
- *
- * This function extracts the own enumerable properties into plain objects
- * so `encodeReply` can serialize the actual values into the cache key.
- * Only used for cache key generation — the original Promise-augmented
- * objects are still passed to the actual function on cache miss.
- */
-type UnwrapThenableObjectsOptions = {
-  omitAppPageSearchParamsAtRoot?: boolean;
-  /**
-   * Omit searchParams from props marked by `markAppPagePropsForUseCache` at
-   * any depth. False for private caches, which key by search params.
-   */
-  omitMarkedAppPageSearchParams: boolean;
-};
-
-type UnwrapThenableObjectArrayOptions = {
-  /** Index of the page props whose searchParams are omitted, if any. */
-  pagePropsIndex: number | undefined;
-  omitMarkedAppPageSearchParams: boolean;
-};
-
-function unwrapThenableObjects(value: unknown, options: UnwrapThenableObjectsOptions): unknown {
-  if (value === null || value === undefined || typeof value !== "object") {
-    return value;
-  }
-
-  const childOptions: UnwrapThenableObjectsOptions = {
-    omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
-  };
-
-  if (Array.isArray(value)) {
-    return value.map((item) => unwrapThenableObjects(item, childOptions));
-  }
-
-  if (isThenableObject(value)) {
-    const plain: Record<string, unknown> = {};
-    for (const key of Object.keys(value)) {
-      // oxlint-disable-next-line typescript/no-explicit-any
-      plain[key] = unwrapThenableObjects((value as any)[key], childOptions);
-    }
-    return plain;
-  }
-  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-  if (typeof (value as any).then === "function") {
-    // Pure Promise with no own properties — leave as-is
-    return value;
-  }
-
-  // Regular object — recurse into values
-  const result: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) {
-    if (
-      key === "searchParams" &&
-      (options.omitAppPageSearchParamsAtRoot ||
-        (options.omitMarkedAppPageSearchParams && isMarkedAppPagePropsObject(value)))
-    ) {
-      continue;
-    }
-    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-    result[key] = unwrapThenableObjects((value as any)[key], childOptions);
-  }
-  return result;
-}
-
-/**
- * A thenable (not an array) with own enumerable properties — the
- * `Object.assign(Promise.resolve(obj), obj)` pattern Next.js params use. The
- * cache key is built from its fields instead of the promise.
- */
-export function isThenableObject(value: object): value is PromiseLike<unknown> {
-  return (
-    !Array.isArray(value) &&
-    "then" in value &&
-    typeof value.then === "function" &&
-    Object.keys(value).length > 0
-  );
-}
-
 function isPagePropsObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -1497,100 +1472,79 @@ function replaceArgument(args: readonly unknown[], index: number, value: unknown
   return result;
 }
 
-/** Remove the `$$isPage` invocation marker before props reach the key or user code. */
-function withoutUseCachePageMarker(props: Record<string, unknown>): Record<string, unknown> {
-  const { [APP_PAGE_USE_CACHE_MARKER]: _marker, ...pageProps } = props;
-  // Keep the page probe's non-enumerable marker, which the spread drops.
-  return isMarkedAppPagePropsObject(props) ? markAppPagePropsForUseCache(pageProps) : pageProps;
-}
-
 /**
  * Response Store replay args for a public page cache: drop `searchParams` from
  * the page props at `index` (after a capture envelope, if any), as Next.js does
- * for the serialized arguments (use-cache-wrapper.ts, `isPageSegmentFunction`),
- * and keep the `$$isPage` marker so a replay regains page semantics, including
- * the erroring searchParams fallback.
+ * for the serialized arguments (use-cache-wrapper.ts, `isPageSegmentFunction`).
+ * The replay regains page semantics from `CacheFlightArguments.pagePropsIndex`.
  */
 function toReplayablePageArgs(args: readonly unknown[], index: number): unknown[] {
   const props = args[index];
   if (!isPagePropsObject(props)) return [...args];
   const { searchParams: _searchParams, ...pageProps } = props;
-  return replaceArgument(args, index, { ...pageProps, [APP_PAGE_USE_CACHE_MARKER]: true });
+  return replaceArgument(args, index, pageProps);
 }
 
 /**
- * Give page props at `index` without `searchParams` (a Response Store replay of
- * args encoded by `toReplayablePageArgs`) a value that throws on
- * access inside the cache scope, like Next.js's
- * `makeErroringSearchParamsForUseCache`, instead of `undefined`.
+ * Run `fn` with an erroring `searchParams` in the page props at `index` when
+ * they have none (they are omitted from a public page cache's arguments, and
+ * from a Response Store replay of them), instead of `undefined`.
  */
-function withErroringPageSearchParams(args: readonly unknown[], index: number): readonly unknown[] {
-  const props = args[index];
-  if (!isPagePropsObject(props) || "searchParams" in props) return args;
-  return replaceArgument(args, index, {
-    ...props,
-    searchParams: makeThenableParams(
-      {},
-      { observeParamAccess: () => throwIfInsideCacheScope("searchParams") },
-    ),
+function withErroringPageSearchParams<TArgs extends unknown[], TResult>(
+  fn: (...args: TArgs) => Promise<TResult>,
+  index: number,
+): (...args: TArgs) => Promise<TResult> {
+  return (...args) => {
+    const props = args[index];
+    if (!isPagePropsObject(props) || "searchParams" in props) return fn(...args);
+    // Made inside the cache scope, so it can record an access on this scope.
+    return fn(
+      ...(replaceArgument(args, index, {
+        ...props,
+        searchParams: makeErroringPageSearchParams(),
+      }) as TArgs),
+    );
+  };
+}
+
+// Next.js's `wellKnownProperties` (shared/lib/utils/reflect-utils.ts). Unlike
+// `isWellKnownProperty`, `value` and `error` aren't reserved, so reading them
+// throws unless React wrote them onto the promise.
+function isNextWellKnownProperty(prop: string): boolean {
+  return prop !== "value" && prop !== "error" && isWellKnownProperty(prop);
+}
+
+/**
+ * Ported from Next.js's `makeErroringSearchParamsForUseCache`
+ * (server/request/search-params.ts): reading `then` or a param throws, and
+ * everything else reads the underlying promise, with methods bound to it.
+ */
+function makeErroringPageSearchParams(): Promise<Record<string, never>> {
+  // Like Next.js, which closes over the workStore, an access records the
+  // invalid use on the cache scope and request the value was made for, even
+  // after it escapes the cache function.
+  const cacheContext = cacheContextStorage.getStore() ?? null;
+  const requestContext = isInsideUnifiedScope() ? getRequestContext() : null;
+  const promise = Promise.resolve({});
+  return new Proxy(promise, {
+    get(target, prop, receiver) {
+      if (
+        !Object.hasOwn(target, prop) &&
+        typeof prop === "string" &&
+        (prop === "then" || !isNextWellKnownProperty(prop))
+      ) {
+        const error = createUseCacheAccessError("searchParams");
+        if (cacheContext) cacheContext.invalidDynamicUsageError ??= error;
+        // A cache the value escaped into must not store a result either.
+        const activeCacheContext = cacheContextStorage.getStore();
+        if (activeCacheContext && activeCacheContext !== cacheContext) {
+          activeCacheContext.invalidDynamicUsageError ??= error;
+        }
+        if (requestContext) recordInvalidDynamicUsageError(requestContext, error);
+        throw error;
+      }
+      const value: unknown = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
   });
-}
-
-function unwrapThenableObjectArray(
-  values: readonly unknown[],
-  options: UnwrapThenableObjectArrayOptions,
-): unknown[] {
-  return values.map((value, index) =>
-    unwrapThenableObjects(value, {
-      omitAppPageSearchParamsAtRoot: index === options.pagePropsIndex,
-      omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
-    }),
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Fallback: stable JSON serialization for cache keys (when RSC unavailable)
-// ---------------------------------------------------------------------------
-
-function stableStringify(value: unknown, seen?: Set<unknown>): string {
-  if (value === undefined) return "undefined";
-  if (value === null) return "null";
-
-  // Bail on non-serializable primitives so the caller can skip caching
-  if (typeof value === "function") throw new Error("Cannot serialize function");
-  if (typeof value === "symbol") throw new Error("Cannot serialize symbol");
-
-  if (Array.isArray(value)) {
-    // Circular reference detection
-    if (!seen) seen = new Set();
-    if (seen.has(value)) throw new Error("Circular reference");
-    seen.add(value);
-    const result = "[" + value.map((v) => stableStringify(v, seen)).join(",") + "]";
-    seen.delete(value);
-    return result;
-  }
-
-  if (typeof value === "object" && value !== null) {
-    if (value instanceof Date) {
-      return `Date(${value.getTime()})`;
-    }
-    // Circular reference detection
-    if (!seen) seen = new Set();
-    if (seen.has(value)) throw new Error("Circular reference");
-    seen.add(value);
-    const keys = Object.keys(value).sort();
-    const result =
-      "{" +
-      keys
-        .map(
-          (k) =>
-            `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k], seen)}`,
-        )
-        .join(",") +
-      "}";
-    seen.delete(value);
-    return result;
-  }
-
-  return JSON.stringify(value);
 }

@@ -62,6 +62,14 @@ export async function performOnDemandRevalidate(
 
   const executionContext = getRequestExecutionContext();
   const dispatchRevalidate = executionContext?.dispatchPagesRevalidate;
+  // Like Next.js without `trustHostHeader`, never address the credential-
+  // bearing request from the inbound Host: it must stay in-process or go to a
+  // server-owned origin.
+  if (!dispatchRevalidate && !trustedOrigin) {
+    throw new Error(
+      `Cannot revalidate ${urlPath}: no in-process dispatcher or server-owned origin is available`,
+    );
+  }
   const target = createRevalidateTarget(source, urlPath, trustedOrigin);
 
   const headers: Record<string, string> = {
@@ -114,7 +122,9 @@ export async function performOnDemandRevalidate(
   // Do not invalidate the data-cache tag here: that would delete the fresh
   // artifact that the authenticated HEAD request just produced.
   const regeneratedTag = res.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER);
-  if (regeneratedTag) await getCdnCacheAdapter().revalidateTag(regeneratedTag);
+  if (regeneratedTag) {
+    await getCdnCacheAdapter().revalidateTag(decodeURIComponent(regeneratedTag));
+  }
 }
 
 function readSourceHeader(source: IncomingMessage | Headers, key: string): string | undefined {

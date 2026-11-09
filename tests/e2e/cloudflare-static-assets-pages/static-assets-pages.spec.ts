@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
+import { chromium, expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -28,6 +28,11 @@ async function readBuildId(request: APIRequestContext, url: string): Promise<str
 function expectHit(response: APIResponse) {
   expect(response.status()).toBe(200);
   expect(response.headers()["x-vinext-cache"]).toBe("HIT");
+}
+
+/** The ISR policy for a build-time revalidate, bounded by the default expireTime. */
+function revalidateCacheControl(revalidate: number): string {
+  return `s-maxage=${revalidate}, stale-while-revalidate=${31_536_000 - revalidate}`;
 }
 
 // Next.js stores and serves both HTML and page data for prerendered Pages routes:
@@ -109,6 +114,22 @@ test("finite ISR and on-demand revalidation leave the packaged snapshot unchange
   const buildOnly = await request.get(`${i18nBaseURL}/fr/posts/first/`);
   expectHit(buildOnly);
   expect(await buildOnly.text()).toContain('id="render-source">build-time</p>');
+});
+
+// Next.js records the revalidate getStaticProps returned during the build render,
+// not a literal found in the source:
+// https://github.com/vercel/next.js/blob/72895219d44df111ee6ac81e4eac10d81a5e5cbf/packages/next/src/build/index.ts#L3433-L3456
+test("snapshots carry the revalidate getStaticProps returned at build time", async ({
+  request,
+}) => {
+  const buildId = await readBuildId(request, "/");
+  const response = await request.get("/hourly");
+  expectHit(response);
+  expect(response.headers()["cache-control"]).toBe(revalidateCacheControl(3600));
+  expect(await response.text()).toContain('id="render-source">build-time</p>');
+  const data = await request.get(`/_next/data/${buildId}/hourly.json`);
+  expectHit(data);
+  expect(data.headers()["cache-control"]).toBe(revalidateCacheControl(3600));
 });
 
 test("conditional rewrites taken at build time do not freeze another page", async ({ request }) => {
@@ -240,12 +261,51 @@ test("i18n domains render their own context instead of a locale-only snapshot", 
     ["en.example", "en"],
     ["fr.example", "fr"],
   ]) {
-    const response = await request.get(`${i18nBaseURL}/en`, { headers: { Host: host } });
+    // Request the trailing-slash URL directly: Playwright resets Host to the
+    // redirect target when it follows the `/en` -> `/en/` redirect.
+    const response = await request.get(`${i18nBaseURL}/en/`, { headers: { Host: host } });
     expect(response.status()).toBe(200);
     expect(response.headers()["x-vinext-cache"]).not.toBe("HIT");
     const html = await response.text();
     expect(html).toContain('id="locale">en</p>');
     expect(html).toContain(`id="default-locale">${defaultLocale}</p>`);
+  }
+});
+
+// Next.js prepareUrlAs() resolves a relative href against the current route
+// before building the cross-domain locale URL, so the configured host is always
+// followed by a `/` path and the href cannot change the authority.
+test("cross-domain locale navigation keeps relative hrefs on the configured domain", async () => {
+  test.skip(deployed, "workers.dev routing cannot receive the configured i18n domain hosts");
+  const port = new URL(i18nBaseURL).port;
+  const browser = await chromium.launch({
+    args: [
+      `--host-resolver-rules=MAP en.example 127.0.0.1:${port}, MAP fr.example 127.0.0.1:${port}`,
+    ],
+  });
+  try {
+    for (const [href, expected] of [
+      ["@evil.com", /^https:\/\/fr\.example\/@evil\.com\/?$/],
+      [".evil.com/x", /^https:\/\/fr\.example\/\.evil\.com\/x\/?$/],
+    ] as const) {
+      const page = await browser.newPage();
+      await page.route(
+        (url) => url.hostname !== "en.example",
+        (route) => route.abort(),
+      );
+      await page.goto("http://en.example/dynamic/");
+      await page.waitForFunction(() => (window as any).next?.router);
+      const hardNavigation = page.waitForRequest(
+        (request) => new URL(request.url()).hostname !== "en.example",
+      );
+      await page.evaluate((target) => {
+        void (window as any).next.router.push(target, undefined, { locale: "fr" });
+      }, href);
+      expect((await hardNavigation).url()).toMatch(expected);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
   }
 });
 
@@ -257,8 +317,10 @@ test("build-time redirects stay immutable for HTML and data", async ({ request }
   expect(redirect.status()).toBe(307);
   expect(redirect.headers()["location"]).toBe("/posts/first?from=build");
   expect(redirect.headers()["x-vinext-cache"]).toBe("HIT");
+  expect(redirect.headers()["cache-control"]).toBe(revalidateCacheControl(240));
   const data = await request.get(`/_next/data/${buildId}/redirect.json`);
   expectHit(data);
+  expect(data.headers()["cache-control"]).toBe(revalidateCacheControl(240));
   expect(await data.json()).toMatchObject({
     pageProps: {
       __N_REDIRECT: "/posts/first?from=build",
@@ -272,10 +334,12 @@ test("build-time notFound results stay immutable for HTML and data", async ({ re
   const removed = await request.get("/removed");
   expect(removed.status()).toBe(404);
   expect(removed.headers()["x-vinext-cache"]).toBe("HIT");
+  expect(removed.headers()["cache-control"]).toBe(revalidateCacheControl(120));
   expect(await removed.text()).toContain("Static Assets page not found");
   const removedData = await request.get(`/_next/data/${buildId}/removed.json`);
   expect(removedData.status()).toBe(404);
   expect(removedData.headers()["x-vinext-cache"]).toBe("HIT");
+  expect(removedData.headers()["cache-control"]).toBe(revalidateCacheControl(120));
   expect(await removedData.json()).toEqual({ notFound: true });
 });
 
@@ -414,4 +478,20 @@ test("rewrites serve public assets but cannot expose private cache artifacts", a
       }
     }
   }
+});
+
+// Verified against Next.js 16.2.7 `next start`: its static file server sets a
+// Cache-Control only when middleware or `headers()` set none.
+test("a public file keeps the headers() Cache-Control over the asset default", async ({
+  request,
+}) => {
+  const file = await request.get("/visible.txt");
+  expect(file.status()).toBe(200);
+  expect(file.headers()["cache-control"]).toBe("private, no-store");
+
+  const etag = file.headers()["etag"];
+  expect(etag).toBeTruthy();
+  const revalidated = await request.get("/visible.txt", { headers: { "if-none-match": etag } });
+  expect(revalidated.status()).toBe(304);
+  expect(revalidated.headers()["cache-control"]).toBe("private, no-store");
 });

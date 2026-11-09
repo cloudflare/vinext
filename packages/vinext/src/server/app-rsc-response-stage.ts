@@ -31,16 +31,20 @@ import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import {
   hasRscCacheBustingSearchParam,
   stripRscCacheBustingSearchParam,
-  stripRscSuffix,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
 } from "./app-rsc-cache-busting.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
+import {
+  isOnDemandRevalidateRequest,
+  PRERENDER_REVALIDATE_HEADER,
+} from "./revalidation-request.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { traceAppPageRender } from "./app-page-tracing.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { stripInheritedResponseStageCookies } from "./response-stage-policy.js";
 import { traceFindPageComponents } from "./pages-execution-tracing.js";
+import { runOutsideWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
@@ -99,14 +103,6 @@ function requestWithoutRscCacheBustingSearchParam(request: Request): Request {
   return cloneRequestWithUrl(request, url.toString());
 }
 
-function requestWithoutRscSuffix(request: Request): Request {
-  const url = new URL(request.url);
-  const pathname = stripRscSuffix(url.pathname);
-  if (pathname === url.pathname) return request;
-  url.pathname = pathname;
-  return cloneRequestWithUrl(request, url.toString());
-}
-
 function pathnameForResolvedUrl(resolvedUrl: string): string {
   return resolvedUrl.split("#", 1)[0].split("?", 1)[0];
 }
@@ -126,6 +122,8 @@ function rematchAppWorkerResponseStageRoute<TRoute extends AppRscHandlerRoute>(
           props.interceptionId,
         ) ?? null;
     }
+  } else if (props.matchKind === "raw-request") {
+    match = options.matchRawRequestRoute?.(props.routePathname) ?? null;
   } else if (props.matchKind === "request") {
     match = options.matchRequestRoute?.(props.routePathname) ?? null;
   } else {
@@ -157,12 +155,14 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
   if (props.kind === "app-full-request") {
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
+  // Read before cloning, like the full App RSC lifecycle: route handlers
+  // follow this signal directly instead of the clone chain below.
+  const rawRequestSignal = rawRequest.signal;
   options.registerCacheAdapters();
-  await options.ensureInstrumentation?.();
-
   const executionContext = isExecutionContextLike(ctx)
     ? ctx
     : (getRequestExecutionContext() ?? null);
+  await options.ensureInstrumentation?.(executionContext);
   const filteredHeaders = executionContext?.isInternalPagesRevalidation
     ? new Headers(rawRequest.headers)
     : filterInternalHeaders(rawRequest.headers);
@@ -233,6 +233,12 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
   const requestContext = createRequestContext({
     headersContext,
     executionContext,
+    // Like Next.js's work store, an authorized on-demand revalidation makes
+    // the data caches skip their reads for the whole request.
+    isOnDemandRevalidate: isOnDemandRevalidateRequest(
+      request.headers.get(PRERENDER_REVALIDATE_HEADER),
+    ),
+    requestSignal: executionContext?.requestSignal ?? rawRequestSignal,
     unstableCacheRevalidation: "background",
   });
   const middlewareContext: AppMiddlewareContext = {
@@ -312,26 +318,30 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           // A transported length belongs to neither the Pages render nor API
           // body. User code remains free to author the final Content-Length.
           preHandlerHeaders?.delete("Content-Length");
-          let pagesResponse = await options.renderPagesFallback({
-            allowRscDocumentFallback: props.allowRscDocumentFallback,
-            appRouteMatch: props.appRouteMatch
-              ? {
-                  route: {
-                    isDynamic: props.appRouteMatch.isDynamic,
-                    pattern: props.appRouteMatch.pattern,
-                  },
-                }
-              : null,
-            isDataRequest: props.isDataRequest,
-            isRscRequest: props.isRscRequest,
-            matchKind: props.matchKind,
-            middlewareContext,
-            initialResponseHeaders: preHandlerHeaders,
-            pathname: props.resolvedUrl,
-            pagesDataRequest: props.isDataRequest ? request : null,
-            request: pageRequest,
-            url: new URL(props.requestUrl),
-          });
+          const renderPagesFallback = options.renderPagesFallback;
+          let pagesResponse = await runOutsideWorkStoreScope(() =>
+            renderPagesFallback({
+              allowRscDocumentFallback: props.allowRscDocumentFallback,
+              appRouteMatch: props.appRouteMatch
+                ? {
+                    route: {
+                      isDynamic: props.appRouteMatch.isDynamic,
+                      pattern: props.appRouteMatch.pattern,
+                    },
+                  }
+                : null,
+              isDataRequest: props.isDataRequest,
+              isRscRequest: props.isRscRequest,
+              matchKind: props.matchKind,
+              middlewareContext,
+              initialResponseHeaders: preHandlerHeaders,
+              pathname: props.resolvedUrl,
+              pagesDataRequest: props.isDataRequest ? request : null,
+              request: pageRequest,
+              sharedAcrossHosts: props.sharedAcrossHosts,
+              url: new URL(props.requestUrl),
+            }),
+          );
           if (!pagesResponse) {
             return new Response("Invalid vinext App response stage", { status: 404 });
           }
@@ -358,12 +368,10 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           setCurrentFetchSoftTags(
             buildPageCacheTags(props.cleanPathname, [], [...route.routeSegments], "route"),
           );
-          const normalizedUserlandRequest = requestWithoutRscSuffix(request);
-          const userlandRequest =
-            requestWithoutRscCacheBustingSearchParam(normalizedUserlandRequest);
+          const userlandRequest = requestWithoutRscCacheBustingSearchParam(request);
           const routeHandlerRequest = isEdgeRouteHandler(route.routeHandler)
             ? userlandRequest
-            : normalizedUserlandRequest;
+            : request;
           const routeHandlerUrl = new URL(routeHandlerRequest.url);
           const internalRscValues = isEdgeRouteHandler(route.routeHandler)
             ? []
@@ -407,7 +415,6 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
         return options.dispatchMatchedPage({
           bypassInterceptionContextCache: props.bypassInterceptionContextCache,
           cachePathname: props.cachePathname,
-          clientReuseManifest: normalized.clientReuseManifest,
           cleanPathname: props.cleanPathname,
           displayPathname: props.canonicalPathname,
           formState: null,
@@ -415,7 +422,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           interceptionContext: normalized.interceptionContextHeader,
           interceptionId: normalized.interceptionIdHeader,
           interceptionPathname:
-            props.matchKind === "resolved" ? props.cleanPathname : normalized.requestCleanPathname,
+            props.matchKind === "resolved" ? props.cleanPathname : normalized.requestPathname,
           isProgressiveActionRender: false,
           isRscRequest: normalized.isRscRequest,
           middlewareContext,

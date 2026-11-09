@@ -19,8 +19,9 @@
  */
 
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
-import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, restoreBasePath, stripBasePath } from "../utils/base-path.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../utils/protocol-headers.js";
+import { cloneRequestWithUrl, hasUrlParserDotSegment } from "./request-pipeline.js";
 
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
@@ -81,8 +82,16 @@ export function encodeUrlParserIgnoredCharacters(pathname: string): string {
  * `/_next/data/<buildId>/en.json`            → `/en`
  * `/_next/data/<wrong-id>/about.json`        → null
  * `/_next/data/<buildId>/about`              → null  (missing .json suffix)
+ * `/_next/data/<buildId>/blog/...json`       → null  (strips to a dot segment)
+ *
+ * `decoded` marks a percent-decoded copy of a pathname whose raw form already
+ * parsed: a `%2e` left in it was `%252e` on the wire, an ordinary character.
  */
-export function parseNextDataPathname(pathname: string, buildId: string): NextDataMatch | null {
+export function parseNextDataPathname(
+  pathname: string,
+  buildId: string,
+  decoded = false,
+): NextDataMatch | null {
   if (!buildId) return null;
   if (!isNextDataPathname(pathname)) return null;
 
@@ -91,7 +100,33 @@ export function parseNextDataPathname(pathname: string, buildId: string): NextDa
   if (!pathname.startsWith(expectedPrefix)) return null;
 
   const rest = pathname.slice(expectedPrefix.length, -NEXT_DATA_SUFFIX.length);
+  // The URL was canonicalized with `.json` attached, so removing it can leave
+  // a dot segment (`blog/...json` -> `blog/..`). The page URL built from it
+  // would resolve to another page than the one config rules and middleware
+  // matchers see. No page's data URL strips to one.
+  if (!decoded && hasUrlParserDotSegment(rest)) return null;
+  return pageFromNextDataRest(rest);
+}
 
+/**
+ * The page pathname a `_next/data` URL addresses, whatever its buildId. Next.js
+ * compiles every middleware matcher with an optional `/_next/data/<buildId>`
+ * prefix and `.json` suffix, so a matcher written for `/admin` also guards that
+ * page's data URL, even one with a stale buildId. Middleware matching uses this
+ * when the request reaches middleware with its raw data URL
+ * (`skipProxyUrlNormalize`).
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/analysis/get-page-static-info.ts
+ */
+export function nextDataMiddlewareMatchPathname(pathname: string): string | null {
+  if (!isNextDataPathname(pathname)) return null;
+  const buildIdEnd = pathname.indexOf("/", NEXT_DATA_PREFIX.length);
+  if (buildIdEnd <= NEXT_DATA_PREFIX.length) return null;
+  const rest = pathname.slice(buildIdEnd + 1, -NEXT_DATA_SUFFIX.length);
+  if (hasUrlParserDotSegment(rest)) return null;
+  return pageFromNextDataRest(rest)?.pagePathname ?? null;
+}
+
+function pageFromNextDataRest(rest: string): NextDataMatch | null {
   // Empty rest (`/_next/data/<buildId>/.json`) is not a valid page path.
   if (rest.length === 0) return null;
 
@@ -261,12 +296,10 @@ export function normalizePagesDataRequest(
   }
   const pagePathname = normalizeNextDataPagePathname(dataMatch.pagePathname, trailingSlash);
   const normalizedUrl = new URL(reqUrl);
-  normalizedUrl.pathname = hadBasePath
-    ? addBasePathToPathname(pagePathname, basePath)
-    : pagePathname;
+  normalizedUrl.pathname = hadBasePath ? restoreBasePath(pagePathname, basePath) : pagePathname;
   return {
     isDataReq: true,
-    request: new Request(normalizedUrl, request),
+    request: cloneRequestWithUrl(request, normalizedUrl.href),
     normalizedPathname: pagePathname,
     search: reqUrl.search,
     notFoundResponse: null,

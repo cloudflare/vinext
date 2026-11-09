@@ -119,6 +119,8 @@ vinext({ cache: responseStoreAdapter({ shards: 16 }) });
 
 Each cache key remains strongly coordinated by one SQLite Durable Object. Tag/path refreshes and purges fan out across all shards. The option is disabled by default, and changing the count starts a new cache layout for the deployed Worker version.
 
+Next.js keeps an App Router page's HTML and RSC payload in one cache entry. Response Store stores them under separate keys, so whenever it stores or regenerates one of the two, it stores the other from the same render. Replacing the other one doesn't purge its edge copy, which would spend the [shared purge budget](#workers-cache-and-kv) on every regeneration. Until that copy's own cache policy ends, the edge can serve it from an earlier render beside the new one. Concurrent misses can also leave the two from different renders.
+
 ### Service-binding mode
 
 The default service-binding mode keeps the cache service in a separate Worker. `vinext init` defines both Workers in `cloudflare.config.ts` using the config helper:
@@ -130,7 +132,6 @@ const responseStore = await createWorkersResponseStoreServiceBindingConfig({
   worker: {
     name: "my-app-response-store",
     compatibilityDate: "2026-09-27",
-    compatibilityFlags: ["nodejs_compat"],
   },
   bucket: "my-app-response-store-cache-bodies",
 });
@@ -230,6 +231,12 @@ Explicit provider headers remain a Cloudflare extension: `Cloudflare-CDN-Cache-C
 
 This setup is fast when an entry is present at the edge, but Workers Cache is distributed rather than one globally shared cache. A response cached in one region may still miss in another. Tiered caching can reduce this duplication, but without a durable response store a regional miss or eviction can require another render. The KV data cache is also eventually consistent.
 
+Next.js keeps an App Router page's HTML and RSC payload in one cache entry. Workers Cache stores each response under its own key, and only from a request for that key. So when Workers Cache renders one of the two for its cache, on a miss or while refreshing a stale entry, vinext also requests the other one in the background. A page first reached by client navigation is then cached for a hard load too, and the other way round. That background request is billed like any other request to the cached response entrypoint. When the other part isn't cached, it renders it separately; when it's still fresh, the request is a cache hit and changes nothing. Interception, parallel-route slot and prefetch loading-shell payloads are stored on their own. Concurrent misses can leave the two parts from different renders, and a request made just after a revalidation can reach the other part before the revalidation does, leaving that part to refresh on its own next request.
+
+`revalidatePath()` and `revalidateTag()` purge the edge by tag. [Workers Cache purges](https://developers.cloudflare.com/workers/cache/purge/) use Cloudflare's Free-tier purge limits, which every Worker in the account shares. As in Next.js, vinext sends one batched purge per cacheLife profile at the end of a Server Action or Route Handler, not one per call. If a purge fails, for example because the rate limit is reached, vinext logs the error and the action still succeeds: the data cache is already invalidated, but edge-cached responses for those tags stay stale until they expire. A route that only needs the client to refetch dynamic data can call `refresh()`, which doesn't purge.
+
+`revalidatePath()` skips the edge purge when every App route that could serve the path sets `dynamic = "force-dynamic"`, because those responses are never cached at the edge. Marking a signed-in area's layout `force-dynamic` therefore keeps its revalidations off the purge budget. The data cache is still invalidated. vinext purges as usual when the app also has a Pages Router or when a metadata route could serve the path.
+
 Use `createWorkersCacheConfig()` to configure the response entrypoints and version metadata, and add the KV binding for the data adapter:
 
 ```ts
@@ -324,7 +331,7 @@ defineWorker({
 });
 ```
 
-An existing `runWorkerFirst: true` also protects these files. Preserve any other Worker-first routes when adding the private directory pattern. Exclusion patterns must not bypass the private directory; init rejects exclusion patterns when configuring this cache.
+Avoid `runWorkerFirst: true`; it also routes the build output through the Worker, which returns 404 for it (see [Middleware and static files](/docs/deploying/cloudflare#middleware-and-static-files)). The `/*` pattern that `vinext init` generates already covers the private directory. Otherwise, preserve any other Worker-first routes when adding the private directory pattern. Exclusion patterns must not bypass the private directory; init rejects exclusion patterns other than its build-output exclusions when configuring this cache. See Cloudflare's [`run_worker_first` reference](https://developers.cloudflare.com/workers/static-assets/binding/#run_worker_first) for the pattern syntax.
 
 Existing typed configs require manual Static Assets setup; init stops before modifying the project so it cannot overwrite a custom binding or leave private files exposed.
 
@@ -350,7 +357,7 @@ For apps with many routes, use traffic-aware warming to prioritize pages people 
 npx @vinext/cloudflare deploy --traffic-aware-warm-cache
 ```
 
-vinext queries Cloudflare zone analytics, ranks page paths by request count, and resolves them against the app's routes. It selects paths up to the traffic coverage target or route limit, then uses the same staged warming flow and cacheability checks described above. Traffic can supply concrete dynamic paths that were not enumerated by `generateStaticParams()` or `getStaticPaths()`; pages that cannot be cached still render on demand.
+vinext queries Cloudflare zone analytics, ranks page paths by request count, and resolves them against the app's routes. It selects paths up to the traffic coverage target or route limit, then uses the same staged warming flow and cacheability checks described above. Traffic can supply concrete dynamic paths that were not enumerated by `generateStaticParams()` or `getStaticPaths()`; pages that cannot be cached still render on demand. Requests the app never renders are left out: Cloudflare's reserved `/cdn-cgi/` paths and files served as static assets, such as those in `public/`.
 
 <table>
   <thead>
@@ -433,7 +440,7 @@ You can run `vinext init --platform=cloudflare` to configure these choices. The 
 Pages Router uses the page's data-fetching methods to determine its caching behavior:
 
 - **`getStaticProps()`:** caches the rendered page and its JSON data. Omitting `revalidate` or returning `revalidate: false` keeps the entry fresh until it is invalidated or removed by the cache backend. Return a positive `revalidate` interval in seconds to enable ISR.
-- **`getStaticPaths()`:** supplies concrete paths for a dynamic `getStaticProps()` page. Its `fallback` setting determines whether paths outside that list can be generated on demand.
+- **`getStaticPaths()`:** supplies concrete paths for a dynamic `getStaticProps()` page. Its `fallback` setting determines whether paths outside that list can be generated on demand. In production, Next.js only calls `getStaticPaths()` at build time. vinext calls it at request time in the deployed server or Worker when a path has no fresh or stale cached entry, including paths outside the list that return 404 under `fallback: false`, expired entries, and on-demand revalidation. Cache hits, stale responses, and draft-mode requests do not call it.
 - **Pages without `getServerSideProps()` or `getInitialProps()`:** qualify for automatic static optimization and response caching through Workers Response Store, Workers Cache, or prerendering with Static Assets. A custom `_app.getInitialProps` disables this for pages without `getStaticProps()`.
 - **`getServerSideProps()` or page `getInitialProps()`:** render per request by default. An explicitly authored public cache policy can opt a response into Workers Response Store or Workers Cache; use this only when the response can be shared between visitors.
 
@@ -474,19 +481,27 @@ A static page defaults to `revalidate = false`, as in Next.js, unless a `revalid
 
 Dynamic APIs include `cookies()`, `headers()`, `connection()`, a `fetch` with `cache: "no-store"` outside a cache scope, and reading `searchParams`. Under `dynamic = "force-static"` they return empty values or don't count, so the page is still stored.
 
-`useSearchParams()` in a client component doesn't make a page dynamic, and returns empty search params under `dynamic = "force-static"`. Otherwise, in production and outside `cacheComponents`, a cacheable page's HTML gets the nearest `<Suspense>` fallback and the browser renders the real value after hydration, as in Next.js. With no `<Suspense>` boundary above the call, the HTML request fails with Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, where Next.js fails the build.
+`useSearchParams()` in a client component doesn't make a page dynamic. Under `dynamic = "force-static"` it returns empty search params in the HTML and the browser URL's after hydration, as in Next.js. Otherwise, in production, a cacheable page's HTML gets the nearest `<Suspense>` fallback and the browser renders the real value after hydration, as in Next.js. With no `<Suspense>` boundary above the call, the HTML request fails with Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, where Next.js fails the build.
 
 ## Query strings
 
 Next.js keeps one cache entry per static page, whatever the query string, and vinext does the same for App Router pages: `/blog/a?ref=x` and `/blog/a?utm_source=y` share the `/blog/a` entry. A render that reads the query is dynamic and isn't stored, so one visitor's query can't reach the shared entry.
 
 - **KV and in-memory:** page keys leave out the query, for App Router and Pages Router pages.
-- **Workers Response Store:** a miss renders from the full request, and the response is stored under the path without the query.
+- **Workers Response Store:** a miss renders from the full request, and the response is stored under the path without the query. A cacheable Route Handler or metadata route is stored under its path too, as Next.js keys a route handler by its pathname; a handler that reads the request URL is dynamic and isn't stored.
 - **Workers Cache:** a hit skips rendering (middleware and routing still run), so the key is chosen before rendering, from the cacheability manifest that a staged deploy writes (`--warm-cache`, see [Cache warming](#cache-warming)). Paths the manifest marks static share one entry across queries, and a request for one that turns dynamic at runtime can fail with a 500, like Next.js's `Page changed from static to dynamic at runtime` error. Other paths, and every path without the manifest, keep the full query in their key.
 
 With Workers Response Store and Workers Cache, some responses aren't stored under the query-free key, for example interception RSC requests and responses that an explicit provider policy in a `next.config` `headers()` rule makes cacheable. Pages Router pages keep the query in their keys on these two backends.
 
 In production, most App page responses that vinext knows will not be stored send Next.js's `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, unless middleware or a `next.config` `headers()` rule sets `Cache-Control`.
+
+## Hosts
+
+Next.js keeps one cache entry per path whatever the host, so an app served on several domains shares its cached pages. A render that reads the host, such as `headers().get("host")` in a page or `request.nextUrl.hostname` in a route handler, is dynamic and isn't stored, so one host's response can't reach another.
+
+- **KV and in-memory:** keys leave out the host. A Pages Router page served on a configured [i18n domain](https://nextjs.org/docs/pages/guides/internationalization#domain-routing) keeps that domain.
+- **Workers Response Store and Workers Cache:** entries leave out the host, and a Pages Router page on a configured i18n domain keeps that domain, as with KV. A `getStaticProps` page shares one entry across hosts even when a custom `_app.getInitialProps` runs for it, as in Next.js.
+- **Workers Cache:** Cloudflare [keys an entry](https://developers.cloudflare.com/workers/cache/cache-keys/) by its path and query, entrypoint, `ctx.props`, Worker version and a few request headers that name another host, such as `X-Forwarded-Host`, but not by the host itself. vinext keeps the host out of the key it adds and the `ctx.props` it passes, and gives a cold render the request's real host. A proxy in front of the Worker that sets `X-Forwarded-Host` still gets one entry per forwarded host.
 
 ## Freshness and revalidation
 
@@ -497,11 +512,30 @@ vinext follows Next.js-style cache semantics:
 - An **expired** entry is not returned and must be regenerated.
 - `revalidatePath()` invalidates content associated with a path.
 - `revalidateTag()` invalidates content associated with a cache tag.
-- Pages Router's `res.revalidate()` requests on-demand page regeneration from an API route, subject to the [Response Store limitation above](#which-pages-router-pages-are-cached).
+- Pages Router's `res.revalidate()` requests on-demand page regeneration from an API route, subject to the [Response Store limitation above](#which-pages-router-pages-are-cached). As in Next.js, that regeneration ignores the stored page or route handler entry and the cached `"use cache"`, `fetch` and `unstable_cache` values. It renders in the foreground, stores the fresh results, and resolves only once the new entry is stored. Concurrent revalidations of the same page, route handler or metadata route share one render.
 
 With the KV or in-memory cache, when a background regeneration of an App Router page fails, the previous entry is kept and regeneration is retried later, as in Next.js.
 
 The adapter changes where entries live and how they are served, but it should not change the caching API used by application code.
+
+## How `"use cache"` arguments are keyed
+
+As in Next.js, a `"use cache"` function's arguments are serialized with React's Server Function argument encoder, and that serialized form is the cache key. Files and Blobs are keyed by their bytes alone, so files with the same contents share an entry even if their names, types, or timestamps differ. Values the encoder can't serialize, such as JSX, functions, and class instances, are passed through without affecting the key; the function can render or return them but can't read their properties.
+
+## How cached `fetch` request bodies are keyed
+
+A cached `fetch` call's request body is part of its cache key, so requests that differ only in their body get separate entries. Strings, binary data, `ReadableStream`s, `URLSearchParams`, `FormData` and `Blob`s are keyed by their contents. Any other body, such as an async iterable or an object the runtime converts to a string, is built into a `Request` the way `fetch` itself does, and keyed by that request's bytes. Next.js doesn't key these other bodies, so it gives requests that differ only in such a body the same entry.
+
+A stream's chunks, whether from a `ReadableStream`, an async iterable or a `Request`, are keyed by the bytes sent for them. Workers sends the bytes of `ArrayBuffer`, `DataView` and other typed array chunks as well as `Uint8Array`s, so those are keyed too.
+
+Some requests with a body are fetched without the cache:
+
+- **Large bodies.** A body over 1 MiB isn't keyed.
+- **Other chunk types.** A body isn't keyed if it streams anything other than binary chunks (or, in a `ReadableStream` body, strings). Node.js converts an async iterable's chunks to `Uint8Array`s, but Workers passes them through, so on Workers an async iterable that yields strings is fetched uncached.
+
+A cached `fetch` reads the body, up to 1 MiB, before it sends the request. A body that waits for the response, or for anything else that happens after the request starts, never finishes, so the fetch doesn't either. Aborting the request takes effect only once that read ends. Next.js also reads a stream body before it sends the request.
+
+Like `fetch` itself, a cached `fetch` copies its URL, headers, `cf` and body when it is called. It keys and sends that copy, so changing those objects after the call changes neither. A stream body, from a `ReadableStream` or a `Request`, can't be copied then: as with `fetch`, its chunks are read after the call, so a chunk changed before it is read is sent changed. It is keyed by the bytes read, and sent as those same bytes, as in Next.js. Next.js sends the caller's other objects, though, so a request changed after its key is built is sent, and its response stored, under the key of the request it was changed from.
 
 ## Where generated metadata goes
 

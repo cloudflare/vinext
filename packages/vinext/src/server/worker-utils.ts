@@ -5,7 +5,7 @@
  * Router worker entry through "vinext/server/worker-utils".
  */
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
-import { readStaticFileSignal } from "./static-file-signal.js";
+import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
 
 /**
  * Merge middleware/config headers into a response.
@@ -67,7 +67,9 @@ export function mergeHeaders(
   extraHeaders: Record<string, string | string[]>,
   statusOverride?: number,
 ): Response {
-  const status = statusOverride ?? response.status;
+  // As in Next.js, which sets a 304 after middleware's status, a 304 answers
+  // the request's own validator.
+  const status = response.status === 304 ? 304 : (statusOverride ?? response.status);
   const merged = new Headers();
   for (const [k, v] of Object.entries(extraHeaders)) {
     if (isContentLengthHeader(k)) continue;
@@ -121,10 +123,35 @@ export function mergeHeaders(
   });
 }
 
+/**
+ * Merge middleware/config headers into a file served from the asset layer.
+ * Its Cache-Control is only the layer's default (Workers Static Assets sends
+ * `public, max-age=0, must-revalidate` with every file), so one set by
+ * middleware or `headers()` wins, as Next.js's static file server sets its
+ * own only when the response has none.
+ */
+export function mergeStaticFileHeaders(
+  response: Response,
+  extraHeaders: Record<string, string | string[]>,
+  statusOverride?: number,
+): Response {
+  const merged = mergeHeaders(response, extraHeaders, statusOverride);
+  for (const [name, value] of Object.entries(extraHeaders)) {
+    if (name.toLowerCase() !== "cache-control") continue;
+    const cacheControl = (Array.isArray(value) ? value.join(", ") : value).trim();
+    // Like Next.js, an empty value leaves the default in place.
+    if (!cacheControl) continue;
+    // mergeHeaders built a new, mutable Response, since extraHeaders is non-empty.
+    merged.headers.set(name, cacheControl);
+  }
+  return merged;
+}
+
 export async function resolveStaticAssetSignal(
   signalResponse: Response,
   options: {
-    fetchAsset(path: string): Promise<Response>;
+    /** `requestHeaders` are the post-middleware request headers, when middleware set any. */
+    fetchAsset(path: string, requestHeaders: Headers | null): Promise<Response>;
   },
 ): Promise<Response | null> {
   const signal = readStaticFileSignal(signalResponse);
@@ -144,8 +171,9 @@ export async function resolveStaticAssetSignal(
     "transfer-encoding",
   ]);
 
+  const requestHeaders = readStaticFileSignalRequestHeaders(signalResponse);
   cancelResponseBody(signalResponse);
-  const assetResponse = await options.fetchAsset(assetPath);
+  const assetResponse = await options.fetchAsset(assetPath, requestHeaders);
   // Only preserve the middleware/status-layer override when we actually got a
   // real asset response back. If the asset lookup misses (404/other non-ok),
   // or returns a partial response, keep that filesystem result instead of
@@ -154,17 +182,32 @@ export async function resolveStaticAssetSignal(
     assetResponse.ok && assetResponse.status !== 206 && signalResponse.status !== 200
       ? signalResponse.status
       : undefined;
-  return mergeHeaders(assetResponse, extraHeaders, statusOverride);
+  return mergeStaticFileHeaders(assetResponse, extraHeaders, statusOverride);
 }
 
-/** Retarget a Worker asset request without dropping its conditional/range fields. */
-export function createStaticAssetRequest(assetPath: string, sourceRequest: Request): Request {
-  const assetUrl = new URL(assetPath, sourceRequest.url);
+/**
+ * Retarget a Worker asset request without dropping its conditional/range
+ * fields. `headers` replaces the source request's headers with middleware's
+ * overrides, so a removed `Range` or replaced validator reaches the asset fetch.
+ */
+export function createStaticAssetRequest(
+  assetPath: string,
+  sourceRequest: Request,
+  headers: Headers | null = null,
+): Request {
+  // A `?` or `#` in a public file's name would otherwise start the query or
+  // fragment.
+  const assetUrl = new URL(
+    assetPath.replace(/[?#]/g, (character) => encodeURIComponent(character)),
+    sourceRequest.url,
+  );
   if (sourceRequest.method === "GET" || sourceRequest.method === "HEAD") {
-    return new Request(assetUrl, sourceRequest);
+    return headers
+      ? new Request(new Request(assetUrl, sourceRequest), { headers })
+      : new Request(assetUrl, sourceRequest);
   }
   return new Request(assetUrl, {
     method: sourceRequest.method,
-    headers: sourceRequest.headers,
+    headers: headers ?? sourceRequest.headers,
   });
 }

@@ -28,6 +28,123 @@ Set `output: "standalone"` in `next.config`. A production build then emits a sel
 
 Set `PORT` and `HOST` to change the default bind address. Unlike Next.js standalone output, vinext uses `HOST`, not `HOSTNAME`.
 
+### Behind a reverse proxy
+
+Any client can send forwarding headers, so by default the Node server (`vinext start`, standalone output, and `vinext dev`) ignores them. If the server only receives traffic through a reverse proxy or load balancer you control, set one of these environment variables:
+
+<table>
+  <thead>
+    <tr>
+      <th>Variable</th>
+      <th>Effect</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>`VINEXT_TRUST_PROXY=1`</td>
+      <td>
+        Trust the proxy's headers: `X-Forwarded-Proto` sets the protocol of `request.url`, and
+        client IP and location headers populate `request.ip` and `request.geo`.
+      </td>
+    </tr>
+    <tr>
+      <td>`VINEXT_TRUSTED_HOSTS`</td>
+      <td>
+        Comma-separated hosts, such as `example.com,www.example.com`, that `X-Forwarded-Host` may
+        set as the host of `request.url`. Other values fall back to the `Host` header. Setting this
+        also enables `VINEXT_TRUST_PROXY`.
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+`request.ip` and `request.geo` on `NextRequest` are vinext extensions; Next.js removed them in version 15. Without proxy trust they're `undefined` on the Node server. With it, `request.ip` reads `CF-Connecting-IP`, then `X-Real-IP`, then the first `X-Forwarded-For` entry. `request.geo` reads Cloudflare's `CF-IPCountry`, `CF-IPCity`, `CF-Region`, `CF-IPLatitude` and `CF-IPLongitude` headers, or the matching `X-Vercel-IP-*` headers.
+
+Proxy trust trusts all of these headers, so your proxy must overwrite or strip any it doesn't set itself. Otherwise a client can still choose its own IP or location. That includes a Node server behind Cloudflare, which needs `VINEXT_TRUST_PROXY=1` to read `CF-Connecting-IP`; make sure the server only accepts traffic from Cloudflare.
+
+On Cloudflare Workers, neither variable is needed. `request.ip` comes from `CF-Connecting-IP`, which Cloudflare sets, and `request.geo` comes from the request's `cf` metadata.
+
+### Custom standalone entries
+
+The generated `server.js` is a small wrapper around `startProdServer` from `vinext/server/prod-server`. To control where the server loads the build output from, write your own entry and call `startProdServer` directly. All options are optional:
+
+<table>
+  <thead>
+    <tr>
+      <th>Option</th>
+      <th>Default</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>`port`</td>
+      <td>`PORT` env var, otherwise `3000`</td>
+      <td>Port to listen on.</td>
+    </tr>
+    <tr>
+      <td>`host`</td>
+      <td>`"0.0.0.0"`</td>
+      <td>
+        Address to bind to. Unlike the generated `server.js`, `startProdServer` doesn't read `HOST`,
+        so pass `process.env.HOST` yourself if you need it.
+      </td>
+    </tr>
+    <tr>
+      <td>`outDir`</td>
+      <td>`dist`, resolved against the current directory</td>
+      <td>
+        Build output directory containing `client/` and `server/`. Relative paths resolve against
+        the current directory. In standalone output, this is `dist/standalone/dist`.
+      </td>
+    </tr>
+    <tr>
+      <td>`serverDir`</td>
+      <td>`<outDir>/server`</td>
+      <td>Directory containing the server bundles, manifests, and prerendered output.</td>
+    </tr>
+    <tr>
+      <td>`rscEntryPath`</td>
+      <td>`<serverDir>/index.js`</td>
+      <td>App Router server entry. If this file exists, the server runs in App Router mode.</td>
+    </tr>
+    <tr>
+      <td>`serverEntryPath`</td>
+      <td>`<serverDir>/entry.js`</td>
+      <td>Pages Router server entry. Used when there's no App Router entry.</td>
+    </tr>
+    <tr>
+      <td>`noCompression`</td>
+      <td>`false`</td>
+      <td>Disable response compression.</td>
+    </tr>
+  </tbody>
+</table>
+
+`ProdServerOptions` also has `purpose` and `silent`, which vinext uses for its own build-time servers. Leave them unset. The returned promise resolves to `{ server, port }` once the server is listening.
+
+### Compiled single-file binaries
+
+A `bun build --compile` binary can't use the generated `server.js`. Bun fixes `import.meta.dirname` when it compiles the binary, so `join(import.meta.dirname, "dist")` doesn't point at the directory the binary runs from. Depending on the Bun version, it points at the build machine's path or at Bun's embedded `/$bunfs/root`. Resolve `outDir` from the executable's location instead:
+
+```js
+// server-bin.mjs, in your project root
+import path from "node:path";
+import { startProdServer } from "vinext/server/prod-server";
+
+await startProdServer({
+  port: Number.parseInt(process.env.PORT ?? "3000", 10),
+  host: process.env.HOST ?? "0.0.0.0",
+  outDir: path.join(path.dirname(process.execPath), "dist"),
+});
+```
+
+```bash
+bun build --compile --compile-autoload-package-json server-bin.mjs --outfile dist/standalone/server
+```
+
+Keep the entry outside `dist/standalone`: each build deletes and recreates that directory. Compile after `vite build`, then ship the whole `dist/standalone` directory, because the `server` binary needs the `dist/` and `node_modules/` directories next to it. The server bundles in `dist/server` still import their dependencies from `node_modules` at runtime. `--compile-autoload-package-json` lets the binary read package `exports` and `main` fields when it resolves them. Under plain Node, `process.execPath` is the Node binary, so use this entry only for compiled builds.
+
 ## Nitro adapters
 
 Add Nitro when you need a deployment preset for Vercel, Netlify, AWS, Deno Deploy, Azure, or another supported host.
@@ -43,3 +160,16 @@ export default defineConfig({
 ```
 
 Follow the [Nitro deployment guide](https://v3.nitro.build/deploy) for host-specific presets and output. On Cloudflare, prefer vinext's native integration for direct bindings, caching, image optimization, and the one-command deployment workflow.
+
+### Middleware and static files
+
+In Next.js, middleware runs for every path its `matcher` matches, including files in `public/`. On presets where Nitro's own server serves the static output, such as `node-server` and `bun`, vinext runs requests for `public/` files through middleware and then serves the file from Nitro's output, so rewrites to public files work too. As in Next.js, `public/docs/index.html` is served only at `/docs/index.html`, not at `/docs`. As on Cloudflare Workers, middleware does not run for the `/_next/static` build output, which Nitro serves directly.
+
+Where something else serves the output directory before Nitro's server runs, middleware does not run for `public/` files:
+
+- presets whose platform serves the static output, such as Vercel, Netlify, and AWS Amplify, or whose web server does, such as IIS with `iis-node`;
+- `vite preview` and `nitro preview`.
+
+On presets whose platform serves the static output, rewrites to public files don't work either. Under a Nitro `baseURL` other than `/`, vinext neither runs requests for `public/` files through middleware nor serves rewrites to them; set vinext's `basePath` in `next.config` instead. Files that Nitro serves from its own `publicAssets` directories, rather than from Vite's `publicDir`, also skip middleware.
+
+Requests for public files skip Nitro's route rules, `request` and `response` hooks, error handling, and its async request context. When vinext serves the file, the route rules and hooks run for the request vinext makes for the file instead. This includes a request that a directory `index.html` in `public/` would answer, such as `/` with `public/index.html`, even though vinext renders the page there. Nitro's server middleware never runs for static files.

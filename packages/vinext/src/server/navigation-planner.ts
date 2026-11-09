@@ -6,10 +6,10 @@ import {
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import type {
-  RouteManifest,
-  RouteManifestInterception,
-  RouteManifestRoute,
-} from "../routing/app-route-graph.js";
+  BrowserRouteManifest,
+  BrowserRouteManifestInterception,
+  BrowserRouteManifestRoute,
+} from "../routing/browser-route-manifest.js";
 import {
   AppElementsWire,
   compareAppElementsSlotIds,
@@ -262,7 +262,8 @@ export type EarlyNavigationIntentDecision =
   | {
       kind: "flightNavigation";
       // True for same-path search changes, where a cached full-route payload is
-      // not authoritative because search params are a page input.
+      // not authoritative because search params are a page input, and for a
+      // Link to the exact current URL. Neither shows an optimistic route shell.
       bypassNavigationCache: boolean;
       trace: NavigationTrace;
     };
@@ -325,7 +326,7 @@ export type NavigationPlannerInput = {
   // Graph-owned route topology is the semantic authority for root/layout/slot
   // decisions whenever the caller can supply it. Null keeps the legacy
   // snapshot-only path for low-level tests and unknown route shapes.
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   state: NavigationPlannerState;
   event: NavigationEvent;
 };
@@ -762,14 +763,24 @@ function classifyNavigationReuse(facts: NavigationReuseFacts): NavigationReuseDe
     return createFreshFetchDecision(facts, "refresh");
   }
 
-  if (!facts.bypassNavigationCache && facts.visitedResponse.status === "available") {
+  // Only same-pathname navigations bypass the cache. They skip the optimistic
+  // shell too: Next.js keys segment boundaries without the page's search
+  // params, so such a navigation suspends inside the mounted loading boundary
+  // and the transition keeps the current page until the new one commits. A
+  // loading shell would replace it.
+  // Ref: packages/next/src/client/components/layout-router.tsx (activeStateKey)
+  if (facts.bypassNavigationCache) {
+    return createFreshFetchDecision(facts, "cacheBypassed");
+  }
+
+  if (facts.visitedResponse.status === "available") {
     return {
       kind: "reuseVisitedResponse",
       trace: createNavigationReuseTrace(NavigationTraceReasonCodes.visitedResponseReuse, facts),
     };
   }
 
-  if (!facts.bypassNavigationCache && facts.prefetch.status === "available") {
+  if (facts.prefetch.status === "available") {
     return {
       kind: "consumePrefetch",
       trace: createNavigationReuseTrace(NavigationTraceReasonCodes.prefetchResponseReuse, facts),
@@ -784,14 +795,7 @@ function classifyNavigationReuse(facts: NavigationReuseFacts): NavigationReuseDe
       };
     }
 
-    return createFreshFetchDecision(
-      facts,
-      facts.bypassNavigationCache ? "cacheBypassed" : facts.optimisticRouteShell.reason,
-    );
-  }
-
-  if (facts.bypassNavigationCache) {
-    return createFreshFetchDecision(facts, "cacheBypassed");
+    return createFreshFetchDecision(facts, facts.optimisticRouteShell.reason);
   }
 
   return createFreshFetchDecision(facts, "cacheMiss");
@@ -850,9 +854,9 @@ function splitMatchedUrlIntoRouteParts(matchedUrl: string): string[] {
 }
 
 function findRouteManifestRouteByMatchedUrl(
-  routeManifest: RouteManifest,
+  routeManifest: BrowserRouteManifest,
   matchedUrl: string,
-): RouteManifestRoute | null {
+): BrowserRouteManifestRoute | null {
   const urlParts = splitMatchedUrlIntoRouteParts(matchedUrl);
 
   // RouteManifest preserves buildAppRouteGraph's sortRoutes() order, so the
@@ -867,15 +871,18 @@ function findRouteManifestRouteByMatchedUrl(
   return null;
 }
 
-function routeManifestRouteMatchesUrl(route: RouteManifestRoute, matchedUrl: string): boolean {
+function routeManifestRouteMatchesUrl(
+  route: BrowserRouteManifestRoute,
+  matchedUrl: string,
+): boolean {
   return matchRoutePattern(splitMatchedUrlIntoRouteParts(matchedUrl), route.patternParts) !== null;
 }
 
 function findRouteManifestRouteByIdOrMatchedUrl(options: {
   matchedUrl: string;
   routeId: string;
-  routeManifest: RouteManifest;
-}): RouteManifestRoute | null {
+  routeManifest: BrowserRouteManifest;
+}): BrowserRouteManifestRoute | null {
   const routeId = stripInterceptionContextFromRouteId(options.routeId);
   const route = options.routeManifest.segmentGraph.routes.get(routeId);
   if (route && routeManifestRouteMatchesUrl(route, options.matchedUrl)) {
@@ -896,9 +903,9 @@ function findRouteManifestRouteByIdOrMatchedUrl(options: {
 }
 
 function findRouteManifestRouteForSnapshot(
-  routeManifest: RouteManifest,
+  routeManifest: BrowserRouteManifest,
   snapshot: RouteSnapshot,
-): RouteManifestRoute | null {
+): BrowserRouteManifestRoute | null {
   if (snapshot.interception !== null) {
     return findRouteManifestRouteByIdOrMatchedUrl({
       matchedUrl: snapshot.interception.sourceMatchedUrl,
@@ -915,8 +922,8 @@ function findRouteManifestRouteForSnapshot(
 }
 
 function resolveRouteManifestSlotBindings(
-  routeManifest: RouteManifest,
-  route: RouteManifestRoute,
+  routeManifest: BrowserRouteManifest,
+  route: BrowserRouteManifestRoute,
 ): readonly ParallelSlotBindingSnapshot[] {
   const bindings: ParallelSlotBindingSnapshot[] = [];
   for (const slotId of route.slotIds) {
@@ -933,15 +940,15 @@ function resolveRouteManifestSlotBindings(
 }
 
 function resolveRouteManifestRootLayoutTreePath(
-  routeManifest: RouteManifest,
-  route: RouteManifestRoute,
+  routeManifest: BrowserRouteManifest,
+  route: BrowserRouteManifestRoute,
 ): string | null {
   if (route.rootBoundaryId === null) return null;
   return routeManifest.segmentGraph.rootBoundaries.get(route.rootBoundaryId)?.treePath ?? null;
 }
 
 function resolveRouteTopologySnapshot(options: {
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   slotBindingSource: RouteTopologySlotBindingSource;
   snapshot: RouteSnapshot;
 }): RouteTopologyResolution {
@@ -972,9 +979,9 @@ function resolveRouteTopologySnapshot(options: {
 }
 
 function findRouteManifestInterceptionForProof(
-  routeManifest: RouteManifest,
+  routeManifest: BrowserRouteManifest,
   proof: InterceptionSnapshot,
-): RouteManifestInterception | null {
+): BrowserRouteManifestInterception | null {
   const sourceParts = splitMatchedUrlIntoRouteParts(proof.sourceMatchedUrl);
   const targetParts = splitMatchedUrlIntoRouteParts(proof.targetMatchedUrl);
   const targetRoute = findRouteManifestRouteByIdOrMatchedUrl({
@@ -1419,7 +1426,7 @@ function validateInterceptedPreservation(options: {
   currentTopology: RouteTopologySnapshot;
   lane: OperationLane;
   restoredHistorySnapshot: boolean;
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   targetSnapshot: RouteSnapshot;
   targetTopology: RouteTopologySnapshot;
 }): InterceptedPreservationValidation {
@@ -1524,7 +1531,7 @@ function validateInterceptedPreservation(options: {
 
 function planFlightResponseArrived(options: {
   event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   state: NavigationPlannerState;
 }): NavigationDecision {
   const targetSnapshot = options.event.result.targetSnapshot;
@@ -1538,12 +1545,27 @@ function planFlightResponseArrived(options: {
     slotBindingSource: "manifestTarget",
     snapshot: targetSnapshot,
   });
+  // Like Next.js, which compares the rendered router trees, payloads that
+  // render different root layouts never share a document. A rewrite can keep
+  // the display URL the manifest resolves while rendering another root layout,
+  // and the manifest may not be loaded yet.
+  const renderedRootLayoutChanged =
+    classifyRootBoundaryTransition(
+      options.state.visibleSnapshot.rootBoundaryId,
+      targetSnapshot.rootBoundaryId,
+    ) === "rootBoundaryChanged";
   const traceFields = createRootBoundaryTraceFields({
-    currentRootLayoutTreePath:
-      currentTopology.kind === "known" ? currentTopology.topology.rootLayoutTreePath : null,
+    currentRootLayoutTreePath: renderedRootLayoutChanged
+      ? options.state.visibleSnapshot.rootBoundaryId
+      : currentTopology.kind === "known"
+        ? currentTopology.topology.rootLayoutTreePath
+        : null,
     event: options.event,
-    nextRootLayoutTreePath:
-      targetTopology.kind === "known" ? targetTopology.topology.rootLayoutTreePath : null,
+    nextRootLayoutTreePath: renderedRootLayoutChanged
+      ? targetSnapshot.rootBoundaryId
+      : targetTopology.kind === "known"
+        ? targetTopology.topology.rootLayoutTreePath
+        : null,
     state: options.state,
   });
 
@@ -1595,6 +1617,19 @@ function planFlightResponseArrived(options: {
     acceptedCacheEntryDecision,
   );
   const cacheEntryProposalFields = createCacheEntryProposalFields(acceptedCacheEntryDecision);
+
+  if (renderedRootLayoutChanged) {
+    return {
+      kind: "hardNavigate",
+      reason: "rootBoundaryChanged",
+      token: options.event.token,
+      trace: createNavigationTrace(
+        NavigationTraceReasonCodes.rootBoundaryChanged,
+        commitTraceFields,
+      ),
+      url: options.event.result.href,
+    };
+  }
 
   // interceptionContext is transport evidence, not authority. Normal payloads
   // can carry it when a request was sent from an intercepted visible world, so

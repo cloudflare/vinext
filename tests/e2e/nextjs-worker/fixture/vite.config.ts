@@ -1,5 +1,5 @@
 import path from "node:path";
-import { defineConfig } from "vite";
+import { defineConfig } from "vite-plus";
 
 import { cloudflare } from "../../../fixtures/cf-app-basic/node_modules/@cloudflare/vite-plugin/dist/index.mjs";
 import vinext from "../../../../packages/vinext/src/index.js";

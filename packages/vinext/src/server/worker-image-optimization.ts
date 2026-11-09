@@ -1,0 +1,212 @@
+/**
+ * Image optimization for Worker hosts. A local source is fetched as an
+ * anonymous direct request would receive it, like Next.js' fetchInternalImage
+ * (packages/next/src/server/image-optimizer.ts), so middleware that denies or
+ * redirects a direct request also denies the optimizer.
+ */
+import { isNextStaticPath } from "../utils/asset-prefix.js";
+import { resolveClientBuildFile } from "./client-build-files.js";
+import {
+  handleConfiguredImageOptimization,
+  invalidImageSourceResponse,
+  isImageSourceBodyStatus,
+  markImageBuildAsset,
+  type ImageConfig,
+  type ImageOptimizationSignal,
+} from "./image-optimization.js";
+import { VINEXT_PRERENDER_SPECIAL_ERROR_HEADER } from "./headers.js";
+import type { VinextAssetFetcher } from "./multi-stage.js";
+import { attachRequestCfMetadata, cloneRequestWithUrl } from "./request-pipeline.js";
+import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
+import { createStaticAssetRequest, mergeHeaders } from "./worker-utils.js";
+
+export type WorkerImageSourceOptions = {
+  assets: VinextAssetFetcher;
+  basePath: string;
+  assetPathPrefix: string;
+  clientBuildFiles: ReadonlySet<string>;
+  /**
+   * Run `sourceRequest`, a GET without the caller's headers, through the
+   * application pipeline and return the public file it selects with a 2xx
+   * outcome, or null.
+   */
+  fetchPublicFile(sourceRequest: Request): Promise<Response | null>;
+};
+
+// Representation headers belong to the image, not to middleware's response,
+// and only a page's special error carries the internal header.
+const OMITTED_MIDDLEWARE_HEADERS = new Set([
+  "content-encoding",
+  "content-length",
+  "content-range",
+  "content-type",
+  "transfer-encoding",
+  VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
+]);
+
+function cancelResponseBody(response: Response): void {
+  const body = response.body;
+  if (!body || body.locked) return;
+  void body.cancel().catch(() => {
+    /* ignore cancellation failures on discarded bodies */
+  });
+}
+
+/**
+ * Return the pathname of the `_next/static` file a source's decoded pathname
+ * names, or null. Next.js matches the decoded pathname against its
+ * `.next/static` files literally, so a `.`, `..` or empty segment names no
+ * file. The asset binding decodes each segment once, so each segment is
+ * encoded once from the name checked here. Parsing the decoded pathname as a
+ * URL again would resolve a segment that decoded to `%2E%2E` as `..`, outside
+ * `_next/static`.
+ */
+function resolveNextStaticFile(
+  decodedPathname: string,
+  options: WorkerImageSourceOptions,
+): string | null {
+  if (!isNextStaticPath(decodedPathname, options.basePath, options.assetPathPrefix)) return null;
+  const segments = decodedPathname.split("/").slice(1);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return null;
+  }
+  return "/" + segments.map(encodeURIComponent).join("/");
+}
+
+/**
+ * Fetch a local image source. Build output is fetched from the asset binding,
+ * which serves it before the Worker and its middleware. Any other source is
+ * served only when the application pipeline selects a public file for it.
+ */
+export async function fetchWorkerImageSource(
+  imageUrl: string,
+  request: Request,
+  options: WorkerImageSourceOptions,
+): Promise<Response> {
+  const sourceUrl = new URL(imageUrl, request.url);
+  let decodedPathname: string;
+  try {
+    decodedPathname = decodeURIComponent(sourceUrl.pathname);
+  } catch {
+    return invalidImageSourceResponse();
+  }
+
+  const nextStaticFile = resolveNextStaticFile(decodedPathname, options);
+  if (nextStaticFile !== null) {
+    return markImageBuildAsset(
+      await options.assets.fetch(new Request(new URL(nextStaticFile, request.url))),
+    );
+  }
+  const clientBuildFile = resolveClientBuildFile(
+    sourceUrl.pathname,
+    options.basePath,
+    options.clientBuildFiles,
+  );
+  if (clientBuildFile !== null) {
+    return options.assets.fetch(new Request(new URL(clientBuildFile, request.url)));
+  }
+
+  // Without the caller's headers, but with the connection's Cloudflare
+  // metadata, as Next.js keeps the caller's socket.
+  const sourceResponse = await options.fetchPublicFile(
+    attachRequestCfMetadata(new Request(sourceUrl, { signal: request.signal }), request),
+  );
+  if (sourceResponse && isImageSourceBodyStatus(sourceResponse.status)) return sourceResponse;
+  if (sourceResponse) cancelResponseBody(sourceResponse);
+  return invalidImageSourceResponse();
+}
+
+/**
+ * Give a public-file source the Cache-Control middleware or `headers()` staged
+ * for it, which a direct request receives in place of the asset default and
+ * Next.js' internal source fetch reads.
+ */
+export function withStagedCacheControl(asset: Response, cacheControl: string | null): Response {
+  if (cacheControl === null) return asset;
+  const headers = new Headers(asset.headers);
+  headers.set("Cache-Control", cacheControl);
+  return new Response(asset.body, {
+    status: asset.status,
+    statusText: asset.statusText,
+    headers,
+  });
+}
+
+/**
+ * Return the public file a framework static-file signal selects, provided the
+ * pipeline answered with a body-bearing 2xx outcome. The file is fetched with middleware's
+ * request header overrides, as resolveStaticAssetSignal fetches it, and keeps
+ * the Cache-Control the pipeline staged.
+ */
+export function fetchSignalledPublicFile(
+  response: Response,
+  sourceRequest: Request,
+  assets: VinextAssetFetcher,
+): Promise<Response> | null {
+  const signal = isImageSourceBodyStatus(response.status) ? readStaticFileSignal(response) : null;
+  const requestHeaders = readStaticFileSignalRequestHeaders(response);
+  const stagedCacheControl = response.headers.get("Cache-Control");
+  cancelResponseBody(response);
+  if (signal === null) return null;
+  let assetPath = signal;
+  try {
+    assetPath = decodeURIComponent(signal);
+  } catch {
+    // Fetch the encoded form, as resolveStaticAssetSignal does.
+  }
+  return Promise.resolve(
+    assets.fetch(createStaticAssetRequest(assetPath, sourceRequest, requestHeaders)),
+  ).then((asset) => withStagedCacheControl(asset, stagedCacheControl));
+}
+
+/**
+ * Serve the App Router image endpoint once the request handler admitted it
+ * through middleware and rewrites. Config and middleware response headers are
+ * sent with the image, as Next.js does.
+ */
+export async function serveWorkerImageOptimization(
+  request: Request,
+  signal: ImageOptimizationSignal,
+  allowedWidths: number[] | undefined,
+  imageConfig: ImageConfig | undefined,
+  options: WorkerImageSourceOptions,
+): Promise<Response> {
+  // The query middleware and rewrites selected, which the handler validated.
+  const imageUrl = new URL(request.url);
+  imageUrl.search = signal.search;
+  const imageRequest = cloneRequestWithUrl(request, imageUrl.href);
+  const response = await handleConfiguredImageOptimization(
+    // Format negotiation reads the request headers after middleware's overrides.
+    signal.requestHeaders
+      ? new Request(imageRequest, { headers: signal.requestHeaders })
+      : imageRequest,
+    (sourceUrl) => fetchWorkerImageSource(sourceUrl, imageRequest, options),
+    allowedWidths,
+    imageConfig,
+  );
+  const middlewareHeaders: Record<string, string | string[]> = {};
+  signal.middlewareHeaders.forEach((value, name) => {
+    if (name === "set-cookie" || OMITTED_MIDDLEWARE_HEADERS.has(name)) return;
+    middlewareHeaders[name] = value;
+  });
+  const cookies = signal.middlewareHeaders.getSetCookie();
+  if (cookies.length > 0) middlewareHeaders["set-cookie"] = cookies;
+  const merged = mergeHeaders(response, middlewareHeaders);
+  if (response.status < 400) return merged;
+  // Next.js sets config and middleware headers before the image handler, so
+  // only an image replaces their Content-Type and Content-Encoding.
+  const errorHeaders = new Headers(merged.headers);
+  let replaced = false;
+  for (const name of ["content-type", "content-encoding"]) {
+    const value = signal.middlewareHeaders.get(name);
+    if (value === null) continue;
+    errorHeaders.set(name, value);
+    replaced = true;
+  }
+  if (!replaced) return merged;
+  return new Response(merged.body, {
+    headers: errorHeaders,
+    status: merged.status,
+    statusText: merged.statusText,
+  });
+}

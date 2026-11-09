@@ -24,7 +24,10 @@ import {
   invalidateRouteCache,
 } from "../packages/vinext/src/routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
-import { validateRoutePatterns } from "../packages/vinext/src/routing/route-validation.js";
+import {
+  getSortedRoutes,
+  validateRoutePatterns,
+} from "../packages/vinext/src/routing/route-validation.js";
 import { sortRoutes } from "../packages/vinext/src/routing/utils.js";
 import { toSlash } from "pathslash";
 
@@ -184,6 +187,75 @@ describe("patternToNextFormat", () => {
   it("handles adversarial parameter names in linear time", () => {
     const parameter = `${":.".repeat(20_000)}value`;
     expect(patternToNextFormat(`/${parameter}`)).toBe(`/[${parameter.slice(1)}]`);
+  });
+});
+
+describe("getSortedRoutes", () => {
+  // Ported from Next.js: test/unit/page-route-sorter.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/unit/page-route-sorter.test.ts
+  it("does not add extra routes", () => {
+    expect(getSortedRoutes(["/posts"])).toEqual(["/posts"]);
+    expect(getSortedRoutes(["/posts/[id]"])).toEqual(["/posts/[id]"]);
+    expect(getSortedRoutes(["/posts/[id]/foo"])).toEqual(["/posts/[id]/foo"]);
+    expect(getSortedRoutes(["/posts/[id]/[foo]/bar"])).toEqual(["/posts/[id]/[foo]/bar"]);
+    expect(getSortedRoutes(["/posts/[id]/baz/[foo]/bar"])).toEqual(["/posts/[id]/baz/[foo]/bar"]);
+  });
+
+  it("correctly sorts required slugs", () => {
+    expect(
+      getSortedRoutes([
+        "/posts",
+        "/[root-slug]",
+        "/",
+        "/posts/[id]",
+        "/blog/[id]/comments/[cid]",
+        "/blog/abc/[id]",
+        "/[...rest]",
+        "/blog/abc/post",
+        "/blog/abc",
+        "/p1/[[...incl]]",
+        "/p/[...rest]",
+        "/p2/[...rest]",
+        "/p2/[id]",
+        "/p2/[id]/abc",
+        "/p3/[[...rest]]",
+        "/p3/[id]",
+        "/p3/[id]/abc",
+        "/blog/[id]",
+        "/foo/[d]/bar/baz/[f]",
+        "/apples/[ab]/[cd]/ef",
+      ]),
+    ).toEqual([
+      "/",
+      "/apples/[ab]/[cd]/ef",
+      "/blog/abc",
+      "/blog/abc/post",
+      "/blog/abc/[id]",
+      "/blog/[id]",
+      "/blog/[id]/comments/[cid]",
+      "/foo/[d]/bar/baz/[f]",
+      "/p/[...rest]",
+      "/p1/[[...incl]]",
+      "/p2/[id]",
+      "/p2/[id]/abc",
+      "/p2/[...rest]",
+      "/p3/[id]",
+      "/p3/[id]/abc",
+      "/p3/[[...rest]]",
+      "/posts",
+      "/posts/[id]",
+      "/[root-slug]",
+      "/[...rest]",
+    ]);
+  });
+
+  it("disallows apex and optional catch all", () => {
+    expect(() => getSortedRoutes(["/", "/[[...all]]"])).toThrow(
+      'You cannot define a route with the same specificity as a optional catch-all route ("/" and "/[[...all]]").',
+    );
+    expect(() => getSortedRoutes(["/sub/[[...all]]", "/sub"])).toThrow(
+      'You cannot define a route with the same specificity as a optional catch-all route ("/sub" and "/sub[[...all]]").',
+    );
   });
 });
 

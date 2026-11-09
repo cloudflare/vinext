@@ -75,17 +75,21 @@ export function resolveRequestProtocol(source: IncomingMessage | Headers): "http
  * against `request.url`.
  */
 export function resolveRequestHost(source: IncomingMessage | Headers, fallback: string): string {
+  return resolveTrustedForwardedHost(source) ?? (readHost(source) || fallback);
+}
+
+/**
+ * The `X-Forwarded-Host` value when it matches the `trustedHosts` allow-list,
+ * otherwise undefined. Unlike the raw `Host` header, this host is
+ * operator-approved.
+ */
+export function resolveTrustedForwardedHost(source: IncomingMessage | Headers): string | undefined {
   const rawForwarded = readForwardedHost(source);
-  if (rawForwarded && trustedHosts.size > 0) {
-    // `X-Forwarded-Host` can be comma-separated when passing through
-    // multiple proxies — take only the first (client-facing) value.
-    const forwardedHost = rawForwarded.split(",")[0]?.trim().toLowerCase();
-    if (forwardedHost && trustedHosts.has(forwardedHost)) {
-      return forwardedHost;
-    }
-  }
-  const hostHeader = readHost(source);
-  return hostHeader || fallback;
+  if (!rawForwarded || trustedHosts.size === 0) return undefined;
+  // `X-Forwarded-Host` can be comma-separated when passing through
+  // multiple proxies — take only the first (client-facing) value.
+  const forwardedHost = rawForwarded.split(",")[0]?.trim().toLowerCase();
+  return forwardedHost && trustedHosts.has(forwardedHost) ? forwardedHost : undefined;
 }
 
 function readForwardedProto(source: IncomingMessage | Headers): string | undefined {

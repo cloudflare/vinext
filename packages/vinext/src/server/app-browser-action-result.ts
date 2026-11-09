@@ -88,8 +88,20 @@ function createServerActionHttpFallbackError(status: number): (Error & { digest:
   return Object.assign(error, { digest });
 }
 
-export function normalizeServerActionThrownValue(data: unknown, responseStatus: number): unknown {
-  return createServerActionHttpFallbackError(responseStatus) ?? data;
+export async function normalizeServerActionThrownValue(
+  data: unknown,
+  responseStatus: number,
+): Promise<unknown> {
+  const fallbackError = createServerActionHttpFallbackError(responseStatus);
+  if (fallbackError) return fallbackError;
+  // A failed action's result is a rejected promise, as in Next.js, so the
+  // thrown value is its rejection.
+  try {
+    await data;
+  } catch (error) {
+    return error;
+  }
+  return data;
 }
 
 export function shouldSyncServerActionHttpFallbackHead<TRoot>(

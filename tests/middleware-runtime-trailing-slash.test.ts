@@ -231,51 +231,250 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
     expect(observedPathnames).toEqual(["/api/admin/"]);
   });
 
-  it.each(["/api/admin", "/api/admin/"])(
-    "does not match %s when the matcher source has a trailing slash",
-    async (pathname) => {
+  // A source that keeps its terminal slash never matches the slash-stripped
+  // pathname, so middleware tests the pathname as requested. Next.js ends
+  // these requests with an empty 200 without running middleware.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/next-server.ts
+  const slashedSources = [
+    { source: "/api/admin/", slashed: "/api/admin/" },
+    { source: "/api/admin\\/", slashed: "/api/admin/" },
+    { source: "/:path(.*\\/)", slashed: "/foo/" },
+    { source: "/admin/(.*)", slashed: "/admin/" },
+    { source: "/admin/:path*/", slashed: "/admin/users/" },
+  ];
+
+  it.each(slashedSources)(
+    "does not match the unslashed spelling of $slashed for source $source",
+    async ({ source, slashed }) => {
       const result = await executeMiddleware({
         isProxy: false,
         module: {
-          config: { matcher: ["/api/admin/"] },
+          config: { matcher: [source] },
           middleware: () => new Response("unauthorized", { status: 401 }),
         },
-        request: new Request(`http://localhost${pathname}`),
+        request: new Request(`http://localhost${slashed.slice(0, -1)}`),
       });
 
       expect(result).toEqual({ continue: true });
     },
   );
 
-  it.each(["/api/admin", "/api/admin/"])(
-    "does not match %s when the matcher source has an escaped terminal slash",
-    async (pathname) => {
+  it.each(slashedSources)(
+    "runs middleware for $slashed for source $source",
+    async ({ source, slashed }) => {
+      const observedPathnames: string[] = [];
+      let pathnameEligible = false;
       const result = await executeMiddleware({
         isProxy: false,
         module: {
-          config: { matcher: ["/api/admin\\/"] },
-          middleware: () => new Response("unauthorized", { status: 401 }),
+          config: { matcher: [source] },
+          middleware: (request: { nextUrl: { pathname: string } }) => {
+            observedPathnames.push(request.nextUrl.pathname);
+            return new Response("unauthorized", { status: 401 });
+          },
         },
-        request: new Request(`http://localhost${pathname}`),
+        onPathMatch() {
+          pathnameEligible = true;
+        },
+        request: new Request(`http://localhost${slashed}`),
+        trailingSlash: true,
       });
 
-      expect(result).toEqual({ continue: true });
+      expect(observedPathnames).toEqual([slashed]);
+      expect(pathnameEligible).toBe(true);
+      expect(result.response?.status).toBe(401);
     },
   );
 
-  it.each(["/foo", "/foo/"])(
-    "does not match %s when a custom constraint requires a terminal slash",
-    async (pathname) => {
+  it("does not run middleware when only the slash-stripped pathname matches", async () => {
+    const run = async (pathname: string) => {
+      let pathnameEligible = false;
       const result = await executeMiddleware({
         isProxy: false,
         module: {
-          config: { matcher: ["/:path(.*\\/)"] },
+          config: { matcher: ["/r1/((?!.*\\/$).*)"] },
           middleware: () => new Response("unauthorized", { status: 401 }),
         },
+        onPathMatch() {
+          pathnameEligible = true;
+        },
         request: new Request(`http://localhost${pathname}`),
+        skipTrailingSlashRedirect: true,
+      });
+      return { pathnameEligible, result };
+    };
+
+    expect(await run("/r1/x/")).toEqual({ pathnameEligible: false, result: { continue: true } });
+    const unslashed = await run("/r1/x");
+    expect(unslashed.pathnameEligible).toBe(true);
+    expect(unslashed.result.response?.status).toBe(401);
+  });
+
+  // `/admin/.rsc` has no terminal slash, so it is tested whole. Like
+  // Next.js's compiled matcher, a source permits the `.rsc` suffix after it.
+  it.each([
+    ["/admin/", 401],
+    ["/other/", undefined],
+  ])("matches /admin/.rsc whole for source %s", async (source, status) => {
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        config: { matcher: [source] },
+        middleware: () => new Response("unauthorized", { status: 401 }),
+      },
+      request: new Request("http://localhost/admin/.rsc"),
+      trailingSlash: true,
+    });
+
+    expect(result.response?.status).toBe(status);
+  });
+
+  it("applies has conditions to the as-requested matcher test", async () => {
+    const run = (search: string) =>
+      executeMiddleware({
+        isProxy: false,
+        module: {
+          config: { matcher: [{ source: "/admin/", has: [{ type: "query", key: "x" }] }] },
+          middleware: () => new Response("unauthorized", { status: 401 }),
+        },
+        request: new Request(`http://localhost/admin/${search}`),
+        trailingSlash: true,
       });
 
-      expect(result).toEqual({ continue: true });
+    expect(await run("")).toEqual({ continue: true });
+    expect((await run("?x=1")).response?.status).toBe(401);
+  });
+
+  // Next.js's router server restores the root's slash after inserting the
+  // default locale, so the requested root is tested as `/en/`.
+  it("tests the default-locale root with its restored slash", async () => {
+    const run = async (source: string, restoreLocaleRootTrailingSlash: boolean) => {
+      let pathnameEligible = false;
+      const result = await executeMiddleware({
+        i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+        isProxy: false,
+        module: {
+          config: { matcher: [{ locale: false, source }] },
+          middleware: () => new Response("unauthorized", { status: 401 }),
+        },
+        onPathMatch() {
+          pathnameEligible = true;
+        },
+        request: new Request("http://localhost/"),
+        restoreLocaleRootTrailingSlash,
+        trailingSlash: true,
+      });
+      return { pathnameEligible, result };
+    };
+
+    const restored = await run("/en/", true);
+    expect(restored.pathnameEligible).toBe(true);
+    expect(restored.result.response?.status).toBe(401);
+    expect(await run("/en/", false)).toEqual({
+      pathnameEligible: false,
+      result: { continue: true },
+    });
+    expect((await run("/en", true)).result.response?.status).toBe(401);
+  });
+
+  it("strips basePath before the as-requested matcher test", async () => {
+    const result = await executeMiddleware({
+      basePath: "/docs",
+      isProxy: false,
+      module: {
+        config: { matcher: ["/admin/"] },
+        middleware: () => new Response("unauthorized", { status: 401 }),
+      },
+      request: new Request("http://localhost/docs/admin/"),
+      trailingSlash: true,
+    });
+
+    expect(result.response?.status).toBe(401);
+  });
+});
+
+// With `skipTrailingSlashRedirect`, middleware sees requests in either slash
+// form. Next.js's getNextPathnameInfo takes NextURL's slash from the pathname
+// (the config only decides root), and the adapter formats a redirect Location
+// from its own slash.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/get-next-pathname-info.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+describe("executeMiddleware with skipTrailingSlashRedirect", () => {
+  it.each([
+    { trailingSlash: false, requestPath: "/another/" },
+    { trailingSlash: true, requestPath: "/another" },
+  ])(
+    "keeps the request's own slash on nextUrl and request.url (trailingSlash: $trailingSlash)",
+    async ({ trailingSlash, requestPath }) => {
+      let observed: { pathname: string; href: string; url: string } | undefined;
+      await executeMiddleware({
+        isProxy: false,
+        module: {
+          middleware: (request: Request & { nextUrl: URL }) => {
+            observed = {
+              pathname: request.nextUrl.pathname,
+              href: request.nextUrl.href,
+              url: request.url,
+            };
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+        request: new Request(`http://localhost${requestPath}?q=1`),
+        skipTrailingSlashRedirect: true,
+        trailingSlash,
+      });
+
+      expect(observed).toEqual({
+        pathname: requestPath,
+        href: `http://localhost${requestPath}?q=1`,
+        url: `http://localhost${requestPath}?q=1`,
+      });
+    },
+  );
+
+  it.each([
+    { trailingSlash: false, requestPath: "/src/", expected: "/somewhere/" },
+    { trailingSlash: true, requestPath: "/src", expected: "/somewhere" },
+  ])(
+    "formats a request.nextUrl redirect from the request's slash (trailingSlash: $trailingSlash)",
+    async ({ trailingSlash, requestPath, expected }) => {
+      const result = await executeMiddleware({
+        isProxy: false,
+        module: {
+          middleware: (request: { nextUrl: URL & { clone(): URL } }) => {
+            const url = request.nextUrl.clone();
+            url.pathname = "/somewhere";
+            return NextResponse.redirect(url);
+          },
+        },
+        request: new Request(`http://localhost${requestPath}`),
+        skipTrailingSlashRedirect: true,
+        trailingSlash,
+      });
+
+      expect(result.redirectStatus).toBe(307);
+      expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe(expected);
+    },
+  );
+
+  it.each([
+    { trailingSlash: false, location: "/somewhere/" },
+    { trailingSlash: true, location: "/somewhere" },
+  ])(
+    "keeps a plain URL redirect's own slash (trailingSlash: $trailingSlash)",
+    async ({ trailingSlash, location }) => {
+      const result = await executeMiddleware({
+        isProxy: false,
+        module: {
+          middleware: (request: Request) => NextResponse.redirect(new URL(location, request.url)),
+        },
+        request: new Request("http://localhost/src"),
+        skipTrailingSlashRedirect: true,
+        trailingSlash,
+      });
+
+      expect(result.redirectStatus).toBe(307);
+      expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe(location);
     },
   );
 });

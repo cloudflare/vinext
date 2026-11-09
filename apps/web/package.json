@@ -37,6 +37,8 @@
     "drizzle-kit": "catalog:",
     "postcss": "catalog:",
     "react-server-dom-webpack": "catalog:",
+    "remark-frontmatter": "catalog:",
+    "remark-mdx-frontmatter": "catalog:",
     "tailwindcss": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:cloudflare-vite-v2"

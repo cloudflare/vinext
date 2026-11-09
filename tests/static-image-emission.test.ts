@@ -56,10 +56,18 @@ function writeFixtureFile(root: string, filePath: string, content: string | Buff
   fs.writeFileSync(absolutePath, content);
 }
 
+// Replace a watched file in one step, so a rebuild never reads it truncated.
+async function replaceFile(filePath: string, content: string | Buffer): Promise<void> {
+  const temporaryPath = `${filePath}.${process.pid}.tmp`;
+  await fs.promises.writeFile(temporaryPath, content);
+  await fs.promises.rename(temporaryPath, filePath);
+}
+
 type FixtureOptions = {
   basePath?: string;
   assetPrefix?: string;
   deploymentId?: string;
+  trailingSlash?: boolean;
 };
 
 async function createFixture(
@@ -68,12 +76,8 @@ async function createFixture(
 ): Promise<string> {
   const root = await mkdtemp(path.join(import.meta.dirname, `.tmp-${router}-static-image-`));
   tempDirs.push(root);
-  fs.mkdirSync(path.join(root, "node_modules"));
-  fs.symlinkSync(
-    path.resolve(import.meta.dirname, "../packages/vinext/node_modules/ipaddr.js"),
-    path.join(root, "node_modules/ipaddr.js"),
-    "junction",
-  );
+  // Deliberately no node_modules: ipaddr.js is vinext's own dependency and is
+  // not resolvable from here, so production SSR must not leave a bare import.
   writeFixtureFile(
     root,
     "package.json",
@@ -88,7 +92,7 @@ async function createFixture(
   writeFixtureFile(root, "client.png", PNG_4X3);
   writeFixtureFile(root, "test.svg", SVG_2X3);
   writeFixtureFile(root, "tiny.png", PNG_1X1);
-  if (options.basePath || options.assetPrefix || options.deploymentId) {
+  if (options.basePath || options.assetPrefix || options.deploymentId || options.trailingSlash) {
     writeFixtureFile(root, "next.config.mjs", `export default ${JSON.stringify(options)};\n`);
   }
 
@@ -250,6 +254,7 @@ function waitForWatchBuild(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let checkingOutput = false;
+    let recheckOutput = false;
     const cleanup = () => {
       clearTimeout(timeout);
       watcher.off("event", onEvent);
@@ -262,13 +267,23 @@ function waitForWatchBuild(
       if (event.code === "ERROR") {
         cleanup();
         reject(event.error ?? new Error("Watch build failed"));
-      } else if (event.code === "END" && !checkingOutput) {
+      } else if (event.code === "END") {
+        // A rebuild can finish while the previous one's output is still being
+        // checked. Check again afterwards rather than miss the last build.
+        if (checkingOutput) {
+          recheckOutput = true;
+          return;
+        }
         checkingOutput = true;
         try {
-          if (await isExpectedOutput()) {
-            cleanup();
-            resolve();
-          }
+          do {
+            recheckOutput = false;
+            if (await isExpectedOutput()) {
+              cleanup();
+              resolve();
+              return;
+            }
+          } while (recheckOutput);
         } catch (error) {
           cleanup();
           reject(error);
@@ -387,6 +402,23 @@ async function assertStaticImageProductionParity(
     );
     expect(src).toContain("q=85");
     expect(src).not.toContain("data%3Aimage");
+    // Next.js serves the image endpoint under basePath, the path next/image emits.
+    expect(new URL(src, "http://vinext.test").pathname).toBe(
+      `${options.basePath ?? ""}/_next/image`,
+    );
+    const imageResponse = await fetch(new URL(src, `http://127.0.0.1:${address.port}`));
+    expect(imageResponse.status, src).toBe(200);
+    expect(imageResponse.headers.get("content-type"), src).toBe("image/png");
+    await imageResponse.arrayBuffer();
+    if (options.basePath) {
+      const unprefixed = new URL(
+        `/_next/image${new URL(src, "http://vinext.test").search}`,
+        imageResponse.url,
+      );
+      const unprefixedResponse = await fetch(unprefixed);
+      expect(unprefixedResponse.status, unprefixed.href).toBe(404);
+      await unprefixedResponse.arrayBuffer();
+    }
     expect(srcset).toContain(`url=${encodeURIComponent(managedUrl)}`);
     if (options.deploymentId) expect(srcset).toContain(`dpl=${options.deploymentId}`);
     expect(srcset).not.toContain("data%3Aimage");
@@ -445,6 +477,84 @@ describe("static image import production emission", () => {
     });
   }, 60_000);
 
+  it("serves Pages Router managed image URLs under basePath", async () => {
+    await assertStaticImageProductionParity("pages", { basePath: "/docs" });
+  }, 60_000);
+
+  it("serves the Pages Router image endpoint only when a middleware rewrite targets it under basePath", async () => {
+    const root = await createFixture("pages", { basePath: "/docs" });
+    writeFixtureFile(
+      root,
+      "middleware.ts",
+      `import { NextResponse, type NextRequest } from "next/server";
+
+export function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === "/legacy-image") {
+    return NextResponse.rewrite(new URL(\`/docs/_next/image\${request.nextUrl.search}\`, request.url));
+  }
+  if (request.nextUrl.pathname === "/unprefixed-image") {
+    return NextResponse.rewrite(new URL(\`/_next/image\${request.nextUrl.search}\`, request.url));
+  }
+}
+`,
+    );
+    await buildFixture(root, "pages");
+    const started = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir: path.join(root, "dist"),
+    });
+    servers.push(started.server);
+    const address = started.server.address();
+    if (!address || typeof address === "string") throw new Error("Production server did not bind");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const html = await (await fetch(`${origin}/docs/`)).text();
+    const search = new URL(getAttribute(html, "static-image", "src"), origin).search;
+
+    // Next.js resolves middleware rewrites before its filesystem lookup, so a
+    // rewrite into the basePath reaches the image endpoint.
+    const rewritten = await fetch(`${origin}/legacy-image${search}`);
+    expect(rewritten.status).toBe(200);
+    expect(rewritten.headers.get("content-type")).toBe("image/png");
+    await rewritten.arrayBuffer();
+    // Next.js checks that the rewrite target still carries the basePath.
+    const unprefixed = await fetch(`${origin}/unprefixed-image${search}`);
+    expect(unprefixed.status).toBe(404);
+    await unprefixed.arrayBuffer();
+    const direct = await fetch(`${origin}/_next/image${search}`);
+    expect(direct.status).toBe(404);
+    await direct.arrayBuffer();
+  }, 60_000);
+
+  it("does not redirect an outside-basePath Pages image request into basePath with trailingSlash", async () => {
+    const root = await createFixture("pages", { basePath: "/docs", trailingSlash: true });
+    await buildFixture(root, "pages");
+    const started = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir: path.join(root, "dist"),
+    });
+    servers.push(started.server);
+    const address = started.server.address();
+    if (!address || typeof address === "string") throw new Error("Production server did not bind");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const html = await (await fetch(`${origin}/docs/`)).text();
+    const src = getAttribute(html, "static-image", "src");
+    expect(src).toMatch(/^\/docs\/_next\/image\/\?/);
+    const image = await fetch(new URL(src, origin));
+    expect(image.status).toBe(200);
+    await image.arrayBuffer();
+
+    // Next.js's trailing-slash redirects only match under the basePath.
+    const search = new URL(src, origin).search;
+    const redirect = await fetch(`${origin}/_next/image${search}`, { redirect: "manual" });
+    expect(redirect.headers.get("location") ?? "").not.toMatch(/^\/docs/);
+    await redirect.arrayBuffer();
+    const followed = await fetch(`${origin}/_next/image${search}`);
+    expect(followed.status).toBe(404);
+    await followed.arrayBuffer();
+  }, 60_000);
+
   it("emits matching SSR and client image URLs in Cloudflare builds", async () => {
     const root = await createFixture("app");
     await buildCloudflareFixture(root);
@@ -487,9 +597,13 @@ describe("static image import production emission", () => {
 
       const changedBuild = waitForWatchBuild(watcher, async () => {
         const emittedImage = await findEmittedImage(root);
-        return emittedImage !== firstImage;
+        return (
+          emittedImage !== firstImage &&
+          !fs.existsSync(path.join(outDir, "_next/static/media", firstImage)) &&
+          (await readBuiltJavaScript(outDir)).includes(emittedImage)
+        );
       });
-      await fs.promises.writeFile(imagePath, PNG_4X3);
+      await replaceFile(imagePath, PNG_4X3);
       await changedBuild;
       const secondImage = await findEmittedImage(root);
       expect(secondImage).not.toBe(firstImage);
@@ -507,7 +621,7 @@ describe("static image import production emission", () => {
           !builtJavaScript.includes(secondImage)
         );
       });
-      await fs.promises.writeFile(entryPath, `console.log("no image");\n`);
+      await replaceFile(entryPath, `console.log("no image");\n`);
       await removedBuild;
       expect(fs.existsSync(path.join(outDir, "_next/static/media", secondImage))).toBe(false);
       expect(await readBuiltJavaScript(outDir)).not.toContain(secondImage);

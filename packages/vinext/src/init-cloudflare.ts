@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import type { ESTree } from "vite";
-import type { CloudflareInitOptions } from "./init-platform.js";
+import { validateWorkerName, type CloudflareInitOptions } from "./init-platform.js";
 import { detectProject } from "./utils/project.js";
 import { isUnknownRecord } from "./utils/record.js";
 
@@ -16,7 +16,8 @@ export type CloudflareProjectInfo = {
   isAppRouter: boolean;
   hasISR: boolean;
   hasMDX: boolean;
-  nativeModulesToStub: string[];
+  /** The effective Next.js config sets `output: "export"`. */
+  isStaticExport?: boolean;
 };
 
 const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
@@ -25,6 +26,18 @@ const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   imageOptimization: "cloudflare-images",
 };
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
+// Run the Worker, and so middleware, before public/ files as Next.js does,
+// while Workers Static Assets keeps serving the hashed build output directly.
+// The second exclusion covers build output under a basePath or path-style
+// assetPrefix, so adding one later does not route chunks to the Worker, which
+// does not serve them.
+const BUILD_OUTPUT_EXCLUSIONS = ["!/_next/static/*", "!/*/_next/static/*"];
+const DEFAULT_RUN_WORKER_FIRST = ["/*", ...BUILD_OUTPUT_EXCLUSIONS];
+// Serve public .html files only at their exact paths, as Next.js does. The
+// default auto-trailing-slash handling redirects /file.html to /file, which then
+// reaches the Worker and is not a public file.
+const HTML_HANDLING = "none";
+const STATIC_ASSETS_CACHE_ROUTE = "/_vinext/static-cache/*";
 const RESPONSE_STORE_WRANGLER_CONFIG = "wrangler.response-store.jsonc";
 
 const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
@@ -35,12 +48,15 @@ const CACHE_METADATA_BINDING = "CACHE_METADATA";
 const CACHE_METADATA_CLASS = "CacheMetadata";
 const CACHE_METADATA_EXPORT = { type: "durable-object", storage: "sqlite" } as const;
 const CTX_EXPORTS_DEFAULT_DATE = "2025-11-17";
+// Workers enables nodejs_compat by default from this compatibility date.
+const NODEJS_COMPAT_DEFAULT_DATE = "2026-08-04";
 
 export type CloudflarePlatformSetupContext = {
   root: string;
   isAppRouter: boolean;
   existingViteConfigPath?: string;
   hasCssModules?: boolean;
+  isStaticExport?: boolean;
   packageManager?: string;
   today?: string;
 };
@@ -57,16 +73,23 @@ export function validateCloudflarePlatformSetup(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): void {
+  // Programmatic callers skip parseNameArg, so validate the name here too.
+  if (cloudflare.name !== undefined) validateWorkerName(cloudflare.name);
+  // The legacy setup updates the root Wrangler config, so it cannot ignore it.
+  if (cloudflare.legacyWrangler && cloudflare.ignoreWranglerConfig) {
+    throw new Error(
+      "--ignore-wrangler-config cannot be combined with --legacy-wrangler-cloudflare-init.",
+    );
+  }
   if (!cloudflare.legacyWrangler) {
-    const existingWrangler = [
-      "wrangler.toml",
-      "wrangler.json",
-      "wrangler.jsonc",
-      RESPONSE_STORE_WRANGLER_CONFIG,
-    ].find((name) => fs.existsSync(path.join(context.root, name)));
+    const existingWrangler = cloudflare.ignoreWranglerConfig
+      ? undefined
+      : ["wrangler.toml", "wrangler.json", "wrangler.jsonc", RESPONSE_STORE_WRANGLER_CONFIG].find(
+          (name) => fs.existsSync(path.join(context.root, name)),
+        );
     if (existingWrangler) {
       throw new Error(
-        `Cloudflare init cannot replace an existing Wrangler config (${existingWrangler}). Migrate its bindings to cloudflare.config.ts first, or use --legacy-wrangler-cloudflare-init to keep the Wrangler setup.`,
+        `Cloudflare init cannot replace an existing Wrangler config (${existingWrangler}). Migrate its bindings to cloudflare.config.ts first, use --ignore-wrangler-config if it belongs to another Worker, or use --legacy-wrangler-cloudflare-init to keep the Wrangler setup.`,
       );
     }
     const typedConfigPath = path.join(context.root, "cloudflare.config.ts");
@@ -107,7 +130,6 @@ export function validateCloudflarePlatformSetup(
         fs.readFileSync(context.existingViteConfigPath, "utf-8"),
         {
           isAppRouter: context.isAppRouter,
-          nativeModulesToStub: detectProject(context.root).nativeModulesToStub,
           cache: cloudflare,
         },
       );
@@ -124,7 +146,6 @@ export function validateCloudflarePlatformSetup(
     );
   }
 
-  const projectInfo = detectProject(context.root);
   const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
     .map((fileName) => path.join(context.root, fileName))
     .find((candidate) => fs.existsSync(candidate));
@@ -138,7 +159,10 @@ export function validateCloudflarePlatformSetup(
     readResponseStoreServiceName(context.root, {});
   }
   const updatedWranglerCode = wranglerCode
-    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, { root: context.root })
+    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, {
+        root: context.root,
+        isStaticExport: context.isStaticExport,
+      })
     : undefined;
   const imagesBinding = updatedWranglerCode
     ? getWranglerImagesBinding(updatedWranglerCode)
@@ -159,7 +183,6 @@ export function validateCloudflarePlatformSetup(
       fs.readFileSync(context.existingViteConfigPath, "utf-8"),
       {
         isAppRouter: context.isAppRouter,
-        nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
         assetsBinding,
         assetsDirectory,
@@ -178,13 +201,16 @@ export function setupCloudflarePlatform(
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {
   if (!cloudflare.legacyWrangler) return setupCfPlatform(context, cloudflare);
-  const projectInfo = detectProject(context.root);
+  const projectInfo = detectCloudflareProject(context.root, cloudflare);
   const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
     .map((fileName) => path.join(context.root, fileName))
     .find((candidate) => fs.existsSync(candidate));
   const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
   const updatedWranglerCode = wranglerCode
-    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, { root: context.root })
+    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, {
+        root: context.root,
+        isStaticExport: context.isStaticExport,
+      })
     : undefined;
   const imagesBinding = updatedWranglerCode
     ? getWranglerImagesBinding(updatedWranglerCode)
@@ -209,7 +235,6 @@ export function setupCloudflarePlatform(
       currentConfig,
       {
         isAppRouter: context.isAppRouter,
-        nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
         assetsBinding,
         assetsDirectory,
@@ -244,7 +269,6 @@ export function setupCloudflarePlatform(
           context.hasCssModules,
         )
       : generatePagesRouterViteConfig(
-          projectInfo,
           cloudflare,
           imagesBinding,
           versionMetadataBinding,
@@ -261,7 +285,11 @@ export function setupCloudflarePlatform(
   if (!wranglerPath) {
     fs.writeFileSync(
       path.join(context.root, "wrangler.jsonc"),
-      generateWranglerConfig(projectInfo, cloudflare, context.today),
+      generateWranglerConfig(
+        { ...projectInfo, isStaticExport: context.isStaticExport },
+        cloudflare,
+        context.today,
+      ),
       "utf-8",
     );
     generatedPlatformFiles.push("wrangler.jsonc");
@@ -295,7 +323,11 @@ export function setupCloudflarePlatform(
       );
     }
   }
-  const nextSteps: string[] = [];
+  // Warn only when this run chose the entry: an existing `main` is the app's own.
+  const wroteWorkerEntry = !wranglerCode || !findTopLevelJsonProperty(wranglerCode, "main");
+  const nextSteps: string[] = wroteWorkerEntry
+    ? workerEntryWarning(context.root, context.isStaticExport)
+    : [];
   if (
     cloudflare.cdnCache === "response-store" &&
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding"
@@ -321,11 +353,30 @@ export function setupCloudflarePlatform(
   };
 }
 
+/**
+ * The existing config that keeps its own Worker name, if `--name` was given.
+ * Init doesn't rename the Worker in an existing config, so callers warn instead.
+ */
+export function findConfigKeepingWorkerName(
+  root: string,
+  cloudflare: CloudflareInitOptions,
+): string | undefined {
+  if (cloudflare.name === undefined) return undefined;
+  return (
+    cloudflare.legacyWrangler ? ["wrangler.jsonc", "wrangler.json"] : ["cloudflare.config.ts"]
+  ).find((name) => fs.existsSync(path.join(root, name)));
+}
+
+function detectCloudflareProject(root: string, cloudflare: CloudflareInitOptions) {
+  const projectInfo = detectProject(root);
+  return cloudflare.name ? { ...projectInfo, projectName: cloudflare.name } : projectInfo;
+}
+
 function setupCfPlatform(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {
-  const projectInfo = detectProject(context.root);
+  const projectInfo = detectCloudflareProject(context.root, cloudflare);
   const serviceBinding =
     cloudflare.cdnCache === "response-store" &&
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding";
@@ -335,7 +386,6 @@ function setupCfPlatform(
     const current = fs.readFileSync(context.existingViteConfigPath, "utf-8");
     let updated = updateViteConfigForCloudflare(context.existingViteConfigPath, current, {
       isAppRouter: context.isAppRouter,
-      nativeModulesToStub: projectInfo.nativeModulesToStub,
       cache: cloudflare,
     });
     if (context.hasCssModules) {
@@ -360,7 +410,6 @@ function setupCfPlatform(
           context.hasCssModules,
         )
       : generatePagesRouterViteConfig(
-          projectInfo,
           cloudflare,
           "IMAGES",
           DEFAULT_VERSION_METADATA_BINDING,
@@ -373,14 +422,19 @@ function setupCfPlatform(
 
   const configPath = path.join(context.root, "cloudflare.config.ts");
   const generatedPlatformFiles: string[] = [];
+  const nextSteps: string[] = [];
   if (!fs.existsSync(configPath)) {
     fs.writeFileSync(
       configPath,
-      generateTypedCloudflareConfig(projectInfo, cloudflare, context.today),
+      generateTypedCloudflareConfig(
+        { ...projectInfo, isStaticExport: context.isStaticExport },
+        cloudflare,
+        context.today,
+      ),
     );
     generatedPlatformFiles.push("cloudflare.config.ts");
+    nextSteps.push(...workerEntryWarning(context.root, context.isStaticExport));
   }
-  const nextSteps: string[] = [];
   if (serviceBinding) {
     nextSteps.push(
       "After `vinext build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
@@ -437,7 +491,6 @@ function generateTypedCloudflareConfig(
   worker: {
     name: ${JSON.stringify(responseStoreName)},
     compatibilityDate: ${JSON.stringify(today)},
-    compatibilityFlags: ["nodejs_compat"],
   },
   bucket: ${JSON.stringify(bucket)},
 });
@@ -466,6 +519,16 @@ export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
     ...(options.imageOptimization === "cloudflare-images" ? ["IMAGES: bindings.images()"] : []),
     ...(options.dataCache === "kv" ? ["VINEXT_KV_CACHE: bindings.kv()"] : []),
   ];
+  const routing = defaultAssetRouting(info, options);
+  const assetLines = [
+    ...(routing.htmlHandling ? [`htmlHandling: ${JSON.stringify(routing.htmlHandling)}`] : []),
+    'notFoundHandling: "none"',
+    ...(routing.runWorkerFirst
+      ? [
+          `runWorkerFirst: [${routing.runWorkerFirst.map((pattern) => JSON.stringify(pattern)).join(", ")}]`,
+        ]
+      : []),
+  ];
   return `${imports.join("\n")}
 
 ${shared}export default defineConfig({
@@ -473,8 +536,9 @@ ${shared}export default defineConfig({
     ${cacheSpread ? `...${cacheSpread},\n    ` : ""}name: ${JSON.stringify(info.projectName)},
     entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
     compatibilityDate: ${JSON.stringify(today)},
-    compatibilityFlags: ["nodejs_compat"],
-    assets: { notFoundHandling: "none"${options.cdnCache === "static-assets" ? ', runWorkerFirst: ["/_vinext/static-cache/*"]' : ""} },
+    assets: {
+      ${assetLines.join(",\n      ")},
+    },
     env: {
       ${envBindings.join(",\n      ")},
     },
@@ -495,6 +559,41 @@ function resolveWorkerEntry(root: string): string {
   return "vinext/server/fetch-handler";
 }
 
+/**
+ * A `worker/index.*` that never reaches vinext's handler (say, a migrated Vite
+ * SPA's API Worker) answers every page route itself, so each one 404s (#4460).
+ */
+function workerEntryWarning(root: string, isStaticExport: boolean | undefined): string[] {
+  // A static export serves its pages asset-first, so the Worker never sees them.
+  if (isStaticExport) return [];
+  const entry = resolveWorkerEntry(root);
+  if (entry === "vinext/server/fetch-handler") return [];
+  const source = fs.readFileSync(path.join(root, entry), "utf-8");
+  if (source.includes("vinext/server/fetch-handler")) return [];
+  return [
+    `Warning: ${entry.slice(2)} does not import vinext/server/fetch-handler. As the Worker entry`,
+    "   it must hand requests to vinext, or every page 404s. Otherwise point the Worker entry",
+    "   (entrypoint in cloudflare.config.ts, or main in wrangler.jsonc) at vinext/server/fetch-handler.",
+  ];
+}
+
+/**
+ * Next.js runs no middleware for a static export, and an export with
+ * `trailingSlash` relies on the default html_handling to serve `/about/` from
+ * `about/index.html`, so export apps keep asset-first serving.
+ */
+function defaultAssetRouting(
+  info: Pick<CloudflareProjectInfo, "isStaticExport">,
+  options: Partial<Pick<CloudflareInitOptions, "cdnCache">>,
+): { htmlHandling?: typeof HTML_HANDLING; runWorkerFirst?: string[] } {
+  if (!info.isStaticExport) {
+    return { htmlHandling: HTML_HANDLING, runWorkerFirst: DEFAULT_RUN_WORKER_FIRST };
+  }
+  return options.cdnCache === "static-assets"
+    ? { runWorkerFirst: [STATIC_ASSETS_CACHE_ROUTE] }
+    : {};
+}
+
 // Cloudflare deployment scaffolding belongs to `vinext init`.
 export function generateWranglerConfig(
   info: CloudflareProjectInfo,
@@ -502,25 +601,23 @@ export function generateWranglerConfig(
   today = new Date().toISOString().split("T")[0],
 ): string {
   const workerEntry = resolveWorkerEntry(info.root);
+  const routing = defaultAssetRouting(info, options);
 
   const config: Record<string, unknown> = {
     $schema: "node_modules/wrangler/config-schema.json",
     name: info.projectName,
     compatibility_date: today,
-    compatibility_flags: ["nodejs_compat"],
     main: workerEntry,
     assets: {
       directory: "dist/client",
+      ...(routing.htmlHandling ? { html_handling: routing.htmlHandling } : {}),
       not_found_handling: "none",
       binding: "ASSETS",
-      ...(options.cdnCache === "static-assets"
-        ? { run_worker_first: ["/_vinext/static-cache/*"] }
-        : {}),
+      ...(routing.runWorkerFirst ? { run_worker_first: routing.runWorkerFirst } : {}),
     },
   };
 
   if (options.cdnCache === "workers-cache") {
-    config.cache = { enabled: true };
     config.version_metadata = { binding: DEFAULT_VERSION_METADATA_BINDING };
   }
 
@@ -584,6 +681,22 @@ function stripJsonComments(code: string): string {
     output += char;
   }
   return output.replace(/,\s*([}\]])/g, "$1");
+}
+
+/** Offset of the first JSONC token in `code`, after whitespace and comments. */
+function skipJsonWhitespaceAndComments(code: string): number {
+  let index = 0;
+  while (index < code.length) {
+    if (/\s/.test(code[index])) index++;
+    else if (code.startsWith("//", index)) {
+      const lineEnd = code.indexOf("\n", index);
+      index = lineEnd === -1 ? code.length : lineEnd;
+    } else if (code.startsWith("/*", index)) {
+      const commentEnd = code.indexOf("*/", index + 2);
+      index = commentEnd === -1 ? code.length : commentEnd + 2;
+    } else break;
+  }
+  return index;
 }
 
 function findTopLevelJsonProperty(
@@ -778,8 +891,9 @@ function readResponseStoreServiceName(root: string, appConfig: Record<string, un
       (Array.isArray(responseStoreConfig.migrations) &&
         responseStoreConfig.migrations.length === 0);
     if (
-      !isUnknownRecord(responseStoreConfig.cache) ||
-      responseStoreConfig.cache.enabled !== true ||
+      (responseStoreConfig.cache !== undefined &&
+        (!isUnknownRecord(responseStoreConfig.cache) ||
+          typeof responseStoreConfig.cache.enabled !== "boolean")) ||
       !isUnknownRecord(responseStoreExport) ||
       !isUnknownRecord(responseStoreExport.cache) ||
       responseStoreExport.cache.enabled !== true ||
@@ -872,10 +986,10 @@ function configureResponseStoreWrangler(
   if (cache !== undefined && !isUnknownRecord(cache)) {
     throw new Error("The existing Wrangler config has an invalid cache value.");
   }
-  code = setTopLevelJsonProperty(code, "cache", {
-    ...cache,
-    enabled: mode === "self-contained",
-  });
+  // Workers Cache runs only for entrypoints that opt in below; the default
+  // entrypoint never does, so no Worker response is served from the cache
+  // before the Worker runs.
+  code = setTopLevelJsonProperty(code, "cache", { ...cache, enabled: false });
 
   const exportsConfig = config.exports;
   if (exportsConfig !== undefined && !isUnknownRecord(exportsConfig)) {
@@ -1105,7 +1219,10 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
     typeof appConfig.compatibility_date === "string"
       ? appConfig.compatibility_date
       : new Date().toISOString().split("T")[0];
-  const compatibilityFlags = ["nodejs_compat"];
+  const compatibilityFlags: string[] = [];
+  if (compatibilityDate < NODEJS_COMPAT_DEFAULT_DATE) {
+    compatibilityFlags.push("nodejs_compat");
+  }
   if (compatibilityDate < CTX_EXPORTS_DEFAULT_DATE) {
     compatibilityFlags.push("enable_ctx_exports");
   }
@@ -1115,10 +1232,10 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
       name: serviceName,
       main: RESPONSE_STORE_MAIN,
       compatibility_date: compatibilityDate,
-      compatibility_flags: compatibilityFlags,
+      ...(compatibilityFlags.length > 0 ? { compatibility_flags: compatibilityFlags } : {}),
       workers_dev: false,
       preview_urls: false,
-      cache: { enabled: true },
+      cache: { enabled: false },
       exports: {
         default: { type: "worker", cache: { enabled: false } },
         ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
@@ -1143,7 +1260,7 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
 export function updateWranglerConfigForCloudflare(
   code: string,
   options: CloudflareInitOptions,
-  context: { root?: string } = {},
+  context: { root?: string; isStaticExport?: boolean } = {},
 ): string {
   let config: Record<string, unknown>;
   try {
@@ -1166,10 +1283,20 @@ export function updateWranglerConfigForCloudflare(
     output = appendTopLevelJsonProperty(output, `  "main": ${JSON.stringify(workerEntry)}`);
   }
   if (!findTopLevelJsonProperty(output, "assets")) {
-    output = appendTopLevelJsonProperty(
-      output,
-      '  "assets": { "directory": "dist/client", "not_found_handling": "none", "binding": "ASSETS" }',
-    );
+    // The Static Assets cache block below adds its own route to an export app.
+    const routing = defaultAssetRouting(context, {});
+    const assets = JSON.stringify(
+      {
+        directory: "dist/client",
+        ...(routing.htmlHandling ? { html_handling: routing.htmlHandling } : {}),
+        not_found_handling: "none",
+        binding: "ASSETS",
+        ...(routing.runWorkerFirst ? { run_worker_first: routing.runWorkerFirst } : {}),
+      },
+      null,
+      2,
+    ).replaceAll("\n", "\n  ");
+    output = appendTopLevelJsonProperty(output, `  "assets": ${assets}`);
   }
   if (options.cdnCache === "static-assets") {
     const assetsProperty = findTopLevelJsonProperty(output, "assets")!;
@@ -1189,23 +1316,30 @@ export function updateWranglerConfigForCloudflare(
     }
     // Exclusions override positive routes, so merely appending our private path
     // cannot guarantee that the Worker protects it when exclusions are present.
+    // The default build-output exclusions cannot match the flat cache entries.
     if (
       Array.isArray(workerFirst) &&
-      workerFirst.some((pattern) => typeof pattern !== "string" || pattern.startsWith("!"))
+      workerFirst.some(
+        (pattern) =>
+          typeof pattern !== "string" ||
+          (pattern.startsWith("!") && !BUILD_OUTPUT_EXCLUSIONS.includes(pattern)),
+      )
     ) {
       throw new Error(
-        "Static Assets cache requires run_worker_first without exclusion patterns. Use true or an array of positive path patterns.",
+        `Static Assets cache requires run_worker_first without exclusion patterns other than ${BUILD_OUTPUT_EXCLUSIONS.join(" and ")}. Use an array of positive path patterns, optionally with those exclusions.`,
       );
     }
     const protectedRouting =
       workerFirst === true
         ? true
-        : [
-            ...new Set([
-              ...(Array.isArray(workerFirst) ? workerFirst : []),
-              "/_vinext/static-cache/*",
-            ]),
-          ];
+        : Array.isArray(workerFirst) && workerFirst.includes("/*")
+          ? workerFirst
+          : [
+              ...new Set([
+                ...(Array.isArray(workerFirst) ? workerFirst : []),
+                STATIC_ASSETS_CACHE_ROUTE,
+              ]),
+            ];
     if (
       typeof assets.directory !== "string" ||
       assets.directory.length === 0 ||
@@ -1227,18 +1361,6 @@ export function updateWranglerConfigForCloudflare(
     }
   }
   if (options.cdnCache === "workers-cache") {
-    const cacheProperty = findTopLevelJsonProperty(output, "cache");
-    if (!cacheProperty) {
-      output = appendTopLevelJsonProperty(output, '  "cache": { "enabled": true }');
-    } else {
-      const cache = JSON.parse(
-        stripJsonComments(output.slice(cacheProperty.valueStart, cacheProperty.valueEnd)),
-      ) as Record<string, unknown> | null;
-      if (!cache || cache.enabled !== true) {
-        const updatedCache = JSON.stringify({ ...cache, enabled: true });
-        output = `${output.slice(0, cacheProperty.valueStart)}${updatedCache}${output.slice(cacheProperty.valueEnd)}`;
-      }
-    }
     const versionMetadataProperty = findTopLevelJsonProperty(output, "version_metadata");
     if (!versionMetadataProperty) {
       output = appendTopLevelJsonProperty(
@@ -1257,6 +1379,33 @@ export function updateWranglerConfigForCloudflare(
         versionMetadata.binding.length === 0
       ) {
         output = `${output.slice(0, versionMetadataProperty.valueStart)}{ "binding": "${DEFAULT_VERSION_METADATA_BINDING}" }${output.slice(versionMetadataProperty.valueEnd)}`;
+      }
+    }
+  }
+  if (options.cdnCache !== "response-store") {
+    // Workers Cache runs only for entrypoints that opt in: workersCacheCdnAdapter()
+    // enables its own response stage at build time. A Worker-wide cache, such
+    // as one left by an earlier setup, would serve every Worker response,
+    // private ones included, before the Worker runs.
+    const cacheProperty = findTopLevelJsonProperty(output, "cache");
+    if (cacheProperty) {
+      const cacheCode = output.slice(cacheProperty.valueStart, cacheProperty.valueEnd);
+      const cache = JSON.parse(stripJsonComments(cacheCode)) as unknown;
+      const enabledProperty = findTopLevelJsonProperty(cacheCode, "enabled");
+      const enabledToken = enabledProperty
+        ? enabledProperty.valueStart +
+          skipJsonWhitespaceAndComments(
+            cacheCode.slice(enabledProperty.valueStart, enabledProperty.valueEnd),
+          )
+        : -1;
+      if (
+        isUnknownRecord(cache) &&
+        cache.enabled === true &&
+        cacheCode.startsWith("true", enabledToken)
+      ) {
+        // Replace only the flag so the rest of the user's cache block stays verbatim.
+        const enabledStart = cacheProperty.valueStart + enabledToken;
+        output = `${output.slice(0, enabledStart)}false${output.slice(enabledStart + "true".length)}`;
       }
     }
   }
@@ -1474,9 +1623,7 @@ export function generateAppRouterViteConfig(
       : []),
   ];
 
-  if (hasCssModules || (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0)) {
-    imports.push(`import path from "node:path";`);
-  }
+  if (hasCssModules) imports.push(`import path from "node:path";`);
 
   const plugins: string[] = [];
   if (hasCssModules) plugins.push('    patchCssModules({ exportMode: "default" }),');
@@ -1504,34 +1651,18 @@ export function generateAppRouterViteConfig(
       },
     }),`);
 
-  // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // by the vinext plugin's native Vite support).
-  let resolveBlock = "";
-  const aliases: string[] = [];
-
-  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
-    for (const mod of info.nativeModulesToStub) {
-      aliases.push(`      "${mod}": path.resolve(__dirname, "empty-stub.js"),`);
-    }
-  }
-
-  if (aliases.length > 0) {
-    resolveBlock = `\n  resolve: {\n    alias: {\n${aliases.join("\n")}\n    },\n  },`;
-  }
-
   return `${imports.join("\n")}
 
 export default defineConfig({
   plugins: [
 ${plugins.join("\n")}
-  ],${resolveBlock}${hasCssModules ? cssModulesConfigSource() : ""}
+  ],${hasCssModules ? cssModulesConfigSource() : ""}
 });
 `;
 }
 
 /** Generate vite.config.ts for Pages Router */
 export function generatePagesRouterViteConfig(
-  info?: CloudflareProjectInfo,
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   imagesBinding = "IMAGES",
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
@@ -1557,24 +1688,7 @@ export function generatePagesRouterViteConfig(
       : []),
   ];
 
-  if (hasCssModules || (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0)) {
-    imports.push(`import path from "node:path";`);
-  }
-
-  // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // by the vinext plugin's native Vite support).
-  let resolveBlock = "";
-  const aliases: string[] = [];
-
-  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
-    for (const mod of info.nativeModulesToStub) {
-      aliases.push(`      "${mod}": path.resolve(__dirname, "empty-stub.js"),`);
-    }
-  }
-
-  if (aliases.length > 0) {
-    resolveBlock = `\n  resolve: {\n    alias: {\n${aliases.join("\n")}\n    },\n  },`;
-  }
+  if (hasCssModules) imports.push(`import path from "node:path";`);
 
   return `${imports.join("\n")}
 
@@ -1591,7 +1705,7 @@ ${hasCssModules ? '    patchCssModules({ exportMode: "default" }),\n' : ""}    $
     assetsDirectory,
   ).replace(/\n/g, "\n    ")},
     cloudflare(${legacyStaticAssets ? '{ viteEnvironment: { name: "ssr" } }' : serviceBinding ? "{ auxiliaryWorkers: [{ config: responseStoreServiceBinding }] }" : ""}),
-  ],${resolveBlock}${hasCssModules ? cssModulesConfigSource() : ""}
+  ],${hasCssModules ? cssModulesConfigSource() : ""}
 });
 `;
 }
@@ -2701,67 +2815,11 @@ export function updateViteConfigForCssModules(
   };
 }
 
-function ensureNativeAliases(
-  output: MagicString,
-  config: AstObject,
-  modules: string[],
-  pathBinding: string,
-  code: string,
-): void {
-  if (modules.length === 0) return;
-  const resolve = findProperty(config, "resolve");
-  if (resolve && resolve.value.type !== "ObjectExpression") {
-    throw new Error(
-      "The Vite config's resolve option must be an object for vinext init to update it.",
-    );
-  }
-  const resolveObject = resolve?.value as AstObject | undefined;
-  const alias = resolveObject ? findProperty(resolveObject, "alias") : undefined;
-  if (alias && alias.value.type !== "ObjectExpression") {
-    throw new Error(
-      "The Vite config's resolve.alias option must be an object for vinext init to update it.",
-    );
-  }
-  const aliasLines = modules.map(
-    (moduleName) =>
-      `      ${JSON.stringify(moduleName)}: ${pathBinding}.resolve(__dirname, "empty-stub.js"),`,
-  );
-  if (!resolveObject) {
-    insertObjectProperty(
-      output,
-      config,
-      `  resolve: {\n    alias: {\n${aliasLines.join("\n")}\n    },\n  },`,
-      code,
-    );
-    return;
-  }
-  if (!alias) {
-    insertObjectProperty(
-      output,
-      resolveObject,
-      `    alias: {\n${aliasLines.join("\n")}\n    },`,
-      code,
-    );
-    return;
-  }
-  const aliasObject = alias.value as AstObject;
-  const existingAliases = new Set(
-    aliasObject.properties.flatMap((property) =>
-      property.type === "Property" && propertyName(property) ? [propertyName(property)!] : [],
-    ),
-  );
-  const missingLines = aliasLines.filter((_, index) => !existingAliases.has(modules[index]));
-  if (missingLines.length > 0) {
-    insertObjectProperty(output, aliasObject, missingLines.join("\n"), code);
-  }
-}
-
 export function updateViteConfigForCloudflare(
   filePath: string,
   code: string,
   options: {
     isAppRouter: boolean;
-    nativeModulesToStub: string[];
     cache?: CloudflareInitOptions;
     assetsBinding?: string;
     assetsDirectory?: string;
@@ -3118,26 +3176,6 @@ export function updateViteConfigForCloudflare(
         );
       }
     }
-  }
-
-  if (options.nativeModulesToStub.length > 0) {
-    const existingPathBinding = commonJs
-      ? findRequiredBinding(program, "node:path", "default")
-      : program.body
-          .filter(
-            (statement): statement is ESTree.ImportDeclaration =>
-              statement.type === "ImportDeclaration",
-          )
-          .find((statement) => statement.source.value === "node:path")
-          ?.specifiers.find(
-            (specifier): specifier is ESTree.ImportDefaultSpecifier =>
-              specifier.type === "ImportDefaultSpecifier",
-          )?.local.name;
-    const pathLocal = existingPathBinding ?? allocateBinding(bindings, "path");
-    const pathBinding = commonJs
-      ? ensureDefaultRequire(program, output, "node:path", pathLocal)
-      : ensureDefaultImport(program, output, "node:path", pathLocal);
-    ensureNativeAliases(output, config, options.nativeModulesToStub, pathBinding, code);
   }
 
   return formatInlineConfig(filePath, output.toString(), code);

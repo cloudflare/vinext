@@ -152,6 +152,39 @@ describe("getOutputPath", () => {
   });
 });
 
+// Ported from Next.js normalizePagePath, which export/worker.ts applies to every
+// prerendered path: `/index` must not share the files of `/`.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/page-path/normalize-page-path.ts
+describe("prerender output paths for /index", () => {
+  it("keeps /index and /index/... apart from / and from each other", () => {
+    expect(getOutputPath("/", false)).toBe("index.html");
+    expect(getOutputPath("/index", false)).toBe("index/index.html");
+    expect(getOutputPath("/index", true)).toBe("index/index/index.html");
+    expect(getOutputPath("/index/index", false)).toBe("index/index/index.html");
+    expect(getOutputPath("/index/foo", false)).toBe("index/index/foo.html");
+    expect(getOutputPath("/index", false, "/docs")).toBe("docs/index/index.html");
+    expect(getOutputPath("/indexed", false)).toBe("indexed.html");
+    expect(getOutputPath("/blog/index", false)).toBe("blog/index.html");
+
+    expect(getRscOutputPath("/")).toBe("index.rsc");
+    expect(getRscOutputPath("/index")).toBe("index/index.rsc");
+    expect(getRscOutputPath("/index", { mode: "export", trailingSlash: false })).toBe(
+      "index/index.txt",
+    );
+    expect(getRscOutputPath("/index", { mode: "export", trailingSlash: true })).toBe(
+      "index/index/index.txt",
+    );
+    expect(getRscOutputPath("/", { mode: "export", trailingSlash: false, basePath: "/docs" })).toBe(
+      "docs/index.txt",
+    );
+    expect(
+      getRscOutputPath("/index", { mode: "export", trailingSlash: false, basePath: "/docs" }),
+    ).toBe("docs/index/index.txt");
+    expect(getAppRouteOutputPath("/")).toBe("index.route");
+    expect(getAppRouteOutputPath("/index")).toBe("index/index.route");
+  });
+});
+
 describe("extractRscPayloadFromPrerenderedHtml", () => {
   function decodeExtractedPayload(html: string): string | null {
     const payload = extractRscPayloadFromPrerenderedHtml(html);
@@ -881,10 +914,15 @@ describe("prerenderApp — special errors that escape the shell", () => {
     expect(route).toMatchObject({ responseStatus: 307, headers: { location: "" } });
   });
 
-  it("still fails a 404 that isn't its page's special error", async () => {
+  // An unmatched rewrite destination's 404 carries no-store, as a dynamic
+  // render does, but without the page's marker it stays an error.
+  it.each([
+    "s-maxage=60, stale-while-revalidate",
+    "private, no-cache, no-store, max-age=0, must-revalidate",
+  ])("still fails a 404 that isn't its page's special error (%s)", async (cacheControl) => {
     const { html, route, rsc } = await prerenderSpecialErrorPage((res) => {
       res.statusCode = 404;
-      res.setHeader("cache-control", "s-maxage=60, stale-while-revalidate");
+      res.setHeader("cache-control", cacheControl);
       res.end(boundaryDocument);
     });
 
@@ -1376,6 +1414,13 @@ describe("prerenderApp — default mode (app-basic)", () => {
 
   afterAll(() => {
     fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  // As in Next.js, whose build fails on a prerender error, a page that throws
+  // is not stored, even when an error.tsx catches the error (#4394).
+  it("does not store a page whose render error an error.tsx catches", () => {
+    expect(findRoute(results, "/error-server-test")).toMatchObject({ status: "skipped" });
+    expect(fs.existsSync(path.join(outDir, "error-server-test.html"))).toBe(false);
   });
 
   // ── Static routes with explicit config ────────────────────────────────────

@@ -3,7 +3,6 @@ import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
-import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import {
   loadAppInterceptLayouts,
   loadAppInterceptNotFound,
@@ -85,8 +84,11 @@ type AppPageInterceptMatch<TPage = unknown> = {
   interceptLoadings?: readonly unknown[] | null;
   interceptLoadingTreePositions?: readonly number[] | null;
   interceptNotFoundBranchSegments?: readonly string[] | null;
+  interceptNotFounds?: readonly unknown[] | null;
+  interceptNotFoundTreePositions?: readonly number[] | null;
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   __loadInterceptLoadings?: readonly (() => Promise<unknown>)[] | null;
+  __loadInterceptNotFounds?: readonly (() => Promise<unknown>)[] | null;
   matchedParams: AppPageParams;
   sourceMatchedParams?: AppPageParams;
   page: TPage;
@@ -94,6 +96,15 @@ type AppPageInterceptMatch<TPage = unknown> = {
   notFound?: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
+  interceptForbiddens?: readonly unknown[] | null;
+  interceptForbiddenTreePositions?: readonly number[] | null;
+  __loadInterceptForbiddens?: readonly (() => Promise<unknown>)[] | null;
+  interceptUnauthorizeds?: readonly unknown[] | null;
+  interceptUnauthorizedTreePositions?: readonly number[] | null;
+  __loadInterceptUnauthorizeds?: readonly (() => Promise<unknown>)[] | null;
+  interceptErrors?: readonly unknown[] | null;
+  interceptErrorTreePositions?: readonly number[] | null;
+  __loadInterceptErrors?: readonly (() => Promise<unknown>)[] | null;
   __loadState?: {
     page: TPage;
     pageLoading: Promise<TPage> | null;
@@ -109,19 +120,19 @@ type AppPageInterceptMatch<TPage = unknown> = {
   targetRouteGraphId?: string | null;
 };
 
-type AppPageInterceptState<TRoute, TPage> =
+export type AppPageInterceptState<TRoute, TPage> =
   | { kind: "none" }
   | { kind: "current-route"; intercept: AppPageInterceptMatch<TPage> }
   | { kind: "source-route"; intercept: AppPageInterceptMatch<TPage>; sourceRoute: TRoute };
 
-type ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts> = {
+type AppPageInterceptStateLookup<TRoute, TPage> = {
   cleanPathname: string;
   currentRoute: TRoute;
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
-  getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
+  /** The state this request already resolved, which is then reused. */
+  interceptState?: AppPageInterceptState<TRoute, TPage>;
   isRscRequest: boolean;
-  toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
 
 type ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> = {
@@ -131,6 +142,7 @@ type ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOp
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
+  interceptState?: AppPageInterceptState<TRoute, TPage>;
   isRscRequest: boolean;
   toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
@@ -154,7 +166,6 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     params: AppPageParams,
     interceptOpts: TInterceptOpts | undefined,
     searchParams: URLSearchParams,
-    layoutParamAccess?: AppLayoutParamAccessTracker,
     buildOptions?: {
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
@@ -165,18 +176,23 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
+  interceptState?: AppPageInterceptState<TRoute, TPage>;
   isRscRequest: boolean;
-  layoutParamAccess?: AppLayoutParamAccessTracker;
   resolveNavigationParams: (
     route: TRoute,
     params: AppPageParams,
     pathname: string,
     interceptOpts: TInterceptOpts,
   ) => AppPageParams;
-  renderInterceptResponse: (route: TRoute, element: TElement) => Promise<Response> | Response;
+  renderInterceptResponse: (
+    route: TRoute,
+    element: TElement,
+    navigationParams: AppPageParams,
+  ) => Promise<Response> | Response;
   resolveSearchParams?: (
     route: TRoute,
     searchParams: URLSearchParams,
+    interceptOpts: TInterceptOpts,
   ) => Awaitable<URLSearchParams>;
   searchParams: URLSearchParams;
   setNavigationContext: (context: {
@@ -522,37 +538,101 @@ async function generateIndependentStaticParams(
   return { staticParams: rows.map((row) => row.params), validated };
 }
 
+function isStaticParamsRowConsistentWithRequest(
+  row: Record<string, unknown>,
+  requestParams: AppPageParams,
+): boolean {
+  const sharedKeys = Object.keys(row).filter((key) => requestParams[key] !== undefined);
+  return areStaticParamsAllowed(requestParams, [row], false, sharedKeys);
+}
+
+function rewritesParentParams(
+  parentParams: Record<string, unknown>,
+  item: Record<string, unknown>,
+): boolean {
+  return Object.keys(item).some(
+    (key) =>
+      Object.hasOwn(parentParams, key) &&
+      JSON.stringify(item[key]) !== JSON.stringify(parentParams[key]),
+  );
+}
+
+type GeneratedStaticParamsRow = {
+  params: Record<string, unknown>;
+  // Identifies the row by its position in the generation tree, so a rerun
+  // finds the results its first pass returned even when rows share params.
+  lineage: string;
+};
+
 async function generateChainedStaticParams(
   sources: readonly GenerateStaticParamsSource[],
+  requestParams: AppPageParams | null,
+  // A rerun over every combination reuses the results each generator already
+  // returned, so it calls generators only for the parents it skipped.
+  results = new Map<GenerateStaticParamsSource, Map<string, unknown>>(),
 ): Promise<Record<string, unknown>[]> {
-  let generatedParams: Record<string, unknown>[] = [];
+  let generatedRows: GeneratedStaticParamsRow[] = [];
+  let skippedParents = false;
+  let needsEveryCombination = false;
 
   for (const source of sources) {
-    const hasParentParams = generatedParams.length > 0;
-    const parents = hasParentParams ? generatedParams : [{}];
-    const nextParams: Record<string, unknown>[] = [];
+    let sourceResults = results.get(source);
+    if (!sourceResults) {
+      sourceResults = new Map();
+      results.set(source, sourceResults);
+    }
+    const hasParentParams = generatedRows.length > 0;
+    let parents = hasParentParams ? generatedRows : [{ params: {}, lineage: "" }];
+    const nextRows: GeneratedStaticParamsRow[] = [];
 
-    for (const parentParams of parents) {
-      const result = await runWithFetchDedupe(() =>
-        source.generateStaticParams({ params: parentParams as AppPageParams }),
+    // Every child row inherits its parent's params, so a parent combination
+    // that already disagrees with the request cannot produce it, and its
+    // generator call is skipped. When none agrees, one still runs so a
+    // generator that rewrites parent params is observed.
+    if (requestParams) {
+      const consistent = parents.filter((row) =>
+        isStaticParamsRowConsistentWithRequest(row.params, requestParams),
       );
+      parents = consistent.length > 0 ? consistent : parents.slice(0, 1);
+    }
+    if (hasParentParams && parents.length < generatedRows.length) skippedParents = true;
+
+    for (const parent of parents) {
+      let result = sourceResults.get(parent.lineage);
+      if (!sourceResults.has(parent.lineage)) {
+        result = await runWithFetchDedupe(() =>
+          source.generateStaticParams({ params: parent.params as AppPageParams }),
+        );
+        sourceResults.set(parent.lineage, result);
+      }
       if (Array.isArray(result) && result.length > 0) {
-        for (const item of result) {
-          if (item !== null && typeof item === "object" && !Array.isArray(item)) {
-            nextParams.push({ ...parentParams, ...(item as Record<string, unknown>) });
+        result.forEach((item, index) => {
+          if (item === null || typeof item !== "object" || Array.isArray(item)) return;
+          const row = item as Record<string, unknown>;
+          if (skippedParents && rewritesParentParams(parent.params, row)) {
+            needsEveryCombination = true;
           }
-        }
+          nextRows.push({
+            params: { ...parent.params, ...row },
+            lineage: `${parent.lineage}/${index}`,
+          });
+        });
       } else if (hasParentParams) {
         // Match Next's non-PPR generation: an empty child result preserves
         // each already-generated parent combination.
-        nextParams.push(parentParams);
+        nextRows.push({ params: parent.params, lineage: `${parent.lineage}/-` });
       }
     }
 
-    generatedParams = nextParams;
+    if (skippedParents && nextRows.length === 0) needsEveryCombination = true;
+    generatedRows = nextRows;
   }
 
-  return generatedParams;
+  // Next merges each result over its parent combination, so a generator that
+  // rewrites a parent param can produce the request from a skipped parent.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+  if (needsEveryCombination) return generateChainedStaticParams(sources, null, results);
+  return generatedRows.map((row) => row.params);
 }
 
 function normalizeGenerateStaticParams(
@@ -595,7 +675,14 @@ export async function validateAppPageDynamicParams(
     // generateStaticParams exported by a grouped layout receives everything
     // generated by its parent layouts.
     // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
-    chainedStaticParams = await generateChainedStaticParams(chainedSources);
+    //
+    // Parallel generators merge their results over each primary combination
+    // and may rewrite primary params, so they receive every combination.
+    const hasIndependentSources = generateStaticParamsSources.some((source) => !source.chained);
+    chainedStaticParams = await generateChainedStaticParams(
+      chainedSources,
+      hasIndependentSources ? null : options.params,
+    );
   }
 
   const independentChains = new Map<unknown, GenerateStaticParamsSource[]>();
@@ -645,9 +732,10 @@ export async function validateAppPageDynamicParams(
   return null;
 }
 
-async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
-  options: ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts>,
+export async function resolveAppPageInterceptState<TRoute, TPage>(
+  options: AppPageInterceptStateLookup<TRoute, TPage>,
 ): Promise<AppPageInterceptState<TRoute, TPage>> {
+  if (options.interceptState) return options.interceptState;
   if (!options.isRscRequest) {
     return { kind: "none" };
   }
@@ -659,7 +747,14 @@ async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
 
   await loadAppInterceptPage(intercept);
   await loadAppInterceptNotFound(intercept);
-  if (intercept.__loadInterceptLayouts || intercept.__loadInterceptLoadings) {
+  if (
+    intercept.__loadInterceptLayouts ||
+    intercept.__loadInterceptLoadings ||
+    intercept.__loadInterceptNotFounds ||
+    intercept.__loadInterceptForbiddens ||
+    intercept.__loadInterceptUnauthorizeds ||
+    intercept.__loadInterceptErrors
+  ) {
     await loadAppInterceptLayouts(intercept);
   }
 
@@ -682,10 +777,9 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     cleanPathname: options.cleanPathname,
     currentRoute: options.currentRoute,
     findIntercept: options.findIntercept,
-    getRouteParamNames: options.getRouteParamNames,
     getSourceRoute: options.getSourceRoute,
+    interceptState: options.interceptState,
     isRscRequest: options.isRscRequest,
-    toInterceptOpts: options.toInterceptOpts,
   });
 
   if (interceptState.kind === "source-route") {
@@ -729,10 +823,9 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
     cleanPathname: options.cleanPathname,
     currentRoute: options.currentRoute,
     findIntercept: options.findIntercept,
-    getRouteParamNames: options.getRouteParamNames,
     getSourceRoute: options.getSourceRoute,
+    interceptState: options.interceptState,
     isRscRequest: options.isRscRequest,
-    toInterceptOpts: options.toInterceptOpts,
   });
 
   if (interceptState.kind === "source-route") {
@@ -745,20 +838,21 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
       ...interceptState.intercept.matchedParams,
     };
     const renderSearchParams = options.resolveSearchParams
-      ? await options.resolveSearchParams(renderRoute, options.searchParams)
+      ? await options.resolveSearchParams(renderRoute, options.searchParams, interceptOpts)
       : options.searchParams;
     const renderParams = pickRouteParams(
       sourceMatchedParams,
       options.getRouteParamNames(interceptState.sourceRoute),
     );
 
+    const resolvedNavigationParams = options.resolveNavigationParams(
+      renderRoute,
+      navigationParams,
+      options.cleanPathname,
+      interceptOpts,
+    );
     options.setNavigationContext({
-      params: options.resolveNavigationParams(
-        renderRoute,
-        navigationParams,
-        options.cleanPathname,
-        interceptOpts,
-      ),
+      params: resolvedNavigationParams,
       pathname: options.cleanPathname,
       searchParams: renderSearchParams,
     });
@@ -767,12 +861,15 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
       renderParams,
       interceptOpts,
       renderSearchParams,
-      options.layoutParamAccess,
     );
 
     return {
       interceptOpts: undefined,
-      response: await options.renderInterceptResponse(renderRoute, interceptElement),
+      response: await options.renderInterceptResponse(
+        renderRoute,
+        interceptElement,
+        resolvedNavigationParams,
+      ),
     };
   }
 

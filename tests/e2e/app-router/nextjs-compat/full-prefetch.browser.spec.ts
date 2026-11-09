@@ -246,7 +246,7 @@ test("explicit full prefetch returns page content and shares its pending request
   }
 });
 
-test("only a settled prepared prefetch commits in the initiating click task", async ({ page }) => {
+test("a settled prepared prefetch commits without refetching the page", async ({ page }) => {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-settled-prefetch-"));
   let server: Server | undefined;
 
@@ -285,25 +285,29 @@ test("only a settled prepared prefetch commits in the initiating click task", as
     await (await settledFullResponse).finished();
     // Preparation is CPU-local once the full response body settles.
     await page.waitForTimeout(50);
+    const targetRequests: string[] = [];
+    page.on("request", (request) => {
+      const { pathname } = new URL(request.url());
+      if (pathname === "/settled-target" || pathname === "/no-prefetch-target") {
+        targetRequests.push(pathname);
+      }
+    });
 
-    expect(
-      await page.evaluate(() => {
-        document.querySelector<HTMLElement>("#settled-prefetch-link")?.click();
-        return document.querySelector("#settled-target-content")?.textContent ?? null;
-      }),
-    ).toBe("Settled prefetch page content");
+    // Like Next.js, the click commits in a transition rather than in the click
+    // task, but it reuses the prepared prefetch instead of fetching again.
+    await page.locator("#settled-prefetch-link").click();
+    await expect(page.locator("#settled-target-content")).toHaveText(
+      "Settled prefetch page content",
+    );
+    expect(targetRequests).toEqual([]);
 
     await page.goto(baseUrl);
     await waitForAppRouterHydration(page);
-    expect(
-      await page.evaluate(() => {
-        document.querySelector<HTMLElement>("#no-prefetch-link")?.click();
-        return document.querySelector("#no-prefetch-target-content")?.textContent ?? null;
-      }),
-    ).toBeNull();
+    await page.locator("#no-prefetch-link").click();
     await expect(page.locator("#no-prefetch-target-content")).toHaveText(
       "No prefetch page content",
     );
+    expect(targetRequests).toContain("/no-prefetch-target");
   } finally {
     await page.close();
     if (server) await closeServer(server);

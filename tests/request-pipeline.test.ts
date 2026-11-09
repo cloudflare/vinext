@@ -6,17 +6,21 @@ import {
   cloneRequestWithUrl,
   createStaticFileSignal,
   filterInternalHeaders,
+  getRepeatedSlashRedirect,
   guardProtocolRelativeUrl,
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
   hasBasePath,
   stripBasePath,
+  stripRequestUrlFragment,
   normalizeTrailingSlash,
   resolvePublicFileRoute,
+  sendRepeatedSlashRedirect,
   validateCsrfOrigin,
   validateServerActionPayload,
   processMiddlewareHeaders,
   VINEXT_INTERNAL_HEADERS,
+  withRequestHeaders,
 } from "../packages/vinext/src/server/request-pipeline.js";
 import {
   applyConfigHeadersToHeaderRecord,
@@ -43,8 +47,10 @@ import {
   hasMiddlewareRequestHeaderOverrides,
 } from "../packages/vinext/src/utils/middleware-request-headers.js";
 import { withResponseStageVary } from "../packages/vinext/src/server/response-stage-policy.js";
+import { restoreBasePath } from "../packages/vinext/src/utils/base-path.js";
 import {
   readStaticFileSignal,
+  readStaticFileSignalRequestHeaders,
   restoreStaticFileSignalFromTransport,
   serializeStaticFileSignalForTransport,
 } from "../packages/vinext/src/server/static-file-signal.js";
@@ -74,16 +80,26 @@ describe("canonicalizeRequestPathname", () => {
 // ── guardProtocolRelativeUrl ────────────────────────────────────────────
 
 describe("guardProtocolRelativeUrl", () => {
-  it("returns 404 for // protocol-relative paths", () => {
-    const res = guardProtocolRelativeUrl("//evil.com");
-    expect(res).not.toBeNull();
-    expect(res!.status).toBe(404);
+  // Next.js 308s literal `//` and `\` to the collapsed same-origin path
+  // (base-server.ts / resolve-routes.ts) instead of 404ing them.
+  it("308s // protocol-relative paths to the collapsed path", async () => {
+    const res = guardProtocolRelativeUrl("//evil.com", "?a=1");
+    expect(res?.status).toBe(308);
+    expect(res?.headers.get("location")).toBe("/evil.com?a=1");
+    expect(res?.headers.get("refresh")).toBe("0;url=/evil.com?a=1");
+    expect(await res?.text()).toBe("/evil.com?a=1");
   });
 
-  it("returns 404 for backslash protocol-relative paths", () => {
+  it("308s backslash protocol-relative paths to the collapsed path", () => {
     const res = guardProtocolRelativeUrl("/\\evil.com");
-    expect(res).not.toBeNull();
-    expect(res!.status).toBe(404);
+    expect(res?.status).toBe(308);
+    expect(res?.headers.get("location")).toBe("/evil.com");
+  });
+
+  it("308s a bare double slash to the root", () => {
+    const res = guardProtocolRelativeUrl("//");
+    expect(res?.status).toBe(308);
+    expect(res?.headers.get("location")).toBe("/");
   });
 
   // Regression for VULN-126915 / H1 #3576997: encoded backslash in the
@@ -143,6 +159,114 @@ describe("guardProtocolRelativeUrl", () => {
   });
 });
 
+// ── getRepeatedSlashRedirect ────────────────────────────────────────────
+
+describe("getRepeatedSlashRedirect", () => {
+  const locationOf = (rawUrl: string) => {
+    const redirect = getRepeatedSlashRedirect(rawUrl);
+    return redirect === null ? null : redirect.status === 404 ? 404 : redirect.location;
+  };
+
+  // Expected values observed against `next start` (Next.js 16.2.7).
+  it.each([
+    ["//", "/"],
+    ["//?a=1", "/?a=1"],
+    ["//?", "/"],
+    ["//??next=1", "/"],
+    ["//?a=1?b=2", "/?a=1?b=2"],
+    ["/a//?&x", "/a/?&x"],
+    ["///", "/"],
+    ["/\\", "/"],
+    ["//evil.com", "/evil.com"],
+    ["///evil.com", "/evil.com"],
+    ["/\\evil.com", "/evil.com"],
+    ["/\\\\evil.com", "/evil.com"],
+    ["/\\/evil.com", "/evil.com"],
+    ["/about//", "/about/"],
+    ["/about//?x=1//y", "/about/?x=1//y"],
+    ["/docs//", "/docs/"],
+    ["//docs/about", "/docs/about"],
+    ["/a/..//b", "/b"],
+    ["/safe/%2e%2e//admin", "/admin"],
+    ['/foo//?q="x"', "/foo/?q=%22x%22"],
+    ["/a//b#frag", "/a/b#frag"],
+    ["/..//evil.com", "/evil.com"],
+    ["/.//evil.com", "/evil.com"],
+    ["/_next//static/x.js", "/_next/static/x.js"],
+  ])("%s → 308 %s", (rawUrl, expected) => {
+    expect(getRepeatedSlashRedirect(rawUrl)).toEqual({ status: 308, location: expected });
+  });
+
+  // Next.js 308s these to a Location that starts with an encoded slash or
+  // backslash; vinext answers 404 directly instead of echoing or routing it.
+  it.each(["/%2F//evil.com", "//%2Fevil.com", "//%5Cevil.com", "/.//%2Fevil.com", "/a/..//%5C"])(
+    "%s → 404",
+    (rawUrl) => {
+      expect(getRepeatedSlashRedirect(rawUrl)).toEqual({ status: 404 });
+    },
+  );
+
+  it("never returns a protocol-relative or cross-origin Location", () => {
+    const prefixes = ["", "/", "//", "/\\", "\\/", "\\\\", "/./", "/.//", "/../", "/a/../"];
+    const middles = ["", "/", "\\", "//", "\\\\", "%2F", "%5C", "%2f", "%5c", "\t", "\n"];
+    for (const prefix of prefixes) {
+      for (const middle of middles) {
+        for (const suffix of ["evil.com", "/evil.com", "\\evil.com", "evil.com/?q=//x"]) {
+          const location = locationOf(`${prefix}${middle}${suffix}`);
+          if (location === null || location === 404) continue;
+          expect(location.startsWith("/")).toBe(true);
+          expect(isOpenRedirectShaped(location)).toBe(false);
+          expect(new URL(location, "https://victim.example").origin).toBe("https://victim.example");
+        }
+      }
+    }
+  });
+
+  it("leaves paths without literal repeated slashes or backslashes alone", () => {
+    expect(getRepeatedSlashRedirect("/")).toBeNull();
+    expect(getRepeatedSlashRedirect("/about/")).toBeNull();
+    expect(getRepeatedSlashRedirect("/about?next=//evil.com")).toBeNull();
+    expect(getRepeatedSlashRedirect("/%2F")).toBeNull();
+    expect(getRepeatedSlashRedirect("/%5C")).toBeNull();
+    expect(getRepeatedSlashRedirect("/%2F/evil.com")).toBeNull();
+    expect(getRepeatedSlashRedirect("/%5C%5Cevil.com")).toBeNull();
+  });
+
+  it("answers non-origin-form request targets with a 404", () => {
+    expect(getRepeatedSlashRedirect("http://evil.com//x")).toEqual({ status: 404 });
+    expect(getRepeatedSlashRedirect("http://evil.com/x")).toEqual({ status: 404 });
+    expect(getRepeatedSlashRedirect("\\/evil.com")).toEqual({ status: 404 });
+    expect(getRepeatedSlashRedirect("*")).toEqual({ status: 404 });
+  });
+
+  it("matches WHATWG URL parsing, which strips tabs and newlines first", () => {
+    // Node rejects raw tabs/newlines in the request target with a 400; Worker
+    // and Request-based entries see the URL after the parser has stripped them.
+    const url = new URL("http://victim.example//\tevil.com");
+    expect(url.pathname).toBe("//evil.com");
+    expect(locationOf(url.pathname)).toBe("/evil.com");
+  });
+
+  it("sends the same answers on a Node response", () => {
+    const sent: unknown[] = [];
+    const res = {
+      writeHead: (status: number, headers?: Record<string, string>) => sent.push(status, headers),
+      end: (body: string) => sent.push(body),
+    };
+    expect(sendRepeatedSlashRedirect("/about", res)).toBe(false);
+    expect(sendRepeatedSlashRedirect("//?a=1", res)).toBe(true);
+    expect(sendRepeatedSlashRedirect("/.//%2Fevil.com", res)).toBe(true);
+    expect(sent).toEqual([
+      308,
+      { Location: "/?a=1", Refresh: "0;url=/?a=1" },
+      "/?a=1",
+      404,
+      undefined,
+      "This page could not be found",
+    ]);
+  });
+});
+
 // ── isOpenRedirectShaped ────────────────────────────────────────────────
 
 describe("isOpenRedirectShaped", () => {
@@ -169,6 +293,14 @@ describe("isOpenRedirectShaped", () => {
     expect(isOpenRedirectShaped("/api/users")).toBe(false);
     expect(isOpenRedirectShaped("/%61dmin")).toBe(false);
   });
+
+  it("detects bare double-slash forms", () => {
+    // A same-origin `http://host//` must not be relativized to `Location: //`.
+    expect(isOpenRedirectShaped("//")).toBe(true);
+    expect(isOpenRedirectShaped("/\\")).toBe(true);
+    expect(isOpenRedirectShaped("/%2F")).toBe(true);
+    expect(isOpenRedirectShaped("/%5c")).toBe(true);
+  });
 });
 
 // ── stripBasePath ───────────────────────────────────────────────────────
@@ -185,6 +317,21 @@ describe("hasBasePath", () => {
     expect(hasBasePath("/docs/v2", "/docs/v2")).toBe(true);
     expect(hasBasePath("/docs/v2/guide", "/docs/v2")).toBe(true);
     expect(hasBasePath("/docs/v20", "/docs/v2")).toBe(false);
+  });
+});
+
+describe("restoreBasePath", () => {
+  it("re-adds the basePath even when the stripped pathname starts with it", () => {
+    expect(restoreBasePath("/docs/about", "/docs")).toBe("/docs/docs/about");
+    expect(restoreBasePath("/about", "/docs")).toBe("/docs/about");
+  });
+
+  it("restores the stripped root as the bare basePath", () => {
+    expect(restoreBasePath("/", "/docs")).toBe("/docs");
+  });
+
+  it("returns pathname unchanged when basePath is empty", () => {
+    expect(restoreBasePath("/about", "")).toBe("/about");
   });
 });
 
@@ -264,6 +411,153 @@ describe("applyConfigHeadersToResponse", () => {
     expect(response.headers.get("vary")).toBe("RSC, Accept");
     expect(response.headers.get("set-cookie")).toBe("from=config; Path=/");
   });
+
+  // Next.js stages config headers before middleware: config cookies precede
+  // the response's own, and middleware's Set-Cookie replaces them.
+  it.each([
+    { middlewareHeaders: undefined, cookies: ["config=1; Path=/", "handler=1; Path=/"] },
+    {
+      middlewareHeaders: new Headers({ "set-cookie": "" }),
+      cookies: ["config=1; Path=/", "handler=1; Path=/"],
+    },
+    {
+      middlewareHeaders: new Headers({ "set-cookie": "mw=1; Path=/" }),
+      cookies: ["handler=1; Path=/"],
+    },
+  ])(
+    "orders config Set-Cookie like Next.js (middleware cookie: $middlewareHeaders)",
+    ({ middlewareHeaders, cookies }) => {
+      const headers = new Headers({ "set-cookie": "handler=1; Path=/" });
+
+      applyConfigHeadersToResponse(headers, {
+        configHeaders: [
+          { source: "/about", headers: [{ key: "Set-Cookie", value: "config=1; Path=/" }] },
+        ],
+        middlewareHeaders,
+        pathname: "/about",
+        requestContext: {
+          headers: new Headers(),
+          cookies: {},
+          query: new URLSearchParams(),
+          host: "example.com",
+        },
+      });
+
+      expect(headers.getSetCookie()).toEqual(cookies);
+    },
+  );
+});
+
+describe("applyConfigHeadersToResponse Route Handler collisions", () => {
+  // Next.js send-response.ts copies a Node Route Handler's header only where
+  // config left none, appending its challenges and Vary; the edge runtime
+  // appends all. Middleware headers and cache policy keep their rules.
+  const applyCollidingConfig = (
+    headers: Headers,
+    routeHandlerRuntime: "node" | "edge" | undefined,
+  ): void =>
+    applyConfigHeadersToResponse(headers, {
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [
+            { key: "X-Collision", value: "config" },
+            { key: "WWW-Authenticate", value: "Bearer realm=config" },
+            { key: "X-Middleware", value: "config" },
+            { key: "x-nextjs-cache", value: "config" },
+            { key: "Cache-Control", value: "private, no-store" },
+            { key: "Vary", value: "X-Config" },
+            { key: "Vary", value: "X-Config-2" },
+          ],
+        },
+      ],
+      middlewareHeaders: new Headers({ "x-middleware": "middleware" }),
+      overwriteExisting: new Set<string>(),
+      pathname: "/about",
+      requestContext: {
+        headers: new Headers(),
+        cookies: {},
+        query: new URLSearchParams(),
+        host: "example.com",
+      },
+      routeHandlerRuntime,
+    });
+
+  it.each([
+    {
+      runtime: undefined,
+      expected: {
+        "x-collision": "handler",
+        "www-authenticate": "Basic realm=handler",
+        "x-nextjs-cache": "handler",
+        vary: "X-Handler, X-Config, X-Config-2",
+      },
+    },
+    {
+      runtime: "node" as const,
+      expected: {
+        "x-collision": "config",
+        "www-authenticate": "Bearer realm=config, Basic realm=handler",
+        "x-nextjs-cache": "config",
+        vary: "X-Config, X-Config-2, X-Handler",
+      },
+    },
+    {
+      runtime: "edge" as const,
+      expected: {
+        "x-collision": "config, handler",
+        "www-authenticate": "Bearer realm=config, Basic realm=handler",
+        "x-nextjs-cache": "config, handler",
+        vary: "X-Config, X-Config-2, X-Handler",
+      },
+    },
+  ])("merges handler headers for runtime $runtime", ({ runtime, expected }) => {
+    const headers = new Headers({
+      "cache-control": "public, max-age=60",
+      vary: "X-Handler",
+      "www-authenticate": "Basic realm=handler",
+      "x-collision": "handler",
+      "x-middleware": "middleware",
+      "x-nextjs-cache": "handler",
+    });
+
+    applyCollidingConfig(headers, runtime);
+
+    expect(Object.fromEntries(headers)).toEqual({
+      ...expected,
+      "cache-control": "public, max-age=60",
+      "x-middleware": "middleware",
+    });
+  });
+
+  // Next.js NodeNextResponse.appendHeader() skips a value already present.
+  it.each(["node" as const, "edge" as const])(
+    "keeps one copy of a value config and the handler share for runtime %s",
+    (runtime) => {
+      const headers = new Headers({
+        "www-authenticate": "Bearer realm=config",
+        "x-collision": "config",
+      });
+
+      applyCollidingConfig(headers, runtime);
+
+      expect(headers.get("www-authenticate")).toBe("Bearer realm=config");
+      expect(headers.get("x-collision")).toBe("config");
+    },
+  );
+
+  // Next.js sets x-nextjs-cache over config on the responses its cache manages.
+  it.each(["node" as const, "edge" as const])(
+    "keeps a cache-managed x-nextjs-cache for runtime %s",
+    (runtime) => {
+      const headers = new Headers({ "x-nextjs-cache": "MISS", "x-vinext-cache": "MISS" });
+
+      applyCollidingConfig(headers, runtime);
+
+      expect(headers.get("x-nextjs-cache")).toBe("MISS");
+      expect(headers.get("x-vinext-cache")).toBe("MISS");
+    },
+  );
 });
 
 describe("response-stage config policy", () => {
@@ -347,7 +641,8 @@ describe("applyConfigHeadersToHeaderRecord", () => {
     expect(headers["x-middleware"]).toBe("winner");
     expect(headers["x-added"]).toBe("config");
     expect(headers.vary).toBe("RSC, Accept");
-    expect(headers["set-cookie"]).toEqual(["mw=1; Path=/", "cfg=1; Path=/"]);
+    // Next.js drops a config Set-Cookie when middleware sets its own.
+    expect(headers["set-cookie"]).toEqual(["mw=1; Path=/"]);
   });
 });
 
@@ -367,7 +662,6 @@ describe("resolvePublicFileRoute", () => {
         }),
         status: 203,
       },
-      pathname: "/logo.svg",
       publicFiles: new Set(["/logo.svg"]),
       request: new Request("https://example.com/logo.svg"),
     });
@@ -377,6 +671,98 @@ describe("resolvePublicFileRoute", () => {
     expect(readStaticFileSignal(response!)).toBe("%2Flogo.svg");
     expect(response!.headers.get("x-vinext-static-file")).toBeNull();
     expect(response!.headers.get("x-from-middleware")).toBe("1");
+  });
+
+  it("carries middleware's request header overrides through the stage transport", async () => {
+    const cookie = "session=" + "x".repeat(4096);
+    const request = new Request("https://example.com/video.mp4", {
+      headers: { accept: "*/*", cookie, "if-none-match": '"original"', range: "bytes=0-1" },
+    });
+    const response = resolvePublicFileRoute({
+      cleanPathname: "/video.mp4",
+      middlewareContext: {
+        headers: new Headers({ "x-from-middleware": "1" }),
+        // NextResponse.next({ request: { headers } }) with Range deleted.
+        requestHeaders: new Headers({
+          "x-middleware-override-headers": "accept,cookie,if-none-match",
+          "x-middleware-request-accept": "video/*",
+          "x-middleware-request-cookie": cookie,
+          "x-middleware-request-if-none-match": '"replaced"',
+        }),
+        status: null,
+      },
+      publicFiles: new Set(["/video.mp4"]),
+      request,
+    });
+
+    const expected = { accept: "video/*", cookie, "if-none-match": '"replaced"' };
+    expect(Object.fromEntries(readStaticFileSignalRequestHeaders(response!)!)).toEqual(expected);
+    const serialized = serializeStaticFileSignalForTransport(response!, "token");
+    // The headers travel in the body, so the large cookie adds nothing to the
+    // transport's response headers.
+    expect([...serialized.headers].join("").length).toBeLessThan(200);
+    const restored = await restoreStaticFileSignalFromTransport(serialized, "token");
+    expect(readStaticFileSignal(restored)).toBe("%2Fvideo.mp4");
+    expect(Object.fromEntries(readStaticFileSignalRequestHeaders(restored)!)).toEqual(expected);
+    expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
+    expect(restored.headers.get("x-from-middleware")).toBe("1");
+    expect(restored.body).toBeNull();
+  });
+
+  it("restores a null-body middleware status after transporting request headers", async () => {
+    const signal = createStaticFileSignal(
+      "/logo.svg",
+      { headers: null, status: 304 },
+      new Headers({ accept: "image/*" }),
+    );
+    const restored = await restoreStaticFileSignalFromTransport(
+      serializeStaticFileSignalForTransport(signal, "token"),
+      "token",
+    );
+    expect(restored.status).toBe(304);
+    expect(Object.fromEntries(readStaticFileSignalRequestHeaders(restored)!)).toEqual({
+      accept: "image/*",
+    });
+  });
+
+  it("ignores an application header under the reserved transport marker name", async () => {
+    const signal = createStaticFileSignal("/logo.svg", {
+      headers: new Headers({ "x-vinext-stage-static-file-request-headers": "app-value" }),
+      status: null,
+    });
+    const restored = await restoreStaticFileSignalFromTransport(
+      serializeStaticFileSignalForTransport(signal, "token"),
+      "token",
+    );
+    expect(readStaticFileSignal(restored)).toBe("%2Flogo.svg");
+    expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
+  });
+
+  it("leaves the asset request headers alone when middleware overrides none", async () => {
+    const response = resolvePublicFileRoute({
+      cleanPathname: "/logo.svg",
+      middlewareContext: { headers: null, requestHeaders: null, status: null },
+      publicFiles: new Set(["/logo.svg"]),
+      request: new Request("https://example.com/logo.svg"),
+    });
+    expect(readStaticFileSignalRequestHeaders(response!)).toBeNull();
+    const restored = await restoreStaticFileSignalFromTransport(
+      serializeStaticFileSignalForTransport(response!, "token"),
+      "token",
+    );
+    expect(readStaticFileSignalRequestHeaders(restored)).toBeNull();
+  });
+
+  it("rejects transported request headers without the stage token", async () => {
+    const forged = new Response("[]", {
+      headers: {
+        "x-vinext-stage-static-file": "token:%2Flogo.svg",
+        "x-vinext-stage-static-file-request-headers": "other:200",
+      },
+    });
+    const restored = await restoreStaticFileSignalFromTransport(forged, "token");
+    expect(readStaticFileSignal(restored)).toBeNull();
+    expect(restored.headers.has("x-vinext-stage-static-file-request-headers")).toBe(false);
   });
 
   it("returns 405 for unsupported methods only after a public file match", async () => {
@@ -389,7 +775,6 @@ describe("resolvePublicFileRoute", () => {
         headers: new Headers({ "x-from-middleware": "1" }),
         status: null,
       },
-      pathname: "/logo.svg",
       publicFiles,
       request: new Request("https://example.com/logo.svg", { method: "POST" }),
     });
@@ -401,32 +786,30 @@ describe("resolvePublicFileRoute", () => {
     expect(mutationResponse?.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     expect(mutationResponse?.headers.get("transfer-encoding")).toBeNull();
     await expect(mutationResponse?.text()).resolves.toBe("Method Not Allowed");
+    // A `.rsc` public file is an ordinary static file.
     expect(
       resolvePublicFileRoute({
         cleanPathname: "/about.rsc",
         middlewareContext,
-        pathname: "/about.rsc",
         publicFiles,
         request: new Request("https://example.com/about.rsc"),
       }),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       resolvePublicFileRoute({
         cleanPathname: "/missing.svg",
         middlewareContext,
-        pathname: "/missing.svg",
         publicFiles,
         request: new Request("https://example.com/missing.svg"),
       }),
     ).toBeNull();
   });
 
-  it("matches decoded request variants against encoded public-file keys", () => {
+  it("matches decoded request pathnames against decoded public-file keys", () => {
     const response = resolvePublicFileRoute({
       cleanPathname: "/hello copy.txt",
       middlewareContext: { headers: null, status: null },
-      pathname: "/hello%20copy.txt",
-      publicFiles: new Set(["/hello copy.txt", "/hello%20copy.txt"]),
+      publicFiles: new Set(["/hello copy.txt"]),
       request: new Request("https://example.com/hello%20copy.txt", { method: "POST" }),
     });
 
@@ -466,14 +849,14 @@ describe("resolvePublicFileRoute", () => {
     expect(serialized.headers.get("content-type")).toBeNull();
     expect(serialized.headers.get("transfer-encoding")).toBeNull();
     const transported = new Response(serialized.body, serialized);
-    const restored = restoreStaticFileSignalFromTransport(transported, token);
+    const restored = await restoreStaticFileSignalFromTransport(transported, token);
 
     expect(restored.status).toBe(203);
     expect(restored.headers.get("x-from-middleware")).toBe("1");
     expect(restored.headers.get("x-vinext-stage-static-file")).toBeNull();
     expect(readStaticFileSignal(restored)).toBe("%2Fstage%20asset.txt");
 
-    const forged = restoreStaticFileSignalFromTransport(
+    const forged = await restoreStaticFileSignalFromTransport(
       new Response("route handler", {
         headers: { "x-vinext-stage-static-file": `${token}:subverted` },
       }),
@@ -524,6 +907,21 @@ describe("normalizeTrailingSlash", () => {
     expect(normalizeTrailingSlash("/catch-all/hello.world", "", true, "")).toBeNull();
   });
 
+  // Next.js's file rule needs a `.\w+` ending and its non-file rule needs a
+  // last segment without a dot; paths matching neither keep their spelling.
+  it("matches Next.js's file and non-file rules exactly when trailingSlash is true", () => {
+    expect(normalizeTrailingSlash("/api/v1.2.3/", "", true, "")!.headers.get("Location")).toBe(
+      "/api/v1.2.3",
+    );
+    expect(normalizeTrailingSlash("/x/a.b/c", "", true, "")!.headers.get("Location")).toBe(
+      "/x/a.b/c/",
+    );
+    expect(normalizeTrailingSlash("/api/foo.a-b/", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/foo.", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/foo./", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/x/foo.\u20ac/", "", true, "")).toBeNull();
+  });
+
   it("does not redirect .well-known paths when trailingSlash is true", () => {
     expect(normalizeTrailingSlash("/.well-known/acme-challenge", "", true, "")).toBeNull();
     expect(normalizeTrailingSlash("/.well-known/acme-challenge/", "", true, "")).toBeNull();
@@ -539,11 +937,21 @@ describe("normalizeTrailingSlash", () => {
     expect(normalizeTrailingSlash("/", "", false, "")).toBeNull();
   });
 
-  it("does not redirect /api routes", () => {
-    expect(normalizeTrailingSlash("/api/data", "", true, "")).toBeNull();
+  // Next.js's internal trailing-slash redirects have no /api exception.
+  it("redirects /api routes like any other path", () => {
+    const added = normalizeTrailingSlash("/api/data", "", true, "");
+    expect(added!.status).toBe(308);
+    expect(added!.headers.get("Location")).toBe("/api/data/");
+
+    const stripped = normalizeTrailingSlash("/api/data/", "", false, "?a=1");
+    expect(stripped!.status).toBe(308);
+    expect(stripped!.headers.get("Location")).toBe("/api/data?a=1");
+
+    expect(normalizeTrailingSlash("/api/data/", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/data", "", false, "")).toBeNull();
   });
 
-  it("does not redirect .rsc requests when trailingSlash is true", () => {
+  it("does not add a trailing slash to a file-like .rsc path", () => {
     expect(normalizeTrailingSlash("/about.rsc", "", true, "")).toBeNull();
   });
 
@@ -558,11 +966,11 @@ describe("normalizeTrailingSlash", () => {
     expect(res!.headers.get("Location")).toBe("/about");
   });
 
-  it("does not redirect /api or /api/", () => {
-    expect(normalizeTrailingSlash("/api", "", true, "")).toBeNull();
+  it("redirects /api and /api/ to the configured spelling", () => {
+    expect(normalizeTrailingSlash("/api", "", true, "")!.headers.get("Location")).toBe("/api/");
+    expect(normalizeTrailingSlash("/api/", "", false, "")!.headers.get("Location")).toBe("/api");
     expect(normalizeTrailingSlash("/api", "", false, "")).toBeNull();
     expect(normalizeTrailingSlash("/api/", "", true, "")).toBeNull();
-    expect(normalizeTrailingSlash("/api/", "", false, "")).toBeNull();
   });
 
   it("redirects /api-docs when trailingSlash is true", () => {
@@ -863,6 +1271,21 @@ describe("validateServerActionPayload", () => {
 // ── processMiddlewareHeaders ────────────────────────────────────────────
 
 describe("processMiddlewareHeaders", () => {
+  it("drops each empty Set-Cookie value like Next.js", () => {
+    const headers = new Headers();
+    headers.append("set-cookie", "");
+    headers.append("set-cookie", "mw=1; Path=/");
+    headers.append("set-cookie", "");
+    processMiddlewareHeaders(headers);
+    expect(headers.getSetCookie()).toEqual(["mw=1; Path=/"]);
+
+    const emptyOnly = new Headers();
+    emptyOnly.append("set-cookie", "");
+    emptyOnly.append("set-cookie", "");
+    processMiddlewareHeaders(emptyOnly);
+    expect(emptyOnly.has("set-cookie")).toBe(false);
+  });
+
   it("strips x-middleware-next header", () => {
     const headers = new Headers({
       "x-middleware-next": "1",
@@ -1184,6 +1607,49 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
     expect(result!.get("x-middleware-request-x-stray")).toBe("literal");
   });
 
+  it("lets truthy middleware response headers replace the client's request headers", () => {
+    // resolve-routes.ts's generic merge writes every truthy middleware response
+    // header to the request after the override translation, except
+    // content-length and ipcForbiddenHeaders. Confirmed against Next.js 16.2.7.
+    const baseHeaders = new Headers({
+      "x-viewer-role": "staff",
+      "x-empty": "client",
+      "set-cookie": "client=1",
+      cookie: "session=abc",
+    });
+    const middlewareHeaders = new Headers({
+      "x-viewer-role": "visitor",
+      "x-empty": "",
+      "content-length": "0",
+      "transfer-encoding": "chunked",
+      "x-middleware-cache": "no-cache",
+    });
+    middlewareHeaders.append("set-cookie", "a=1; Path=/");
+    middlewareHeaders.append("set-cookie", "b=2; Path=/");
+
+    const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
+    expect(result!.get("x-viewer-role")).toBe("visitor");
+    expect(result!.get("x-empty")).toBe("client");
+    expect(result!.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+    expect(result!.get("cookie")).toBe("session=abc");
+    expect(result!.has("content-length")).toBe(false);
+    expect(result!.has("transfer-encoding")).toBe(false);
+    expect(result!.has("x-middleware-cache")).toBe(false);
+
+    // The merge runs after the override translation, so it takes precedence.
+    const withOverrides = buildRequestHeadersFromMiddlewareResponse(baseHeaders, {
+      "x-middleware-override-headers": "x-viewer-role,x-only-override",
+      "x-middleware-request-x-viewer-role": "from-override",
+      "x-middleware-request-x-only-override": "kept",
+      "x-viewer-role": "visitor",
+      "set-cookie": ["a=1; Path=/", "b=2; Path=/"],
+    });
+    expect(withOverrides!.get("x-viewer-role")).toBe("visitor");
+    expect(withOverrides!.get("x-only-override")).toBe("kept");
+    expect(withOverrides!.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+    expect(withOverrides!.has("cookie")).toBe(false);
+  });
+
   it("drops empty unlisted forwarded values", () => {
     const middlewareHeaders = new Headers({
       "x-middleware-request-x-empty": "",
@@ -1207,6 +1673,65 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
 //
 // These tests lock down the helper so it can't be "simplified" back into the
 // broken URL-constructor pattern that drops body/redirect/signal semantics.
+
+describe("withRequestHeaders", () => {
+  it("returns the request itself, body untouched, when no header changed", () => {
+    const original = new Request("http://localhost/api", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "payload",
+    });
+    const result = withRequestHeaders(original, new Headers(original.headers));
+    expect(result).toBe(original);
+    expect(original.bodyUsed).toBe(false);
+  });
+
+  it("rebuilds a Request look-alike that lacks native state", () => {
+    // Shaped like srvx's NodeRequest (used by Nitro): it passes `instanceof
+    // Request` and forwards to a native Request, but native Request getters
+    // throw on the object itself.
+    const NativeRequest = Request;
+    const inner = new NativeRequest("http://localhost/page", { headers: { accept: "text/html" } });
+    class LookAlikeRequest {
+      static [Symbol.hasInstance](value: unknown) {
+        return value instanceof NativeRequest || Object.hasOwn(Object(value), "lookAlike");
+      }
+      readonly lookAlike = true;
+    }
+    Object.setPrototypeOf(LookAlikeRequest.prototype, NativeRequest.prototype);
+    for (const key of Object.keys(Object.getOwnPropertyDescriptors(NativeRequest.prototype))) {
+      if (key === "constructor") continue;
+      Object.defineProperty(LookAlikeRequest.prototype, key, {
+        get() {
+          const value = (inner as unknown as Record<string, unknown>)[key];
+          return typeof value === "function" ? value.bind(inner) : value;
+        },
+      });
+    }
+    const lookAlike = new LookAlikeRequest() as unknown as Request;
+    expect(lookAlike instanceof NativeRequest).toBe(true);
+
+    const result = withRequestHeaders(lookAlike, new Headers(lookAlike.headers));
+    expect(result).not.toBe(lookAlike);
+    expect(Object.getOwnPropertyDescriptor(NativeRequest.prototype, "url")?.get?.call(result)).toBe(
+      "http://localhost/page",
+    );
+  });
+
+  it("rebuilds the request when a header changed", async () => {
+    const original = new Request("http://localhost/api", {
+      method: "POST",
+      headers: { "content-type": "text/plain", "x-internal": "1" },
+      body: "payload",
+    });
+    const headers = new Headers(original.headers);
+    headers.delete("x-internal");
+    const result = withRequestHeaders(original, headers);
+    expect(result).not.toBe(original);
+    expect(result.headers.has("x-internal")).toBe(false);
+    await expect(result.text()).resolves.toBe("payload");
+  });
+});
 
 describe("cloneRequestWithHeaders", () => {
   it("preserves method", () => {
@@ -1353,6 +1878,50 @@ describe("cloneRequestWithHeaders", () => {
     expect(cloned.method).toBe("GET");
     expect(cloned.body).toBeNull();
     expect(cloned.headers.get("accept")).toBe("text/html");
+  });
+});
+
+// ── stripRequestUrlFragment ──────────────────────────────────────────────
+
+describe("stripRequestUrlFragment", () => {
+  it("returns a fragment-free request as is", () => {
+    const request = new Request("https://example.com/a?q=1");
+    expect(stripRequestUrlFragment(request)).toBe(request);
+  });
+
+  it("drops the fragment and keeps the query and body", async () => {
+    const stripped = stripRequestUrlFragment(
+      new Request("https://example.com/a?q=1#planted", { method: "POST", body: "payload" }),
+    );
+    expect(stripped.url).toBe("https://example.com/a?q=1");
+    expect(stripped.method).toBe("POST");
+    expect(await stripped.text()).toBe("payload");
+  });
+
+  // srvx's NodeRequest returns its connection signal until a clone reads the
+  // body and materializes a native Request, whose signal only follows it for
+  // as long as the NodeRequest is retained.
+  it("follows the host's signal from before the clone", () => {
+    const connection = new AbortController();
+    const materialized = new AbortController();
+    let bodyRead = false;
+    const hostRequest = {
+      url: "https://example.com/a#planted",
+      method: "GET",
+      headers: new Headers(),
+      get body() {
+        bodyRead = true;
+        return null;
+      },
+      get signal() {
+        return bodyRead ? materialized.signal : connection.signal;
+      },
+    } as unknown as Request;
+
+    const stripped = stripRequestUrlFragment(hostRequest);
+    expect(stripped.url).toBe("https://example.com/a");
+    connection.abort();
+    expect(stripped.signal.aborted).toBe(true);
   });
 });
 

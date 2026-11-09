@@ -137,13 +137,13 @@ describe("StaticFileCache", () => {
     expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
   });
 
-  it("sets short cache-control for non-hashed files", async () => {
+  it("sets revalidating cache-control for non-hashed files", async () => {
     await writeFile(clientDir, "favicon.ico", "icon-data");
 
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/favicon.ico");
 
-    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=3600");
+    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=0");
   });
 
   it("generates weak etag from filename hash for hashed assets", async () => {
@@ -154,6 +154,26 @@ describe("StaticFileCache", () => {
 
     // Hashed assets use the content hash from the filename
     expect(entry!.etag).toBe('W/"abc123"');
+  });
+
+  it("uses the whole hash-only basename for managed chunk, worker and CSS etags", async () => {
+    // Rolldown's base64url hash can contain `-`; the name-hash split would
+    // otherwise see a too-short suffix and fall back to mtime.
+    await writeFile(clientDir, "_next/static/chunks/Dq-Zc3R4.js", "export {};");
+    await writeFile(clientDir, "cdn/_next/static/css/Ab_Cd9-f.css", "body{}");
+    await writeFile(clientDir, "_next/static/workers/0a1b2c3d-Wk-r9_Ab.js", "export {};");
+    await writeFile(clientDir, "_next/static/Dq-Zc3R4.js", "export {};");
+
+    const cache = await StaticFileCache.create(clientDir);
+
+    expect(cache.lookup("/_next/static/chunks/Dq-Zc3R4.js")!.etag).toBe('W/"Dq-Zc3R4"');
+    expect(cache.lookup("/cdn/_next/static/css/Ab_Cd9-f.css")!.etag).toBe('W/"Ab_Cd9-f"');
+    // Worker names carry an opaque module id before the content hash.
+    expect(cache.lookup("/_next/static/workers/0a1b2c3d-Wk-r9_Ab.js")!.etag).toBe(
+      'W/"0a1b2c3d-Wk-r9_Ab"',
+    );
+    // Outside the managed chunks/css directories the hash-only form isn't trusted.
+    expect(cache.lookup("/_next/static/Dq-Zc3R4.js")!.etag).toMatch(/^W\/"\d+-\d+"$/);
   });
 
   it("generates stable weak etag for dot-delimited managed image hashes", async () => {
@@ -308,27 +328,18 @@ describe("StaticFileCache", () => {
     expect(cache.lookup("/_next/static/app-abc123.js.zst")).toBeUndefined();
   });
 
-  // ── HTML fallbacks ─────────────────────────────────────────────
+  // ── HTML files ─────────────────────────────────────────────────
 
-  it("resolves .html extension fallback for prerendered pages", async () => {
+  it("serves an .html file only under its own pathname", async () => {
     await writeFile(clientDir, "about.html", "<html>About</html>");
-
-    const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/about");
-
-    expect(entry).toBeDefined();
-    expect(entry!.original.path).toBe(toSlash(path.join(clientDir, "about.html")));
-    expect(entry!.original.headers["Content-Type"]).toBe("text/html; charset=utf-8");
-  });
-
-  it("resolves /index.html fallback for directory paths", async () => {
     await writeFile(clientDir, "blog/index.html", "<html>Blog</html>");
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/blog");
 
-    expect(entry).toBeDefined();
-    expect(entry!.original.path).toBe(toSlash(path.join(clientDir, "blog/index.html")));
+    expect(cache.lookup("/about.html")).toBeDefined();
+    expect(cache.lookup("/blog/index.html")).toBeDefined();
+    expect(cache.lookup("/about")).toBeUndefined();
+    expect(cache.lookup("/blog")).toBeUndefined();
   });
 
   // ── Directory traversal protection ─────────────────────────────

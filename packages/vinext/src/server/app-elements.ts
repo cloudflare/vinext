@@ -2,6 +2,30 @@ import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { AppElementsWire, UNMATCHED_SLOT, type AppElements } from "./app-elements-wire.js";
 
 export const APP_PREFETCH_LOADING_SHELL_MARKER_KEY = "__prefetchLoadingShell";
+/**
+ * An optimistic shell's rebinder from the learned URL's segment state keys to
+ * the target's. Only the browser sets it, on the elements it builds a shell
+ * from, so it never reaches the wire.
+ */
+const APP_OPTIMISTIC_STATE_KEY_REBINDER_KEY = "__optimisticStateKeyRebinder";
+
+type AppElementsStateKeyRebinder = (stateKey: string) => string;
+
+export function setOptimisticStateKeyRebinder(
+  elements: Record<string, unknown>,
+  rebind: AppElementsStateKeyRebinder,
+): void {
+  elements[APP_OPTIMISTIC_STATE_KEY_REBINDER_KEY] = rebind;
+}
+
+export function readOptimisticStateKeyRebinder(
+  elements: AppElements,
+): AppElementsStateKeyRebinder | null {
+  const rebind: unknown = Reflect.get(elements, APP_OPTIMISTIC_STATE_KEY_REBINDER_KEY);
+  return typeof rebind === "function" ? (rebind as AppElementsStateKeyRebinder) : null;
+}
+/** Prefix of the element that streams a route's generateMetadata() tags in the body. */
+export const APP_STREAMING_METADATA_BODY_ID_PREFIX = "__vinext_streaming_metadata_body:";
 
 export {
   AppElementsWire,
@@ -12,7 +36,6 @@ export {
   APP_INTERCEPTION_KEY,
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_LAYOUT_IDS_KEY,
-  APP_LAYOUT_FLAGS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
@@ -27,7 +50,6 @@ export {
   normalizeAppElementsSlotBindings,
   normalizeAppElements,
   readAppElementsMetadata,
-  withLayoutFlags,
   type AppElementValue,
   type AppElementsBfcacheSegmentIdentities,
   type AppElementsInterception,
@@ -35,7 +57,6 @@ export {
   type AppElements,
   type AppOutgoingElements,
   type AppWireElements,
-  type LayoutFlags,
 } from "./app-elements-wire.js";
 
 // Raw constructor helpers stay private because callers use AppElementsWire codecs.

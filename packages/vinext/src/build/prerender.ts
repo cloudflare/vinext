@@ -346,8 +346,9 @@ const RSC_RUNTIME_DONE_SCRIPT = `${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true`;
  * Throws on partial or malformed embeds (chunks present but no done marker,
  * tampered chunk JSON, etc.) — those are real vinext-internal regressions.
  *
- * Safe regex usage: safeJsonStringify (used by createRscEmbedTransform) escapes
- * all '<' and '>' in the embedded JSON, preventing false </script> matches.
+ * Safe regex usage: scriptSafeJsonStringify (used by createRscEmbedTransform)
+ * escapes every '<' that begins "</script" (case-insensitive) in the embedded
+ * JSON, preventing false </script> matches.
  */
 export function extractRscPayloadFromPrerenderedHtml(html: string): Uint8Array | null {
   const scriptPattern = /<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi;
@@ -1235,14 +1236,20 @@ export async function prerenderPages({
             outputFiles.push(htmlOutputPath);
           }
 
+          // A getStaticProps render reports the revalidate it returned; no
+          // report means `false`. Other responses keep the source classification.
+          const renderedRevalidate = isStaticPropsResponse
+            ? (readPrerenderCacheLifeHeader(response.headers)?.revalidate ?? false)
+            : revalidate;
+
           result = {
             route: route.pattern,
             status: "rendered",
             outputFiles,
-            revalidate,
+            revalidate: renderedRevalidate,
             // Pages Router cache metadata comes only from getStaticProps.revalidate;
             // Next.js applies expireTime as the fallback when no route expire exists.
-            ...(typeof revalidate === "number" ? { expire: config.expireTime } : {}),
+            ...(typeof renderedRevalidate === "number" ? { expire: config.expireTime } : {}),
             router: "pages",
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
             ...(locale ? { locale } : {}),
@@ -2053,9 +2060,9 @@ export async function prerenderApp({
           : htmlRender.html;
 
         // Reconstruct the RSC payload from the inline bootstrap chunks already
-        // streamed into the HTML body. The generated RSC entry performs
-        // framing-aware hint normalization at the stream source, so the
-        // resulting Flight artifact contains the same bytes.
+        // streamed into the HTML body. The embedded chunks rebuild React's
+        // stream byte for byte, so the resulting Flight artifact contains the
+        // same bytes.
         //
         // Falls back to a second invocation with `RSC: 1` when the HTML has
         // no chunk scripts at all — covers cases where middleware

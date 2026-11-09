@@ -55,22 +55,81 @@ describe("Next.js compat: metadata", () => {
 
   // ── Title template ───────────────────────────────────────────
   // Next.js: 'should support title template'
-  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L34-L38
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L36-L40
 
-  it("should apply title template from layout", async () => {
+  it("should not apply a layout's title template to the page beside it", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template");
-    // Layout has template "%s | Layout", page has title "Page"
-    // Result should be "Page | Layout"
-    expect(html).toContain("<title>Page | Layout</title>");
+    // The layout's template "%s | Layout" wraps only titles in segments below
+    // it, so the page beside it keeps its own title, as Next.js expects.
+    expect(html).toContain("<title>Page</title>");
   });
-
-  // Next.js: 'should support stashed title in one layer'
-  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L40-L44
 
   it("should apply title template to child page", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/child");
     // Layout template "%s | Layout", child page title "Extra Page"
     expect(html).toContain("<title>Extra Page | Layout</title>");
+  });
+
+  // Next.js: 'should support stashed title in one layer of page and layout'
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L42-L46
+
+  it("should apply the parent layout's template beside a nested layout's", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/extra");
+    expect(html).toContain("<title>Extra Page | Layout</title>");
+  });
+
+  // Next.js: 'should use parent layout title when no title is defined in page'
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L48-L53
+
+  it("should use parent layout title when no title is defined in page", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-title-template/use-layout-title",
+    );
+    expect(html).toContain("<title>title template layout default</title>");
+  });
+
+  // Next.js: 'should support stashed title in two layers of page and layout'
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L55-L61
+
+  it("should support stashed title in two layers of page and layout", async () => {
+    const inner = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/extra/inner");
+    expect(inner.html).toContain("<title>Inner Page | Extra Layout</title>");
+
+    const deep = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-title-template/extra/inner/deep",
+    );
+    expect(deep.html).toContain("<title>extra layout default | Layout</title>");
+  });
+
+  it("should clear the title template after a plain-string layout title", async () => {
+    // Next.js 16.2.7 titles this "Leaf Page": the resolved title's template
+    // is the plain string's own, null.
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/plain/leaf");
+    expect(html).toContain("<title>Leaf Page</title>");
+  });
+
+  it("should give openGraph and twitter titles their own templates", async () => {
+    // Each pair is og:title and twitter:title as Next.js 16.2.7 renders them
+    // (Turbopack and webpack, `next dev`).
+    const socialTitles = async (path: string) => {
+      const { html } = await fetchHtml(
+        baseUrl,
+        `/nextjs-compat/metadata-title-template/social${path}`,
+      );
+      return [
+        html.match(/<meta property="og:title" content="([^"]*)"/)?.[1],
+        html.match(/<meta name="twitter:title" content="([^"]*)"/)?.[1],
+      ];
+    };
+    expect(await socialTitles("")).toEqual(["Beside", "Beside"]);
+    expect(await socialTitles("/child")).toEqual(["Child | OG", "Child | TW"]);
+    expect(await socialTitles("/inherit")).toEqual(["OG Default", "TW Default"]);
+    expect(await socialTitles("/extra")).toEqual(["Extra | OG", "TW Default"]);
+    expect(await socialTitles("/plain/leaf")).toEqual(["Leaf", "Leaf"]);
+    expect(await socialTitles("/og-only")).toEqual(["OG Only | OG", "OG Only | OG"]);
+    expect(await socialTitles("/cleared")).toEqual(["Cleared | OG", "Cleared | TW"]);
   });
 
   // ── Basic metadata tags ──────────────────────────────────────
@@ -189,6 +248,78 @@ describe("Next.js compat: metadata", () => {
     expect(html).toMatch(
       /meta\s+name="twitter:image"\s+content="https:\/\/example\.com\/twitter-single\.png"/,
     );
+  });
+
+  // ── OpenGraph videos and audio ───────────────────────────────
+  // Next.js accepts a single entry or an array, where each entry is a string,
+  // a URL, or a descriptor. Expected tags were captured from next@16.2.7, which
+  // renders video and audio URLs as written, without applying metadataBase.
+
+  function ogMediaTags(html: string): string[] {
+    return Array.from(
+      html.matchAll(/<meta\s+property="(og:(?:video|audio)[^"]*)"\s+content="([^"]*)"/g),
+      (match) => `${match[1]}=${match[2]}`,
+    );
+  }
+
+  it("should render a single og:video descriptor and a single og:audio URL", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-video-audio");
+    expect(ogMediaTags(html)).toEqual([
+      "og:video=/video.mp4",
+      "og:video:secure_url=/secure-video.mp4",
+      "og:video:type=video/mp4",
+      "og:video:width=800",
+      "og:video:height=600",
+      "og:audio=/audio.mp3",
+    ]);
+  });
+
+  it("should render og:video and og:audio lists of strings, URLs and descriptors", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-video-audio/list");
+    expect(ogMediaTags(html)).toEqual([
+      "og:video=/video-1.mp4",
+      "og:video=https://example.com/video-2.mp4",
+      "og:video=https://example.com/video-3.mp4",
+      "og:audio=/audio-1.mp3",
+      "og:audio:type=audio/mpeg",
+      "og:audio=https://example.com/audio-2.mp3",
+    ]);
+  });
+
+  // ── OpenGraph contact and alternate locale lists ─────────────
+  // Next.js accepts a single string or an array for each field. Expected tags
+  // were captured from next@16.2.7.
+
+  function ogListTags(html: string): string[] {
+    return Array.from(
+      html.matchAll(
+        /<meta\s+property="(og:(?:email|phone_number|fax_number|locale:alternate))"\s+content="([^"]*)"/g,
+      ),
+      (match) => `${match[1]}=${match[2]}`,
+    );
+  }
+
+  it("should render og:email, og:phone_number, og:fax_number and og:locale:alternate lists", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-contact");
+    expect(ogListTags(html)).toEqual([
+      "og:email=a@example.com",
+      "og:email=b@example.com",
+      "og:phone_number=+1 555 0100",
+      "og:phone_number=+1 555 0101",
+      "og:fax_number=+1 555 0199",
+      "og:locale:alternate=fr_FR",
+      "og:locale:alternate=de_DE",
+    ]);
+  });
+
+  it("should render single og:email, og:phone_number, og:fax_number and og:locale:alternate values", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-contact/single");
+    expect(ogListTags(html)).toEqual([
+      "og:email=a@example.com",
+      "og:phone_number=+1 555 0100",
+      "og:fax_number=+1 555 0199",
+      "og:locale:alternate=fr_FR",
+    ]);
   });
 
   // ── Twitter ──────────────────────────────────────────────────

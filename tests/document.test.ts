@@ -9,17 +9,39 @@ import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Document, { Html, Head, Main, NextScript } from "../packages/vinext/src/shims/document.js";
+import { withDocumentPlaceholders } from "../packages/vinext/src/shims/document-placeholders.js";
 
 function render(el: React.ReactElement): string {
   return ReactDOMServer.renderToString(el);
 }
 
 describe("Main", () => {
-  it("renders the __NEXT_MAIN__ placeholder inside a #__next container", () => {
+  it("renders the __NEXT_MAIN__ comment placeholder inside a #__next container", () => {
     const html = render(React.createElement(Main));
-    // Dev-server looks for id="__next" and replaces __NEXT_MAIN__ with rendered page content
-    expect(html).toContain('id="__next"');
-    expect(html).toContain("__NEXT_MAIN__");
+    // The renderers replace this HTML comment with the rendered page content
+    expect(html).toBe('<div id="__next"><!-- __NEXT_MAIN__ --></div>');
+  });
+});
+
+describe("Document placeholders", () => {
+  it("marks Head, Main and NextScript with the renderer's per-render token", () => {
+    const html = render(
+      withDocumentPlaceholders(
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(Head, { lang: "en" }, "x"),
+          React.createElement(Main),
+          React.createElement(NextScript),
+        ),
+        "token",
+      ),
+    );
+    expect(html).toBe(
+      '<head lang="en" data-vinext-head-open="token">x<template data-vinext-head-close="token"></template></head>' +
+        '<div id="__next"><!--__NEXT_MAIN__:token--></div>' +
+        "<span><!--__NEXT_SCRIPTS__:token--></span>",
+    );
   });
 });
 
@@ -107,7 +129,7 @@ describe("Default Document", () => {
     const headOpen = html.indexOf("<head>");
     const bodyOpen = html.indexOf("<body>");
     const mainDiv = html.indexOf('id="__next"');
-    const placeholder = html.indexOf("__NEXT_MAIN__");
+    const placeholder = html.indexOf("<!-- __NEXT_MAIN__ -->");
     const scripts = html.indexOf("__NEXT_SCRIPTS__");
     const bodyClose = html.indexOf("</body>");
 
@@ -170,8 +192,8 @@ describe("Document base class", () => {
     const html = render(React.createElement(MyDocument));
     expect(html).toMatch(/<html[^>]*lang="ja"/);
     expect(html).toContain('id="doc-marker"');
-    expect(html).toContain("__NEXT_MAIN__");
-    expect(html).toContain("__NEXT_SCRIPTS__");
+    expect(html).toContain("<!-- __NEXT_MAIN__ -->");
+    expect(html).toContain("<!-- __NEXT_SCRIPTS__ -->");
   });
 
   it("delegates static getInitialProps to ctx.defaultGetInitialProps", async () => {

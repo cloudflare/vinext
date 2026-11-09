@@ -6,7 +6,6 @@
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/dynamic.catch-all.hypen.test.ts
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/host.test.ts
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/query.test.ts
- * Tests: ON-13, ON-14 in TRACKING.md
  */
 import { test, expect } from "@playwright/test";
 
@@ -32,7 +31,8 @@ test.describe("Trailing Slash (OpenNext compat)", () => {
   });
 
   // Ref: opennextjs-cloudflare trailing.test.ts — "trailingSlash redirect to external domain"
-  // Next.js returns 404 for //example.com/ to prevent protocol-relative redirects.
+  // Next.js 308s //example.com/ to the same-origin /example.com/ (never a
+  // protocol-relative redirect), which then ends in a 404.
   test("double-slash path returns 404, not external redirect", async ({ page }) => {
     const response = await page.goto(`${BASE}//example.com/`);
     expect(response?.status()).toBe(404);

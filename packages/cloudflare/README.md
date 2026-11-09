@@ -128,7 +128,6 @@ const responseStore = await createWorkersResponseStoreServiceBindingConfig({
   worker: {
     name: "example-response-store",
     compatibilityDate: "2026-09-15",
-    compatibilityFlags: ["nodejs_compat"],
   },
   bucket: "example-response-store-cache-bodies",
 });

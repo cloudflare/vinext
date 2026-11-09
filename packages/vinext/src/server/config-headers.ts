@@ -11,10 +11,31 @@ import {
   markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
 import { isCdnResponsePolicyHeader, isNonCacheableCdnResponsePolicy } from "./cache-control.js";
-import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "./headers.js";
+import {
+  NEXTJS_CACHE_HEADER,
+  VINEXT_CACHE_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
+} from "./headers.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
+// Next.js send-response.ts appends a Node Route Handler's own values for these
+// after the staged config values instead of dropping them.
+const ROUTE_HANDLER_APPENDED_HEADER_NAMES = new Set(["www-authenticate", "proxy-authenticate"]);
+
+/**
+ * Next.js sets x-nextjs-cache over config only on the responses its cache
+ * manages, which vinext marks with x-vinext-cache too. A Route Handler's own
+ * x-nextjs-cache meets config like any other header.
+ */
+function isFrameworkCacheStateHeader(headers: Headers, lowerName: string): boolean {
+  return (
+    lowerName === VINEXT_CACHE_HEADER.toLowerCase() ||
+    (lowerName === NEXTJS_CACHE_HEADER && headers.has(VINEXT_CACHE_HEADER))
+  );
+}
+
+export type RouteHandlerRuntime = "node" | "edge";
 
 export type ResponseStageCachePolicyOptions = {
   basePathState?: BasePathMatchState;
@@ -109,6 +130,12 @@ type ApplyConfigHeadersOptions = {
   middlewareHeaders?: Headers | null;
   /** Whether this composition participates in response-cache admission. */
   recordCacheability?: boolean;
+  /**
+   * Set when a Route Handler produced the response. Next.js copies a Node
+   * handler's headers only where config left none, and appends an edge
+   * handler's after config. Cache policy headers keep their own rules.
+   */
+  routeHandlerRuntime?: RouteHandlerRuntime;
 };
 
 function retainLastSingularConfigValues(
@@ -178,11 +205,15 @@ export function applyConfigHeadersToResponse(
     ),
   );
   if (options.recordCacheability !== false) markExplicitConfigResponseVeto(matched);
+  const configCookies: string[] = [];
+  const configVary: string[] = [];
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     // vinext's own marker, which a config header can't forge.
     if (lowerName === VINEXT_SPECIAL_ERROR_STATUS_HEADER) continue;
-    if (lowerName === "link") {
+    if (lowerName === "set-cookie") {
+      configCookies.push(header.value);
+    } else if (lowerName === "link") {
       if (options.middlewareHeaders?.get(lowerName)) continue;
 
       const postConfigLink = options.appendToPostConfigLink ? responseHeaders.get(lowerName) : null;
@@ -199,7 +230,7 @@ export function applyConfigHeadersToResponse(
       // default (notably Cache-Control).
       continue;
     } else if (lowerName === "vary") {
-      mergeVaryHeader(responseHeaders, header.value);
+      configVary.push(header.value);
     } else if (ADDITIVE_CONFIG_HEADER_NAMES.has(lowerName)) {
       responseHeaders.append(header.key, header.value);
     } else if (
@@ -209,6 +240,44 @@ export function applyConfigHeadersToResponse(
       !responseHeaders.has(lowerName)
     ) {
       responseHeaders.set(header.key, header.value);
+    } else if (
+      options.routeHandlerRuntime &&
+      !isFrameworkCacheStateHeader(responseHeaders, lowerName) &&
+      !isCdnResponsePolicyHeader(lowerName)
+    ) {
+      const handlerValue = responseHeaders.get(lowerName);
+      // Next.js appends a handler value only when it differs from config's.
+      responseHeaders.set(
+        header.key,
+        handlerValue !== header.value &&
+          (options.routeHandlerRuntime === "edge" ||
+            ROUTE_HANDLER_APPENDED_HEADER_NAMES.has(lowerName))
+          ? `${header.value}, ${handlerValue}`
+          : header.value,
+      );
+    }
+  }
+
+  if (configVary.length > 0) {
+    // A Route Handler's own Vary follows config's, as in Next.js.
+    const routeHandlerVary = options.routeHandlerRuntime ? responseHeaders.get("vary") : null;
+    if (routeHandlerVary) responseHeaders.delete("vary");
+    for (const value of [...configVary, ...(routeHandlerVary ? [routeHandlerVary] : [])]) {
+      mergeVaryHeader(responseHeaders, value);
+    }
+  }
+
+  // Next.js stages config headers before middleware and replaces the staged
+  // Set-Cookie with middleware's own, so config cookies only reach the
+  // response when middleware sets none. Every cookie already on the response
+  // then comes from the handler or renderer, which Next.js appends after the
+  // staged headers.
+  // Like Next.js, an empty middleware Set-Cookie is not staged.
+  if (configCookies.length > 0 && !options.middlewareHeaders?.get("set-cookie")) {
+    const responseCookies = responseHeaders.getSetCookie();
+    responseHeaders.delete("set-cookie");
+    for (const cookie of [...configCookies, ...responseCookies]) {
+      responseHeaders.append("set-cookie", cookie);
     }
   }
 }
@@ -228,10 +297,16 @@ export function applyConfigHeadersToHeaderRecord(
     ),
   );
   if (options.recordCacheability !== false) markExplicitConfigResponseVeto(matched);
+  // Next.js replaces staged config Set-Cookie values with middleware's own.
+  // Callers either stage config into the middleware header record or pass the
+  // middleware response's headers.
+  const middlewareSetsCookie =
+    Boolean(options.middlewareHeaders?.get("set-cookie")) ||
+    findHeaderRecordKey(headers, "set-cookie") !== undefined;
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "set-cookie") {
-      appendHeaderRecord(headers, lowerName, header.value);
+      if (!middlewareSetsCookie) appendHeaderRecord(headers, lowerName, header.value);
     } else if (lowerName === "vary") {
       appendVaryHeaderRecord(headers, header.value);
     } else if (findHeaderRecordKey(headers, lowerName) === undefined) {

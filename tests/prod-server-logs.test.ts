@@ -148,6 +148,55 @@ describe("startProdServer logging", () => {
     }
   });
 
+  it("reads next.config compress from the server artifact root for nested Pages entries", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prod-server-pages-compress-"));
+    roots.push(root);
+    const distDir = path.join(root, "dist");
+    const serverDir = path.join(distDir, "server");
+    const entryPath = path.join(serverDir, "entries", "pages.js");
+    fs.mkdirSync(path.join(distDir, "client"), { recursive: true });
+    fs.mkdirSync(path.dirname(entryPath), { recursive: true });
+    fs.writeFileSync(
+      entryPath,
+      [
+        "export const vinextConfig = {};",
+        "export async function renderPage() { return new Response('x'.repeat(2000), { headers: { 'content-type': 'text/html' } }); }",
+        "export async function handleApiRoute() { return new Response('api'); }",
+        "export async function runMiddleware() { return { continue: true }; }",
+        "",
+      ].join("\n"),
+    );
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    for (const [compress, expectedEncoding] of [
+      [false, null],
+      [true, "gzip"],
+    ] as const) {
+      fs.writeFileSync(
+        path.join(serverDir, "vinext-server.json"),
+        JSON.stringify({ prerenderSecret: "secret", compress }),
+      );
+      const { server, port } = await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir: distDir,
+        serverEntryPath: entryPath,
+        serverDir,
+        silent: true,
+      });
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/`, {
+          headers: { "Accept-Encoding": "gzip" },
+        });
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-encoding")).toBe(expectedEncoding);
+        await expect(response.text()).resolves.toBe("x".repeat(2000));
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }
+  });
+
   it("uses the prerender-specific startup log for App Router production servers", async () => {
     const root = createAppBuild();
     roots.push(root);

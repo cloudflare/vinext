@@ -427,6 +427,38 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     }
   });
 
+  // Next.js document requests surface redirect() as a 307. Ported from:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  for (const [router, pathname, location] of [
+    ["App", "/cdn-stage-app/redirect", "/about"],
+    ["Pages", "/cdn-stage-pages/redirect", "/pages-about"],
+  ] as const) {
+    test(`returns ${router} redirects from the cache-facing response stage`, async ({
+      request,
+    }) => {
+      const response = await request.get(`${BASE_URL}${pathname}`, {
+        headers: { Accept: "text/html" },
+        maxRedirects: 0,
+      });
+
+      expect(response.status()).toBe(307);
+      expect(response.headers()["location"]).toBe(location);
+    });
+  }
+
+  // The same Next.js test expects an RSC request to carry the redirect in a 200
+  // payload. With only `RSC: 1`, the validated `_rsc` value is empty.
+  test("returns App RSC redirects from the cache-facing response stage", async ({ request }) => {
+    const response = await request.get(`${BASE_URL}/cdn-stage-app/redirect?_rsc`, {
+      headers: { RSC: "1" },
+      maxRedirects: 0,
+    });
+
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("text/x-component");
+    expect(response.headers()["location"]).toBe("/about");
+  });
+
   test("routes revalidatePath through the cache-bearing response entrypoint", async ({
     request,
   }) => {
@@ -446,6 +478,26 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
 
     expect(first.body).toContain("middleware-cookie:visitor-a");
     expect(second.body).toContain("middleware-cookie:visitor-b");
+  });
+
+  // Next.js keeps a next.config public policy and `Vary: Cookie` on a page
+  // that reads cookies(). Miniflare does not emulate the Worker-front cache, so
+  // the deployed cache-prewarm spec proves no session's page is stored.
+  test("renders each session under a next.config Vary: Cookie public policy", async ({
+    request,
+  }) => {
+    const slug = `vary-cookie-${Date.now()}`;
+    for (const session of ["alice", "bob", undefined]) {
+      const response = await request.get(`${BASE_URL}/cdn-stage-vary-cookie/${slug}`, {
+        headers: session ? { cookie: `session=${session}` } : {},
+      });
+      expect(response.status()).toBe(200);
+      expect(response.headers()["cache-control"]).toBe("public, s-maxage=300");
+      expect(response.headers().vary?.toLowerCase().split(/,\s*/)).toContain("cookie");
+      expect(await response.text()).toContain(
+        `vary-cookie-session:${session ?? "anonymous"}; slug:${slug}`,
+      );
+    }
   });
 
   test("bypasses the shared response stage for middleware request-header overrides", async ({

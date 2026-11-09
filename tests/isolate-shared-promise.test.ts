@@ -1,0 +1,71 @@
+import { describe, expect, it, vi } from "vite-plus/test";
+import { shareIsolatePromise } from "../packages/vinext/src/server/isolate-shared-promise.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+
+describe("shareIsolatePromise", () => {
+  it("registers the promise with the given context and returns a promise that follows it", async () => {
+    const ctx = { waitUntil: vi.fn() };
+    const shared = Promise.resolve("value");
+
+    await expect(shareIsolatePromise(shared, ctx)).resolves.toBe("value");
+    expect(ctx.waitUntil).toHaveBeenCalledOnce();
+    await expect(ctx.waitUntil.mock.calls[0]![0]).resolves.toBeUndefined();
+  });
+
+  it("prefers the given context over the request in scope", () => {
+    const ctx = { waitUntil: vi.fn() };
+    const request = { waitUntil: vi.fn() };
+
+    void runWithExecutionContext(request, () => shareIsolatePromise(Promise.resolve(), ctx));
+
+    expect(ctx.waitUntil).toHaveBeenCalledOnce();
+    expect(request.waitUntil).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the request context when the given one has no waitUntil", () => {
+    const request = { waitUntil: vi.fn() };
+
+    void runWithExecutionContext(request, () => shareIsolatePromise(Promise.resolve(), {}));
+    void runWithExecutionContext(request, () => shareIsolatePromise(Promise.resolve(), null));
+
+    expect(request.waitUntil).toHaveBeenCalledTimes(2);
+  });
+
+  it("registers nothing outside a request", async () => {
+    const shared = Promise.resolve("value");
+
+    await expect(shareIsolatePromise(shared)).resolves.toBe("value");
+  });
+
+  // The request's copy must not surface the shared promise's rejection again;
+  // the callers that await it handle that.
+  it("keeps a rejection out of the request's lifetime", async () => {
+    const ctx = { waitUntil: vi.fn() };
+    const shared = Promise.reject(new Error("failed"));
+
+    await expect(shareIsolatePromise(shared, ctx)).rejects.toThrow("failed");
+    await expect(ctx.waitUntil.mock.calls[0]![0]).resolves.toBeUndefined();
+  });
+
+  // Node 20 has no Promise.withResolvers, and only workerd tags promises.
+  it("returns the promise itself where Promise.withResolvers is missing", () => {
+    const shared = Promise.resolve("value");
+    vi.stubGlobal(
+      "Promise",
+      Object.assign(function () {}, { withResolvers: undefined }),
+    );
+    try {
+      expect(shareIsolatePromise(shared, { waitUntil: vi.fn() })).toBe(shared);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // Shims that are also bundled for the browser, such as next/dynamic, reach
+  // the helper through this global on the server.
+  it("publishes itself for shims that cannot import request state", () => {
+    expect((globalThis as Record<symbol, unknown>)[Symbol.for("vinext.shareIsolatePromise")]).toBe(
+      shareIsolatePromise,
+    );
+  });
+});

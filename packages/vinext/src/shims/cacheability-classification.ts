@@ -19,6 +19,8 @@ export type RouteCacheabilityOutcome = {
    */
   status?: number;
   headers?: Readonly<Record<string, string>>;
+  /** App pages: the client-router stale time from the completed render's cacheLife. */
+  staleTimeSeconds?: number;
   tags?: readonly string[];
 };
 
