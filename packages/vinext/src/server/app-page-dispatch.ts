@@ -1277,6 +1277,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       validateAppPageRouteDynamicParams({
         dynamicConfig,
         dynamicParamsConfig: options.dynamicParamsConfig,
+        fetchCache: options.fetchCache,
         generateStaticParams: options.generateStaticParams,
         isDynamicRoute: route.isDynamic,
         isProduction: options.isProduction,

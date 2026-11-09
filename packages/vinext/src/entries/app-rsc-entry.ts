@@ -1495,6 +1495,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     return (await __validateAppPageRouteDynamicParams({
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
+      fetchCache: __segmentConfig.fetchCache ?? null,
       generateStaticParams: __resolveRouteGenerateStaticParams(route),
       isDynamicRoute: route.isDynamic,
       isProduction: process.env.NODE_ENV === "production",
