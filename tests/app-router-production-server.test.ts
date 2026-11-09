@@ -1930,8 +1930,9 @@ describe("App Router Production server (startProdServer)", () => {
     expect(body).toContain("guest");
   });
 
-  // The layout reads cookies behind Suspense 300 ms into the render, after
-  // these documents' headers have been sent.
+  // Like Next.js, the miss renders the root not-found inside the root layout
+  // only, so the segment's layout, which reads cookies behind Suspense, never
+  // runs.
   it("never caches a generated-param miss's not-found document", async () => {
     const session = `user-${randomUUID()}`;
     const res = await fetch(`${baseUrl}/late-cookie-layout/handbook/${randomUUID()}`, {
@@ -1941,7 +1942,9 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
-    expect(await res.text()).toContain(session);
+    const html = await res.text();
+    expect(html).toContain("404 - Page Not Found");
+    expect(html).not.toContain(session);
   });
 
   it("never caches the error document of a page that throws", async () => {

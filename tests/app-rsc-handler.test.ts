@@ -12,6 +12,8 @@ import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-combi
 import { createTrackedAppRouteRequest } from "../packages/vinext/src/server/app-route-handler-runtime.js";
 import { readActionFormDataWithLimit } from "../packages/vinext/src/server/app-server-action-execution.js";
 import { getRequestContext } from "../packages/vinext/src/shims/unified-request-context.js";
+import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
+import { captureFrameworkRequestRoute } from "../packages/vinext/src/server/request-tracing.js";
 import {
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   type AppWorkerResponseStageProps,
@@ -30,10 +32,12 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_ROUTE_MISS_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import { markLocaleRedirect } from "../packages/vinext/src/server/pages-i18n.js";
+import { mergeMiddlewareResponseHeaders } from "../packages/vinext/src/server/middleware-response-headers.js";
 import { sealForwardedMiddlewareContext } from "../packages/vinext/src/server/forwarded-middleware-context.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
@@ -53,6 +57,8 @@ import {
   draftMode,
   getHeadersContext,
   headers as requestHeaders,
+  markDynamicUsage,
+  peekDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
 import { readImageOptimizationSignal } from "../packages/vinext/src/server/image-optimization.js";
@@ -200,6 +206,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
       overrides.dispatchMatchedRouteHandler ?? (async () => new Response("route", { status: 200 })),
     ensureRouteLoaded: overrides.ensureRouteLoaded,
     ensureInstrumentation: overrides.ensureInstrumentation,
+    isDynamicParamsMiss: overrides.isDynamicParamsMiss,
     handleProgressiveActionRequest:
       "handleProgressiveActionRequest" in overrides
         ? overrides.handleProgressiveActionRequest
@@ -4987,6 +4994,399 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("x-nextjs-postponed")).toBe("2");
     expect(response.headers.get("x-response-header")).toBe("preserved");
     expect(clearRequestContext).toHaveBeenCalledOnce();
+  });
+
+  // Next.js rejects a dynamicParams = false miss while routing, so it serves
+  // /_not-found with the never-cache 404 policy.
+  describe("a dynamicParams = false miss", () => {
+    const route = createPageRoute({
+      isDynamic: true,
+      params: ["slug"],
+      pattern: "/products/:slug",
+      routeSegments: ["products", "[slug]"],
+    });
+    const matchRoute = (pathname: string) => {
+      const slug = /^\/products\/([^/]+)$/.exec(pathname)?.[1];
+      return slug ? { params: { slug }, route } : null;
+    };
+    const configHeaders = [
+      {
+        source: "/products/:slug",
+        headers: [{ key: "Cache-Control", value: "public, s-maxage=3600" }],
+      },
+    ];
+
+    it("answers a route-tree prefetch with the unmatched route's 404", async () => {
+      const isDynamicParamsMiss = vi.fn(
+        async (_route: TestRoute, params: Record<string, unknown>) => params.slug !== "allowed",
+      );
+      const renderNotFound = vi.fn(async () => new Response("not found", { status: 404 }));
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler({
+        configHeaders,
+        dispatchMatchedPage,
+        isDynamicParamsMiss,
+        matchRoute,
+        renderNotFound,
+      });
+
+      async function treeRequest(pathname: string): Promise<Request> {
+        const headers = createRscRequestHeaders();
+        headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+        const url = await createRscRequestUrl(pathname, headers);
+        return new Request(`https://example.test${url}`, { headers });
+      }
+
+      const rejectedRequest = await treeRequest("/docs/products/rejected");
+      const { result: rejected, route: tracedRoute } = await captureFrameworkRequestRoute(() =>
+        handler(rejectedRequest, null),
+      );
+      expect(rejected.status).toBe(404);
+      // Traced as the unmatched route, not the rejected dynamic route.
+      expect(tracedRoute).toBe("/404");
+      expect(rejected.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(renderNotFound).toHaveBeenCalledWith(expect.objectContaining({ route: null }));
+      expect(isDynamicParamsMiss).toHaveBeenCalledWith(route, { slug: "rejected" });
+
+      const allowed = await handler(await treeRequest("/docs/products/allowed"), null);
+      expect(allowed.status).toBe(200);
+      expect(await allowed.text()).toContain('"tree"');
+      expect(renderNotFound).toHaveBeenCalledOnce();
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    it("keeps a rejected route-tree prefetch's generator cacheForRequest values out of its 404", async () => {
+      const readRequestData = vi.fn(() => ({}));
+      const cachedRequestData = cacheForRequest(readRequestData);
+      const handler = createHandler({
+        configHeaders: [],
+        async isDynamicParamsMiss() {
+          cachedRequestData();
+          return true;
+        },
+        matchRoute,
+        async renderNotFound() {
+          cachedRequestData();
+          return new Response("not found", { status: 404 });
+        },
+      });
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/products/rejected", headers);
+
+      const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+
+      expect(tree.status).toBe(404);
+      expect(readRequestData).toHaveBeenCalledTimes(2);
+    });
+
+    it("checks an admitted route-tree prefetch once with fallback rewrites", async () => {
+      const isDynamicParamsMiss = vi.fn(async () => false);
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles: [],
+          fallback: [{ source: "/products/:slug", destination: "/fallback/:slug" }],
+        },
+        isDynamicParamsMiss,
+        matchRoute,
+      });
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/products/allowed", headers);
+
+      const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+
+      expect(tree.status).toBe(200);
+      // Routing already admitted the params, so the generators run once.
+      expect(isDynamicParamsMiss).toHaveBeenCalledOnce();
+    });
+
+    it("keeps a rejected route's generator fetches out of the fallback rewrite's render", async () => {
+      const fallbackRoute = createPageRoute({ pattern: "/fallback/:slug" });
+      const readRequestData = vi.fn(() => ({}));
+      const cachedRequestData = cacheForRequest(readRequestData);
+      const isDynamicParamsMiss = vi.fn(async () => {
+        cachedRequestData();
+        // What a tagged, uncached fetch in generateStaticParams records.
+        const ctx = getRequestContext();
+        ctx.currentRequestTags.push("rejected-route");
+        ctx.dynamicFetchUrls?.add("https://api.example.test/slugs");
+        markDynamicUsage();
+        return true;
+      });
+      let fallbackRender: unknown;
+      const dispatchMatchedPage = vi.fn(async () => {
+        cachedRequestData();
+        const ctx = getRequestContext();
+        fallbackRender = {
+          dynamic: peekDynamicUsage(),
+          dynamicFetchUrls: [...(ctx.dynamicFetchUrls ?? [])],
+          tags: [...ctx.currentRequestTags],
+        };
+        return new Response("fallback");
+      });
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles: [],
+          fallback: [{ source: "/products/:slug", destination: "/fallback/:slug" }],
+        },
+        dispatchMatchedPage,
+        isDynamicParamsMiss,
+        matchRoute(pathname: string) {
+          const slug = /^\/fallback\/([^/]+)$/.exec(pathname)?.[1];
+          return slug ? { params: { slug }, route: fallbackRoute } : matchRoute(pathname);
+        },
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/products/rejected"),
+        null,
+      );
+
+      expect(await response.text()).toBe("fallback");
+      expect(isDynamicParamsMiss).toHaveBeenCalledOnce();
+      expect(fallbackRender).toEqual({ dynamic: false, dynamicFetchUrls: [], tags: [] });
+      // The rewrite target computes its own cacheForRequest() value.
+      expect(readRequestData).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps an unlisted param when middleware enables draft mode, as Next.js does", async () => {
+      const isDynamicParamsMiss = vi.fn(async () => true);
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles: [],
+          fallback: [{ source: "/products/:slug", destination: "/fallback/:slug" }],
+        },
+        dispatchMatchedPage,
+        isDynamicParamsMiss,
+        matchRoute,
+        middlewareModule: {
+          async default() {
+            (await draftMode()).enable();
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+      });
+
+      const document = await handler(
+        new Request("https://example.test/docs/products/rejected"),
+        null,
+      );
+      expect(await document.text()).toBe("page");
+
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/products/rejected", headers);
+      const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+      expect(tree.status).toBe(200);
+      expect(isDynamicParamsMiss).not.toHaveBeenCalled();
+    });
+
+    it("hides the rejected match's root params from a route-tree prefetch's not-found", async () => {
+      const localizedRoute = createPageRoute({
+        isDynamic: true,
+        params: ["lang", "slug"],
+        pattern: "/:lang/products/:slug",
+        rootParamNames: ["lang"],
+        routeSegments: ["[lang]", "products", "[slug]"],
+      });
+      const localizedMatch = (pathname: string) => {
+        const match = /^\/([^/]+)\/products\/([^/]+)$/.exec(pathname);
+        return match ? { params: { lang: match[1], slug: match[2] }, route: localizedRoute } : null;
+      };
+      let notFoundLang: unknown = "not rendered";
+      const handler = createHandler({
+        configHeaders: [],
+        isDynamicParamsMiss: async () => true,
+        matchRequestRoute: localizedMatch,
+        matchRoute: localizedMatch,
+        async renderNotFound() {
+          const { getRootParam } = await import("../packages/vinext/src/shims/root-params.js");
+          notFoundLang = await getRootParam("lang");
+          return new Response("not found", { status: 404 });
+        },
+      });
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/fr/products/rejected", headers);
+
+      const response = await handler(new Request(`https://example.test${url}`, { headers }), null);
+
+      expect(response.status).toBe(404);
+      expect(notFoundLang).toBeUndefined();
+    });
+
+    it("keeps the never-cache policy of the page render's not-found over config headers", async () => {
+      const handler = createHandler({
+        configHeaders,
+        dispatchMatchedPage: async () =>
+          new Response("not found", {
+            status: 404,
+            headers: { [VINEXT_ROUTE_MISS_HEADER]: "1" },
+          }),
+        matchRoute,
+      });
+
+      const { result: response, route: tracedRoute } = await captureFrameworkRequestRoute(() =>
+        handler(new Request("https://example.test/docs/products/rejected"), null),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+      // Traced as the unmatched route, not the rejected dynamic route.
+      expect(tracedRoute).toBe("/404");
+    });
+
+    it("puts config Link headers before an immutable not-found's own", async () => {
+      const handler = createHandler({
+        configHeaders: [
+          {
+            source: "/products/:slug",
+            headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+          },
+        ],
+        dispatchMatchedPage: async () => {
+          const response = new Response("not found", {
+            status: 404,
+            headers: {
+              Link: '</not-found.css>; rel="preload"; as="style"',
+              [VINEXT_ROUTE_MISS_HEADER]: "1",
+            },
+          });
+          markFrameworkLinkHeaders(response.headers, response.headers.get("link"));
+          response.headers.delete = () => {
+            throw new TypeError("immutable");
+          };
+          return response;
+        },
+        matchRoute,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/products/rejected"),
+        null,
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+      expect(response.headers.get("link")).toBe(
+        '</config>; rel="describedby", </not-found.css>; rel="preload"; as="style"',
+      );
+    });
+
+    it("applies config headers once to a staged page render's not-found", async () => {
+      const handler = createHandler({
+        configHeaders: [
+          {
+            source: "/products/:slug",
+            headers: [...configHeaders[0].headers, { key: "Set-Cookie", value: "config=1" }],
+          },
+        ],
+        dispatchMatchedPage: async () =>
+          new Response("not found", {
+            status: 404,
+            headers: { [VINEXT_ROUTE_MISS_HEADER]: "1" },
+          }),
+        matchRoute,
+      });
+
+      const { result: response, route: tracedRoute } = await captureFrameworkRequestRoute(() =>
+        handler(
+          new Request("https://example.test/docs/products/rejected"),
+          null,
+          false,
+          (stageRequest: Request, props: AppWorkerResponseStageProps) =>
+            handler.handleResponseStage(stageRequest, null, props),
+        ),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(response.headers.getSetCookie()).toEqual(["config=1"]);
+      expect(tracedRoute).toBe("/404");
+    });
+
+    it("sends a staged RSC not-found without the rejected params", async () => {
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage: async () =>
+          new Response("not found", {
+            status: 404,
+            headers: { [VINEXT_ROUTE_MISS_HEADER]: "1" },
+          }),
+        matchRoute,
+      });
+      const headers = createRscRequestHeaders();
+      const url = await createRscRequestUrl("/docs/products/rejected", headers);
+
+      const response = await handler(
+        new Request(`https://example.test${url}`, { headers }),
+        null,
+        false,
+        (stageRequest: Request, props: AppWorkerResponseStageProps) =>
+          handler.handleResponseStage(stageRequest, null, props),
+      );
+
+      expect(response.status).toBe(404);
+      // The client reads this header into useParams().
+      expect(response.headers.has(VINEXT_PARAMS_HEADER)).toBe(false);
+      expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+    });
+
+    it.each(["middleware", "a config header"])("ignores a marker that %s sets", async (source) => {
+      const marker = { key: VINEXT_ROUTE_MISS_HEADER, value: "1" };
+      const handler = createHandler({
+        configHeaders:
+          source === "middleware"
+            ? configHeaders
+            : [{ source: "/products/:slug", headers: [...configHeaders[0].headers, marker] }],
+        // Like the page render, carry middleware's response headers.
+        async dispatchMatchedPage({ middlewareContext }) {
+          const headers = new Headers();
+          mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+          return new Response("page", { headers });
+        },
+        matchRoute,
+        middlewareModule:
+          source === "middleware"
+            ? {
+                default() {
+                  return new Response(null, {
+                    headers: { "x-middleware-next": "1", [marker.key]: marker.value },
+                  });
+                },
+              }
+            : null,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/products/allowed"),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("public, s-maxage=3600");
+      expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+    });
   });
 
   it("returns route-tree prefetches for layout-only App Router matches", async () => {

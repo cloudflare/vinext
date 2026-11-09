@@ -83,7 +83,11 @@ import {
   generateAppResponseRscEntry,
   generateRscEntry,
 } from "./entries/app-rsc-entry.js";
-import { rootBoundaryFiles, rootBoundaryRouteFiles } from "./entries/app-rsc-manifest.js";
+import {
+  appDirectoryNotFoundPath,
+  rootBoundaryFiles,
+  rootBoundaryRouteFiles,
+} from "./entries/app-rsc-manifest.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { resolveRuntimeEntryModule } from "./entries/runtime-entry-module.js";
 import {
@@ -5419,19 +5423,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const globalNotFoundPath = nextConfig?.globalNotFound
               ? findFileWithExts(appDir, "global-not-found", fileMatcher)
               : null;
+            const appNotFoundPath = findFileWithExts(appDir, "not-found", fileMatcher);
             if (id !== RESOLVED_APP_REQUEST_ENTRY) {
               rscActionOwnerRoutes =
                 this.environment.config.command === "build" && hasServerActions ? routes : null;
-              rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
-                (path): path is string => path !== null,
-              );
+              rscActionOwnerSharedRoots = [
+                globalErrorPath,
+                globalNotFoundPath,
+                // Without app/layout, every 404 without a matched route renders
+                // app/not-found, which no route may list.
+                appDirectoryNotFoundPath(routes, appNotFoundPath),
+              ].filter((path): path is string => path !== null);
               clientReferenceRoutes = this.environment.config.command === "build" ? routes : null;
               clientReferenceAlwaysRenderedFiles = [
                 ...(globalErrorPath ? [globalErrorPath] : []),
                 ...rootBoundaryFiles(routes),
               ];
               clientReferenceRoutelessFiles = [
-                ...rootBoundaryRouteFiles(routes),
+                ...rootBoundaryRouteFiles(routes, appNotFoundPath),
                 ...(globalNotFoundPath ? [globalNotFoundPath] : []),
               ];
             }
@@ -5502,6 +5511,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                           : this.environment.config.publicDir,
                       ),
                 globalNotFoundPath,
+                appNotFoundPath,
                 draftModeSecret,
                 prerenderSecret,
                 // Dev-only, and never emitted into a client-environment copy.

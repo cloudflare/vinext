@@ -1,5 +1,13 @@
 import type { AppPageSpecialError } from "./app-page-execution.js";
-import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import {
+  runWithFetchDedupe,
+  setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
+  setCurrentFetchSoftTags,
+  setCurrentForceDynamicFetchDefault,
+  type FetchCacheMode,
+} from "vinext/shims/fetch-cache";
+import { buildAppStaticParamsTags } from "./implicit-tags.js";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
@@ -730,6 +738,47 @@ export async function validateAppPageDynamicParams(
   }
 
   return null;
+}
+
+type ValidateAppPageRouteDynamicParamsOptions = {
+  dynamicConfig?: string;
+  dynamicParamsConfig?: boolean;
+  fetchCache?: FetchCacheMode | null;
+  generateStaticParams?: ValidateAppPageDynamicParamsOptions["generateStaticParams"];
+  isDynamicRoute: boolean;
+  isProduction: boolean;
+  params: AppPageParams;
+  routeSegments?: readonly string[];
+};
+
+/**
+ * Next.js rejects a `dynamicParams = false` miss while routing, before any of
+ * the route's segments render: it serves `/_not-found` instead.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/base-server.ts
+ */
+export function validateAppPageRouteDynamicParams(
+  options: ValidateAppPageRouteDynamicParamsOptions,
+): Promise<Response | null> {
+  // Next.js' production force-dynamic routes are absent from the prerender
+  // manifest, so they never enter its generated-path fallback gate. Dev still
+  // resolves and exact-matches generateStaticParams for the same route.
+  if (options.isProduction && options.dynamicConfig === "force-dynamic") {
+    return Promise.resolve(null);
+  }
+  // Next.js runs generateStaticParams in a work store of its own: the route's
+  // fetchCache and implicit tags, and no revalidate or force-dynamic default.
+  // Callers run this check apart from the request, so these stay out of it.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+  setCurrentFetchCacheMode(options.fetchCache ?? null);
+  setCurrentFetchSoftTags(buildAppStaticParamsTags(options.routeSegments ?? []));
+  setCurrentFetchRevalidate(null);
+  setCurrentForceDynamicFetchDefault(false);
+  return validateAppPageDynamicParams({
+    enforceStaticParamsOnly: options.dynamicParamsConfig === false,
+    generateStaticParams: options.generateStaticParams,
+    isDynamicRoute: options.isDynamicRoute,
+    params: options.params,
+  });
 }
 
 export async function resolveAppPageInterceptState<TRoute, TPage>(

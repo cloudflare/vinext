@@ -14,6 +14,7 @@ import { patternToNextFormat } from "../routing/route-validation.js";
 import { traceFindPageComponents } from "./pages-execution-tracing.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import {
+  getActiveDraftModeState,
   getEffectiveRequestCookieHeader,
   getDraftModeCookieHeader,
   getHeadersContext,
@@ -21,6 +22,7 @@ import {
   headersContextFromRequest,
   isDraftModeEnabled,
   isDraftModeRequest,
+  runStaticParamsCheckDetached,
   runWithHeadersContext,
 } from "vinext/shims/headers";
 import {
@@ -44,6 +46,7 @@ import {
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_ROUTE_MISS_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
 import type { ReactFormState } from "react-dom/client";
@@ -93,6 +96,7 @@ import {
 import {
   applyAppRscConfigHeaders,
   finalizeAppRscResponse,
+  isAppRscResponseConfigHeadersApplied,
   isStreamedActionRedirectResponse,
   markAppRscApplicationResponse,
   markAppRscRouteHandlerResponse,
@@ -212,7 +216,11 @@ import {
 import { traceAppPageRender } from "./app-page-tracing.js";
 import { runOutsideWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
-import { setFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
+import {
+  replaceFrameworkRequestRoute,
+  setFrameworkRequestRoute,
+  traceFrameworkRequest,
+} from "./request-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -524,6 +532,38 @@ function withStoredSpecialErrorStatus(response: Response, isSegmentPrefetch: boo
   );
 }
 
+/** Send a routing-level not-found from the page render as an unmatched route's 404. */
+function withRouteMissCacheControl(response: Response): Response {
+  if (!response.headers.has(VINEXT_ROUTE_MISS_HEADER)) return response;
+  // Dispatch rejects the params after the matched route was recorded.
+  replaceFrameworkRequestRoute("/404");
+  let unmarkedResponse = response;
+  try {
+    // Keep the response itself, whose config headers may already be applied.
+    response.headers.delete(VINEXT_ROUTE_MISS_HEADER);
+    // A split stage reattaches the rejected match's params, which the client
+    // would read into useParams(). An unmatched route has none.
+    response.headers.delete(VINEXT_PARAMS_HEADER);
+  } catch {
+    const headers = new Headers(response.headers);
+    headers.delete(VINEXT_ROUTE_MISS_HEADER);
+    headers.delete(VINEXT_PARAMS_HEADER);
+    unmarkedResponse = preserveFullyBufferedBodyMetadata(
+      response,
+      new Response(response.body, {
+        headers,
+        status: response.status,
+        statusText: response.statusText,
+      }),
+    );
+    copyLinkHeaderProvenance(response.headers, unmarkedResponse.headers);
+    if (isAppRscResponseConfigHeadersApplied(response)) {
+      markAppRscResponseConfigHeadersApplied(unmarkedResponse);
+    }
+  }
+  return withUnmatchedRouteCacheControl(unmarkedResponse);
+}
+
 type DispatchMatchedPageOptions<TRoute> = {
   bypassInterceptionContextCache: boolean;
   cachePathname: string;
@@ -712,6 +752,12 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
    * dedup'd. Provided by the generated RSC entry; absent in older entries.
    */
   ensureRouteLoaded?: (route: TRoute) => unknown;
+  /**
+   * Whether a loaded page route rejects these params under
+   * `dynamicParams = false`. Absent in the request-only stage, which has no
+   * page modules and sends route tree prefetches to the full graph.
+   */
+  isDynamicParamsMiss?: (route: TRoute, params: AppPageParams) => Promise<boolean>;
   ensureInstrumentation?: (ctx: ExecutionContextLike | null) => Promise<void>;
   /**
    * Register cache adapters configured via the vinext() `cache` option. Wired
@@ -2210,6 +2256,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     (isPossibleAppRouteActionRequest(request) ||
       isDraftModeRequest(request, options.draftModeSecret) ||
       isDraftModeEnabled());
+  // Middleware can enable or disable draft mode for this request.
+  const isActiveDraftMode = () =>
+    getActiveDraftModeState() ?? isDraftModeRequest(request, options.draftModeSecret);
   const usesRawRequestMatch = () =>
     rendersRawRequestMatch && cleanPathnameIsRequestPathname && !isInterceptionMatch;
   const renderedRouteMatch = <TMatch extends AppRscRouteMatch<TRoute> | null>(
@@ -2607,6 +2656,41 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return dynamicPagesFallbackResponse;
   }
 
+  let dynamicParamsAdmittedMatch: typeof match = null;
+  // Next.js rejects a dynamicParams = false miss while routing and resumes with
+  // the fallback rewrites, so one can still claim the URL. Without fallback
+  // rewrites the dispatch renders the miss itself.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-server.ts
+  if (
+    match &&
+    filesystemRouteEligible &&
+    options.configRewrites.fallback.length > 0 &&
+    options.isDynamicParamsMiss
+  ) {
+    const routedMatch = renderedRouteMatch(match);
+    const routedRoute = routedMatch.route;
+    if (options.ensureRouteLoaded) {
+      await traceFindPageComponents(routedRoute.pattern, () =>
+        options.ensureRouteLoaded!(routedRoute),
+      );
+    }
+    // Draft mode renders an unlisted param on demand, as the dispatch does.
+    if (!routedRoute.routeHandler && !isActiveDraftMode()) {
+      const isDynamicParamsMiss = options.isDynamicParamsMiss;
+      if (
+        await runStaticParamsCheckDetached(() =>
+          isDynamicParamsMiss(routedRoute, routedMatch.params),
+        )
+      ) {
+        // The rejected match seeded its root params before routing finished.
+        setRootParams(null);
+        match = null;
+      } else {
+        dynamicParamsAdmittedMatch = routedMatch;
+      }
+    }
+  }
+
   if (!match) {
     for (const rewrite of options.configRewrites.fallback) {
       const fallbackRewrite = await applyRewrite(
@@ -2770,19 +2854,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
   }
 
-  if (!match) {
-    // Dev-only favicon short-circuit: browsers auto-request /favicon.ico on
-    // every page load. Don't compile/render the not-found page for it.
-    // Check `canonicalPathname` (the original browser-requested URL) so a
-    // middleware rewrite that lands on `/favicon.ico` still falls through to
-    // the normal not-found render.
-    // Matches Next.js: packages/next/src/server/lib/router-server.ts —
-    // condition `parsedUrl.pathname === '/favicon.ico'`.
-    if (process.env.NODE_ENV !== "production" && canonicalPathname === "/favicon.ico") {
-      options.clearRequestContext();
-      return new Response("", { status: 404 });
-    }
-
+  const renderUnmatchedRoute = async (): Promise<Response> => {
     setFrameworkRequestRoute("/404", isRscRequest);
     const notFoundResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
     if (notFoundResponseStage) {
@@ -2826,9 +2898,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const headers = new Headers();
     mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
     return withUnmatchedRouteCacheControl(notFoundResponse({ headers }));
+  };
+
+  if (!match) {
+    // Dev-only favicon short-circuit: browsers auto-request /favicon.ico on
+    // every page load. Don't compile/render the not-found page for it.
+    // Check `canonicalPathname` (the original browser-requested URL) so a
+    // middleware rewrite that lands on `/favicon.ico` still falls through to
+    // the normal not-found render.
+    // Matches Next.js: packages/next/src/server/lib/router-server.ts —
+    // condition `parsedUrl.pathname === '/favicon.ico'`.
+    if (process.env.NODE_ENV !== "production" && canonicalPathname === "/favicon.ico") {
+      options.clearRequestContext();
+      return new Response("", { status: 404 });
+    }
+
+    return renderUnmatchedRoute();
   }
 
-  match = renderedRouteMatch(match);
+  match = dynamicParamsAdmittedMatch ?? renderedRouteMatch(match);
   const { route, params } = match;
   const requestPathnameDiffersFromCachePath = requestPathname !== cleanPathname;
   const rawRequestPathnameIsObservable =
@@ -2859,14 +2947,32 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const cachePathname = cleanPathnameIsRequestPathname
     ? cleanPathname
     : rewriteCachePathname(canonicalPathname, cleanPathname);
-  setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.
   if (options.ensureRouteLoaded) {
     await traceFindPageComponents(route.pattern, () => options.ensureRouteLoaded!(route));
   }
   const resolvedSearchParams = getResolvedSearchParams();
-  if (isRouteTreePrefetchRequest(request) && !route.routeHandler) {
+  const isRouteTreePrefetch = isRouteTreePrefetchRequest(request) && !route.routeHandler;
+  // Routing already admitted these params for this route.
+  const isDynamicParamsAdmitted =
+    dynamicParamsAdmittedMatch?.route === route && dynamicParamsAdmittedMatch.params === params;
+  // Next.js rejects a dynamicParams = false miss while routing, outside draft
+  // mode, so route discovery gets the unmatched route's 404 rather than this
+  // route's tree.
+  if (
+    isRouteTreePrefetch &&
+    !isDynamicParamsAdmitted &&
+    !isActiveDraftMode() &&
+    options.isDynamicParamsMiss &&
+    (await runStaticParamsCheckDetached(() => options.isDynamicParamsMiss!(route, params)))
+  ) {
+    // The rejected match seeded its root params before routing finished.
+    setRootParams(null);
+    return renderUnmatchedRoute();
+  }
+  setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
+  if (isRouteTreePrefetch) {
     const response = await createRouteTreePrefetchResponse(route, {
       buildId: options.buildId,
       prefetchInlining: options.prefetchInlining,
@@ -3064,7 +3170,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             }
           : undefined,
         renderedConcreteUrlPaths: getRenderedConcreteUrlPathsForRoute(route.pattern),
-        skipStaticParamsValidation: isPrerenderFallbackShell,
+        skipStaticParamsValidation: isPrerenderFallbackShell || isDynamicParamsAdmitted,
         staticParamsValidationParams:
           prerenderRouteParams === null || isPrerenderFallbackShell ? undefined : params,
         rootParams,
@@ -3076,7 +3182,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         renderMode,
       });
   const pageResponse = withStoredSpecialErrorStatus(
-    renderedPageResponse,
+    withRouteMissCacheControl(renderedPageResponse),
     // Next.js reads the segment header only on a prefetch.
     isRscRequest &&
       request.headers.get(NEXT_ROUTER_PREFETCH_HEADER) === "1" &&

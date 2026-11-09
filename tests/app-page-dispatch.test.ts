@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import React from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
@@ -49,6 +51,7 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
 import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   consumeDynamicUsage,
@@ -68,13 +71,18 @@ import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MOUNTED_LAYOUTS_HEADER,
+  VINEXT_ROUTE_MISS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
 } from "../packages/vinext/src/server/headers.js";
-import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import {
+  hasFrameworkLinkHeaders,
+  markFrameworkLinkHeaders,
+} from "../packages/vinext/src/server/app-response-header-provenance.js";
 import {
   createWorkerCacheabilityAdmissionContext,
   finalizeWorkerCacheabilityResponse,
 } from "../packages/vinext/src/server/cacheability-request.js";
+import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
 import {
   usePathname,
   useSearchParams,
@@ -1562,6 +1570,114 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(404);
     expect(ensureRouteLoaded).not.toHaveBeenCalled();
+  });
+
+  it("keeps a rejected param's generator cacheForRequest values out of its 404", async () => {
+    const readRequestData = vi.fn(() => ({}));
+    const cachedRequestData = cacheForRequest(readRequestData);
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      async generateStaticParams() {
+        cachedRequestData();
+        return [{ slug: "known" }];
+      },
+      isProduction: true,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderHttpAccessFallbackPage = vi.fn(async () => {
+      cachedRequestData();
+      return new Response("not found", { status: 404 });
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+    );
+
+    expect(response.status).toBe(404);
+    // Next.js runs generateStaticParams apart from the request, so the 404
+    // computes its own value.
+    expect(readRequestData).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a rejected param's generator fetches out of its 404's request memoization", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    try {
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw new Error("unknown static params should not render the page");
+        },
+        async generateStaticParams() {
+          await (await fetch(url, { cache: "no-store" })).text();
+          return [{ slug: "known" }];
+        },
+        isProduction: true,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+      });
+      let notFoundData = "";
+      options.renderHttpAccessFallbackPage = vi.fn(async () => {
+        notFoundData = await (await fetch(url, { cache: "no-store" })).text();
+        return new Response("not found", { status: 404 });
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+      );
+
+      expect(response.status).toBe(404);
+      // The 404 fetches anew rather than reading the generator's response.
+      expect(notFoundData).toBe("2");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("renders an unlisted param in draft mode, also when middleware enabled it", async () => {
+    for (const [draft, dynamicConfig] of [
+      ["cookie", undefined],
+      ["middleware", undefined],
+      ["middleware", "force-static"],
+    ] as const) {
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("not found", { status: 404 }),
+      );
+      const isrGet = vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>")),
+      );
+      const { options } = createDispatchOptions({
+        dynamicConfig,
+        async generateStaticParams() {
+          return [{ slug: "known" }];
+        },
+        isProduction: true,
+        isrGet,
+        request: new Request("https://example.com/posts/unknown", {
+          headers: draft === "cookie" ? { cookie: "__prerender_bypass=draft-secret" } : {},
+        }),
+        revalidateSeconds: 60,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+      if (draft === "middleware") {
+        setHeadersContext({ cookies: new Map(), draftModeEnabled: true, headers: new Headers() });
+      }
+
+      const response = await dispatchAppPage({ ...options, dynamicParamsConfig: false });
+
+      // Draft mode bypasses the cache and renders the param on demand.
+      expect(response.status).toBe(200);
+      expect(await response.text()).not.toBe("<html>cached</html>");
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(renderHttpAccessFallbackPage).not.toHaveBeenCalled();
+      setHeadersContext(null);
+    }
   });
 
   it("bounds a redirect from a generated-param miss by the route's dynamic stale time (#3745)", async () => {
@@ -3293,9 +3409,24 @@ describe("app page dispatch", () => {
   });
 
   it("returns not found for dynamicParams=false paths outside generated params", async () => {
-    const renderHttpAccessFallbackPage = vi.fn(
-      async () => new Response('<html><h1 class="next-error-h1">404</h1></html>', { status: 404 }),
-    );
+    let renderState: unknown = null;
+    const renderHttpAccessFallbackPage = vi.fn(async () => {
+      renderState = {
+        navigationParams: navigationContext.params,
+        lang: await getRootParam("lang"),
+      };
+      const notFound = new Response('<html><h1 class="next-error-h1">404</h1></html>', {
+        status: 404,
+        headers: { Link: '</not-found.css>; rel="preload"; as="style"' },
+      });
+      markFrameworkLinkHeaders(notFound.headers, notFound.headers.get("link"));
+      return notFound;
+    });
+    let navigationContext = {
+      pathname: "/posts/hello",
+      searchParams: new URLSearchParams(),
+      params: { slug: "hello" } as Record<string, string | string[]>,
+    };
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw new Error("unknown static params should not render the page");
@@ -3303,24 +3434,144 @@ describe("app page dispatch", () => {
       async generateStaticParams() {
         return [{ slug: "known" }];
       },
+      getNavigationContext: () => navigationContext,
       route: createRoute({ isDynamic: true, params: ["slug"] }),
+      setNavigationContext(context) {
+        navigationContext = context;
+      },
     });
     options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
 
-    const response = await dispatchAppPage({
-      ...options,
-      dynamicParamsConfig: false,
-    });
+    const requestContext = createRequestContext({ rootParams: { lang: "fr" } });
+    const response = await runWithRequestContext(requestContext, () =>
+      dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+    );
 
     expect(response.status).toBe(404);
     await expect(response.text()).resolves.toContain('class="next-error-h1"');
-    // The route has no not-found of its own, so the built-in one renders.
+    // Next.js rejects the params while routing: no route segment renders, and
+    // nothing in the not-found render observes the rejected params.
     expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
       404,
-      { boundaryModule: DEFAULT_NOT_FOUND_MODULE, matchedParams: { slug: "hello" } },
+      { matchedParams: {}, routeMiss: true },
       options.middlewareContext,
     );
+    expect(renderState).toEqual({ navigationParams: {}, lang: undefined });
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response.headers.get(VINEXT_ROUTE_MISS_HEADER)).toBe("1");
+    // Config Link headers still go before the not-found render's own.
+    expect(hasFrameworkLinkHeaders(response.headers)).toBe(true);
   });
+
+  it("keeps a dynamicParams=false miss out of a split stage's shared cache under a public config policy", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const request = new Request("https://example.com/posts/hello", {
+        headers: { Accept: "text/html" },
+      });
+      const { options } = createDispatchOptions({
+        async generateStaticParams() {
+          return [{ slug: "known" }];
+        },
+        isProduction: true,
+        request,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+      });
+      options.renderHttpAccessFallbackPage = async () => new Response("not found", { status: 404 });
+
+      const response = await withResponseStageCacheability(
+        {
+          buildId: "build-a",
+          cache: "shared",
+          context: { waitUntil() {} },
+          policyHeaders: [["Cloudflare-CDN-Cache-Control", "public, s-maxage=3600"]],
+          rawManifest: null,
+          registerCacheAdapters() {},
+          request,
+          resolvedRoutePathname: "/posts/hello",
+        },
+        (context) =>
+          runWithRequestContext(
+            createRequestContext({
+              executionContext: context,
+              headersContext: headersContextFromRequest(request),
+            }),
+            () =>
+              runWithExecutionContext(context, () =>
+                dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+              ),
+          ),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      // The request stage reads the marker to reassert the never-cache policy.
+      expect(response.headers.get(VINEXT_ROUTE_MISS_HEADER)).toBe("1");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it.each(["force-static", "error"])(
+    "renders a dynamic = %s route's miss with the unmatched route's request state",
+    async (dynamicConfig) => {
+      let observed: unknown = null;
+      let navigationContext = {
+        pathname: "/posts/hello",
+        searchParams: new URLSearchParams("q=1"),
+        params: { slug: "hello" } as Record<string, string | string[]>,
+      };
+      const { options } = createDispatchOptions({
+        dynamicConfig,
+        async generateStaticParams() {
+          return [{ slug: "known" }];
+        },
+        getNavigationContext: () => navigationContext,
+        revalidateSeconds: 60,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+        setNavigationContext(context) {
+          navigationContext = context;
+        },
+      });
+      options.fetchCache = "force-cache";
+      options.searchParams = new URLSearchParams("q=1");
+      options.renderHttpAccessFallbackPage = async () => {
+        const context = getRequestContext();
+        observed = {
+          cacheMode: context.currentFetchCacheMode,
+          forceDynamic: context.currentForceDynamicFetchDefault,
+          header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+          revalidate: context.currentFetchRevalidate,
+          searchParams: navigationContext.searchParams.toString(),
+          softTags: context.currentFetchSoftTags,
+        };
+        return new Response("not found", { status: 404 });
+      };
+      const requestContext = createRequestContext({
+        headersContext: {
+          cookies: new Map(),
+          headers: new Headers({ "x-request-value": "available" }),
+        },
+      });
+
+      const response = await runWithRequestContext(requestContext, () =>
+        dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+      );
+
+      expect(response.status).toBe(404);
+      expect(observed).toEqual({
+        cacheMode: null,
+        forceDynamic: false,
+        header: "available",
+        revalidate: null,
+        searchParams: "q=1",
+        softTags: [],
+      });
+    },
+  );
 
   it("keeps request context alive while rendering a generated-param not-found response", async () => {
     const observedHeaderValues: Array<string | null> = [];
@@ -3948,10 +4199,14 @@ describe("app page dispatch", () => {
       isForceStatic: true,
       search: "",
     });
+    // The dynamicParams check sets its own defaults apart from the request, so
+    // these check that the dispatch set the interception's.
+    vi.mocked(setCurrentForceDynamicFetchDefault).mockClear();
     await dispatchCurrentRouteIntercept(undefined, { dynamic: "force-dynamic" });
-    expect(setCurrentForceDynamicFetchDefault).toHaveBeenLastCalledWith(true);
+    expect(setCurrentForceDynamicFetchDefault).toHaveBeenCalledWith(true);
+    vi.mocked(setCurrentFetchRevalidate).mockClear();
     await dispatchCurrentRouteIntercept(undefined, { revalidate: 7 });
-    expect(setCurrentFetchRevalidate).toHaveBeenLastCalledWith(7);
+    expect(setCurrentFetchRevalidate).toHaveBeenCalledWith(7);
     await expect(
       dispatchCurrentRouteIntercept(undefined, { unstable_dynamicStaleTime: 15 }),
     ).resolves.toMatchObject({ dynamicStaleTime: 15 });
@@ -6572,12 +6827,13 @@ describe("app page dispatch", () => {
         expect(response.status).toBe(404);
         expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
 
-        // Middleware's own cache policy still wins.
+        // As for an unmatched route, Next.js' routing-level 404 replaces
+        // middleware's own cache policy.
         if (fallback === "rendered") {
           const withMiddlewarePolicy = await dispatch(
             new Headers({ "cache-control": middlewareCacheControl }),
           );
-          expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
+          expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
         }
       });
     }
@@ -6602,29 +6858,24 @@ describe("app page dispatch", () => {
         return dispatchAppPage({ ...options, dynamicParamsConfig: false });
       };
 
-      // Its layouts can still read the request after the headers leave.
-      const response = await dispatch();
-      expect(response.status).toBe(404);
-      expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
-
-      // Middleware's own cache policy still wins.
-      const middlewareCacheControl = "public, max-age=5";
-      const withMiddlewarePolicy = await dispatch(
-        {},
-        new Headers({ "cache-control": middlewareCacheControl }),
-      );
-      expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
-
-      // A render that can't read the request, and dev, keep no policy.
+      // Next.js serves the miss as an unmatched route's 404, whose never-cache
+      // policy replaces middleware's and applies to force-static and
+      // dynamic = "error" routes too.
       for (const overrides of [
+        {},
         { dynamicConfig: "force-static" },
         { dynamicConfig: "error" },
         { isProduction: false },
       ]) {
-        const unstamped = await dispatch(overrides);
-        expect(unstamped.status).toBe(404);
-        expect(unstamped.headers.get("cache-control")).toBeNull();
+        const response = await dispatch(overrides);
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
       }
+      const withMiddlewarePolicy = await dispatch(
+        {},
+        new Headers({ "cache-control": "public, max-age=5" }),
+      );
+      expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
     });
 
     it("never caches the missing default export response of a non-static page", async () => {

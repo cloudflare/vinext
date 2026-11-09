@@ -229,6 +229,8 @@ type AppRouterConfig = {
    * @see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
    */
   globalNotFoundPath?: string | null;
+  /** Absolute path to `app/not-found.{tsx,ts,js,jsx}` when present. */
+  appNotFoundPath?: string | null;
   /**
    * When true, the project has a `pages/` directory alongside the App Router.
    * The generated RSC entry exposes `/__vinext/prerender/pages-static-paths`
@@ -815,6 +817,7 @@ export function generateRscEntry(
     globalErrorPath,
     globalNotFoundPath:
       config?.globalNotFound === true ? (config.globalNotFoundPath ?? null) : null,
+    appNotFoundPath: config?.appNotFoundPath ?? null,
   });
   const {
     imports,
@@ -827,6 +830,8 @@ export function generateRscEntry(
     rootForbiddenVar,
     rootUnauthorizedVar,
     rootLayoutVars,
+    hasAppRootLayout,
+    appNotFoundVar,
     globalErrorVar,
     globalNotFoundImportSpecifier,
   } = manifestCode;
@@ -1023,6 +1028,7 @@ ${
 }
 import {
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
+  validateAppPageRouteDynamicParams as __validateAppPageRouteDynamicParams,
 } from ${JSON.stringify(appPageRequestPath)};
 import {
   collectAppPageStaticGenerationRuntimes as __collectAppPageStaticGenerationRuntimes,
@@ -1172,6 +1178,25 @@ function __resolveRouteSegmentConfig(route, segmentConfigBranches) {
   });
 }
 
+function __resolveRouteGenerateStaticParams(route) {
+  return __resolveAppPageGenerateStaticParamsSources({
+    layouts: route.layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page: route.page,
+    parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
+      layout: slot.layout,
+      configLayouts: slot.configLayouts,
+      configLayoutTreePositions: slot.configLayoutTreePositions,
+      page: slot.page ?? slot.default,
+      paramNames: slot.slotParamNames,
+      patternParts: slot.slotPatternParts,
+      routeSegments: slot.routeSegments,
+    })),
+    routePatternParts: route.patternParts,
+    routeSegments: route.routeSegments,
+  });
+}
+
 // The parts of a route's static generation classification that come from its
 // module tree rather than its effective segment config.
 function __resolveRouteStaticGeneration(route, segmentConfigBranches) {
@@ -1299,6 +1324,8 @@ function __createFallbackRenderer() {
   globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
   loadGlobalNotFoundModule: __loadGlobalNotFoundModule,
   globalNotFoundEnabled: ${config?.globalNotFound === true},
+  hasAppRootLayout: ${hasAppRootLayout},
+  appNotFoundModule: ${appNotFoundVar ?? "null"},
   metadataRoutes,
   ssrLoader() {
     return import.meta.viteRsc.loadModule("ssr", "index");
@@ -1461,6 +1488,21 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,
+  async isDynamicParamsMiss(route, params) {
+    if (!route.isDynamic) return false;
+    const __segmentConfig = __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route));
+    if (__segmentConfig.dynamicParamsConfig !== false) return false;
+    return (await __validateAppPageRouteDynamicParams({
+      dynamicConfig: __segmentConfig.dynamicConfig,
+      dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
+      fetchCache: __segmentConfig.fetchCache ?? null,
+      generateStaticParams: __resolveRouteGenerateStaticParams(route),
+      isDynamicRoute: route.isDynamic,
+      isProduction: process.env.NODE_ENV === "production",
+      params,
+      routeSegments: route.routeSegments,
+    })) !== null;
+  },
   prefetchInlining: ${JSON.stringify(prefetchInlining)},
   clearRequestContext() {
     __clearRequestContext();
@@ -1515,22 +1557,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     const __segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
     const __segmentConfig = __resolveRouteSegmentConfig(route, __segmentConfigBranches);
     const __staticGeneration = __resolveRouteStaticGeneration(route, __segmentConfigBranches);
-    const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
-      layouts: route.layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      page: route.page,
-      parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
-        layout: slot.layout,
-        configLayouts: slot.configLayouts,
-        configLayoutTreePositions: slot.configLayoutTreePositions,
-        page: slot.page ?? slot.default,
-        paramNames: slot.slotParamNames,
-        patternParts: slot.slotPatternParts,
-        routeSegments: slot.routeSegments,
-      })),
-      routePatternParts: route.patternParts,
-      routeSegments: route.routeSegments,
-    });
+    const __generateStaticParams = __resolveRouteGenerateStaticParams(route);
     return __dispatchAppPage({
       basePath: __basePath,
       bypassInterceptionContextCache,
@@ -1657,10 +1684,10 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           interceptionContext,
           interceptionId,
         );
-        return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
-          isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
+        return __fallbackRenderer.renderHttpAccessFallback(opts.routeMiss ? null : route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
+          isEdgeRuntime: !opts.routeMiss && __isEdgeRuntime(__segmentConfig.runtime),
           routePathname: cleanPathname,
-          sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
+          sourcePageSegments: !opts.routeMiss && __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
             : null,
         });
