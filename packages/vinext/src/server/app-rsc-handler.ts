@@ -2688,9 +2688,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (!routedRoute.routeHandler && !isActiveDraftMode()) {
       const isDynamicParamsMiss = options.isDynamicParamsMiss;
       // Next.js runs generateStaticParams apart from the request, so its
-      // fetches leave the tags and dynamic usage of whatever render follows.
+      // fetches and cacheForRequest() values leave the tags, dynamic usage and
+      // data of whatever render follows.
       const isMiss = await runWithUnifiedStateMutation(
         (ctx) => {
+          ctx.requestCache = new WeakMap();
           ctx.currentRequestTags = [];
           ctx.dynamicFetchUrls = new Set<string>();
           ctx.dynamicUsageDetected = false;

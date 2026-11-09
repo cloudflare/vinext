@@ -12,6 +12,7 @@ import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-combi
 import { createTrackedAppRouteRequest } from "../packages/vinext/src/server/app-route-handler-runtime.js";
 import { readActionFormDataWithLimit } from "../packages/vinext/src/server/app-server-action-execution.js";
 import { getRequestContext } from "../packages/vinext/src/shims/unified-request-context.js";
+import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
 import { captureFrameworkRequestRoute } from "../packages/vinext/src/server/request-tracing.js";
 import {
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
@@ -5083,7 +5084,10 @@ describe("createAppRscHandler", () => {
 
     it("keeps a rejected route's generator fetches out of the fallback rewrite's render", async () => {
       const fallbackRoute = createPageRoute({ pattern: "/fallback/:slug" });
+      const readRequestData = vi.fn(() => ({}));
+      const cachedRequestData = cacheForRequest(readRequestData);
       const isDynamicParamsMiss = vi.fn(async () => {
+        cachedRequestData();
         // What a tagged, uncached fetch in generateStaticParams records.
         const ctx = getRequestContext();
         ctx.currentRequestTags.push("rejected-route");
@@ -5093,6 +5097,7 @@ describe("createAppRscHandler", () => {
       });
       let fallbackRender: unknown;
       const dispatchMatchedPage = vi.fn(async () => {
+        cachedRequestData();
         const ctx = getRequestContext();
         fallbackRender = {
           dynamic: peekDynamicUsage(),
@@ -5124,6 +5129,8 @@ describe("createAppRscHandler", () => {
       expect(await response.text()).toBe("fallback");
       expect(isDynamicParamsMiss).toHaveBeenCalledOnce();
       expect(fallbackRender).toEqual({ dynamic: false, dynamicFetchUrls: [], tags: [] });
+      // The rewrite target computes its own cacheForRequest() value.
+      expect(readRequestData).toHaveBeenCalledTimes(2);
     });
 
     it("keeps an unlisted param when middleware enables draft mode, as Next.js does", async () => {
