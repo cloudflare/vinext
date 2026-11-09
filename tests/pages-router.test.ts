@@ -1820,6 +1820,25 @@ export default function Page({ value }: { value: string }) {
     );
   });
 
+  // Ported from Next.js: test/development/pages-dir/client-navigation/rendering-head.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/development/pages-dir/client-navigation/rendering-head.test.ts
+  it("replaces the default charset and viewport with unkeyed next/head tags", async () => {
+    const html = await (await fetch(`${baseUrl}/head-priority`)).text();
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+
+    // "header helper dedupes tags": only the page's charset and viewport remain.
+    expect(headContents.match(/<meta charset=/g)).toHaveLength(1);
+    expect(headContents.match(/<meta name="viewport" /g)).toHaveLength(1);
+    // "should place charset element at the top of <head>": the next/head tags
+    // lead <head>, ahead of the children of _document's <Head>.
+    const nextHeadTags =
+      '<meta charset="iso-8859-5" data-next-head="" />' +
+      '<meta name="viewport" content="width=device-width,initial-scale=1" data-next-head="" />' +
+      '<meta name="title" content="head title" data-next-head="" />';
+    expect(headContents.trimStart().slice(0, nextHeadTags.length)).toBe(nextHeadTags);
+    expect(headContents.indexOf('<meta name="description"')).toBeGreaterThan(nextHeadTags.length);
+  });
+
   it("rerenders GSP pages without carrying prior render state", async () => {
     const firstRes = await fetch(`${baseUrl}/isr-second-render-state`);
     expect(firstRes.status).toBe(200);
