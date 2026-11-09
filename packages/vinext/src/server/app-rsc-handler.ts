@@ -60,6 +60,7 @@ import {
   createRequestContext,
   preserveFullyBufferedBodyMetadata,
   runWithRequestContext,
+  runWithUnifiedStateMutation,
 } from "vinext/shims/unified-request-context";
 import { flattenErrorCauses } from "../utils/error-cause.js";
 import { hasBasePath, restoreBasePath, stripBasePath } from "../utils/base-path.js";
@@ -2685,7 +2686,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     // Draft mode renders an unlisted param on demand, as the dispatch does.
     if (!routedRoute.routeHandler && !isActiveDraftMode()) {
-      if (await options.isDynamicParamsMiss(routedRoute, routedMatch.params)) {
+      const isDynamicParamsMiss = options.isDynamicParamsMiss;
+      // Next.js runs generateStaticParams apart from the request, so its
+      // fetches leave the tags and dynamic usage of whatever render follows.
+      const isMiss = await runWithUnifiedStateMutation(
+        (ctx) => {
+          ctx.currentRequestTags = [];
+          ctx.dynamicFetchUrls = new Set<string>();
+          ctx.dynamicUsageDetected = false;
+          ctx.renderDynamicLatch = { dynamic: false, listeners: new Set() };
+          ctx.renderRequestApiUsage = new Set();
+        },
+        () => isDynamicParamsMiss(routedRoute, routedMatch.params),
+      );
+      if (isMiss) {
         // The rejected match seeded its root params before routing finished.
         setRootParams(null);
         match = null;

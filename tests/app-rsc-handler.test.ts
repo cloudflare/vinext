@@ -56,6 +56,8 @@ import {
   draftMode,
   getHeadersContext,
   headers as requestHeaders,
+  markDynamicUsage,
+  peekDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
 import { readImageOptimizationSignal } from "../packages/vinext/src/server/image-optimization.js";
@@ -5077,6 +5079,51 @@ describe("createAppRscHandler", () => {
       expect(tree.status).toBe(200);
       // Routing already admitted the params, so the generators run once.
       expect(isDynamicParamsMiss).toHaveBeenCalledOnce();
+    });
+
+    it("keeps a rejected route's generator fetches out of the fallback rewrite's render", async () => {
+      const fallbackRoute = createPageRoute({ pattern: "/fallback/:slug" });
+      const isDynamicParamsMiss = vi.fn(async () => {
+        // What a tagged, uncached fetch in generateStaticParams records.
+        const ctx = getRequestContext();
+        ctx.currentRequestTags.push("rejected-route");
+        ctx.dynamicFetchUrls?.add("https://api.example.test/slugs");
+        markDynamicUsage();
+        return true;
+      });
+      let fallbackRender: unknown;
+      const dispatchMatchedPage = vi.fn(async () => {
+        const ctx = getRequestContext();
+        fallbackRender = {
+          dynamic: peekDynamicUsage(),
+          dynamicFetchUrls: [...(ctx.dynamicFetchUrls ?? [])],
+          tags: [...ctx.currentRequestTags],
+        };
+        return new Response("fallback");
+      });
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles: [],
+          fallback: [{ source: "/products/:slug", destination: "/fallback/:slug" }],
+        },
+        dispatchMatchedPage,
+        isDynamicParamsMiss,
+        matchRoute(pathname: string) {
+          const slug = /^\/fallback\/([^/]+)$/.exec(pathname)?.[1];
+          return slug ? { params: { slug }, route: fallbackRoute } : matchRoute(pathname);
+        },
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/products/rejected"),
+        null,
+      );
+
+      expect(await response.text()).toBe("fallback");
+      expect(isDynamicParamsMiss).toHaveBeenCalledOnce();
+      expect(fallbackRender).toEqual({ dynamic: false, dynamicFetchUrls: [], tags: [] });
     });
 
     it("keeps an unlisted param when middleware enables draft mode, as Next.js does", async () => {
