@@ -828,6 +828,7 @@ export function generateRscEntry(
     rootUnauthorizedVar,
     rootLayoutVars,
     hasAppRootLayout,
+    appNotFoundVar,
     globalErrorVar,
     globalNotFoundImportSpecifier,
   } = manifestCode;
@@ -1321,6 +1322,7 @@ function __createFallbackRenderer() {
   loadGlobalNotFoundModule: __loadGlobalNotFoundModule,
   globalNotFoundEnabled: ${config?.globalNotFound === true},
   hasAppRootLayout: ${hasAppRootLayout},
+  appNotFoundModule: ${appNotFoundVar ?? "null"},
   metadataRoutes,
   ssrLoader() {
     return import.meta.viteRsc.loadModule("ssr", "index");

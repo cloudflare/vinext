@@ -23,6 +23,8 @@ type AppRscManifestCode = {
   rootLayoutVars: string[];
   /** Whether `app/layout` exists, rather than only route-group root layouts. */
   hasAppRootLayout: boolean;
+  /** `app/not-found` when the app has no `app/layout`. */
+  appNotFoundVar: string | null;
   globalErrorVar: string | null;
   /**
    * Path expression for the `app/global-not-found.{tsx,ts,js,jsx}` module
@@ -77,6 +79,21 @@ function hasAppDirectoryLayout(route: AppRoute): boolean {
 // With app/layout, Next.js' /_not-found page holds only the app directory's
 // own layout and boundaries, even when / sits in a route group with its own.
 // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+/**
+ * `app/not-found` in an app without `app/layout`. Next.js' /_not-found page
+ * renders it with no layout there, rather than any route group's root layout.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+ */
+function appDirectoryNotFoundPath(routes: readonly AppRoute[]): string | null {
+  if (routes.some(hasAppDirectoryLayout)) return null;
+  // Page routes list every segment's not-found, from the app directory down.
+  for (const route of routes) {
+    if (route.segmentNotFoundTreePositions?.[0] === 0)
+      return route.segmentNotFoundPaths?.[0] ?? null;
+  }
+  return null;
+}
+
 function rootRouteLayoutPaths(route: AppRoute | undefined): readonly string[] {
   if (!route) return [];
   if (route.pattern === "/" && !hasAppDirectoryLayout(route)) return route.layouts;
@@ -117,7 +134,12 @@ export function rootBoundaryFiles(routes: readonly AppRoute[]): string[] {
  * forbidden or unauthorized boundary): the root layouts and root boundaries.
  */
 export function rootBoundaryRouteFiles(routes: readonly AppRoute[]): string[] {
-  return [...rootRouteLayoutPaths(findRootBoundaryRoute(routes)), ...rootBoundaryFiles(routes)];
+  const appNotFoundPath = appDirectoryNotFoundPath(routes);
+  return [
+    ...rootRouteLayoutPaths(findRootBoundaryRoute(routes)),
+    ...rootBoundaryFiles(routes),
+    ...(appNotFoundPath ? [appNotFoundPath] : []),
+  ];
 }
 
 type ImportAllocator = {
@@ -693,6 +715,8 @@ export function buildAppRscManifestCode(
     imports.getImportVar(layoutPath),
   );
   const hasAppRootLayout = options.routes.some(hasAppDirectoryLayout);
+  const appNotFoundPath = appDirectoryNotFoundPath(options.routes);
+  const appNotFoundVar = appNotFoundPath ? imports.getImportVar(appNotFoundPath) : null;
   const globalErrorVar = options.globalErrorPath
     ? imports.getImportVar(options.globalErrorPath)
     : null;
@@ -726,6 +750,7 @@ export function buildAppRscManifestCode(
     rootUnauthorizedVar,
     rootLayoutVars,
     hasAppRootLayout,
+    appNotFoundVar,
     globalErrorVar,
     globalNotFoundImportSpecifier,
   };

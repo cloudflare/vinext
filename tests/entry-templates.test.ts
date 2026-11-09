@@ -1539,6 +1539,49 @@ describe("App Router generated manifest construction", () => {
     );
   });
 
+  it("renders app/not-found with no layout in an app without app/layout", () => {
+    const routes = [
+      {
+        pattern: "/:locale",
+        patternParts: [":locale"],
+        pagePath: "/tmp/test/app/[locale]/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/[locale]/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null],
+        notFoundPath: "/tmp/test/app/[locale]/not-found.tsx",
+        notFoundPaths: ["/tmp/test/app/[locale]/not-found.tsx"],
+        segmentNotFoundPaths: [
+          "/tmp/test/app/not-found.tsx",
+          "/tmp/test/app/[locale]/not-found.tsx",
+        ],
+        segmentNotFoundTreePositions: [0, 1],
+        forbiddenPath: null,
+        forbiddenPaths: [null],
+        unauthorizedPath: null,
+        unauthorizedPaths: [null],
+        routeSegments: ["[locale]"],
+        templateTreePositions: [],
+        layoutTreePositions: [1],
+        isDynamic: true,
+        params: ["locale"],
+        siblingIntercepts: [],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({ routes, metadataRoutes: [], globalErrorPath: null });
+
+    expect(manifest.hasAppRootLayout).toBe(false);
+    expect(manifest.imports.join("\n")).toContain(
+      `import * as ${manifest.appNotFoundVar} from "/tmp/test/app/not-found.tsx";`,
+    );
+    // A render without a matched route ships the not-found's client references.
+    expect(rootBoundaryRouteFiles(routes)).toContain("/tmp/test/app/not-found.tsx");
+  });
+
   it("derives route-miss root boundaries when the app has no root page", () => {
     const routes = [
       {

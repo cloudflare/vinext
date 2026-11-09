@@ -63,6 +63,8 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
   globalNotFoundEnabled?: boolean;
   /** Whether the app has a root `app/layout`, rather than only route-group root layouts. */
   hasAppRootLayout?: boolean;
+  /** `app/not-found` in an app without `app/layout`, which renders without a layout. */
+  appNotFoundModule?: TModule | null;
   /**
    * Loader for the user's `app/global-not-found.tsx` module. When provided,
    * route-miss 404s render this module as a standalone document (skipping the
@@ -183,6 +185,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
     getNavigationContext,
     globalErrorModule,
     globalNotFoundEnabled = false,
+    appNotFoundModule = null,
     hasAppRootLayout = true,
     loadGlobalNotFoundModule,
     makeThenableParams,
@@ -268,10 +271,11 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
       const useGlobalNotFound =
         statusCode === 404 && globalNotFoundEnabled && !route && !opts?.boundaryComponent;
-      // Without app/layout, Next.js' /_not-found page wraps the built-in
-      // not-found in a default document rather than a route group's root
-      // layout. Every 404 without a matched route renders that page, so a
-      // route-group root layout and its not-found never wrap it.
+      // Without app/layout, Next.js' /_not-found page renders app/not-found
+      // with no layout, or the built-in not-found in a default document,
+      // rather than a route group's root layout. Every 404 without a matched
+      // route renders that page, so a route-group root layout and its
+      // not-found never wrap it.
       // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
       const useStandaloneNotFound =
         useGlobalNotFound ||
@@ -324,7 +328,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       }
 
       const routeMissRootNotFoundModule = useStandaloneNotFound
-        ? (DEFAULT_GLOBAL_NOT_FOUND_MODULE as unknown as TModule)
+        ? ((useGlobalNotFound ? null : appNotFoundModule) ??
+          (DEFAULT_GLOBAL_NOT_FOUND_MODULE as unknown as TModule))
         : effectiveRootNotFoundModule;
 
       return renderAppPageHttpAccessFallback({

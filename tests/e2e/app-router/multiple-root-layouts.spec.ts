@@ -61,3 +61,28 @@ for (const entry of ["/pin", "/"] as const) {
     ).toEqual(["header", "main", "footer"]);
   });
 }
+
+// Without app/layout, Next.js' /_not-found page renders app/not-found with no
+// layout, for an unmatched URL and for a dynamicParams = false miss alike.
+for (const pathname of ["/no/such/route", "/closed/unlisted"] as const) {
+  test(`${pathname} renders app/not-found without a route group's root layout`, async ({
+    request,
+  }) => {
+    const response = await request.get(`${baseUrl}${pathname}`);
+    expect(response.status()).toBe(404);
+    const html = await response.text();
+    expect(html).toContain('id="app-not-found"');
+    // app/not-found owns the document.
+    expect(html.match(/<html/g)).toHaveLength(1);
+    expect(html).not.toContain('id="site-root"');
+    expect(html).not.toContain('id="pin-root"');
+  });
+}
+
+test("a listed param renders inside its root layout", async ({ request }) => {
+  const response = await request.get(`${baseUrl}/closed/listed`);
+  expect(response.status()).toBe(200);
+  const html = await response.text();
+  expect(html).toContain("closed page listed");
+  expect(html).toContain('id="site-root"');
+});
