@@ -879,31 +879,19 @@ import __cacheabilityManifest from "virtual:vinext-cacheability-manifest";
 export { __cacheabilityManifest };
 ${
   hasServerActions
-    ? `import { loadServerAction, createTemporaryReferenceSet } from "@vitejs/plugin-rsc/rsc";\n`
+    ? `import {
+  createTemporaryReferenceSet,
+  decodeAction,
+  decodeFormState,
+  decodeReply,
+  loadServerAction,
+} from "@vitejs/plugin-rsc/rsc";\n`
     : ""
-}import {
-  createClientManifest as _createClientManifest,${
-    hasServerActions
-      ? `
-  createServerManifest as _createServerManifest,`
-      : ""
-  }
-} from "@vitejs/plugin-rsc/core/rsc";
+}import { createClientManifest as _createClientManifest } from "@vitejs/plugin-rsc/core/rsc";
 import { renderToReadableStream as _renderToReadableStream } from "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge";
 import { prerender as _prerender } from "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge";
 import { createClientReferenceChunksManifest } from ${JSON.stringify(appClientReferenceManifestPath)};
-${
-  hasServerActions
-    ? `// plugin-rsc's decoders fix an unscoped server manifest; React's own take the
-// manifest, so actions can scope the server references they decode per route.
-import {
-  decodeAction as _decodeAction,
-  decodeFormState as _decodeFormState,
-  decodeReply as _decodeReply,
-} from "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge";
-`
-    : ""
-}import { createRscRenderer } from ${JSON.stringify(rscRenderStreamPath)};
+import { createRscRenderer } from ${JSON.stringify(rscRenderStreamPath)};
 
 // Each render takes a fresh client manifest: in development, its references
 // carry a new cache tag.
@@ -1794,9 +1782,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         __clearRequestContext();
       },
       contentType,
-      createServerManifest: _createServerManifest,
-      decodeAction: _decodeAction,
-      decodeFormState: _decodeFormState,
+      decodeAction,
+      decodeFormState,
       getAndClearPendingCookies,
       getDraftModeCookieHeader,
       forwardAction(__progressiveActionId) {
@@ -1940,9 +1927,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       createRscOnErrorHandler(actionRequest, actionPathname, routePattern, overrides) {
         return createRscOnErrorHandler(actionRequest, actionPathname, routePattern, overrides);
       },
-      createServerManifest: _createServerManifest,
       createTemporaryReferenceSet,
-      decodeReply: _decodeReply,
+      decodeReply,
       dispatchRedirectRequest(redirectRequest) {
         return __appRscHandler(redirectRequest, undefined);
       },
