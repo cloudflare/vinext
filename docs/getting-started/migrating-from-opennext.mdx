@@ -18,7 +18,7 @@ export const metadata = {
 
 import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager";
 
-> This guide is for apps deployed to Cloudflare Workers with [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare). It replaces the check and init steps of the [general migration guide](/docs/getting-started/migrating) and covers what replaces each part of the OpenNext setup. The general guide's [Run both toolchains](/docs/getting-started/migrating#3-run-both-toolchains) and [Styling](/docs/getting-started/migrating#styling) sections still apply.
+> This guide is for apps deployed to Cloudflare Workers with [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare). It replaces the check and init steps of the [general migration guide](/docs/getting-started/migrating) and covers what replaces each part of the OpenNext setup. The general guide's [Styling](/docs/getting-started/migrating#styling) section still applies, and so does [Run both toolchains](/docs/getting-started/migrating#3-run-both-toolchains) until [step 4](#4-replace-getcloudflarecontext).
 
 ## Before you migrate
 
@@ -162,7 +162,9 @@ For TypeScript, add `.cloudflare/types` to `include` in `tsconfig.json`. Binding
 
 ## 4. Replace `getCloudflareContext()`
 
-vinext doesn't implement `getCloudflareContext()`, and under vinext it doesn't return your bindings. Replace each part of the context it returns:
+vinext doesn't implement `getCloudflareContext()`, and under vinext it doesn't return your bindings. Replace each part of the context it returns.
+
+This step ends side-by-side use: Next.js can't resolve `cloudflare:workers`, so after it, `next dev` fails to load the page and `next build`, which OpenNext's build runs, fails with both webpack and Turbopack. Test with both toolchains before this step, and keep a branch of the OpenNext version if you need to deploy it while you finish the migration.
 
 - **`env`:** import `env` from `cloudflare:workers` in Server Components, Route Handlers, Server Actions, middleware, `getServerSideProps`, and API routes. OpenNext's `{ async: true }` mode gives statically generated pages bindings at build time. vinext renders those pages on the Worker instead, on their first request or during cache warming, where `env` works. Bindings aren't available when vinext prerenders at build time, with the `prerender` option, the Static Assets cache, or a static export; reading `env` there throws.
 - **`cf`:** read `request.cf` from the request that middleware and Route Handlers receive. Server Components and Server Actions have no request object, and `getServerSideProps` and Pages Router API routes get a Node.js-style request without `cf`. Read the values in middleware and pass them on as request headers, which Server Components and Server Actions read with `headers()`, and the Pages Router reads from `req.headers`.
@@ -243,7 +245,8 @@ Choose a vinext cache that matches your OpenNext setup:
         <a href="/docs/guides/caching#static-assets-response-cache">Static Assets response cache</a>
       </td>
       <td>
-        <code>--cdn-cache=static-assets --data-cache=none</code>
+        <code>--cdn-cache=static-assets --data-cache=kv</code>, or <code>--data-cache=none</code> if
+        the app doesn't use cached data
       </td>
     </tr>
     <tr>
@@ -265,7 +268,8 @@ Differences to plan for:
 
 - **The cache starts empty.** vinext doesn't read the entries OpenNext stored in R2, KV, or D1.
 - **There is no cache population step.** OpenNext's `deploy` uploads the pages prerendered by `next build`. Except for the Static Assets cache, which prerenders pages during the build, vinext renders and stores each page on its first request. To fill the cache before traffic reaches a new version, deploy with [`--warm-cache`](/docs/guides/caching#cache-warming), which needs an earlier deployment of the Worker.
-- **ISR needs a cache adapter.** `vinext-cloudflare deploy` refuses to deploy an app that exports `revalidate` or `getStaticProps`, or uses Cache Components, until `vinext({ cache })` configures one.
+- **ISR needs a cache adapter.** `vinext-cloudflare deploy` refuses to deploy an app it detects using ISR, through a `revalidate` or `getStaticProps` export or Cache Components, until `vinext({ cache })` configures one. The check doesn't recognize every form, such as a typed `export const revalidate: number = 60`, so configure an adapter whenever the app uses ISR.
+- **The Static Assets cache doesn't store cached data.** OpenNext's Static Assets cache also stores `fetch` cache entries. vinext's Static Assets cache packages only rendered responses at build time, so if the app uses `fetch` with `next.revalidate` or `unstable_cache`, add the KV data cache (`--data-cache=kv`).
 - **`cacheHandler` and `cacheHandlers` in `next.config` are ignored.** Configure caching with `vinext({ cache })` instead.
 - **Pages Router `res.revalidate()`** does not yet refresh pages stored in Workers Response Store. See the [current limitation](/docs/guides/caching#which-pages-router-pages-are-cached).
 
@@ -273,7 +277,7 @@ Differences to plan for:
 
 To keep optimizing `next/image` with Cloudflare Images, choose `--image-optimization=cloudflare-images` at init. It adds `imagesOptimizer()` from `@vinext/cloudflare/images/images-optimizer` to `vite.config.ts` and an `IMAGES: bindings.images()` binding to `cloudflare.config.ts`, replacing the `images` binding in `wrangler.jsonc`. Without an optimizer, `/_next/image` serves the original file, and the deploy command prints a reminder.
 
-- **Remote images:** Next.js, and OpenNext with an `IMAGES` binding, optimize remote images through `/_next/image`. vinext's `/_next/image` serves only local images. A remote `src` allowed by `remotePatterns` loads from its own URL; for an image with `width` and `height`, [unpic](https://unpic.pics) adds resizing parameters when it recognizes the image CDN. In production, a remote `src` that `remotePatterns` doesn't allow renders nothing.
+- **Remote images:** Next.js, and OpenNext with an `IMAGES` binding, optimize remote images through `/_next/image`. vinext's `/_next/image` serves only local images. A remote `src` allowed by `images.remotePatterns` or `images.domains` loads from its own URL; for an image with `width` and `height`, [unpic](https://unpic.pics) adds resizing parameters when it recognizes the image CDN. In production, when either is configured, a remote `src` that neither allows renders nothing.
 - **Custom loaders:** `images.loader` and `images.loaderFile` in `next.config` are ignored, so a `/cdn-cgi/image` loader file like the one in the OpenNext docs has no effect. Pass the loader to each image with the `loader` prop instead. A loader is a function, so in the App Router put `next/image` and its `loader` in a `"use client"` wrapper component and use that in place of `Image`, as Next.js requires.
 - **`images.unoptimized: true`** renders a plain `<img>` with the original URL, as in Next.js.
 
