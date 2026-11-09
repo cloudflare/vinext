@@ -1222,6 +1222,13 @@ export async function prerenderPages({
           const notFound = isStaticPropsResponse && response.status === 404;
           const redirect =
             isStaticPropsResponse && [301, 302, 303, 307, 308].includes(response.status);
+          // A custom `/500` answers with status 500, like Next.js, but is still
+          // a rendered page. A plain-text 500 means `/500` itself failed.
+          const renderedOk =
+            response.ok ||
+            (route.pattern === "/500" &&
+              response.status === 500 &&
+              contentType?.includes("text/html") === true);
           let redirectProps: object | undefined;
           if (redirect) {
             const props: unknown = await response.json();
@@ -1259,7 +1266,7 @@ export async function prerenderPages({
             fs.writeFileSync(htmlFullPath, html, "utf-8");
             outputFiles.push(htmlOutputPath);
           } else {
-            if (!response.ok && !notFound) {
+            if (!renderedOk && !notFound) {
               throw new Error(`renderPage returned ${response.status} for ${urlPath}`);
             }
             const html = await response.text();
@@ -1285,8 +1292,8 @@ export async function prerenderPages({
             router: "pages",
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
             ...(locale ? { locale } : {}),
-            ...(response.ok ? { responseStatus: response.status } : {}),
-            ...(response.ok && contentType ? { headers: { "content-type": contentType } } : {}),
+            ...(renderedOk ? { responseStatus: response.status } : {}),
+            ...(renderedOk && contentType ? { headers: { "content-type": contentType } } : {}),
             ...(notFound ? { notFound: true, responseStatus: 404 } : {}),
             ...(redirect
               ? {

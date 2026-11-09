@@ -739,8 +739,11 @@ export function createPagesPageHandler(
       );
     }
     const routePattern = patternToNextFormat(route.pattern);
+    // A direct request for a status page answers with that status, as in
+    // Next.js base-server.ts.
     const renderStatusCode =
-      renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
+      renderStatusCodeOverride ??
+      (routePattern === "/404" ? 404 : routePattern === "/500" ? 500 : undefined);
     // Error pages have their own ISR identity rather than the request URL's.
     // Otherwise a cached notFound marker for the source page can short-circuit
     // the recursive /404 render before the custom 404 module (and its

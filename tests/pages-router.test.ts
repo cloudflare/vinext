@@ -1481,6 +1481,14 @@ describe("Pages Router integration", () => {
     expect(await res.text()).toContain("404 - Page Not Found");
   });
 
+  // Ported from Next.js: test/integration/500-page/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/500-page/test/index.test.ts
+  it("answers a direct /500 request with 500 in dev", async () => {
+    const res = await fetch(`${baseUrl}/500`);
+    expect(res.status).toBe(500);
+    expect(await res.text()).toContain("custom pages/500");
+  });
+
   // Ported from Next.js: test/e2e/not-found-revalidate/not-found-revalidate.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/not-found-revalidate/not-found-revalidate.test.ts
   it("runs custom 404 getStaticProps for getStaticProps notFound in dev", async () => {
@@ -8246,6 +8254,14 @@ describe("Production server middleware (Pages Router)", () => {
   // the collapsed path (base-server.ts / resolve-routes.ts).
   it("redirects repeated slashes and backslashes like Next.js", async () => {
     await expectRepeatedSlashRedirects(prodUrl);
+  });
+
+  // Ported from Next.js: test/integration/500-page/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/500-page/test/index.test.ts
+  it("answers a direct /500 request with 500", async () => {
+    const res = await fetch(`${prodUrl}/500`);
+    expect(res.status).toBe(500);
+    expect(await res.text()).toContain("custom pages/500");
   });
 
   it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
