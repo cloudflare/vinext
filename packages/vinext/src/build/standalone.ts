@@ -145,9 +145,22 @@ function resolvePackageJsonPath(packageName: string, resolver: NodeRequire): str
 
 type ImportKind = "import" | "require";
 
-// Node's default conditions (module-sync is on by default from Node 22.12).
-const IMPORT_CONDITIONS = ["node", "import", "module-sync", "node-addons", "default"];
-const REQUIRE_CONDITIONS = ["node", "require", "module-sync", "node-addons", "default"];
+// Node's default conditions vary by runtime: `module-sync` is on by default
+// only from Node 22.12 (vinext supports >= 22), and `--no-addons` turns off
+// `node-addons`. Trace every branch a supported runtime can select.
+function runtimeConditionSets(kind: ImportKind): string[][] {
+  const sets: string[][] = [];
+  for (const moduleSync of [["module-sync"], []]) {
+    for (const addons of [["node-addons"], []]) {
+      sets.push(["node", kind, ...moduleSync, ...addons, "default"]);
+    }
+  }
+  return sets;
+}
+const CONDITION_SETS: Record<ImportKind, string[][]> = {
+  import: runtimeConditionSets("import"),
+  require: runtimeConditionSets("require"),
+};
 const FILE_EXTENSIONS = [".js", ".cjs", ".mjs", ".json", ".node"];
 const TRACEABLE_FILE_RE = /\.[cm]?js$/;
 // Gates the AST walk for require calls. Deserializing the AST costs far more
@@ -281,6 +294,21 @@ function resolvePackageFile(
   return resolveFileCandidate(path.join(packageRoot, subpath));
 }
 
+/** Every distinct file `subpath` resolves to under any of `conditionSets`. */
+function resolvePackageFiles(
+  packageRoot: string,
+  pkg: PackageJson,
+  subpath: string,
+  conditionSets: readonly (readonly string[])[],
+): string[] {
+  const files = new Set<string>();
+  for (const conditions of conditionSets) {
+    const file = resolvePackageFile(packageRoot, pkg, subpath, conditions);
+    if (file) files.add(file);
+  }
+  return [...files];
+}
+
 function findPackageScope(filePath: string): string | null {
   let dir = path.dirname(filePath);
   while (dir !== path.dirname(dir)) {
@@ -392,7 +420,7 @@ function traceRuntimePackages(
 
   const traceSpecifier = (specifier: string, importer: string, kind: ImportKind) => {
     if (specifier.startsWith("node:") || isBuiltin(specifier)) return;
-    const conditions = kind === "require" ? REQUIRE_CONDITIONS : IMPORT_CONDITIONS;
+    const conditionSets = CONDITION_SETS[kind];
 
     if (specifier.startsWith("file:")) {
       enqueueFile(resolveFileCandidate(fileURLToPath(specifier)));
@@ -408,13 +436,19 @@ function traceRuntimePackages(
         ? readCachedPackageJson(scopePackageJson).imports
         : undefined;
       if (!scopePackageJson || imports === null || typeof imports !== "object") return;
-      const target = resolveSubpathMap(imports as Record<string, unknown>, specifier, conditions);
-      // A target naming another `#` entry is invalid in Node.
-      if (target === null || target.startsWith("#")) return;
-      if (target.startsWith("./")) {
-        enqueueFile(resolveFileCandidate(path.join(path.dirname(scopePackageJson), target)));
-      } else {
-        traceSpecifier(target, importer, kind);
+      const targets = new Set(
+        conditionSets.map((conditions) =>
+          resolveSubpathMap(imports as Record<string, unknown>, specifier, conditions),
+        ),
+      );
+      for (const target of targets) {
+        // A target naming another `#` entry is invalid in Node.
+        if (target === null || target.startsWith("#")) continue;
+        if (target.startsWith("./")) {
+          enqueueFile(resolveFileCandidate(path.join(path.dirname(scopePackageJson), target)));
+        } else {
+          traceSpecifier(target, importer, kind);
+        }
       }
       return;
     }
@@ -444,20 +478,20 @@ function traceRuntimePackages(
     const entryKey = `${packageRoot}\0${subpath}\0${kind}`;
     if (tracedPackageEntries.has(entryKey)) return;
     tracedPackageEntries.add(entryKey);
-    let entryFile = resolvePackageFile(
+    const entryFiles = resolvePackageFiles(
       packageRoot,
       readCachedPackageJson(realPackageJsonPath),
       subpath,
-      conditions,
+      conditionSets,
     );
-    if (!entryFile) {
+    if (entryFiles.length === 0) {
       try {
-        entryFile = createRequire(importer).resolve(specifier);
+        entryFiles.push(createRequire(importer).resolve(specifier));
       } catch {
         // Not resolvable as a file; the package itself is still copied.
       }
     }
-    enqueueFile(entryFile);
+    for (const entryFile of entryFiles) enqueueFile(entryFile);
   };
 
   // Tracing only adds packages on top of the dependency walk, so a file or
@@ -473,25 +507,32 @@ function traceRuntimePackages(
     }
   };
 
+  // Breadth-first, so a package name is first reached through its nearest importer.
+  let index = 0;
+  const tracePendingFiles = () => {
+    for (; index < pendingFiles.length; index++) {
+      const filePath = pendingFiles[index];
+      let imports: TracedImport[];
+      try {
+        imports = collectFileImports(filePath);
+      } catch (error) {
+        console.warn(
+          `[vinext] Warning: could not trace imports of ${filePath} for standalone output: ${String(error)}`,
+        );
+        continue;
+      }
+      for (const { specifier, kind } of imports) traceSafely(specifier, filePath, kind);
+    }
+  };
+
+  // Entry files first: where they and an entry specifier reach different
+  // copies of one package name, the flat output keeps the entry files' copy.
+  for (const entryFile of entryFiles) enqueueFile(entryFile);
+  tracePendingFiles();
   for (const entry of entries) {
     for (const kind of entry.kinds) traceSafely(entry.specifier, entry.importer, kind);
   }
-  for (const entryFile of entryFiles) enqueueFile(entryFile);
-
-  // Breadth-first, so a package name is first reached through its nearest importer.
-  for (let index = 0; index < pendingFiles.length; index++) {
-    const filePath = pendingFiles[index];
-    let imports: TracedImport[];
-    try {
-      imports = collectFileImports(filePath);
-    } catch (error) {
-      console.warn(
-        `[vinext] Warning: could not trace imports of ${filePath} for standalone output: ${String(error)}`,
-      );
-      continue;
-    }
-    for (const { specifier, kind } of imports) traceSafely(specifier, filePath, kind);
-  }
+  tracePendingFiles();
 
   return packages;
 }
@@ -687,29 +728,32 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
 
   const vinextPackageRoot = resolveVinextPackageRoot(options.vinextPackageRoot);
   const vinextPkg = readPackageJson(path.join(vinextPackageRoot, "package.json"));
-  const prodServerFile = resolvePackageFile(
+  const prodServerFiles = resolvePackageFiles(
     vinextPackageRoot,
     vinextPkg,
     "./server/prod-server",
-    IMPORT_CONDITIONS,
+    CONDITION_SETS.import,
   );
 
   // Trace what the bundle's externals and vinext's prod server (the entry
   // server.js imports) load at runtime, so packages they import without
   // declaring them as dependencies, such as peer dependencies, are shipped.
-  // The server bundle may reach an external through either an import or a
-  // bundler-emitted require, so trace both conditions.
+  // The prod server is traced first, so the packages it loads take priority
+  // over other copies an external reaches. The server bundle may reach an
+  // external through either an import or a bundler-emitted require, so trace
+  // both conditions.
   const tracedPackages = traceRuntimePackages(
     externalSpecifiers.map((specifier) => ({
       specifier,
       importer: rootPackageJsonPath,
       kinds: ["import", "require"],
     })),
-    prodServerFile ? [prodServerFile] : [],
+    prodServerFiles,
   ).filter((entry) => entry.packageName !== "vinext");
 
   // The flat node_modules/ keeps the first copy of each name, so order is the
-  // version priority: the manifest's packages, then traced packages, then the
+  // version priority: the manifest's packages, then traced packages (the prod
+  // server's before the externals'), then the
   // declared dependencies of both, and vinext's own dependencies last.
   const copiedSet = new Set<string>();
   copyPackageAndRuntimeDeps(
