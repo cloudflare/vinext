@@ -9,6 +9,7 @@ import {
   type FetchCacheMode,
 } from "vinext/shims/fetch-cache";
 import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
+import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-storage";
 import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import {
   consumeDynamicUsage,
@@ -139,6 +140,18 @@ function encodeAppRouteParams(params: AppRouteParams): AppRouteParams {
   return encoded;
 }
 
+// The rendered 404 carries the draft-mode transition that dispatch consumed.
+function appendDraftModeCookie(response: Response, draftCookie: string | null): Response {
+  if (!draftCookie) return response;
+  const headers = new Headers(response.headers);
+  headers.append("Set-Cookie", draftCookie);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 /**
  * Runs a route's generateStaticParams as Next.js does, in a work store of its
  * own: root params come only from parent params, which a route handler's
@@ -152,6 +165,10 @@ function runStaticParamsGeneration<T>(
   pattern: string,
   fn: () => Promise<T>,
 ): Promise<T> {
+  // Next.js' generate-static-params work unit: io() resolves, and revalidation
+  // throws.
+  const generate = () =>
+    workUnitAsyncStorage.run({ type: "generate-static-params", route: pattern }, fn);
   return runWithUnifiedStateMutation((ctx) => {
     ctx.rootParams = {};
     ctx.currentRequestTags = [];
@@ -173,7 +190,7 @@ function runStaticParamsGeneration<T>(
     ctx.currentFetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
     ctx.currentFetchRevalidate = null;
     ctx.currentForceDynamicFetchDefault = false;
-  }, fn);
+  }, generate);
 }
 
 /**
@@ -380,7 +397,7 @@ async function dispatchAppRouteHandlerImpl(
     setCurrentForceDynamicFetchDefault(false);
     return markRouteMissResponse(
       options.renderNotFound
-        ? await options.renderNotFound()
+        ? appendDraftModeCookie(await options.renderNotFound(), initialDraftModeCookie)
         : finalizeFrameworkResponse(notFoundResponse()),
     );
   };

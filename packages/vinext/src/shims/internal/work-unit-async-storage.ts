@@ -34,6 +34,8 @@ export type CacheStore = {
 
 export type GenerateStaticParamsStore = {
   readonly type: "generate-static-params";
+  /** Optional route identifier for error messages. */
+  readonly route?: string;
 };
 
 export type PrerenderLegacyStore = {

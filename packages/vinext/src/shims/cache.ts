@@ -107,7 +107,19 @@ function scheduleRevalidation(promise: Promise<void>): undefined {
  * @param tag - Cache tag to revalidate
  * @param profile - cacheLife profile name (e.g. 'max', 'hours') or inline { expire: number }
  */
+// Next.js rejects revalidation inside `generateStaticParams`.
+function throwIfGeneratingStaticParams(expression: string): void {
+  const store = workUnitAsyncStorage.getStore();
+  if (store?.type !== "generate-static-params") return;
+  throw new Error(
+    `Route ${store.route} used "${expression}" inside \`generateStaticParams\` which is unsupported. ` +
+      "To ensure revalidation is performed consistently it must always happen outside of renders and cached functions. " +
+      "See more info here: https://nextjs.org/docs/app/building-your-application/rendering/static-and-dynamic#dynamic-rendering",
+  );
+}
+
 export function revalidateTag(tag: string, profile?: string | { expire?: number }): undefined {
+  throwIfGeneratingStaticParams(`revalidateTag ${tag}`);
   if (isStagedCacheabilityProbeActive()) {
     _markDynamic();
     return undefined;
@@ -178,6 +190,7 @@ async function invalidateDataCacheTag(
  * layout/page hierarchy tags, so only no-type invalidation applies there.
  */
 export function revalidatePath(path: string, type?: "page" | "layout"): undefined {
+  throwIfGeneratingStaticParams(`revalidatePath ${path}`);
   if (isStagedCacheabilityProbeActive()) {
     _markDynamic();
     return undefined;

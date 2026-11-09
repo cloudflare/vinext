@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { dispatchAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-dispatch.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
-import { revalidateTag } from "../packages/vinext/src/shims/cache.js";
+import { io, revalidatePath, revalidateTag } from "../packages/vinext/src/shims/cache.js";
+import { workUnitAsyncStorage } from "../packages/vinext/src/shims/internal/work-unit-async-storage.js";
 import {
   getDataCacheHandler,
   setDataCacheHandler,
@@ -855,6 +856,64 @@ describe("app route handler dispatch", () => {
       for (const message of errors) {
         expect(message).toContain("inside `generateStaticParams`");
       }
+    });
+
+    it("resolves io() and rejects revalidation in generateStaticParams, as Next.js does", async () => {
+      const errors: string[] = [];
+      const renderSignal = new AbortController().signal;
+      // A Cache Components prerender would otherwise hang the generator's io().
+      const result = await workUnitAsyncStorage.run(
+        { type: "prerender", renderSignal },
+        async () => {
+          const closed = dispatchClosedRoute({
+            async generateStaticParams() {
+              await io();
+              for (const revalidate of [
+                () => revalidateTag("posts"),
+                () => revalidatePath("/posts"),
+              ]) {
+                try {
+                  revalidate();
+                } catch (error) {
+                  errors.push((error as Error).message);
+                }
+              }
+              return [{ slug: "listed" }];
+            },
+            params: { slug: "unlisted" },
+            pathname: "/posts/unlisted",
+            pattern: "/posts/:slug",
+          });
+          return (await closed.response).status;
+        },
+      );
+      expect(result).toBe(404);
+      expect(errors).toEqual([
+        expect.stringContaining('used "revalidateTag posts" inside `generateStaticParams`'),
+        expect.stringContaining('used "revalidatePath /posts" inside `generateStaticParams`'),
+      ]);
+    });
+
+    it("keeps middleware's draft-mode disable on a rejected param's rendered 404", async () => {
+      const ctx = createRequestContext({
+        headersContext: {
+          headers: new Headers(),
+          cookies: new Map([["__prerender_bypass", "test-draft-secret"]]),
+          draftModeSecret: "test-draft-secret",
+        },
+      });
+      const response = await runWithRequestContext(ctx, async () => {
+        (await draftMode()).disable();
+        return dispatchClosedRoute({
+          generateStaticParams: () => [{ slug: "listed" }],
+          params: { slug: "unlisted" },
+          pathname: "/posts/unlisted",
+          pattern: "/posts/:slug",
+        }).response;
+      });
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe("not found page");
+      expect(response.headers.get("set-cookie")).toContain("__prerender_bypass=;");
     });
 
     it("compares decoded params as Next.js does", async () => {
