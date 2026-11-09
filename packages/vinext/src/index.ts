@@ -1665,11 +1665,15 @@ const clientManualChunks = createClientManualChunks(_shimsDir);
 const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualChunks);
 const appClientManualChunks = createClientManualChunks(_shimsDir, true);
 const appClientCodeSplittingConfig = createClientCodeSplittingConfig(appClientManualChunks);
+const appOnlyClientManualChunks = createClientManualChunks(_shimsDir, true, false);
+const appOnlyClientCodeSplittingConfig = createClientCodeSplittingConfig(appOnlyClientManualChunks);
 
-function getClientOutputConfig(preserveAppRouteBoundaries = false) {
-  const codeSplitting = preserveAppRouteBoundaries
-    ? appClientCodeSplittingConfig
-    : clientCodeSplittingConfig;
+function getClientOutputConfig(preserveAppRouteBoundaries = false, hasPagesRouter = true) {
+  const codeSplitting = !preserveAppRouteBoundaries
+    ? clientCodeSplittingConfig
+    : hasPagesRouter
+      ? appClientCodeSplittingConfig
+      : appOnlyClientCodeSplittingConfig;
   // File names are defaults that yield to user config; see
   // createClientOutputFileNameDefaults and vinext:css-url-assets-defaults.
   return { codeSplitting };
@@ -4541,7 +4545,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: appClientInput,
-                  output: getClientOutputConfig(true),
+                  output: getClientOutputConfig(true, hasPagesDir),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -9248,6 +9252,7 @@ export const loadServerActionClient = ${
               },
               ownClientChunkGroups: new Set([
                 ...appClientCodeSplittingConfig.groups,
+                ...appOnlyClientCodeSplittingConfig.groups,
                 ...clientCodeSplittingConfig.groups,
               ]),
             },

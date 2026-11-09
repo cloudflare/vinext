@@ -56,10 +56,11 @@ const PAGE_OWNED_CLIENT_SHIMS = new Set([
 
 // The App Router navigation runtime: the prefetch cache, history writes and
 // navigation. Only the App Router browser entry imports it statically; next/link
-// loads it lazily and next/form imports it. Every build gives it a chunk of its
-// own. In "vinext" it, and its server/ dependencies, would load on every Pages
-// Router page; left to graph-based chunking, Link's lazy App Router imports
-// would split it into many small chunks.
+// loads it lazily and next/form imports it. Builds with Pages Router pages give
+// it a chunk of its own. In "vinext" it, and its server/ dependencies, would
+// load on every Pages Router page; left to graph-based chunking, Link's lazy App
+// Router imports would split it into many small chunks. App-only builds keep it
+// in "vinext": every page loads it, so its own chunk would be an extra request.
 const APP_ROUTER_RUNTIME_SHIMS = new Set([
   "app-router-navigation",
   "app-router-scroll-state",
@@ -169,7 +170,8 @@ export const RESOLVED_EAGER_CLIENT_REFERENCES_ID = "\0virtual:vinext-client-refe
  * - "framework" — React, ReactDOM, and scheduler (loaded on every page)
  * - "vinext"    — shared vinext runtime shims
  * - "vinext-navigation" — the next/navigation hooks, in Pages Router builds
- * - "vinext-app-router" — the App Router navigation runtime
+ * - "vinext-app-router" — the App Router navigation runtime, in builds with
+ *   Pages Router pages
  *
  * Route-owned (App Router) or page-owned (Pages Router) client shims and all
  * other vendor code are left to the bundler's graph-based chunking so they
@@ -190,7 +192,11 @@ export const RESOLVED_EAGER_CLIENT_REFERENCES_ID = "\0virtual:vinext-client-refe
  *   well: shared dependencies between routes get their own chunks,
  *   and route-specific code stays in route chunks.
  */
-export function createClientManualChunks(shimsDir: string, preserveRouteBoundaries = false) {
+export function createClientManualChunks(
+  shimsDir: string,
+  preserveRouteBoundaries = false,
+  splitAppRouterRuntime = true,
+) {
   // Both client entries import this hook state, and so does next/navigation.
   // Keep it in "vinext" so a navigation chunk never imports the entry chunk.
   const instrumentationStatePrefix = path.join(shimsDir, "../client/instrumentation-client-state.");
@@ -214,7 +220,9 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
         ? ROUTE_OWNED_CLIENT_SHIMS
         : PAGE_OWNED_CLIENT_SHIMS;
       if (ownedShims.has(shimName)) return undefined;
-      if (APP_ROUTER_RUNTIME_SHIMS.has(shimName)) return "vinext-app-router";
+      if (splitAppRouterRuntime && APP_ROUTER_RUNTIME_SHIMS.has(shimName)) {
+        return "vinext-app-router";
+      }
       if (!preserveRouteBoundaries && PAGES_NAVIGATION_SHIMS.has(shimName)) {
         return "vinext-navigation";
       }
