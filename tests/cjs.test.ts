@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
-import { createLogger, createServer, type ViteDevServer } from "vite-plus";
+import {
+  createBuilder,
+  createLogger,
+  createServer,
+  type Plugin,
+  type ViteDevServer,
+} from "vite-plus";
+import { spawn, type ChildProcess } from "node:child_process";
 import type { Server } from "node:http";
+import net from "node:net";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { toSlash } from "pathslash";
@@ -216,6 +224,67 @@ async function expectConditionalExport(
   expect(visibleTextByTestId(html, "conditional-result")).toBe(`${label}: ${expected}`);
 }
 
+async function writeConditionalExportFixture(root: string): Promise<void> {
+  await Promise.all([
+    writeFixtureFile(root, "package.json", JSON.stringify({ private: true, type: "module" })),
+    writeFixtureFile(
+      root,
+      "app/layout.tsx",
+      `export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    ),
+    writeFixtureFile(
+      root,
+      "node_modules/lib-cjs/package.json",
+      JSON.stringify({
+        name: "lib-cjs",
+        type: "commonjs",
+        exports: { ".": { import: "./index.mjs", default: "./index.js" } },
+      }),
+    ),
+    writeFixtureFile(
+      root,
+      "node_modules/lib-cjs/index.mjs",
+      `"use client"; export default () => "esm";`,
+    ),
+    writeFixtureFile(
+      root,
+      "node_modules/lib-cjs/index.js",
+      `"use client"; module.exports = () => "cjs";`,
+    ),
+    writeFixtureFile(
+      root,
+      "node_modules/lib-esm/package.json",
+      JSON.stringify({
+        name: "lib-esm",
+        type: "module",
+        exports: { ".": { require: "./index.cjs", default: "./index.js" } },
+      }),
+    ),
+    writeFixtureFile(
+      root,
+      "node_modules/lib-esm/index.js",
+      `"use client"; export default () => "esm";`,
+    ),
+    writeFixtureFile(
+      root,
+      "node_modules/lib-esm/index.cjs",
+      `"use client"; module.exports = () => "cjs";`,
+    ),
+    ...[
+      ["import-cjs", `import Library from "lib-cjs";`, "lib-cjs"],
+      ["require-cjs", `const Library = require("lib-cjs");`, "lib-cjs"],
+      ["import-esm", `import Library from "lib-esm";`, "lib-esm"],
+      ["require-esm", `const Library = require("lib-esm");`, "lib-esm"],
+    ].map(([route, declaration, label]) =>
+      writeFixtureFile(
+        root,
+        `app/${route}/page.tsx`,
+        `${declaration}\nexport default function Page() { return <p data-testid="conditional-result">${label}: <Library /></p>; }`,
+      ),
+    ),
+  ]);
+}
+
 describe("conditional package exports", () => {
   let root: string;
   let server: ViteDevServer;
@@ -226,64 +295,7 @@ describe("conditional package exports", () => {
 
   beforeAll(async () => {
     root = await mkdtemp(path.join(import.meta.dirname, ".require-condition-"));
-    await Promise.all([
-      writeFixtureFile(root, "package.json", JSON.stringify({ private: true, type: "module" })),
-      writeFixtureFile(
-        root,
-        "app/layout.tsx",
-        `export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
-      ),
-      writeFixtureFile(
-        root,
-        "node_modules/lib-cjs/package.json",
-        JSON.stringify({
-          name: "lib-cjs",
-          type: "commonjs",
-          exports: { ".": { import: "./index.mjs", default: "./index.js" } },
-        }),
-      ),
-      writeFixtureFile(
-        root,
-        "node_modules/lib-cjs/index.mjs",
-        `"use client"; export default () => "esm";`,
-      ),
-      writeFixtureFile(
-        root,
-        "node_modules/lib-cjs/index.js",
-        `"use client"; module.exports = () => "cjs";`,
-      ),
-      writeFixtureFile(
-        root,
-        "node_modules/lib-esm/package.json",
-        JSON.stringify({
-          name: "lib-esm",
-          type: "module",
-          exports: { ".": { require: "./index.cjs", default: "./index.js" } },
-        }),
-      ),
-      writeFixtureFile(
-        root,
-        "node_modules/lib-esm/index.js",
-        `"use client"; export default () => "esm";`,
-      ),
-      writeFixtureFile(
-        root,
-        "node_modules/lib-esm/index.cjs",
-        `"use client"; module.exports = () => "cjs";`,
-      ),
-      ...[
-        ["import-cjs", `import Library from "lib-cjs";`, "lib-cjs"],
-        ["require-cjs", `const Library = require("lib-cjs");`, "lib-cjs"],
-        ["import-esm", `import Library from "lib-esm";`, "lib-esm"],
-        ["require-esm", `const Library = require("lib-esm");`, "lib-esm"],
-      ].map(([route, declaration, label]) =>
-        writeFixtureFile(
-          root,
-          `app/${route}/page.tsx`,
-          `${declaration}\nexport default function Page() { return <p data-testid="conditional-result">${label}: <Library /></p>; }`,
-        ),
-      ),
-    ]);
+    await writeConditionalExportFixture(root);
     ({ server, baseUrl: devBaseUrl } = await startFixtureServer(root));
 
     const rscBundlePath = await buildAppFixture(root);
@@ -323,6 +335,78 @@ describe("conditional package exports", () => {
     "renders %s from the correct export condition in production",
     async (route, label, expected) => {
       await expectConditionalExport(prodBaseUrl, route, label, expected);
+    },
+  );
+});
+
+// Nitro services keep Vite's default server externalization, so the require
+// pre-resolution must still pick the `require` target of node_modules packages.
+describe("conditional package exports on Nitro", () => {
+  let root: string;
+  let server: ChildProcess | undefined;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    root = await mkdtemp(path.join(import.meta.dirname, ".require-condition-nitro-"));
+    await writeConditionalExportFixture(root);
+    const nitroModule = (await import(
+      pathToFileURL(
+        path.resolve(
+          import.meta.dirname,
+          "../examples/app-router-nitro/node_modules/nitro/dist/vite.mjs",
+        ),
+      ).href
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [
+        vinext({ appDir: root }),
+        nitroModule.nitro({ buildDir: path.join(root, ".nitro") }),
+      ],
+    });
+    await builder.buildApp();
+
+    const port = await new Promise<number>((resolve, reject) => {
+      const probe = net.createServer();
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", () => {
+        const address = probe.address();
+        probe.close(() => resolve(typeof address === "object" && address ? address.port : 0));
+      });
+    });
+    baseUrl = `http://127.0.0.1:${port}`;
+    server = spawn(process.execPath, [path.join(root, ".output/server/index.mjs")], {
+      cwd: root,
+      env: { ...process.env, HOST: "127.0.0.1", PORT: String(port) },
+      stdio: "ignore",
+    });
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      try {
+        await fetch(baseUrl);
+        break;
+      } catch (error) {
+        if (Date.now() > deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+  }, 180_000);
+
+  afterAll(async () => {
+    if (server && server.exitCode === null && server.signalCode === null) {
+      const exited = new Promise<void>((resolve) => server!.once("exit", () => resolve()));
+      server.kill("SIGTERM");
+      await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 3_000))]);
+    }
+    if (root) await rm(root, { recursive: true, force: true });
+  });
+
+  it.each(CONDITIONAL_EXPORT_CASES)(
+    "renders %s from the correct export condition",
+    async (route, label, expected) => {
+      await expectConditionalExport(baseUrl, route, label, expected);
     },
   );
 });
