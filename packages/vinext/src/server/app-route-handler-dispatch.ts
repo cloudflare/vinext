@@ -26,6 +26,7 @@ import {
   createRequestContext,
   getRequestContext,
   runWithRequestContext,
+  runWithUnifiedStateMutation,
 } from "vinext/shims/unified-request-context";
 import { coalesceOnDemandResponse, type ISRCacheEntry } from "./isr-cache.js";
 import { notFoundResponse } from "./http-error-responses.js";
@@ -134,6 +135,21 @@ function encodeAppRouteParams(params: AppRouteParams): AppRouteParams {
       : encodeURIComponent(value);
   }
   return encoded;
+}
+
+/**
+ * Runs a route's generateStaticParams as Next.js does, in a work store of its
+ * own: root params come only from parent params, which a route handler's
+ * generator has none of, and its fetches leave the request's tags, revalidate
+ * and dynamic-fetch observations alone.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+ */
+function runStaticParamsGeneration<T>(fn: () => Promise<T>): Promise<T> {
+  return runWithUnifiedStateMutation((ctx) => {
+    ctx.rootParams = {};
+    ctx.currentRequestTags = [];
+    ctx.dynamicFetchUrls = new Set<string>();
+  }, fn);
 }
 
 /**
@@ -278,15 +294,16 @@ async function dispatchAppRouteHandlerImpl(
   // previous deploy stored under a pinned build ID is served without the
   // check, as docs/reference/differences.mdx notes.
   const rejectUnlistedParams = async (): Promise<Response | null> => {
-    if (options.params === null || isDraftMode) return null;
+    const params = options.params;
+    if (params === null || isDraftMode) return null;
     const enforcement = resolveAppRouteHandlerStaticParamsEnforcement(handler, isProduction);
     if (enforcement === "skip") return null;
     const patternParts = route.pattern.split("/");
     let notFound: Response | null;
     if (enforcement === "enforce-when-none-generated") {
-      const generated = await (
-        handler.generateStaticParams as (context: { params: object }) => unknown
-      )({ params: {} });
+      const generated = await runStaticParamsGeneration(async () =>
+        (handler.generateStaticParams as (context: { params: object }) => unknown)({ params: {} }),
+      );
       if (hasPrerenderedStaticParams(patternParts, generated)) return null;
       // The route is listed without params, so every param misses.
       notFound = notFoundResponse();
@@ -296,17 +313,19 @@ async function dispatchAppRouteHandlerImpl(
         routePatternParamNames,
         validateAppPageDynamicParams,
       } = await import("./app-page-request.js");
-      notFound = await validateAppPageDynamicParams({
-        enforceStaticParamsOnly: true,
-        generateStaticParams:
-          handler.generateStaticParams as ValidateAppPageDynamicParamsOptions["generateStaticParams"],
-        isDynamicRoute: true,
-        optionalCatchAllParamNames: routePatternOptionalCatchAllParamNames(patternParts),
-        // Route handlers receive decoded params. Next.js admits the decoded
-        // value, which matches the encoded form pages compare.
-        params: encodeAppRouteParams(options.params),
-        requiredParamNames: routePatternParamNames(patternParts),
-      });
+      notFound = await runStaticParamsGeneration(() =>
+        validateAppPageDynamicParams({
+          enforceStaticParamsOnly: true,
+          generateStaticParams:
+            handler.generateStaticParams as ValidateAppPageDynamicParamsOptions["generateStaticParams"],
+          isDynamicRoute: true,
+          optionalCatchAllParamNames: routePatternOptionalCatchAllParamNames(patternParts),
+          // Route handlers receive decoded params. Next.js admits the decoded
+          // value, which matches the encoded form pages compare.
+          params: encodeAppRouteParams(params),
+          requiredParamNames: routePatternParamNames(patternParts),
+        }),
+      );
     }
     if (!notFound) return null;
     // Render the 404 as for an unmatched URL, without this route's fetch

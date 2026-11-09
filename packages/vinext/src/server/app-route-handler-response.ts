@@ -174,6 +174,8 @@ export function buildRouteHandlerCachedResponse(
   }
   headers.delete(NEXT_CACHE_TAGS_HEADER);
   headers.delete(VINEXT_METADATA_ROUTE_CACHE_HEADER);
+  // Only a framework 404 carries the route-miss marker, and none is stored.
+  headers.delete(VINEXT_ROUTE_MISS_HEADER);
   if (shouldDropRouteHandlerFramingHeaders(headers)) deleteRouteHandlerFramingHeaders(headers);
   setCacheStateHeaders(headers, options.cacheState);
   // HIT/STALE served from the origin store: route the cache header through the

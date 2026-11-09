@@ -20,6 +20,7 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { setCurrentFetchSoftTags } from "../packages/vinext/src/shims/fetch-cache.js";
+import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
 import { VINEXT_ROUTE_MISS_HEADER } from "../packages/vinext/src/server/headers.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
@@ -585,7 +586,7 @@ describe("app route handler dispatch", () => {
   describe("dynamicParams = false", () => {
     function dispatchClosedRoute(options: {
       cached?: boolean;
-      generateStaticParams?: () => Record<string, unknown>[];
+      generateStaticParams?: () => Record<string, unknown>[] | Promise<Record<string, unknown>[]>;
       handlerConfig?: Record<string, unknown>;
       isProduction?: boolean;
       method?: string;
@@ -719,6 +720,52 @@ describe("app route handler dispatch", () => {
       }
     });
 
+    it.each([
+      { name: "a GET-only route", handlerConfig: {} },
+      { name: "a mixed-method route", handlerConfig: { POST: () => new Response("post") } },
+    ])(
+      "runs generateStaticParams without the request's root params on $name",
+      async ({ handlerConfig }) => {
+        const result = await runWithRequestContext(
+          createRequestContext({ rootParams: { lang: "fr" } }),
+          async () => {
+            const closed = dispatchClosedRoute({
+              async generateStaticParams() {
+                const lang = await getRootParam("lang");
+                return lang ? [{ lang }] : [];
+              },
+              handlerConfig,
+              params: { lang: "fr" },
+              pathname: "/fr/data",
+              pattern: "/:lang/data",
+            });
+            return { status: (await closed.response).status, handlerCalls: closed.handlerCalls };
+          },
+        );
+        expect(result).toEqual({ status: 404, handlerCalls: [] });
+      },
+    );
+
+    it("keeps generateStaticParams' fetch state out of the request", async () => {
+      const ctx = createRequestContext();
+      await runWithRequestContext(ctx, async () => {
+        const result = dispatchClosedRoute({
+          generateStaticParams() {
+            // What a tagged no-store fetch records.
+            getRequestContext().currentRequestTags.push("generator-tag");
+            getRequestContext().dynamicFetchUrls.add("https://example.com/generator");
+            return [{ slug: "listed" }];
+          },
+          params: { slug: "listed" },
+          pathname: "/posts/listed",
+          pattern: "/posts/:slug",
+        });
+        expect((await result.response).status).toBe(200);
+      });
+      expect(ctx.currentRequestTags).not.toContain("generator-tag");
+      expect([...ctx.dynamicFetchUrls]).toEqual([]);
+    });
+
     it("compares decoded params as Next.js does", async () => {
       const generateStaticParams = () => [{ slug: "public post" }];
       const listed = dispatchClosedRoute({
@@ -790,6 +837,33 @@ describe("app route handler dispatch", () => {
       });
       expect((await result.response).status).toBe(200);
       expect(result.renderNotFound).not.toHaveBeenCalled();
+    });
+
+    it("drops a route-miss marker from a stored route response", async () => {
+      const stored = buildCachedRouteValue("cached");
+      stored.headers[VINEXT_ROUTE_MISS_HEADER] = "1";
+      const response = await dispatchAppRouteHandler({
+        cleanPathname: "/api/stored",
+        clearRequestContext() {},
+        draftModeSecret: "test-secret",
+        isDevelopment: false,
+        isProduction: true,
+        isrGet: async () => buildISRCacheEntry(stored),
+        isrRouteKey: (path) => path,
+        isrSet: async () => {},
+        middlewareContext: { headers: null, status: null },
+        params: null,
+        request: new Request("https://example.com/api/stored"),
+        route: {
+          pattern: "/api/stored",
+          routeSegments: ["api", "stored"],
+          routeHandler: { revalidate: 60, GET: () => new Response("live") },
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      await expect(response.text()).resolves.toBe("cached");
+      expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
     });
 
     it.each([
