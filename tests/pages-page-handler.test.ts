@@ -708,6 +708,41 @@ describe("createPagesPageHandler — status pages", () => {
     expect(body.pageProps.__N_REDIRECT).toBe("/");
   });
 
+  it("renders a getStaticProps /500 data request miss as its 500 page", async () => {
+    setMissingCdnCache();
+    const route = makeRoute(
+      "/500",
+      makePageModule({ getStaticProps: async () => ({ props: {} }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const url = "/_next/data/test-build-id/500.json";
+    const res = await handler(makeRequest(url), url, null, null, null);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("page");
+  });
+
+  it("renders the error fallback when a /500 data request render throws", async () => {
+    setMissingCdnCache();
+    const defaults = makeOpts();
+    let renders = 0;
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [makeRoute("/500")],
+        renderToReadableStream: async (element) => {
+          renders++;
+          if (renders === 1) throw new Error("render failure");
+          return defaults.renderToReadableStream(element);
+        },
+      }),
+    );
+    const url = "/_next/data/test-build-id/500.json";
+    const res = await handler(makeRequest(url), url, null, null, null);
+    expect(renders).toBe(2);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+  });
+
   // Next.js stores no status for a Pages entry, so a cached status page still
   // answers with its own status, even from an entry stored with 200.
   it.each([

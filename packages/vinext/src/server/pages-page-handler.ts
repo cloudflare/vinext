@@ -1475,10 +1475,11 @@ export function createPagesPageHandler(
         // getStaticProps page and only reports the error.
         if (sendsEarly && pageResponseSent()) return sentResponse;
 
-        // Data requests can't render HTML; avoid recursion if already rendering
-        // the error page. Mirrors Next.js base-server.ts: render /500 or _error
-        // when SSR throws. Fixes #1458.
-        if (!isInternalErrorRender && !isDataReq) {
+        // Data requests can't render HTML, except `/500`, which renders its
+        // HTML document; avoid recursion if already rendering the error page.
+        // Mirrors Next.js base-server.ts: render /500 or _error when SSR
+        // throws. Fixes #1458.
+        if (!isInternalErrorRender && (!isDataReq || routePattern === "/500")) {
           let errorRoute: PageRoute | null = null;
           for (let i = 0; i < pageRoutes.length; i++) {
             if (pageRoutes[i].pattern === "/500") {

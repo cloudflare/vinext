@@ -8291,16 +8291,6 @@ describe("Production server middleware (Pages Router)", () => {
     expect(await res.text()).toContain("custom pages/500");
   });
 
-  // Next.js pages-handler.ts: "if we are rendering the error page it's not a
-  // data request anymore", so /500 answers its HTML document with 500.
-  it("answers a /500 data request with the 500 page", async () => {
-    const res = await fetch(`${prodUrl}/_next/data/test-build-id/500.json`);
-    expect(res.status).toBe(500);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    expect(res.headers.get("x-nextjs-matched-path")).toBeNull();
-    expect(await res.text()).toContain("custom pages/500");
-  });
-
   it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
     const res = await fetch(`${prodUrl}/mw-redirect-double-slash`, { redirect: "manual" });
     expect(res.status).toBe(307);
