@@ -242,6 +242,11 @@ type RenderAppPageLifecycleOptionsBase = {
     element: ReactNode | AppOutgoingElements,
     options: { onError: AppPageBoundaryOnError; signal?: AbortSignal },
   ) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
+  /**
+   * Filled with whether the render reported an error that keeps it from being
+   * stored, read once its writes have settled.
+   */
+  renderFailedRef?: { value: (() => boolean) | null };
   routePattern: string;
   scriptNonce?: string;
   mountedSlotsHeader?: string | null;
@@ -755,6 +760,19 @@ async function renderAppPageLifecycleImpl(
       options.isStaticEligible &&
       options.pprFallbackShellSignal?.aborted !== true,
   );
+  // A candidate's useSearchParams() outside Suspense fails its render too.
+  let bailedOutToClientRendering = false;
+  if (options.renderFailedRef) {
+    // Without PPR, Next.js fails a revalidation whose render turned dynamic
+    // anyway (app-page.ts's static-to-dynamic error), so one that reported an
+    // error fails whether or not it did. With PPR, Next.js postpones the dynamic
+    // holes vinext renders, so an error in one is excused, as in #4542.
+    options.renderFailedRef.value = () =>
+      bailedOutToClientRendering ||
+      (options.isRoutePPREnabled === true
+        ? prerenderRenderErrors.failsBuild(consumeRenderDynamicUsage)
+        : prerenderRenderErrors.reported());
+  }
   const finalizePrerenderRenderError = (
     response: Response,
     // Peeks, so the read leaves the render's later dynamic-usage checks as they were.
@@ -1483,6 +1501,7 @@ async function renderAppPageLifecycleImpl(
         console.error(
           `${error.reason} should be wrapped in a suspense boundary at page "${options.routePattern}". Read more: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout`,
         );
+        bailedOutToClientRendering = true;
         options.clearRequestContext();
         const headers = new Headers();
         mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);

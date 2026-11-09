@@ -82,7 +82,7 @@ import {
   useSearchParams,
   type NavigationContext,
 } from "../packages/vinext/src/shims/navigation.js";
-import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
+import { BailoutToCSRError, notFound } from "../packages/vinext/src/shims/navigation-errors.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import { cacheLife } from "../packages/vinext/src/shims/cache.js";
 import {
@@ -4373,7 +4373,9 @@ describe("app page dispatch", () => {
         },
       );
 
-      expect(isrGet).not.toHaveBeenCalled();
+      // It reads the entries only to re-store them should the render fail, as
+      // Next.js's handleGet reads the previous entry before it revalidates.
+      expect(isrGet).toHaveBeenCalledTimes(2);
       expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
       expect(readPolicy).toEqual([true]);
     },
@@ -4417,6 +4419,236 @@ describe("app page dispatch", () => {
     const bodies = await Promise.all(responses.map((response) => response.text()));
     expect(bodies[0]).not.toBe("");
     expect(bodies[1]).toBe(bodies[0]);
+  });
+
+  // As in Next.js, an on-demand revalidation whose render reports an error, even
+  // one a Suspense boundary caught, fails, so `res.revalidate()` throws, and the
+  // previous entry is re-stored with a short revalidate. Only a PPR render that
+  // turned dynamic is excused, as the build excuses it.
+  it.each([
+    { name: "a Flight error", reports: "flight", failed: true },
+    { name: "an SSR error", reports: "ssr", failed: true },
+    // These fail before the render schedules its writes: an error the error
+    // boundary recovers from the shell, or one the page throws as it builds.
+    { name: "a shell error", reports: "shell", failed: true },
+    { name: "a page build error", reports: "build", failed: true },
+    // Without PPR, Next.js fails a revalidation that turned dynamic anyway.
+    {
+      name: "a page build error after turning dynamic",
+      reports: "build",
+      failed: true,
+      dynamic: true,
+    },
+    {
+      name: "a page build error that no boundary renders",
+      reports: "build",
+      failed: true,
+      throws: true,
+    },
+    // A stream that fails once the render has returned rejects as it is read.
+    {
+      name: "a stream error",
+      reports: "stream",
+      failed: true,
+      isRscRequest: true,
+      throws: true,
+    },
+    // Next.js rethrows the bail-out instead of rendering an error boundary.
+    { name: "a useSearchParams() outside Suspense", reports: "bailout", failed: true },
+    // Next.js re-stores whatever it read, so an expired entry is revived.
+    {
+      name: "a Flight error over an expired entry",
+      reports: "flight",
+      failed: true,
+      expired: true,
+    },
+    { name: "an RSC request's Flight error", reports: "flight", failed: true, isRscRequest: true },
+    // A variant's payload is never the page's document, which it leaves alone.
+    {
+      name: "a prefetch shell's Flight error",
+      reports: "flight",
+      failed: true,
+      isRscRequest: true,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      restored: ["rsc"],
+    },
+    // The entries are read before the render, so a write since is newer.
+    {
+      name: "a Flight error after another render's write",
+      reports: "flight",
+      failed: true,
+      overwritten: true,
+      restored: [],
+    },
+    // Without PPR, Next.js fails a revalidation that turned dynamic anyway.
+    {
+      name: "a Flight error after turning dynamic",
+      reports: "flight",
+      failed: true,
+      dynamic: true,
+    },
+    // One that turns dynamic before its writes skips them, yet still fails.
+    {
+      name: "a Flight error after turning dynamic first",
+      reports: "flight",
+      failed: true,
+      dynamic: "first",
+    },
+    // With PPR, a dynamic hole Next.js postpones is excused.
+    {
+      name: "a PPR route's Flight error after turning dynamic",
+      reports: "flight",
+      failed: false,
+      dynamic: true,
+      ppr: true,
+    },
+    // A PPR route's RSC render never writes the page's document.
+    {
+      name: "a PPR route's RSC Flight error",
+      reports: "flight",
+      failed: true,
+      isRscRequest: true,
+      ppr: true,
+      restored: ["rsc"],
+    },
+    { name: "no error", reports: false, failed: false },
+    // A render that is never stored isn't checked, whenever its error comes.
+    { name: "a never-stored render's error", reports: "early", failed: false, scriptNonce: "n" },
+  ] as const)("answers an on-demand revalidation with $name accordingly", async (testCase) => {
+    const { reports, failed } = testCase;
+    const isRscRequest = "isRscRequest" in testCase && testCase.isRscRequest;
+    const dynamic = "dynamic" in testCase && testCase.dynamic;
+    const scriptNonce = "scriptNonce" in testCase ? testCase.scriptNonce : undefined;
+    const renderMode = "renderMode" in testCase ? testCase.renderMode : undefined;
+    const restored: readonly string[] = ("restored" in testCase && testCase.restored) || [
+      "html",
+      "rsc",
+    ];
+    const previous: ISRCacheEntry = {
+      ...("expired" in testCase ? { isExpired: true } : {}),
+      isStale: "expired" in testCase,
+      value: {
+        cacheControl: { revalidate: 3600 },
+        lastModified: Date.now(),
+        value: buildCachedAppPageValue(
+          "<html>stored</html>",
+          new TextEncoder().encode("stored-flight").buffer,
+          200,
+          buildQueryInvariantRenderObservation(),
+        ),
+      },
+    };
+    const newer: ISRCacheEntry = {
+      ...previous,
+      value: { ...previous.value, lastModified: previous.value.lastModified + 1 },
+    };
+    let rendered = false;
+    const shellError = new Error("layout failure");
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      ...("ppr" in testCase ? { pprRuntime: appPagePprRuntime } : {}),
+      async buildPageElement() {
+        if (reports === "build") {
+          if (dynamic) markDynamicUsage();
+          throw shellError;
+        }
+        return React.createElement("div", null, "fresh");
+      },
+      isProduction: true,
+      isRscRequest,
+      isrGet: vi.fn(async () => ("overwritten" in testCase && rendered ? newer : previous)),
+      isrSet,
+      renderMode,
+      // Its document closes once it has read the whole Flight stream, as
+      // handleSsr's does.
+      loadSsrHandler: async () => ({
+        async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const flight = new Response(rscStream).arrayBuffer();
+          if (reports === "shell" || reports === "bailout") {
+            await flight;
+            throw reports === "shell" ? shellError : new BailoutToCSRError("useSearchParams()");
+          }
+          return new ReadableStream<Uint8Array>({
+            async start(controller) {
+              await flight;
+              // A client component's server-only error, inside Suspense.
+              if (reports === "ssr") captureOptions?.onSsrError?.(new Error("client failure"));
+              controller.enqueue(new TextEncoder().encode("<html>page</html>"));
+              controller.close();
+            },
+          });
+        },
+      }),
+      renderToReadableStream(_element, renderOptions) {
+        rendered = true;
+        if (reports === "early") {
+          renderOptions?.onError?.(new Error("shell failure"), undefined, undefined);
+        }
+        if (reports === "shell") renderOptions?.onError?.(shellError, undefined, undefined);
+        if (dynamic === "first") markDynamicUsage();
+        return new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight"));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (dynamic === true) markDynamicUsage();
+            if (reports === "stream") {
+              controller.error(shellError);
+              return;
+            }
+            if (reports === "flight") {
+              renderOptions?.onError?.(new Error("suspended failure"), undefined, undefined);
+            }
+            controller.close();
+          },
+        });
+      },
+      revalidateSeconds: 60,
+    });
+    options.scriptNonce = scriptNonce;
+    options.renderErrorBoundaryPage = vi.fn(async () =>
+      "throws" in testCase ? null : new Response("error", { status: 500 }),
+    );
+
+    const dispatched = runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () => dispatchAppPage(options),
+    );
+    if ("throws" in testCase) {
+      await expect(dispatched).rejects.toBe(shellError);
+      expect(
+        [...isrSet.mock.calls]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, , policy]) => [key.split(":")[0], policy.cacheControl]),
+      ).toEqual(restored.map((kind) => [kind, { revalidate: 30 }]));
+      return;
+    }
+    const response = await dispatched;
+    await response.arrayBuffer();
+
+    if (!failed) {
+      expect(response.status).toBe(200);
+      expect(isrSet).toHaveBeenCalledTimes(dynamic || scriptNonce ? 0 : 2);
+      return;
+    }
+    expect(response.status).toBe(500);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    // The previous entry's document and payload both.
+    expect(
+      [...isrSet.mock.calls]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, data, policy]) => [
+          key.split(":")[0],
+          data === previous.value.value,
+          policy.cacheControl,
+        ]),
+    ).toEqual(restored.map((kind) => [kind, true, { revalidate: 30 }]));
   });
 
   it("bypasses shared caches for an unverified interception context", async () => {
