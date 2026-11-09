@@ -958,6 +958,10 @@ describe("app route handler dispatch", () => {
         const closed = dispatchClosedRoute({
           generateStaticParams() {
             after(callback);
+            // One registered by an after() promise once the generator failed.
+            after(
+              new Promise<void>((resolve) => setTimeout(resolve, 5)).then(() => after(callback)),
+            );
             throw new Error("generation failed");
           },
           params: { slug: "unlisted" },
@@ -970,6 +974,7 @@ describe("app route handler dispatch", () => {
         );
       });
       expect(error).toBe("generation failed");
+      await new Promise((resolve) => setTimeout(resolve, 20));
       // Nothing the generator registered keeps the request waiting.
       const settled = await Promise.race([
         Promise.all(waitUntil).then(() => true),

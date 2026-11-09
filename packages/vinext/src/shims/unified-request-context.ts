@@ -92,6 +92,8 @@ export type AfterRequestContext = {
   waitUntil?: (promise: Promise<unknown>) => void;
   /** Reports a failed `after()` task, besides logging it. */
   onTaskError?: (error: unknown) => void;
+  /** Discards `after()` callbacks registered from now on. */
+  cancelled?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -223,6 +225,7 @@ function startAfterCallback(ctx: UnifiedRequestContext, callback: () => unknown)
 
 /** Queue a callback until response close, or start it immediately once closed. */
 export function queueAfterCallback(ctx: UnifiedRequestContext, callback: () => unknown): void {
+  if (ctx.afterContext.cancelled) return;
   ensureAfterCompletion(ctx);
   if (ctx.afterContext.responseClosed) {
     startAfterCallback(ctx, callback);
