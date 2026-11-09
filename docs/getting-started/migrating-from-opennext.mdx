@@ -359,7 +359,7 @@ export default defineConfig({
 });
 ```
 
-If the Worker also has Durable Object classes of your own, give each a live entry instead, such as `ChatRoom: exports.durableObject({ storage: "sqlite" })` (or `"legacy-kv"` for a class created with `new_classes`), and drop the Wrangler `migrations` array; never mark them `deleted`.
+If the Worker also has Durable Object classes of your own, give each a live entry instead, such as `ChatRoom: exports.durableObject({ storage: "sqlite" })` (or `"legacy-kv"` for a class created with `new_classes`), and drop the Wrangler `migrations` array; never mark them `deleted`. Each class must also stay a named export of the Worker code, so keep exporting it from a [custom Worker entry](#custom-worker-entry).
 
 If the Worker spreads the self-contained Response Store or Workers Cache helper (`...cache`), this `exports` object replaces the helper's, so merge them: `exports: { ...cache.exports, DOQueueHandler: exports.durableObject({ state: "deleted" }) }`.
 
@@ -380,7 +380,7 @@ Workers Builds deploys only to the Worker it's connected to, so a new Worker nee
 
 ### Custom Worker entry
 
-OpenNext's custom Worker wrapper, which imports `.open-next/worker.js` to add handlers such as `scheduled`, becomes `worker/index.ts`. Set the Worker's `entrypoint` to `./worker/index.ts`; init picks the file up only if it already exists when init runs. The file must hand requests to `vinext/server/fetch-handler` and must not re-export OpenNext's Durable Object classes. Each cron in `triggers.crons` becomes an entry in the Worker's `triggers`, such as `triggers.scheduled({ schedule: "0 * * * *" })` with `triggers` from `cf/config`.
+OpenNext's custom Worker wrapper, which imports `.open-next/worker.js` to add handlers such as `scheduled`, becomes `worker/index.ts`. Set the Worker's `entrypoint` to `./worker/index.ts`; init picks the file up only if it already exists when init runs. The file must hand requests to `vinext/server/fetch-handler` and must not re-export OpenNext's Durable Object classes. Keep exporting your own Durable Object classes from it. Each cron in `triggers.crons` becomes an entry in the Worker's `triggers`, such as `triggers.scheduled({ schedule: "0 * * * *" })` with `triggers` from `cf/config`.
 
 ```ts
 import handler from "vinext/server/fetch-handler";
