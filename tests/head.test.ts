@@ -912,6 +912,29 @@ describe("Head client sync (defaults + order, issue #1569 / #1677)", () => {
     }
   });
 
+  it("replaces the default viewport with an unkeyed page viewport", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      seedServerHead(head, createElement);
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement("meta", {
+          name: "viewport",
+          content: "width=device-width,initial-scale=1",
+        }),
+      );
+
+      _syncClientHead();
+
+      const viewports = head.children.filter((el) => el.getAttribute("name") === "viewport");
+      expect(viewports.map((el) => el.getAttribute("content"))).toEqual([
+        "width=device-width,initial-scale=1",
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
   it("reuses nonce-bearing nodes when CSP hides the live nonce attribute", () => {
     // Ported from Next.js: test/unit/is-equal-node.unit.test.ts
     const { createElement, restore } = installFakeDocument();

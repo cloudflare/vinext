@@ -103,11 +103,7 @@ export function getSSRHeadHTML(): string {
   // (not next/head), they don't appear in this collector — so emitting
   // `defaultHead + user + initialProps` here matches Next.js's serialised
   // output up to that boundary.
-  return reduceHeadChildren([
-    ...defaultHead(),
-    ..._getSSRHeadChildren(),
-    ..._getDocumentInitialHead(),
-  ])
+  return reduceHeadChildren([..._getSSRHeadChildren(), ..._getDocumentInitialHead()], defaultHead())
     .map((child) => headChildToHTML(child.type as string, child.props as Record<string, unknown>))
     .filter(Boolean)
     .join("");
@@ -251,7 +247,15 @@ function createUniqueHeadFilter(): (child: React.ReactElement) => boolean {
   };
 }
 
-export function reduceHeadChildren(headChildren: React.ReactNode[]): React.ReactElement[] {
+export function reduceHeadChildren(
+  headChildren: React.ReactNode[],
+  defaults: React.ReactElement[] = [],
+): React.ReactElement[] {
+  // Like Next.js's reduceComponents(), the defaults join after the children
+  // are flattened, so they keep their raw `charset` / `viewport` keys.
+  // Children.toArray would turn those into user keys (`.$viewport`), which
+  // skip the meta[name] dedupe and let the default sit next to an unkeyed
+  // user viewport.
   return headChildren
     .reduce<React.ReactNode[]>(
       (flattenedChildren, child) => flattenedChildren.concat(Children.toArray(child)),
@@ -259,6 +263,7 @@ export function reduceHeadChildren(headChildren: React.ReactNode[]): React.React
     )
     .reduce(collectHeadElements, [])
     .reverse()
+    .concat(defaults.slice().reverse())
     .filter(createUniqueHeadFilter())
     .reverse();
 }
@@ -507,8 +512,8 @@ export function _removeClientHeadInstance(instanceId: symbol): void {
  * tags — matching the SSR path in getSSRHeadHTML() and Next.js's
  * reduceComponents(), which always concatenates defaultHead() on both server
  * and client. Without it the first <Head> mount after hydration would drop the
- * server-rendered defaults. Users can still override via key="charset" /
- * key="viewport" through the dedupe pipeline.
+ * server-rendered defaults. A user <meta charSet> or <meta name="viewport">
+ * still replaces the matching default through the dedupe pipeline.
  *
  * @internal — exported for unit tests; called from the Head client effect.
  */
@@ -522,7 +527,7 @@ export function _syncClientHead(): void {
   const charsetEl = headEl.querySelector("meta[charset]");
   if (charsetEl) oldTags.add(charsetEl);
 
-  const desiredHead = reduceHeadChildren([...defaultHead(), ..._clientHeadChildren.values()]);
+  const desiredHead = reduceHeadChildren([..._clientHeadChildren.values()], defaultHead());
   const title = desiredHead.find((child) => child.type === "title");
   const titleChildren = (title?.props as { children?: React.ReactNode } | undefined)?.children;
   const titleText =
