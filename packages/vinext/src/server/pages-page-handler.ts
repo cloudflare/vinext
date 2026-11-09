@@ -746,6 +746,9 @@ export function createPagesPageHandler(
       );
     }
     const routePattern = patternToNextFormat(route.pattern);
+    // Next.js renders `/500` as its HTML document even for a `_next/data`
+    // request: "if we are rendering the error page it's not a data request".
+    if (routePattern === "/500") isDataReq = false;
     // A direct request for a status page answers with that status, as in
     // Next.js base-server.ts.
     const renderStatusCode =
@@ -1417,9 +1420,9 @@ export function createPagesPageHandler(
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
-          // protection). Next.js skips the success path for /_error and /500
-          // (`!isErrorPage && !is500Page`). Fixes #1829.
-          if (routePattern !== "/_error" && routePattern !== "/500") {
+          // protection). Next.js skips the success path for /_error, and
+          // renders /500 as HTML (`!isErrorPage && !is500Page`). Fixes #1829.
+          if (routePattern !== "/_error") {
             const deploymentId =
               process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
             if (deploymentId) {

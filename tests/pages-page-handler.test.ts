@@ -672,7 +672,12 @@ describe("createPagesPageHandler — status pages", () => {
 
   // Next.js stores no status for a Pages entry, so a cached status page still
   // answers with its own status, even from an entry stored with 200.
-  it.each(["HIT", "STALE"])("answers a cached getStaticProps /500 %s with 500", async (state) => {
+  it.each([
+    ["HIT", "/500"],
+    ["STALE", "/500"],
+    ["HIT", "/_next/data/test-build-id/500.json"],
+    ["STALE", "/_next/data/test-build-id/500.json"],
+  ])("answers a cached getStaticProps /500 %s for %s with 500", async (state, url) => {
     const adapter = new DefaultCdnCacheAdapter();
     vi.spyOn(adapter, "get").mockResolvedValue({
       lastModified: 0,
@@ -693,9 +698,10 @@ describe("createPagesPageHandler — status pages", () => {
       makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 1 }) }),
     );
     const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
-    const res = await handler(makeRequest("/500"), "/500", null, null, null);
+    const res = await handler(makeRequest(url), url, null, null, null);
     expect(res.headers.get("x-vinext-cache")).toBe(state);
     expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
     expect(await res.text()).toContain("cached 500");
   });
 });
@@ -2367,8 +2373,11 @@ describe("createPagesPageHandler — x-nextjs-deployment-id", () => {
     process.env.__VINEXT_DEPLOYMENT_ID = DEPLOYMENT_ID;
     try {
       // Next.js pages-handler.ts guards the success-path header with
-      // `!isErrorPage && !is500Page`; mirror that exclusion here.
-      for (const pattern of ["/_error", "/500"]) {
+      // `!isErrorPage && !is500Page`, and renders /500 as its HTML document.
+      for (const [pattern, status] of [
+        ["/_error", 200],
+        ["/500", 500],
+      ] as const) {
         const routes = [makeRoute(pattern)];
         const handler = createPagesPageHandler(
           makeOpts({
@@ -2381,7 +2390,7 @@ describe("createPagesPageHandler — x-nextjs-deployment-id", () => {
         );
         const dataUrl = `/_next/data/test-build-id${pattern}.json`;
         const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
-        expect(res.status).toBe(200);
+        expect(res.status).toBe(status);
         expect(res.headers.get("x-nextjs-deployment-id")).toBeNull();
       }
     } finally {
