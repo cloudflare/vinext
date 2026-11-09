@@ -1368,7 +1368,8 @@ export function createPagesPageHandler(
         // For client-side navigations Next.js fetches /_next/data/<buildId>/<page>.json
         // and expects the full props envelope (pageProps plus any app-level
         // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
-        if (isDataReq) {
+        // `/500` answers its HTML document instead, as in Next.js.
+        if (isDataReq && routePattern !== "/500") {
           const headers = new Headers();
           let resHasCacheControl = false;
           if (gsspRes && typeof gsspRes.getHeaders === "function") {
@@ -1417,9 +1418,9 @@ export function createPagesPageHandler(
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
-          // protection). Next.js skips the success path for /_error and /500
-          // (`!isErrorPage && !is500Page`). Fixes #1829.
-          if (routePattern !== "/_error" && routePattern !== "/500") {
+          // protection). Next.js skips the success path for /_error, and
+          // renders /500 as HTML (`!isErrorPage && !is500Page`). Fixes #1829.
+          if (routePattern !== "/_error") {
             const deploymentId =
               process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
             if (deploymentId) {
@@ -1474,10 +1475,11 @@ export function createPagesPageHandler(
         // getStaticProps page and only reports the error.
         if (sendsEarly && pageResponseSent()) return sentResponse;
 
-        // Data requests can't render HTML; avoid recursion if already rendering
-        // the error page. Mirrors Next.js base-server.ts: render /500 or _error
-        // when SSR throws. Fixes #1458.
-        if (!isInternalErrorRender && !isDataReq) {
+        // Data requests can't render HTML, except `/500`, which renders its
+        // HTML document; avoid recursion if already rendering the error page.
+        // Mirrors Next.js base-server.ts: render /500 or _error when SSR
+        // throws. Fixes #1458.
+        if (!isInternalErrorRender && (!isDataReq || routePattern === "/500")) {
           let errorRoute: PageRoute | null = null;
           for (let i = 0; i < pageRoutes.length; i++) {
             if (pageRoutes[i].pattern === "/500") {

@@ -1489,6 +1489,15 @@ describe("Pages Router integration", () => {
     expect(await res.text()).toContain("custom pages/500");
   });
 
+  // Next.js pages-handler.ts: "if we are rendering the error page it's not a
+  // data request anymore", so /500 answers its HTML document with 500.
+  it("answers a /500 data request with the 500 page in dev", async () => {
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/500.json`);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("custom pages/500");
+  });
+
   // Ported from Next.js: test/e2e/not-found-revalidate/not-found-revalidate.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/not-found-revalidate/not-found-revalidate.test.ts
   it("runs custom 404 getStaticProps for getStaticProps notFound in dev", async () => {
@@ -3889,13 +3898,12 @@ export const config = { matcher: "${matcher}" };
         });
       });
 
-      it("omits the header on the /500 data success response", async () => {
-        // Next.js pages-handler.ts guards the success-path header with
-        // `!isErrorPage && !is500Page`, so /_error and /500 data responses
-        // must not carry it even when a deployment id is configured.
+      it("omits the header on the /500 data response", async () => {
+        // Next.js pages-handler.ts renders /500 as HTML for a data request
+        // and guards the header with `!isErrorPage && !is500Page`.
         await withDeploymentId(async () => {
           const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/500.json`);
-          expect(res.status).toBe(200);
+          expect(res.status).toBe(500);
           expect(res.headers.get("x-nextjs-deployment-id")).toBeNull();
         });
       });

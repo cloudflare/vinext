@@ -1150,6 +1150,10 @@ export async function resolvePagesPageData(
   const userFacingParams: Record<string, unknown> | null = options.route.isDynamic
     ? options.params
     : null;
+  // Next.js answers a `/500` data request with the page's HTML document:
+  // "if we are rendering the error page it's not a data request anymore".
+  // Its notFound and redirect results still use the data protocol.
+  const sendsPagePropsJson = options.isDataReq === true && options.routePattern !== "/500";
 
   // Set when `getStaticPaths: { fallback: true }` is configured and the
   // requested path is NOT in the pre-rendered list. When true, we render the
@@ -1177,7 +1181,7 @@ export async function resolvePagesPageData(
     );
     const value = cached?.value.value;
     if (cached && !cached.isStale && !cached.isExpired && value?.kind === "PAGES") {
-      const response = options.isDataReq
+      const response = sendsPagePropsJson
         ? applyCachedPagesRepresentationHeaders(
             buildNextDataPropsJsonResponse(
               normalizePagesRenderProps(value.pageData as Record<string, unknown>),
@@ -1203,7 +1207,7 @@ export async function resolvePagesPageData(
       return finalizeCachedPagesResponse(
         response,
         options,
-        options.isDataReq ? undefined : value.html,
+        sendsPagePropsJson ? undefined : value.html,
       );
     }
   }
@@ -1602,7 +1606,7 @@ export async function resolvePagesPageData(
           options,
         );
       }
-      if (options.isDataReq && cachedValue?.kind === "PAGES") {
+      if (sendsPagePropsJson && cachedValue?.kind === "PAGES") {
         const response = buildNextDataPropsJsonResponse(
           normalizePagesRenderProps(cachedValue.pageData as Record<string, unknown>),
           options.safeJsonStringify,
@@ -1631,7 +1635,7 @@ export async function resolvePagesPageData(
       cached &&
       !cached.isStale &&
       !options.scriptNonce &&
-      !options.isDataReq &&
+      !sendsPagePropsJson &&
       previewData === false
     ) {
       const hitResponse = buildPagesCacheResponse(
@@ -1657,7 +1661,7 @@ export async function resolvePagesPageData(
       (cachedValue === null ||
         cachedRedirect !== null ||
         isLegacyCachedNotFound ||
-        options.isDataReq)
+        sendsPagePropsJson)
     ) {
       scheduleStaleRegeneration();
       if (cachedValue === null)
@@ -1699,7 +1703,7 @@ export async function resolvePagesPageData(
       cached.isStale &&
       !cached.isExpired &&
       !options.scriptNonce &&
-      !options.isDataReq &&
+      !sendsPagePropsJson &&
       previewData === false
     ) {
       scheduleStaleRegeneration();
@@ -1902,7 +1906,7 @@ export async function resolvePagesPageData(
   }
 
   // The HTML render stores the entry and returns the sent response itself.
-  if (options.isDataReq) {
+  if (sendsPagePropsJson) {
     const sentResponse = await takeSentResponse();
     if (sentResponse) return sentResponse;
   }
