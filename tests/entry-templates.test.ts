@@ -18,6 +18,7 @@ import {
 } from "../packages/vinext/src/entries/app-browser-entry.js";
 import {
   buildAppRscManifestCode,
+  rootBoundaryFiles,
   rootBoundaryRouteFiles,
 } from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import {
@@ -1588,6 +1589,8 @@ describe("App Router generated manifest construction", () => {
     expect(rootBoundaryRouteFiles(routes, "/tmp/test/app/not-found.tsx")).toEqual([
       "/tmp/test/app/not-found.tsx",
     ]);
+    // Nor does any render load a route group's boundaries outside its routes.
+    expect(rootBoundaryFiles(routes)).toEqual([]);
   });
 
   it("renders app/not-found in an app with only route handlers, also below a nearer not-found", () => {

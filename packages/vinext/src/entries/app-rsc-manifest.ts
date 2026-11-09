@@ -118,9 +118,11 @@ function rootRouteBoundaryPath(
 
 /**
  * The root not-found, forbidden and unauthorized boundaries, which a route
- * without its own boundary falls back to.
+ * without its own boundary falls back to. Without `app/layout`, a route group's
+ * boundaries render only with its own routes, which list them.
  */
 export function rootBoundaryFiles(routes: readonly AppRoute[]): string[] {
+  if (!routes.some(hasAppDirectoryLayout)) return [];
   const rootRoute = findRootBoundaryRoute(routes);
   return [
     rootRouteBoundaryPath(rootRoute, rootRoute?.notFoundPaths, rootRoute?.notFoundPath),
