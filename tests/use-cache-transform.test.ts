@@ -565,6 +565,9 @@ describe("plugin-rsc inline use-cache references", () => {
       filter: { id: { include: RegExp; exclude: RegExp }; code: string };
     };
     expect(filter.id.include.test(packageId)).toBe(true);
+    for (const extension of [".mjs", ".cjs", ".mts", ".cts", ".jsx", ".ts", ".tsx"]) {
+      expect(filter.id.include.test(packageId.replace(/\.js$/, extension))).toBe(true);
+    }
     expect(filter.id.include.test(moduleId)).toBe(false);
     expect(filter.id.exclude.test(packageId)).toBe(false);
     expect(filter.code).toBe("use cache");

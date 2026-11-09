@@ -62,8 +62,15 @@ export type UseCacheCallableApi = {
 
 const PLUGIN_NAME = "vinext:server-function-directives";
 export { PLUGIN_NAME as USE_CACHE_PLUGIN_NAME };
-const SOURCE_MODULE_ID_RE = /\.(?:tsx?|jsx?|mjs)(?:\?.*)?$/;
-const NODE_MODULES_SOURCE_MODULE_ID_RE = /[\\/]node_modules[\\/].*\.(?:tsx?|jsx?|mjs)(?:\?.*)?$/;
+// Match every JavaScript and TypeScript module extension, `.mts` and `.cts`
+// included, as @vitejs/plugin-rsc's "use server" transform (no id filter)
+// does. Next.js's server function transform skips `.mts` and `.cts`
+// (webpack `codeCondition`, Turbopack `match_js_extension`), which leaves the
+// directive unrecognised: uncached on the server, and the module body bundled
+// into the browser for a Client Component import.
+const SOURCE_MODULE_ID_RE = /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/;
+const NODE_MODULES_SOURCE_MODULE_ID_RE =
+  /[\\/]node_modules[\\/].*\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/;
 const RESOLVED_VIRTUAL_MODULE_ID_RE = new RegExp(`^${String.fromCharCode(0)}`);
 const USE_CACHE_DIRECTIVE = /^use cache(?:: ([^\s].*))?$/;
 const USE_CACHE_DIRECTIVE_CANDIDATE = /^use cache.*$/;
@@ -181,7 +188,7 @@ function shouldTransformModuleExport(name: string, id: string, meta: ModuleExpor
   ) {
     return false;
   }
-  if (/\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id) && name === "default") return false;
+  if (/\/(layout|template)\.(?:[cm]?[jt]s|[jt]sx)$/.test(id) && name === "default") return false;
   return true;
 }
 
