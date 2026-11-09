@@ -670,6 +670,44 @@ describe("createPagesPageHandler — status pages", () => {
     expect(res.status).toBe(202);
   });
 
+  // Next.js renders only a successful `/500` page as HTML for a data request;
+  // its notFound and redirect results keep the data protocol.
+  function setMissingCdnCache(): void {
+    const adapter = new DefaultCdnCacheAdapter();
+    vi.spyOn(adapter, "get").mockResolvedValue(null);
+    vi.spyOn(adapter, "set").mockResolvedValue();
+    setCdnCacheAdapter(adapter);
+  }
+
+  it("keeps the data protocol for a /500 getStaticProps notFound", async () => {
+    setMissingCdnCache();
+    const route = makeRoute(
+      "/500",
+      makePageModule({ getStaticProps: async () => ({ notFound: true }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const url = "/_next/data/test-build-id/500.json";
+    const res = await handler(makeRequest(url), url, null, null, null);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ notFound: true });
+  });
+
+  it("keeps the data protocol for a /500 getStaticProps redirect", async () => {
+    setMissingCdnCache();
+    const route = makeRoute(
+      "/500",
+      makePageModule({
+        getStaticProps: async () => ({ redirect: { destination: "/", permanent: false } }),
+      }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const url = "/_next/data/test-build-id/500.json";
+    const res = await handler(makeRequest(url), url, null, null, null);
+    expect(res.headers.get("location")).toBeNull();
+    const body = (await res.json()) as { pageProps: Record<string, unknown> };
+    expect(body.pageProps.__N_REDIRECT).toBe("/");
+  });
+
   // Next.js stores no status for a Pages entry, so a cached status page still
   // answers with its own status, even from an entry stored with 200.
   it.each([

@@ -746,9 +746,6 @@ export function createPagesPageHandler(
       );
     }
     const routePattern = patternToNextFormat(route.pattern);
-    // Next.js renders `/500` as its HTML document even for a `_next/data`
-    // request: "if we are rendering the error page it's not a data request".
-    if (routePattern === "/500") isDataReq = false;
     // A direct request for a status page answers with that status, as in
     // Next.js base-server.ts.
     const renderStatusCode =
@@ -1371,7 +1368,8 @@ export function createPagesPageHandler(
         // For client-side navigations Next.js fetches /_next/data/<buildId>/<page>.json
         // and expects the full props envelope (pageProps plus any app-level
         // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
-        if (isDataReq) {
+        // `/500` answers its HTML document instead, as in Next.js.
+        if (isDataReq && routePattern !== "/500") {
           const headers = new Headers();
           let resHasCacheControl = false;
           if (gsspRes && typeof gsspRes.getHeaders === "function") {

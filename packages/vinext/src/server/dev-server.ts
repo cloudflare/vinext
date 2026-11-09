@@ -862,9 +862,6 @@ export function createSSRHandler(
       : i18nConfig
         ? extractLocaleFromUrlShared(originalUrl, i18nConfig, locale).url
         : originalUrl;
-    // Next.js renders `/500` as its HTML document even for a `_next/data`
-    // request: "if we are rendering the error page it's not a data request".
-    if (route.pattern === "/500") isDataReq = false;
     // Next.js exposes `params: null` to data-fetching contexts (gSSP, gSP) on
     // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
     // Internal use (query merging, _app router context) keeps the matched
@@ -1524,8 +1521,9 @@ export function createSSRHandler(
         // expect the full Pages props object as JSON. We have renderProps; skip the React
         // tree render and the _document shell entirely. Headers set on `res`
         // by getServerSideProps (cookies, status codes, etc.) are preserved
-        // because we already let gSSP mutate `res` above.
-        if (isDataReq) {
+        // because we already let gSSP mutate `res` above. `/500` answers its
+        // HTML document instead, as in Next.js.
+        if (isDataReq && route.pattern !== "/500") {
           const dataHeaders: Record<string, string | string[] | number> = {
             "Content-Type": "application/json",
           };
