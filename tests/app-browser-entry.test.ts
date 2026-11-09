@@ -498,6 +498,8 @@ type TestPendingDispositionOptions = {
   currentRootLayoutTreePath: string | null;
   currentVisibleCommitVersion: number;
   nextRootLayoutTreePath: string | null;
+  // Omitted for an HMR-shaped operation, which carries no navigation id.
+  pendingNavigationId?: number | null;
   renderId?: number;
   startedNavigationId: number;
   startedVisibleCommitVersion: number;
@@ -521,6 +523,10 @@ async function resolveTestPendingNavigationCommitDispositionDecision(
     nextElements: Promise.resolve(
       createResolvedElements("route:/dashboard", options.nextRootLayoutTreePath),
     ),
+    navigationId:
+      options.pendingNavigationId === null
+        ? undefined
+        : (options.pendingNavigationId ?? options.startedNavigationId),
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
     operationLane: "navigation",
     renderId: options.renderId ?? options.startedNavigationId,
@@ -2256,6 +2262,31 @@ describe("app browser entry state helpers", () => {
       currentVisibleCommitVersion: 1,
       currentRootLayoutTreePath: "/",
       nextRootLayoutTreePath: "/",
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision.disposition).toBe("skip");
+    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.staleOperation);
+  });
+
+  it("stays stale for an operation without a navigation id that compares a render id", async () => {
+    // HMR approval passes its render id as startedNavigationId, so an id
+    // ahead of a committed navigation's must not read as superseding it.
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentActiveOperation: {
+        id: 1,
+        lane: "navigation",
+        navigationId: 1,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      pendingNavigationId: null,
       startedNavigationId: 2,
       startedVisibleCommitVersion: 0,
     });
