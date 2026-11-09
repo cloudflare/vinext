@@ -5101,9 +5101,8 @@ describe("createAppRscHandler", () => {
         matchRoute,
       });
 
-      const response = await handler(
-        new Request("https://example.test/docs/products/rejected"),
-        null,
+      const { result: response, route: tracedRoute } = await captureFrameworkRequestRoute(() =>
+        handler(new Request("https://example.test/docs/products/rejected"), null),
       );
 
       expect(response.status).toBe(404);
@@ -5111,6 +5110,8 @@ describe("createAppRscHandler", () => {
         "private, no-cache, no-store, max-age=0, must-revalidate",
       );
       expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+      // Traced as the unmatched route, not the rejected dynamic route.
+      expect(tracedRoute).toBe("/404");
     });
 
     it("puts config Link headers before an immutable not-found's own", async () => {
@@ -5166,12 +5167,14 @@ describe("createAppRscHandler", () => {
         matchRoute,
       });
 
-      const response = await handler(
-        new Request("https://example.test/docs/products/rejected"),
-        null,
-        false,
-        (stageRequest: Request, props: AppWorkerResponseStageProps) =>
-          handler.handleResponseStage(stageRequest, null, props),
+      const { result: response, route: tracedRoute } = await captureFrameworkRequestRoute(() =>
+        handler(
+          new Request("https://example.test/docs/products/rejected"),
+          null,
+          false,
+          (stageRequest: Request, props: AppWorkerResponseStageProps) =>
+            handler.handleResponseStage(stageRequest, null, props),
+        ),
       );
 
       expect(response.status).toBe(404);
@@ -5179,6 +5182,7 @@ describe("createAppRscHandler", () => {
         "private, no-cache, no-store, max-age=0, must-revalidate",
       );
       expect(response.headers.getSetCookie()).toEqual(["config=1"]);
+      expect(tracedRoute).toBe("/404");
     });
 
     it("sends a staged RSC not-found without the rejected params", async () => {

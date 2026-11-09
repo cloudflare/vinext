@@ -80,13 +80,27 @@ test.describe("Next.js compat: segment cache closed params (dynamicParams = fals
   }, testInfo) => {
     // As in Next.js, Link prefetching only runs in production.
     test.skip(testInfo.project.name === "app-router", "prefetching is production-only");
+    const allowedPath = `${ROOT}/products/allowed`;
     const rejectedStatuses: number[] = [];
-    page.on("response", (response) => {
+    const allowedPrefetchStatuses: number[] = [];
+    let allowedNavigationRequests = 0;
+    page.on("request", (request) => {
+      const headers = request.headers();
       if (
-        response.request().headers().rsc === "1" &&
-        new URL(response.url()).pathname === `${ROOT}/products/rejected`
+        headers.rsc === "1" &&
+        headers["next-router-prefetch"] !== "1" &&
+        new URL(request.url()).pathname === allowedPath
       ) {
-        rejectedStatuses.push(response.status());
+        allowedNavigationRequests++;
+      }
+    });
+    page.on("response", (response) => {
+      const headers = response.request().headers();
+      if (headers.rsc !== "1") return;
+      const { pathname } = new URL(response.url());
+      if (pathname === `${ROOT}/products/rejected`) rejectedStatuses.push(response.status());
+      if (pathname === allowedPath && headers["next-router-prefetch"] === "1") {
+        allowedPrefetchStatuses.push(response.status());
       }
     });
 
@@ -95,11 +109,15 @@ test.describe("Next.js compat: segment cache closed params (dynamicParams = fals
     await page.locator(`input[data-link-accordion="${ROOT}/products/rejected"]`).click();
     await expect.poll(() => rejectedStatuses).toContain(404);
 
-    await page.locator(`input[data-link-accordion="${ROOT}/products/allowed"]`).click();
-    await page.locator(`a[href="${ROOT}/products/allowed"]`).click();
+    await page.locator(`input[data-link-accordion="${allowedPath}"]`).click();
+    await expect.poll(() => allowedPrefetchStatuses).toContain(200);
+    await page.waitForLoadState("networkidle");
+    await page.locator(`a[href="${allowedPath}"]`).click();
 
     await expect(page.locator("#product-page")).toHaveText("Allowed product page");
     await expect(page.getByText(ROOT_NOT_FOUND)).toHaveCount(0);
+    // As in Next.js, the click reuses the allowed prefetch, not the rejected 404.
+    expect(allowedNavigationRequests).toBe(0);
   });
 
   test("does not reuse an allowed route for a parameter value that must 404", async ({ page }) => {

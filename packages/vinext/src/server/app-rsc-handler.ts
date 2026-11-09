@@ -217,7 +217,11 @@ import {
 import { traceAppPageRender } from "./app-page-tracing.js";
 import { runOutsideWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
-import { setFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
+import {
+  replaceFrameworkRequestRoute,
+  setFrameworkRequestRoute,
+  traceFrameworkRequest,
+} from "./request-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -532,6 +536,8 @@ function withStoredSpecialErrorStatus(response: Response, isSegmentPrefetch: boo
 /** Send a routing-level not-found from the page render as an unmatched route's 404. */
 function withRouteMissCacheControl(response: Response): Response {
   if (!response.headers.has(VINEXT_ROUTE_MISS_HEADER)) return response;
+  // Dispatch rejects the params after the matched route was recorded.
+  replaceFrameworkRequestRoute("/404");
   let unmarkedResponse = response;
   try {
     // Keep the response itself, whose config headers may already be applied.
