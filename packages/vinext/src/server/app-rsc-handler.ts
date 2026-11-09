@@ -14,6 +14,7 @@ import { patternToNextFormat } from "../routing/route-validation.js";
 import { traceFindPageComponents } from "./pages-execution-tracing.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import {
+  getActiveDraftModeState,
   getEffectiveRequestCookieHeader,
   getDraftModeCookieHeader,
   getHeadersContext,
@@ -2266,6 +2267,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     (isPossibleAppRouteActionRequest(request) ||
       isDraftModeRequest(request, options.draftModeSecret) ||
       isDraftModeEnabled());
+  // Middleware can enable or disable draft mode for this request.
+  const isActiveDraftMode = () =>
+    getActiveDraftModeState() ?? isDraftModeRequest(request, options.draftModeSecret);
   const usesRawRequestMatch = () =>
     rendersRawRequestMatch && cleanPathnameIsRequestPathname && !isInterceptionMatch;
   const renderedRouteMatch = <TMatch extends AppRscRouteMatch<TRoute> | null>(
@@ -2680,7 +2684,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
     }
     // Draft mode renders an unlisted param on demand, as the dispatch does.
-    if (!routedRoute.routeHandler && !isDraftModeRequest(request, options.draftModeSecret)) {
+    if (!routedRoute.routeHandler && !isActiveDraftMode()) {
       if (await options.isDynamicParamsMiss(routedRoute, routedMatch.params)) {
         // The rejected match seeded its root params before routing finished.
         setRootParams(null);
@@ -2959,7 +2963,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // route's tree.
   if (
     isRouteTreePrefetch &&
-    !isDraftModeRequest(request, options.draftModeSecret) &&
+    !isActiveDraftMode() &&
     (await options.isDynamicParamsMiss?.(route, params))
   ) {
     // The rejected match seeded its root params before routing finished.

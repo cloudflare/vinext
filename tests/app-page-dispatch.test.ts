@@ -1569,6 +1569,34 @@ describe("app page dispatch", () => {
     expect(ensureRouteLoaded).not.toHaveBeenCalled();
   });
 
+  it("renders an unlisted param in draft mode, also when middleware enabled it", async () => {
+    for (const draft of ["cookie", "middleware"] as const) {
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("not found", { status: 404 }),
+      );
+      const { options } = createDispatchOptions({
+        async generateStaticParams() {
+          return [{ slug: "known" }];
+        },
+        isProduction: true,
+        request: new Request("https://example.com/posts/unknown", {
+          headers: draft === "cookie" ? { cookie: "__prerender_bypass=draft-secret" } : {},
+        }),
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+      if (draft === "middleware") {
+        setHeadersContext({ cookies: new Map(), draftModeEnabled: true, headers: new Headers() });
+      }
+
+      const response = await dispatchAppPage({ ...options, dynamicParamsConfig: false });
+
+      expect(response.status).toBe(200);
+      expect(renderHttpAccessFallbackPage).not.toHaveBeenCalled();
+      setHeadersContext(null);
+    }
+  });
+
   it("bounds a redirect from a generated-param miss by the route's dynamic stale time (#3745)", async () => {
     // A not-found boundary that calls redirect() answers an RSC request with
     // a streamed redirect, which a prefetch may replay.

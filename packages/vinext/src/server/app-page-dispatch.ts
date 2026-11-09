@@ -11,6 +11,7 @@ import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
+  getActiveDraftModeState,
   getAndClearPendingCookies,
   getDraftModeCookieHeader,
   getHeadersContext,
@@ -1266,9 +1267,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  // Next.js renders an unlisted param on demand in draft mode.
+  // Next.js renders an unlisted param on demand in draft mode, including
+  // draft mode that middleware enabled for this request.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
-  if (options.skipStaticParamsValidation !== true && !isDraftMode) {
+  if (options.skipStaticParamsValidation !== true && !(getActiveDraftModeState() ?? isDraftMode)) {
     const dynamicParamsResponse = await validateAppPageRouteDynamicParams({
       dynamicConfig,
       dynamicParamsConfig: options.dynamicParamsConfig,

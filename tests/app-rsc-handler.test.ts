@@ -5055,6 +5055,42 @@ describe("createAppRscHandler", () => {
       expect(dispatchMatchedPage).not.toHaveBeenCalled();
     });
 
+    it("keeps an unlisted param when middleware enables draft mode, as Next.js does", async () => {
+      const isDynamicParamsMiss = vi.fn(async () => true);
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles: [],
+          fallback: [{ source: "/products/:slug", destination: "/fallback/:slug" }],
+        },
+        dispatchMatchedPage,
+        isDynamicParamsMiss,
+        matchRoute,
+        middlewareModule: {
+          async default() {
+            (await draftMode()).enable();
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+      });
+
+      const document = await handler(
+        new Request("https://example.test/docs/products/rejected"),
+        null,
+      );
+      expect(await document.text()).toBe("page");
+
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/products/rejected", headers);
+      const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+      expect(tree.status).toBe(200);
+      expect(isDynamicParamsMiss).not.toHaveBeenCalled();
+    });
+
     it("hides the rejected match's root params from a route-tree prefetch's not-found", async () => {
       const localizedRoute = createPageRoute({
         isDynamic: true,
