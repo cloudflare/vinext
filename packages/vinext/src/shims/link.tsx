@@ -117,28 +117,34 @@ function loadHybridClientRouteOwnerModule(): Promise<HybridClientRouteOwnerModul
     }));
 }
 
+type AppElementsModule = typeof import("../server/app-elements.js");
 type AppRscCacheBustingModule = typeof import("../server/app-rsc-cache-busting.js");
 type AppPrefetchModules = [
-  typeof import("../server/app-elements.js"),
+  AppElementsModule,
   AppRscCacheBustingModule,
   typeof import("./internal/app-prefetch-rsc-request.js"),
   typeof import("../server/app-rsc-render-mode.js"),
   typeof import("../server/headers.js"),
 ];
 
+let appElementsModulePromise: Promise<AppElementsModule> | null = null;
 let appRscCacheBustingModulePromise: Promise<AppRscCacheBustingModule> | null = null;
 let appPrefetchModulesPromise: Promise<AppPrefetchModules> | null = null;
 
 // Production builds wrap each dynamic import() in Vite's preload helper, which
 // queries the document for a CSP nonce on every call. Cache the promises so
 // each Link prefetch reuses them instead of paying that DOM scan again.
+function loadAppElementsModule(): Promise<AppElementsModule> {
+  return (appElementsModulePromise ??= import("../server/app-elements.js"));
+}
+
 function loadAppRscCacheBustingModule(): Promise<AppRscCacheBustingModule> {
   return (appRscCacheBustingModulePromise ??= import("../server/app-rsc-cache-busting.js"));
 }
 
 function loadAppPrefetchModules(): Promise<AppPrefetchModules> {
   return (appPrefetchModulesPromise ??= Promise.all([
-    import("../server/app-elements.js"),
+    loadAppElementsModule(),
     loadAppRscCacheBustingModule(),
     import("./internal/app-prefetch-rsc-request.js"),
     import("../server/app-rsc-render-mode.js"),
@@ -582,15 +588,7 @@ function prefetchUrl(
         const fetchFullRscPayload = () =>
           scheduleOwnedLinkPrefetch(
             owned,
-            (signal) =>
-              fetch(rscUrl, {
-                headers,
-                credentials: "include",
-                priority,
-                signal,
-                // @ts-expect-error — purpose is a valid fetch option in some browsers
-                purpose: "prefetch",
-              }),
+            (signal) => fetchAppPrefetch(rscUrl, { headers, priority, signal }),
             priority,
           );
         const fetchLoadingShellForReuse = async (): Promise<void> => {
@@ -617,14 +615,7 @@ function prefetchUrl(
             const shellFetchPromise = scheduleOwnedLinkPrefetch(
               shellOwned,
               (signal) =>
-                fetch(shellRscUrl, {
-                  headers: shellHeaders,
-                  credentials: "include",
-                  priority,
-                  signal,
-                  // @ts-expect-error — purpose is a valid fetch option in some browsers
-                  purpose: "prefetch",
-                }),
+                fetchAppPrefetch(shellRscUrl, { headers: shellHeaders, priority, signal }),
               priority,
             );
             trackOwnedLinkPrefetch(shellOwned, shellFetchPromise);
@@ -663,13 +654,10 @@ function prefetchUrl(
           if (owner && owner.leaveCount !== ownerLeaveCount) {
             throw new DOMException("Prefetch is no longer wanted", "AbortError");
           }
-          return fetch(probeRscUrl, {
+          return fetchAppPrefetch(probeRscUrl, {
             method: "HEAD",
             headers: probeHeaders,
-            credentials: "include",
             priority,
-            // @ts-expect-error — purpose is a valid fetch option in some browsers
-            purpose: "prefetch",
           });
         };
         // A visible Link that reuses a pending request becomes one of its owners.
@@ -766,13 +754,10 @@ function prefetchUrl(
                     scheduleOwnedLinkPrefetch(
                       owned,
                       (signal) =>
-                        fetch(routeTreeRscUrl, {
+                        fetchAppPrefetch(routeTreeRscUrl, {
                           headers: routeTreeHeaders,
-                          credentials: "include",
                           priority,
                           signal,
-                          // @ts-expect-error — purpose is a valid fetch option in some browsers
-                          purpose: "prefetch",
                         }),
                       priority,
                     ),
@@ -878,7 +863,12 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
       promotePrefetchCacheEntryForNavigation,
     },
     { parseRscRequestPath, stripRscCacheBustingSearchParam },
-  ] = await Promise.all([loadNavigationModule(), loadAppRscCacheBustingModule()]);
+    { AppElementsWire },
+  ] = await Promise.all([
+    loadNavigationModule(),
+    loadAppRscCacheBustingModule(),
+    loadAppElementsModule(),
+  ]);
 
   let target: URL;
   const fullHref = toCanonicalBrowserNavigationHref(
@@ -901,10 +891,8 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
     if (entry.prefetchKind === "route-tree") continue;
     if ((entry.mountedSlotsHeader ?? null) !== mountedSlotsHeader) continue;
 
-    const separatorIndex = cacheKey.indexOf("\0");
-    const rscUrl = separatorIndex === -1 ? cacheKey : cacheKey.slice(0, separatorIndex);
-    const cacheKeyInterceptionContext =
-      separatorIndex === -1 ? null : cacheKey.slice(separatorIndex + 1);
+    const { interceptionContext: cacheKeyInterceptionContext, rscUrl } =
+      AppElementsWire.decodeCacheKey(cacheKey);
     if (cacheKeyInterceptionContext !== interceptionContext) continue;
     let cached: URL;
     try {
@@ -970,6 +958,19 @@ type OwnedLinkPrefetch = {
 };
 
 const ownedLinkPrefetches = new WeakMap<Promise<Response>, OwnedLinkPrefetch>();
+
+/** Send an App Router prefetch request with the credentials and hints all stages share. */
+function fetchAppPrefetch(
+  url: string,
+  init: { headers: Headers; method?: "HEAD"; priority: "low" | "high"; signal?: AbortSignal },
+): Promise<Response> {
+  return fetch(url, {
+    ...init,
+    credentials: "include",
+    // @ts-expect-error — purpose is a valid fetch option in some browsers
+    purpose: "prefetch",
+  });
+}
 
 function createOwnedLinkPrefetch(
   owner: LinkPrefetchInstance | undefined,
@@ -1264,6 +1265,17 @@ function resolveConcreteRouteHref(href: string, as: string | undefined): string 
   return projection?.href || null;
 }
 
+/** Point Link's internal anchor ref and the user's ref at the same node. */
+function setAnchorRefs(
+  internalRef: React.RefObject<HTMLAnchorElement | null>,
+  ref: React.Ref<HTMLAnchorElement> | undefined,
+  node: HTMLAnchorElement | null,
+): void {
+  internalRef.current = node;
+  if (typeof ref === "function") ref(node);
+  else if (ref) ref.current = node;
+}
+
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   {
     href,
@@ -1417,12 +1429,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   });
 
   const setRefs = useCallback(
-    (node: HTMLAnchorElement | null) => {
-      internalRef.current = node;
-      if (typeof forwardedRef === "function") forwardedRef(node);
-      else if (forwardedRef)
-        (forwardedRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
-    },
+    (node: HTMLAnchorElement | null) => setAnchorRefs(internalRef, forwardedRef, node),
     [forwardedRef],
   );
 
@@ -1763,14 +1770,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       }>;
       const childOnClick = child.props.onClick;
       const childRef = child.props.ref;
-      const setDangerousRefs = (node: HTMLAnchorElement | null): void => {
-        internalRef.current = node;
-        if (typeof childRef === "function") {
-          childRef(node);
-        } else if (childRef) {
-          (childRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
-        }
-      };
+      const setDangerousRefs = (node: HTMLAnchorElement | null): void =>
+        setAnchorRefs(internalRef, childRef, node);
       // Next.js also clones the legacy child and merges its ref during render.
       // oxlint-disable-next-line react/refs -- preserve the Next.js legacy Link contract
       const dangerousChild = React.cloneElement(child, {
@@ -1844,14 +1845,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // `ref` is a regular prop on the element. Merge with our intersection
     // observer ref via `setRefs` so prefetching still works.
     const childRef = childPropsExisting.ref;
-    const setLegacyRefs = (node: HTMLAnchorElement | null): void => {
-      internalRef.current = node;
-      if (typeof childRef === "function") {
-        childRef(node);
-      } else if (childRef) {
-        (childRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
-      }
-    };
+    const setLegacyRefs = (node: HTMLAnchorElement | null): void =>
+      setAnchorRefs(internalRef, childRef, node);
     const clonedProps: Record<string, unknown> = {
       ref: setLegacyRefs,
       onClick: (event: MouseEvent<HTMLAnchorElement>) => {
