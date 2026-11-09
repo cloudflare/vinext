@@ -1076,6 +1076,30 @@ describe("app route handler dispatch", () => {
       expect(hits).toBe(1);
     });
 
+    it("tags generateStaticParams' fetches with the route's implicit tags, as Next.js does", async () => {
+      const hits = await withCountingServer(async (url) => {
+        for (let request = 0; request < 2; request++) {
+          const response = await runWithRequestContext(
+            createRequestContext(),
+            async () =>
+              dispatchClosedRoute({
+                async generateStaticParams() {
+                  await (await fetch(url, { cache: "force-cache" })).text();
+                  return [{ slug: "listed" }];
+                },
+                params: { slug: "unlisted" },
+                pathname: "/tagged-posts/unlisted",
+                pattern: "/tagged-posts/:slug",
+              }).response,
+          );
+          expect(response.status).toBe(404);
+          // revalidatePath() expires the cached fetch through a layout's tag.
+          if (request === 0) revalidatePath("/tagged-posts", "layout");
+        }
+      });
+      expect(hits).toBe(2);
+    });
+
     it("keeps middleware's draft-mode disable on a rejected param's rendered 404", async () => {
       const ctx = createRequestContext({
         headersContext: {

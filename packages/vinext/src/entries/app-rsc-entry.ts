@@ -1498,6 +1498,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         isProduction: process.env.NODE_ENV === "production",
         params,
         pattern: route.pattern,
+        routeSegments: route.routeSegments,
       });
     }
     const __segmentConfig = __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route));
