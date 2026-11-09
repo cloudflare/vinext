@@ -70,7 +70,8 @@ describe("closeAfterResponseWithBody on the Cloudflare Workers runtime", () => {
           `${path.sep}app${path.sep}nextjs-compat${path.sep}dynamic${path.sep}node-modules-call-site`,
         ) &&
         !src.includes(`${path.sep}app${path.sep}tsconfig-exact-path`) &&
-        !src.includes(`${path.sep}pages${path.sep}tsconfig-exact-path-pages`),
+        !src.includes(`${path.sep}pages${path.sep}tsconfig-exact-path-pages`) &&
+        !src.includes(`${path.sep}pages${path.sep}pages-only-dependency`),
       CLOUDFLARE_NODE_MODULES,
     );
     // app-basic has no wrangler config of its own (it's normally only used

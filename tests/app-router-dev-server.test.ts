@@ -2322,6 +2322,21 @@ describe("App Router integration", () => {
     expect(ssrGlob).toContain("instrumentation-client.ts");
     expect(clientGlob).toContain("instrumentation.ts");
     expect(clientGlob).toContain("instrumentation-client.ts");
+    // Pages Router modules render in ssr and hydrate in client, never in rsc.
+    expect(ssrEntries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+    expect(clientEntries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+    expect(rscEntries).not.toContain("pages/**/*.{tsx,ts,jsx,js}");
+  });
+
+  it("discovers dependencies only Pages Router pages import at startup", async () => {
+    // Otherwise the first request for such a page re-optimizes and reloads.
+    const optimizer = server.environments.client.depsOptimizer!;
+    await optimizer.scanProcessing;
+    // Earlier requests may already have moved scanned deps into `optimized`.
+    expect([
+      ...Object.keys(optimizer.metadata.optimized),
+      ...Object.keys(optimizer.metadata.discovered),
+    ]).toContain("fake-pages-only-lib");
   });
 
   it("pre-includes framework dependencies in optimizeDeps.include to avoid late discovery", () => {
