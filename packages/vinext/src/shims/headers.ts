@@ -158,7 +158,8 @@ function mergeMiddlewareSetCookies(ctx: HeadersContext, rawHeader: string | null
 /**
  * Run a layout probe without letting its dynamic API usage, fetch tags or
  * cacheLife reach the request. Next.js has no probe: only the render decides
- * whether a page is dynamic and how long it is cached.
+ * whether a page is dynamic and how long it is cached. A `generateStaticParams`
+ * check runs this way too, as Next.js runs the generator apart from the request.
  */
 export async function runWithDetachedDynamicUsage<T>(fn: () => T | Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {

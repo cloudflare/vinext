@@ -22,6 +22,7 @@ import {
   headersContextFromRequest,
   isDraftModeEnabled,
   isDraftModeRequest,
+  runWithDetachedDynamicUsage,
   runWithHeadersContext,
 } from "vinext/shims/headers";
 import {
@@ -60,7 +61,6 @@ import {
   createRequestContext,
   preserveFullyBufferedBodyMetadata,
   runWithRequestContext,
-  runWithUnifiedStateMutation,
 } from "vinext/shims/unified-request-context";
 import { flattenErrorCauses } from "../utils/error-cause.js";
 import { hasBasePath, restoreBasePath, stripBasePath } from "../utils/base-path.js";
@@ -2687,21 +2687,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // Draft mode renders an unlisted param on demand, as the dispatch does.
     if (!routedRoute.routeHandler && !isActiveDraftMode()) {
       const isDynamicParamsMiss = options.isDynamicParamsMiss;
-      // Next.js runs generateStaticParams apart from the request, so its
-      // fetches and cacheForRequest() values leave the tags, dynamic usage and
-      // data of whatever render follows.
-      const isMiss = await runWithUnifiedStateMutation(
-        (ctx) => {
-          ctx.requestCache = new WeakMap();
-          ctx.currentRequestTags = [];
-          ctx.dynamicFetchUrls = new Set<string>();
-          ctx.dynamicUsageDetected = false;
-          ctx.renderDynamicLatch = { dynamic: false, listeners: new Set() };
-          ctx.renderRequestApiUsage = new Set();
-        },
-        () => isDynamicParamsMiss(routedRoute, routedMatch.params),
-      );
-      if (isMiss) {
+      if (
+        await runWithDetachedDynamicUsage(() =>
+          isDynamicParamsMiss(routedRoute, routedMatch.params),
+        )
+      ) {
         // The rejected match seeded its root params before routing finished.
         setRootParams(null);
         match = null;
@@ -2984,7 +2974,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isRouteTreePrefetch &&
     !isDynamicParamsAdmitted &&
     !isActiveDraftMode() &&
-    (await options.isDynamicParamsMiss?.(route, params))
+    options.isDynamicParamsMiss &&
+    (await runWithDetachedDynamicUsage(() => options.isDynamicParamsMiss!(route, params)))
   ) {
     // The rejected match seeded its root params before routing finished.
     setRootParams(null);

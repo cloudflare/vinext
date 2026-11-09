@@ -5058,6 +5058,32 @@ describe("createAppRscHandler", () => {
       expect(dispatchMatchedPage).not.toHaveBeenCalled();
     });
 
+    it("keeps a rejected route-tree prefetch's generator cacheForRequest values out of its 404", async () => {
+      const readRequestData = vi.fn(() => ({}));
+      const cachedRequestData = cacheForRequest(readRequestData);
+      const handler = createHandler({
+        configHeaders: [],
+        async isDynamicParamsMiss() {
+          cachedRequestData();
+          return true;
+        },
+        matchRoute,
+        async renderNotFound() {
+          cachedRequestData();
+          return new Response("not found", { status: 404 });
+        },
+      });
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/products/rejected", headers);
+
+      const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+
+      expect(tree.status).toBe(404);
+      expect(readRequestData).toHaveBeenCalledTimes(2);
+    });
+
     it("checks an admitted route-tree prefetch once with fallback rewrites", async () => {
       const isDynamicParamsMiss = vi.fn(async () => false);
       const handler = createHandler({

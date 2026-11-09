@@ -1272,14 +1272,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // Next.js renders an unlisted param on demand in draft mode.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
   if (options.skipStaticParamsValidation !== true && !isDraftMode) {
-    const dynamicParamsResponse = await validateAppPageRouteDynamicParams({
-      dynamicConfig,
-      dynamicParamsConfig: options.dynamicParamsConfig,
-      generateStaticParams: options.generateStaticParams,
-      isDynamicRoute: route.isDynamic,
-      isProduction: options.isProduction,
-      params: options.staticParamsValidationParams ?? options.params,
-    });
+    const dynamicParamsResponse = await runWithDetachedDynamicUsage(() =>
+      validateAppPageRouteDynamicParams({
+        dynamicConfig,
+        dynamicParamsConfig: options.dynamicParamsConfig,
+        generateStaticParams: options.generateStaticParams,
+        isDynamicRoute: route.isDynamic,
+        isProduction: options.isProduction,
+        params: options.staticParamsValidationParams ?? options.params,
+      }),
+    );
     if (dynamicParamsResponse) {
       // Next.js rejects a generated-param miss while routing, so it renders
       // the root not-found as if no route matched. None of this route's

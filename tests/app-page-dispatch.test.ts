@@ -49,6 +49,7 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
 import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   consumeDynamicUsage,
@@ -1567,6 +1568,35 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(404);
     expect(ensureRouteLoaded).not.toHaveBeenCalled();
+  });
+
+  it("keeps a rejected param's generator cacheForRequest values out of its 404", async () => {
+    const readRequestData = vi.fn(() => ({}));
+    const cachedRequestData = cacheForRequest(readRequestData);
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      async generateStaticParams() {
+        cachedRequestData();
+        return [{ slug: "known" }];
+      },
+      isProduction: true,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderHttpAccessFallbackPage = vi.fn(async () => {
+      cachedRequestData();
+      return new Response("not found", { status: 404 });
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+    );
+
+    expect(response.status).toBe(404);
+    // Next.js runs generateStaticParams apart from the request, so the 404
+    // computes its own value.
+    expect(readRequestData).toHaveBeenCalledTimes(2);
   });
 
   it("renders an unlisted param in draft mode, also when middleware enabled it", async () => {
