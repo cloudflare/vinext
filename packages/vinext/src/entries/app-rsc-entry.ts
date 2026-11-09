@@ -229,6 +229,8 @@ type AppRouterConfig = {
    * @see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
    */
   globalNotFoundPath?: string | null;
+  /** Absolute path to `app/not-found.{tsx,ts,js,jsx}` when present. */
+  appNotFoundPath?: string | null;
   /**
    * When true, the project has a `pages/` directory alongside the App Router.
    * The generated RSC entry exposes `/__vinext/prerender/pages-static-paths`
@@ -815,6 +817,7 @@ export function generateRscEntry(
     globalErrorPath,
     globalNotFoundPath:
       config?.globalNotFound === true ? (config.globalNotFoundPath ?? null) : null,
+    appNotFoundPath: config?.appNotFoundPath ?? null,
   });
   const {
     imports,

@@ -1526,7 +1526,7 @@ describe("App Router generated manifest construction", () => {
     const manifest = buildAppRscManifestCode({ routes, metadataRoutes: [], globalErrorPath: null });
     const imports = manifest.imports.join("\n");
 
-    expect(rootBoundaryRouteFiles(routes)).toEqual([
+    expect(rootBoundaryRouteFiles(routes, "/tmp/test/app/not-found.tsx")).toEqual([
       "/tmp/test/app/layout.tsx",
       "/tmp/test/app/not-found.tsx",
     ]);
@@ -1572,17 +1572,25 @@ describe("App Router generated manifest construction", () => {
       },
     ] satisfies AppRoute[];
 
-    const manifest = buildAppRscManifestCode({ routes, metadataRoutes: [], globalErrorPath: null });
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+      appNotFoundPath: "/tmp/test/app/not-found.tsx",
+    });
 
     expect(manifest.hasAppRootLayout).toBe(false);
     expect(manifest.imports.join("\n")).toContain(
       `import * as ${manifest.appNotFoundVar} from "/tmp/test/app/not-found.tsx";`,
     );
-    // A render without a matched route ships the not-found's client references.
-    expect(rootBoundaryRouteFiles(routes)).toContain("/tmp/test/app/not-found.tsx");
+    // A render without a matched route ships only the not-found's client
+    // references, not those of a route group's root layout it never renders.
+    expect(rootBoundaryRouteFiles(routes, "/tmp/test/app/not-found.tsx")).toEqual([
+      "/tmp/test/app/not-found.tsx",
+    ]);
   });
 
-  it("renders app/not-found in an app with only route handlers", () => {
+  it("renders app/not-found in an app with only route handlers, also below a nearer not-found", () => {
     const routes = [
       {
         pattern: "/api",
@@ -1595,8 +1603,8 @@ describe("App Router generated manifest construction", () => {
         loadingPath: null,
         errorPath: null,
         layoutErrorPaths: [],
-        notFoundPath: "/tmp/test/app/not-found.tsx",
-        notFoundTreePosition: 0,
+        notFoundPath: "/tmp/test/app/api/not-found.tsx",
+        notFoundTreePosition: 1,
         notFoundPaths: [],
         segmentNotFoundPaths: [],
         segmentNotFoundTreePositions: [],
@@ -1613,7 +1621,12 @@ describe("App Router generated manifest construction", () => {
       },
     ] satisfies AppRoute[];
 
-    const manifest = buildAppRscManifestCode({ routes, metadataRoutes: [], globalErrorPath: null });
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+      appNotFoundPath: "/tmp/test/app/not-found.tsx",
+    });
 
     expect(manifest.hasAppRootLayout).toBe(false);
     expect(manifest.imports.join("\n")).toContain(
