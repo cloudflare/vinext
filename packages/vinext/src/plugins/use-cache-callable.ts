@@ -62,8 +62,15 @@ export type UseCacheCallableApi = {
 
 const PLUGIN_NAME = "vinext:server-function-directives";
 export { PLUGIN_NAME as USE_CACHE_PLUGIN_NAME };
-const SOURCE_MODULE_ID_RE = /\.(?:tsx?|jsx?|mjs)(?:\?.*)?$/;
-const NODE_MODULES_SOURCE_MODULE_ID_RE = /[\\/]node_modules[\\/].*\.(?:tsx?|jsx?|mjs)(?:\?.*)?$/;
+// Match every ES module JavaScript and TypeScript extension, `.mts` included.
+// Next.js's server function transform skips `.mts` (webpack `codeCondition`,
+// Turbopack `match_js_extension`), which leaves the directive unrecognised:
+// uncached on the server, and the module body bundled into the browser for a
+// Client Component import. CommonJS `.cjs` and `.cts` stay out: this
+// transform emits ES module syntax, and Vite does not strip TypeScript from
+// `.cts` before this hook.
+const SOURCE_MODULE_ID_RE = /\.(?:m?[jt]s|[jt]sx)(?:\?.*)?$/;
+const NODE_MODULES_SOURCE_MODULE_ID_RE = /[\\/]node_modules[\\/].*\.(?:m?[jt]s|[jt]sx)(?:\?.*)?$/;
 const RESOLVED_VIRTUAL_MODULE_ID_RE = new RegExp(`^${String.fromCharCode(0)}`);
 const USE_CACHE_DIRECTIVE = /^use cache(?:: ([^\s].*))?$/;
 const USE_CACHE_DIRECTIVE_CANDIDATE = /^use cache.*$/;
@@ -181,7 +188,7 @@ function shouldTransformModuleExport(name: string, id: string, meta: ModuleExpor
   ) {
     return false;
   }
-  if (/\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id) && name === "default") return false;
+  if (/\/(layout|template)\.(?:m?[jt]s|[jt]sx)$/.test(id) && name === "default") return false;
   return true;
 }
 
