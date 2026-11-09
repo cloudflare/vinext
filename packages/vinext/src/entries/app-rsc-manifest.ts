@@ -84,7 +84,7 @@ function hasAppDirectoryLayout(route: AppRoute): boolean {
  * layout.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
  */
-function appDirectoryNotFoundPath(
+export function appDirectoryNotFoundPath(
   routes: readonly AppRoute[],
   appNotFoundPath: string | null | undefined,
 ): string | null {
