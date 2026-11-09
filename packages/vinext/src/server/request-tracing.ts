@@ -40,6 +40,11 @@ export function replaceFrameworkRequestRoute(route: string): void {
   activeRequestTrace.getStore()?.setRoute(route, undefined, true);
 }
 
+/** Forget the recorded route when routing resumes after rejecting it. */
+export function resetFrameworkRequestRoute(): void {
+  activeRequestTrace.getStore()?.setRoute(undefined, undefined, true);
+}
+
 function updateResponseHeader(
   response: Response,
   name: string,
@@ -63,14 +68,14 @@ function updateResponseHeader(
 
 export async function captureFrameworkRequestRoute<T>(
   callback: () => Promise<T>,
-  onRoute?: (route: string) => void,
+  onRoute?: (route: string | undefined) => void,
 ): Promise<{ result: T; route: string | undefined }> {
   let route: string | undefined;
   const result = await activeRequestTrace.run(
     {
       recordError() {},
       setRoute(nextRoute, _isRsc, replace) {
-        if ((route === undefined || replace) && nextRoute !== undefined) {
+        if (replace || (route === undefined && nextRoute !== undefined)) {
           route = nextRoute;
           onRoute?.(nextRoute);
         }
@@ -201,7 +206,7 @@ export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T
                   carriedError = error;
                 },
                 setRoute(nextRoute, nextIsRsc, replace) {
-                  if ((route === undefined || replace) && nextRoute !== undefined) {
+                  if (replace || (route === undefined && nextRoute !== undefined)) {
                     route = nextRoute;
                   }
                   if (nextIsRsc !== undefined) isRsc = nextIsRsc;

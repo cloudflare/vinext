@@ -57,6 +57,7 @@ import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
   draftMode,
+  getDraftModeCookieHeader,
   getHeadersContext,
   headers,
   headersContextFromRequest,
@@ -3464,6 +3465,76 @@ describe("app page dispatch", () => {
     // Config Link headers still go before the not-found render's own.
     expect(hasFrameworkLinkHeaders(response.headers)).toBe(true);
   });
+
+  it.each([undefined, "force-static"] as const)(
+    "leaves a dynamicParams=false miss to the fallback rewrites when routing resumes (dynamic = %s)",
+    async (dynamicConfig) => {
+      let navigationContext = {
+        pathname: "/posts/hello",
+        searchParams: new URLSearchParams(),
+        params: { slug: "hello" } as Record<string, string | string[]>,
+      };
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw new Error("unknown static params should not render the page");
+        },
+        async generateStaticParams() {
+          return [{ slug: "known" }];
+        },
+        getNavigationContext: () => navigationContext,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+        setNavigationContext(context) {
+          navigationContext = context;
+        },
+      });
+      const renderHttpAccessFallbackPage = vi.fn(async () => new Response("404", { status: 404 }));
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+      const resumeRoutingAfterMiss = vi.fn(() => true);
+
+      const cacheability: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      const context: ExecutionContextLike = { waitUntil() {} };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, cacheability);
+
+      const requestContext = createRequestContext({
+        headersContext: {
+          headers: new Headers(),
+          cookies: new Map([["__prerender_bypass", "draft-secret"]]),
+          draftModeSecret: "draft-secret",
+        },
+        rootParams: { lang: "fr" },
+      });
+      const { pendingDraftCookie, response } = await runWithExecutionContext(context, () =>
+        runWithRequestContext(requestContext, async () => {
+          // What middleware's draftMode().disable() leaves for the response.
+          (await draftMode()).disable();
+          const response = await dispatchAppPage({
+            ...options,
+            dynamicConfig,
+            dynamicParamsConfig: false,
+            resumeRoutingAfterMiss,
+          });
+          return { pendingDraftCookie: getDraftModeCookieHeader(), response };
+        }),
+      );
+
+      expect(resumeRoutingAfterMiss).toHaveBeenCalledOnce();
+      expect(response.status).toBe(404);
+      // Routing discards the response, so nothing keeps the fallback rewrite's
+      // response out of the shared cache.
+      expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+      expect(cacheability.finalResponseVetoReason).toBeUndefined();
+      // No 404 renders, and the fallback rewrite's render sees none of this
+      // route's params.
+      expect(renderHttpAccessFallbackPage).not.toHaveBeenCalled();
+      expect(navigationContext.params).toEqual({});
+      // The dispatch runs in its own copy of the request state, so the fallback
+      // rewrite's response still sends middleware's draft-mode transition.
+      expect(pendingDraftCookie).toContain("__prerender_bypass=;");
+    },
+  );
 
   it("keeps a dynamicParams=false miss out of a split stage's shared cache under a public config policy", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());

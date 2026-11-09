@@ -19,11 +19,19 @@ import {
 import {
   cookies,
   draftMode,
+  getDraftModeCookieHeader,
   headers,
   markDynamicUsage,
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
-import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  runWithExecutionContext,
+  type ExecutionContextLike,
+} from "../packages/vinext/src/shims/request-context.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 import {
   createRequestContext,
   getRequestContext,
@@ -608,7 +616,7 @@ describe("app route handler dispatch", () => {
       pathname: string;
       pattern: string;
       renderNotFound?: () => Promise<Response>;
-      skipStaticParamsValidation?: boolean;
+      resumeRoutingAfterMiss?: () => boolean;
     }) {
       const handlerCalls: unknown[] = [];
       const renderNotFound = vi.fn(
@@ -646,7 +654,7 @@ describe("app route handler dispatch", () => {
         },
         scheduleBackgroundRegeneration() {},
         searchParams: new URLSearchParams(),
-        skipStaticParamsValidation: options.skipStaticParamsValidation,
+        resumeRoutingAfterMiss: options.resumeRoutingAfterMiss,
       });
       return { handlerCalls, renderNotFound, response };
     }
@@ -701,18 +709,52 @@ describe("app route handler dispatch", () => {
       expect((await unlisted.response).status).toBe(404);
     });
 
-    it("does not run generateStaticParams again for params routing admitted", async () => {
-      const generateStaticParams = vi.fn(() => [{ slug: "listed" }]);
-      const admitted = dispatchClosedRoute({
-        generateStaticParams,
-        params: { slug: "listed" },
-        pathname: "/posts/listed",
-        pattern: "/posts/:slug",
-        skipStaticParamsValidation: true,
+    it("leaves a rejected param to the fallback rewrites when routing resumes", async () => {
+      const ctx = createRequestContext({
+        headersContext: {
+          headers: new Headers(),
+          cookies: new Map([["__prerender_bypass", "test-draft-secret"]]),
+          draftModeSecret: "test-draft-secret",
+        },
       });
-      expect((await admitted.response).status).toBe(200);
-      expect(admitted.handlerCalls).toEqual([{ slug: "listed" }]);
-      expect(generateStaticParams).not.toHaveBeenCalled();
+      const cacheability: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      const executionContext: ExecutionContextLike = { waitUntil() {} };
+      Reflect.set(executionContext, CACHEABILITY_REQUEST_STATE, cacheability);
+      const result = await runWithExecutionContext(executionContext, () =>
+        runWithRequestContext(ctx, async () => {
+          (await draftMode()).disable();
+          const rejected = dispatchClosedRoute({
+            generateStaticParams: () => [{ slug: "listed" }],
+            handlerConfig: { fetchCache: "only-cache" },
+            params: { slug: "unlisted" },
+            pathname: "/posts/unlisted",
+            pattern: "/posts/:slug",
+            resumeRoutingAfterMiss: () => true,
+          });
+          const response = await rejected.response;
+          return {
+            fetchCacheMode: getRequestContext().currentFetchCacheMode,
+            handlerCalls: rejected.handlerCalls,
+            // The fallback rewrite's response sends the draft-mode transition.
+            pendingDraftCookie: getDraftModeCookieHeader(),
+            renderedNotFound: rejected.renderNotFound.mock.calls.length,
+            response,
+          };
+        }),
+      );
+      expect(result.response.status).toBe(404);
+      // Routing discards the response, so nothing keeps the fallback rewrite's
+      // response out of the shared cache.
+      expect(result.response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+      expect(cacheability.finalResponseVetoReason).toBeUndefined();
+      expect(result.response.headers.has("set-cookie")).toBe(false);
+      expect(result.handlerCalls).toEqual([]);
+      expect(result.renderedNotFound).toBe(0);
+      expect(result.fetchCacheMode).toBeNull();
+      expect(result.pendingDraftCookie).toContain("__prerender_bypass=;");
     });
 
     it("runs generateStaticParams with the route's fetchCache before an auto-OPTIONS response", async () => {

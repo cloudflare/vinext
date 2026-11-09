@@ -18,6 +18,7 @@ import {
   getDraftModeCookieHeader,
   isDraftModeRequest,
   markDynamicUsage,
+  restoreDraftModeCookieHeader,
   setHeadersAccessPhase,
 } from "vinext/shims/headers";
 import { setNavigationContext } from "vinext/shims/navigation";
@@ -116,10 +117,13 @@ type DispatchAppRouteHandlerOptions = {
    * (`params ? await params : null`) resolves to `null`.
    */
   params: AppRouteParams | null;
-  /** Routing already admitted these params. */
-  skipStaticParamsValidation?: boolean;
   /** Render the not-found page Next.js serves for an unmatched URL. */
   renderNotFound?: () => Promise<Response>;
+  /**
+   * Called on a dynamicParams = false miss. When it returns true, routing
+   * resumes with the fallback rewrites, so the miss renders no 404.
+   */
+  resumeRoutingAfterMiss?: () => boolean;
   request: Request;
   route: AppRouteHandlerDispatchRoute;
   scheduleBackgroundRegeneration: RouteHandlerBackgroundRegenerator;
@@ -242,7 +246,7 @@ function runStaticParamsGeneration<T>(
  * the check, so the caller decides whether to run it.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-route.ts
  */
-export async function isAppRouteHandlerParamsMiss(options: {
+async function isAppRouteHandlerParamsMiss(options: {
   handler: AppRouteHandlerModule;
   isProduction: boolean;
   params: AppRouteParams;
@@ -396,13 +400,12 @@ async function dispatchAppRouteHandlerImpl(
   // Next.js rejects params outside generateStaticParams before it resolves
   // the method, and falls through to the unmatched-URL 404. Draft mode
   // skips the check. This build only caches admitted params, so a cache read
-  // runs first and spares a hit the generateStaticParams call, unless routing
-  // already ran it for the app's fallback rewrites. An entry a
+  // runs first and spares a hit the generateStaticParams call. An entry a
   // previous deploy stored under a pinned build ID is served without the
   // check, as docs/reference/differences.mdx notes.
   const rejectUnlistedParams = async (): Promise<Response | null> => {
     const params = options.params;
-    if (params === null || isDraftMode || options.skipStaticParamsValidation) return null;
+    if (params === null || isDraftMode) return null;
     const isMiss = await isAppRouteHandlerParamsMiss({
       handler,
       isProduction,
@@ -417,6 +420,12 @@ async function dispatchAppRouteHandlerImpl(
     setCurrentFetchCacheMode(null);
     setCurrentFetchRevalidate(null);
     setCurrentForceDynamicFetchDefault(false);
+    if (options.resumeRoutingAfterMiss?.()) {
+      // The fallback rewrite's response carries the draft-mode transition.
+      if (initialDraftModeCookie) restoreDraftModeCookieHeader(initialDraftModeCookie);
+      // Routing discards this response, so it marks nothing for the request.
+      return new Response(null, { status: 404 });
+    }
     if (!options.renderNotFound) {
       return markRouteMissResponse(finalizeFrameworkResponse(notFoundResponse()));
     }
