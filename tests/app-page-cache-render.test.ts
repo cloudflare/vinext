@@ -57,7 +57,7 @@ describe("renderAppPageCacheArtifacts", () => {
     recordedSpans.length = 0;
     const failure = new TypeError("recovered regeneration failure");
 
-    await renderAppPageCacheArtifacts({
+    const result = await renderAppPageCacheArtifacts({
       captureRscData: false,
       cleanPathname: "/posts/post",
       element: React.createElement("div", null, "page"),
@@ -84,12 +84,42 @@ describe("renderAppPageCacheArtifacts", () => {
       status: "recovered regeneration failure",
       type: "AppRender.getBodyResult",
     });
+    // Next.js stores no render that reports an error.
+    expect(result.reportedError).toEqual({ error: failure });
+  });
+
+  it("reports an SSR error a Suspense boundary caught", async () => {
+    const failure = new Error("suspended client failure");
+
+    const result = await renderAppPageCacheArtifacts({
+      captureRscData: false,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      isCapturedRscError: () => false,
+      loadSsrHandler: async () => ({
+        async handleSsr(_stream, _navigation, _fontData, options) {
+          options?.onSsrError?.(failure);
+          return createStream(["<html>fallback</html>"]);
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      onSsrError: () => undefined,
+      renderToReadableStream: () => createStream(["flight"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(result.reportedError).toEqual({ error: failure });
   });
 
   it("does not mark well-known SSR control flow as a regeneration failure", async () => {
     recordedSpans.length = 0;
 
-    await renderAppPageCacheArtifacts({
+    const result = await renderAppPageCacheArtifacts({
       captureRscData: false,
       cleanPathname: "/posts/post",
       element: React.createElement("div", null, "page"),
@@ -115,6 +145,7 @@ describe("renderAppPageCacheArtifacts", () => {
       errors: [],
       type: "AppRender.getBodyResult",
     });
+    expect(result.reportedError).toBeUndefined();
   });
 
   it("marks regenerated HTML as static generation for client navigation hooks", async () => {
