@@ -1592,6 +1592,7 @@ function createNodeExecutionContext(
 ): ExecutionContextLike {
   return {
     hostRuntime: "node",
+    skipsPagesApiHandlerWaitUntil: true,
     requestSignal,
     waitUntil(promise: Promise<unknown>) {
       // Node has no Workers lifecycle. The work runs on its own; tracking it

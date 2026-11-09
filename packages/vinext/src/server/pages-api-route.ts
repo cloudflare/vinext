@@ -328,11 +328,14 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       // inherited from the surrounding App Router handler rather than passed
       // through options.ctx.
       //
-      // Node keeps the handler running without help. There, waitUntil holds
-      // a graceful shutdown open, which Next.js never does for API handlers,
-      // and a handler waiting for an event that never comes would hang it.
+      // The Node production server keeps the handler running without help.
+      // There, waitUntil holds a graceful shutdown open, which Next.js never
+      // does for API handlers, and a handler waiting for an event that never
+      // comes would hang it.
       const executionContext = getRequestExecutionContext();
-      if (executionContext?.hostRuntime !== "node") executionContext?.waitUntil(handlerLifecycle);
+      if (!executionContext?.skipsPagesApiHandlerWaitUntil) {
+        executionContext?.waitUntil(handlerLifecycle);
+      }
       return finalizeResponse(firstSettled.response);
     }
 
