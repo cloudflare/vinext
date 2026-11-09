@@ -5,6 +5,7 @@ import {
   hasNonStaticAppRouteHandlerMethods,
   isPossibleAppRouteActionRequest,
   resolveAppRouteHandlerMethod,
+  resolveAppRouteHandlerStaticParamsEnforcement,
   resolveAppRouteHandlerSpecialError,
   shouldApplyAppRouteHandlerRevalidateHeader,
   shouldCompleteAppRouteHandlerResponse,
@@ -13,6 +14,47 @@ import {
 } from "../packages/vinext/src/server/app-route-handler-policy.js";
 
 describe("app route handler policy helpers", () => {
+  // Next.js v16.2.7 enforces dynamicParams = false through the prerender
+  // manifest, which a production build fills only for statically generated
+  // routes: packages/next/src/build/index.ts
+  it("enforces dynamicParams = false where Next.js lists the route as prerendered", () => {
+    const GET = () => new Response("ok");
+    const generateStaticParams = () => [{ slug: "one" }];
+    const resolve = resolveAppRouteHandlerStaticParamsEnforcement;
+    expect(resolve({ GET, generateStaticParams }, false)).toBe("skip");
+    expect(resolve({ GET, dynamicParams: true, generateStaticParams }, true)).toBe("skip");
+
+    const closed = { GET, dynamicParams: false, generateStaticParams };
+    expect(resolve(closed, true)).toBe("enforce");
+    expect(resolve({ ...closed, revalidate: 60 }, true)).toBe("enforce");
+
+    for (const bailout of [{ dynamic: "force-dynamic" }, { revalidate: 0 }]) {
+      expect(resolve({ ...closed, ...bailout }, true)).toBe("skip");
+      // Dev checks every dynamicParams = false route with generateStaticParams.
+      expect(resolve({ ...closed, ...bailout }, false)).toBe("enforce");
+    }
+    // These bail out only while a generated path prerenders.
+    for (const methods of [{ POST: GET }, { OPTIONS: GET }]) {
+      expect(resolve({ ...closed, ...methods }, true)).toBe("enforce-when-none-generated");
+      expect(resolve({ ...closed, ...methods }, false)).toBe("enforce");
+    }
+
+    // Without generateStaticParams, only static production routes are listed.
+    const noParams = { GET, dynamicParams: false };
+    expect(resolve(noParams, true)).toBe("skip");
+    expect(resolve(noParams, false)).toBe("skip");
+    for (const dynamic of ["force-static", "error"]) {
+      expect(resolve({ ...noParams, dynamic, POST: GET }, true)).toBe("enforce");
+      expect(resolve({ ...noParams, dynamic }, false)).toBe("skip");
+    }
+
+    // Edge routes never prerender, so production has no entry for them.
+    for (const runtime of ["edge", "experimental-edge"]) {
+      expect(resolve({ ...closed, runtime }, true)).toBe("skip");
+      expect(resolve({ ...noParams, dynamic: "force-static", runtime }, true)).toBe("skip");
+    }
+  });
+
   it("preserves revalidate = 0 as a distinct never-cache signal", () => {
     // revalidate = 0 must not collapse to null. Downstream header and cache
     // gates rely on 0 being observable to emit a no-store Cache-Control and

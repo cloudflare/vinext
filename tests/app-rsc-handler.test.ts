@@ -14,6 +14,7 @@ import { readActionFormDataWithLimit } from "../packages/vinext/src/server/app-s
 import { getRequestContext } from "../packages/vinext/src/shims/unified-request-context.js";
 import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
 import { captureFrameworkRequestRoute } from "../packages/vinext/src/server/request-tracing.js";
+import { markRouteMissResponse } from "../packages/vinext/src/server/route-miss-response.js";
 import {
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   type AppWorkerResponseStageProps,
@@ -413,6 +414,107 @@ describe("createAppRscHandler", () => {
       expect(response.headers.get("cache-control")).toBe(NEVER_CACHE);
       await response.text();
     });
+
+    it.each([
+      { name: "dispatched directly", staged: false },
+      { name: "dispatched through the response stage", staged: true },
+    ])(
+      "sends a route handler's unlisted-param 404 $name like an unmatched route's",
+      async ({ staged }) => {
+        const route = createPageRoute({
+          isDynamic: true,
+          params: ["slug"],
+          pattern: "/:slug",
+          rootParamNames: ["slug"],
+          routeHandler: { GET: () => new Response("route") },
+        });
+        const setNavigationContext = vi.fn();
+        let renderContext: unknown = null;
+        const handler = createHandler({
+          configHeaders: [
+            ...cacheableConfigHeaders,
+            { source: "/:path*", headers: [{ key: "Set-Cookie", value: "config=1" }] },
+          ],
+          async dispatchMatchedRouteHandler({ renderNotFound }) {
+            // Dispatch marks the 404 it rebuilds as a routing-level miss.
+            return markRouteMissResponse(await renderNotFound());
+          },
+          matchRoute: (pathname) =>
+            pathname === "/unlisted" ? { params: { slug: "unlisted" }, route } : null,
+          async renderNotFound() {
+            const { getCurrentRootParams } =
+              await import("../packages/vinext/src/shims/root-params.js");
+            renderContext = {
+              navigationParams: setNavigationContext.mock.lastCall?.[0].params,
+              rootParams: getCurrentRootParams(),
+            };
+            return new Response("rendered not found", { status: 404 });
+          },
+          setNavigationContext,
+        });
+
+        const { result: response, route: tracedRoute } = await captureFrameworkRequestRoute(() =>
+          handler(
+            new Request("https://example.test/docs/unlisted"),
+            null,
+            false,
+            staged
+              ? (stageRequest: Request, props: AppWorkerResponseStageProps) =>
+                  handler.handleResponseStage(stageRequest, null, props)
+              : undefined,
+          ),
+        );
+
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE);
+        expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+        expect(response.headers.getSetCookie()).toEqual(["config=1"]);
+        // Traced as the unmatched route, not the rejected route handler.
+        expect(tracedRoute).toBe("/404");
+        expect(await response.text()).toBe("rendered not found");
+        expect(renderContext).toEqual({ navigationParams: {}, rootParams: {} });
+      },
+    );
+
+    it.each([
+      { name: "dispatched directly", staged: false },
+      { name: "dispatched through the response stage", staged: true },
+    ])(
+      "applies config headers to a redirect from a route handler's unlisted-param 404 $name",
+      async ({ staged }) => {
+        const route = createPageRoute({
+          isDynamic: true,
+          params: ["slug"],
+          pattern: "/:slug",
+          routeHandler: { GET: () => new Response("route") },
+        });
+        const handler = createHandler({
+          configHeaders: [{ source: "/:path*", headers: [{ key: "X-Config", value: "1" }] }],
+          async dispatchMatchedRouteHandler({ renderNotFound }) {
+            return markRouteMissResponse(await renderNotFound());
+          },
+          matchRoute: (pathname) =>
+            pathname === "/unlisted" ? { params: { slug: "unlisted" }, route } : null,
+          // The root layout redirects while the not-found renders.
+          renderNotFound: async () =>
+            new Response(null, { headers: { Location: "/login" }, status: 307 }),
+        });
+
+        const response = await handler(
+          new Request("https://example.test/docs/unlisted"),
+          null,
+          false,
+          staged
+            ? (stageRequest: Request, props: AppWorkerResponseStageProps) =>
+                handler.handleResponseStage(stageRequest, null, props)
+            : undefined,
+        );
+
+        expect(response.status).toBe(307);
+        // Application code produced the redirect, so config headers apply.
+        expect(response.headers.get("x-config")).toBe("1");
+      },
+    );
 
     it("sends a staged not-found page with the never-cache policy", async () => {
       const handler = createHandler({

@@ -424,6 +424,10 @@ const nextConfig: NextConfig = {
           source: "/nextjs-compat/dynamic-params-fallback/:slug",
           destination: "/nextjs-compat/dynamic-params-fallback-target/:slug",
         },
+        {
+          source: "/nextjs-compat/dynamic-params-fallback/:slug/data",
+          destination: "/nextjs-compat/dynamic-params-fallback-target/:slug",
+        },
         // Used by E2E: app-router-prod/server-action-late-routing.spec.ts
         { source: "/fallback-revalidate", destination: "/nextjs-compat/action-revalidate" },
         // Used by E2E: app-router-encoded-basepath-i18n (see beforeFiles).

@@ -31,6 +31,7 @@ import {
   createRenderDynamicLatch,
   getHeadersShimState as _getState,
   headersShimAls as _als,
+  isInsideAnyCacheScope,
   markDynamicUsage,
   markRenderRequestApiUsage,
   throwIfInsideCacheScope,
@@ -63,6 +64,12 @@ export type HeadersContext = {
   headers: Headers;
   cookies: Map<string, string>;
   accessError?: Error;
+  /**
+   * The route whose `generateStaticParams` runs. There is no HTTP request, so
+   * `connection()` and `draftMode()` reject with `accessError` too, and
+   * revalidation throws, also from a cached function the generator calls.
+   */
+  staticParamsRoute?: string;
   draftModeEnabled?: boolean;
   forceStatic?: boolean;
   mutableCookies?: RequestCookies;
@@ -1090,6 +1097,10 @@ export async function draftMode(): Promise<DraftModeResult> {
   const context = state.headersContext;
   if (!context) {
     throw createDraftModeScopeError("draftMode()");
+  }
+  // A cache scope reads disabled draft mode, even in generateStaticParams.
+  if (context.staticParamsRoute !== undefined && context.accessError && !isInsideAnyCacheScope()) {
+    throw context.accessError;
   }
   // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
   // getter and merely calling `draftMode()` does not require bailing out

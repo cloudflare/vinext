@@ -532,7 +532,7 @@ function withStoredSpecialErrorStatus(response: Response, isSegmentPrefetch: boo
   );
 }
 
-/** Send a routing-level not-found from the page render as an unmatched route's 404. */
+/** Send a routing-level not-found from a dispatch as an unmatched route's 404. */
 function withRouteMissCacheControl(response: Response): Response {
   if (!response.headers.has(VINEXT_ROUTE_MISS_HEADER)) return response;
   // Dispatch rejects the params after the matched route was recorded.
@@ -622,6 +622,10 @@ type DispatchMatchedRouteHandlerOptions<TRoute> = {
    * matched params object.
    */
   params: AppPageParams | null;
+  /** Render the not-found page Next.js serves for an unmatched URL. */
+  renderNotFound: () => Promise<Response>;
+  /** Routing already admitted these params. */
+  skipStaticParamsValidation?: boolean;
   request: Request;
   route: TRoute;
   searchParams: URLSearchParams;
@@ -753,9 +757,9 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
    */
   ensureRouteLoaded?: (route: TRoute) => unknown;
   /**
-   * Whether a loaded page route rejects these params under
+   * Whether a loaded page or route handler rejects these params under
    * `dynamicParams = false`. Absent in the request-only stage, which has no
-   * page modules and sends route tree prefetches to the full graph.
+   * route modules and sends route tree prefetches to the full graph.
    */
   isDynamicParamsMiss?: (route: TRoute, params: AppPageParams) => Promise<boolean>;
   ensureInstrumentation?: (ctx: ExecutionContextLike | null) => Promise<void>;
@@ -2674,8 +2678,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         options.ensureRouteLoaded!(routedRoute),
       );
     }
-    // Draft mode renders an unlisted param on demand, as the dispatch does.
-    if (!routedRoute.routeHandler && !isActiveDraftMode()) {
+    // Draft mode skips the check, as each dispatch does.
+    if (!isActiveDraftMode()) {
       const isDynamicParamsMiss = options.isDynamicParamsMiss;
       if (
         await runStaticParamsCheckDetached(() =>
@@ -3071,7 +3075,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         routePathname: responseStageRoutePathname,
         scriptNonce: scriptNonce ?? null,
       });
-      return composeResponseStageResponse(response, routeHandlerRuntime);
+      return withRouteMissCacheControl(
+        await composeResponseStageResponse(
+          response,
+          // The miss renders the not-found page, which takes page config headers.
+          response.headers.has(VINEXT_ROUTE_MISS_HEADER) ? undefined : routeHandlerRuntime,
+        ),
+      );
     }
     const { setCurrentFetchSoftTags } = await import("vinext/shims/fetch-cache");
     setCurrentFetchSoftTags(
@@ -3087,10 +3097,26 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // object (always `{}` for non-dynamic) so `useParams()` etc. still see
       // an object shape; only the user-facing handler context surfaces null.
       params: route.isDynamic ? renderParams : null,
+      renderNotFound() {
+        // Render the 404 with the context of an unmatched route.
+        options.setNavigationContext({
+          pathname: canonicalPathname,
+          searchParams: resolvedSearchParams,
+          params: {},
+        });
+        setRootParams({});
+        return renderUnmatchedRoute();
+      },
       request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
       route,
       searchParams: resolvedSearchParams,
+      skipStaticParamsValidation: isDynamicParamsAdmitted,
     });
+    if (routeHandlerResponse.headers.has(VINEXT_ROUTE_MISS_HEADER)) {
+      // The not-found render is application code, so a redirect it throws
+      // still gets config headers, as for an unmatched URL.
+      return markAppRscApplicationResponse(withRouteMissCacheControl(routeHandlerResponse));
+    }
     return markAppRscRouteHandlerResponse(routeHandlerResponse, routeHandlerRuntime);
   }
 
