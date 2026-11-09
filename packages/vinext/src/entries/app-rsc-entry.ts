@@ -1500,6 +1500,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isDynamicRoute: route.isDynamic,
       isProduction: process.env.NODE_ENV === "production",
       params,
+      routeSegments: route.routeSegments,
     })) !== null;
   },
   prefetchInlining: ${JSON.stringify(prefetchInlining)},

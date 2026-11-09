@@ -2,8 +2,12 @@ import type { AppPageSpecialError } from "./app-page-execution.js";
 import {
   runWithFetchDedupe,
   setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
+  setCurrentFetchSoftTags,
+  setCurrentForceDynamicFetchDefault,
   type FetchCacheMode,
 } from "vinext/shims/fetch-cache";
+import { buildAppStaticParamsTags } from "./implicit-tags.js";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
@@ -744,6 +748,7 @@ type ValidateAppPageRouteDynamicParamsOptions = {
   isDynamicRoute: boolean;
   isProduction: boolean;
   params: AppPageParams;
+  routeSegments?: readonly string[];
 };
 
 /**
@@ -760,10 +765,14 @@ export function validateAppPageRouteDynamicParams(
   if (options.isProduction && options.dynamicConfig === "force-dynamic") {
     return Promise.resolve(null);
   }
-  // Next.js runs generateStaticParams with the route's fetchCache. Callers run
-  // this check apart from the request, so the mode stays out of it.
+  // Next.js runs generateStaticParams in a work store of its own: the route's
+  // fetchCache and implicit tags, and no revalidate or force-dynamic default.
+  // Callers run this check apart from the request, so these stay out of it.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
   setCurrentFetchCacheMode(options.fetchCache ?? null);
+  setCurrentFetchSoftTags(buildAppStaticParamsTags(options.routeSegments ?? []));
+  setCurrentFetchRevalidate(null);
+  setCurrentForceDynamicFetchDefault(false);
   return validateAppPageDynamicParams({
     enforceStaticParamsOnly: options.dynamicParamsConfig === false,
     generateStaticParams: options.generateStaticParams,

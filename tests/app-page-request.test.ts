@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { revalidatePath } from "../packages/vinext/src/shims/cache.js";
 import { resolveAppPageSpecialError } from "../packages/vinext/src/server/app-page-execution.js";
 import {
   buildAppPageElement,
@@ -86,6 +87,41 @@ describe("app page request helpers", () => {
         expect(response?.status).toBe(404);
       }
       // force-no-store keeps the generator's force-cache fetch out of the cache.
+      expect(hits).toBe(2);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("tags generateStaticParams' fetches with the route's implicit tags, as Next.js does", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    const check = () =>
+      runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          validateAppPageRouteDynamicParams({
+            dynamicParamsConfig: false,
+            async generateStaticParams() {
+              await (await fetch(url, { cache: "force-cache" })).text();
+              return [{ slug: "known" }];
+            },
+            isDynamicRoute: true,
+            isProduction: true,
+            params: { slug: "unknown" },
+            routeSegments: ["tagged-posts", "[slug]"],
+          }),
+        ),
+      );
+    try {
+      await check();
+      revalidatePath("/tagged-posts/[slug]", "page");
+      await check();
+      // revalidatePath() expires the cached fetch through the page's tag.
       expect(hits).toBe(2);
     } finally {
       await new Promise((resolve) => server.close(resolve));

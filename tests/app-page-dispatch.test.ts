@@ -4199,10 +4199,14 @@ describe("app page dispatch", () => {
       isForceStatic: true,
       search: "",
     });
+    // The dynamicParams check sets its own defaults apart from the request, so
+    // these check that the dispatch set the interception's.
+    vi.mocked(setCurrentForceDynamicFetchDefault).mockClear();
     await dispatchCurrentRouteIntercept(undefined, { dynamic: "force-dynamic" });
-    expect(setCurrentForceDynamicFetchDefault).toHaveBeenLastCalledWith(true);
+    expect(setCurrentForceDynamicFetchDefault).toHaveBeenCalledWith(true);
+    vi.mocked(setCurrentFetchRevalidate).mockClear();
     await dispatchCurrentRouteIntercept(undefined, { revalidate: 7 });
-    expect(setCurrentFetchRevalidate).toHaveBeenLastCalledWith(7);
+    expect(setCurrentFetchRevalidate).toHaveBeenCalledWith(7);
     await expect(
       dispatchCurrentRouteIntercept(undefined, { unstable_dynamicStaleTime: 15 }),
     ).resolves.toMatchObject({ dynamicStaleTime: 15 });
