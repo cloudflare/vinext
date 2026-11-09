@@ -100,6 +100,7 @@ import {
   getPendingAppRouterScrollIntent,
   isLatestAppRouterScrollIntent,
 } from "../packages/vinext/src/shims/app-router-scroll-state.js";
+import * as appRouterNavigationShim from "../packages/vinext/src/shims/app-router-navigation.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createBfcacheSegmentIdentityMap,
@@ -1161,7 +1162,7 @@ describe("app browser entry navigation scheduling", () => {
     stubWindow("https://example.com/current");
 
     const responseUrl = "https://example.com/target?_rsc=fresh";
-    const snapshot = navigationShim.createCachedRscResponseSnapshot(
+    const snapshot = appRouterNavigationShim.createCachedRscResponseSnapshot(
       new Response("unused", {
         headers: {
           "content-type": "text/x-component",
@@ -1186,7 +1187,7 @@ describe("app browser entry navigation scheduling", () => {
       }),
     ).toEqual({ kind: "compatible" });
 
-    const replayed = navigationShim.restoreRscResponse(snapshot);
+    const replayed = appRouterNavigationShim.restoreRscResponse(snapshot);
     expect(replayed.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
     expect(replayed.headers.get(VINEXT_MOUNTED_SLOTS_HEADER)).toBe("children");
     expect(replayed.headers.get(VINEXT_PARAMS_HEADER)).toBe("%7B%22slug%22%3A%22target%22%7D");

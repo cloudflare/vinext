@@ -93,8 +93,8 @@ const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
 const isServer = typeof window === "undefined";
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
-type NavigationModule = typeof import("./navigation.js");
-type PrefetchCacheEntry = import("./navigation.js").PrefetchCacheEntry;
+type NavigationModule = typeof import("./app-router-navigation.js");
+type PrefetchCacheEntry = import("./app-router-navigation.js").PrefetchCacheEntry;
 type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
 
 let loadedNavigationModule: NavigationModule | null = null;
@@ -103,7 +103,7 @@ let loadedHybridClientRouteOwnerModule: HybridClientRouteOwnerModule | null = nu
 let hybridClientRouteOwnerModulePromise: Promise<HybridClientRouteOwnerModule> | null = null;
 
 function loadNavigationModule(): Promise<NavigationModule> {
-  return (navigationModulePromise ??= import("./navigation.js").then((module) => {
+  return (navigationModulePromise ??= import("./app-router-navigation.js").then((module) => {
     loadedNavigationModule = module;
     return module;
   }));

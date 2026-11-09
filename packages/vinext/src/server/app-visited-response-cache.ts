@@ -1,4 +1,7 @@
-import { resolveCachedRscResponseExpiresAt, type CachedRscResponse } from "vinext/shims/navigation";
+import {
+  resolveCachedRscResponseExpiresAt,
+  type CachedRscResponse,
+} from "vinext/shims/app-router-navigation";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
 import { parseRscRequestPath, stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 

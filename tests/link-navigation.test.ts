@@ -1969,7 +1969,8 @@ describe("Link prefetch scheduling", () => {
       href: "/viewport-prefetch-target",
       nodeEnv: "production",
     });
-    const { invalidatePrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+    const { invalidatePrefetchCache } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
@@ -2010,7 +2011,8 @@ describe("Link prefetch scheduling", () => {
       href: "/viewport-prefetch-target",
       nodeEnv: "production",
     });
-    const { invalidatePrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+    const { invalidatePrefetchCache } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
@@ -2049,7 +2051,7 @@ describe("Link prefetch scheduling", () => {
       const observer = stubIntersectionObserver();
       const result = await renderIsolatedLink({ href, nodeEnv: "production" });
       const { getPrefetchCache, invalidatePrefetchCache } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       try {
         observer.dispatchIntersectingEntry(result.anchor);
@@ -2173,7 +2175,8 @@ describe("Link prefetch scheduling", () => {
         },
       },
     });
-    const { invalidatePrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+    const { invalidatePrefetchCache } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const renderModeOf = (call: unknown[] | undefined) =>
       new Headers((call?.[1] as RequestInit | undefined)?.headers).get(
         VINEXT_RSC_RENDER_MODE_HEADER,
@@ -2352,7 +2355,7 @@ describe("Link prefetch scheduling", () => {
       const observer = stubIntersectionObserver();
       const result = await renderIsolatedLink({ href, nodeEnv: "production", props });
       const { invalidatePrefetchCache } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       try {
         observer.dispatchIntersectingEntry(result.anchor);
@@ -2388,7 +2391,8 @@ describe("Link prefetch scheduling", () => {
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
       // Manually expire the cached entry
-      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       const cache = getPrefetchCache();
       const now = 1_000_000;
       for (const [, entry] of cache) {
@@ -2474,7 +2478,8 @@ describe("Link prefetch scheduling", () => {
       expect(
         (fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
       ).toBe("1");
-      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       const entry = Array.from(getPrefetchCache().values())[0];
       expect(entry?.cacheForNavigation).toBe(false);
       expect(entry?.optimisticRouteShell).toBe(true);
@@ -2587,7 +2592,8 @@ describe("Link prefetch scheduling", () => {
       expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
         "1",
       );
-      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       const entry = Array.from(getPrefetchCache().values())[0];
       expect(entry?.cacheForNavigation).toBe(false);
       expect(entry?.optimisticRouteShell).toBe(true);
@@ -2607,7 +2613,7 @@ describe("Link prefetch scheduling", () => {
 
     try {
       const { getPrefetchCache, prefetchRscResponse } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       prefetchRscResponse(
         "/viewport-prefetch-target?searchParam=a_PPR&_rsc=first",
         Promise.resolve(createFlightResponse("target-page-with-search-param")),
@@ -2708,7 +2714,8 @@ describe("Link prefetch scheduling", () => {
       expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
         null,
       );
-      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       const entry = Array.from(getPrefetchCache().values())[0];
       expect(entry?.cacheForNavigation).toBe(true);
       expect(entry?.optimisticRouteShell).toBe(false);
@@ -2750,7 +2757,8 @@ describe("Link prefetch scheduling", () => {
       expect(headers?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
       expect(headers?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("1");
 
-      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       const entry = Array.from(getPrefetchCache().values())[0];
       expect(entry?.cacheForNavigation).toBe(false);
       expect(entry?.optimisticRouteShell).toBe(true);
@@ -2792,7 +2800,8 @@ describe("Link prefetch scheduling", () => {
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
 
-      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       const entry = Array.from(getPrefetchCache().values())[0];
       await entry?.pending;
 
@@ -2825,7 +2834,8 @@ describe("Link prefetch scheduling", () => {
         observer.dispatchIntersectingEntry(result.anchor);
         await waitForFetchCalls(result.fetch, 1);
 
-        const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+        const { getPrefetchCache } =
+          await import("../packages/vinext/src/shims/app-router-navigation.js");
         const entry = Array.from(getPrefetchCache().values())[0];
         await entry?.pending;
 
@@ -2871,7 +2881,8 @@ describe("Link prefetch scheduling", () => {
         try {
           observer.dispatchIntersectingEntry(result.anchor);
           await waitForFetchCalls(result.fetch, 1);
-          const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+          const { getPrefetchCache } =
+            await import("../packages/vinext/src/shims/app-router-navigation.js");
           const entry = Array.from(getPrefetchCache().values())[0];
           if (settledBeforeHover) {
             respond();
@@ -2970,7 +2981,7 @@ describe("Link prefetch scheduling", () => {
     });
 
     try {
-      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
       const visitedResponse = {
         buffer: new TextEncoder().encode("visited").buffer,
         contentType: "text/x-component",
@@ -3097,7 +3108,7 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
       props: { prefetch: true },
     });
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
     let resolveLearningPrefetch!: (response: Response) => void;
     result.fetch.mockImplementationOnce(
       () =>
@@ -3243,7 +3254,7 @@ describe("Link prefetch scheduling", () => {
     const { createRscRequestHeaders, createRscRequestUrl } =
       await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
     const { consumePrefetchResponse, getPrefetchCache, getPrefetchedUrls } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const rscUrl = await createRscRequestUrl("/intent-prefetch-target", createRscRequestHeaders());
     const snapshot = {
       buffer: new TextEncoder().encode("flight").buffer,
@@ -3290,7 +3301,7 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
     });
     const { getPrefetchCache, getPrefetchedUrls } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
@@ -3331,7 +3342,8 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
       props: { unstable_dynamicOnHover: true },
     });
-    const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+    const { getPrefetchCache } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     result.fetch
       .mockImplementationOnce(() => shellPromise)
@@ -3517,7 +3529,8 @@ describe("Link prefetch scheduling", () => {
       expect(routeTreeHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
       expect(routeTreeHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
       expect(routeTreeHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
-      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       const routeTreeEntry = Array.from(getPrefetchCache().values()).find(
         (entry) => entry.prefetchKind === "route-tree",
       );
@@ -3599,7 +3612,8 @@ describe("Link prefetch scheduling", () => {
       expect(typeof pageRequestUrl).toBe("string");
       expect(pageRequestUrl as string).not.toContain("%5Bvalue%5D");
 
-      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       const navigationEntry = Array.from(getPrefetchCache().values()).find(
         (entry) => entry.prefetchKind === "navigation",
       );
@@ -3617,7 +3631,8 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
       props: { unstable_dynamicOnHover: true },
     });
-    const { invalidatePrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+    const { invalidatePrefetchCache } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
@@ -3639,7 +3654,8 @@ describe("Link prefetch scheduling", () => {
       expect(
         (hoverFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
       ).toBeNull();
-      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       const entries = Array.from(getPrefetchCache().values());
       expect(entries).toEqual(
         expect.arrayContaining([
@@ -3675,7 +3691,8 @@ describe("Link prefetch scheduling", () => {
     });
     const { createRscRequestHeaders, createRscRequestUrl } =
       await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
-    const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+    const { getPrefetchCache } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const targetRscUrl = await createRscRequestUrl(
       "/.//attacker.example/z",
       createRscRequestHeaders(),
@@ -3721,7 +3738,8 @@ describe("Link prefetch scheduling", () => {
     });
     const { createRscRequestHeaders, createRscRequestUrl } =
       await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
-    const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+    const { getPrefetchCache } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const targetRscUrl = await createRscRequestUrl("/photos/1", createRscRequestHeaders());
     const createEntry = (mountedSlotsHeader: string | null) => ({
       cacheForNavigation: false,

@@ -1,7 +1,7 @@
 /**
  * Shared URL utilities for same-origin detection.
  *
- * Used by link.tsx, navigation.ts, and router.ts to normalize
+ * Used by link.tsx, app-router-navigation.ts, and router.ts to normalize
  * same-origin absolute URLs to local paths for client-side navigation.
  */
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
