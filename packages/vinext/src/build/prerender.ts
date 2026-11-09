@@ -1126,8 +1126,9 @@ export async function prerenderPages({
               locale,
               config.i18n,
             );
-            // A `.` or `..` param would write this page outside the output
-            // directory. Next.js's normalizePagePath fails the build on it.
+            // A `.` or `..` param resolves this page to another path, and `..`
+            // can climb out of the output directory. Next.js's normalizePagePath
+            // fails the build on it.
             assertNormalizedPagePath(urlPath);
             if (!seenPaths.has(urlPath)) {
               seenPaths.add(urlPath);

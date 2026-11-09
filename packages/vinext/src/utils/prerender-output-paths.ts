@@ -2,7 +2,7 @@ import path from "pathslash";
 
 /**
  * A prerendered URL with a `.` or `..` segment, which `posix.normalize` would
- * resolve to another path, so its artifacts would land outside their output
+ * resolve to another path; a `..` segment can climb out of the output
  * directory. Next.js's `normalizePagePath` throws the same message, which
  * fails `next build` in every output mode.
  */
