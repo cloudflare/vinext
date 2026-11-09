@@ -370,9 +370,11 @@ import {
 import {
   EXPORT_ALL_CANDIDATE_FILTER,
   hasExportAllCandidate,
+  hasServerExportCandidate,
   stripServerExports,
   validatePageExports,
 } from "./plugins/strip-server-exports.js";
+import { blankServerExportSource } from "./plugins/page-source-content.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import {
   createImportMetaUrlPlugin,
@@ -1499,6 +1501,20 @@ const RESOLVED_INSTRUMENTATION_CLIENT = `${VIRTUAL_PREFIX}${VIRTUAL_INSTRUMENTAT
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
+// Page files vinext:strip-server-exports loads for client sourcemaps, and the
+// language each is compiled as. Plain `.js` pages may contain JSX.
+const PAGE_SCRIPT_LANGS: Record<string, "jsx" | "ts" | "tsx"> = {
+  ".js": "jsx",
+  ".jsx": "jsx",
+  ".mjs": "jsx",
+  ".cjs": "jsx",
+  ".ts": "ts",
+  ".mts": "ts",
+  ".cts": "ts",
+  ".tsx": "tsx",
+};
+const PAGE_SCRIPT_RE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+
 /** Matches a trailing image extension on an import path. Built once: `IMAGE_EXTS`
  *  is constant, so there is no need to recompile this per transform invocation. */
 const IMAGE_EXT_RE = new RegExp(`\\.(${IMAGE_EXTS})$`);
@@ -2067,6 +2083,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const relativePath = fileMatcher.stripExtension(canonicalId.slice(canonicalPagesDir.length));
     return relativePath === "/api" || relativePath.startsWith("/api/");
   };
+  // Pages whose data exports are stripped from the client build: every page
+  // except API routes, _app, _document and _error.
+  const isClientPageWithDataExports = (id: string): boolean => {
+    if (!hasPagesDir) return false;
+    const modulePath = stripViteModuleQuery(id);
+    if (!isWithinPagesDirectory(modulePath)) return false;
+    const canonicalId = canonicalizePageTransformPath(modulePath);
+    if (!isWithinPagesDirectory(canonicalId)) return false;
+    if (!fileMatcher.isPageFile(canonicalId)) return false;
+    if (isApiPage(canonicalId)) return false;
+    const relativePath = canonicalId.slice(canonicalPagesDir.length);
+    return !/^\/(?:_app|_document|_error)(?:\.[^/]*)?$/.test(relativePath);
+  };
+  // Client build pages loaded by vinext:strip-server-exports.
+  const clientSourcemapPageIds = new Set<string>();
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
   // VINEXT_OPTIMIZE_DEPS_EXCLUDE plus every bare specifier vinext resolves to
@@ -7918,8 +7949,52 @@ export const loadServerActionClient = ${
     //
     // Only applies to client builds (not SSR) and only to files under the
     // pages/ directory.
+    //
+    // Client builds with sourcemaps load these pages themselves so the map's
+    // sourcesContent leaves out what the transform strips, as each module's
+    // first map supplies its sourcesContent.
     {
       name: "vinext:strip-server-exports",
+      buildStart() {
+        if (this.environment.name === "client") clientSourcemapPageIds.clear();
+      },
+      load: {
+        order: "pre",
+        filter: { id: { include: PAGE_SCRIPT_RE, exclude: VIRTUAL_MODULE_ID_RE } },
+        async handler(id) {
+          const environment = this.environment;
+          if (environment.name !== "client" || environment.mode !== "build") return null;
+          if (!environment.config.build.sourcemap || !isClientPageWithDataExports(id)) return null;
+          const source = await fs.promises.readFile(id, "utf8");
+          if (!hasServerExportCandidate(source)) return null;
+          let sourcesContent: string;
+          try {
+            const compiled = await transformWithOxc(
+              source,
+              id,
+              {
+                lang: PAGE_SCRIPT_LANGS[path.extname(id)],
+                jsx: { runtime: "automatic" },
+                sourcemap: true,
+              },
+              undefined,
+              environment.config,
+            );
+            sourcesContent = blankServerExportSource(
+              source,
+              compiled.code,
+              compiled.map?.mappings ?? "",
+            );
+          } catch {
+            // The transform reports the error; never fall back to the source.
+            sourcesContent = source.replace(/[^\r\n]/g, " ");
+          }
+          const map = new MagicString(source).generateMap({ hires: "boundary", source: id });
+          map.sourcesContent = [sourcesContent];
+          clientSourcemapPageIds.add(id);
+          return { code: source, map };
+        },
+      },
       transform: {
         filter: {
           id: { exclude: VIRTUAL_MODULE_ID_RE },
@@ -7927,21 +8002,22 @@ export const loadServerActionClient = ${
         },
         handler(code, id) {
           if (this.environment?.name !== "client") return null;
-          if (!hasPagesDir) return null;
-          // Only transform files under the pages/ directory
-          const modulePath = stripViteModuleQuery(id);
-          if (!isWithinPagesDirectory(modulePath)) return null;
-          const canonicalId = canonicalizePageTransformPath(modulePath);
-          if (!isWithinPagesDirectory(canonicalId)) return null;
-          if (!fileMatcher.isPageFile(canonicalId)) return null;
-          // Skip API routes, _app, _document, _error
-          const relativePath = canonicalId.slice(canonicalPagesDir.length);
-          if (isApiPage(canonicalId)) return null;
-          if (/^\/(?:_app|_document|_error)(?:\.[^/]*)?$/.test(relativePath)) return null;
+          if (!isClientPageWithDataExports(id)) return null;
 
           // stripServerExports returns { code, map }; thread the map through so
           // line shifts from removed exports stay debuggable in client builds.
-          return stripServerExports(code);
+          const result = stripServerExports(code);
+          // A page this plugin did not load (another plugin's file type, or a
+          // query id) has no map to override, so it gets none.
+          if (
+            result &&
+            this.environment.mode === "build" &&
+            this.environment.config.build.sourcemap &&
+            !clientSourcemapPageIds.has(id)
+          ) {
+            return { code: result.code, map: { mappings: "" } };
+          }
+          return result;
         },
       },
     },

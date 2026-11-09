@@ -2,6 +2,8 @@ import { defineConfig } from "vite-plus";
 import vinext from "vinext";
 
 export default defineConfig({
+  // The production e2e checks what browser sourcemaps include.
+  environments: { client: { build: { sourcemap: true } } },
   plugins: [
     vinext(),
     {

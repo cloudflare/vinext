@@ -443,6 +443,48 @@ type StripServerExportsResult = {
  * - crates/next-custom-transforms/src/transforms/strip_page_exports.rs
  */
 export function stripServerExports(code: string): StripServerExportsResult | null {
+  const edits = serverExportEdits(code);
+  if (!edits) return null;
+  const string = new MagicString(code);
+  for (const edit of edits) string.overwrite(edit.start, edit.end, edit.replacement);
+  // The MagicString already tracks every overwrite, so emit its sourcemap
+  // instead of dropping it — removing whole statements shifts line numbers for
+  // the rest of the module, which would otherwise break client-build debugging.
+  return magicStringTransformResult(string);
+}
+
+/**
+ * The ranges of `code` that `stripServerExports` removes or rewrites. Text a
+ * rewrite keeps verbatim at either end of its range is left out.
+ */
+export function serverExportRewrittenRanges(
+  code: string,
+): Array<{ start: number; end: number }> | null {
+  const edits = serverExportEdits(code);
+  if (!edits) return null;
+  return edits.flatMap((edit) => {
+    const original = code.slice(edit.start, edit.end);
+    let prefix = 0;
+    const shortest = Math.min(original.length, edit.replacement.length);
+    while (prefix < shortest && original[prefix] === edit.replacement[prefix]) prefix++;
+    let suffix = 0;
+    while (
+      suffix < shortest - prefix &&
+      original[original.length - 1 - suffix] ===
+        edit.replacement[edit.replacement.length - 1 - suffix]
+    ) {
+      suffix++;
+    }
+    const start = edit.start + prefix;
+    const end = edit.end - suffix;
+    return start < end ? [{ start, end }] : [];
+  });
+}
+
+// The outermost edits, in source order, with their replacements rendered.
+function serverExportEdits(
+  code: string,
+): Array<{ start: number; end: number; replacement: string }> | null {
   if (!hasServerExportCandidate(code) && !hasExportAllCandidate(code)) {
     return null;
   }
@@ -1077,20 +1119,17 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
 
   if (edits.length === 0) return null;
 
-  const string = new MagicString(code);
   const uniqueEdits = [
     ...new Map(edits.map((edit) => [`${edit.start}:${edit.end}`, edit])).values(),
   ].sort((left, right) => left.start - right.start || right.end - left.end);
   // Nested assignments can sit inside a range that is already being removed or
   // re-rendered; the outermost edit wins and renders any nested edits itself.
+  const outermost: Array<{ start: number; end: number; replacement: string }> = [];
   let lastEnd = Number.NEGATIVE_INFINITY;
   for (const edit of uniqueEdits) {
     if (edit.start < lastEnd) continue;
-    string.overwrite(edit.start, edit.end, renderEdit(edit));
+    outermost.push({ start: edit.start, end: edit.end, replacement: renderEdit(edit) });
     lastEnd = edit.end;
   }
-  // The MagicString already tracks every overwrite, so emit its sourcemap
-  // instead of dropping it — removing whole statements shifts line numbers for
-  // the rest of the module, which would otherwise break client-build debugging.
-  return magicStringTransformResult(string);
+  return outermost;
 }

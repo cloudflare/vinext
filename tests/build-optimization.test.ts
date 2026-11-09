@@ -10,15 +10,24 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
-import { createBuilder, createLogger, mergeConfig, parseAst, resolveConfig } from "vite";
+import {
+  createBuilder,
+  createLogger,
+  mergeConfig,
+  parseAst,
+  resolveConfig,
+  transformWithOxc,
+} from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
   EXPORT_ALL_CANDIDATE_FILTER as _EXPORT_ALL_CANDIDATE_FILTER,
   hasExportAllCandidate as _hasExportAllCandidate,
   hasServerExportCandidate as _hasServerExportCandidate,
+  serverExportRewrittenRanges as _serverExportRewrittenRanges,
   stripServerExports as _stripServerExportsImpl,
   validatePageExports as _validatePageExports,
 } from "../packages/vinext/src/plugins/strip-server-exports.js";
+import { blankServerExportSource } from "../packages/vinext/src/plugins/page-source-content.js";
 import {
   createClientManualChunks,
   getClientTreeshakeConfig,
@@ -6594,6 +6603,100 @@ export const getStaticPaths = () => [
     expect(result).not.toBeNull();
     expect(result).not.toContain("getStaticPaths");
     expect(result).not.toContain("a;b");
+  });
+});
+
+describe("serverExportRewrittenRanges", () => {
+  it("leaves out text a rewrite keeps at either end", () => {
+    const code = `import { kept, serverOnly } from "./lib";
+export default function Page() {
+  return kept;
+}
+export function getStaticProps() {
+  return { props: { value: serverOnly() } };
+}
+`;
+    const ranges = _serverExportRewrittenRanges(code)!;
+    expect(ranges.map(({ start, end }) => code.slice(start, end))).toEqual([
+      ", serverOnly",
+      code.slice(code.indexOf("export function getStaticProps"), -1),
+    ]);
+  });
+
+  it("returns null for a page without data exports", () => {
+    expect(_serverExportRewrittenRanges("export default function Page() {}")).toBeNull();
+  });
+});
+
+describe("blankServerExportSource", () => {
+  async function blankPage(source: string, lang: "jsx" | "tsx"): Promise<string> {
+    const compiled = await transformWithOxc(source, `/app/pages/page.${lang}`, {
+      lang,
+      jsx: { runtime: "automatic" },
+      sourcemap: true,
+    });
+    return blankServerExportSource(source, compiled.code, compiled.map!.mappings);
+  }
+
+  it("blanks data exports and the helpers and imports only they use", async () => {
+    const source = `import { db } from "./db";
+import { useState } from "react";
+
+// Non-ASCII text before the page: ünïcödé — 日本語
+function loadValue(): string {
+  return db.query("HELPER_BODY");
+}
+type LoadValue = typeof loadValue;
+
+export default function Page({ value }: { value: string }) {
+  const [count, setCount] = useState<number>(0);
+  return <button onClick={() => setCount(count + 1)}>PAGE_BODY {value} ✓ {count}</button>;
+}
+
+export async function getServerSideProps() {
+  const load: LoadValue = loadValue;
+  return { props: { value: "DATA_EXPORT_BODY" + load() } };
+}
+`;
+    const blanked = await blankPage(source, "tsx");
+    expect(blanked).not.toMatch(/db|HELPER_BODY|loadValue|getServerSideProps|DATA_EXPORT_BODY/);
+    // Every kept line keeps its position.
+    expect(blanked.length).toBe(source.length);
+    const keptLines = source
+      .split("\n")
+      .filter((line, index) => blanked.split("\n")[index] === line);
+    expect(keptLines).toEqual([
+      'import { useState } from "react";',
+      "",
+      "// Non-ASCII text before the page: ünïcödé — 日本語",
+      "",
+      "export default function Page({ value }: { value: string }) {",
+      "  const [count, setCount] = useState<number>(0);",
+      "  return <button onClick={() => setCount(count + 1)}>PAGE_BODY {value} ✓ {count}</button>;",
+      "}",
+      "",
+      "",
+    ]);
+  });
+
+  it("blanks static data exports in a JavaScript page", async () => {
+    const source = `export default function Page({ value }) {
+  return <p>PAGE_BODY {value}</p>;
+}
+
+export const getStaticPaths = () => ({ paths: ["/STATIC_PATHS_BODY"], fallback: false });
+export const getStaticProps = () => ({ props: { value: "STATIC_PROPS_BODY" } });
+`;
+    const blanked = await blankPage(source, "jsx");
+    expect(blanked).toContain("  return <p>PAGE_BODY {value}</p>;");
+    expect(blanked).not.toMatch(/STATIC_PATHS_BODY|STATIC_PROPS_BODY/);
+  });
+
+  it("blanks the whole page when the map places nothing", () => {
+    const source = "export default function Page() {}\nexport function getStaticProps() {}\n";
+    expect(blankServerExportSource(source, source, "")).toBe(
+      " ".repeat(33) + "\n" + " ".repeat(35) + "\n",
+    );
   });
 });
 
