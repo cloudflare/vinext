@@ -76,9 +76,6 @@ function hasAppDirectoryLayout(route: AppRoute): boolean {
   return route.layouts.length > 0 && route.layoutTreePositions[0] === 0;
 }
 
-// With app/layout, Next.js' /_not-found page holds only the app directory's
-// own layout and boundaries, even when / sits in a route group with its own.
-// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
 /**
  * `app/not-found` in an app without `app/layout`. Next.js' /_not-found page
  * renders it with no layout there, rather than any route group's root layout.
@@ -94,6 +91,9 @@ function appDirectoryNotFoundPath(routes: readonly AppRoute[]): string | null {
   return null;
 }
 
+// With app/layout, Next.js' /_not-found page holds only the app directory's
+// own layout and boundaries, even when / sits in a route group with its own.
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
 function rootRouteLayoutPaths(route: AppRoute | undefined): readonly string[] {
   if (!route) return [];
   if (route.pattern === "/" && !hasAppDirectoryLayout(route)) return route.layouts;
