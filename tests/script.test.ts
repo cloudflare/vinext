@@ -759,23 +759,29 @@ describe("Script beforeInteractive registry (#2016)", () => {
  */
 function runHoistedLoader(
   html: string,
-  {
-    withCurrentScript = true,
-    readyState = "loading",
-  }: { withCurrentScript?: boolean; readyState?: "loading" | "interactive" } = {},
+  { withCurrentScript = true }: { withCurrentScript?: boolean } = {},
 ): {
   attributes: Record<string, string>;
   text: string;
-  placement: "replaced-loader" | "appended-to-head" | "after-dom-content-loaded";
+  operations: string[];
+  placement: "replaced-loader" | "appended-to-head";
 } {
   const loader = /^<script\b[^>]*>([^<]*)<\/script[^>]*>$/i.exec(html)?.[1];
   if (loader === undefined) throw new Error(`not a single hoisted loader: ${html}`);
-  const created = { attributes: {} as Record<string, string>, text: "" };
-  let placement: "replaced-loader" | "appended-to-head" | "after-dom-content-loaded" | undefined;
-  let domContentLoaded: (() => void) | undefined;
+  const created = {
+    attributes: {} as Record<string, string>,
+    text: "",
+    operations: [] as string[],
+  };
+  let placement: "replaced-loader" | "appended-to-head" | undefined;
   const element = {
+    set async(value: boolean) {
+      created.operations.push(`async=${value}`);
+      if (!value) delete created.attributes.async;
+    },
     hasAttribute: (name: string) => name.toLowerCase() in created.attributes,
     setAttribute(name: string, value: string) {
+      created.operations.push(`setAttribute(${name})`);
       created.attributes[name.toLowerCase()] = value;
     },
     set text(value: string) {
@@ -783,10 +789,6 @@ function runHoistedLoader(
     },
   };
   const fakeDocument = {
-    readyState,
-    addEventListener(type: string, listener: () => void) {
-      if (type === "DOMContentLoaded") domContentLoaded = listener;
-    },
     currentScript: withCurrentScript
       ? {
           parentNode: {},
@@ -803,11 +805,6 @@ function runHoistedLoader(
     },
   };
   runInNewContext(loader, { document: fakeDocument });
-  if (domContentLoaded) {
-    if (placement) throw new Error("deferred loader inserted the script early");
-    placement = "after-dom-content-loaded";
-    domContentLoaded();
-  }
   if (!placement) throw new Error("loader did not insert the script");
   return { ...created, placement };
 }
@@ -841,11 +838,9 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
     const inline = runHoistedLoader(
       renderBeforeInteractiveInlineScripts([{ id: "x", content: "console.log(1)" }]),
     );
-    expect(inline).toEqual({
-      attributes: { id: "x", "data-nscript": "beforeInteractive" },
-      text: "console.log(1)",
-      placement: "replaced-loader",
-    });
+    expect(inline.attributes).toEqual({ id: "x", "data-nscript": "beforeInteractive" });
+    expect(inline.text).toBe("console.log(1)");
+    expect(inline.placement).toBe("replaced-loader");
     expect(renderBeforeInteractiveInlineScripts([{ src: "/x.js" }])).toContain(
       'data-nscript="beforeInteractive"',
     );
@@ -862,11 +857,14 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
     expect(html.match(/</g)).toHaveLength(2);
     expect(html).not.toContain("&");
     expect(html.startsWith('<script nonce="n1">')).toBe(true);
-    expect(runHoistedLoader(html)).toEqual({
-      attributes: { id: "data", nonce: "n1", "data-nscript": "beforeInteractive" },
-      text: content,
-      placement: "replaced-loader",
+    const created = runHoistedLoader(html);
+    expect(created.attributes).toEqual({
+      id: "data",
+      nonce: "n1",
+      "data-nscript": "beforeInteractive",
     });
+    expect(created.text).toBe(content);
+    expect(created.placement).toBe("replaced-loader");
   });
 
   it("appends to <head> when the loader runs without a currentScript", () => {
@@ -883,21 +881,17 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
     expect(runHoistedLoader(html).attributes.nonce).toBe("first");
   });
 
-  it("defers non-async inline module scripts until the document has parsed", () => {
+  it("keeps created module scripts ordered unless the author asked for async", () => {
+    // Created scripts start out force-async; clearing `async` first puts a
+    // module in the in-order queue, and an author `async` attribute still wins.
     const render = (attributes: Record<string, string | boolean>) =>
       renderBeforeInteractiveInlineScripts([{ id: "m", content: "1", attributes }]);
-    expect(runHoistedLoader(render({ type: " Module " })).placement).toBe(
-      "after-dom-content-loaded",
-    );
-    // Once parsing is done there is nothing to wait for.
-    expect(
-      runHoistedLoader(render({ type: "module" }), { readyState: "interactive" }).placement,
-    ).toBe("replaced-loader");
-    // async modules and classic scripts run as soon as they are inserted.
-    expect(runHoistedLoader(render({ type: "module", async: true })).placement).toBe(
-      "replaced-loader",
-    );
-    expect(runHoistedLoader(render({ type: "text/javascript" })).placement).toBe("replaced-loader");
+    const ordered = runHoistedLoader(render({ type: "module" }));
+    expect(ordered.operations[0]).toBe("async=false");
+    expect(ordered.attributes).not.toHaveProperty("async");
+    const asyncModule = runHoistedLoader(render({ type: "module", async: true }));
+    expect(asyncModule.operations[0]).toBe("async=false");
+    expect(asyncModule.attributes.async).toBe("");
   });
 
   it("emits a <script src> tag (with no body) for registered src scripts", () => {
