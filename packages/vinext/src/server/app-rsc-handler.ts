@@ -2958,11 +2958,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
   const resolvedSearchParams = getResolvedSearchParams();
   const isRouteTreePrefetch = isRouteTreePrefetchRequest(request) && !route.routeHandler;
+  // Routing already admitted these params for this route.
+  const isDynamicParamsAdmitted =
+    dynamicParamsAdmittedMatch?.route === route && dynamicParamsAdmittedMatch.params === params;
   // Next.js rejects a dynamicParams = false miss while routing, outside draft
   // mode, so route discovery gets the unmatched route's 404 rather than this
   // route's tree.
   if (
     isRouteTreePrefetch &&
+    !isDynamicParamsAdmitted &&
     !isActiveDraftMode() &&
     (await options.isDynamicParamsMiss?.(route, params))
   ) {
@@ -3169,11 +3173,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             }
           : undefined,
         renderedConcreteUrlPaths: getRenderedConcreteUrlPathsForRoute(route.pattern),
-        // Routing already admitted these params for this route.
-        skipStaticParamsValidation:
-          isPrerenderFallbackShell ||
-          (dynamicParamsAdmittedMatch?.route === route &&
-            dynamicParamsAdmittedMatch.params === params),
+        skipStaticParamsValidation: isPrerenderFallbackShell || isDynamicParamsAdmitted,
         staticParamsValidationParams:
           prerenderRouteParams === null || isPrerenderFallbackShell ? undefined : params,
         rootParams,

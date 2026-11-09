@@ -5055,6 +5055,30 @@ describe("createAppRscHandler", () => {
       expect(dispatchMatchedPage).not.toHaveBeenCalled();
     });
 
+    it("checks an admitted route-tree prefetch once with fallback rewrites", async () => {
+      const isDynamicParamsMiss = vi.fn(async () => false);
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles: [],
+          fallback: [{ source: "/products/:slug", destination: "/fallback/:slug" }],
+        },
+        isDynamicParamsMiss,
+        matchRoute,
+      });
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/products/allowed", headers);
+
+      const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+
+      expect(tree.status).toBe(200);
+      // Routing already admitted the params, so the generators run once.
+      expect(isDynamicParamsMiss).toHaveBeenCalledOnce();
+    });
+
     it("keeps an unlisted param when middleware enables draft mode, as Next.js does", async () => {
       const isDynamicParamsMiss = vi.fn(async () => true);
       const dispatchMatchedPage = vi.fn(async () => new Response("page"));
