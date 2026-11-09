@@ -226,6 +226,52 @@ async function assertRscSuffixAuthGuard(baseUrl: string): Promise<void> {
   }
 }
 
+async function assertMetadataRouteSuffixAuthGuard(baseUrl: string): Promise<void> {
+  // Next.js runs middleware for every spelling of an exact metadata route
+  // matcher. A `.rsc` suffix, encoded or not, never selects the metadata route,
+  // so the suffixed spellings 404 instead of serving it.
+  const targets = [
+    { body: "protected-sitemap-entry", pathname: "/sitemap.xml" },
+    { body: "protected-robots-entry", pathname: "/robots.txt" },
+  ];
+  const suffixes = [".rsc", "%2Ersc", "%2ersc", ".rs%63"];
+
+  for (const target of targets) {
+    const response = await fetch(`${baseUrl}${target.pathname}`);
+    const body = await response.text();
+    expect(response.status, target.pathname).toBe(200);
+    expect(response.headers.get("x-auth-guard"), target.pathname).toBeNull();
+    expect(body, target.pathname).toContain(target.body);
+  }
+  for (const target of targets) {
+    for (const suffix of suffixes) {
+      const pathname = `${target.pathname}${suffix}`;
+      const response = await fetch(`${baseUrl}${pathname}`);
+      const body = await response.text();
+      expect(response.status, pathname).toBe(404);
+      expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
+      expect(body, pathname).not.toContain(target.body);
+    }
+  }
+
+  const headers = { "x-metadata-route-auth": "1" };
+  const guardedPaths = [
+    ...targets.flatMap(({ pathname }) => [
+      pathname,
+      ...suffixes.map((suffix) => `${pathname}${suffix}`),
+    ]),
+    "/sitemap.xm%6C",
+    "/robots.tx%74",
+  ];
+  for (const pathname of guardedPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+}
+
 async function assertStaticAssetExclusionAuthGuard(baseUrl: string): Promise<void> {
   const headers = { "x-static-asset-auth": "1" };
   // `js(?!on)` excludes `.js` but not `.json`, and `.cs` is not `.css`/`.csv`.
@@ -379,6 +425,10 @@ describe("valid middleware matcher auth guards", () => {
       await assertRscSuffixAuthGuard(baseUrl);
     }, 30_000);
 
+    it("runs middleware for encoded `.rsc` spellings of metadata routes", async () => {
+      await assertMetadataRouteSuffixAuthGuard(baseUrl);
+    }, 30_000);
+
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
     }, 30_000);
@@ -445,6 +495,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("treats a `.rsc` suffix as an ordinary path segment", async () => {
       await assertRscSuffixAuthGuard(baseUrl);
+    });
+
+    it("runs middleware for encoded `.rsc` spellings of metadata routes", async () => {
+      await assertMetadataRouteSuffixAuthGuard(baseUrl);
     });
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
@@ -538,6 +592,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("treats a `.rsc` suffix as an ordinary path segment", async () => {
       await assertRscSuffixAuthGuard(baseUrl);
+    });
+
+    it("runs middleware for encoded `.rsc` spellings of metadata routes", async () => {
+      await assertMetadataRouteSuffixAuthGuard(baseUrl);
     });
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
