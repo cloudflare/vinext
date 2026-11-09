@@ -388,7 +388,7 @@ test("a put after a miss is visible to the next read", async () => {
   assert.equal(await stored.text(), "stored-after-miss");
 });
 
-test("purgeExisting skips first writes but still purges replacements and tombstones", async () => {
+test("purgeExisting skips first writes but still purges replacements and tombstones whose edge purge is queued", async () => {
   const first = await put("/conditional-edge-purge", "first", { purgeExisting: true });
   assert.deepEqual(first.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
 
@@ -408,6 +408,33 @@ test("purgeExisting skips first writes but still purges replacements and tombsto
     backingStoreUpdated: true,
     edgePurgeAccepted: false,
   });
+});
+
+test("purgeExisting skips replacing a tombstone once its edge purge completed", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  const edgeCalls = async () =>
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[];
+  await put("/purged-edge-copy", "first", { tags: ["purged-edge-copy"] });
+  const purged = await purge({ tags: ["purged-edge-copy"] });
+  assert.deepEqual(purged.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal((await edgeCalls()).length, 1);
+
+  // The edge holds no copy of the key any more, so its refill needs no purge.
+  const refill = await put("/purged-edge-copy", "refill", {
+    purgeExisting: true,
+    tags: ["purged-edge-copy"],
+  });
+  assert.deepEqual(refill.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal((await edgeCalls()).length, 1);
+  assert.equal(await (await read("/purged-edge-copy")).text(), "refill");
+
+  // Replacing that refill while it is fresh still purges it.
+  const replacement = await put("/purged-edge-copy", "replacement", {
+    purgeExisting: true,
+    tags: ["purged-edge-copy"],
+  });
+  assert.deepEqual(replacement.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal((await edgeCalls()).length, 2);
 });
 
 test("purgeExisting skips replacing an entry without a revalidator once its edge copy expired", async () => {
