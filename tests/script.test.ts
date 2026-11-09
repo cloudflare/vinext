@@ -765,7 +765,7 @@ function runHoistedLoader(
   text: string;
   placement: "replaced-loader" | "appended-to-head";
 } {
-  const loader = /^<script\b[^>]*>([^<]*)<\/script>$/.exec(html)?.[1];
+  const loader = /^<script\b[^>]*>([^<]*)<\/script>$/i.exec(html)?.[1];
   if (loader === undefined) throw new Error(`not a single hoisted loader: ${html}`);
   const created = { attributes: {} as Record<string, string>, text: "" };
   let placement: "replaced-loader" | "appended-to-head" | undefined;

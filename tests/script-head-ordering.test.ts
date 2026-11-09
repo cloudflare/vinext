@@ -65,12 +65,12 @@ type HoistedInlineScript = {
  */
 function findHoistedInlineScripts(html: string): HoistedInlineScript[] {
   return [
-    ...html.matchAll(/<script\b[^>]*>[^<]*\(document\.currentScript,([^<]*)\)<\/script>/g),
+    ...html.matchAll(/<script\b[^>]*>[^<]*\(document\.currentScript,([^<]*)\)<\/script>/gi),
   ].map((match) => {
     const [attrs, content] = JSON.parse(match[1] ?? "") as [[string, string][], string];
     return {
       index: match.index,
-      tag: /^<script\b[^>]*>/.exec(match[0])?.[0] ?? "",
+      tag: /^<script\b[^>]*>/i.exec(match[0])?.[0] ?? "",
       attrs: Object.fromEntries(attrs),
       content,
     };
