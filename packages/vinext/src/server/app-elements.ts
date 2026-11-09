@@ -26,6 +26,8 @@ export function readOptimisticStateKeyRebinder(
 }
 /** Prefix of the element that streams a route's generateMetadata() tags in the body. */
 export const APP_STREAMING_METADATA_BODY_ID_PREFIX = "__vinext_streaming_metadata_body:";
+/** Prefix of the element that renders a route's head, beside its layout tree. */
+export const APP_ROUTE_HEAD_ID_PREFIX = "__vinext_route_head:";
 
 export {
   AppElementsWire,
