@@ -64,10 +64,11 @@ export type HeadersContext = {
   cookies: Map<string, string>;
   accessError?: Error;
   /**
-   * No HTTP request exists, as in `generateStaticParams`: `connection()` and
-   * `draftMode()` reject with `accessError` too.
+   * The route whose `generateStaticParams` runs. There is no HTTP request, so
+   * `connection()` and `draftMode()` reject with `accessError` too, and
+   * revalidation throws, also from a cached function the generator calls.
    */
-  noRequest?: boolean;
+  staticParamsRoute?: string;
   draftModeEnabled?: boolean;
   forceStatic?: boolean;
   mutableCookies?: RequestCookies;
@@ -1096,7 +1097,7 @@ export async function draftMode(): Promise<DraftModeResult> {
   if (!context) {
     throw createDraftModeScopeError("draftMode()");
   }
-  if (context.noRequest && context.accessError) throw context.accessError;
+  if (context.staticParamsRoute !== undefined && context.accessError) throw context.accessError;
   // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
   // getter and merely calling `draftMode()` does not require bailing out
   // of static prerendering. Only `enable()`/`disable()` mutate state and

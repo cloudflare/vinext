@@ -94,12 +94,14 @@ function scheduleRevalidation(promise: Promise<void>): undefined {
 // Public API — what app code imports from 'next/cache'
 // ---------------------------------------------------------------------------
 
-// Next.js rejects revalidation inside `generateStaticParams`.
+// Next.js rejects revalidation inside `generateStaticParams`, also from a
+// cached function the generator calls.
 function throwIfGeneratingStaticParams(expression: string): void {
-  const store = workUnitAsyncStorage.getStore();
-  if (store?.type !== "generate-static-params") return;
+  if (!isInsideUnifiedScope()) return;
+  const route = getRequestContext().headersContext?.staticParamsRoute;
+  if (route === undefined) return;
   throw new Error(
-    `Route ${store.route} used "${expression}" inside \`generateStaticParams\` which is unsupported. ` +
+    `Route ${route} used "${expression}" inside \`generateStaticParams\` which is unsupported. ` +
       "To ensure revalidation is performed consistently it must always happen outside of renders and cached functions. " +
       "See more info here: https://nextjs.org/docs/app/building-your-application/rendering/static-and-dynamic#dynamic-rendering",
   );

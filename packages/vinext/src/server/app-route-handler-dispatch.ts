@@ -140,18 +140,6 @@ function encodeAppRouteParams(params: AppRouteParams): AppRouteParams {
   return encoded;
 }
 
-// The rendered 404 carries the draft-mode transition that dispatch consumed.
-function appendDraftModeCookie(response: Response, draftCookie: string | null): Response {
-  if (!draftCookie) return response;
-  const headers = new Headers(response.headers);
-  headers.append("Set-Cookie", draftCookie);
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
 /**
  * Runs a route's generateStaticParams as Next.js does, in a work store of its
  * own: root params come only from parent params, which a route handler's
@@ -165,18 +153,18 @@ function runStaticParamsGeneration<T>(
   pattern: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  // Next.js' generate-static-params work unit: io() resolves, and revalidation
-  // throws.
-  const generate = () =>
-    workUnitAsyncStorage.run({ type: "generate-static-params", route: pattern }, fn);
+  // Next.js' generate-static-params work unit, where io() resolves.
+  const generate = () => workUnitAsyncStorage.run({ type: "generate-static-params" }, fn);
   return runWithUnifiedStateMutation((ctx) => {
     ctx.rootParams = {};
     ctx.currentRequestTags = [];
     ctx.dynamicFetchUrls = new Set<string>();
+    // `cacheForRequest()` values belong to the request, not the generator.
+    ctx.requestCache = new WeakMap();
     ctx.headersContext = {
       headers: new Headers(),
       cookies: new Map(),
-      noRequest: true,
+      staticParamsRoute: pattern,
       accessError: new Error(
         `Route ${pattern} used a request API such as \`headers()\`, \`cookies()\`, \`connection()\` or \`draftMode()\` inside \`generateStaticParams\`. ` +
           "This is not supported because `generateStaticParams` runs at build time without an HTTP request. " +
@@ -395,11 +383,13 @@ async function dispatchAppRouteHandlerImpl(
     setCurrentFetchCacheMode(null);
     setCurrentFetchRevalidate(null);
     setCurrentForceDynamicFetchDefault(false);
-    return markRouteMissResponse(
-      options.renderNotFound
-        ? appendDraftModeCookie(await options.renderNotFound(), initialDraftModeCookie)
-        : finalizeFrameworkResponse(notFoundResponse()),
-    );
+    if (!options.renderNotFound) {
+      return markRouteMissResponse(finalizeFrameworkResponse(notFoundResponse()));
+    }
+    const miss = markRouteMissResponse(await options.renderNotFound());
+    // The rendered 404 carries the draft-mode transition dispatch consumed.
+    if (initialDraftModeCookie) miss.headers.append("Set-Cookie", initialDraftModeCookie);
+    return miss;
   };
 
   if (hasAppRouteHandlerDefaultExport(handler) && isDevelopment) {

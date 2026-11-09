@@ -3,6 +3,7 @@ import { dispatchAppRouteHandler } from "../packages/vinext/src/server/app-route
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import { io, revalidatePath, revalidateTag } from "../packages/vinext/src/shims/cache.js";
 import { workUnitAsyncStorage } from "../packages/vinext/src/shims/internal/work-unit-async-storage.js";
+import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
 import {
   getDataCacheHandler,
   setDataCacheHandler,
@@ -862,15 +863,16 @@ describe("app route handler dispatch", () => {
       const errors: string[] = [];
       const renderSignal = new AbortController().signal;
       // A Cache Components prerender would otherwise hang the generator's io().
-      const result = await workUnitAsyncStorage.run(
-        { type: "prerender", renderSignal },
-        async () => {
+      const result = await runWithRequestContext(createRequestContext(), () =>
+        workUnitAsyncStorage.run({ type: "prerender", renderSignal }, async () => {
           const closed = dispatchClosedRoute({
             async generateStaticParams() {
               await io();
               for (const revalidate of [
                 () => revalidateTag("posts"),
                 () => revalidatePath("/posts"),
+                // A cached function the generator calls runs in a cache work unit.
+                () => workUnitAsyncStorage.run({ type: "cache" }, () => revalidateTag("cached")),
               ]) {
                 try {
                   revalidate();
@@ -885,13 +887,38 @@ describe("app route handler dispatch", () => {
             pattern: "/posts/:slug",
           });
           return (await closed.response).status;
-        },
+        }),
       );
       expect(result).toBe(404);
       expect(errors).toEqual([
         expect.stringContaining('used "revalidateTag posts" inside `generateStaticParams`'),
         expect.stringContaining('used "revalidatePath /posts" inside `generateStaticParams`'),
+        expect.stringContaining('used "revalidateTag cached" inside `generateStaticParams`'),
       ]);
+    });
+
+    it("keeps generateStaticParams' cacheForRequest values out of the request", async () => {
+      const readSlug = cacheForRequest(() => ({ slug: "unlisted" }));
+      const ctx = createRequestContext();
+      const result = await runWithRequestContext(ctx, async () => {
+        // The request computed a value before routing checked its params.
+        const requestValue = readSlug();
+        let generatorValue: unknown;
+        const closed = dispatchClosedRoute({
+          generateStaticParams() {
+            generatorValue = readSlug();
+            return [{ slug: "listed" }];
+          },
+          params: { slug: "unlisted" },
+          pathname: "/posts/unlisted",
+          pattern: "/posts/:slug",
+        });
+        const status = (await closed.response).status;
+        return { generatorValue, readsAfter: readSlug() === requestValue, requestValue, status };
+      });
+      expect(result.status).toBe(404);
+      expect(result.generatorValue).not.toBe(result.requestValue);
+      expect(result.readsAfter).toBe(true);
     });
 
     it("keeps middleware's draft-mode disable on a rejected param's rendered 404", async () => {
