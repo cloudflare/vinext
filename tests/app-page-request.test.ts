@@ -22,6 +22,42 @@ import {
 } from "../packages/vinext/src/shims/unified-request-context.js";
 
 describe("app page request helpers", () => {
+  it("keeps an on-demand revalidation from refreshing generateStaticParams' cached data", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    try {
+      for (const isOnDemandRevalidate of [false, true]) {
+        const response = await runWithRequestContext(
+          createRequestContext({ isOnDemandRevalidate }),
+          () =>
+            runStaticParamsCheckDetached(() =>
+              validateAppPageRouteDynamicParams({
+                dynamicParamsConfig: false,
+                async generateStaticParams() {
+                  await (await fetch(url, { cache: "force-cache" })).text();
+                  return [{ slug: "known" }];
+                },
+                isDynamicRoute: true,
+                isProduction: true,
+                params: { slug: "unknown" },
+              }),
+            ),
+        );
+        expect(response?.status).toBe(404);
+      }
+      // Next.js runs generateStaticParams outside the revalidation, so the
+      // generator reads its cached fetch.
+      expect(hits).toBe(1);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it("runs a route's generateStaticParams with its fetchCache, as Next.js does", async () => {
     let hits = 0;
     const server = createServer((_request, response) => {
