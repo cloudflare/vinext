@@ -253,3 +253,111 @@ export default function handler() {
     expect(await assetResponse.text()).toBe("nitro public asset");
   });
 });
+
+// Ported from Next.js: test/e2e/streaming-ssr/streaming-ssr.test.ts (pages/index.js)
+// https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/streaming-ssr.test.ts
+describe("Pages Router styled-jsx on Nitro", () => {
+  let root = "";
+  let relocatedRoot = "";
+  const servers: ChildProcess[] = [];
+  let serverErrors = "";
+
+  async function startServer(entry: string, cwd: string): Promise<string> {
+    const port = await getAvailablePort();
+    const url = `http://127.0.0.1:${port}`;
+    const child = spawn(process.execPath, [entry], {
+      cwd,
+      env: { ...process.env, HOST: "127.0.0.1", PORT: String(port) },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      serverErrors += chunk.toString();
+    });
+    servers.push(child);
+    await waitForServer(`${url}/`);
+    return url;
+  }
+
+  beforeAll(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-nitro-styled-jsx-"));
+    const nodeModules = path.join(root, "node_modules");
+    await fs.mkdir(path.join(root, "pages"), { recursive: true });
+    await fs.mkdir(nodeModules, { recursive: true });
+    // styled-jsx comes from Next's dependency graph, so the fixture needs
+    // both the Nitro example's packages and an installed `next`.
+    const entries = await fs.readdir(NITRO_NODE_MODULES);
+    await Promise.all([
+      ...entries.map((entry) =>
+        fs.symlink(path.join(NITRO_NODE_MODULES, entry), path.join(nodeModules, entry), "junction"),
+      ),
+      fs.symlink(
+        path.resolve(import.meta.dirname, "../node_modules/next"),
+        path.join(nodeModules, "next"),
+        "junction",
+      ),
+      fs.writeFile(path.join(root, "package.json"), '{"type":"module"}'),
+      fs.writeFile(
+        path.join(root, "pages/index.jsx"),
+        `export default function Page() {
+  return (
+    <div>
+      <style jsx>{\`
+        p {
+          color: blue;
+        }
+      \`}</style>
+      <p>styled index</p>
+    </div>
+  );
+}
+`,
+      ),
+    ]);
+
+    const nitroModule = (await import(
+      pathToFileURL(path.join(nodeModules, "nitro/dist/vite.mjs")).href
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+    // Keep Nitro's default build directory (node_modules/.nitro), as in the
+    // reported setup.
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext(), nitroModule.nitro()],
+    });
+    await builder.buildApp();
+
+    relocatedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-nitro-relocated-"));
+    await fs.cp(path.join(root, ".output"), path.join(relocatedRoot, ".output"), {
+      recursive: true,
+      verbatimSymlinks: false,
+    });
+  }, 180_000);
+
+  afterAll(async () => {
+    await Promise.all(servers.map((server) => stopServer(server)));
+    if (root) await fs.rm(root, { recursive: true, force: true });
+    if (relocatedRoot) await fs.rm(relocatedRoot, { recursive: true, force: true });
+  });
+
+  it("renders <style jsx> with the same React instance as the renderer", async () => {
+    const url = await startServer(path.join(root, ".output/server/index.mjs"), root);
+    const response = await fetch(`${url}/`);
+    const html = await response.text();
+    expect(response.status, serverErrors).toBe(200);
+    expect(html).toContain("styled index");
+    // The styled-jsx runtime ran and scoped the element.
+    expect(html).toMatch(/<p class="jsx-[^"]+">styled index<\/p>/);
+  });
+
+  it("renders <style jsx> after the server output is moved away from the project", async () => {
+    const url = await startServer(
+      path.join(relocatedRoot, ".output/server/index.mjs"),
+      relocatedRoot,
+    );
+    const response = await fetch(`${url}/`);
+    const html = await response.text();
+    expect(response.status, serverErrors).toBe(200);
+    expect(html).toContain("styled index");
+  });
+});
