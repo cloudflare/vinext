@@ -161,7 +161,9 @@ const CONDITION_SETS: Record<ImportKind, string[][]> = {
   import: runtimeConditionSets("import"),
   require: runtimeConditionSets("require"),
 };
-const FILE_EXTENSIONS = [".js", ".cjs", ".mjs", ".json", ".node"];
+// Node's implicit LOAD_AS_FILE and directory-index extensions. `.cjs` and
+// `.mjs` load only when named explicitly.
+const FILE_EXTENSIONS = [".js", ".json", ".node"];
 // Node's CommonJS loader runs any other file as JavaScript, and nft parses
 // every file but these.
 const UNTRACED_FILE_RE = /\.(?:json|node)$/;
@@ -170,7 +172,7 @@ const UNTRACED_FILE_RE = /\.(?:json|node)$/;
 // mention "require" as a keyword without calling it. Over-matching only costs
 // a walk. Whitespace before the `(` is allowed; a comment there would hide the
 // call, but published code does not write one.
-const REQUIRE_PRESCAN_RE = /\brequire\s*(?:\(|\.\s*resolve\b)/;
+const REQUIRE_PRESCAN_RE = /\brequire\s*(?:\?\.\s*)?(?:\(|\.\s*resolve\b)/;
 
 type TracedImport = { specifier: string; kind: ImportKind };
 

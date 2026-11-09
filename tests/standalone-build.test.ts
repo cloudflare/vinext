@@ -339,7 +339,20 @@ describe("emitStandaloneOutput", () => {
       entry: "index.js",
       code: 'module.exports = module.require("lib-peer");\n',
     },
-  ])("traces $name", ({ packageJson, entry, code }) => {
+    {
+      name: "optional require?.() calls",
+      packageJson: { name: "lib", main: "index.js" },
+      entry: "index.js",
+      code: 'module.exports = require?.("lib-peer");\n',
+    },
+    {
+      // Node's implicit lookup never appends .cjs: main "entry" falls back to index.js.
+      name: "the index.js an extensionless main falls back to",
+      packageJson: { name: "lib", main: "entry" },
+      entry: "index.js",
+      extraFile: "entry.cjs",
+    },
+  ])("traces $name", ({ packageJson, entry, code, extraFile }) => {
     const appRoot = path.join(tmpDir, "app");
     fs.mkdirSync(appRoot, { recursive: true });
 
@@ -349,7 +362,9 @@ describe("emitStandaloneOutput", () => {
     writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["lib"]));
 
     writeFile(appRoot, "node_modules/lib/package.json", JSON.stringify(packageJson));
-    writeFile(appRoot, "node_modules/lib/other.js", "module.exports = {};\n");
+    for (const file of ["other.js", ...(extraFile ? [extraFile] : [])]) {
+      writeFile(appRoot, `node_modules/lib/${file}`, "module.exports = {};\n");
+    }
     writeFile(
       appRoot,
       `node_modules/lib/${entry}`,
