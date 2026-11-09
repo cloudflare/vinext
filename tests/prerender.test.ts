@@ -1120,6 +1120,15 @@ describe("prerenderPages — default mode (pages-basic)", () => {
     }
   });
 
+  // Next.js always emits pages/500 as 500.html, though it answers with 500.
+  it("renders 500 page", () => {
+    const r = findRoute(results, "/500");
+    expect(r).toMatchObject({ route: "/500", status: "rendered", revalidate: false });
+    if (r?.status === "rendered") {
+      expect(r.outputFiles).toContain("500.html");
+    }
+  });
+
   // ── Dynamic routes with getStaticPaths ────────────────────────────────────
 
   it("renders static dynamic routes from getStaticPaths (fallback: false)", () => {
@@ -1374,6 +1383,14 @@ describe("prerenderPages — export mode (pages-basic)", () => {
       status: "rendered",
       revalidate: false,
     });
+  });
+
+  it("exports the 500 page", () => {
+    const r = findRoute(results, "/500");
+    expect(r).toMatchObject({ route: "/500", status: "rendered" });
+    if (r?.status === "rendered") {
+      expect(fs.readFileSync(path.join(outDir, "500.html"), "utf8")).toContain("custom pages/500");
+    }
   });
 
   it("errors on SSR pages in export mode", () => {

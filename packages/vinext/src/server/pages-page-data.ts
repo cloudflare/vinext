@@ -33,7 +33,11 @@ import {
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
 import { buildNextDataPropsJsonResponse } from "./pages-data-route.js";
-import { NEXTJS_CACHE_HEADER, NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import {
+  NEXTJS_CACHE_HEADER,
+  NEXTJS_DEPLOYMENT_ID_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+} from "./headers.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -746,6 +750,16 @@ async function loadPagesAppInitialRenderProps(
 }
 
 /**
+ * Marks a plain 500 for a page that could not render, so the prerenderer can
+ * tell it apart from the custom `/500` page answering with its own status.
+ */
+export function markPagesPrerenderRenderError(headers: Headers): void {
+  if (typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1") {
+    headers.set(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+  }
+}
+
+/**
  * Build the response for a `getServerSideProps` / `getStaticProps`
  * `{ redirect }` result.
  *
@@ -800,6 +814,7 @@ function buildPagesRedirectResponse(
     if (options.deploymentId) {
       headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, options.deploymentId);
     }
+    markPagesPrerenderRenderError(headers);
     return new Response("Invalid redirect destination", { status: 500, headers });
   }
 
@@ -1626,7 +1641,7 @@ export async function resolvePagesPageData(
         undefined,
         options.expireSeconds,
         cached.value.cacheControl,
-        cachedValue.status,
+        options.statusCode ?? cachedValue.status,
         cachedValue.headers,
       );
       return finalizeCachedPagesResponse(hitResponse, options, cachedValue.html);
@@ -1696,7 +1711,7 @@ export async function resolvePagesPageData(
         undefined,
         options.expireSeconds,
         cached.value.cacheControl,
-        cachedValue.status,
+        options.statusCode ?? cachedValue.status,
         cachedValue.headers,
       );
       return finalizeCachedPagesResponse(staleResponse, options, cachedValue.html);
