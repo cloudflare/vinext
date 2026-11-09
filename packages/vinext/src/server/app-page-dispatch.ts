@@ -19,6 +19,7 @@ import {
   peekDynamicUsage,
   peekRenderRequestApiUsage,
   runWithConnectionProbe,
+  runStaticParamsCheckDetached,
   runWithDetachedDynamicUsage,
   setHeadersContext,
 } from "vinext/shims/headers";
@@ -1272,7 +1273,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // Next.js renders an unlisted param on demand in draft mode.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
   if (options.skipStaticParamsValidation !== true && !isDraftMode) {
-    const dynamicParamsResponse = await runWithDetachedDynamicUsage(() =>
+    const dynamicParamsResponse = await runStaticParamsCheckDetached(() =>
       validateAppPageRouteDynamicParams({
         dynamicConfig,
         dynamicParamsConfig: options.dynamicParamsConfig,

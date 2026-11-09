@@ -22,7 +22,7 @@ import {
   headersContextFromRequest,
   isDraftModeEnabled,
   isDraftModeRequest,
-  runWithDetachedDynamicUsage,
+  runStaticParamsCheckDetached,
   runWithHeadersContext,
 } from "vinext/shims/headers";
 import {
@@ -2688,7 +2688,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (!routedRoute.routeHandler && !isActiveDraftMode()) {
       const isDynamicParamsMiss = options.isDynamicParamsMiss;
       if (
-        await runWithDetachedDynamicUsage(() =>
+        await runStaticParamsCheckDetached(() =>
           isDynamicParamsMiss(routedRoute, routedMatch.params),
         )
       ) {
@@ -2975,7 +2975,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     !isDynamicParamsAdmitted &&
     !isActiveDraftMode() &&
     options.isDynamicParamsMiss &&
-    (await runWithDetachedDynamicUsage(() => options.isDynamicParamsMiss!(route, params)))
+    (await runStaticParamsCheckDetached(() => options.isDynamicParamsMiss!(route, params)))
   ) {
     // The rejected match seeded its root params before routing finished.
     setRootParams(null);

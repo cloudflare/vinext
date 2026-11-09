@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import React from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
@@ -1597,6 +1599,44 @@ describe("app page dispatch", () => {
     // Next.js runs generateStaticParams apart from the request, so the 404
     // computes its own value.
     expect(readRequestData).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a rejected param's generator fetches out of its 404's request memoization", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    try {
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw new Error("unknown static params should not render the page");
+        },
+        async generateStaticParams() {
+          await (await fetch(url, { cache: "no-store" })).text();
+          return [{ slug: "known" }];
+        },
+        isProduction: true,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+      });
+      let notFoundData = "";
+      options.renderHttpAccessFallbackPage = vi.fn(async () => {
+        notFoundData = await (await fetch(url, { cache: "no-store" })).text();
+        return new Response("not found", { status: 404 });
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+      );
+
+      expect(response.status).toBe(404);
+      // The 404 fetches anew rather than reading the generator's response.
+      expect(notFoundData).toBe("2");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it("renders an unlisted param in draft mode, also when middleware enabled it", async () => {
