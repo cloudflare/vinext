@@ -897,6 +897,57 @@ describe("app route handler dispatch", () => {
       ]);
     });
 
+    it("finishes generateStaticParams' after() work before checking its params, as Next.js does", async () => {
+      const finished: string[] = [];
+      const status = await runWithRequestContext(createRequestContext(), async () => {
+        const closed = dispatchClosedRoute({
+          generateStaticParams() {
+            after(() => {
+              finished.push("callback");
+            });
+            after(
+              new Promise<void>((resolve) => setTimeout(resolve, 5)).then(() => {
+                finished.push("promise");
+              }),
+            );
+            return [{ slug: "listed" }];
+          },
+          params: { slug: "unlisted" },
+          pathname: "/posts/unlisted",
+          pattern: "/posts/:slug",
+        });
+        return (await closed.response).status;
+      });
+      expect(status).toBe(404);
+      expect(finished.sort()).toEqual(["callback", "promise"]);
+    });
+
+    it("fails generateStaticParams when its after() work fails, as Next.js does", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const result = await runWithRequestContext(createRequestContext(), async () => {
+          const closed = dispatchClosedRoute({
+            generateStaticParams() {
+              after(() => {
+                throw new Error("after task failed");
+              });
+              return [{ slug: "listed" }];
+            },
+            params: { slug: "unlisted" },
+            pathname: "/posts/unlisted",
+            pattern: "/posts/:slug",
+          });
+          return closed.response.then(
+            (response) => ({ status: response.status }),
+            (error: unknown) => ({ error: (error as Error).message }),
+          );
+        });
+        expect(result).toEqual({ error: "after task failed" });
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+
     it("keeps generateStaticParams' cacheForRequest values out of the request", async () => {
       const readSlug = cacheForRequest(() => ({ slug: "unlisted" }));
       const ctx = createRequestContext();

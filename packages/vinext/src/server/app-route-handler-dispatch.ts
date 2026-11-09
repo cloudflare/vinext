@@ -28,6 +28,7 @@ import {
   getRequestContext,
   runWithRequestContext,
   runWithUnifiedStateMutation,
+  type UnifiedRequestContext,
 } from "vinext/shims/unified-request-context";
 import { coalesceOnDemandResponse, type ISRCacheEntry } from "./isr-cache.js";
 import { notFoundResponse } from "./http-error-responses.js";
@@ -153,9 +154,38 @@ function runStaticParamsGeneration<T>(
   pattern: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  // Next.js' generate-static-params work unit, where io() resolves.
-  const generate = () => workUnitAsyncStorage.run({ type: "generate-static-params" }, fn);
+  // Like Next.js' AfterRunner, the generator's after() work finishes before
+  // its params are used, and a failed task fails the generation.
+  const afterPromises: Promise<unknown>[] = [];
+  let afterTaskError: { error: unknown } | null = null;
+  let generatorContext: UnifiedRequestContext | undefined;
+  const generate = async () => {
+    // Next.js' generate-static-params work unit, where io() resolves.
+    const result = await workUnitAsyncStorage.run({ type: "generate-static-params" }, fn);
+    if (generatorContext) {
+      await closeAfterResponse(generatorContext);
+      while (afterPromises.length > 0) {
+        await Promise.all(afterPromises.splice(0));
+        await closeAfterResponse(generatorContext);
+      }
+    }
+    if (afterTaskError) throw afterTaskError.error;
+    return result;
+  };
   return runWithUnifiedStateMutation((ctx) => {
+    generatorContext = ctx;
+    ctx.afterContext = {
+      callbacks: [],
+      responseClosed: false,
+      pendingCallbacks: 0,
+      pendingPromises: 0,
+      completion: null,
+      resolveCompletion: null,
+      waitUntil: (promise) => afterPromises.push(promise),
+      onTaskError: (error) => {
+        afterTaskError ??= { error };
+      },
+    };
     ctx.rootParams = {};
     ctx.currentRequestTags = [];
     ctx.dynamicFetchUrls = new Set<string>();

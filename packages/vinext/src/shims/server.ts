@@ -1449,9 +1449,11 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
       requestContext,
       Promise.resolve(task).catch((error) => {
         console.error("[vinext] after() task failed:", error);
+        requestContext.afterContext.onTaskError?.(error);
       }),
     );
-    getRequestExecutionContext()?.waitUntil(guarded);
+    if (requestContext.afterContext.waitUntil) requestContext.afterContext.waitUntil(guarded);
+    else getRequestExecutionContext()?.waitUntil(guarded);
     return;
   }
 
