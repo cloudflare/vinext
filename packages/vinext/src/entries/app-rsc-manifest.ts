@@ -78,15 +78,18 @@ function hasAppDirectoryLayout(route: AppRoute): boolean {
 
 /**
  * `app/not-found` in an app without `app/layout`. Next.js' /_not-found page
- * renders it with no layout there, rather than any route group's root layout.
+ * renders it in a default layout there, rather than any route group's root
+ * layout.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
  */
 function appDirectoryNotFoundPath(routes: readonly AppRoute[]): string | null {
   if (routes.some(hasAppDirectoryLayout)) return null;
-  // Page routes list every segment's not-found, from the app directory down.
   for (const route of routes) {
+    // Page routes list every segment's not-found, from the app directory down.
     if (route.segmentNotFoundTreePositions?.[0] === 0)
       return route.segmentNotFoundPaths?.[0] ?? null;
+    // Route handlers list none, but find their nearest one.
+    if (route.notFoundTreePosition === 0) return route.notFoundPath ?? null;
   }
   return null;
 }
