@@ -75,6 +75,20 @@ test.describe("Next.js compat: segment cache closed params (dynamicParams = fals
     expect(await rejectedTree.text()).not.toContain("product-record-");
   });
 
+  test("lets a fallback rewrite claim a rejected param, as Next.js does", async ({ request }) => {
+    const listed = await request.get("/nextjs-compat/dynamic-params-fallback/listed");
+    expect(listed.status()).toBe(200);
+    expect(await listed.text()).toContain("listed page listed");
+
+    // Next.js rejects the param while routing and resumes with the fallback
+    // rewrites, rather than sending the not-found.
+    const rejected = await request.get("/nextjs-compat/dynamic-params-fallback/unlisted");
+    expect(rejected.status()).toBe(200);
+    const body = await rejected.text();
+    expect(body).toContain('id="dynamic-params-fallback-target"');
+    expect(body).toContain("fallback target unlisted");
+  });
+
   test("does not reuse a prefetched 404 for an allowed parameter value", async ({
     page,
   }, testInfo) => {

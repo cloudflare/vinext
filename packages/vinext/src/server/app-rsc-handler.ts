@@ -2661,6 +2661,35 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return dynamicPagesFallbackResponse;
   }
 
+  let dynamicParamsAdmittedMatch: typeof match = null;
+  // Next.js rejects a dynamicParams = false miss while routing and resumes with
+  // the fallback rewrites, so one can still claim the URL. Without fallback
+  // rewrites the dispatch renders the miss itself.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-server.ts
+  if (
+    match &&
+    filesystemRouteEligible &&
+    options.configRewrites.fallback.length > 0 &&
+    options.isDynamicParamsMiss
+  ) {
+    const routedMatch = renderedRouteMatch(match);
+    const routedRoute = routedMatch.route;
+    if (options.ensureRouteLoaded) {
+      await traceFindPageComponents(routedRoute.pattern, () =>
+        options.ensureRouteLoaded!(routedRoute),
+      );
+    }
+    if (!routedRoute.routeHandler) {
+      if (await options.isDynamicParamsMiss(routedRoute, routedMatch.params)) {
+        // The rejected match seeded its root params before routing finished.
+        setRootParams(null);
+        match = null;
+      } else {
+        dynamicParamsAdmittedMatch = routedMatch;
+      }
+    }
+  }
+
   if (!match) {
     for (const rewrite of options.configRewrites.fallback) {
       const fallbackRewrite = await applyRewrite(
@@ -2886,7 +2915,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return renderUnmatchedRoute();
   }
 
-  match = renderedRouteMatch(match);
+  match = dynamicParamsAdmittedMatch ?? renderedRouteMatch(match);
   const { route, params } = match;
   const requestPathnameDiffersFromCachePath = requestPathname !== cleanPathname;
   const rawRequestPathnameIsObservable =
@@ -3130,7 +3159,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             }
           : undefined,
         renderedConcreteUrlPaths: getRenderedConcreteUrlPathsForRoute(route.pattern),
-        skipStaticParamsValidation: isPrerenderFallbackShell,
+        // Routing already admitted these params for this route.
+        skipStaticParamsValidation:
+          isPrerenderFallbackShell ||
+          (dynamicParamsAdmittedMatch?.route === route &&
+            dynamicParamsAdmittedMatch.params === params),
         staticParamsValidationParams:
           prerenderRouteParams === null || isPrerenderFallbackShell ? undefined : params,
         rootParams,
