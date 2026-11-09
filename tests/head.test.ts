@@ -12,6 +12,7 @@ import Head, {
   resetSSRHead,
   getSSRHeadHTML,
   escapeAttr,
+  defaultHead,
   reduceHeadChildren,
   setDocumentInitialHead,
   _applyHeadPropsToElement,
@@ -264,6 +265,21 @@ describe("Head SSR collection", () => {
 });
 
 describe("Head reduction", () => {
+  it("keeps the default viewport when a user key only reuses its name", () => {
+    // Next.js's reduceComponents() adds defaultHead() with raw keys, which
+    // never join the user-key set, so only a viewport meta replaces it.
+    const reduced = reduceHeadChildren(
+      [React.createElement("link", { rel: "icon", href: "/icon.png", key: "viewport" })],
+      defaultHead(),
+    );
+
+    expect(reduced.map((child) => [child.type, (child.props as { name?: string }).name])).toEqual([
+      ["meta", undefined],
+      ["meta", "viewport"],
+      ["link", undefined],
+    ]);
+  });
+
   it("dedupes keyed tags and keeps the last matching element", () => {
     const reduced = reduceHeadChildren([
       React.createElement("meta", {
