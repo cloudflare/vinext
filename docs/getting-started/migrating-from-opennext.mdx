@@ -1,0 +1,410 @@
+export const metadata = {
+  slug: "getting-started/migrating-from-opennext",
+  title: "Migrate from OpenNext",
+  description:
+    "Move a Next.js app deployed with @opennextjs/cloudflare to vinext's native Cloudflare Workers integration.",
+  section: "Getting Started",
+  sectionOrder: 1,
+  order: 4,
+  navTitle: "Migrate from OpenNext",
+  keywords: [
+    "OpenNext to vinext",
+    "migrate from OpenNext",
+    "@opennextjs/cloudflare",
+    "getCloudflareContext",
+    "Next.js Cloudflare Workers migration",
+  ],
+};
+
+import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager";
+
+> This guide is for apps deployed to Cloudflare Workers with [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare). It replaces the check and init steps of the [general migration guide](/docs/getting-started/migrating) and covers what replaces each part of the OpenNext setup. The general guide's [Run both toolchains](/docs/getting-started/migrating#3-run-both-toolchains) and [Styling](/docs/getting-started/migrating#styling) sections still apply.
+
+## Before you migrate
+
+OpenNext adapts the output of `next build`, so it inherits the Next.js implementation of every API. vinext reimplements the Next.js API surface on Vite: builds no longer run `next build`, but the long tail of Next.js features is less complete. Before you switch, run `vinext check`, compare the [compatibility dashboard](/compatibility) with the features your app uses, and read [Known differences](#known-differences) below.
+
+Your `app/` and `pages/` routes, components, `next/*` imports, and `next.config` stay in place. What changes is the deployment setup around them:
+
+<table>
+  <thead>
+    <tr>
+      <th>OpenNext</th>
+      <th>vinext</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <code>wrangler.jsonc</code>
+      </td>
+      <td>
+        <code>cloudflare.config.ts</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>open-next.config.ts</code>
+      </td>
+      <td>
+        <code>vinext(&#123; cache, images &#125;)</code> in <code>vite.config.ts</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>getCloudflareContext().env</code>
+      </td>
+      <td>
+        <code>import &#123; env &#125; from "cloudflare:workers"</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>initOpenNextCloudflareForDev()</code>
+      </td>
+      <td>Not needed</td>
+    </tr>
+    <tr>
+      <td>R2, KV, or Static Assets incremental cache, plus the queue and tag cache</td>
+      <td>A vinext cache adapter</td>
+    </tr>
+    <tr>
+      <td>
+        <code>images: &#123; binding: "IMAGES" &#125;</code>
+      </td>
+      <td>
+        <code>imagesOptimizer()</code> and an <code>IMAGES</code> binding
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>opennextjs-cloudflare build</code> and <code>deploy</code>
+      </td>
+      <td>
+        <code>vinext-cloudflare deploy</code>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+## 1. Check compatibility
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx vinext check",
+    npm: "npx vinext check",
+    yarn: "yarn dlx vinext check",
+    bun: "bunx vinext check",
+    vp: "vpx vinext check",
+  }}
+/>
+
+The scanner reports unsupported `next.config` options, imports, and conventions, such as `cacheHandler`, and notes that `images.loader` and `images.loaderFile` are ignored. It doesn't look for OpenNext APIs, so search your code for `@opennextjs/cloudflare` imports as well; [step 4](#4-replace-getcloudflarecontext) covers what replaces them.
+
+## 2. Initialize vinext
+
+`vinext init --platform=cloudflare` stops when the project already has a `wrangler.jsonc`, `wrangler.json`, or `wrangler.toml`, because it doesn't migrate Wrangler config. To keep the OpenNext setup deployable while you evaluate vinext, pass `--ignore-wrangler-config`, and set the Worker name with `--name`. Choose the name before running init, because init also writes it into the cache config it generates: use a new name to deploy next to the OpenNext Worker, or the OpenNext Worker's name to replace it (see [Deploy](#8-build-and-deploy)).
+
+Init prompts for a cache, image optimization, prerendering, and cache warming. Read the [caching](#6-caching-and-isr) and [images](#7-images) sections before you run it: they map each OpenNext option to its vinext choice, and running init again doesn't change a `cloudflare.config.ts` it already created. See [Cache and image choices](/docs/deploying/cloudflare#cache-and-image-choices) for the flags that answer these prompts in CI.
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx vinext init --platform=cloudflare --ignore-wrangler-config --name my-app",
+    npm: "npx vinext init --platform=cloudflare --ignore-wrangler-config --name my-app",
+    yarn: "yarn dlx vinext init --platform=cloudflare --ignore-wrangler-config --name my-app",
+    bun: "bunx vinext init --platform=cloudflare --ignore-wrangler-config --name my-app",
+    vp: "vpx vinext init --platform=cloudflare --ignore-wrangler-config --name my-app",
+  }}
+/>
+
+Init leaves `wrangler.jsonc`, `open-next.config.ts`, and your existing scripts untouched. It creates `vite.config.ts` and `cloudflare.config.ts` and adds `dev:vinext`, `build:vinext`, `start:vinext`, and `deploy:vinext` scripts, plus `deploy:response-store` for Workers Response Store in service-binding mode. Once `cloudflare.config.ts` exists, vinext's dev server, build, and deploy read only that file, so `wrangler.jsonc` keeps serving OpenNext.
+
+## 3. Move Wrangler settings to `cloudflare.config.ts`
+
+Init doesn't copy anything from `wrangler.jsonc`. Move these settings to the Worker in `cloudflare.config.ts`, keeping the `entrypoint`, `assets`, and `ASSETS` binding that init generated:
+
+- **`name`:** set by `--name` (init otherwise derives it from `package.json`). If you change it afterwards, also update the Worker name in the generated cache config, such as the `worker` option of the self-contained Response Store helper.
+- **`compatibility_date` and `compatibility_flags`:** keep the `compatibilityDate` init wrote (today's date) rather than copying OpenNext's older one. Node.js compatibility is on by default from `2026-08-04`, so `nodejs_compat` isn't needed with that date; if you keep an earlier date, keep `nodejs_compat` too. Copy any other flag your app relies on, such as `global_fetch_strictly_public` from OpenNext's template, to `compatibilityFlags`.
+- **`main` and `assets`:** don't copy them. They point at OpenNext's `.open-next/` build output.
+- **`services` with `WORKER_SELF_REFERENCE`:** drop it. vinext doesn't use a self-reference binding.
+- **`routes`:** custom domains go in the Worker's `domains`. If you deploy to a new Worker, leave them out until you switch traffic: vinext's deploy moves a custom domain from the Worker that serves it without asking. Zone route patterns go in `triggers`, using `triggers.fetch({ pattern, zone })` from `cf/config`.
+- **`env.<name>` environments:** a typed config has no Wrangler environments. Pass `defineWorker` a function, which receives the `mode`, and return the name, bindings, and variables for each environment. `vinext-cloudflare deploy --env staging` builds and deploys in the `staging` mode.
+- **`observability` and other Worker settings:** if `wrangler.jsonc` enables `observability`, as OpenNext's create-cloudflare template does, copy it and settings such as `placement`, `limits`, `workers_dev`, and `preview_urls`, to the matching camelCase fields of `defineWorker`.
+- **Your own bindings:** move them to `env`. Reuse existing resources by passing their IDs or names.
+- **OpenNext cache bindings** such as `NEXT_INC_CACHE_R2_BUCKET`, `NEXT_INC_CACHE_KV`, `NEXT_TAG_CACHE_KV`, `NEXT_TAG_CACHE_D1`, and the `NEXT_CACHE_DO_*` and `NEXT_TAG_CACHE_DO_SHARDED` Durable Objects: drop them, along with OpenNext's cache variables such as `NEXT_INC_CACHE_R2_PREFIX`, `NEXT_INC_CACHE_KV_PREFIX`, `NEXT_CACHE_DO_QUEUE_*`, and `NEXT_CACHE_DO_PURGE_BUFFER_TIME_IN_SECONDS`, and the `CACHE_PURGE_API_TOKEN` and `CACHE_PURGE_ZONE_ID` secrets. The vinext cache adapter replaces them.
+
+```ts
+import { bindings, defineConfig, defineWorker } from "cf/config";
+
+export default defineConfig({
+  worker: defineWorker({
+    name: "my-app",
+    // ...entrypoint, compatibilityDate, and assets generated by init
+    env: {
+      // ...bindings generated by init, such as the cache, IMAGES, or VINEXT_KV_CACHE
+      ASSETS: bindings.assets(),
+      // d1_databases
+      DB: bindings.d1({ id: "<database-id>", name: "my-db" }),
+      // kv_namespaces
+      SESSIONS: bindings.kv({ id: "<namespace-id>" }),
+      // r2_buckets
+      UPLOADS: bindings.r2({ name: "my-uploads" }),
+      // vars
+      API_BASE_URL: bindings.text("https://api.example.com"),
+      // secrets
+      API_TOKEN: bindings.secret(),
+    },
+  }),
+});
+```
+
+For TypeScript, add `.cloudflare/types` to `include` in `tsconfig.json`. Binding types are generated there during development and builds, so the `wrangler types` step and the file it writes, `cloudflare-env.d.ts` in OpenNext's template or `worker-configuration.d.ts` by default, are no longer needed. Remove the file from `compilerOptions.types` or `include` when you delete it. The generated types declare the global `Env` interface rather than OpenNext's `CloudflareEnv`, so rename any `CloudflareEnv` references to `Env`.
+
+## 4. Replace `getCloudflareContext()`
+
+vinext doesn't implement `getCloudflareContext()`, and under vinext it doesn't return your bindings. Replace each part of the context it returns:
+
+- **`env`:** import `env` from `cloudflare:workers` in Server Components, Route Handlers, Server Actions, middleware, `getServerSideProps`, and API routes. OpenNext's `{ async: true }` mode gives statically generated pages bindings at build time. vinext renders those pages on the Worker instead, on their first request or during cache warming, where `env` works. Bindings aren't available when vinext prerenders at build time, with the `prerender` option, the Static Assets cache, or a static export; reading `env` there throws.
+- **`cf`:** read `request.cf` from the request that middleware and Route Handlers receive. Server Components and Server Actions have no request object, and `getServerSideProps` and Pages Router API routes get a Node.js-style request without `cf`. Read the values in middleware and pass them on as request headers, which Server Components and Server Actions read with `headers()`, and the Pages Router reads from `req.headers`.
+- **`ctx.waitUntil()`:** in App Router code and middleware, call [`after()`](https://nextjs.org/docs/app/api-reference/functions/after) from `next/server`, which vinext passes to the Worker's `waitUntil()`. Anywhere else, including the Pages Router, import `waitUntil` from `cloudflare:workers`.
+
+```tsx
+// Before
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+
+export default async function Page() {
+  const { env } = getCloudflareContext();
+  const posts = await env.DB.prepare("SELECT * FROM posts").all();
+  return <pre>{JSON.stringify(posts.results)}</pre>;
+}
+```
+
+```tsx
+// After
+import { env } from "cloudflare:workers";
+
+export default async function Page() {
+  const posts = await env.DB.prepare("SELECT * FROM posts").all();
+  return <pre>{JSON.stringify(posts.results)}</pre>;
+}
+```
+
+`initOpenNextCloudflareForDev()` in `next.config` isn't needed either. vinext's dev server runs your server code in workerd through the Cloudflare Vite plugin, so bindings work in `dev:vinext` without it. Remove the call before running vinext: vinext loads `next.config` in its own process, where the call starts a Wrangler platform proxy against `wrangler.jsonc` during dev, build, and deploy. If `next dev` still needs it while both setups coexist, call it only when an environment variable that your `next dev` script sets is present, for example `OPENNEXT_DEV=1 next dev`.
+
+If `next.config` sets `deploymentId: getDeploymentId()` for OpenNext's skew protection, remove it before building with vinext, or set it only in OpenNext builds while both setups coexist, for example behind an environment variable your OpenNext build script sets. `getDeploymentId()` returns a new value each time it's called, and vinext can evaluate `next.config` more than once in a build, so different parts of the build would get different IDs. vinext detects payloads from a different build on its own. Skew protection's `CF_WORKER_NAME`, `CF_PREVIEW_DOMAIN`, `CF_WORKERS_SCRIPTS_API_TOKEN`, and `CF_ACCOUNT_ID` variables aren't needed either.
+
+## 5. Environment variables and secrets
+
+`NEXT_PUBLIC_*` variables and `next.config` `env` entries are inlined at build time, as with OpenNext.
+
+Server-only variables are different. OpenNext copies the values from your `.env` files into the Worker's `process.env`. vinext doesn't bundle `.env` values into the Worker: declare each server-only variable on the Worker, with `bindings.text()` for plain values or `bindings.secret()` for secrets. With the compatibility date init generates, Workers expose these string bindings on `process.env` as well as on `env`, so code that reads `process.env.API_TOKEN` keeps working.
+
+In local development, the Cloudflare Vite plugin gives each declared secret a value from `.dev.vars`, or from `.env` files and the shell when there is no `.dev.vars` file. OpenNext's `.dev.vars` only sets `NEXTJS_ENV`; delete it if you keep local secrets in `.env`, because its presence makes the plugin ignore them.
+
+In production, set each secret's value on the deployed Worker, in the Cloudflare dashboard or with `npx cf workers secrets update <NAME> --worker <worker-name> --type secret_text`. If you deploy to the OpenNext Worker, its existing secrets stay attached, but its plain-text variables don't: vinext's deploy removes any variable `cloudflare.config.ts` doesn't declare, as `wrangler deploy` does without the `--keep-vars` flag OpenNext suggests for variables set in the dashboard.
+
+## 6. Caching and ISR
+
+Choose a vinext cache that matches your OpenNext setup:
+
+<table>
+  <thead>
+    <tr>
+      <th>OpenNext</th>
+      <th>vinext</th>
+      <th>Init flags</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        R2 incremental cache, with or without the Durable Object queue and a D1 or Durable Object
+        tag cache
+      </td>
+      <td>
+        <a href="/docs/guides/caching#workers-response-store">Workers Response Store</a>
+      </td>
+      <td>
+        <code>--cdn-cache=response-store --data-cache=none</code>
+      </td>
+    </tr>
+    <tr>
+      <td>KV incremental cache</td>
+      <td>
+        <a href="/docs/guides/caching#kv-data-cache">KV data cache</a>
+      </td>
+      <td>
+        <code>--cdn-cache=data-cache --data-cache=kv</code>
+      </td>
+    </tr>
+    <tr>
+      <td>Static Assets incremental cache</td>
+      <td>
+        <a href="/docs/guides/caching#static-assets-response-cache">Static Assets response cache</a>
+      </td>
+      <td>
+        <code>--cdn-cache=static-assets --data-cache=none</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        No incremental cache, and no <code>revalidate</code>, <code>getStaticProps</code>, or Cache
+        Components
+      </td>
+      <td>No cache</td>
+      <td>
+        <code>--cdn-cache=none --data-cache=none</code>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+Workers Response Store stores rendered responses and cached data in R2, with a SQLite Durable Object tracking metadata and invalidation, and serves hot responses from Workers Cache. It handles time-based revalidation, `revalidatePath()`, and `revalidateTag()` itself, so there is no separate queue, tag cache, or cache-purge override to configure. [Caching on Cloudflare](/docs/guides/caching) compares every option, including Workers Cache with KV.
+
+Differences to plan for:
+
+- **The cache starts empty.** vinext doesn't read the entries OpenNext stored in R2, KV, or D1.
+- **There is no cache population step.** OpenNext's `deploy` uploads the pages prerendered by `next build`. Except for the Static Assets cache, which prerenders pages during the build, vinext renders and stores each page on its first request. To fill the cache before traffic reaches a new version, deploy with [`--warm-cache`](/docs/guides/caching#cache-warming), which needs an earlier deployment of the Worker.
+- **ISR needs a cache adapter.** `vinext-cloudflare deploy` refuses to deploy an app that exports `revalidate` or `getStaticProps`, or uses Cache Components, until `vinext({ cache })` configures one.
+- **`cacheHandler` and `cacheHandlers` in `next.config` are ignored.** Configure caching with `vinext({ cache })` instead.
+- **Pages Router `res.revalidate()`** does not yet refresh pages stored in Workers Response Store. See the [current limitation](/docs/guides/caching#which-pages-router-pages-are-cached).
+
+## 7. Images
+
+To keep optimizing `next/image` with Cloudflare Images, choose `--image-optimization=cloudflare-images` at init. It adds `imagesOptimizer()` from `@vinext/cloudflare/images/images-optimizer` to `vite.config.ts` and an `IMAGES: bindings.images()` binding to `cloudflare.config.ts`, replacing the `images` binding in `wrangler.jsonc`. Without an optimizer, `/_next/image` serves the original file, and the deploy command prints a reminder.
+
+- **Remote images:** Next.js, and OpenNext with an `IMAGES` binding, optimize remote images through `/_next/image`. vinext's `/_next/image` serves only local images. A remote `src` allowed by `remotePatterns` loads from its own URL; for an image with `width` and `height`, [unpic](https://unpic.pics) adds resizing parameters when it recognizes the image CDN. In production, a remote `src` that `remotePatterns` doesn't allow renders nothing.
+- **Custom loaders:** `images.loader` and `images.loaderFile` in `next.config` are ignored, so a `/cdn-cgi/image` loader file like the one in the OpenNext docs has no effect. Pass the loader to each image with the `loader` prop instead. A loader is a function, so in the App Router put `next/image` and its `loader` in a `"use client"` wrapper component and use that in place of `Image`, as Next.js requires.
+- **`images.unoptimized: true`** renders a plain `<img>` with the original URL, as in Next.js.
+
+## 8. Build and deploy
+
+<table>
+  <thead>
+    <tr>
+      <th>OpenNext script</th>
+      <th>vinext script</th>
+      <th>What it runs</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <code>preview</code>:{" "}
+        <code>opennextjs-cloudflare build &amp;&amp; opennextjs-cloudflare preview</code>
+      </td>
+      <td>
+        <code>build:vinext</code>, then <code>start:vinext</code>
+      </td>
+      <td>
+        <code>vite build</code>, then <code>vite preview</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>deploy</code>:{" "}
+        <code>opennextjs-cloudflare build &amp;&amp; opennextjs-cloudflare deploy</code>
+      </td>
+      <td>
+        <code>deploy:vinext</code>
+      </td>
+      <td>
+        <code>vinext-cloudflare deploy</code>, which builds and deploys
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>upload</code>:{" "}
+        <code>opennextjs-cloudflare build &amp;&amp; opennextjs-cloudflare upload</code>
+      </td>
+      <td>
+        <code>deploy:vinext</code> with <code>--no-promote</code>
+      </td>
+      <td>
+        <code>vinext-cloudflare deploy --no-promote</code>, which uploads a Worker version without
+        sending traffic to it
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+Authenticate as described in [Deploy to Cloudflare Workers](/docs/deploying/cloudflare#2-authenticate). With Workers Response Store in its default service-binding mode, run `build:vinext` and then `deploy:response-store` before the first `deploy:vinext`; see [Deploy](/docs/deploying/cloudflare#3-deploy). For branch previews, use [Worker Previews](/docs/deploying/cloudflare#deploy-a-worker-preview).
+
+### Choose the Worker to deploy to
+
+**A new Worker.** Deploy under a different `name` and check the deployment on its own URL. Then add the custom domains to `domains` and deploy again, which moves them off the OpenNext Worker. Zone routes don't move: remove them from the OpenNext Worker before adding them to `triggers`, or the deploy fails. The OpenNext Worker stays deployed until you remove it, so stop its deploys once you switch, by removing its `routes` or disconnecting its Workers Builds; otherwise its next deploy moves the custom domains back. For the first deploy:
+
+- `--warm-cache` and `--no-promote` need an existing deployment. If init added `--warm-cache` to `deploy:vinext`, run `vinext-cloudflare deploy` without it.
+- The deploy fails while a `bindings.secret()` has no value, because secrets can't be set on a Worker that doesn't exist yet. Run `build:vinext`, then `npx cf deploy --prebuilt --secrets-file <file>` with the values in a JSON or `.env` file.
+
+**The OpenNext Worker.** Keep its `name`, and add its custom domains to `domains` on the Worker. If OpenNext's cache used Durable Objects (the queue, sharded tag cache, or cache purge), the Worker still has their classes, and the deploy fails until `cloudflare.config.ts` retires them. Retiring a class permanently deletes its stored data; see Cloudflare's [Durable Object class exports](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/).
+
+```ts
+import { defineConfig, defineWorker, exports } from "cf/config";
+
+export default defineConfig({
+  worker: defineWorker({
+    // ...existing Worker settings
+    exports: {
+      // List only the OpenNext cache classes your Worker declared.
+      DOQueueHandler: exports.durableObject({ state: "deleted" }),
+      DOShardedTagCache: exports.durableObject({ state: "deleted" }),
+      BucketCachePurge: exports.durableObject({ state: "deleted" }),
+    },
+  }),
+});
+```
+
+If the Worker also has Durable Object classes of your own, give each a live entry instead, such as `ChatRoom: exports.durableObject({ storage: "sqlite" })` (or `"legacy-kv"` for a class created with `new_classes`), and drop the Wrangler `migrations` array; never mark them `deleted`.
+
+If the Worker spreads the self-contained Response Store or Workers Cache helper (`...cache`), this `exports` object replaces the helper's, so merge them: `exports: { ...cache.exports, DOQueueHandler: exports.durableObject({ state: "deleted" }) }`.
+
+Cloudflare applies a change that adds or retires Durable Object classes, whether OpenNext's or the self-contained Response Store's, only when a deploy sends all traffic to the new version, not through a version upload or a gradual deployment. Run that deploy with `vinext-cloudflare deploy`, without `--warm-cache` or `--no-promote`, and use them again from the next deploy. Cloudflare can't roll the Worker back past that deploy, so you can't return to an OpenNext version of it; deploy to a new Worker if you need that fallback. Keep the `deleted` entries until `cf` reports them as safe to remove from `exports`.
+
+The Worker's existing secrets stay attached. Once OpenNext is gone, delete the ones only it used, such as `CACHE_PURGE_API_TOKEN` and `CF_WORKERS_SCRIPTS_API_TOKEN`, and revoke those API tokens.
+
+### Workers Builds
+
+If the OpenNext Worker deploys through Workers Builds, update its build settings:
+
+- Clear the build command. `vinext-cloudflare deploy` builds the app.
+- Set the deploy command to `npx @vinext/cloudflare deploy`, and the preview command, which runs for non-production branches, to `npx @vinext/cloudflare previews deploy`.
+- Keep the build variables that `NEXT_PUBLIC_*` values come from.
+- Workers Builds doesn't run `deploy:response-store`, so deploy the service-binding Response Store yourself before the first build.
+
+Workers Builds deploys only to the Worker it's connected to, so a new Worker needs its own connection.
+
+### Custom Worker entry
+
+OpenNext's custom Worker wrapper, which imports `.open-next/worker.js` to add handlers such as `scheduled`, becomes `worker/index.ts`. Set the Worker's `entrypoint` to `./worker/index.ts`; init picks the file up only if it already exists when init runs. The file must hand requests to `vinext/server/fetch-handler` and must not re-export OpenNext's Durable Object classes. Each cron in `triggers.crons` becomes an entry in the Worker's `triggers`, such as `triggers.scheduled({ schedule: "0 * * * *" })` with `triggers` from `cf/config`.
+
+```ts
+import handler from "vinext/server/fetch-handler";
+
+export default {
+  fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    return handler.fetch(request, env, ctx);
+  },
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    // ...
+  },
+};
+```
+
+## 9. Remove OpenNext
+
+Once the app runs on vinext:
+
+- Uninstall `@opennextjs/cloudflare`, and `wrangler` if nothing else uses it.
+- Remove any remaining `initOpenNextCloudflareForDev()` or `getDeploymentId()` call from `next.config`.
+- Delete `open-next.config.ts`, `wrangler.jsonc`, `.dev.vars` if it only sets `NEXTJS_ENV`, the generated `cloudflare-env.d.ts` or `worker-configuration.d.ts`, and the `.open-next/` build directory.
+- Delete `public/_headers` unless it has rules of your own. vinext's Cloudflare build adds the same immutable caching rule for `/_next/static/*` when the build output has no `_headers` file, so if you keep a `public/_headers`, keep that rule in it.
+- Replace the OpenNext `preview`, `deploy`, and `upload` scripts with the vinext scripts. For `cf-typegen`, run `npx cf workers types` when you type-check without building the app. Rename `dev:vinext` and the other vinext scripts once you no longer need `next dev`.
+- Delete the R2 bucket, KV namespace, or D1 database that held OpenNext's cache.
+
+## Known differences
+
+- **API coverage.** App Router, Pages Router, Server Actions, middleware, and ISR are implemented, but Cache Components and Partial Prerendering are incomplete, and webpack plugins and loaders don't carry over to Vite. See [Differences from Next.js](/docs/reference/differences).
+- **Skew protection.** vinext has no equivalent of OpenNext's skew protection, which routes requests from an older client to the Worker version that built it. When a client navigation receives an App Router payload from a different build, vinext falls back to a full page load. Pages Router data requests from an older build also fall back to a full page load, because the new build's data URLs don't match theirs.
+- **Middleware.** `middleware.ts` and `proxy.ts` both run inside the Worker. Middleware runs for `public/` files through the `runWorkerFirst` routes that init generates, but not for the `/_next/static` build output. See [Middleware and static files](/docs/deploying/cloudflare#middleware-and-static-files).
+- **`runtime = "edge"`.** OpenNext requires removing it. In vinext it doesn't choose where code runs, but outside Cache Components it still opts an App Router page out of ISR, as in Next.js.
