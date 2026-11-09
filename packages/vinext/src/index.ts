@@ -4249,6 +4249,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             instrumentationClientPath,
           ].flatMap((entry) => (entry ? [toRelativeFileEntry(root, entry)] : []));
           const optimizeEntries = [...new Set([...appEntries, ...explicitInstrumentationEntries])];
+          // Pages Router modules render in ssr and hydrate in client, never in
+          // rsc. Without these, each dependency only pages/ imports is found on
+          // the first request for its page, re-optimizing and reloading.
+          const ssrAndClientOptimizeEntries = hasPagesDir
+            ? [...optimizeEntries, toRelativeFileEntry(root, pagesDir) + "/**/*.{tsx,ts,jsx,js}"]
+            : optimizeEntries;
           const additionalRscOptimizeIncludes: string[] = [];
           if (
             env.command === "serve" &&
@@ -4477,7 +4483,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...(userSsrExternal === true || externalizeSsrReactInDev || hasCloudflarePlugin
                   ? {}
                   : { include: ["react-dom/server", "react-dom/static"] }),
-                entries: optimizeEntries,
+                entries: ssrAndClientOptimizeEntries,
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -4509,10 +4515,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   shimOptimizeDepsExclude,
                   nextServerExternal,
                 ),
-                // Crawl app/ source files up front so client-only deps imported
-                // by user components are discovered during startup instead of
-                // triggering a late re-optimisation + full page reload.
-                entries: optimizeEntries,
+                // Crawl app/ and pages/ source files up front so client-only
+                // deps imported by user components are discovered during startup
+                // instead of triggering a late re-optimisation + full page reload.
+                entries: ssrAndClientOptimizeEntries,
                 // React packages aren't crawled from app/ source files,
                 // so must be pre-included to avoid late discovery (#25).
                 include: [

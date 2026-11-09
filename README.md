@@ -283,7 +283,7 @@ No. vinext is an alternative implementation of the Next.js API surface built on 
 No. vinext ships fallback declarations for the supported `next` and `next/*` APIs, so applications can run and type-check without the `next` package. If both packages are installed, vinext keeps using Next.js's authoritative types and adds only its own extensions. Compatibility features that consume Next.js internals, such as `styled-jsx`, may still require a matching Next.js installation when used.
 
 **How is this different from OpenNext?**
-[OpenNext](https://opennext.js.org/) adapts the _output_ of a standard `next build` to run on various platforms. Because it builds on Next.js's own output, it inherits broad API coverage and has been well-tested for much longer. vinext takes a different approach: it reimplements the Next.js APIs on Vite from scratch, which means faster builds and smaller bundles, but less coverage of the long tail of Next.js features. If you need a mature, well-tested way to run Next.js outside Vercel, OpenNext is the safer choice. If you want a lighter Vite-based toolchain and do not need every Next.js API, vinext may be a good fit.
+[OpenNext](https://opennext.js.org/) adapts the _output_ of a standard `next build` to run on various platforms. Because it builds on Next.js's own output, it inherits broad API coverage and has been well-tested for much longer. vinext takes a different approach: it reimplements the Next.js APIs on Vite from scratch, which means faster builds and smaller bundles, but less coverage of the long tail of Next.js features. If you need a mature, well-tested way to run Next.js outside Vercel, OpenNext is the safer choice. If you want a lighter Vite-based toolchain and do not need every Next.js API, vinext may be a good fit. To move an OpenNext app on Cloudflare Workers to vinext, see [Migrate from OpenNext](docs/getting-started/migrating-from-opennext.mdx).
 
 **Can I use this in production?**
 You can, with caution. vinext has known compatibility gaps and has not yet been battle-tested across the full range of production Next.js workloads. Evaluate the features and deployment target your application relies on before adopting it.
@@ -358,6 +358,8 @@ pnpm run deploy:vinext
 ```
 
 For `create-vinext-app` projects, use `build` and `deploy` instead of `build:vinext` and `deploy:vinext`. Redeploy the Response Store only when its package or config changes; normal application deployments do not deploy auxiliary Workers.
+
+To deploy from a connected Git repository, replace the default Wrangler commands in Workers Builds; see [Deploy with Workers Builds](https://vinext.dev/docs/deploying/cloudflare#deploy-with-workers-builds).
 
 The init command also auto-detects and fixes common migration issues:
 

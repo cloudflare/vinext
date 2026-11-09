@@ -2322,6 +2322,10 @@ describe("App Router integration", () => {
     expect(ssrGlob).toContain("instrumentation-client.ts");
     expect(clientGlob).toContain("instrumentation.ts");
     expect(clientGlob).toContain("instrumentation-client.ts");
+    // Pages Router modules render in ssr and hydrate in client, never in rsc.
+    expect(ssrEntries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+    expect(clientEntries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+    expect(rscEntries).not.toContain("pages/**/*.{tsx,ts,jsx,js}");
   });
 
   it("pre-includes framework dependencies in optimizeDeps.include to avoid late discovery", () => {

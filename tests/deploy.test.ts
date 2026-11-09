@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import Module from "node:module";
 import { execFileSync, type ChildProcess, type spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -1386,6 +1387,28 @@ describe("detectProject", () => {
     writeFile(tmpDir, "node_modules/.bin/cf.exe", "");
     writeFile(tmpDir, "node_modules/.bin/cf.bunx", "");
     expect(detectProject(tmpDir).hasWrangler).toBe(false);
+  });
+
+  it("ignores a Wrangler the project only reaches through NODE_PATH", () => {
+    // pnpm's bin shims put node_modules/.pnpm/node_modules on NODE_PATH. Node
+    // reads NODE_PATH once at startup; re-run its path setup so this test
+    // controls it.
+    const hoisted = path.join(tmpDir, "hoisted");
+    const project = path.join(tmpDir, "project");
+    writeWranglerPackageForTest(hoisted);
+    mkdir(project, "app");
+    const originalNodePath = process.env.NODE_PATH;
+    const setNodePath = (value: string | undefined) => {
+      if (value === undefined) delete process.env.NODE_PATH;
+      else process.env.NODE_PATH = value;
+      (Module as unknown as { _initPaths(): void })._initPaths();
+    };
+    try {
+      setNodePath(path.join(hoisted, "node_modules"));
+      expect(detectProject(project).hasWrangler).toBe(false);
+    } finally {
+      setNodePath(originalNodePath);
+    }
   });
 
   it("detects cloudflare.config.ts", () => {

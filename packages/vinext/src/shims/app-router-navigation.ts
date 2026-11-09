@@ -500,20 +500,6 @@ function normalizeRscCacheLookupPathname(rscUrl: string): string | null {
   }
 }
 
-function parsePrefetchCacheKey(cacheKey: string): {
-  interceptionContext: string | null;
-  rscUrl: string;
-} {
-  const separatorIndex = cacheKey.indexOf("\0");
-  if (separatorIndex === -1) {
-    return { interceptionContext: null, rscUrl: cacheKey };
-  }
-  return {
-    interceptionContext: cacheKey.slice(separatorIndex + 1),
-    rscUrl: cacheKey.slice(0, separatorIndex),
-  };
-}
-
 function isPrefetchCacheEntryCompatibleWithMountedSlots(
   entry: PrefetchCacheEntry,
   mountedSlotsHeader: string | null,
@@ -562,7 +548,7 @@ function findPrefetchCacheEntryForNavigation(
   for (const [cacheKey, entry] of cache) {
     if (entry.cacheForNavigation === false) continue;
 
-    const source = parsePrefetchCacheKey(cacheKey);
+    const source = AppElementsWire.decodeCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     const normalizedSource = normalizeRscCacheLookupUrl(source.rscUrl);
     if (normalizedSource === null || !normalizedTargets.has(normalizedSource)) continue;
@@ -656,7 +642,7 @@ export function hasSearchAgnosticPrefetchShellForRoute(
   for (const [cacheKey, entry] of cache) {
     if (entry.searchAgnosticShell !== true) continue;
 
-    const source = parsePrefetchCacheKey(cacheKey);
+    const source = AppElementsWire.decodeCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeRscCacheLookupPathname(source.rscUrl) !== normalizedTargetPathname) continue;
     if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
@@ -951,7 +937,7 @@ export function discardLearningOnlyPrefetchCacheEntry(
   const superseded: Array<[string, PrefetchCacheEntry]> = [];
   for (const [cacheKey, entry] of cache) {
     if (entry.cacheForNavigation !== false || entry.prefetchKind !== "navigation") continue;
-    const source = parsePrefetchCacheKey(cacheKey);
+    const source = AppElementsWire.decodeCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeRscCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
     // Another slot context's entry is not the one being replaced.
@@ -1641,7 +1627,7 @@ function addRenderedPathAndSearchPrefetchAlias(
   const renderedPathAndSearch = entry.snapshot?.renderedPathAndSearch;
   if (!renderedPathAndSearch) return;
 
-  const source = parsePrefetchCacheKey(primaryCacheKey);
+  const source = AppElementsWire.decodeCacheKey(primaryCacheKey);
   const aliasCacheKey = AppElementsWire.encodeCacheKey(
     renderedPathAndSearch,
     source.interceptionContext,
@@ -2724,6 +2710,12 @@ const _appRouter: AppRouterInstance = {
               mountedSlotsHeader,
             })
           : fetchFullRscPayload();
+      const sharedBehavior = {
+        fallbackTtlMs:
+          policy.fallbackTtl === "dynamic" ? DYNAMIC_NAVIGATION_CACHE_TTL : PREFETCH_CACHE_TTL,
+        dynamicStaleTime: policy.dynamicStaleTime,
+        prefetchKind: "navigation" as const,
+      };
       prefetchRscResponse(
         rscUrl,
         fetchPromise,
@@ -2732,26 +2724,12 @@ const _appRouter: AppRouterInstance = {
         options,
         reusable
           ? {
+              ...sharedBehavior,
               cacheForNavigation: true,
-              fallbackTtlMs:
-                policy.fallbackTtl === "dynamic"
-                  ? DYNAMIC_NAVIGATION_CACHE_TTL
-                  : PREFETCH_CACHE_TTL,
-              dynamicStaleTime: policy.dynamicStaleTime,
               optimisticRouteShell: false,
-              prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,
             }
-          : {
-              cacheForNavigation: false,
-              fallbackTtlMs:
-                policy.fallbackTtl === "dynamic"
-                  ? DYNAMIC_NAVIGATION_CACHE_TTL
-                  : PREFETCH_CACHE_TTL,
-              dynamicStaleTime: policy.dynamicStaleTime,
-              optimisticRouteShell: true,
-              prefetchKind: "navigation",
-            },
+          : { ...sharedBehavior, cacheForNavigation: false, optimisticRouteShell: true },
       );
     })()
       .catch((error: unknown) => {
