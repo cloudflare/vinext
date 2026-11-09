@@ -324,7 +324,22 @@ describe("emitStandaloneOutput", () => {
       packageJson: { name: "lib", main: "server" },
       entry: "server",
     },
-  ])("traces $name", ({ packageJson, entry }) => {
+    {
+      // Export targets are URLs: Node 22.12+ loads "legacy file.js".
+      name: "a percent-encoded exports target",
+      packageJson: {
+        name: "lib",
+        exports: { ".": { "module-sync": "./legacy%20file.js", default: "./other.js" } },
+      },
+      entry: "legacy file.js",
+    },
+    {
+      name: "module.require() calls",
+      packageJson: { name: "lib", main: "index.js" },
+      entry: "index.js",
+      code: 'module.exports = module.require("lib-peer");\n',
+    },
+  ])("traces $name", ({ packageJson, entry, code }) => {
     const appRoot = path.join(tmpDir, "app");
     fs.mkdirSync(appRoot, { recursive: true });
 
@@ -335,7 +350,11 @@ describe("emitStandaloneOutput", () => {
 
     writeFile(appRoot, "node_modules/lib/package.json", JSON.stringify(packageJson));
     writeFile(appRoot, "node_modules/lib/other.js", "module.exports = {};\n");
-    writeFile(appRoot, `node_modules/lib/${entry}`, 'module.exports = require("lib-peer");\n');
+    writeFile(
+      appRoot,
+      `node_modules/lib/${entry}`,
+      code ?? 'module.exports = require("lib-peer");\n',
+    );
     writePackage(appRoot, "lib-peer");
 
     const fakeVinextRoot = path.join(tmpDir, "fake-vinext");

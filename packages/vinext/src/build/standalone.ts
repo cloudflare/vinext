@@ -5,7 +5,7 @@ import fs from "node:fs";
 // oxlint-disable-next-line no-restricted-imports
 import path from "node:path";
 import { createRequire, isBuiltin } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseSync, type ESTree, type ParserOptions } from "vite";
 import {
   forEachAstChild,
@@ -218,6 +218,18 @@ function isValidPackageTarget(target: string, isImports: boolean): boolean {
   return !URL.canParse(target);
 }
 
+/**
+ * Package targets are URLs relative to the package.json, so `./a%20b.js`
+ * names `a b.js`. Returns null for a target Node rejects as a file URL.
+ */
+function packageTargetPath(packageJsonPath: string, target: string): string | null {
+  try {
+    return fileURLToPath(new URL(target, pathToFileURL(packageJsonPath)));
+  } catch {
+    return null;
+  }
+}
+
 /** Resolve an `exports`/`imports` target value against a condition set. */
 function resolveConditionalTarget(
   target: unknown,
@@ -302,8 +314,8 @@ function resolvePackageFile(
   if (pkg.exports !== undefined) {
     const target = resolveSubpathMap(exportsSubpathMap(pkg.exports), subpath, conditions, false);
     if (target === null || !target.startsWith("./")) return null;
-    const filePath = path.join(packageRoot, target);
-    return isFile(filePath) ? filePath : null;
+    const filePath = packageTargetPath(path.join(packageRoot, "package.json"), target);
+    return filePath && isFile(filePath) ? filePath : null;
   }
   if (subpath === ".") {
     const mainFile = pkg.main ? resolveFileCandidate(path.join(packageRoot, pkg.main)) : null;
@@ -389,11 +401,14 @@ function collectFileImports(filePath: string): TracedImport[] {
       forEachAstChild(node, (child) => pending.push(child));
       if (node.type !== "CallExpression") continue;
       const callee = unwrapExpression(node.callee);
+      // require(), require.resolve() and module.require(), as nft recognizes.
       const isRequire =
         isIdentifierNamed(callee, "require") ||
         (callee?.type === "MemberExpression" &&
-          isIdentifierNamed(callee.object, "require") &&
-          isIdentifierNamed(callee.property, "resolve"));
+          ((isIdentifierNamed(callee.object, "require") &&
+            isIdentifierNamed(callee.property, "resolve")) ||
+            (isIdentifierNamed(callee.object, "module") &&
+              isIdentifierNamed(callee.property, "require"))));
       if (!isRequire) continue;
       const specifier = staticStringValue(unwrapExpression(node.arguments[0]));
       if (specifier !== null) imports.push({ specifier, kind: "require" });
@@ -464,7 +479,8 @@ function traceRuntimePackages(
         // A target naming another `#` entry is invalid in Node.
         if (target === null || target.startsWith("#")) continue;
         if (target.startsWith("./")) {
-          enqueueFile(resolveFileCandidate(path.join(path.dirname(scopePackageJson), target)));
+          const targetPath = packageTargetPath(scopePackageJson, target);
+          if (targetPath) enqueueFile(resolveFileCandidate(targetPath));
         } else {
           traceSpecifier(target, importer, kind);
         }
