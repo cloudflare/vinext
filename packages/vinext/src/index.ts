@@ -113,10 +113,6 @@ import {
 } from "./build/report.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
 import {
-  createRscScanGlobImportsPlugin,
-  isRscScanGlobImportsAffected,
-} from "./plugins/rsc-scan-glob-imports.js";
-import {
   normalizePathnameForRouteMatch,
   normalizePathnameForRouteMatchStrict,
 } from "./routing/utils.js";
@@ -424,7 +420,7 @@ import {
   isViteCliConfigFile,
 } from "./utils/vite-cli-invocation.js";
 import { resolvePluginReactPath } from "./utils/plugin-react-version.js";
-import { assertPluginRscVersion, needsAppReactServerDom } from "./utils/plugin-rsc-version.js";
+import { assertPluginRscVersion } from "./utils/plugin-rsc-version.js";
 import { getReactUpgradeDeps, reactUpgradeRequiredMessage } from "./utils/react-version.js";
 import {
   canonicalizeFilePath,
@@ -2183,8 +2179,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
   resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
-  const rscVersion =
-    earlyAppDirExists && resolvedRscPath ? assertPluginRscVersion(resolvedRscPath) : null;
+  if (earlyAppDirExists && resolvedRscPath) assertPluginRscVersion(resolvedRscPath);
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
@@ -2567,19 +2562,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       reactVersionChecked = true;
       // Never install during a build: fail with the command to run instead.
       const reactUpgrade = getReactUpgradeDeps(root);
-      // plugin-rsc looks for the app's RSDW from the working directory, not
-      // the Vite root.
-      const needsAppRsdw = rscVersion !== null && needsAppReactServerDom(process.cwd(), rscVersion);
-      if (needsAppRsdw && !reactUpgrade.includes("react-server-dom-webpack@latest")) {
-        reactUpgrade.push("react-server-dom-webpack@latest");
-      }
       if (reactUpgrade.length === 0) return;
       throw new Error(
-        reactUpgradeRequiredMessage(
-          detectPackageManager(root).replace(/ -D$/, ""),
-          reactUpgrade,
-          needsAppRsdw ? rscVersion : undefined,
-        ),
+        reactUpgradeRequiredMessage(detectPackageManager(root).replace(/ -D$/, ""), reactUpgrade),
       );
     },
     shouldBuildPlainPages: () => !hasAppDir && !hasCloudflarePlugin && !hasNitroPlugin,
@@ -9187,16 +9172,6 @@ export const loadServerActionClient = ${
   // Append auto-injected RSC plugins if applicable
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
-  }
-  if (rscVersion && isRscScanGlobImportsAffected(rscVersion)) {
-    plugins.push(
-      createRscScanGlobImportsPlugin({
-        async getManager(config) {
-          const rscPluginModule = await rscPluginModulePromise;
-          return rscPluginModule?.getPluginApi(config)?.manager;
-        },
-      }),
-    );
   }
   if (earlyAppDirExists) {
     plugins.push(

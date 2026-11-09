@@ -32,8 +32,8 @@ describe("assertPluginRscVersion", () => {
     );
   });
 
-  it("returns the installed version from 0.5.39", () => {
-    expect(assertPluginRscVersion(installPluginRsc("0.5.39"))).toBe("0.5.39");
-    expect(assertPluginRscVersion(installPluginRsc("0.6.0"))).toBe("0.6.0");
+  it("accepts installed versions from 0.5.39", () => {
+    expect(() => assertPluginRscVersion(installPluginRsc("0.5.39"))).not.toThrow();
+    expect(() => assertPluginRscVersion(installPluginRsc("0.6.0"))).not.toThrow();
   });
 });

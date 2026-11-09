@@ -463,13 +463,7 @@ export async function createUseCacheCallablePlugin(
           noExport: true,
           runtime: (value, name, meta) =>
             runtime(value, name, matchUseCacheDirective(meta.directiveMatch[0]), meta),
-          encode: (value, name?: string) => {
-            // Older plugin-rsc releases pass neither `name` nor `meta.bindVars`.
-            if (name === undefined) {
-              throw new Error(
-                'vinext: inline "use cache" functions require @vitejs/plugin-rsc 0.5.37 or newer.',
-              );
-            }
+          encode: (value, name) => {
             const referenceId = `${reference.referenceKey}#${secureExportName(name)}`;
             return `$$cacheRuntime.encryptCacheCaptures(${JSON.stringify(referenceId)}, ${value})`;
           },
