@@ -1645,6 +1645,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         const navEvent: NavigateEvent = {
           url: navUrl,
           preventDefault() {
+            // False positive: https://github.com/oxc-project/oxc/issues/28401
+            // oxlint-disable-next-line react/immutability -- This flag is local to each click.
             prevented = true;
           },
           get defaultPrevented() {
