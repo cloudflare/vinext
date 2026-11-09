@@ -1473,6 +1473,14 @@ describe("Pages Router integration", () => {
     expect(JSON.parse(nextDataMatch![1]).buildId).toBe("test-build-id");
   });
 
+  // Ported from Next.js: test/integration/404-page/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/404-page/test/index.test.ts
+  it("answers a direct /404 request with 404 in dev", async () => {
+    const res = await fetch(`${baseUrl}/404`);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toContain("404 - Page Not Found");
+  });
+
   // Ported from Next.js: test/e2e/not-found-revalidate/not-found-revalidate.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/not-found-revalidate/not-found-revalidate.test.ts
   it("runs custom 404 getStaticProps for getStaticProps notFound in dev", async () => {

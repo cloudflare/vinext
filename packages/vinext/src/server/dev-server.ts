@@ -843,6 +843,12 @@ export function createSSRHandler(
     }
 
     const { route, params } = match;
+    // Like Next.js base-server.ts, a direct /404 page request answers 404,
+    // except for data requests. As in the prod handler, a middleware rewrite
+    // status wins.
+    if (statusCode === undefined && !isDataReq && route.pattern === "/404") {
+      res.statusCode = 404;
+    }
     // Implements the Next.js `req.url` contract: data-fetching methods observe
     // the original request URL. For ordinary page requests this defaults to
     // `url`, so the assignment is a no-op.
