@@ -112,7 +112,7 @@ export function parseModuleRecord(code: string, lang: ParserOptions["lang"]): Mo
  * way (a block comment stops at the first `*\/`, a line comment runs to the
  * line end), so repeating it cannot backtrack exponentially.
  */
-export const TRIVIA_PATTERN = String.raw`(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n\r\u2028\u2029]*(?![^\n\r\u2028\u2029]))`;
+const TRIVIA_PATTERN = String.raw`(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n\r\u2028\u2029]*(?![^\n\r\u2028\u2029]))`;
 
 // Matches `export {}`, which may be an `export {} from "x"` re-export. oxc's
 // module record omits those, but they still load `x`.
