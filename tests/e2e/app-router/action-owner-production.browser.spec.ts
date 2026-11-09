@@ -13,6 +13,17 @@ import { waitForAppRouterHydration } from "../helpers";
 
 const FIXTURE_DIR = path.resolve(process.cwd(), "tests/fixtures/app-action-ownership");
 
+// Text that only exists in server code: the directives and the bodies of the
+// Server Functions on /ownership/sourcemap.
+const SERVER_ONLY_TEXT = [
+  "use server",
+  "use cache",
+  "SERVER_MODULE_ACTION_BODY_MARKER",
+  "INLINE_SERVER_ACTION_BODY_MARKER",
+  "CACHED_MODULE_FUNCTION_BODY_MARKER",
+  "INLINE_CACHED_FUNCTION_BODY_MARKER",
+];
+
 type ProductionApp = {
   actionIds: {
     adminOnly: string;
@@ -91,13 +102,16 @@ function findActionIds(source: string, exportName: string): string[] {
   return [...new Set(matches)];
 }
 
-function findOnlyCacheActionId(source: string): string {
-  const matches = [
-    ...source.matchAll(/["'`]([0-9a-f]{12})["'`]\s*,\s*["'`](\$\$vinext_cache_[0-9a-f]{64})["'`]/g),
-  ].map((match) => `${match[1]}#${match[2]}`);
-  const ids = [...new Set(matches)];
-  if (ids.length !== 1) throw new Error(`Expected one built cache action id, found ${ids.length}`);
-  return ids[0]!;
+// Cache functions register as `"<module id>:<export>"` with their reference id.
+function findCacheActionId(source: string, cacheFunction: string): string {
+  const escapedCacheFunction = cacheFunction.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = source.match(
+    new RegExp(
+      `${escapedCacheFunction}["'\`][^}]*?["']?serverReferenceId["']?\\s*:\\s*["'\`]([0-9a-f]{12}#\\$\\$vinext_cache_[0-9a-f]{64})["'\`]`,
+    ),
+  );
+  if (!match) throw new Error(`Missing built cache action id for ${cacheFunction}`);
+  return match[1]!;
 }
 
 async function buildAndServeFixture(): Promise<ProductionApp> {
@@ -114,6 +128,9 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
     root: fixtureRoot,
     configFile: false,
     plugins: [vinext({ appDir: fixtureRoot })],
+    // Every action runs against a build with browser sourcemaps, like the
+    // Next.js actions fixture (`productionBrowserSourceMaps: true`).
+    environments: { client: { build: { sourcemap: true } } },
     logLevel: "silent",
   });
   await builder.buildApp();
@@ -128,7 +145,10 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
       adminOnly: findActionId(builtSource, "$$hoist_0_adminOnly"),
       adminShared: findActionId(builtSource, "adminSharedAction"),
       boundaryOnly: findActionId(builtSource, "boundaryOnlyAction"),
-      cachedProtected: findOnlyCacheActionId(builtSource),
+      cachedProtected: findCacheActionId(
+        builtSource,
+        "report/cache-owner/actions.ts:cachedProtectedAction",
+      ),
       cookieOwner: findActionId(builtSource, "$$hoist_0_readForwardedCredentials"),
       describeArgument: findActionId(builtSource, "describeArgument"),
       describeBoundArgument: findActionId(builtSource, "describeBoundArgument"),
@@ -755,5 +775,76 @@ test.describe("production server action ownership", () => {
     );
     expect(response.status).toBe(200);
     expect(response.body).toContain("PACKAGE_CLIENT_ACTION_EXECUTED");
+  });
+
+  // Like Next.js's "should not expose action content in sourcemaps"
+  // (test/e2e/app-dir/actions/app-action.test.ts), the browser only gets
+  // createServerReference() proxies for "use server" and "use cache" functions.
+  test("keeps Server Function source out of every emitted client file", async () => {
+    const clientDir = path.join(app.fixtureRoot, "dist", "client");
+    const files = (await fs.readdir(clientDir, { recursive: true })).filter(
+      (file) => file.endsWith(".js") || file.endsWith(".js.map"),
+    );
+    const leaks: string[] = [];
+    const sources = new Map<string, (string | null)[]>();
+    for (const file of files) {
+      const content = await fs.readFile(path.join(clientDir, file), "utf8");
+      for (const text of SERVER_ONLY_TEXT) {
+        if (content.includes(text)) leaks.push(`${file}: ${text}`);
+      }
+      if (!file.endsWith(".map")) continue;
+      const map = JSON.parse(content) as { sources: string[]; sourcesContent?: (string | null)[] };
+      map.sources.forEach((source, index) => {
+        const contents = sources.get(source) ?? [];
+        contents.push(map.sourcesContent?.[index] ?? null);
+        sources.set(source, contents);
+      });
+    }
+    const contentOf = (suffix: string) =>
+      [...sources].filter(([source]) => source.endsWith(suffix)).flatMap(([, content]) => content);
+
+    expect(files.filter((file) => file.endsWith(".js.map")).length).toBeGreaterThan(0);
+    expect(leaks).toEqual([]);
+    // The maps still carry the Client Component and the Web Worker that import
+    // the Server Functions, so this fails if sourcemaps silently stop being emitted.
+    expect(contentOf("ownership/sourcemap/client-buttons.tsx")).toEqual([
+      expect.stringContaining("CLIENT_COMPONENT_SOURCE_MARKER"),
+    ]);
+    expect(contentOf("ownership/sourcemap/worker.ts")).toEqual([
+      expect.stringContaining("WORKER_SOURCE_MARKER"),
+    ]);
+  });
+
+  test("keeps Server Function source out of served sourcemaps", async ({ page, request }) => {
+    const scriptUrls = new Set<string>();
+    page.on("response", (response) => {
+      if (response.request().resourceType() === "script") scriptUrls.add(response.url());
+    });
+    await page.goto(`${app.baseUrl}/ownership/sourcemap`);
+    await waitForAppRouterHydration(page);
+    await expect(page.getByTestId("inline-cached")).toHaveText(
+      "INLINE_CACHED_FUNCTION_BODY_MARKER",
+    );
+    await expect(page.getByTestId("worker")).toHaveText("WORKER_SOURCE_MARKER,function,function");
+
+    // The proxies still call the server.
+    await page.getByRole("button", { name: "Call server action" }).click();
+    await expect(page.getByTestId("result")).toHaveText("SERVER_MODULE_ACTION_BODY_MARKER");
+    await page.getByRole("button", { name: "Call cached function" }).click();
+    await expect(page.getByTestId("result")).toHaveText("CACHED_MODULE_FUNCTION_BODY_MARKER");
+
+    // Follow each served script's sourceMappingURL, as any visitor can.
+    let mapCount = 0;
+    for (const scriptUrl of scriptUrls) {
+      const script = await (await request.get(scriptUrl)).text();
+      const mapUrl = script.match(/\/\/# sourceMappingURL=(\S+)\s*$/)?.[1];
+      if (!mapUrl) continue;
+      const response = await request.get(new URL(mapUrl, scriptUrl).href);
+      expect(response.status()).toBe(200);
+      const map = await response.text();
+      mapCount++;
+      for (const text of SERVER_ONLY_TEXT) expect(map, `${mapUrl}: ${text}`).not.toContain(text);
+    }
+    expect(mapCount).toBeGreaterThan(0);
   });
 });

@@ -14,7 +14,7 @@ import {
 } from "../build/server-actions-encryption-key.js";
 import { parseProgramAsync } from "./ast-utils.js";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
-import { magicStringTransformResult } from "./transform-result.js";
+import { magicStringTransformResult, serverReferenceProxyResult } from "./transform-result.js";
 
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
 type Program = ESTree.Program;
@@ -409,7 +409,10 @@ export async function createUseCacheCallablePlugin(
       result.output.prepend(
         `import * as $$ReactClient from "@vitejs/plugin-rsc/react/${runtimeEnvironment}";\n`,
       );
-      return magicStringTransformResult(result.output, { hires: "boundary", source: id });
+      return serverReferenceProxyResult(this.environment, result.output, {
+        hires: "boundary",
+        source: id,
+      });
     }
 
     // Page semantics (omitting searchParams) are not decided here: like

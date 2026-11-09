@@ -183,6 +183,13 @@ function getStylesheetHrefs(html: string): string[] {
     .filter((href): href is string => href !== null);
 }
 
+// Vite escapes `&` in attribute values, so decode the src like a browser would.
+function getHtmlProxyScriptPath(html: string): string | undefined {
+  return html
+    .match(/<script type="module" src="([^"]*html-proxy[^"]*)"/)?.[1]
+    ?.replaceAll("&amp;", "&");
+}
+
 function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixture {
   const pagesDir = path.join(rootDir, "pages");
   const libDir = path.join(rootDir, "lib");
@@ -1960,9 +1967,7 @@ export default function About({ source }) { return <h1>{source}</h1>; }
   it("installs the vinext dev error overlay in the hydration script", async () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
-    const hydrationProxyPath = html.match(
-      /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
-    )?.[1];
+    const hydrationProxyPath = getHtmlProxyScriptPath(html);
     expect(hydrationProxyPath).toBeDefined();
 
     const hydrationProxy = await fetch(new URL(hydrationProxyPath!, baseUrl)).then((response) =>
@@ -2060,9 +2065,7 @@ export default class CustomDocument extends Document {
         const nextData = JSON.parse(nextDataMatch![1]);
         expect(nextData.__vinext.appModuleUrl).toBe("/pages/_app.page.tsx");
 
-        const hydrationProxyPath = html.match(
-          /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
-        )?.[1];
+        const hydrationProxyPath = getHtmlProxyScriptPath(html);
         expect(hydrationProxyPath).toBeDefined();
         const hydrationProxy = await fetch(new URL(hydrationProxyPath!, started.baseUrl)).then(
           (proxyResponse) => proxyResponse.text(),
@@ -2529,9 +2532,7 @@ export const config = { matcher: "${matcher}" };
           const nextData = JSON.parse(
             html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? "{}",
           );
-          const proxyPath = html.match(
-            /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
-          )?.[1];
+          const proxyPath = getHtmlProxyScriptPath(html);
           expect(proxyPath).toBeDefined();
           const script = await fetch(new URL(proxyPath!, baseUrl)).then((response) =>
             response.text(),
@@ -2634,9 +2635,7 @@ export const config = { matcher: "${matcher}" };
       const { server: devServer, baseUrl } = await startFixtureServer(tmpRoot);
       try {
         const html = await fetch(baseUrl).then((response) => response.text());
-        const proxyPath = html.match(
-          /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
-        )?.[1];
+        const proxyPath = getHtmlProxyScriptPath(html);
         expect(proxyPath).toBeDefined();
         await fetch(new URL(proxyPath!, baseUrl));
         const proxyModule = [
@@ -3412,10 +3411,10 @@ export const config = { matcher: "${matcher}" };
     // and verify it contains our hydration code
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
-    const proxyMatch = html.match(/src="([^"]*html-proxy[^"]*)"/);
-    expect(proxyMatch).toBeTruthy();
+    const proxyPath = getHtmlProxyScriptPath(html);
+    expect(proxyPath).toBeTruthy();
 
-    const scriptRes = await fetch(`${baseUrl}${proxyMatch![1]}`);
+    const scriptRes = await fetch(`${baseUrl}${proxyPath}`);
     expect(scriptRes.status).toBe(200);
     const scriptContent = await scriptRes.text();
     // The proxy module should contain our hydration imports
@@ -4911,7 +4910,7 @@ describe("Virtual server entry generation", () => {
       const html = await res.text();
       expect(res.status).toBe(404);
       expect(html).toContain("Global CSS Error Test");
-      const scriptPath = html.match(/<script type="module" src="([^"]+html-proxy[^"]+)"/)?.[1];
+      const scriptPath = getHtmlProxyScriptPath(html);
       expect(scriptPath).toBeTruthy();
       const hydrationScript = await (
         await fetch(`http://localhost:${addr.port}${scriptPath}`)
