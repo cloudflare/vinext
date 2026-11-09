@@ -661,6 +661,31 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(response.headers.get("Last-Modified")).toBeNull();
   });
 
+  it.each<{ name: string; status: number; headers: Record<string, string> }>([
+    { name: "an ETag on a cacheable Pages page 404", status: 404, headers: { ETag: '"bot-404"' } },
+    {
+      name: "a Last-Modified on a cacheable Pages page redirect",
+      status: 308,
+      headers: { "Last-Modified": "Tue, 06 Oct 2026 00:00:00 GMT" },
+    },
+  ])("keeps $name", async ({ status, headers }) => {
+    stages.response.mockResolvedValue(
+      new Response(status === 308 ? null : "body", {
+        headers: { ...headers, "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
+        status,
+      }),
+    );
+
+    const response = await createEntrypoint(responseStageInvocation({ kind: "pages-page" })).fetch(
+      new Request("https://example.com/page"),
+    );
+
+    expect(response.status).toBe(status);
+    for (const [name, value] of Object.entries(headers)) {
+      expect(response.headers.get(name)).toBe(value);
+    }
+  });
+
   it("rejects an expected build identity when the named stage has no identity", async () => {
     const response = await createEntrypoint({
       ...responseStageInvocation({ kind: "app-page" }),
