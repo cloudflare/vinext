@@ -1,5 +1,47 @@
 # vinext
 
+## 1.4.5
+
+### Bug Fixes
+
+#### App Router
+
+- prefetch loading shells for search-param hrefs without Cache Components (#4660)
+- enforce dynamicParams = false for route handlers (#4125)
+- render dynamicParams misses as a routing-level not-found (#4122)
+- let the latest navigation commit over a superseded one's render (#4633)
+
+#### Pages Router
+
+- render /500 as HTML for a _next/data request (#4629)
+- answer a direct /500 request with 500 (#4626)
+- answer a direct /404 request with 404 in dev (#4612)
+
+#### Misc
+
+- align Server Function proxy transforms with @vitejs/plugin-rsc (#4630)
+- **Styled Jsx:** load Next's prebundled styled-jsx in the dev client (#4621)
+- **Use Cache:** compile .mts cache modules like other source files (#4627)
+- keep the App Router navigation runtime out of Pages Router bundles (#4617)
+- **Cloudflare:** stop dev answering 500 for paths that parse as an invalid host (#4616)
+- **Pages:** drop the default viewport when next/head sets one (#4614)
+- **Dev:** scan pages/ for client and ssr deps when app/ also exists (#4613)
+- **Head:** ignore next/head in the App Router like Next.js (#4610)
+- **Server:** shut down the production server gracefully on SIGTERM and SIGINT (#4611)
+- **Deploy:** detect Wrangler only in the project's node_modules (#4607)
+- **Prerender:** fail the build on getStaticPaths paths with dot segments (#4608)
+- tag isolate-shared promises with the request that creates them (#4567)
+- **Init:** stop adding nodejs_compat now that compat dates enable it (#4580)
+- **Nitro:** wait for server dep optimization before Nitro dev imports entries (#4577)
+
+### Performance
+
+- **App Router:** run a dynamicParams = false route's generators only on a cache miss (#4634)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.4.4
 
 ### Bug Fixes
