@@ -39,11 +39,12 @@ const EVENT_HANDLER_ATTR_NAME = /^on/i;
 // promise on `load` or `error`. An inline module fires neither, so a one-line
 // inline module queued right after it (same nonce, so CSP treats both alike)
 // settles the promise by index once the inline one has run, then removes
-// itself. Each also settles if CSP blocks it. The first of any
-// case-insensitive duplicate attribute wins, as when the parser reads the tag.
+// itself. Each also settles if CSP blocks it, but not on a report-only
+// violation, which lets the script run. The first of any case-insensitive
+// duplicate attribute wins, as when the parser reads the tag.
 const CLASSIC_SCRIPT_LOADER =
   '(function(c,p,s){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});s.text=p[1];(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s)})';
-const MODULE_SCRIPT_LOADER = `(function(c,p,s,t,q,n,d){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});p[1]!=null?s.text=p[1]:0;(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s);q=self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}=self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}||[];n=q.length;q.push(new Promise(function(r){d=function(){t===s||t.remove();r()};t=s;if(p[1]!=null){t=document.createElement("script");t.async=!1;t.type="module";t.nonce=s.nonce;t.text="self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}["+n+"].d()";s.after(t)}t.onload=t.onerror=t.onsecuritypolicyviolation=d}));q[n].d=d})`;
+const MODULE_SCRIPT_LOADER = `(function(c,p,s,t,q,n,d){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});p[1]!=null?s.text=p[1]:0;(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s);q=self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}=self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}||[];n=q.length;q.push(new Promise(function(r){d=function(){t===s||t.remove();r()};t=s;if(p[1]!=null){t=document.createElement("script");t.async=!1;t.type="module";t.nonce=s.nonce;t.text="self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}["+n+"].d()";s.after(t)}t.onload=t.onerror=d;t.onsecuritypolicyviolation=function(e){e.disposition=="report"||d()}}));q[n].d=d})`;
 
 // The script `type` that makes the browser run it as a module: an exact,
 // case-insensitive match. Any other non-JavaScript type is a data block that

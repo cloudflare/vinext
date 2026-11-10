@@ -1,3 +1,4 @@
+import type { Page, Response } from "@playwright/test";
 import { test, expect } from "../fixtures";
 import { waitForAppRouterHydration } from "../helpers";
 
@@ -102,56 +103,23 @@ test.describe("inline beforeInteractive head ordering", () => {
       page,
       consoleErrors,
     }) => {
-      // Hold the external module back so the inline modules after it and the
-      // bootstrap are both ready first: it must still run before them.
-      await page.route("**/before-interactive-module.js", async (route) => {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        await route.continue();
-      });
-      const response = await page.goto(`${BASE}/beforeinteractive-script-data${search}`);
+      const response = await expectModulesRunInOrderBeforeHydration(page, search);
       expect(response?.headers()["content-security-policy"]).toBe(csp);
-      await waitForAppRouterHydration(page);
-
-      const moduleLog = await page.evaluate(
-        () => (self as unknown as { __vinextModuleLog?: unknown }).__vinextModuleLog,
-      );
-      expect(moduleLog).toEqual([
-        { name: "external-module", hydrated: false },
-        { name: "module-1", hydrated: false },
-        { name: "module-2", hydrated: false },
-      ]);
-
-      const modules = await page.evaluate(() =>
-        ["vinext-test-external-module", "vinext-test-module-1", "vinext-test-module-2"].map(
-          (id) => {
-            const element = document.getElementById(id) as HTMLScriptElement | null;
-            return {
-              parent: element?.parentElement?.tagName,
-              type: element?.type,
-              async: element?.async,
-              marker: element?.getAttribute("data-nscript"),
-            };
-          },
-        ),
-      );
-      const expected = {
-        parent: "HEAD",
-        type: "module",
-        async: false,
-        marker: "beforeInteractive",
-      };
-      expect(modules).toEqual([expected, expected, expected]);
-      // The sentinels queued after the inline modules removed themselves.
-      expect(
-        await page.evaluate(
-          () => document.querySelectorAll('script[type="module"]:not([src]):not([id])').length,
-        ),
-      ).toBe(0);
       expect(
         consoleErrors.filter((message) => message.includes("Content Security Policy")),
       ).toEqual([]);
     });
   }
+
+  // A report-only policy reports every script here but blocks none, so the
+  // modules must still hold hydration back. Its reports are console errors,
+  // so this test does not use the consoleErrors fixture.
+  test("beforeInteractive module scripts run in order before hydration under a report-only CSP", async ({
+    page,
+  }) => {
+    const response = await expectModulesRunInOrderBeforeHydration(page, "?csp-report-only");
+    expect(response?.headers()["content-security-policy-report-only"]).toBe("script-src 'none';");
+  });
 
   test("inline beforeInteractive script runs under a nonce-based CSP", async ({
     page,
@@ -179,3 +147,48 @@ test.describe("inline beforeInteractive head ordering", () => {
     );
   });
 });
+
+// Loads the module fixture with its external module held back, so the inline
+// modules after it and the bootstrap are both ready first, and checks that all
+// three modules still ran in order before hydration.
+async function expectModulesRunInOrderBeforeHydration(
+  page: Page,
+  search: string,
+): Promise<Response | null> {
+  await page.route("**/before-interactive-module.js", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await route.continue();
+  });
+  const response = await page.goto(`${BASE}/beforeinteractive-script-data${search}`);
+  await waitForAppRouterHydration(page);
+
+  const moduleLog = await page.evaluate(
+    () => (self as unknown as { __vinextModuleLog?: unknown }).__vinextModuleLog,
+  );
+  expect(moduleLog).toEqual([
+    { name: "external-module", hydrated: false },
+    { name: "module-1", hydrated: false },
+    { name: "module-2", hydrated: false },
+  ]);
+
+  const modules = await page.evaluate(() =>
+    ["vinext-test-external-module", "vinext-test-module-1", "vinext-test-module-2"].map((id) => {
+      const element = document.getElementById(id) as HTMLScriptElement | null;
+      return {
+        parent: element?.parentElement?.tagName,
+        type: element?.type,
+        async: element?.async,
+        marker: element?.getAttribute("data-nscript"),
+      };
+    }),
+  );
+  const expected = { parent: "HEAD", type: "module", async: false, marker: "beforeInteractive" };
+  expect(modules).toEqual([expected, expected, expected]);
+  // The sentinels queued after the inline modules removed themselves.
+  expect(
+    await page.evaluate(
+      () => document.querySelectorAll('script[type="module"]:not([src]):not([id])').length,
+    ),
+  ).toBe(0);
+  return response;
+}

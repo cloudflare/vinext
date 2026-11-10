@@ -938,6 +938,8 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
     expect(classic.modulePromises).toEqual([]);
     expect(classic.sentinel).toBeUndefined();
 
+    type Handler = (event: { disposition: string }) => void;
+    const enforced = { disposition: "enforce" };
     const settles = async (promise: Promise<unknown>, fire: () => void) => {
       let settled = false;
       void promise.then(() => {
@@ -971,7 +973,7 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
       expect(sentinel).not.toHaveProperty("src");
       expect(String(sentinel.text)).not.toMatch(/[<&]/);
       await settles(inline.modulePromises[0], () =>
-        fire === "run" ? inline.runSentinel() : (sentinel[fire] as () => void)(),
+        fire === "run" ? inline.runSentinel() : (sentinel[fire] as Handler)(enforced),
       );
       expect(sentinel.removed).toBe(true);
     }
@@ -983,8 +985,35 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
         ]),
       );
       expect(external.sentinel).toBeUndefined();
-      await settles(external.modulePromises[0], () => (external.element[event] as () => void)());
+      await settles(external.modulePromises[0], () =>
+        (external.element[event] as Handler)(enforced),
+      );
     }
+  });
+
+  it("does not settle a module promise on a report-only CSP violation", async () => {
+    // A report-only policy lets the script run, so hydration must still wait.
+    const inline = runHoistedLoader(
+      renderBeforeInteractiveInlineScripts([
+        { id: "m", content: "1", attributes: { type: "module" } },
+      ]),
+    );
+    const external = runHoistedLoader(
+      renderBeforeInteractiveInlineScripts([
+        { id: "e", src: "/e.js", attributes: { type: "module" } },
+      ]),
+    );
+    const report = { disposition: "report" };
+    const handler = (element: Record<string, unknown> | undefined) =>
+      element?.onsecuritypolicyviolation as (event: { disposition: string }) => void;
+    handler(inline.sentinel)(report);
+    handler(external.element)(report);
+    let settled = 0;
+    void inline.modulePromises[0].then(() => settled++);
+    void external.modulePromises[0].then(() => settled++);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(0);
+    expect(inline.sentinel?.removed).toBeUndefined();
   });
 
   it("keeps only an exact module type on the module path", () => {
