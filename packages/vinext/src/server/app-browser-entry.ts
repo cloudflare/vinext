@@ -129,6 +129,7 @@ import {
   createVinextHydrateRootOptions,
   hydrateRootInTransition,
   resolveFetchedHydrationLocation,
+  waitForBeforeInteractiveModules,
 } from "./app-browser-hydration.js";
 import {
   AppElementsWire,
@@ -1972,6 +1973,8 @@ async function main(): Promise<void> {
   // The recovery path reloads the document, which resets the "starting" claim;
   // this module instance is intentionally not eligible to retry bootstrap.
   if (rscStream === null) return;
+  const beforeInteractiveModules = waitForBeforeInteractiveModules(getVinextBrowserGlobal());
+  if (beforeInteractiveModules) await beforeInteractiveModules;
   bootstrapHydration(rscStream, devErrorOverlay, initialRscBootstrap);
 }
 

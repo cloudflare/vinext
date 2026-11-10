@@ -4,10 +4,14 @@ import {
   getNavigationRuntime,
   type NavigationRuntimeRscBootstrap,
 } from "../client/navigation-runtime.js";
-import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
+import {
+  BEFORE_INTERACTIVE_MODULES_GLOBAL,
+  RSC_FORM_STATE_GLOBAL,
+} from "../client/browser-globals.js";
 import { decodeRscEmbeddedChunk, type RscEmbeddedChunk } from "./app-rsc-embedded-chunks.js";
 
 type VinextBrowserGlobals = {
+  [BEFORE_INTERACTIVE_MODULES_GLOBAL]?: Promise<unknown>[];
   __VINEXT_RSC_CHUNKS__?: RscEmbeddedChunk[];
   __VINEXT_RSC_DONE__?: boolean;
   [RSC_FORM_STATE_GLOBAL]?: ReactFormState;

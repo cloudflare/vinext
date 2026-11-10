@@ -1,5 +1,8 @@
 import type { hydrateRoot, ReactFormState } from "react-dom/client";
-import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
+import {
+  BEFORE_INTERACTIVE_MODULES_GLOBAL,
+  RSC_FORM_STATE_GLOBAL,
+} from "../client/browser-globals.js";
 
 type HydrateRootOptions = NonNullable<Parameters<typeof hydrateRoot>[2]>;
 type HydrateRoot = typeof hydrateRoot;
@@ -19,6 +22,22 @@ export function consumeInitialFormState(global: FormStateGlobal): ReactFormState
   const formState = global[RSC_FORM_STATE_GLOBAL] ?? null;
   delete global[RSC_FORM_STATE_GLOBAL];
   return formState;
+}
+
+type BeforeInteractiveModulesGlobal = {
+  [BEFORE_INTERACTIVE_MODULES_GLOBAL]?: Promise<unknown>[];
+};
+
+/**
+ * Settles once every hoisted beforeInteractive module script has run, so
+ * hydration starts after them (see server/before-interactive-head.ts). Returns
+ * null when the page has none, so hydration does not wait at all.
+ */
+export function waitForBeforeInteractiveModules(
+  global: BeforeInteractiveModulesGlobal,
+): Promise<unknown[]> | null {
+  const pending = global[BEFORE_INTERACTIVE_MODULES_GLOBAL];
+  return pending !== undefined && pending.length > 0 ? Promise.all(pending) : null;
 }
 
 export function createVinextHydrateRootOptions(options: {

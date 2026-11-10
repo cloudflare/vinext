@@ -1,4 +1,5 @@
 import type { BeforeInteractiveInlineScript } from "vinext/shims/before-interactive-context";
+import { BEFORE_INTERACTIVE_MODULES_GLOBAL } from "../client/browser-globals.js";
 import { createNonceAttribute, escapeHtmlAttr, safeJsonStringify } from "./html.js";
 
 // Conservative subset of the HTML attribute-name grammar. Must start with a
@@ -25,16 +26,30 @@ const EVENT_HANDLER_ATTR_NAME = /^on/i;
 // (`</head>`, `</body></html>`, stylesheet links). The loader carries its own
 // payload (`[[name, value], ...]` attribute pairs plus the body) and swaps
 // itself for the real script element. A classic script runs on insertion, at
-// the same point in the parse as a parser-inserted tag. A module script is
-// inserted at the same point, ahead of vinext's parser-deferred bootstrap, so
-// it is queued before hydration starts. As with the scripts Next.js inserts
-// from `appBootstrap` before it hydrates, a module still waits for its own
-// imports and can therefore run after hydration starts. Clearing `async`
-// before applying the attributes keeps modules in registration order unless
-// the author asked for `async`. The first of any case-insensitive duplicate
-// attribute wins, as when the parser reads the tag.
-const INLINE_SCRIPT_LOADER =
-  '(function(c,p,s){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});s.text=p[1];(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s)})';
+// the same point in the parse as a parser-inserted tag.
+//
+// Module scripts, inline or `src`, all go through the loader so they share one
+// queue: clearing `async` before applying the attributes keeps them in
+// registration order unless the author asked for `async`. A parser-inserted
+// `src` module would instead wait for parsing to finish and run after the
+// created ones. Each created module also registers a promise, and the App
+// Router bootstrap awaits them before it hydrates. This keeps the ordering
+// Next.js gets from inserting its queue in sequence in `appBootstrap`, waiting
+// on each external script, before it hydrates. A `src` module settles its
+// promise on `load` or `error`. An inline module fires neither, so an empty
+// `data:` module queued right after it settles the promise once the inline one
+// has run, then removes itself. Each also settles if CSP blocks it. The first
+// of any case-insensitive duplicate attribute wins, as when the parser reads
+// the tag.
+const SCRIPT_LOADER = `(function(c,p,s,t){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});p[1]!=null?s.text=p[1]:0;(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s);p[2]?(self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}=self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}||[]).push(new Promise(function(r){t=s;if(p[1]!=null){t=document.createElement("script");t.async=!1;t.type="module";t.nonce=s.nonce;t.src="data:text/javascript,";s.after(t)}t.onload=t.onerror=t.onsecuritypolicyviolation=function(){t===s||t.remove();r()}})):0})`;
+
+// The script `type` that makes the browser run it as a module.
+const MODULE_TYPE = /^\s*module\s*$/i;
+
+function isModuleScript(attrs: readonly [string, string][]): boolean {
+  const type = attrs.find(([name]) => name.toLowerCase() === "type");
+  return type !== undefined && MODULE_TYPE.test(type[1]);
+}
 
 /**
  * Collect the attributes that go on a hoisted `<script>`, in emit order: id,
@@ -76,10 +91,11 @@ function collectAttributes(script: BeforeInteractiveInlineScript): [string, stri
  * Render captured `<Script strategy="beforeInteractive">` scripts to HTML,
  * ready to splice immediately after `<head ...>` opens.
  *
- * External (`src`) scripts render as a plain `<script src>` tag with quoted
- * attributes and no body. Inline scripts render as a loader whose payload is
- * HTML-safe JSON (see `INLINE_SCRIPT_LOADER`); the loader itself carries the
- * nonce so it runs under the same CSP as the script it creates.
+ * Classic external (`src`) scripts render as a plain `<script src>` tag with
+ * quoted attributes and no body. Inline scripts and module scripts render as a
+ * loader whose payload is HTML-safe JSON (see `SCRIPT_LOADER`); the loader
+ * itself carries the nonce so it runs under the same CSP as the script it
+ * creates.
  *
  * Keeping this function in its own module makes the boundary obvious: anything
  * passed through here is being concatenated directly into HTML; treat the
@@ -92,7 +108,8 @@ export function renderBeforeInteractiveInlineScripts(
   let html = "";
   for (const script of scripts) {
     const attrs = collectAttributes(script);
-    if (script.content === undefined) {
+    const isModule = isModuleScript(attrs);
+    if (script.content === undefined && !isModule) {
       let attrHtml = "";
       for (const [key, value] of attrs) {
         attrHtml += value === "" ? ` ${key}` : ` ${key}="${escapeHtmlAttr(value)}"`;
@@ -100,8 +117,10 @@ export function renderBeforeInteractiveInlineScripts(
       html += `<script${attrHtml}></script>`;
       continue;
     }
-    const payload = safeJsonStringify([attrs, script.content]);
-    html += `<script${createNonceAttribute(script.nonce)}>${INLINE_SCRIPT_LOADER}(document.currentScript,${payload})</script>`;
+    const payload = safeJsonStringify(
+      isModule ? [attrs, script.content ?? null, 1] : [attrs, script.content],
+    );
+    html += `<script${createNonceAttribute(script.nonce)}>${SCRIPT_LOADER}(document.currentScript,${payload})</script>`;
   }
   return html;
 }

@@ -85,39 +85,61 @@ test.describe("inline beforeInteractive head ordering", () => {
     void consoleErrors;
   });
 
-  test("inline beforeInteractive module scripts run in order before hydration", async ({
-    page,
-    consoleErrors,
-  }) => {
-    await page.goto(`${BASE}/beforeinteractive-script-data`);
-    await waitForAppRouterHydration(page);
+  for (const { name, search } of [
+    { name: "", search: "" },
+    { name: " under a nonce-based CSP", search: "?csp-nonce=before-interactive-nonce" },
+  ]) {
+    test(`beforeInteractive module scripts run in order before hydration${name}`, async ({
+      page,
+      consoleErrors,
+    }) => {
+      // Hold the external module back so the inline modules after it and the
+      // bootstrap are both ready first: it must still run before them.
+      await page.route("**/before-interactive-module.js", async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await route.continue();
+      });
+      await page.goto(`${BASE}/beforeinteractive-script-data${search}`);
+      await waitForAppRouterHydration(page);
 
-    // The loader inserts each module with `async` cleared, so modules without
-    // imports run in registration order ahead of the deferred bootstrap.
-    const moduleLog = await page.evaluate(
-      () => (self as unknown as { __vinextModuleLog?: unknown }).__vinextModuleLog,
-    );
-    expect(moduleLog).toEqual([
-      { name: "module-1", hydrated: false },
-      { name: "module-2", hydrated: false },
-    ]);
+      const moduleLog = await page.evaluate(
+        () => (self as unknown as { __vinextModuleLog?: unknown }).__vinextModuleLog,
+      );
+      expect(moduleLog).toEqual([
+        { name: "external-module", hydrated: false },
+        { name: "module-1", hydrated: false },
+        { name: "module-2", hydrated: false },
+      ]);
 
-    const modules = await page.evaluate(() =>
-      ["vinext-test-module-1", "vinext-test-module-2"].map((id) => {
-        const element = document.getElementById(id) as HTMLScriptElement | null;
-        return {
-          parent: element?.parentElement?.tagName,
-          type: element?.type,
-          async: element?.async,
-          marker: element?.getAttribute("data-nscript"),
-        };
-      }),
-    );
-    const expected = { parent: "HEAD", type: "module", async: false, marker: "beforeInteractive" };
-    expect(modules).toEqual([expected, expected]);
-
-    void consoleErrors;
-  });
+      const modules = await page.evaluate(() =>
+        ["vinext-test-external-module", "vinext-test-module-1", "vinext-test-module-2"].map(
+          (id) => {
+            const element = document.getElementById(id) as HTMLScriptElement | null;
+            return {
+              parent: element?.parentElement?.tagName,
+              type: element?.type,
+              async: element?.async,
+              marker: element?.getAttribute("data-nscript"),
+            };
+          },
+        ),
+      );
+      const expected = {
+        parent: "HEAD",
+        type: "module",
+        async: false,
+        marker: "beforeInteractive",
+      };
+      expect(modules).toEqual([expected, expected, expected]);
+      // The sentinels queued after the inline modules removed themselves.
+      expect(
+        await page.evaluate(() => document.querySelectorAll('script[src^="data:"]').length),
+      ).toBe(0);
+      expect(
+        consoleErrors.filter((message) => message.includes("Content Security Policy")),
+      ).toEqual([]);
+    });
+  }
 
   test("inline beforeInteractive script runs under a nonce-based CSP", async ({
     page,

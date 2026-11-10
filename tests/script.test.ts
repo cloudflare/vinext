@@ -20,6 +20,7 @@ import {
   type BeforeInteractiveInlineScript,
 } from "../packages/vinext/src/shims/before-interactive-context.js";
 import { renderBeforeInteractiveInlineScripts } from "../packages/vinext/src/server/before-interactive-head.js";
+import { BEFORE_INTERACTIVE_MODULES_GLOBAL } from "../packages/vinext/src/client/browser-globals.js";
 import { NAVIGATION_RUNTIME_KEY } from "../packages/vinext/src/client/navigation-runtime.js";
 
 const originalDocument = globalThis.document;
@@ -765,6 +766,9 @@ function runHoistedLoader(
   text: string;
   operations: string[];
   placement: "replaced-loader" | "appended-to-head";
+  modulePromises: Promise<unknown>[];
+  element: Record<string, unknown>;
+  sentinel: Record<string, unknown> | undefined;
 } {
   const loader = /^<script\b[^>]*>([^<]*)<\/script[^>]*>$/i.exec(html)?.[1];
   if (loader === undefined) throw new Error(`not a single hoisted loader: ${html}`);
@@ -774,7 +778,11 @@ function runHoistedLoader(
     operations: [] as string[],
   };
   let placement: "replaced-loader" | "appended-to-head" | undefined;
-  const element = {
+  // The loader may create a second script: the sentinel queued after an inline
+  // module. It records where it went and whether it removed itself.
+  let sentinel: Record<string, unknown> | undefined;
+  const element: Record<string, unknown> = {
+    nonce: "",
     set async(value: boolean) {
       created.operations.push(`async=${value}`);
       if (!value) delete created.attributes.async;
@@ -785,8 +793,18 @@ function runHoistedLoader(
       created.attributes[name.toLowerCase()] = value;
     },
     set text(value: string) {
+      created.operations.push("text");
       created.text = value;
     },
+    after(node: unknown) {
+      if (sentinel && node === sentinel) sentinel.insertedAfterScript = true;
+    },
+  };
+  // The nonce IDL attribute reflects the nonce content attribute.
+  const setAttribute = element.setAttribute as (name: string, value: string) => void;
+  element.setAttribute = (name: string, value: string) => {
+    setAttribute(name, value);
+    if (name.toLowerCase() === "nonce") element.nonce = value;
   };
   const fakeDocument = {
     currentScript: withCurrentScript
@@ -797,16 +815,32 @@ function runHoistedLoader(
           },
         }
       : null,
-    createElement: (tag: string) => (tag === "script" ? element : null),
+    createElement(tag: string) {
+      if (tag !== "script") return null;
+      if (!placement) return element;
+      sentinel = {
+        remove() {
+          if (sentinel) sentinel.removed = true;
+        },
+      };
+      return sentinel;
+    },
     head: {
       appendChild(node: unknown) {
         if (node === element) placement ??= "appended-to-head";
       },
     },
   };
-  runInNewContext(loader, { document: fakeDocument });
+  const fakeSelf: Record<string, Promise<unknown>[] | undefined> = {};
+  runInNewContext(loader, { document: fakeDocument, self: fakeSelf });
   if (!placement) throw new Error("loader did not insert the script");
-  return { ...created, placement };
+  return {
+    ...created,
+    placement,
+    modulePromises: fakeSelf[BEFORE_INTERACTIVE_MODULES_GLOBAL] ?? [],
+    element,
+    sentinel,
+  };
 }
 
 describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
@@ -892,6 +926,73 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
     const asyncModule = runHoistedLoader(render({ type: "module", async: true }));
     expect(asyncModule.operations[0]).toBe("async=false");
     expect(asyncModule.attributes.async).toBe("");
+  });
+
+  it("registers a promise for each created module that settles once it runs", async () => {
+    const classic = runHoistedLoader(
+      renderBeforeInteractiveInlineScripts([{ id: "c", content: "1" }]),
+    );
+    expect(classic.modulePromises).toEqual([]);
+    expect(classic.sentinel).toBeUndefined();
+
+    const settles = async (promise: Promise<unknown>, fire: () => void) => {
+      let settled = false;
+      void promise.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      fire();
+      await Promise.resolve();
+      expect(settled).toBe(true);
+    };
+
+    for (const event of ["onload", "onerror", "onsecuritypolicyviolation"]) {
+      // An inline module fires no load event, so a sentinel module queued
+      // right after it settles the promise and then removes itself.
+      const inline = runHoistedLoader(
+        renderBeforeInteractiveInlineScripts([
+          { id: "m", content: "1", nonce: "n1", attributes: { type: "Module" } },
+        ]),
+      );
+      expect(inline.modulePromises).toHaveLength(1);
+      const sentinel = inline.sentinel;
+      if (!sentinel) throw new Error("inline module queued no sentinel");
+      expect(sentinel).toMatchObject({
+        async: false,
+        type: "module",
+        nonce: "n1",
+        src: "data:text/javascript,",
+        insertedAfterScript: true,
+      });
+      await settles(inline.modulePromises[0], () => (sentinel[event] as () => void)());
+      expect(sentinel.removed).toBe(true);
+
+      const external = runHoistedLoader(
+        renderBeforeInteractiveInlineScripts([
+          { id: "e", src: "/e.js", attributes: { type: "module" } },
+        ]),
+      );
+      expect(external.sentinel).toBeUndefined();
+      await settles(external.modulePromises[0], () => (external.element[event] as () => void)());
+    }
+  });
+
+  it("creates src module scripts through the loader so they share the module queue", () => {
+    const html = renderBeforeInteractiveInlineScripts([
+      { id: "ext", src: "/ext.js", nonce: "n1", attributes: { type: "module" } },
+    ]);
+    expect(html).toMatch(/^<script nonce="n1">/);
+    const created = runHoistedLoader(html);
+    expect(created.attributes).toEqual({
+      id: "ext",
+      src: "/ext.js",
+      nonce: "n1",
+      type: "module",
+      "data-nscript": "beforeInteractive",
+    });
+    expect(created.operations).not.toContain("text");
+    expect(created.modulePromises).toHaveLength(1);
   });
 
   it("emits a <script src> tag (with no body) for registered src scripts", () => {

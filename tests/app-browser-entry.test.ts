@@ -25,12 +25,16 @@ import {
   shouldSyncServerActionHttpFallbackHead,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
-import { RSC_FORM_STATE_GLOBAL } from "../packages/vinext/src/client/browser-globals.js";
+import {
+  BEFORE_INTERACTIVE_MODULES_GLOBAL,
+  RSC_FORM_STATE_GLOBAL,
+} from "../packages/vinext/src/client/browser-globals.js";
 import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,
   hydrateRootInTransition,
   resolveFetchedHydrationLocation,
+  waitForBeforeInteractiveModules,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "../packages/vinext/src/server/app-browser-navigation-response.js";
@@ -10475,6 +10479,30 @@ describe("app browser form-state hydration", () => {
       onRecoverableError,
       onUncaughtError,
     });
+  });
+
+  it("waits for hoisted beforeInteractive modules only when the page has some", async () => {
+    expect(waitForBeforeInteractiveModules({})).toBeNull();
+    expect(waitForBeforeInteractiveModules({ [BEFORE_INTERACTIVE_MODULES_GLOBAL]: [] })).toBeNull();
+
+    let settleModule: (value?: unknown) => void = () => {};
+    const pending = waitForBeforeInteractiveModules({
+      [BEFORE_INTERACTIVE_MODULES_GLOBAL]: [
+        Promise.resolve(),
+        new Promise((resolve) => {
+          settleModule = resolve;
+        }),
+      ],
+    });
+    let settled = false;
+    void pending?.then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    settleModule();
+    await pending;
+    expect(settled).toBe(true);
   });
 
   it("preserves null form state as an explicit hydrateRoot option", () => {

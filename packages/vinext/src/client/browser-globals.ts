@@ -5,3 +5,6 @@
 
 export const RSC_FORM_STATE_GLOBAL = "__VINEXT_RSC_FORM_STATE__";
 export const NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION = "vinext.navigationRuntime";
+// Promises for hoisted beforeInteractive module scripts, pushed by their head
+// loaders and awaited by the App Router bootstrap before it hydrates.
+export const BEFORE_INTERACTIVE_MODULES_GLOBAL = "__VINEXT_BEFORE_INTERACTIVE_MODULES__";
