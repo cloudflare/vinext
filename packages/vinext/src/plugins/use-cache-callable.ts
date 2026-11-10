@@ -614,10 +614,11 @@ export async function createUseCacheCallablePlugin(
       handler: transformDirectives,
     },
   };
-  // Like Next.js, packages may ship their own "use cache" functions. Package
-  // files don't change, so unlike app files they need no claim cleanup when
-  // the directive is absent, and the native code filter keeps the hook off
-  // the rest of node_modules.
+  // Like Next.js, packages may ship their own "use cache" functions, and an
+  // inline "use server" function in a package fails the build outside the RSC
+  // graph like one in an app file. Package files don't change, so unlike app
+  // files they need no claim cleanup when the directive is absent, and the
+  // native code filter keeps the hook off the rest of node_modules.
   const nodeModulesPlugin: Plugin = {
     name: `${PLUGIN_NAME}:node-modules`,
     transform: {
@@ -626,7 +627,7 @@ export async function createUseCacheCallablePlugin(
           include: NODE_MODULES_SOURCE_MODULE_ID_RE,
           exclude: RESOLVED_VIRTUAL_MODULE_ID_RE,
         },
-        code: "use cache",
+        code: /use (?:cache|server)/,
       },
       handler: transformDirectives,
     },

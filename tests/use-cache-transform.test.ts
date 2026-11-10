@@ -610,7 +610,7 @@ describe("plugin-rsc inline use-cache references", () => {
     )!;
     const packageId = path.join(APP_FIXTURE_DIR, "node_modules", "my-pkg", "index.js");
     const { filter } = plugin.transform as {
-      filter: { id: { include: RegExp; exclude: RegExp }; code: string };
+      filter: { id: { include: RegExp; exclude: RegExp }; code: RegExp };
     };
     expect(filter.id.include.test(packageId)).toBe(true);
     for (const extension of [".mjs", ".mts", ".jsx", ".ts", ".tsx"]) {
@@ -622,13 +622,34 @@ describe("plugin-rsc inline use-cache references", () => {
     }
     expect(filter.id.include.test(moduleId)).toBe(false);
     expect(filter.id.exclude.test(packageId)).toBe(false);
-    expect(filter.code).toBe("use cache");
+    expect(filter.code.test(fileCacheCode)).toBe(true);
+    expect(filter.code.test(`export const value = 1;`)).toBe(false);
     const result = await unwrapHook(plugin.transform)!.call(
       { environment: { name: "rsc", mode: "build" } },
       fileCacheCode,
       packageId,
     );
     expect(result!.code).toContain("registerCachedFunction(getData");
+  });
+
+  it("rejects inline use-server functions shipped inside node_modules outside the rsc graph", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives:node-modules",
+    )!;
+    const packageId = path.join(APP_FIXTURE_DIR, "node_modules", "my-pkg", "index.js");
+    const source = [`export async function action() {`, `  "use server";`, `}`].join("\n");
+    const { filter } = plugin.transform as { filter: { code: RegExp } };
+    expect(filter.code.test(source)).toBe(true);
+    const transform = unwrapHook(plugin.transform)!;
+
+    await expect(
+      transform.call({ environment: { name: "client", mode: "build" } }, source, packageId),
+    ).rejects.toThrow(/inline "use server" annotated Server Actions in Client Components/);
+    await expect(
+      transform.call({ environment: { name: "rsc", mode: "build" } }, source, packageId),
+    ).resolves.toBeUndefined();
   });
 
   it("compiles app source modules of every ES module extension", async () => {
