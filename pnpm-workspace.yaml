@@ -114,7 +114,7 @@ catalog:
 catalogs:
   cloudflare-vite-v2:
     "@cloudflare/vite-plugin": 2.0.0-beta.sha-805ec1ff3
-    cf: 1.0.0-beta.1
+    cf: 1.0.0-beta.29
     vite: 8.3.0
   sentry-nextjs-16-static:
     "@sentry/core": 11.0.0-beta.2
