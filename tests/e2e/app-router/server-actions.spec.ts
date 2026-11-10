@@ -99,6 +99,58 @@ test.describe("Server Actions", () => {
     await expect(page.locator("h1")).toHaveText("About");
   });
 
+  test("server action redirect still navigates after another action refreshed the page", async ({
+    page,
+  }) => {
+    const path = "/action-redirect-after-refresh";
+    // Hold each action response until the test releases it, so the save
+    // response commits its refresh before the redirect response arrives.
+    const release: Array<() => void> = [];
+    let posted = 0;
+    await page.route(`**${path}`, async (route) => {
+      const headers = await route.request().allHeaders();
+      if (route.request().method() !== "POST" || !headers["next-action"]) {
+        await route.continue();
+        return;
+      }
+      const index = posted++;
+      const response = await route.fetch();
+      await new Promise<void>((resolve) => {
+        release[index] = resolve;
+      });
+      await route.fulfill({ response });
+    });
+    const isActionPost = (request: import("@playwright/test").Request) =>
+      request.method() === "POST" && new URL(request.url()).pathname === path;
+
+    await page.goto(`${BASE}${path}`);
+    await expect(page.locator("h1")).toHaveText("Action Redirect After Refresh");
+    await waitForAppRouterHydration(page);
+    const firstRender = await page.locator('[data-testid="rendered-at"]').textContent();
+    // The redirect must stay a soft navigation: no document request after load.
+    const documentRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.resourceType() === "document") documentRequests.push(request.url());
+    });
+
+    const savePosted = page.waitForRequest(isActionPost);
+    await page.click('[data-testid="save-btn"]');
+    await savePosted;
+    const redirectPosted = page.waitForRequest(isActionPost);
+    await page.click('[data-testid="redirect-btn"]');
+    await redirectPosted;
+    await expect.poll(() => release.filter(Boolean).length).toBe(2);
+
+    release[0]();
+    await expect(page.locator('[data-testid="rendered-at"]')).not.toHaveText(firstRender ?? "");
+    await expect(page).toHaveURL(`${BASE}${path}`);
+
+    release[1]();
+    await expect(page).toHaveURL(`${BASE}/about`);
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(documentRequests).toEqual([]);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
   test("server action posts to the visible route and exposes text/plain failures", async ({
