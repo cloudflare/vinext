@@ -1,5 +1,23 @@
 # @vinext/cloudflare
 
+## 1.3.4
+
+### Bug Fixes
+
+#### Cloudflare
+
+- pass the Preview name with --preview-name like cf (#4572)
+- never store a Range request's 206 in the Response Store (#4622)
+- read the log cf writes to stderr during version deploys (#4609)
+
+#### Misc
+
+- **Init:** stop adding nodejs_compat now that compat dates enable it (#4580)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.3.3
 
 ### Bug Fixes
