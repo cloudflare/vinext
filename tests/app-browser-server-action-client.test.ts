@@ -27,88 +27,100 @@ afterEach(() => {
 });
 
 describe("app browser server action client", () => {
-  it("commits a raw full-tree Flight payload from an internal action redirect", async () => {
-    const wireElements = AppElementsWire.createMetadataEntries({
-      interception: null,
-      interceptionContext: null,
-      layoutIds: [AppElementsWire.encodeLayoutId("/")],
-      rootLayoutTreePath: "/",
-      routeId: AppElementsWire.encodeRouteId("/target", null),
-      slotBindings: [],
-    });
-    const elements = normalizeAppElements(wireElements);
-    const routerState: AppRouterState = {
-      activeOperation: null,
-      bfcacheIds: {},
-      elements,
-      interception: null,
-      interceptionContext: null,
-      layoutIds: [AppElementsWire.encodeLayoutId("/")],
-      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/source", {}),
-      previousNextUrl: null,
-      renderId: 0,
-      rootLayoutTreePath: "/",
-      routeId: AppElementsWire.encodeRouteId("/source", null),
-      slotBindings: [],
-      visibleCommitVersion: 0,
-    };
-    vi.stubGlobal("window", {
-      location: { href: "https://example.com/source", origin: "https://example.com" },
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response("flight", {
-          status: 303,
-          headers: {
-            [ACTION_REDIRECT_HEADER]: "/target",
-            // The target's render, rewritten from /target to /page?q=rewritten.
-            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/page?q=rewritten"),
-            "content-type": "text/x-component",
+  // A "/.//" target names a "//" pathname on the app origin, so the thrown
+  // redirect digest keeps its "/." prefix rather than a protocol-relative URL.
+  it.each([
+    ["/target", "https://example.com/target", "/target"],
+    [
+      "/.//other.invalid/landing",
+      "https://example.com//other.invalid/landing",
+      "/.//other.invalid/landing",
+    ],
+  ])(
+    "commits a raw full-tree Flight payload from an internal action redirect to %s",
+    async (target, href, digestUrl) => {
+      const wireElements = AppElementsWire.createMetadataEntries({
+        interception: null,
+        interceptionContext: null,
+        layoutIds: [AppElementsWire.encodeLayoutId("/")],
+        rootLayoutTreePath: "/",
+        routeId: AppElementsWire.encodeRouteId("/target", null),
+        slotBindings: [],
+      });
+      const elements = normalizeAppElements(wireElements);
+      const routerState: AppRouterState = {
+        activeOperation: null,
+        bfcacheIds: {},
+        elements,
+        interception: null,
+        interceptionContext: null,
+        layoutIds: [AppElementsWire.encodeLayoutId("/")],
+        navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/source", {}),
+        previousNextUrl: null,
+        renderId: 0,
+        rootLayoutTreePath: "/",
+        routeId: AppElementsWire.encodeRouteId("/source", null),
+        slotBindings: [],
+        visibleCommitVersion: 0,
+      };
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response("flight", {
+            status: 303,
+            headers: {
+              [ACTION_REDIRECT_HEADER]: target,
+              // The target's render, rewritten from /target to /page?q=rewritten.
+              [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/page?q=rewritten"),
+              "content-type": "text/x-component",
+            },
+          }),
+        ),
+      );
+      vi.mocked(createFromFetch).mockResolvedValueOnce(wireElements);
+      const renderRedirectPayload = vi.fn();
+      const performHardNavigation = vi.fn();
+
+      await expect(
+        invokeClientServerAction(
+          "action-id",
+          [],
+          createServerActionInitiationSnapshot({
+            href: "https://example.com/source",
+            navigationId: 1,
+            routerState,
+          }),
+          {
+            basePath: "",
+            clearClientNavigationCaches: vi.fn(),
+            clearDynamicClientNavigationCaches: vi.fn(),
+            clientRscCompatibilityId: null,
+            commitSameUrlNavigatePayload: vi.fn(),
+            navigationPlanner,
+            performHardNavigation,
+            renderRedirectPayload,
+            syncCurrentHistoryState: vi.fn(),
+            syncServerActionHttpFallbackHead: vi.fn(),
           },
-        }),
-      ),
-    );
-    vi.mocked(createFromFetch).mockResolvedValueOnce(wireElements);
-    const renderRedirectPayload = vi.fn();
-    const performHardNavigation = vi.fn();
+        ),
+      ).rejects.toMatchObject({ digest: `NEXT_REDIRECT;push;${digestUrl};307;`, handled: true });
 
-    await expect(
-      invokeClientServerAction(
-        "action-id",
-        [],
-        createServerActionInitiationSnapshot({
-          href: "https://example.com/source",
-          navigationId: 1,
-          routerState,
+      expect(renderRedirectPayload).toHaveBeenCalledWith(
+        normalizeAppElements(wireElements),
+        // Client pages in the target read the query it rendered with.
+        expect.objectContaining({
+          href,
+          renderedPathAndSearch: "/page?q=rewritten",
         }),
-        {
-          basePath: "",
-          clearClientNavigationCaches: vi.fn(),
-          clearDynamicClientNavigationCaches: vi.fn(),
-          clientRscCompatibilityId: null,
-          commitSameUrlNavigatePayload: vi.fn(),
-          navigationPlanner,
-          performHardNavigation,
-          renderRedirectPayload,
-          syncCurrentHistoryState: vi.fn(),
-          syncServerActionHttpFallbackHead: vi.fn(),
-        },
-      ),
-    ).rejects.toMatchObject({ handled: true });
-
-    expect(renderRedirectPayload).toHaveBeenCalledWith(
-      normalizeAppElements(wireElements),
-      // Client pages in the target read the query it rendered with.
-      expect.objectContaining({
-        href: "https://example.com/target",
-        renderedPathAndSearch: "/page?q=rewritten",
-      }),
-      expect.any(Object),
-      "none",
-    );
-    expect(performHardNavigation).not.toHaveBeenCalled();
-  });
+        expect.any(Object),
+        "none",
+      );
+      expect(performHardNavigation).not.toHaveBeenCalled();
+    },
+  );
 
   it("uses action state captured before the lazy client loads", async () => {
     const elements = normalizeAppElements(

@@ -35,7 +35,10 @@ import {
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import { Main, NextScript } from "../packages/vinext/src/shims/document.js";
-import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_REVALIDATED_CACHE_TAG_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { pagesPathCacheTag } from "../packages/vinext/src/server/pages-cache-tag.js";
 import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
@@ -600,6 +603,179 @@ describe("createPagesPageHandler — no default export", () => {
     const handler = createPagesPageHandler(makeOpts({ pageRoutes: routes }));
     const res = await handler(makeRequest("/"), "/", null, null, null);
     expect(res.status).toBe(500);
+    expect(res.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// The prerenderer keeps a 500 from the custom `/500` page as its rendered
+// output, so a `/500` that could not render must be marked.
+describe("createPagesPageHandler — prerender render errors", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("marks the plain 500 for a page without a default export", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const routes = [makeRoute("/500", {})]; // no `default`
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: routes }));
+    const res = await handler(makeRequest("/500"), "/500", null, null, null);
+    expect(res.status).toBe(500);
+    expect(res.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+  });
+
+  it("marks the plain 500 for a rejected getStaticProps redirect", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const route = makeRoute(
+      "/500",
+      makePageModule({
+        getStaticProps: async () => ({
+          redirect: { destination: "javascript:alert(1)", permanent: false },
+        }),
+      }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const res = await handler(makeRequest("/500"), "/500", null, null, null);
+    expect(res.status).toBe(500);
+    expect(await res.text()).toBe("Invalid redirect destination");
+    expect(res.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("createPagesPageHandler — status pages", () => {
+  it.each([
+    ["/404", 404],
+    ["/500", 500],
+  ])("answers a direct %s request with %i", async (pattern, status) => {
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [makeRoute(pattern)] }));
+    const res = await handler(makeRequest(pattern), pattern, null, null, null);
+    expect(res.status).toBe(status);
+  });
+
+  // Next.js only seeds the status page's res, so a status `_app` sets wins.
+  it.each(["/404", "/500"])("keeps a status _app sets on a direct %s request", async (pattern) => {
+    const AppComponent = Object.assign(() => null, {
+      getInitialProps: async ({ ctx }: { ctx: { res: { statusCode: number } } }) => {
+        ctx.res.statusCode = 202;
+        return { pageProps: {} };
+      },
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({ pageRoutes: [makeRoute(pattern)], AppComponent }),
+    );
+    const res = await handler(makeRequest(pattern), pattern, null, null, null);
+    expect(res.status).toBe(202);
+  });
+
+  // Next.js renders only a successful `/500` page as HTML for a data request;
+  // its notFound and redirect results keep the data protocol.
+  function setMissingCdnCache(): void {
+    const adapter = new DefaultCdnCacheAdapter();
+    vi.spyOn(adapter, "get").mockResolvedValue(null);
+    vi.spyOn(adapter, "set").mockResolvedValue();
+    setCdnCacheAdapter(adapter);
+  }
+
+  it("keeps the data protocol for a /500 getStaticProps notFound", async () => {
+    setMissingCdnCache();
+    const route = makeRoute(
+      "/500",
+      makePageModule({ getStaticProps: async () => ({ notFound: true }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const url = "/_next/data/test-build-id/500.json";
+    const res = await handler(makeRequest(url), url, null, null, null);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ notFound: true });
+  });
+
+  it("keeps the data protocol for a /500 getStaticProps redirect", async () => {
+    setMissingCdnCache();
+    const route = makeRoute(
+      "/500",
+      makePageModule({
+        getStaticProps: async () => ({ redirect: { destination: "/", permanent: false } }),
+      }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const url = "/_next/data/test-build-id/500.json";
+    const res = await handler(makeRequest(url), url, null, null, null);
+    expect(res.headers.get("location")).toBeNull();
+    const body = (await res.json()) as { pageProps: Record<string, unknown> };
+    expect(body.pageProps.__N_REDIRECT).toBe("/");
+  });
+
+  it("renders a getStaticProps /500 data request miss as its 500 page", async () => {
+    setMissingCdnCache();
+    const route = makeRoute(
+      "/500",
+      makePageModule({ getStaticProps: async () => ({ props: {} }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const url = "/_next/data/test-build-id/500.json";
+    const res = await handler(makeRequest(url), url, null, null, null);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("page");
+  });
+
+  it("renders the error fallback when a /500 data request render throws", async () => {
+    setMissingCdnCache();
+    const defaults = makeOpts();
+    let renders = 0;
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [makeRoute("/500")],
+        renderToReadableStream: async (element) => {
+          renders++;
+          if (renders === 1) throw new Error("render failure");
+          return defaults.renderToReadableStream(element);
+        },
+      }),
+    );
+    const url = "/_next/data/test-build-id/500.json";
+    const res = await handler(makeRequest(url), url, null, null, null);
+    expect(renders).toBe(2);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+  });
+
+  // Next.js stores no status for a Pages entry, so a cached status page still
+  // answers with its own status, even from an entry stored with 200.
+  it.each([
+    ["HIT", "/500"],
+    ["STALE", "/500"],
+    ["HIT", "/_next/data/test-build-id/500.json"],
+    ["STALE", "/_next/data/test-build-id/500.json"],
+  ])("answers a cached getStaticProps /500 %s for %s with 500", async (state, url) => {
+    const adapter = new DefaultCdnCacheAdapter();
+    vi.spyOn(adapter, "get").mockResolvedValue({
+      lastModified: 0,
+      ...(state === "STALE" ? { cacheState: "stale" as const } : {}),
+      cacheControl: { revalidate: state === "STALE" ? 1 : false },
+      value: {
+        kind: "PAGES",
+        html: "<html><body>cached 500</body></html>",
+        pageData: { pageProps: {} },
+        status: 200,
+        headers: undefined,
+      },
+    });
+    vi.spyOn(adapter, "set").mockResolvedValue();
+    setCdnCacheAdapter(adapter);
+    const route = makeRoute(
+      "/500",
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 1 }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const res = await handler(makeRequest(url), url, null, null, null);
+    expect(res.headers.get("x-vinext-cache")).toBe(state);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("cached 500");
   });
 });
 
@@ -626,6 +802,35 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(ct).toContain("application/json");
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toHaveProperty("pageProps");
+  });
+
+  it("renders a page whose basePath-free path starts with the basePath and /_next/data", async () => {
+    // /docs/docs/_next/data/... under basePath "/docs" reaches the handler as
+    // the page path /docs/_next/data/..., not as a data request for /about.
+    const docsRoute = makeRoute("/docs/[...slug]");
+    const matchedUrls: string[] = [];
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [makeRoute("/about"), docsRoute],
+        matchRoute: (url, r) => {
+          const p = url.split("?")[0];
+          matchedUrls.push(p);
+          const route = p.startsWith("/docs/") ? docsRoute : r.find((rt) => rt.pattern === p);
+          return route ? { route, params: {} } : null;
+        },
+        vinextConfig: {
+          basePath: "/docs",
+          assetPrefix: "",
+          trailingSlash: false,
+          disableOptimizedLoading: true,
+        },
+      }),
+    );
+    const pageUrl = "/docs/_next/data/test-build-id/about.json";
+    const res = await handler(makeRequest(pageUrl), pageUrl, null, null, null);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(matchedUrls).toEqual([pageUrl]);
   });
 
   it("preserves staged Set-Cookie values separately on Pages data responses", async () => {
@@ -2241,8 +2446,11 @@ describe("createPagesPageHandler — x-nextjs-deployment-id", () => {
     process.env.__VINEXT_DEPLOYMENT_ID = DEPLOYMENT_ID;
     try {
       // Next.js pages-handler.ts guards the success-path header with
-      // `!isErrorPage && !is500Page`; mirror that exclusion here.
-      for (const pattern of ["/_error", "/500"]) {
+      // `!isErrorPage && !is500Page`, and renders /500 as its HTML document.
+      for (const [pattern, status] of [
+        ["/_error", 200],
+        ["/500", 500],
+      ] as const) {
         const routes = [makeRoute(pattern)];
         const handler = createPagesPageHandler(
           makeOpts({
@@ -2255,7 +2463,7 @@ describe("createPagesPageHandler — x-nextjs-deployment-id", () => {
         );
         const dataUrl = `/_next/data/test-build-id${pattern}.json`;
         const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
-        expect(res.status).toBe(200);
+        expect(res.status).toBe(status);
         expect(res.headers.get("x-nextjs-deployment-id")).toBeNull();
       }
     } finally {

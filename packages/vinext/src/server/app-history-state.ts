@@ -1,7 +1,7 @@
 import { AppElementsWire } from "./app-elements.js";
 import type { TraverseDirection } from "./navigation-planner.js";
 import { isNonNegativeSafeInteger } from "../utils/number.js";
-import { isBfcacheSegmentId } from "./app-bfcache-id.js";
+import { isBfcacheSegmentId } from "./app-bfcache-identity.js";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
