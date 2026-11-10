@@ -45,6 +45,26 @@ const nextConfig: NextConfig = {
   // temporary outDir don't need node_modules next to the output.
   transpilePackages: ["fake-css-module-lib", "fake-tsconfig-exact-lib"],
 
+  // Used by E2E: app-router-prod/image-local-patterns.spec.ts — every local
+  // path without a query string (the Next.js default), plus one query string
+  // the default rejects, so the spec observes the configured list. The SVG
+  // query is listed for image-middleware.spec.ts, so that source reaches the
+  // content-type check.
+  images: {
+    localPatterns: [
+      { pathname: "/**", search: "" },
+      { pathname: "/heart.png", search: "?v=listed" },
+      { pathname: "/logo/logo.svg", search: "?.png" },
+    ],
+  },
+
+  // Used by E2E: app-router/use-cache.spec.ts, app-router-prod/use-cache.spec.ts —
+  // a custom profile and an overridden built-in read by cacheLife().
+  cacheLife: {
+    customProfile: { revalidate: 120, expire: 3600 },
+    minutes: { stale: 30, revalidate: 90, expire: 1800 },
+  },
+
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,
 
@@ -260,6 +280,17 @@ const nextConfig: NextConfig = {
           has: [{ type: "query", key: "host", value: "(?<proxyHost>.*)" }],
           destination: "http://:proxyHost.invalid/host-capture",
         },
+        // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
+        // capture in an external destination path must stay inside that path
+        // and keep the destination's own query.
+        {
+          source: "/proxy-external-path-capture",
+          has: [
+            { type: "header", key: "x-test-upstream-port", value: "(?<upstreamPort>\\d+)" },
+            { type: "query", key: "file", value: "(?<file>.*)" },
+          ],
+          destination: "http://127.0.0.1::upstreamPort/public/:file?revision=published",
+        },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",
@@ -336,6 +367,16 @@ const nextConfig: NextConfig = {
         },
         // Used by Vitest: app-router.test.ts
         { source: "/after-rewrite-about", destination: "/about" },
+        // Used by E2E: app-router/isr.spec.ts — a rewrite onto a dynamic
+        // metadata route is served and keyed like its decoded destination.
+        {
+          source: "/metadata-rewrite-card/:slug",
+          destination: "/metadata-rewrite-key/:slug/opengraph-image",
+        },
+        {
+          source: "/metadata-rewrite-icon/:slug/:id",
+          destination: "/metadata-rewrite-key/:slug/icon/:id",
+        },
         // Used by E2E: app-router-prod/multipart-late-routing.spec.ts
         { source: "/after-files-upload", destination: "/api/methods" },
         // Used by E2E: app-router-prod/server-action-late-routing.spec.ts
@@ -377,6 +418,16 @@ const nextConfig: NextConfig = {
         externalHeadersRewrite("fallback"),
         // Used by E2E: app-router-prod/multipart-late-routing.spec.ts
         { source: "/fallback-upload", destination: "/api/methods" },
+        // Used by E2E: nextjs-compat/segment-cache-dynamic-params.spec.ts. A
+        // dynamicParams = false miss resumes routing with these rewrites.
+        {
+          source: "/nextjs-compat/dynamic-params-fallback/:slug",
+          destination: "/nextjs-compat/dynamic-params-fallback-target/:slug",
+        },
+        {
+          source: "/nextjs-compat/dynamic-params-fallback/:slug/data",
+          destination: "/nextjs-compat/dynamic-params-fallback-target/:slug",
+        },
         // Used by E2E: app-router-prod/server-action-late-routing.spec.ts
         { source: "/fallback-revalidate", destination: "/nextjs-compat/action-revalidate" },
         // Used by E2E: app-router-encoded-basepath-i18n (see beforeFiles).
@@ -429,6 +480,16 @@ const nextConfig: NextConfig = {
 
   async headers() {
     return [
+      // Used by Playwright: app-router-prod/image-source-cache-control.spec.ts
+      {
+        source: "/image-source-cache-policy.png",
+        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
+      },
+      // Used by Vitest: app-router-production-server.test.ts
+      {
+        source: "/action-cache-control/config-policy",
+        headers: [{ key: "Cache-Control", value: "public, s-maxage=300" }],
+      },
       // Used by Vitest: app-router-dev-server.test.ts, app-router-production-server.test.ts
       {
         source: "/external-headers/:path*",
@@ -450,6 +511,41 @@ const nextConfig: NextConfig = {
         source: "/config-cookie-response",
         headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
       },
+      // Used by E2E: app-router-prod/image-middleware.spec.ts
+      {
+        source: "/_next/image",
+        headers: [
+          { key: "Content-Security-Policy", value: "config-csp" },
+          { key: "Content-Type", value: "text/x-config-image" },
+          { key: "X-Mw-Image-Endpoint", value: "config" },
+        ],
+      },
+      // Used by Vitest: app-router-production-server.test.ts — collisions with
+      // Route Handler headers resolve like Next.js on each runtime.
+      {
+        source: "/api/config-header-collision/:path*",
+        headers: [
+          { key: "X-Config-Collision", value: "config" },
+          { key: "WWW-Authenticate", value: "Bearer realm=config" },
+          { key: "Vary", value: "X-Config" },
+          { key: "X-Nextjs-Cache", value: "config" },
+        ],
+      },
+      // Used by Vitest: app-router-production-server.test.ts — redirects that
+      // application code returns carry config headers like Next.js; the
+      // redirects() rule on /old-about does not.
+      ...[
+        "/redirect-test",
+        "/permanent-redirect-test",
+        "/nextjs-compat/api/redirect-response",
+        "/response-redirect-test",
+        "/nextjs-compat/action-progressive",
+        "/api/pages-redirect",
+        "/old-about",
+      ].map((source) => ({
+        source,
+        headers: [{ key: "X-Redirect-Config-Header", value: "1" }],
+      })),
       // Used by Vitest: app-router.test.ts
       {
         source: "/api/(.*)",

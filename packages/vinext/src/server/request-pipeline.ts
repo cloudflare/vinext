@@ -47,6 +47,17 @@ export function canonicalizeRequestUrlPathname(url: string): string {
 }
 
 /**
+ * Whether the pathname has a segment the URL parser resolves as `.` or `..`,
+ * literally or percent-encoded. Such a pathname changes when it becomes a URL.
+ */
+export function hasUrlParserDotSegment(pathname: string): boolean {
+  return pathname.split("/").some((segment) => {
+    const decodedDots = segment.replaceAll(/%2e/gi, ".");
+    return decodedDots === "." || decodedDots === "..";
+  });
+}
+
+/**
  * Shared request pipeline utilities.
  *
  * Extracted from generated entries and server hot paths to keep codegen focused
@@ -124,12 +135,15 @@ type ResolvePublicFileRouteOptions = {
   cleanPathname: string;
   /** `requestHeaders` holds middleware's request-header override instructions. */
   middlewareContext: StaticFileSignalContext & { requestHeaders?: Headers | null };
-  pathname: string;
   publicFiles: ReadonlySet<string>;
   request: Request;
 };
 
-const FILE_LIKE_PATHNAME_RE = /\.[^/]+\/?$/;
+// The sources of Next.js's two internal trailingSlash: true redirects
+// (lib/load-custom-routes): a slashed path whose last segment ends in `.\w+`
+// loses its slash, and an unslashed path whose last segment has no dot gains one.
+const SLASHED_FILE_PATHNAME_RE = /^\/(?:[^/]+\/)*[^/]+\.\w+\/$/;
+const UNSLASHED_NON_FILE_PATHNAME_RE = /^\/(?:[^/]+\/)*[^/.]+$/;
 
 function isWellKnownPathname(pathname: string): boolean {
   return pathname === "/.well-known" || pathname.startsWith("/.well-known/");
@@ -140,11 +154,10 @@ function isWellKnownPathname(pathname: string): boolean {
  *
  * Public files are checked after middleware and before afterFiles/fallback
  * rewrites. The generated App Router entry provides the public-file set; this
- * helper owns the RSC exclusion, existence-first method enforcement, and
+ * helper owns existence-first method enforcement and
  * static-file signaling. Missing mutation targets continue through routing.
  */
 export function resolvePublicFileRoute(options: ResolvePublicFileRouteOptions): Response | null {
-  if (options.pathname.endsWith(".rsc")) return null;
   if (!options.publicFiles.has(options.cleanPathname)) return null;
   if (options.request.method !== "GET" && options.request.method !== "HEAD") {
     return methodNotAllowedResponse("GET, HEAD", {
@@ -165,26 +178,18 @@ export function normalizeTrailingSlashPathname(
   pathname: string,
   trailingSlash: boolean,
 ): string | null {
-  if (pathname === "/" || pathname === "/api" || pathname.startsWith("/api/")) {
-    return null;
-  }
-
-  const hasTrailing = pathname.endsWith("/");
+  if (pathname === "/") return null;
 
   if (trailingSlash) {
-    // Next.js emits two internal redirect rules for trailingSlash:true:
-    // file-looking paths lose a trailing slash, non-file paths gain one, and
-    // /.well-known stays untouched for RFC-defined discovery URLs.
+    // /.well-known stays untouched for RFC-defined discovery URLs. Paths that
+    // match neither rule, such as `/foo.a-b/` or `/foo.`, are left as they are.
     if (isWellKnownPathname(pathname)) return null;
-    if (FILE_LIKE_PATHNAME_RE.test(pathname)) {
-      const normalized = removeTrailingSlash(pathname);
-      return normalized === pathname ? null : normalized;
-    }
-    if (!hasTrailing && !pathname.endsWith(".rsc")) return `${pathname}/`;
+    if (SLASHED_FILE_PATHNAME_RE.test(pathname)) return pathname.slice(0, -1);
+    if (UNSLASHED_NON_FILE_PATHNAME_RE.test(pathname)) return `${pathname}/`;
     return null;
   }
 
-  if (hasTrailing) return removeTrailingSlash(pathname);
+  if (pathname.endsWith("/")) return removeTrailingSlash(pathname);
   return null;
 }
 
@@ -192,8 +197,8 @@ export function normalizeTrailingSlashPathname(
  * Check if the pathname needs a trailing slash redirect, and return the
  * redirect Response if so.
  *
- * Follows Next.js behavior:
- * - `/api` routes are never redirected
+ * Follows Next.js behavior, whose internal trailing-slash redirects cover
+ * every path, `/api` included:
  * - The root path `/` is never redirected
  * - If `trailingSlash` is true, redirect `/about` → `/about/`
  * - If `trailingSlash` is true, redirect file-looking `/file.ext/` → `/file.ext`
@@ -212,9 +217,7 @@ export function normalizeTrailingSlash(
   trailingSlash: boolean,
   search: string,
 ): Response | null {
-  if (pathname === "/" || pathname === "/api" || pathname.startsWith("/api/")) {
-    return null;
-  }
+  if (pathname === "/") return null;
   // Defense-in-depth: `guardProtocolRelativeUrl` runs earlier and should
   // have rejected these shapes. Refuse to emit a Location header that the
   // browser would resolve as protocol-relative, even if a caller somehow
@@ -694,4 +697,20 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
     cloned = new Request(url, init);
   }
   return attachRequestCfMetadata(cloned, request);
+}
+
+/**
+ * Drop a `#fragment` the host kept from the request line. Next.js rebuilds
+ * request URLs from pathname + search, so neither middleware nor handlers
+ * ever observe one, and pathname-keyed cache entries must not either.
+ */
+export function stripRequestUrlFragment(request: Request): Request {
+  const hashIndex = request.url.indexOf("#");
+  if (hashIndex === -1) return request;
+  // Read before cloning: srvx returns its own connection signal only until a
+  // clone materializes its native Request, whose signal merely follows it and
+  // stops following once nothing retains the original request.
+  const signal = request.signal;
+  const stripped = cloneRequestWithUrl(request, request.url.slice(0, hashIndex));
+  return attachRequestCfMetadata(new Request(stripped, { signal }), request);
 }

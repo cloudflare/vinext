@@ -17,7 +17,7 @@ import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
-import { extractLocaleFromUrl, resolvePagesI18nRequest } from "./pages-i18n.js";
+import { extractLocaleFromUrl, markLocaleRedirect, resolvePagesI18nRequest } from "./pages-i18n.js";
 import { createPagesReqRes } from "./pages-node-compat.js";
 import {
   appendPagesPreviewClearCookies,
@@ -26,6 +26,7 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import {
+  markPagesPrerenderRenderError,
   mergePagesNotFoundSourceHeaders,
   resolvePagesPageData,
   resolvePagesStatusPageRenderPath,
@@ -33,7 +34,10 @@ import {
 } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
-import { renderPagesPageResponse } from "./pages-page-response.js";
+import {
+  applyPagesPrerenderRevalidateHeader,
+  renderPagesPageResponse,
+} from "./pages-page-response.js";
 import { tracePagesDocumentStream, traceFindPageComponents } from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
@@ -98,6 +102,7 @@ import {
   hasPagesGetInitialProps,
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
+import { logRequestError } from "./request-error-log.js";
 
 export async function renderTracedPagesPageResponse(
   options: Parameters<typeof renderPagesPageResponse>[0],
@@ -288,6 +293,12 @@ type VinextConfigSubset = {
   disableOptimizedLoading: boolean;
   crossOrigin?: string;
 };
+
+function renderErrorResponse(body: string): Response {
+  const headers = new Headers();
+  markPagesPrerenderRenderError(headers);
+  return new Response(body, { headers, status: 500 });
+}
 
 export function shouldEmitPagesClientTraceMetadata(
   pageModule: PagesPageModule,
@@ -514,10 +525,13 @@ export function createPagesPageHandler(
     const originalRequestPathAndSearch = originalRequestUrl.pathname + originalRequestUrl.search;
     let dataRequestPathname: string | null = null;
     let dataRequestSearch = "";
+    // Every caller passes the request without its basePath. Stripping it again
+    // would turn the page path "/docs/_next/data/..." (basePath "/docs") into a
+    // data request.
     const initialDataNorm = normalizePagesDataRequest(
       request,
       buildId,
-      vinextConfig.basePath,
+      "",
       hasMiddleware && vinextConfig.trailingSlash,
     );
 
@@ -598,7 +612,9 @@ export function createPagesPageHandler(
     const pageIsrCacheKey = isrCacheKeyForRequest(i18nCacheVariant);
 
     if (localeInfo.redirectUrl) {
-      return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
+      return markLocaleRedirect(
+        new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } }),
+      );
     }
 
     // Internal error render path: caller has pinned a specific route to render.
@@ -679,17 +695,20 @@ export function createPagesPageHandler(
     });
     const isCacheabilityProbe = isRouteCacheabilityProbe();
     const isTopLevelPageRoute = !isRouteMissErrorRender && options?.__forcedRoute === undefined;
+    // A page or custom `_app` getInitialProps runs on every request with the
+    // live req/res, like getServerSideProps. Error renders keep their own
+    // policy from applyPagesErrorCachePolicy.
+    const isInitialPropsRender =
+      isTopLevelPageRoute &&
+      !isStaticPropsRoute &&
+      pagesReadiness.gssp !== true &&
+      (pagesReadiness.gip === true || pagesReadiness.appGip === true);
     if (isTopLevelPageRoute) {
       beginRouteCacheability("pages-page", route.pattern);
       if (isRouteCacheabilityIdentityProbe()) {
         return new Response(null, { status: 204 });
       }
-      if (
-        pagesReadiness.gssp !== true &&
-        pagesReadiness.gip !== true &&
-        !(pagesReadiness.appGip === true && !isStaticPropsRoute) &&
-        !isStaticPropsRoute
-      ) {
+      if (pagesReadiness.gssp !== true && !isInitialPropsRender && !isStaticPropsRoute) {
         // Automatic Static Optimization is the Pages Router equivalent of a
         // `getStaticProps` page with no revalidation window. It has no origin
         // ISR entry to copy policy from, so carry Next.js's static policy into
@@ -727,8 +746,11 @@ export function createPagesPageHandler(
       );
     }
     const routePattern = patternToNextFormat(route.pattern);
+    // A direct request for a status page answers with that status, as in
+    // Next.js base-server.ts.
     const renderStatusCode =
-      renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
+      renderStatusCodeOverride ??
+      (routePattern === "/404" ? 404 : routePattern === "/500" ? 500 : undefined);
     // Error pages have their own ISR identity rather than the request URL's.
     // Otherwise a cached notFound marker for the source page can short-circuit
     // the recursive /404 render before the custom 404 module (and its
@@ -785,7 +807,7 @@ export function createPagesPageHandler(
       resolveSentResponse = resolve;
     });
     const reportSsrError = async (e: unknown) => {
-      console.error("[vinext] SSR error:", e);
+      logRequestError("[vinext] SSR error:", e);
       await reportRequestError(
         e,
         {
@@ -898,7 +920,7 @@ export function createPagesPageHandler(
 
         const PageComponent = pageModule.default as ComponentType | undefined;
         if (!PageComponent) {
-          return new Response("Page has no default export", { status: 500 });
+          return renderErrorResponse("Page has no default export");
         }
 
         // Reject non-GET/HEAD on static (no getServerSideProps) routes with
@@ -1072,6 +1094,7 @@ export function createPagesPageHandler(
               : undefined,
             documentReqRes: render.documentReqRes,
             gsspRes: render.gsspRes,
+            isInitialPropsRender,
             isrCacheKey: pageIsrCacheKey,
             isrCachePathname,
             expireSeconds: render.expireSeconds,
@@ -1098,7 +1121,12 @@ export function createPagesPageHandler(
             initialStylesheetHrefs,
             crossOrigin: vinextConfig.crossOrigin,
             disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
-            statusCode: renderStatusCode,
+            // The status-page default only seeds the page's res, so a status
+            // `_app` writes there wins, like Next.js. getStaticProps and
+            // auto-export renders have no res status to read and keep it.
+            statusCode:
+              renderStatusCodeOverride ??
+              (isStaticPropsRoute || !render.documentReqRes ? renderStatusCode : undefined),
             nextData: serializedPagesNextData,
           };
         };
@@ -1263,6 +1291,13 @@ export function createPagesPageHandler(
           } else if (pageDataResult.cacheState) {
             notFoundResponse = withPagesCacheState(notFoundResponse, pageDataResult.cacheState);
           }
+          // Whichever 404 rendered, the build records the source route's lifetime.
+          if (pageDataResult.revalidateSeconds !== undefined) {
+            applyPagesPrerenderRevalidateHeader(
+              notFoundResponse.headers,
+              pageDataResult.revalidateSeconds,
+            );
+          }
           return finalizePagesPreviewResponse(withBrowserPolicy(notFoundResponse), preview);
         }
         if (pageDataResult.kind === "response") {
@@ -1333,8 +1368,10 @@ export function createPagesPageHandler(
         // For client-side navigations Next.js fetches /_next/data/<buildId>/<page>.json
         // and expects the full props envelope (pageProps plus any app-level
         // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
-        if (isDataReq) {
+        // `/500` answers its HTML document instead, as in Next.js.
+        if (isDataReq && routePattern !== "/500") {
           const headers = new Headers();
+          let resHasCacheControl = false;
           if (gsspRes && typeof gsspRes.getHeaders === "function") {
             const gsspHeaders = gsspRes.getHeaders();
             for (const k of Object.keys(gsspHeaders)) {
@@ -1346,13 +1383,25 @@ export function createPagesPageHandler(
                 headers.set(k, Array.isArray(v) ? v.join(", ") : String(v));
               }
             }
+            resHasCacheControl = headers.has("Cache-Control");
+          } else if (isInitialPropsRender && documentReqRes) {
+            // getInitialProps ran on the document res, which also starts from
+            // the middleware and next.config headers. Keep its cache policy so
+            // the default below only fills a missing one, as in Next.js.
+            const resHeaders = documentReqRes.res.getHeaders();
+            for (const [name, value] of Object.entries(resHeaders)) {
+              if (isCdnResponsePolicyHeader(name)) setPagesResponseHeader(headers, name, value);
+            }
+            // Next.js checks the raw value (`!res.getHeader('Cache-Control')`),
+            // so `[]` counts as set while `""` does not.
+            resHasCacheControl = Boolean(resHeaders["cache-control"]);
           }
           if (hasCdnResponsePolicy(headers)) markRouteCacheabilityExplicitResponsePolicy();
-          if (gsspRes) {
-            // Default Cache-Control for gSSP-driven _next/data responses —
-            // skip when gSSP already set one via res.setHeader. Fixes #1461.
-            if (!headers.has("Cache-Control"))
-              headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
+          if (gsspRes || isInitialPropsRender) {
+            // Default Cache-Control for gSSP- and getInitialProps-driven
+            // _next/data responses — skip when the res already has one.
+            // Fixes #1461.
+            if (!resHasCacheControl) headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
           } else if (isStaticPropsRoute) {
             if (isrRevalidateSeconds !== null) {
               applyCdnResponseHeaders(headers, {
@@ -1369,9 +1418,9 @@ export function createPagesPageHandler(
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
-          // protection). Next.js skips the success path for /_error and /500
-          // (`!isErrorPage && !is500Page`). Fixes #1829.
-          if (routePattern !== "/_error" && routePattern !== "/500") {
+          // protection). Next.js skips the success path for /_error, and
+          // renders /500 as HTML (`!isErrorPage && !is500Page`). Fixes #1829.
+          if (routePattern !== "/_error") {
             const deploymentId =
               process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
             if (deploymentId) {
@@ -1426,10 +1475,11 @@ export function createPagesPageHandler(
         // getStaticProps page and only reports the error.
         if (sendsEarly && pageResponseSent()) return sentResponse;
 
-        // Data requests can't render HTML; avoid recursion if already rendering
-        // the error page. Mirrors Next.js base-server.ts: render /500 or _error
-        // when SSR throws. Fixes #1458.
-        if (!isInternalErrorRender && !isDataReq) {
+        // Data requests can't render HTML, except `/500`, which renders its
+        // HTML document; avoid recursion if already rendering the error page.
+        // Mirrors Next.js base-server.ts: render /500 or _error when SSR
+        // throws. Fixes #1458.
+        if (!isInternalErrorRender && (!isDataReq || routePattern === "/500")) {
           let errorRoute: PageRoute | null = null;
           for (let i = 0; i < pageRoutes.length; i++) {
             if (pageRoutes[i].pattern === "/500") {
@@ -1463,7 +1513,7 @@ export function createPagesPageHandler(
             }
           }
         }
-        return new Response("Internal Server Error", { status: 500 });
+        return renderErrorResponse("Internal Server Error");
       }
     });
     if (!sendsEarly) return closeAfterResponseWithBody(await rendering, uCtx);

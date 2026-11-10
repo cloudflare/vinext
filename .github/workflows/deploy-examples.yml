@@ -261,7 +261,14 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc
+        run: |
+          args=(--config wrangler.response-store.jsonc)
+          # Edge purges share an account-wide rate limit with production, so the
+          # PR service that the deployed E2E exercises never sends them.
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            args+=(--var WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE:disabled)
+          fi
+          node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" "${args[@]}"
 
       - name: Build example
         # `previews deploy` builds the Preview Build Output itself.
@@ -396,7 +403,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
-        run: vp exec vinext-cloudflare previews deploy "$PREVIEW_NAME"
+        run: vp exec vinext-cloudflare previews deploy --preview-name "$PREVIEW_NAME"
 
       - name: Deploy Named Preview Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) == '' && matrix.example.worker_name
@@ -529,6 +536,17 @@ jobs:
           tests/e2e/cloudflare-workers/web-worker.spec.ts
           tests/e2e/cloudflare-workers/optimistic-search-navigation.spec.ts
 
+      # Wrangler dev emulates the Images binding; this runs the image endpoint
+      # against the Cloudflare Images service itself.
+      - name: Test deployed image optimization
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-workers
+          VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-app-router-cloudflare.vinext.workers.dev', github.event.pull_request.number) || 'https://app-router-cloudflare.vinext.workers.dev' }}
+        run: >-
+          vp exec playwright test
+          tests/e2e/cloudflare-workers/image-optimization.spec.ts
+          tests/e2e/cloudflare-workers/image-optimizer.spec.ts
+
       - name: Test deployed Static Assets cache
         env:
           PLAYWRIGHT_PROJECT: cloudflare-static-assets
@@ -573,6 +591,8 @@ jobs:
 
       - name: Delete named preview Workers
         if: github.event.action == 'closed'
+        # The repo root has no wrangler bin; the package's pinned Wrangler does.
+        working-directory: packages/workers-response-store
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

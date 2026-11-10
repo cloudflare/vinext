@@ -66,6 +66,14 @@ export function middleware(request: NextRequest) {
     );
   }
   response.headers.set("x-mw-ran", "true");
+  // Like Next.js, this replaces the asset layer's default for an admitted file.
+  // Coverage: tests/e2e/cloudflare-workers/public-file-cache-control.spec.ts
+  if (
+    request.nextUrl.pathname.startsWith("/protected/") &&
+    request.nextUrl.searchParams.has("no-store")
+  ) {
+    response.headers.set("cache-control", "private, no-store");
+  }
   if (request.nextUrl.pathname.startsWith("/api/framed-get")) {
     response.headers.set("x-mw-body-null", String(request.body === null));
   }

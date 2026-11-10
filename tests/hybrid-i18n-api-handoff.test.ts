@@ -61,6 +61,24 @@ describe("hybrid i18n API handoff", () => {
 
         const localePrefixed = await fetch(`${baseUrl}/fr/api/direct`);
         expect(localePrefixed.status).toBe(404);
+
+        if (mode === "production") {
+          // Next.js answers the locale-detection redirect before it stages
+          // next.config headers, while the Pages route's own responses get them.
+          // Dev serves Pages routes through its own pipeline, which still adds
+          // them to this redirect.
+          const localeRedirect = await fetch(`${baseUrl}/`, {
+            headers: { "Accept-Language": "fr" },
+            redirect: "manual",
+          });
+          expect(localeRedirect.status).toBe(307);
+          expect(localeRedirect.headers.get("location")).toBe("/fr");
+          expect(localeRedirect.headers.get("x-config-header")).toBeNull();
+
+          const home = await fetch(`${baseUrl}/`);
+          expect(home.status).toBe(200);
+          expect(home.headers.get("x-config-header")).toBe("1");
+        }
       } finally {
         await closeServer?.();
         await fs.rm(fixtureRoot, { recursive: true, force: true });

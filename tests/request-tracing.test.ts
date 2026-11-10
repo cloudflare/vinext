@@ -4,6 +4,7 @@ import {
   attachFrameworkRequestRoute,
   captureFrameworkRequestRoute,
   consumeFrameworkRequestRoute,
+  resetFrameworkRequestRoute,
   setFrameworkRequestRoute,
   traceFrameworkRequest,
 } from "../packages/vinext/src/server/request-tracing.js";
@@ -282,6 +283,23 @@ describe("framework request tracing", () => {
       },
       name: "GET /products/[id]",
     });
+  });
+
+  it("reports a reset route to a response stage whose render then fails", async () => {
+    const routes: (string | undefined)[] = [];
+    await expect(
+      captureFrameworkRequestRoute(
+        async () => {
+          setFrameworkRequestRoute("/products/[id]");
+          resetFrameworkRequestRoute();
+          throw new Error("fallback render failed");
+        },
+        (route) => routes.push(route),
+      ),
+    ).rejects.toThrow("fallback render failed");
+
+    // The failed render's 500 doesn't name the rejected route.
+    expect(routes).toEqual(["/products/[id]", undefined]);
   });
 
   it("preserves RSC classification when a response stage returns only the route", async () => {

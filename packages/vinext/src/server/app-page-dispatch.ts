@@ -9,11 +9,12 @@ import {
   _setResumeDataCacheSeed,
 } from "vinext/shims/cache-request-state";
 import { createResumeDataCache } from "vinext/shims/resume-data-cache";
-import type { RootParams } from "vinext/shims/root-params";
+import { setRootParams, type RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
+  getActiveDraftModeState,
   getAndClearPendingCookies,
   getDraftModeCookieHeader,
   getHeadersContext,
@@ -21,6 +22,7 @@ import {
   peekDynamicUsage,
   peekRenderRequestApiUsage,
   runWithConnectionProbe,
+  runStaticParamsCheckDetached,
   runWithDetachedDynamicUsage,
   setHeadersContext,
 } from "vinext/shims/headers";
@@ -64,13 +66,19 @@ import {
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
 import { isAppPageStaticEligible } from "./app-segment-config.js";
-import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
+import {
+  resolveAppPageInterceptSegmentConfig,
+  type AppPageInterceptSegmentConfig,
+} from "./app-page-intercept-segment-config.js";
+import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
 import type { AppPageFallbackRouteHead, AppPagePreparedRouteHead } from "./app-page-head.js";
 import {
+  type AppPageInterceptState,
   buildAppPageElement,
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
-  validateAppPageDynamicParams,
+  resolveAppPageInterceptState,
+  validateAppPageRouteDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
 import { applyIneligibleRouteCachePolicy, renderAppPageLifecycle } from "./app-page-render.js";
@@ -100,9 +108,11 @@ import {
   NEXT_ROUTER_PREFETCH_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MOUNTED_LAYOUTS_HEADER,
+  VINEXT_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "./headers.js";
 import { parseMountedLayoutsHeader } from "./app-mounted-layouts.js";
+import { markRouteMissResponse } from "./route-miss-response.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
 import {
@@ -219,10 +229,17 @@ type AppPageModule = {
 };
 
 type AppPageDispatchSlot = {
+  configLayouts?: readonly (AppPageModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
   default?: AppPageModule | null;
+  layout?: AppPageModule | null;
+  layoutIndex?: number;
   loading?: AppPageModule | null;
   loadings?: readonly (AppPageModule | null | undefined)[] | null;
+  name?: string;
+  ownerTreePosition?: number | null;
   page?: AppPageModule | null;
+  routeSegments?: readonly string[] | null;
   slotPatternParts?: readonly string[] | null;
   slotParamNames?: readonly string[] | null;
 };
@@ -339,6 +356,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     options?: {
       isForceStatic?: boolean;
       isUncacheableRender?: boolean;
+      routeTreeOnlyPrefetchShell?: boolean;
       /** Layouts the navigating client holds, which the render may leave out. */
       mountedLayouts?: ReadonlySet<string> | null;
       observeMetadataSearchParamsAccess?: boolean;
@@ -369,6 +387,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   ensureRouteLoaded?: (route: TRoute) => unknown;
   fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
+  /** This request's intercept, which dispatch resolves once before rendering. */
+  interceptState?: AppPageInterceptState<TRoute, unknown>;
   formState?: ReactFormState | null;
   actionError?: unknown;
   actionFailed?: boolean;
@@ -385,7 +405,6 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   hasGenerateStaticParams: boolean;
   /** Whether any segment of the route exports `generateStaticParams`. */
   hasAnyGenerateStaticParams: boolean;
-  hasCustomGlobalError?: boolean;
   hasPageDefaultExport: boolean;
   hasPageModule: boolean;
   handlerStart: number;
@@ -432,6 +451,11 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
    * has a transient gap. Falls through to a fresh render instead.
    */
   renderedConcreteUrlPaths?: ReadonlySet<string>;
+  /**
+   * Called on a dynamicParams = false miss. When it returns true, routing
+   * resumes with the fallback rewrites, so the miss renders no 404.
+   */
+  resumeRoutingAfterMiss?: () => boolean;
   skipStaticParamsValidation?: boolean;
   staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
@@ -457,6 +481,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
       matchedParams: AppPageParams;
       /** The route's render threw the signal, so the document keeps the route's head. */
       routeHead?: AppPageFallbackRouteHead;
+      /** Render the root not-found as if no route matched, as Next.js routing does. */
+      routeMiss?: boolean;
     },
     middlewareContext: AppPageMiddlewareContext | null,
   ) => Promise<Response | null>;
@@ -659,7 +685,8 @@ function hasNoManifestAdmissionState(routePattern: string): boolean {
 export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
-  const dispatch = () => runWithFetchDedupe(() => dispatchAppPageInner(options));
+  const dispatch = () =>
+    runWithFetchDedupe(async () => dispatchAppPageInner(await withResolvedIntercept(options)));
   let response: Response;
   if (!options.pprFallbackShell || !options.pprRuntime) {
     response = await dispatch();
@@ -668,6 +695,45 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   }
 
   return options.isRscRequest ? response : traceResponseStart(response);
+}
+
+/**
+ * Resolves the request's intercept once, for the render and its cache reads.
+ *
+ * Next.js renders an interception as its own route even when its source is the
+ * matched route (`app/shots/[id]` beside `app/shots/@modal/(.)[id]`, from
+ * `/shots/1` to `/shots/2`). vinext renders that through the matched route's
+ * own page render, so the interception's segment config replaces the route's
+ * before that render reads it.
+ */
+async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+): Promise<DispatchAppPageOptions<TRoute>> {
+  const interceptState = await resolveAppPageInterceptState({
+    cleanPathname: options.cleanPathname,
+    currentRoute: options.route,
+    findIntercept: options.findIntercept,
+    getSourceRoute: options.getSourceRoute,
+    interceptState: options.interceptState,
+    isRscRequest: options.isRscRequest,
+  });
+  if (interceptState.kind !== "current-route") return { ...options, interceptState };
+  const config = resolveAppPageInterceptSegmentConfig(
+    options.route,
+    toInterceptOptions(options.interceptionContext, interceptState.intercept),
+  );
+  return {
+    ...options,
+    interceptState,
+    dynamicConfig: config.dynamicConfig,
+    dynamicStaleTimeSeconds: config.dynamicStaleTimeSeconds,
+    fetchCache: config.fetchCacheMode,
+    hasAnyGenerateStaticParams: config.hasAnyGenerateStaticParams,
+    hasGenerateStaticParams: config.hasGenerateStaticParams,
+    isEdgeRuntime: config.isEdgeRuntime,
+    isStaticGenerationEdgeRuntime: config.isStaticGenerationEdgeRuntime,
+    revalidateSeconds: config.revalidateSeconds,
+  };
 }
 
 async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
@@ -743,7 +809,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const placeGeneratedMetadataInBody =
     (!isPrerender || options.pprFallbackShell !== undefined) && serveStreamingMetadata;
   const isPrefetchDynamicShell = options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
-  const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
+  // Middleware can enable or disable draft mode for this request.
+  const isDraftMode =
+    getActiveDraftModeState() ?? isDraftModeRequest(options.request, options.draftModeSecret);
   const requestHeadersContext = getHeadersContext();
   const shouldUseEmptySearchParams = isForceStatic || isPrefetchDynamicShell;
   const hasRequestSearchParams =
@@ -766,6 +834,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isDynamicError,
         isForceDynamic,
         isForceStatic,
+        isPrerender,
         isProduction: options.isProduction,
         isProgressiveActionRender: options.isProgressiveActionRender === true,
         isRscRequest: options.isRscRequest,
@@ -846,15 +915,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isStaticEligible &&
     options.pprFallbackShell === undefined &&
     !isNeverStoredPath;
-  // A render that can never be stored and, in production, is never sent with
-  // static cache headers. Only it may skip layouts that would otherwise decide
-  // whether the response is cacheable. With Cache Components, Next.js renders
-  // layouts for every production prefetch (isRoutePPREnabled), so only dev
-  // skips them.
-  const isUncacheableRender =
-    !(isCacheEligibleRender && isStaticEligible) &&
+  // A render without PPR sends only the route tree for a loading-shell prefetch
+  // without a loading boundary. With Cache Components, Next.js renders layouts
+  // for every production prefetch (isRoutePPREnabled), so only dev does.
+  const routeTreeOnlyPrefetchShell =
     options.pprFallbackShell === undefined &&
     (options.pprRuntime === undefined || !options.isProduction);
+  // A render that can never be stored and, in production, is never sent with
+  // static cache headers. Only it may skip the layouts a navigation's client
+  // holds.
+  const isUncacheableRender =
+    !(isCacheEligibleRender && isStaticEligible) && routeTreeOnlyPrefetchShell;
   // A navigation names the layouts it holds, so a render that's never stored
   // can leave them out, as Next.js renders only below where a navigation
   // diverges. A stored payload stays whole for every client that reads it.
@@ -891,6 +962,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         getSourceRoute(sourceRouteIndex) {
           return options.getSourceRoute(sourceRouteIndex);
         },
+        interceptState: options.interceptState,
         isRscRequest: options.isRscRequest,
         toInterceptOpts(intercept) {
           return toInterceptOptions(options.interceptionContext, intercept);
@@ -951,16 +1023,30 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         options.renderedConcreteUrlPaths?.has(options.cleanPathname) !== true,
       renderFreshPageForCache: async ({ renderDocument }) => {
         const revalidationTarget = await resolveCacheRenderTarget();
+        // An interception regenerates as its own route, under its own config.
+        const revalidationInterceptConfig = revalidationTarget.interceptOpts
+          ? resolveAppPageInterceptSegmentConfig(
+              revalidationTarget.route,
+              revalidationTarget.interceptOpts,
+            )
+          : null;
 
-        const revalidationDynamicConfig =
-          options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
-          (revalidationTarget.route === route ? dynamicConfig : undefined);
-        const revalidationConfigRevalidateSeconds =
-          options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
-          (revalidationTarget.route === route ? currentRevalidateSeconds : null);
-        // A stale intercepted entry regenerates its source route, so the entry
-        // takes that route's revalidate, not the matched route's read seed. A
-        // static route without one keeps `revalidate = false`.
+        const revalidationDynamicConfig = revalidationInterceptConfig
+          ? revalidationInterceptConfig.dynamicConfig
+          : (options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
+            (revalidationTarget.route === route ? dynamicConfig : undefined));
+        // An interception of the matched route already seeded this request's
+        // revalidate from its own config, so its regeneration reuses that seed.
+        const revalidationConfigRevalidateSeconds = revalidationInterceptConfig
+          ? revalidationTarget.route === route
+            ? currentRevalidateSeconds
+            : revalidationInterceptConfig.revalidateSeconds
+          : (options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
+            (revalidationTarget.route === route ? currentRevalidateSeconds : null));
+        // A stale entry intercepted from another route regenerates as that
+        // interception, so the entry takes the interception's revalidate, not
+        // the matched route's read seed. A static interception without one
+        // keeps `revalidate = false`.
         const revalidationRouteRevalidateSeconds =
           revalidationTarget.route === route
             ? undefined
@@ -969,7 +1055,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               revalidationDynamicConfig === "error" ||
               (options.isProduction &&
                 options.pprRuntime === undefined &&
-                options.resolveRouteStaticEligible(revalidationTarget.route))
+                (revalidationInterceptConfig?.isStaticEligible ??
+                  options.resolveRouteStaticEligible(revalidationTarget.route)))
                 ? Infinity
                 : null));
         const revalidationRouteHead: RouteHeadRef = {
@@ -982,9 +1069,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           {
             cleanPathname: options.cleanPathname,
             displayPathname: options.displayPathname,
-            currentFetchCacheMode:
-              options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
-              (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
+            currentFetchCacheMode: revalidationInterceptConfig
+              ? revalidationInterceptConfig.fetchCacheMode
+              : (options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
+                (revalidationTarget.route === route ? (options.fetchCache ?? null) : null)),
             currentFetchRevalidate: revalidationConfigRevalidateSeconds,
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: revalidationDynamicConfig,
@@ -1005,6 +1093,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 isForceStatic: revalidationDynamicConfig === "force-static",
                 observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+                // A stale loading shell regenerates in the shape it was stored.
+                routeTreeOnlyPrefetchShell,
                 // As in Next.js, a regeneration streams metadata as the
                 // request that triggered it does, into the <head> of a
                 // document it renders whole.
@@ -1160,28 +1250,48 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  // Next.js' production force-dynamic routes are absent from the prerender
-  // manifest, so they never enter its generated-path fallback gate. Dev still
-  // resolves and exact-matches generateStaticParams for the same route.
-  if (options.skipStaticParamsValidation !== true && !(options.isProduction && isForceDynamic)) {
-    const dynamicParamsResponse = await validateAppPageDynamicParams({
-      enforceStaticParamsOnly: options.dynamicParamsConfig === false,
-      generateStaticParams: options.generateStaticParams,
-      isDynamicRoute: route.isDynamic,
-      params: options.staticParamsValidationParams ?? options.params,
-    });
+  // Next.js renders an unlisted param on demand in draft mode.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  if (options.skipStaticParamsValidation !== true && !isDraftMode) {
+    const dynamicParamsResponse = await runStaticParamsCheckDetached(() =>
+      validateAppPageRouteDynamicParams({
+        dynamicConfig,
+        dynamicParamsConfig: options.dynamicParamsConfig,
+        fetchCache: options.fetchCache,
+        routeSegments: route.routeSegments,
+        generateStaticParams: options.generateStaticParams,
+        isDynamicRoute: route.isDynamic,
+        isProduction: options.isProduction,
+        params: options.staticParamsValidationParams ?? options.params,
+      }),
+    );
     if (dynamicParamsResponse) {
-      // A generated-param miss belongs to a matched App route, so render the
-      // route's not-found boundary just like a page-level notFound() signal.
-      // The plain response remains a defensive fallback if boundary rendering
-      // is unavailable, but the normal path must include Next.js's canonical
-      // not-found markup (and custom not-found.tsx when present). The route's
-      // own not-found is the nearest one in its tree; the manifest's root
-      // not-found can belong to another root layout's (issue #4304).
-      const boundaryModule = route.notFound ?? getDefaultHttpAccessFallbackModule(404);
+      // Next.js rejects a generated-param miss while routing, so it renders
+      // the root not-found as if no route matched. None of this route's
+      // layouts or generateMetadata may run with the rejected params. The
+      // plain response remains a defensive fallback if boundary rendering is
+      // unavailable.
+      // Undo this route's config too: its fetch defaults, and the static
+      // headers context and search params of force-static / dynamic = "error".
+      const navigationContext = options.getNavigationContext();
+      if (navigationContext) {
+        options.setNavigationContext({
+          ...navigationContext,
+          params: {},
+          searchParams: options.searchParams,
+        });
+      }
+      setRootParams(null);
+      setHeadersContext(requestHeadersContext);
+      setCurrentFetchSoftTags([]);
+      setCurrentFetchCacheMode(null);
+      setCurrentFetchRevalidate(null);
+      setCurrentForceDynamicFetchDefault(false);
+      // Routing discards this response, so it marks nothing for the request.
+      if (options.resumeRoutingAfterMiss?.()) return new Response(null, { status: 404 });
       const renderedNotFound = await options.renderHttpAccessFallbackPage(
         404,
-        { boundaryModule, matchedParams: options.params },
+        { matchedParams: {}, routeMiss: true },
         options.middlewareContext,
       );
       const cachePolicy = {
@@ -1190,6 +1300,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isDynamicError,
         isForceDynamic,
         isForceStatic,
+        isPrerender,
         isProduction: options.isProduction,
         isProgressiveActionRender: options.isProgressiveActionRender === true,
         isRscRequest: options.isRscRequest,
@@ -1200,10 +1311,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         scriptNonce: options.scriptNonce,
       };
       if (renderedNotFound) {
-        return applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy);
+        return markRouteMissResponse(
+          applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy),
+        );
       }
       options.clearRequestContext();
-      return applyIneligibleRouteCachePolicy(dynamicParamsResponse, cachePolicy);
+      return markRouteMissResponse(
+        applyIneligibleRouteCachePolicy(dynamicParamsResponse, cachePolicy),
+      );
     }
   }
 
@@ -1220,11 +1335,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return fallbackShellResponse;
   }
 
-  let interceptDynamicConfig: string | null | undefined;
-  let interceptDynamicConfigResolved = false;
-  // Whether the source route that the intercepted response renders is
-  // force-dynamic or revalidate = 0, from the config activated for its render.
-  let isInterceptSourceKnownDynamic = false;
+  let interceptConfig: AppPageInterceptSegmentConfig | null = null;
+  // Whether the intercepted response's render is force-dynamic or
+  // revalidate = 0, from the config activated for it.
+  let isInterceptKnownDynamic = false;
+  // Whether it is force-static or dynamic = "error", so its render can't read
+  // the request.
+  let isInterceptRequestIndependent = false;
   // The head the page's render prepared, for its special-error fallback.
   const renderedRouteHead: RouteHeadRef = {
     observeSearchParams: !isForceStatic,
@@ -1248,16 +1365,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // The intercept route's fetch defaults must also stay active past this
       // call — its server components fetch lazily during the
       // renderToReadableStream in renderInterceptResponse below.
-      const sourceDynamicConfig = interceptDynamicConfigResolved
-        ? interceptDynamicConfig
-        : options.resolveRouteDynamicConfig?.(interceptRoute);
-      if (sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error") {
+      interceptConfig ??= resolveAppPageInterceptSegmentConfig(interceptRoute, interceptOpts!);
+      const interceptDynamicConfig = interceptConfig.dynamicConfig;
+      if (interceptDynamicConfig === "force-static" || interceptDynamicConfig === "error") {
         const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
         setHeadersContext(
           createStaticGenerationHeadersContext({
             draftModeEnabled: isDraftMode,
             draftModeSecret: options.draftModeSecret,
-            dynamicConfig: sourceDynamicConfig,
+            dynamicConfig: interceptDynamicConfig,
             routeKind: "page",
             routePattern: interceptRoute.pattern,
           }),
@@ -1265,23 +1381,24 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       } else {
         setHeadersContext(requestHeadersContext);
       }
-      const sourceRevalidateSeconds =
-        options.resolveRouteRevalidateSeconds?.(interceptRoute) ?? null;
-      isInterceptSourceKnownDynamic =
-        sourceDynamicConfig === "force-dynamic" || sourceRevalidateSeconds === 0;
-      setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
-      setCurrentFetchRevalidate(sourceRevalidateSeconds);
-      setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
+      isInterceptKnownDynamic =
+        interceptDynamicConfig === "force-dynamic" || interceptConfig.revalidateSeconds === 0;
+      isInterceptRequestIndependent =
+        interceptDynamicConfig === "force-static" || interceptDynamicConfig === "error";
+      setCurrentFetchCacheMode(interceptConfig.fetchCacheMode);
+      setCurrentFetchRevalidate(interceptConfig.revalidateSeconds);
+      setCurrentForceDynamicFetchDefault(interceptDynamicConfig === "force-dynamic");
       return options.buildPageElement(
         interceptRoute,
         interceptParams,
         interceptOpts,
         interceptSearchParams,
         {
-          isForceStatic: sourceDynamicConfig === "force-static",
-          observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
-          observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
+          isForceStatic: interceptDynamicConfig === "force-static",
+          observeMetadataSearchParamsAccess: interceptDynamicConfig !== "force-static",
+          observePageSearchParamsAccess: interceptDynamicConfig !== "force-static",
           isUncacheableRender,
+          routeTreeOnlyPrefetchShell,
           serveStreamingMetadata: placeGeneratedMetadataInBody,
           placeStreamedMetadataInHead: options.renderWholeDocument === true,
           onHeadPrepared,
@@ -1299,11 +1416,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     getSourceRoute(sourceRouteIndex) {
       return options.getSourceRoute(sourceRouteIndex);
     },
+    interceptState: options.interceptState,
     isRscRequest: options.isRscRequest,
     resolveNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts) {
       return resolveAppPageNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts);
     },
-    renderInterceptResponse(sourceRoute, interceptElement) {
+    renderInterceptResponse(sourceRoute, interceptElement, navigationParams) {
       const interceptOnError = options.createRscOnErrorHandler(
         options.cleanPathname,
         sourceRoute.pattern,
@@ -1317,14 +1435,30 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
-      // This response renders the source route, so it takes the source's
-      // cacheability and dynamic config, not the matched target's. A source
-      // that can't be static, a render known dynamic before it starts, or a
-      // draft-mode request is never cacheable, like the source's own render.
-      // Middleware's policy still wins, merged after, as in the RSC builder.
-      const isSourceStaticEligible =
-        options.pprRuntime !== undefined || options.resolveRouteStaticEligible(sourceRoute);
-      if (!isSourceStaticEligible || isDraftMode || isInterceptSourceKnownDynamic) {
+      // The client reads useParams() from this header, as for any page, so
+      // the intercepted target's params reach it, not just the source's.
+      if (Object.keys(navigationParams).length > 0) {
+        interceptHeaders.set(
+          VINEXT_PARAMS_HEADER,
+          encodeURIComponent(JSON.stringify(navigationParams)),
+        );
+      }
+      // This response renders the interception, so it takes the interception's
+      // cacheability and dynamic config, not the matched target's. One that
+      // can't be static, a render known dynamic before it starts, or a
+      // draft-mode request is never cacheable, like a page's own render. In
+      // production, so is any other interception that can read the request:
+      // this response is never stored and can still reach a dynamic API as it
+      // streams. Middleware's policy still wins, merged after, as in the RSC
+      // builder.
+      const isInterceptStaticEligible =
+        options.pprRuntime !== undefined || interceptConfig?.isStaticEligible === true;
+      if (
+        !isInterceptStaticEligible ||
+        isDraftMode ||
+        isInterceptKnownDynamic ||
+        (options.isProduction && !isInterceptRequestIndependent)
+      ) {
         interceptHeaders.set("Cache-Control", resolveUncacheableCacheControl(options.isProduction));
       }
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
@@ -1335,11 +1469,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         headers: interceptHeaders,
       });
     },
-    async resolveSearchParams(sourceRoute, searchParams) {
+    async resolveSearchParams(sourceRoute, searchParams, interceptOpts) {
       await options.ensureRouteLoaded?.(sourceRoute);
-      interceptDynamicConfig = options.resolveRouteDynamicConfig?.(sourceRoute);
-      interceptDynamicConfigResolved = true;
-      return interceptDynamicConfig === "force-static" ? new URLSearchParams() : searchParams;
+      interceptConfig = resolveAppPageInterceptSegmentConfig(sourceRoute, interceptOpts);
+      return interceptConfig.dynamicConfig === "force-static"
+        ? new URLSearchParams()
+        : searchParams;
     },
     searchParams: options.searchParams,
     setNavigationContext: options.setNavigationContext,
@@ -1371,6 +1506,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
             isUncacheableRender,
+            routeTreeOnlyPrefetchShell,
             // An intercepted render keeps every layout its interception wraps.
             mountedLayouts: interceptResult.interceptOpts ? null : mountedLayouts,
             serveStreamingMetadata: placeGeneratedMetadataInBody,
@@ -1539,7 +1675,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       );
     },
     renderToReadableStream: options.renderToReadableStream,
-    hasCustomGlobalError: options.hasCustomGlobalError,
     prerenderToReadableStream: options.prerenderToReadableStream,
     routePattern: route.pattern,
     scriptNonce: options.scriptNonce,

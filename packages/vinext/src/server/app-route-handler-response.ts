@@ -14,6 +14,7 @@ import {
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_ROUTE_MISS_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import {
@@ -22,7 +23,11 @@ import {
 } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
-import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
+import {
+  copyLinkHeaderProvenance,
+  markEdgeRouteHandlerLinkHeaders,
+} from "./app-response-header-provenance.js";
+import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -47,6 +52,47 @@ const APP_ROUTE_REWRITE_ERROR =
   "NextResponse.rewrite() was used in a app route handler, this is not currently supported. Please remove the invocation to continue.";
 const APP_ROUTE_NEXT_ERROR =
   "NextResponse.next() was used in a app route handler, this is not supported. See here for more info: https://nextjs.org/docs/messages/next-response-next-in-app-route-handler";
+
+// Like Next.js's sendResponse for a Node response, a route handler's Response
+// never frames the body that is sent. Its body may have been transparently
+// decoded: Node's fetch() decompresses a gzip body but keeps the upstream
+// Content-Length and Content-Encoding, so forwarding them would describe bytes
+// that are no longer there. The server frames (and may compress) the body
+// itself.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-response.ts
+//
+// workerd frames the body itself and keeps Content-Encoding accurate: it
+// ignores a set Content-Length, passes a returned fetch() body through still
+// encoded, and compresses any other body to match its Content-Encoding. So
+// Workers responses keep the headers. `WebSocketPair` identifies workerd under
+// any compatibility flags (`navigator` is absent with `no_global_navigator`),
+// and is absent when a Worker build runs on Node through `vinext start`.
+// https://developers.cloudflare.com/workers/runtime-apis/fetch/#passthrough-behavior
+// https://developers.cloudflare.com/workers/runtime-apis/response/
+const ROUTE_HANDLER_FRAMING_HEADERS = ["content-length", "content-encoding", "transfer-encoding"];
+
+function shouldDropRouteHandlerFramingHeaders(headers: Headers): boolean {
+  if ("WebSocketPair" in globalThis) return false;
+  return ROUTE_HANDLER_FRAMING_HEADERS.some((name) => headers.has(name));
+}
+
+function deleteRouteHandlerFramingHeaders(headers: Headers): void {
+  for (const name of ROUTE_HANDLER_FRAMING_HEADERS) headers.delete(name);
+}
+
+export function stripRouteHandlerFramingHeaders(response: Response): Response {
+  if (!shouldDropRouteHandlerFramingHeaders(response.headers)) return response;
+  const headers = new Headers(response.headers);
+  deleteRouteHandlerFramingHeaders(headers);
+  return preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    }),
+  );
+}
 
 function hasMiddlewareHeader(headers: Headers): boolean {
   for (const key of headers.keys()) {
@@ -93,6 +139,25 @@ export function assertSupportedAppRouteHandlerResponse(response: Response): void
   }
 }
 
+/** Drop a route-miss marker the handler set, so only routing can mark a miss. */
+export function stripAppRouteHandlerRouteMissMarker(response: Response): Response {
+  if (!response.headers.has(VINEXT_ROUTE_MISS_HEADER)) return response;
+  try {
+    response.headers.delete(VINEXT_ROUTE_MISS_HEADER);
+    return response;
+  } catch {
+    // Fetch/service-binding responses may have immutable headers.
+  }
+  // Workerd copies cf, webSocket and encodeBody from a Response init.
+  const rebuilt = preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, response as ResponseInit),
+  );
+  copyLinkHeaderProvenance(response.headers, rebuilt.headers);
+  rebuilt.headers.delete(VINEXT_ROUTE_MISS_HEADER);
+  return rebuilt;
+}
+
 export function buildRouteHandlerCachedResponse(
   cachedValue: CachedRouteValue,
   options: BuildRouteHandlerCachedResponseOptions,
@@ -109,6 +174,9 @@ export function buildRouteHandlerCachedResponse(
   }
   headers.delete(NEXT_CACHE_TAGS_HEADER);
   headers.delete(VINEXT_METADATA_ROUTE_CACHE_HEADER);
+  // Only a framework 404 carries the route-miss marker, and none is stored.
+  headers.delete(VINEXT_ROUTE_MISS_HEADER);
+  if (shouldDropRouteHandlerFramingHeaders(headers)) deleteRouteHandlerFramingHeaders(headers);
   setCacheStateHeaders(headers, options.cacheState);
   // HIT/STALE served from the origin store: route the cache header through the
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
@@ -296,12 +364,14 @@ export function finalizeRouteHandlerResponse(
     pendingCookies.length === 0 &&
     !draftCookie &&
     !isHead &&
-    !hasMiddlewareHeader(response.headers)
+    !hasMiddlewareHeader(response.headers) &&
+    !shouldDropRouteHandlerFramingHeaders(response.headers)
   ) {
     return response;
   }
 
   const headers = new Headers(response.headers);
+  if (shouldDropRouteHandlerFramingHeaders(headers)) deleteRouteHandlerFramingHeaders(headers);
   processMiddlewareHeaders(headers);
   applyMutableCookieFallbacks(headers, pendingCookies);
   if (draftCookie) {

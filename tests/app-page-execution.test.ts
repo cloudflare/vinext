@@ -717,7 +717,7 @@ describe("app page execution helpers", () => {
       buildRscRedirectFlightStream,
       clearRequestContext: vi.fn(),
       isRscRequest: true,
-      request: new Request("https://example.com/start.rsc"),
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "redirect",
         location: "/redirected",
@@ -772,6 +772,10 @@ describe("app page execution helpers", () => {
     ["./subpage", "/docs/subpage"],
     ["?tab=1", "/docs/page?tab=1"],
     ["#section", "/docs/page#section"],
+    // A same-origin path whose resolved pathname begins with "//" must not be
+    // sent as a protocol-relative URL naming another host.
+    ["/.//other.test/out", "/.//other.test/out"],
+    ["/x/..//other.test/out?a=1#f", "/.//other.test/out?a=1#f"],
   ])(
     "resolves a relative RSC redirect target %s against the request path",
     async (location, url) => {
@@ -855,7 +859,7 @@ describe("app page execution helpers", () => {
       buildRscRedirectFlightStream,
       clearRequestContext: vi.fn(),
       isRscRequest: true,
-      request: new Request("https://example.com/start.rsc"),
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "redirect",
         location: "/redirected",
@@ -884,7 +888,7 @@ describe("app page execution helpers", () => {
           clearRequestContext: vi.fn(),
           isRscRequest: true,
           middlewareContext: { headers: middlewareHeaders },
-          request: new Request("https://example.com/start.rsc"),
+          request: new Request("https://example.com/start"),
           specialError: {
             kind: "redirect",
             location: "/actual-target",
@@ -925,7 +929,7 @@ describe("app page execution helpers", () => {
       buildRscRedirectFlightStream,
       clearRequestContext: vi.fn(),
       isRscRequest: true,
-      request: new Request("https://example.com/start.rsc"),
+      request: new Request("https://example.com/start"),
       specialError: specialError!,
     });
     const emittedDigest = await response.text();
@@ -960,7 +964,7 @@ describe("app page execution helpers", () => {
       buildRscRedirectFlightStream,
       clearRequestContext: vi.fn(),
       isRscRequest: true,
-      request: new Request("https://example.com/start.rsc"),
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "redirect",
         location: "/redirected",
@@ -1070,7 +1074,7 @@ describe("app page execution helpers", () => {
       buildRscRedirectFlightStream,
       clearRequestContext: vi.fn(),
       isRscRequest: true,
-      request: new Request("https://example.com/start.rsc"),
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "redirect",
         location: "/permanent-target",
@@ -1089,7 +1093,7 @@ describe("app page execution helpers", () => {
     const response = await buildAppPageSpecialErrorResponse({
       clearRequestContext: vi.fn(),
       isRscRequest: true,
-      request: new Request("https://example.com/start.rsc"),
+      request: new Request("https://example.com/start"),
       specialError: {
         kind: "redirect",
         location: "/redirected",
@@ -1106,7 +1110,7 @@ describe("app page execution helpers", () => {
     const response = await buildAppPageSpecialErrorResponse({
       clearRequestContext: vi.fn(),
       isRscRequest: true,
-      request: new Request("https://example.com/start.rsc", {
+      request: new Request("https://example.com/start", {
         headers: {
           Accept: "text/x-component",
           RSC: "1",
@@ -1333,7 +1337,7 @@ describe("app page execution helpers", () => {
       clearRequestContext: vi.fn(),
       isEdgeRuntime: true,
       isRscRequest: true,
-      request: new Request("https://example.com/start.rsc"),
+      request: new Request("https://example.com/start"),
       specialError: { kind: "redirect", location: "/redirected", statusCode: 307 },
     });
 
@@ -1352,7 +1356,7 @@ describe("app page execution helpers", () => {
         }),
       clearRequestContext: vi.fn(),
       isRscRequest: true,
-      request: new Request("https://example.com/start.rsc"),
+      request: new Request("https://example.com/start"),
       specialError: { kind: "redirect", location: "/redirected", statusCode: 307 },
     });
 

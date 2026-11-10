@@ -22,6 +22,7 @@ import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { applyCdnResponseHeaders, SERVER_ACTION_CACHE_CONTROL } from "./cache-control.js";
 import {
   ACTION_FORWARDED_HEADER,
   ACTION_REDIRECT_HEADER,
@@ -43,7 +44,12 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
-import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
+import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
+import {
+  resolveAppPageInterceptSegmentConfig,
+  type AppPageInterceptSegmentConfigOptions,
+  type AppPageInterceptSegmentConfigRoute,
+} from "./app-page-intercept-segment-config.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -63,16 +69,19 @@ import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
-  createServerActionNotFoundResponse,
-  getServerActionNotFoundMessage,
   isServerActionNotFoundError,
+  respondServerActionNotFound,
 } from "./server-action-not-found.js";
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
 import { hasDigest } from "./app-rsc-errors.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
-import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
+import {
+  markAppRscResponseConfigHeadersApplied,
+  markStreamedActionRedirectResponse,
+} from "./app-rsc-response-finalizer.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
+import { logRequestError } from "./request-error-log.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -1153,7 +1162,10 @@ function createRejectedActionResult(error: unknown): Promise<never> {
  */
 function logRejectedActionResult(error: unknown): void {
   if (process.env.NODE_ENV === "production" || hasDigest(error)) {
-    console.error("[vinext] Server action error:", error);
+    // The render reports the result unless it's a thrown string, which isn't
+    // reported, so VINEXT_QUIET doesn't silence it.
+    if (typeof error === "string") console.error("[vinext] Server action error:", error);
+    else logRequestError("[vinext] Server action error:", error);
   }
 }
 
@@ -1179,7 +1191,7 @@ function createServerActionErrorResponse(
   },
 ): Response {
   options.getAndClearPendingCookies();
-  console.error("[vinext] Server action error:", error);
+  logRequestError("[vinext] Server action error:", error);
   options.reportRequestError(
     error,
     {
@@ -1211,9 +1223,7 @@ function createActionNotFoundResponse(
   },
 ): Response {
   options.getAndClearPendingCookies();
-  console.warn(getServerActionNotFoundMessage(actionId));
-  options.clearRequestContext();
-  return createServerActionNotFoundResponse();
+  return respondServerActionNotFound(actionId, options.clearRequestContext);
 }
 
 export function isProgressiveServerActionRequest(
@@ -1373,7 +1383,7 @@ export async function handleProgressiveServerActionRequest(
         actionFailedWithError =
           getActionHttpFallbackStatus(error) === null && !isServerActionNotFoundError(error, null);
         if (actionFailedWithError) {
-          console.error("[vinext] Server action error:", error);
+          logRequestError("[vinext] Server action error:", error);
           options.reportRequestError(
             error,
             {
@@ -1429,7 +1439,7 @@ export async function handleProgressiveServerActionRequest(
         options.clearRequestContext();
         const headers = new Headers();
         mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders);
-        headers.set("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate");
+        headers.set("Cache-Control", SERVER_ACTION_CACHE_CONTROL);
         for (const cookie of actionPendingCookies) headers.append("Set-Cookie", cookie);
         if (actionDraftCookie) headers.append("Set-Cookie", actionDraftCookie);
         return internalServerErrorResponse(
@@ -1503,7 +1513,7 @@ export async function handleProgressiveServerActionRequest(
 
     getAndClearActionRevalidationKind();
     options.getAndClearPendingCookies();
-    console.error("[vinext] Server action payload parsing error:", error);
+    logRequestError("[vinext] Server action payload parsing error:", error);
     options.reportRequestError(
       error,
       {
@@ -1776,6 +1786,9 @@ export async function handleServerActionRscRequest<
       applyEdgeRuntimeHeader(redirectHeaders, options.isEdgeRuntime);
       mergeActionRedirectSourceHeaders(redirectHeaders, options.sourceConfigHeaders ?? null);
       mergeActionRedirectSourceHeaders(redirectHeaders, options.middlewareHeaders);
+      // As in Next.js, the action's policy replaces the source path's, and
+      // only a streamed target's own policy replaces it in turn.
+      applyCdnResponseHeaders(redirectHeaders, { cacheControl: SERVER_ACTION_CACHE_CONTROL });
       applyRscCompatibilityIdHeader(redirectHeaders);
       // Prefix basePath onto the redirect target. The client-side handler in
       // app-browser-entry reads ACTION_REDIRECT_HEADER and calls
@@ -1862,11 +1875,13 @@ export async function handleServerActionRscRequest<
         ? 200
         : 303;
 
-      return markAppRscResponseConfigHeadersApplied(
-        createServerActionRscResponse(
-          targetResponse.body,
-          { status: redirectResponseStatus, headers: redirectHeaders },
-          options.clearRequestContext,
+      return markStreamedActionRedirectResponse(
+        markAppRscResponseConfigHeadersApplied(
+          createServerActionRscResponse(
+            targetResponse.body,
+            { status: redirectResponseStatus, headers: redirectHeaders },
+            options.clearRequestContext,
+          ),
         ),
       );
     }
@@ -1926,6 +1941,7 @@ export async function handleServerActionRscRequest<
     let element: TElement;
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
     let renderedPathAndSearch: string | null = null;
+    let actionRerenderIsEdgeRuntime = options.isEdgeRuntime;
     const actionRerenderIsRscRequest = true;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
@@ -1954,9 +1970,18 @@ export async function handleServerActionRscRequest<
       );
       // Hydrate the re-render target before reading its page module.
       await options.ensureRouteLoaded?.(actionRerenderTarget.route);
-      const actionRerenderDynamicConfig = options.resolveRouteDynamicConfig?.(
-        actionRerenderTarget.route,
-      );
+      // An intercepted re-render renders the interception, which takes its
+      // config from its own loader tree, as on an intercepted navigation.
+      const actionInterceptConfig = actionRerenderTarget.interceptOpts
+        ? resolveAppPageInterceptSegmentConfig(
+            actionRerenderTarget.route as AppPageInterceptSegmentConfigRoute,
+            actionRerenderTarget.interceptOpts as unknown as AppPageInterceptSegmentConfigOptions,
+          )
+        : null;
+      if (actionInterceptConfig) actionRerenderIsEdgeRuntime = actionInterceptConfig.isEdgeRuntime;
+      const actionRerenderDynamicConfig = actionInterceptConfig
+        ? actionInterceptConfig.dynamicConfig
+        : options.resolveRouteDynamicConfig?.(actionRerenderTarget.route);
       const actionRerenderSearchParams = prepareActionPageRerenderContext({
         draftModeCookie: actionDraftCookie,
         draftModeSecret: options.draftModeSecret,
@@ -1975,10 +2000,14 @@ export async function handleServerActionRscRequest<
         ? `${options.cleanPathname}?${renderedSearch}`
         : options.cleanPathname;
       setCurrentFetchCacheMode(
-        options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
+        actionInterceptConfig
+          ? actionInterceptConfig.fetchCacheMode
+          : (options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null),
       );
       setCurrentFetchRevalidate(
-        options.resolveRouteRevalidateSeconds?.(actionRerenderTarget.route) ?? null,
+        actionInterceptConfig
+          ? actionInterceptConfig.revalidateSeconds
+          : (options.resolveRouteRevalidateSeconds?.(actionRerenderTarget.route) ?? null),
       );
       setCurrentForceDynamicFetchDefault(actionRerenderDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(
@@ -2030,7 +2059,7 @@ export async function handleServerActionRscRequest<
       "Content-Type": VINEXT_RSC_CONTENT_TYPE,
       Vary: VINEXT_RSC_VARY_HEADER,
     });
-    applyEdgeRuntimeHeader(actionHeaders, options.isEdgeRuntime);
+    applyEdgeRuntimeHeader(actionHeaders, actionRerenderIsEdgeRuntime);
     mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
     applyRscCompatibilityIdHeader(actionHeaders);
     setActionRevalidatedHeader(actionHeaders, actionRevalidationKind);

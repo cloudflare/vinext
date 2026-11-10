@@ -45,6 +45,20 @@ function appendDerivedTags(tags: string[], routePath: string): void {
   }
 }
 
+/**
+ * The implicit tags of Next.js' `generateStaticParams` work store: the route's
+ * page or route handler and its layouts, without a request pathname.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+ */
+export function buildAppStaticParamsTags(
+  routeSegments: readonly string[],
+  leafKind: AppCacheLeafKind = "page",
+): string[] {
+  const tags: string[] = [];
+  appendDerivedTags(tags, buildRouteCachePath([...routeSegments], leafKind));
+  return tags.map(encodeCacheTag);
+}
+
 export function buildAppPageTags(
   cleanPathname: string,
   extraTags: string[],

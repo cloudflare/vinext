@@ -1,5 +1,8 @@
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { _recordUseCacheRootParamRead } from "./internal/cache-context-accessor.js";
+import {
+  _recordUseCacheRootParamRead,
+  getRegisteredCacheContext,
+} from "./internal/cache-context-accessor.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,
@@ -33,6 +36,10 @@ const _FALLBACK_KEY = Symbol.for("vinext.rootParams.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 const _als = getOrCreateAls<RootParamsState>("vinext.rootParams.als");
 const _usageAls = getOrCreateAls<RootParamsUsageState>("vinext.rootParams.usage.als");
+// The "use cache" scope an unstable_cache() callback started in, set by cache.ts.
+const _unstableCacheCallbackAls = getOrCreateAls<{ useCacheContext: unknown }>(
+  "vinext.unstableCache.callbackAls",
+);
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   rootParams: null,
@@ -56,6 +63,19 @@ export function pickRootParams(
   return picked;
 }
 
+/**
+ * Like Next.js's `unstable-cache` work unit, an unstable_cache() callback has
+ * no root params, and neither does a "use cache" scope entered from it: the
+ * callback's entry is keyed by its source and arguments alone.
+ */
+function getUnstableCacheScope(): "callback" | "use-cache" | null {
+  const callback = _unstableCacheCallbackAls.getStore();
+  if (!callback) return null;
+  return (callback.useCacheContext ?? null) === getRegisteredCacheContext()
+    ? "callback"
+    : "use-cache";
+}
+
 export function setRootParams(params: RootParams | null): void {
   getState().rootParams = params;
 }
@@ -72,13 +92,24 @@ export function getRootParam(name: string): Promise<string | string[] | undefine
       `Route ${usage.routePattern} used \`import('next/root-params').${name}()\` inside a Route Handler. Support for this API in Route Handlers is planned for a future version of Next.js.`,
     );
   }
+  const unstableCacheScope = getUnstableCacheScope();
+  if (unstableCacheScope === "callback") {
+    throw createRootParamsUsageError(
+      `\`import('next/root-params').${name}()\` was used inside \`unstable_cache\`. This is not supported. Use \`"use cache"\` instead.`,
+    );
+  }
+  if (unstableCacheScope === "use-cache") {
+    throw createRootParamsUsageError(
+      `\`import('next/root-params').${name}()\` was used inside \`"use cache"\` nested within \`unstable_cache\`. Root params are not available in this context.`,
+    );
+  }
   _recordUseCacheRootParamRead(name);
   return Promise.resolve(getState().rootParams?.[name]);
 }
 
 /** @internal Current route root params for `"use cache"` key derivation. */
 export function getCurrentRootParams(): RootParams | null {
-  return getState().rootParams;
+  return getUnstableCacheScope() ? null : getState().rootParams;
 }
 
 export function runWithRootParamsUsage<T>(

@@ -19,7 +19,7 @@ import {
   createCanonicalRscRequestUrl,
   stripRscCacheBustingSearchParam,
 } from "vinext/internal/server/app-rsc-cache-busting";
-import { hasDocumentPart, isCanonicalAppPage } from "./app-page-parts.js";
+import { isCanonicalAppPage } from "./app-page-parts.js";
 import {
   finalizeGatewayResponse,
   SHARED_RESPONSE_STAGE_HEADER,
@@ -678,7 +678,6 @@ type ResponseStageDispatch = { props: unknown; request: Request };
 function otherPagePartDispatch(request: Request, props: unknown): ResponseStageDispatch | null {
   const isRscRequest = isCanonicalAppPage(props, true);
   if (!isRscRequest && !isCanonicalAppPage(props, false)) return null;
-  if (isRscRequest && !hasDocumentPart(request.url)) return null;
 
   const headers = new Headers(request.headers);
   for (const name of FRAMEWORK_RESPONSE_VARY_FIELDS) headers.delete(name);
