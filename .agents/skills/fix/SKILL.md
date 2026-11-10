@@ -46,7 +46,7 @@ After the fix and focused validation pass, spawn one independent review sub-agen
 ## 3. Draft PR and Issue Reply
 
 1. Commit and push as `references/rules.md` describes, and open a draft PR against `main`. For stacked PRs, use `gh stack`.
-2. Start watching the PR's checks right away, with a PR-watching tool if you have one, otherwise `gh pr checks`. Don't end a turn with CI running and nothing watching it.
+2. Start watching the PR's checks right away, with a PR-watching tool if you have one, otherwise `gh pr checks <n> --watch`. Don't end a turn with CI running and nothing watching it.
 3. Reply on the issue: the root cause, a workaround the reporter can use now, and the PR link. Reply only to people active now, not to weeks-old comments. Skip the reply for a private or security report.
 
 ## 4. Make CI Green
