@@ -13,6 +13,7 @@ import type {
   ResponseStoreRefreshOptions,
   SerializableValue,
 } from "../src/index.js";
+import { edgeCacheControl } from "../src/cache-policy.js";
 import { IsolateNegativeCache } from "../src/isolate-negative-cache.js";
 import { mapSettledWithR2Concurrency } from "../src/r2-concurrency.js";
 
@@ -347,6 +348,17 @@ test("bounded concurrency preserves settled results", async () => {
   assert.deepEqual(settled[0], { status: "fulfilled", value: 0 });
   assert.equal(settled[7]?.status, "rejected");
   assert.deepEqual(settled[12], { status: "fulfilled", value: 24 });
+});
+
+test("an edge copy never goes stale later than its entry", () => {
+  // 1.9 seconds of freshness left: rounding up would keep the edge copy fresh past the
+  // entry, and a put replacing the stale entry skips the edge purge.
+  assert.equal(edgeCacheControl(11_900, 71_900, 10_000), "max-age=1, stale-while-revalidate=60");
+  assert.equal(edgeCacheControl(10_900, 70_900, 10_000), "max-age=0, stale-while-revalidate=60");
+  assert.equal(
+    edgeCacheControl(11_900, 71_900, 10_000, false),
+    "max-age=1, stale-while-revalidate=0, stale-if-error=0",
+  );
 });
 
 test("isolate miss caching expires and evicts least-recently-used keys", () => {
