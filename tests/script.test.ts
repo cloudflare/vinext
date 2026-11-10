@@ -769,6 +769,7 @@ function runHoistedLoader(
   modulePromises: Promise<unknown>[];
   element: Record<string, unknown>;
   sentinel: Record<string, unknown> | undefined;
+  runSentinel: () => void;
 } {
   const loader = /^<script\b[^>]*>([^<]*)<\/script[^>]*>$/i.exec(html)?.[1];
   if (loader === undefined) throw new Error(`not a single hoisted loader: ${html}`);
@@ -840,6 +841,8 @@ function runHoistedLoader(
     modulePromises: fakeSelf[BEFORE_INTERACTIVE_MODULES_GLOBAL] ?? [],
     element,
     sentinel,
+    // Runs the sentinel's body, as the browser would once it reaches it.
+    runSentinel: () => runInNewContext(String(sentinel?.text), { self: fakeSelf }),
   };
 }
 
@@ -947,9 +950,10 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
       expect(settled).toBe(true);
     };
 
-    for (const event of ["onload", "onerror", "onsecuritypolicyviolation"]) {
-      // An inline module fires no load event, so a sentinel module queued
-      // right after it settles the promise and then removes itself.
+    // An inline module fires no load event, so an inline sentinel module
+    // queued right after it settles the promise and then removes itself. It
+    // also settles if CSP blocks the sentinel.
+    for (const fire of ["run", "onerror", "onsecuritypolicyviolation"]) {
       const inline = runHoistedLoader(
         renderBeforeInteractiveInlineScripts([
           { id: "m", content: "1", nonce: "n1", attributes: { type: "Module" } },
@@ -962,12 +966,17 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
         async: false,
         type: "module",
         nonce: "n1",
-        src: "data:text/javascript,",
         insertedAfterScript: true,
       });
-      await settles(inline.modulePromises[0], () => (sentinel[event] as () => void)());
+      expect(sentinel).not.toHaveProperty("src");
+      expect(String(sentinel.text)).not.toMatch(/[<&]/);
+      await settles(inline.modulePromises[0], () =>
+        fire === "run" ? inline.runSentinel() : (sentinel[fire] as () => void)(),
+      );
       expect(sentinel.removed).toBe(true);
+    }
 
+    for (const event of ["onload", "onerror", "onsecuritypolicyviolation"]) {
       const external = runHoistedLoader(
         renderBeforeInteractiveInlineScripts([
           { id: "e", src: "/e.js", attributes: { type: "module" } },
@@ -976,6 +985,22 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
       expect(external.sentinel).toBeUndefined();
       await settles(external.modulePromises[0], () => (external.element[event] as () => void)());
     }
+  });
+
+  it("keeps only an exact module type on the module path", () => {
+    // Browsers treat any other non-JavaScript type, such as " module ", as a
+    // data block that fires no events, so it must not hold up hydration.
+    for (const type of [" module ", "module;", "text/module"]) {
+      const created = runHoistedLoader(
+        renderBeforeInteractiveInlineScripts([{ id: "t", content: "1", attributes: { type } }]),
+      );
+      expect(created.modulePromises).toEqual([]);
+      expect(created.sentinel).toBeUndefined();
+    }
+    const external = renderBeforeInteractiveInlineScripts([
+      { id: "t", src: "/t.js", attributes: { type: " module " } },
+    ]);
+    expect(external).toMatch(/^<script id="t" src="\/t\.js" type=" module "/);
   });
 
   it("creates src module scripts through the loader so they share the module queue", () => {

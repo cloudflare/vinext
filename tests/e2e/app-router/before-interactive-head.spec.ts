@@ -85,9 +85,18 @@ test.describe("inline beforeInteractive head ordering", () => {
     void consoleErrors;
   });
 
-  for (const { name, search } of [
-    { name: "", search: "" },
-    { name: " under a nonce-based CSP", search: "?csp-nonce=before-interactive-nonce" },
+  for (const { name, search, csp } of [
+    { name: "", search: "", csp: undefined },
+    {
+      name: " under a nonce-based CSP",
+      search: "?csp-nonce=before-interactive-nonce",
+      csp: "script-src 'nonce-before-interactive-nonce' 'strict-dynamic';",
+    },
+    {
+      name: " under a same-origin and inline CSP",
+      search: "?csp-self",
+      csp: "script-src 'self' 'unsafe-inline' 'unsafe-eval';",
+    },
   ]) {
     test(`beforeInteractive module scripts run in order before hydration${name}`, async ({
       page,
@@ -99,7 +108,8 @@ test.describe("inline beforeInteractive head ordering", () => {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         await route.continue();
       });
-      await page.goto(`${BASE}/beforeinteractive-script-data${search}`);
+      const response = await page.goto(`${BASE}/beforeinteractive-script-data${search}`);
+      expect(response?.headers()["content-security-policy"]).toBe(csp);
       await waitForAppRouterHydration(page);
 
       const moduleLog = await page.evaluate(
@@ -133,7 +143,9 @@ test.describe("inline beforeInteractive head ordering", () => {
       expect(modules).toEqual([expected, expected, expected]);
       // The sentinels queued after the inline modules removed themselves.
       expect(
-        await page.evaluate(() => document.querySelectorAll('script[src^="data:"]').length),
+        await page.evaluate(
+          () => document.querySelectorAll('script[type="module"]:not([src]):not([id])').length,
+        ),
       ).toBe(0);
       expect(
         consoleErrors.filter((message) => message.includes("Content Security Policy")),
