@@ -28,9 +28,9 @@ const EVENT_HANDLER_ATTR_NAME = /^on/i;
 // itself for the real script element. A classic script runs on insertion, at
 // the same point in the parse as a parser-inserted tag.
 //
-// Module scripts, inline or `src`, all go through the loader so they share one
-// queue: clearing `async` before applying the attributes keeps them in
-// registration order unless the author asked for `async`. A parser-inserted
+// Module scripts, inline or `src`, all go through the module loader so they
+// share one queue: clearing `async` before applying the attributes keeps them
+// in registration order unless the author asked for `async`. A parser-inserted
 // `src` module would instead wait for parsing to finish and run after the
 // created ones. Each created module also registers a promise, and the App
 // Router bootstrap awaits them before it hydrates. This keeps the ordering
@@ -41,7 +41,9 @@ const EVENT_HANDLER_ATTR_NAME = /^on/i;
 // has run, then removes itself. Each also settles if CSP blocks it. The first
 // of any case-insensitive duplicate attribute wins, as when the parser reads
 // the tag.
-const SCRIPT_LOADER = `(function(c,p,s,t){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});p[1]!=null?s.text=p[1]:0;(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s);p[2]?(self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}=self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}||[]).push(new Promise(function(r){t=s;if(p[1]!=null){t=document.createElement("script");t.async=!1;t.type="module";t.nonce=s.nonce;t.src="data:text/javascript,";s.after(t)}t.onload=t.onerror=t.onsecuritypolicyviolation=function(){t===s||t.remove();r()}})):0})`;
+const CLASSIC_SCRIPT_LOADER =
+  '(function(c,p,s){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});s.text=p[1];(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s)})';
+const MODULE_SCRIPT_LOADER = `(function(c,p,s,t){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});p[1]!=null?s.text=p[1]:0;(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s);(self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}=self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}||[]).push(new Promise(function(r){t=s;if(p[1]!=null){t=document.createElement("script");t.async=!1;t.type="module";t.nonce=s.nonce;t.src="data:text/javascript,";s.after(t)}t.onload=t.onerror=t.onsecuritypolicyviolation=function(){t===s||t.remove();r()}}))})`;
 
 // The script `type` that makes the browser run it as a module.
 const MODULE_TYPE = /^\s*module\s*$/i;
@@ -93,7 +95,7 @@ function collectAttributes(script: BeforeInteractiveInlineScript): [string, stri
  *
  * Classic external (`src`) scripts render as a plain `<script src>` tag with
  * quoted attributes and no body. Inline scripts and module scripts render as a
- * loader whose payload is HTML-safe JSON (see `SCRIPT_LOADER`); the loader
+ * loader whose payload is HTML-safe JSON (see the loaders above); the loader
  * itself carries the nonce so it runs under the same CSP as the script it
  * creates.
  *
@@ -117,10 +119,9 @@ export function renderBeforeInteractiveInlineScripts(
       html += `<script${attrHtml}></script>`;
       continue;
     }
-    const payload = safeJsonStringify(
-      isModule ? [attrs, script.content ?? null, 1] : [attrs, script.content],
-    );
-    html += `<script${createNonceAttribute(script.nonce)}>${SCRIPT_LOADER}(document.currentScript,${payload})</script>`;
+    const loader = isModule ? MODULE_SCRIPT_LOADER : CLASSIC_SCRIPT_LOADER;
+    const payload = safeJsonStringify([attrs, script.content ?? null]);
+    html += `<script${createNonceAttribute(script.nonce)}>${loader}(document.currentScript,${payload})</script>`;
   }
   return html;
 }
