@@ -723,7 +723,7 @@ export function buildCfDeployArgs(
   const mode = options.env || (options.preview ? "preview" : undefined);
   const isPreviewDeploy = options.target?.type === "preview";
   const args = isPreviewDeploy ? ["previews", "deploy"] : ["deploy"];
-  if (isPreviewDeploy && options.target?.name) args.push(options.target.name);
+  if (isPreviewDeploy && options.target?.name) args.push("--preview-name", options.target.name);
   args.push("--prebuilt");
   if (mode) args.push("--mode", validateWranglerEnvName(mode));
   return { args, mode };

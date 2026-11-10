@@ -627,7 +627,14 @@ describe("cf Build Output deployment", () => {
 
   it.each([undefined, "pr-123"])("builds Preview deploy args (name: %s)", (name) => {
     expect(buildCfDeployArgs({ env: "preview", target: { type: "preview", name } })).toEqual({
-      args: ["previews", "deploy", ...(name ? [name] : []), "--prebuilt", "--mode", "preview"],
+      args: [
+        "previews",
+        "deploy",
+        ...(name ? ["--preview-name", name] : []),
+        "--prebuilt",
+        "--mode",
+        "preview",
+      ],
       mode: "preview",
     });
   });
@@ -657,7 +664,16 @@ describe("cf Build Output deployment", () => {
     expect(invocations).toEqual([
       [
         process.execPath,
-        [resolveCfBin(tmpDir), "previews", "deploy", "main", "--prebuilt", "--mode", "preview"],
+        [
+          resolveCfBin(tmpDir),
+          "previews",
+          "deploy",
+          "--preview-name",
+          "main",
+          "--prebuilt",
+          "--mode",
+          "preview",
+        ],
         { cwd: tmpDir, stdio: ["inherit", "pipe", "pipe"], shell: false },
       ],
     ]);
@@ -817,14 +833,16 @@ describe("parseWorkerDeploymentUrl", () => {
 // ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
 
 describe("parsePreviewsDeployArgs", () => {
-  it("accepts an optional name, mode, skip-build, and help", () => {
+  it("accepts an optional Preview name, mode, skip-build, and help", () => {
     expect(parsePreviewsDeployArgs([])).toEqual({
       name: undefined,
       mode: undefined,
       skipBuild: false,
       help: false,
     });
-    expect(parsePreviewsDeployArgs(["pr-123", "--mode", "staging", "--skip-build"])).toEqual({
+    expect(
+      parsePreviewsDeployArgs(["--preview-name", "pr-123", "--mode", "staging", "--skip-build"]),
+    ).toEqual({
       name: "pr-123",
       mode: "staging",
       skipBuild: true,
@@ -848,10 +866,15 @@ describe("parsePreviewsDeployArgs", () => {
     expect(() => parsePreviewsDeployArgs([option])).toThrow();
   });
 
-  it("rejects multiple or invalid Preview names", () => {
-    expect(() => parsePreviewsDeployArgs(["one", "two"])).toThrow("at most one");
-    expect(() => parsePreviewsDeployArgs([" "])).toThrow("must not be empty");
-    expect(() => parsePreviewsDeployArgs(["pr\0name"])).toThrow("null bytes");
+  it("rejects a positional Preview name", () => {
+    expect(() => parsePreviewsDeployArgs(["pr-123"])).toThrow(
+      "Unexpected argument: pr-123. Pass the Preview name with --preview-name <name>.",
+    );
+  });
+
+  it("rejects invalid Preview names", () => {
+    expect(() => parsePreviewsDeployArgs(["--preview-name", " "])).toThrow("must not be empty");
+    expect(() => parsePreviewsDeployArgs(["--preview-name", "pr\0name"])).toThrow("null bytes");
   });
 
   it.each([["--mode="], ["--mode", " "]])("rejects an empty mode: %j", (...args) => {

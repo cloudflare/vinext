@@ -31,7 +31,7 @@ function printHelp(commandName?: string): void {
 
   Commands:
     deploy                          Deploy to Cloudflare Workers
-    previews deploy [preview-name]  Deploy a Cloudflare Worker Preview
+    previews deploy                 Deploy a Cloudflare Worker Preview
 
   Options:
     -h, --help     Show this help
