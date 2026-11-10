@@ -764,42 +764,29 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(await prefetch.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
   });
 
-  // A Link's search-param prefetch of a static route renders the page with an
-  // empty query, as Next.js's static prefetch of a page segment never varies on
-  // search params (vary-path.ts). So every query shares the page's own entry.
-  test("serves a static page's dynamic-shell prefetch from its navigation entry", async () => {
+  // Without PPR, Next.js renders no page segment for an automatic prefetch of a
+  // page that may read searchParams (walkTreeWithFlightRouterState()). Without
+  // static classification, a static route's search-param prefetch is a loading
+  // shell, and only its navigation renders the page.
+  test("runs no page for an unclassified static page's dynamic-shell prefetch", async () => {
     const pathname = "/static-default";
-    const prefetch = async (search: string, nextUrl: string) => {
-      const headers = createRscRequestHeaders({
-        nextUrl,
-        prefetchRouterState: { pathAndSearch: nextUrl, routeId: "route:/" },
-        renderMode: "prefetch-dynamic-shell",
-      });
-      headers.set("Next-Router-Segment-Prefetch", "1");
-      return request(await createRscRequestUrl(`${pathname}${search}`, headers), {
-        headers: Object.fromEntries(headers),
-      });
-    };
+    const headers = createRscRequestHeaders({
+      nextUrl: "/",
+      prefetchRouterState: { pathAndSearch: "/", routeId: "route:/" },
+      renderMode: "prefetch-dynamic-shell",
+    });
+    headers.set("Next-Router-Segment-Prefetch", "1");
+    const prefetch = await request(await createRscRequestUrl(`${pathname}?tab=1`, headers), {
+      headers: Object.fromEntries(headers),
+    });
+    assert.equal(prefetch.status, 200);
+    assert.doesNotMatch(await prefetch.text(), /static-default-render-id/);
 
-    const fill = await prefetch("?tab=1", "/");
-    assert.equal(fill.status, 200);
-    const fillBody = await fill.text();
-    assert.match(fillBody, /static-default-render-id/);
-    await waitForResponseEntries(pathname, 2);
-
-    for (const [search, nextUrl] of [
-      ["?tab=1", "/"],
-      ["?tab=2", "/cached/local"],
-    ] as const) {
-      const hit = await prefetch(search, nextUrl);
-      assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
-      assert.equal(await hit.text(), fillBody);
-    }
     const navigation = await request(`${pathname}?_rsc=`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
-    assert.equal(navigation.headers.get("x-vinext-cache"), "HIT");
-    assert.equal(await navigation.text(), fillBody);
+    assert.equal(navigation.status, 200);
+    assert.match(await navigation.text(), /static-default-render-id/);
   });
 
   // Next.js answers a pre-PPR prefetch with no loading boundary with only the
