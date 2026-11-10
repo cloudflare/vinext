@@ -15,6 +15,7 @@ const DATA_EXPORT_TEXT = [
   "SOURCEMAP_STATIC_PATHS",
   "SOURCEMAP_STATIC_PROPS",
   "SOURCEMAP_MDX_SERVER_PROPS",
+  "SOURCEMAP_LOADED_SERVER_PROPS",
 ];
 
 // pages-basic builds with client sourcemaps; the data exports the client build
@@ -72,6 +73,8 @@ test("keeps Pages data exports out of served sourcemaps", async ({ page, request
   await expect(page.locator("#sourcemap-data-static")).toHaveText(
     "SOURCEMAP_STATIC_COMPONENT SOURCEMAP_STATIC_PROPS 22",
   );
+  await page.goto(`${BASE}/sourcemap-data/loaded`);
+  await expect(page.locator("#sourcemap-data-loaded")).toHaveText("SOURCEMAP_LOADED_COMPONENT 29");
   await page.goto(`${BASE}/sourcemap-data/mdx`);
   await expect(page.locator("h1")).toHaveText("SOURCEMAP_MDX_CONTENT 26");
 

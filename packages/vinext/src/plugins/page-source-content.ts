@@ -42,23 +42,41 @@ export function blankServerExportSource(
     // or after `end`. Taking the extremes of all of them keeps the blanked
     // range covering the code even where compiling reorders it.
     let first = 0;
+    let firstGenerated = 0;
     let after = source.length;
-    let originalStart = Number.POSITIVE_INFINITY;
-    let originalStop = 0;
+    let afterGenerated = compiled.length;
+    const inside: number[] = [];
     for (const segment of segments) {
-      if (segment.generated <= start) first = segment.original;
-      else if (segment.generated < end) {
-        originalStart = Math.min(originalStart, segment.original);
-        originalStop = Math.max(originalStop, originalEnd(segment.original));
+      if (segment.generated <= start) {
+        first = segment.original;
+        firstGenerated = segment.generated;
+      } else if (segment.generated < end) {
+        inside.push(segment.original);
       } else {
         after = segment.original;
+        afterGenerated = segment.generated;
         break;
       }
     }
-    return {
-      start: Math.min(first, originalStart),
-      end: Math.max(after, originalStop, originalEnd(first)),
-    };
+    // Kept code between those segments and the range, such as `live` before a
+    // removed `, helper = ...` declarator or ` } from ` after a removed
+    // specifier, stays when the source matches it.
+    const keptBefore = compiled.slice(firstGenerated, start);
+    const keptAfter = compiled.slice(end, afterGenerated);
+    const keptBeforeEnd = source.startsWith(keptBefore, first) ? first + keptBefore.length : null;
+    const keptAfterStart = source.endsWith(keptAfter, after) ? after - keptAfter.length : after;
+    // A mapped token runs until the next mapped position or the kept code.
+    const tokenEnd = (original: number) =>
+      original < keptAfterStart
+        ? Math.min(originalEnd(original), keptAfterStart)
+        : originalEnd(original);
+    let blankStart = keptBeforeEnd ?? first;
+    let blankEnd = Math.max(keptAfterStart, keptBeforeEnd ?? tokenEnd(first));
+    for (const original of inside) {
+      blankStart = Math.min(blankStart, original);
+      blankEnd = Math.max(blankEnd, tokenEnd(original));
+    }
+    return { start: blankStart, end: blankEnd };
   });
   return blank(source, blanked);
 }

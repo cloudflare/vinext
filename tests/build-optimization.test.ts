@@ -6684,6 +6684,22 @@ export async function getServerSideProps() {
     ]);
   });
 
+  it("keeps the specifiers and declarators a rewrite copies", async () => {
+    const source = `import { serverA, live, serverB } from "./lib";
+export const value: string = live, helper = (): string => serverB();
+export default function Page() {
+  return <p>{value}</p>;
+}
+export function getStaticProps() {
+  return { props: { value: serverA() + helper() } };
+}
+`;
+    const lines = (await blankPage(source, "tsx")).split("\n");
+    expect(lines[0]).toMatch(/^import \{ +live +\} from "\.\/lib";$/);
+    expect(lines[1]).toMatch(/^export const value: string = live {20,}/);
+    expect(lines.join("\n")).not.toMatch(/serverA|serverB|helper|getStaticProps/);
+  });
+
   it("blanks static data exports in a JavaScript page", async () => {
     const source = `export default function Page({ value }) {
   return <p>PAGE_BODY {value}</p>;

@@ -7941,25 +7941,18 @@ export const loadServerActionClient = ${
         },
       },
     },
-    // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
-    // getStaticPaths) from page modules in the client bundle. These functions
-    // often import server-only modules (database drivers, fs, etc.) that would
-    // break or bloat the client bundle. Next.js does this via an SWC transform
-    // (next-ssg-transform); we use Vite's oxc parser + MagicString.
-    //
-    // Only applies to client builds (not SSR) and only to files under the
-    // pages/ directory.
-    //
-    // Client builds with sourcemaps load these pages themselves so the map's
-    // sourcesContent leaves out what the transform strips, as each module's
-    // first map supplies its sourcesContent.
     {
-      name: "vinext:strip-server-exports",
+      // In client builds with sourcemaps, loads the pages no other plugin loads
+      // with a map whose sourcesContent leaves out what
+      // vinext:strip-server-exports strips: a module's first map supplies its
+      // sourcesContent. As a post-ordered load, it runs only when no other
+      // plugin loaded the page.
+      name: "vinext:page-source-content",
       buildStart() {
         if (this.environment.name === "client") clientSourcemapPageIds.clear();
       },
       load: {
-        order: "pre",
+        order: "post",
         filter: { id: { include: PAGE_SCRIPT_RE, exclude: VIRTUAL_MODULE_ID_RE } },
         async handler(id) {
           const environment = this.environment;
@@ -7995,6 +7988,17 @@ export const loadServerActionClient = ${
           return { code: source, map };
         },
       },
+    },
+    // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
+    // getStaticPaths) from page modules in the client bundle. These functions
+    // often import server-only modules (database drivers, fs, etc.) that would
+    // break or bloat the client bundle. Next.js does this via an SWC transform
+    // (next-ssg-transform); we use Vite's oxc parser + MagicString.
+    //
+    // Only applies to client builds (not SSR) and only to files under the
+    // pages/ directory.
+    {
+      name: "vinext:strip-server-exports",
       transform: {
         filter: {
           id: { exclude: VIRTUAL_MODULE_ID_RE },
@@ -8007,8 +8011,8 @@ export const loadServerActionClient = ${
           // stripServerExports returns { code, map }; thread the map through so
           // line shifts from removed exports stay debuggable in client builds.
           const result = stripServerExports(code);
-          // A page this plugin did not load (another plugin's file type, or a
-          // query id) has no map to override, so it gets none.
+          // A page vinext:page-source-content did not load (another plugin's
+          // loader or file type) gets no map, so its source stays out.
           if (
             result &&
             this.environment.mode === "build" &&
