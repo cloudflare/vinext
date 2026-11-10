@@ -6607,18 +6607,23 @@ export const getStaticPaths = () => [
 });
 
 describe("serverExportRewrittenRanges", () => {
-  it("leaves out text a rewrite keeps at either end", () => {
-    const code = `import { kept, serverOnly } from "./lib";
+  const removedText = (code: string) =>
+    _serverExportRewrittenRanges(code)!.map(({ start, end }) => code.slice(start, end));
+
+  it("leaves out the source a rewrite keeps", () => {
+    const code = `import { serverA, live, serverB } from "./lib";
+export const value = live, helper = () => serverB();
 export default function Page() {
-  return kept;
+  return value;
 }
 export function getStaticProps() {
-  return { props: { value: serverOnly() } };
+  return { props: { value: serverA() + helper() } };
 }
 `;
-    const ranges = _serverExportRewrittenRanges(code)!;
-    expect(ranges.map(({ start, end }) => code.slice(start, end))).toEqual([
-      ", serverOnly",
+    expect(removedText(code)).toEqual([
+      "serverA, ",
+      ", serverB",
+      ", helper = () => serverB()",
       code.slice(code.indexOf("export function getStaticProps"), -1),
     ]);
   });

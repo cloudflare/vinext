@@ -229,7 +229,7 @@ function walkAstWithAncestors(
 }
 
 function renderImportDeclaration(
-  code: string,
+  slice: (start: number, end: number) => string,
   statement: PositionedNode,
   removed: Set<PositionedNode>,
 ): string {
@@ -244,21 +244,21 @@ function renderImportDeclaration(
   );
   const namedSpecifiers = kept.filter((specifier) => specifier.type === "ImportSpecifier");
   const clauses: string[] = [];
-  if (defaultSpecifier) clauses.push(code.slice(defaultSpecifier.start, defaultSpecifier.end));
+  if (defaultSpecifier) clauses.push(slice(defaultSpecifier.start, defaultSpecifier.end));
   if (namespaceSpecifier) {
-    clauses.push(code.slice(namespaceSpecifier.start, namespaceSpecifier.end));
+    clauses.push(slice(namespaceSpecifier.start, namespaceSpecifier.end));
   }
   if (namedSpecifiers.length > 0) {
     clauses.push(
-      `{ ${namedSpecifiers.map((specifier) => code.slice(specifier.start, specifier.end)).join(", ")} }`,
+      `{ ${namedSpecifiers.map((specifier) => slice(specifier.start, specifier.end)).join(", ")} }`,
     );
   }
 
-  return `import ${clauses.join(", ")} from ${code.slice(statement.source.start, statement.end)}`;
+  return `import ${clauses.join(", ")} from ${slice(statement.source.start, statement.end)}`;
 }
 
 function renderExportDeclaration(
-  code: string,
+  slice: (start: number, end: number) => string,
   statement: PositionedNode,
   removed: Set<PositionedNode>,
 ): string {
@@ -266,8 +266,8 @@ function renderExportDeclaration(
     (specifier) => !removed.has(specifier),
   );
   if (kept.length === 0) return "";
-  return `export { ${kept.map((specifier) => code.slice(specifier.start, specifier.end)).join(", ")} }${
-    statement.source ? ` from ${code.slice(statement.source.start, statement.end)}` : ";"
+  return `export { ${kept.map((specifier) => slice(specifier.start, specifier.end)).join(", ")} }${
+    statement.source ? ` from ${slice(statement.source.start, statement.end)}` : ";"
   }`;
 }
 
@@ -282,7 +282,7 @@ function renderBindingPattern(
   removedNames: ReadonlySet<string>,
 ): string | null {
   if (pattern.type === "Identifier") {
-    return removedNames.has(pattern.name) ? null : pattern.name;
+    return removedNames.has(pattern.name) ? null : slice(pattern.start, pattern.end);
   }
   if (pattern.type === "MemberExpression") {
     const root = assignmentTargetIdentifiers(pattern)[0];
@@ -454,8 +454,9 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
 }
 
 /**
- * The ranges of `code` that `stripServerExports` removes or rewrites. Text a
- * rewrite keeps verbatim at either end of its range is left out.
+ * The ranges of `code` that `stripServerExports` removes. The source a rewrite
+ * copies into its replacement is left out, and so is text around each copy
+ * that matches the replacement's own (e.g. `import {` and `} from`).
  */
 export function serverExportRewrittenRanges(
   code: string,
@@ -463,28 +464,59 @@ export function serverExportRewrittenRanges(
   const edits = serverExportEdits(code);
   if (!edits) return null;
   return edits.flatMap((edit) => {
-    const original = code.slice(edit.start, edit.end);
-    let prefix = 0;
-    const shortest = Math.min(original.length, edit.replacement.length);
-    while (prefix < shortest && original[prefix] === edit.replacement[prefix]) prefix++;
-    let suffix = 0;
-    while (
-      suffix < shortest - prefix &&
-      original[original.length - 1 - suffix] ===
-        edit.replacement[edit.replacement.length - 1 - suffix]
-    ) {
-      suffix++;
+    // Pair each gap between copies with the replacement text between them;
+    // copies rendered out of order leave their gaps unpaired.
+    const gaps: Array<{ start: number; end: number; replacement: string }> = [];
+    let cursor = edit.start;
+    let replacementCursor: number | null = 0;
+    for (const copy of edit.copies) {
+      const position: number =
+        replacementCursor === null || copy.start < cursor
+          ? -1
+          : edit.replacement.indexOf(code.slice(copy.start, copy.end), replacementCursor);
+      gaps.push({
+        start: cursor,
+        end: copy.start,
+        replacement:
+          position === -1 || replacementCursor === null
+            ? ""
+            : edit.replacement.slice(replacementCursor, position),
+      });
+      replacementCursor = position === -1 ? null : position + copy.end - copy.start;
+      cursor = Math.max(cursor, copy.end);
     }
-    const start = edit.start + prefix;
-    const end = edit.end - suffix;
-    return start < end ? [{ start, end }] : [];
+    gaps.push({
+      start: cursor,
+      end: edit.end,
+      replacement: replacementCursor === null ? "" : edit.replacement.slice(replacementCursor),
+    });
+
+    return gaps.flatMap(({ start, end, replacement }) => {
+      let prefix = 0;
+      const shortest = Math.min(end - start, replacement.length);
+      while (prefix < shortest && code[start + prefix] === replacement[prefix]) prefix++;
+      let suffix = 0;
+      while (
+        suffix < shortest - prefix &&
+        code[end - 1 - suffix] === replacement[replacement.length - 1 - suffix]
+      ) {
+        suffix++;
+      }
+      return start + prefix < end - suffix ? [{ start: start + prefix, end: end - suffix }] : [];
+    });
   });
 }
 
+type RenderedEdit = {
+  start: number;
+  end: number;
+  replacement: string;
+  /** Ranges of the source copied verbatim into `replacement`. */
+  copies: Array<{ start: number; end: number }>;
+};
+
 // The outermost edits, in source order, with their replacements rendered.
-function serverExportEdits(
-  code: string,
-): Array<{ start: number; end: number; replacement: string }> | null {
+function serverExportEdits(code: string): RenderedEdit[] | null {
   if (!hasServerExportCandidate(code) && !hasExportAllCandidate(code)) {
     return null;
   }
@@ -539,6 +571,12 @@ function serverExportEdits(
       ...redeclarations.filter((redeclaration) => redeclaration.name === name),
     ];
   };
+  // Copies of kept source in the edit being rendered.
+  let copies: Array<{ start: number; end: number }> = [];
+  const copy = (start: number, end: number): string => {
+    if (start < end) copies.push({ start, end });
+    return code.slice(start, end);
+  };
   const renderEdit = (edit: Edit): string =>
     typeof edit.replacement === "function" ? edit.replacement() : edit.replacement;
   // Copies kept source with the outermost edits inside it applied. Callers
@@ -556,10 +594,10 @@ function serverExportEdits(
     let cursor = start;
     for (const edit of nested) {
       if (edit.start < cursor) continue;
-      rendered += code.slice(cursor, edit.start) + renderEdit(edit);
+      rendered += copy(cursor, edit.start) + renderEdit(edit);
       cursor = edit.end;
     }
-    return rendered + code.slice(cursor, end);
+    return rendered + copy(cursor, end);
   };
   const bindingPositions = new Set<number>();
   const references = new Map<string, number[]>();
@@ -1072,7 +1110,7 @@ function serverExportEdits(
     edits.push({
       start: statement.start,
       end: statement.end,
-      replacement: renderExportDeclaration(code, statement, removed),
+      replacement: () => renderExportDeclaration(copy, statement, removed),
     });
   }
   for (const [declaration, removed] of variableRemovals) {
@@ -1113,7 +1151,7 @@ function serverExportEdits(
     edits.push({
       start: statement.start,
       end: statement.end,
-      replacement: renderImportDeclaration(code, statement, removed),
+      replacement: () => renderImportDeclaration(copy, statement, removed),
     });
   }
 
@@ -1124,11 +1162,13 @@ function serverExportEdits(
   ].sort((left, right) => left.start - right.start || right.end - left.end);
   // Nested assignments can sit inside a range that is already being removed or
   // re-rendered; the outermost edit wins and renders any nested edits itself.
-  const outermost: Array<{ start: number; end: number; replacement: string }> = [];
+  const outermost: RenderedEdit[] = [];
   let lastEnd = Number.NEGATIVE_INFINITY;
   for (const edit of uniqueEdits) {
     if (edit.start < lastEnd) continue;
-    outermost.push({ start: edit.start, end: edit.end, replacement: renderEdit(edit) });
+    copies = [];
+    const replacement = renderEdit(edit);
+    outermost.push({ start: edit.start, end: edit.end, replacement, copies });
     lastEnd = edit.end;
   }
   return outermost;
