@@ -461,12 +461,15 @@ test("purgeExisting skips replacing an entry without a revalidator once its edge
 test("purgeExisting skips replacing an entry with a revalidator once its edge copy went stale", async () => {
   await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
   const options = { cacheControl: "public, max-age=2, stale-while-revalidate=60" };
-  await put("/stale-edge-copy", "first", options);
+  // Long-lived, so it is still fresh when it is replaced.
+  await put("/stale-edge-copy", "first", {
+    cacheControl: "public, max-age=60, stale-while-revalidate=60",
+  });
   const fresh = await read("/stale-edge-copy");
   // Rounded down, so the edge copy goes stale no later than the entry.
   assert.match(
     fresh.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
-    /^max-age=[01], stale-while-revalidate=60$/,
+    /^max-age=(59|60), stale-while-revalidate=60$/,
   );
   await fresh.arrayBuffer();
 
