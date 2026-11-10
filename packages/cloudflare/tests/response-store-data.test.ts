@@ -821,9 +821,18 @@ test("fills the revision a read in the same request missed", async () => {
     missAs("2");
     await expect(handler.get("key")).resolves.toBeNull();
     await expect(handler.get("key")).resolves.toBeNull();
+    expect(await write()).toMatchObject({ replacesRevision: 2 });
+    expect(await write()).toMatchObject({ replacesRevision: 2 });
+    expect(await write()).not.toHaveProperty("replacesRevision");
+
+    // A miss that is never filled (e.g. a failed fetch) ends with the next read finding the
+    // entry: a write after that, like a shorter revalidate's rewrite, is no fill.
+    missAs("0");
+    missAs("0");
+    await expect(handler.get("key")).resolves.toBeNull();
+    await expect(handler.get("key")).resolves.toBeNull();
+    expect(await write()).toMatchObject({ replacesRevision: 0 });
     await expect(handler.get("key")).resolves.not.toBeNull();
-    expect(await write()).toMatchObject({ replacesRevision: 2 });
-    expect(await write()).toMatchObject({ replacesRevision: 2 });
     expect(await write()).not.toHaveProperty("replacesRevision");
 
     // A miss without a revision leaves an ordinary write.

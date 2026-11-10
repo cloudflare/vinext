@@ -370,6 +370,8 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
    * The Store misses of each key this request's reads have yet to fill, for the writes
    * filling them. Overlapping reads of a key share the earliest revision they missed: the
    * Store still lands a fill whose own read came after an invalidation since that revision.
+   * A read that finds the entry ends them: a miss need not lead to a write (e.g. a failed
+   * fetch), and a later write of an entry read since is no fill.
    */
   private readonly unfilledMisses = cacheForRequest(
     () => new Map<string, { revision: number; reads: number }>(),
@@ -409,6 +411,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         }
         throw new Error(`Workers Response Store returned ${response.status}`);
       }
+      this.unfilledMisses().delete(key);
 
       const softTags = [
         ...new Set(readStringArrayField(context, "softTags").map(encodeCloudflareCacheTag)),
