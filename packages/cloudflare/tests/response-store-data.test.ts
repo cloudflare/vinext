@@ -784,7 +784,7 @@ test("refreshes the revision behind the stale entry a write passes as staleEntry
   }
 });
 
-test("fills the revision a read in the same request missed", async () => {
+test("fills the revision its own read missed", async () => {
   const store = new TestStore();
   const handler = new WorkersResponseStoreCacheHandler(store);
   const missAs = (revision: string | null) => {
@@ -798,74 +798,63 @@ test("fills the revision a read in the same request missed", async () => {
       }),
     );
   };
-  const write = async () => {
+  const write = async (cacheRead?: object, key = "key") => {
     store.options = undefined;
-    await handler.set("key", null, { revalidate: 60 });
+    await handler.set(key, null, { revalidate: 60, ...(cacheRead ? { cacheRead } : {}) });
     expect(store.options).toBeDefined();
     return store.options;
   };
 
-  await runWithRequestContext(createRequestContext(), async () => {
-    // Concurrent requests that miss a key each fill it: the Store drops all but the first.
-    for (const revision of ["0", "4"]) {
-      missAs(revision);
-      await expect(handler.get("key")).resolves.toBeNull();
-      expect(await write()).toMatchObject({ replacesRevision: Number(revision) });
-      // Only the write filling that miss.
-      expect(await write()).not.toHaveProperty("replacesRevision");
-    }
+  // Concurrent requests that miss a key each fill it: the Store drops all but the first.
+  for (const revision of ["0", "4"]) {
+    const cacheRead = {};
+    missAs(revision);
+    await expect(handler.get("key", { cacheRead })).resolves.toBeNull();
+    expect(await write(cacheRead)).toMatchObject({ replacesRevision: Number(revision) });
+  }
 
-    // Overlapping reads of the key each have their fill, which passes the earliest revision
-    // they missed.
-    missAs("4");
-    missAs("2");
-    await expect(handler.get("key")).resolves.toBeNull();
-    await expect(handler.get("key")).resolves.toBeNull();
-    expect(await write()).toMatchObject({ replacesRevision: 2 });
-    expect(await write()).toMatchObject({ replacesRevision: 2 });
-    expect(await write()).not.toHaveProperty("replacesRevision");
+  // Each operation fills only what its own read missed: overlapping reads keep their own
+  // revisions, and a write without a read (e.g. once a revalidation skipped it), or whose
+  // read found the entry, is an ordinary write.
+  const first = {};
+  const second = {};
+  const hit = {};
+  missAs("4");
+  missAs("2");
+  await expect(handler.get("key", { cacheRead: first })).resolves.toBeNull();
+  await expect(handler.get("key", { cacheRead: second })).resolves.toBeNull();
+  await expect(handler.get("key", { cacheRead: hit })).resolves.not.toBeNull();
+  expect(await write()).not.toHaveProperty("replacesRevision");
+  expect(await write(hit)).not.toHaveProperty("replacesRevision");
+  expect(await write(second)).toMatchObject({ replacesRevision: 2 });
+  expect(await write(first)).toMatchObject({ replacesRevision: 4 });
+  // Nor is a write of another key a fill.
+  expect(await write(first, "other")).not.toHaveProperty("replacesRevision");
 
-    // A miss that is never filled (e.g. a failed fetch) ends with the next read finding the
-    // entry: a write after that, like a shorter revalidate's rewrite, is no fill.
-    missAs("0");
-    missAs("0");
-    await expect(handler.get("key")).resolves.toBeNull();
-    await expect(handler.get("key")).resolves.toBeNull();
-    expect(await write()).toMatchObject({ replacesRevision: 0 });
-    await expect(handler.get("key")).resolves.not.toBeNull();
-    expect(await write()).not.toHaveProperty("replacesRevision");
+  // A miss without a revision leaves an ordinary write.
+  const unrevisioned = {};
+  missAs(null);
+  await expect(handler.get("key", { cacheRead: unrevisioned })).resolves.toBeNull();
+  expect(await write(unrevisioned)).not.toHaveProperty("replacesRevision");
 
-    // A miss without a revision leaves an ordinary write.
-    missAs(null);
-    await expect(handler.get("key")).resolves.toBeNull();
-    expect(await write()).not.toHaveProperty("replacesRevision");
-
-    // Nor is a null that isn't a Store miss one: a soft-tag expiration found the entry, and a
-    // regeneration's read of its own key never reaches the Store.
-    missAs("0");
-    await expect(handler.get("key")).resolves.toBeNull();
-    store.tagExpiration = Number.MAX_SAFE_INTEGER;
-    await expect(handler.get("key", { softTags: ["_N_T_/a"] })).resolves.toBeNull();
-    store.tagExpiration = 0;
-    expect(await write()).not.toHaveProperty("replacesRevision");
-    const fetch = vi.spyOn(store, "fetch");
-    const reads = fetch.mock.calls.length;
-    await captureResponseStoreDataRegeneration("key", async () => {
-      await expect(handler.get("key")).resolves.toBeNull();
-      await handler.set("key", null, { revalidate: 60 });
-    });
-    expect(fetch.mock.calls.length).toBe(reads);
-    expect(await write()).not.toHaveProperty("replacesRevision");
+  // Nor is a null that isn't a Store miss one: a soft-tag expiration found the entry, and a
+  // regeneration's read of its own key never reaches the Store.
+  const softExpired = {};
+  store.tagExpiration = Number.MAX_SAFE_INTEGER;
+  await expect(
+    handler.get("key", { softTags: ["_N_T_/a"], cacheRead: softExpired }),
+  ).resolves.toBeNull();
+  store.tagExpiration = 0;
+  expect(await write(softExpired)).not.toHaveProperty("replacesRevision");
+  const regenerating = {};
+  const fetch = vi.spyOn(store, "fetch");
+  const reads = fetch.mock.calls.length;
+  await captureResponseStoreDataRegeneration("key", async () => {
+    await expect(handler.get("key", { cacheRead: regenerating })).resolves.toBeNull();
+    await handler.set("key", null, { revalidate: 60, cacheRead: regenerating });
   });
-
-  // Another request's miss is not this one's.
-  await runWithRequestContext(createRequestContext(), async () => {
-    missAs("0");
-    await expect(handler.get("key")).resolves.toBeNull();
-  });
-  await runWithRequestContext(createRequestContext(), async () => {
-    expect(await write()).not.toHaveProperty("replacesRevision");
-  });
+  expect(fetch.mock.calls.length).toBe(reads);
+  expect(await write(regenerating)).not.toHaveProperty("replacesRevision");
 });
 
 test("honors a shorter revalidate requested by a later read", async () => {

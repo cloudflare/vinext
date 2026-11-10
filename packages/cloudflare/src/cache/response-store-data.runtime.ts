@@ -367,15 +367,11 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     { revision: number; tagExpiration?: { tags: string[]; expiration: number } }
   >();
   /**
-   * The Store misses of each key this request's reads have yet to fill, for the writes
-   * filling them. Overlapping reads of a key share the earliest revision they missed: the
-   * Store still lands a fill whose own read came after an invalidation since that revision.
-   * A read that finds the entry ends them: a miss need not lead to a write (e.g. a failed
-   * fetch), and a later write of an entry read since is no fill.
+   * The revision each read missed, by the `cacheRead` token its caller passes to that read
+   * and to the write filling it, and by key. A write whose own read missed is a fill; one
+   * without a token, e.g. after a revalidation skipped the read, is an ordinary write.
    */
-  private readonly unfilledMisses = cacheForRequest(
-    () => new Map<string, { revision: number; reads: number }>(),
-  );
+  private readonly missRevisions = new WeakMap<object, Map<string, number>>();
 
   constructor(private readonly store: WorkersResponseStore = responseStore!) {
     if (!store) {
@@ -399,19 +395,21 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         ) {
           // The revision it missed, 0 for none, lets the Store drop a duplicate fill.
           const revision = Number(response.headers.get("X-Workers-Response-Store-Revision"));
-          if (response.headers.has("X-Workers-Response-Store-Revision") && revision >= 0) {
-            const misses = this.unfilledMisses();
-            const unfilled = misses.get(key);
-            misses.set(key, {
-              revision: Math.min(revision, unfilled?.revision ?? revision),
-              reads: (unfilled?.reads ?? 0) + 1,
-            });
+          const cacheRead = context?.cacheRead;
+          if (
+            cacheRead &&
+            typeof cacheRead === "object" &&
+            response.headers.has("X-Workers-Response-Store-Revision") &&
+            revision >= 0
+          ) {
+            const misses = this.missRevisions.get(cacheRead) ?? new Map<string, number>();
+            misses.set(key, revision);
+            this.missRevisions.set(cacheRead, misses);
           }
           return null;
         }
         throw new Error(`Workers Response Store returned ${response.status}`);
       }
-      this.unfilledMisses().delete(key);
 
       const softTags = [
         ...new Set(readStringArrayField(context, "softTags").map(encodeCloudflareCacheTag)),
@@ -617,23 +615,21 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
 
     // Concurrent requests that read the entry stale, or missed it, each refresh or fill it.
     // A refresh passes the stale entry as `staleEntry`, whose revision `staleRevisions` holds;
-    // a fill passes none, and sends the revision this request missed, from `unfilledMisses`.
-    // Once one has replaced that revision, the Store drops the rest instead of replacing it
-    // again and spending an edge purge on each.
+    // a fill sends the revision its own read missed, from `missRevisions`. Once one has
+    // replaced that revision, the Store drops the rest instead of replacing it again and
+    // spending an edge purge on each.
     const staleEntry = context?.staleEntry;
-    let replaces:
-      | { revision: number; tagExpiration?: { tags: string[]; expiration: number } }
-      | undefined;
-    if (staleEntry && typeof staleEntry === "object") {
-      replaces = this.staleRevisions.get(staleEntry as CacheHandlerValue);
-    } else {
-      const misses = this.unfilledMisses();
-      const unfilled = misses.get(key);
-      if (unfilled) {
-        replaces = { revision: unfilled.revision };
-        if (--unfilled.reads === 0) misses.delete(key);
-      }
-    }
+    const cacheRead = context?.cacheRead;
+    const missRevision =
+      cacheRead && typeof cacheRead === "object"
+        ? this.missRevisions.get(cacheRead)?.get(key)
+        : undefined;
+    const replaces =
+      staleEntry && typeof staleEntry === "object"
+        ? this.staleRevisions.get(staleEntry as CacheHandlerValue)
+        : missRevision !== undefined
+          ? { revision: missRevision }
+          : undefined;
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),
       // A read that finds a page-replay entry expired must not wait for the replay: a page
