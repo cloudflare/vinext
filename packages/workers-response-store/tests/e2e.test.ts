@@ -640,6 +640,22 @@ test("replacesRevision drops a fill of a miss another fill already replaced", as
   assert.equal(await (await read("/cold-fill")).text(), "refill");
   assert.equal((await edgeCalls()).length, 2);
 
+  // Fills of a miss read before a path invalidate() of a key whose first write was still in
+  // flight straddle it, so both land.
+  const pending = put("/cold-fill-pending", "pending", { bodyDelayMs: 300 });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects")) > 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(await metadataRowCount("pending_objects"), 1);
+  await invalidate({ pathPrefixes: ["/cold-fill-pending"] });
+  assert.equal((await pending).json.backingStoreUpdated, false);
+  for (const body of ["straddling", "also-straddling"]) {
+    const fill = await put("/cold-fill-pending", body, { ...options, replacesRevision: none });
+    assert.equal(fill.json.backingStoreUpdated, true, body);
+    assert.equal(await (await read("/cold-fill-pending")).text(), body);
+  }
+
   // A miss of an expired entry carries its revision.
   const expiring = {
     cacheControl: "public, max-age=1, stale-while-revalidate=0",
