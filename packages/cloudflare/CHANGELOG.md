@@ -4,6 +4,8 @@
 
 ### Bug Fixes
 
+This release changes the `@vinext/cloudflare previews deploy` command to use a `--preview-name` flag instead of a positional arg for preview names, to align with an upstream breaking change that the cf CLI did.
+
 #### Cloudflare
 
 - pass the Preview name with --preview-name like cf (#4572)
