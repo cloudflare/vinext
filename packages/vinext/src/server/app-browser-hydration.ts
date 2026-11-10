@@ -39,12 +39,13 @@ type ScriptDocument = {
 /**
  * Inserts the queued beforeInteractive scripts (see
  * server/before-interactive-head.ts) one at a time, in order, like Next.js's
- * `loadScriptsInSequence`: each `src` script once the previous one has loaded
- * or failed, each inline one a task after the previous one. Settles after the
- * last, so hydration starts after them. If inserting one throws (for example,
- * a Trusted Types policy rejects its body), it logs the error and settles
- * without the rest, so hydration still starts, as in Next.js. Returns null
- * when nothing is queued, so hydration does not wait at all.
+ * `loadScriptsInSequence`: each one after the previous `src` script has loaded,
+ * or a task after the previous inline one. Settles after the last, so
+ * hydration starts after them. If a `src` script fails to load or inserting
+ * one throws (for example, a Trusted Types policy rejects its body), it logs
+ * the error and settles without the rest, which may depend on it, so
+ * hydration still starts, as in Next.js. Returns null when nothing is queued,
+ * so hydration does not wait at all.
  */
 export function runBeforeInteractiveQueue(
   global: BeforeInteractiveQueueGlobal,
@@ -57,7 +58,7 @@ export function runBeforeInteractiveQueue(
   for (const [attributes, content] of queue) {
     previous = previous.then(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise<void>((resolve, reject) => {
           const script = target.createElement("script");
           // Created scripts start out async; clear it so queued modules keep
           // their order unless the author asked for `async`.
@@ -67,7 +68,8 @@ export function runBeforeInteractiveQueue(
             if (!script.hasAttribute(name)) script.setAttribute(name, value);
           }
           if (content === null) {
-            script.onload = script.onerror = () => resolve();
+            script.onload = () => resolve();
+            script.onerror = reject;
           } else {
             script.text = content;
             setTimeout(resolve);

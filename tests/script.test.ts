@@ -951,6 +951,8 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
       { defer: true, nomodule: true },
       { defer: true, type: "text/plain" },
       { defer: true, type: "module " },
+      // Browsers trim only ASCII whitespace from the type.
+      { defer: true, type: "\u00a0text/javascript\u00a0" },
       {},
     ];
     for (const attributes of parsingAttributes) {

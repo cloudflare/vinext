@@ -10530,6 +10530,7 @@ describe("app browser form-state hydration", () => {
           ],
           [[["type", "module"]], "inline"],
           [[["src", "/c.js"]], null],
+          [[["src", "/d.js"]], null],
         ],
       },
       doc as never,
@@ -10548,10 +10549,18 @@ describe("app browser form-state hydration", () => {
     expect(inserted).toHaveLength(3);
     expect(inserted[1]).toMatchObject({ text: "inline", attributes: { type: "module" } });
     expect(settled).toBe(false);
-    // A failed src script still lets hydration start.
-    inserted[2].onerror?.();
-    await tick();
-    expect(settled).toBe(true);
+    // A failed src script skips the rest of the queue, which may depend on
+    // it, but still lets hydration start.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      inserted[2].onerror?.();
+      await tick();
+      expect(settled).toBe(true);
+      expect(inserted).toHaveLength(3);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("settles the beforeInteractive queue when inserting a script throws", async () => {

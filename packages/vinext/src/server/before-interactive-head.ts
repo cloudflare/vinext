@@ -47,12 +47,12 @@ const QUEUE_SCRIPT = `(self.${BEFORE_INTERACTIVE_QUEUE_GLOBAL}=self.${BEFORE_INT
 // case-insensitive match. Any other non-JavaScript type is a data block.
 const MODULE_TYPE = /^module$/i;
 
-// The `type` values (after trimming) that make the browser run a classic
-// script: the HTML spec's JavaScript MIME type essences. A missing or empty
-// `type` is classic too. Anything else is a data block, which the browser
-// never fetches, so it fires neither `load` nor `error`.
+// The `type` values that make the browser run a classic script: the HTML
+// spec's JavaScript MIME type essences, after trimming ASCII whitespace only.
+// A missing or empty `type` is classic too. Anything else is a data block,
+// which the browser never fetches, so it fires neither `load` nor `error`.
 const CLASSIC_TYPE =
-  /^\s*(?:(?:text|application)\/(?:x-)?(?:java|ecma)script|text\/(?:javascript1\.[0-5]|jscript|livescript))?\s*$/i;
+  /^[\t\n\f\r ]*(?:(?:text|application)\/(?:x-)?(?:java|ecma)script|text\/(?:javascript1\.[0-5]|jscript|livescript))?[\t\n\f\r ]*$/i;
 
 function findAttribute(attrs: readonly [string, string][], name: string): string | undefined {
   return attrs.find(([key]) => key.toLowerCase() === name)?.[1];

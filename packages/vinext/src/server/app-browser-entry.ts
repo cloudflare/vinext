@@ -1943,6 +1943,9 @@ function ReplayInitialDevServerErrors({ report }: { report: () => void }): null 
 
 async function main(): Promise<void> {
   if (!claimInitialAppRouterBootstrap()) return;
+  // Start the queued beforeInteractive scripts first; hydration waits for them
+  // below, while the RSC payload is read in the meantime.
+  const beforeInteractiveQueue = runBeforeInteractiveQueue(getVinextBrowserGlobal());
   // Fetch the RouteManifest chunk alongside bootstrap and hydration rather than
   // in the entry chunk. Navigations and prefetches wait for it before reading it.
   void loadNavigationRuntimeRouteManifest();
@@ -1973,7 +1976,6 @@ async function main(): Promise<void> {
   // The recovery path reloads the document, which resets the "starting" claim;
   // this module instance is intentionally not eligible to retry bootstrap.
   if (rscStream === null) return;
-  const beforeInteractiveQueue = runBeforeInteractiveQueue(getVinextBrowserGlobal());
   if (beforeInteractiveQueue) await beforeInteractiveQueue;
   bootstrapHydration(rscStream, devErrorOverlay, initialRscBootstrap);
 }
