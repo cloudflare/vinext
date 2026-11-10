@@ -32,6 +32,7 @@ import { NextRequest } from "vinext/shims/server";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
 import { hasCdnResponsePolicy } from "./cache-control.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
+import { MIDDLEWARE_SET_COOKIE_HEADER } from "./headers.js";
 
 type PagesApiRouteConfig = {
   runtime?: string;
@@ -155,8 +156,11 @@ function withInitialResponseHeaders(
 ): Response {
   if (!initialResponseHeaders || !initialResponseHeaders.keys().next().value) return response;
   const headers = new Headers(initialResponseHeaders);
+  // Staged middleware headers include the internal cookie copy so this request
+  // can read it. The client only receives Set-Cookie.
+  headers.delete(MIDDLEWARE_SET_COOKIE_HEADER);
   for (const [name, value] of response.headers) {
-    if (name !== "set-cookie") headers.set(name, value);
+    if (name !== "set-cookie" && name !== MIDDLEWARE_SET_COOKIE_HEADER) headers.set(name, value);
   }
   for (const cookie of response.headers.getSetCookie()) headers.append("Set-Cookie", cookie);
   return new Response(response.body, {

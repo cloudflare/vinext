@@ -642,6 +642,64 @@ describe("pages api route", () => {
     }
   });
 
+  it.each(["node", "worker"] as const)(
+    "drops staged x-middleware-set-cookie from a %s pages API response",
+    async (edgeRuntime) => {
+      const response = await handlePagesApiRoute({
+        edgeRuntime,
+        initialResponseHeaders: new Headers([
+          ["set-cookie", "mw=1; Path=/; HttpOnly"],
+          ["x-middleware-set-cookie", "mw=1; Path=/; HttpOnly"],
+          ["x-from-middleware", "1"],
+        ]),
+        match: createMatch(
+          () => {
+            const handlerResponse = new Response("ok", {
+              headers: [
+                ["set-cookie", "edge=1; Path=/"],
+                ["x-middleware-set-cookie", "edge=1; Path=/"],
+              ],
+            });
+            return handlerResponse;
+          },
+          {},
+          { runtime: "edge" },
+        ),
+        request: new Request("https://example.com/api/cookies"),
+        url: "/api/cookies",
+      });
+
+      expect(response.headers.get("x-middleware-set-cookie")).toBeNull();
+      expect(response.headers.get("x-from-middleware")).toBe("1");
+      expect(response.headers.getSetCookie()).toEqual(["mw=1; Path=/; HttpOnly", "edge=1; Path=/"]);
+      await expect(response.text()).resolves.toBe("ok");
+    },
+  );
+
+  it("drops staged x-middleware-set-cookie from a node pages API response", async () => {
+    const response = await handlePagesApiRoute({
+      initialResponseHeaders: new Headers([
+        ["set-cookie", "mw=1; Path=/; HttpOnly"],
+        ["x-middleware-set-cookie", "mw=1; Path=/; HttpOnly"],
+        ["x-from-middleware", "1"],
+      ]),
+      match: createMatch((_req, res) => {
+        expect(res.getHeader("x-middleware-set-cookie")).toBeUndefined();
+        expect(res.getHeader("x-from-middleware")).toBe("1");
+        expect(res.getHeader("set-cookie")).toEqual(["mw=1; Path=/; HttpOnly"]);
+        res.setHeader("x-middleware-set-cookie", "handler=1; Path=/");
+        res.end("ok");
+      }),
+      request: new Request("https://example.com/api/cookies"),
+      url: "/api/cookies",
+    });
+
+    expect(response.headers.get("x-middleware-set-cookie")).toBeNull();
+    expect(response.headers.get("x-from-middleware")).toBe("1");
+    expect(response.headers.getSetCookie()).toEqual(["mw=1; Path=/; HttpOnly"]);
+    await expect(response.text()).resolves.toBe("ok");
+  });
+
   it("drops x-middleware-set-cookie from a proxied Worker edge API response", async () => {
     const upstream = http.createServer((_req, res) => {
       res.setHeader("set-cookie", "session=abc; Path=/; HttpOnly");

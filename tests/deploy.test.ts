@@ -2126,6 +2126,24 @@ describe("readPagesRouterEntrySource", () => {
     expect(merged.headers.get("x-custom")).toBe("from-middleware");
   });
 
+  it("mergeHeaders drops x-middleware-set-cookie and keeps Set-Cookie", () => {
+    const response = new Response("body", {
+      headers: [
+        ["set-cookie", "resp=1; Path=/"],
+        ["x-middleware-set-cookie", "resp=1; Path=/"],
+      ],
+    });
+    const merged = mergeHeaders(response, {
+      "set-cookie": ["mw=1; Path=/"],
+      "x-middleware-set-cookie": "mw=1; Path=/",
+      "x-custom": "from-middleware",
+    });
+
+    expect(merged.headers.get("x-middleware-set-cookie")).toBeNull();
+    expect(merged.headers.getSetCookie()).toEqual(["mw=1; Path=/", "resp=1; Path=/"]);
+    expect(merged.headers.get("x-custom")).toBe("from-middleware");
+  });
+
   it("mergeHeaders drops the body for no-body middleware rewrite statuses", async () => {
     for (const status of [204, 205, 304]) {
       const response = new Response("body", {

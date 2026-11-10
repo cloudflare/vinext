@@ -1776,6 +1776,49 @@ describe("API routes", () => {
     expect(proxyExternal).not.toHaveBeenCalled();
   });
 
+  it("sends middleware Set-Cookie without the internal x-middleware-set-cookie copy", async () => {
+    const renderPage = vi.fn(
+      async (
+        _req: Request,
+        _url: string,
+        _opts: PagesRenderOptions | undefined,
+        staged?: Headers,
+      ) => {
+        // The pipeline consumes the internal header for same-request cookies
+        // before the page runs, so the staged response headers do not carry it.
+        expect(staged?.get("x-middleware-set-cookie")).toBeNull();
+        expect(staged?.get("set-cookie")).toBe("session=1; Path=/");
+        return new Response("page", {
+          headers: [
+            ["content-type", "text/html"],
+            ["set-cookie", "page=1; Path=/"],
+            ["x-middleware-set-cookie", "page=1; Path=/"],
+          ],
+        });
+      },
+    );
+    const result = await runPagesRequest(
+      makeRequest("/page"),
+      baseDeps({
+        renderPage,
+        runMiddleware: makeMiddleware({
+          responseHeaders: [
+            ["set-cookie", "session=1; Path=/"],
+            ["x-middleware-set-cookie", "session=1; Path=/"],
+            ["x-from-middleware", "1"],
+          ],
+        }),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-middleware-set-cookie")).toBeNull();
+    expect(result.response.headers.getSetCookie()).toEqual(["session=1; Path=/", "page=1; Path=/"]);
+    expect(result.response.headers.get("x-from-middleware")).toBe("1");
+    expect(await result.response.text()).toBe("page");
+  });
+
   it("tags page renders with a text/html content-type default", async () => {
     const req = makeRequest("/page");
     const result = await runPagesRequest(req, baseDeps({ renderPage: makeRenderPage(200) }));

@@ -161,6 +161,7 @@ import {
   shouldRestoreLocaleRootTrailingSlash,
 } from "./server/pages-i18n.js";
 import {
+  isMiddlewareSetCookieHeader,
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
@@ -7605,7 +7606,13 @@ export const loadServerActionClient = ${
               };
 
               const flushStagedHeaders = () => {
-                forEachStagedHeader((key, value) => res.appendHeader(key, value));
+                // Keep `x-middleware-set-cookie` in the staged record (the App
+                // plugin still reads it for same-render cookies) but do not
+                // append that internal copy onto the client response.
+                forEachStagedHeader((key, value) => {
+                  if (isMiddlewareSetCookieHeader(key)) return;
+                  res.appendHeader(key, value);
+                });
               };
 
               // Apply post-middleware request headers to req.headers so the
@@ -9352,7 +9359,7 @@ async function writeWebResponseToNodeRes(
   }
   const nodeHeaders: Record<string, string | string[]> = {};
   response.headers.forEach((value, key) => {
-    if (key === "set-cookie") return;
+    if (key === "set-cookie" || isMiddlewareSetCookieHeader(key)) return;
     const existing = nodeHeaders[key];
     if (existing !== undefined) {
       nodeHeaders[key] = Array.isArray(existing) ? [...existing, value] : [existing, value];

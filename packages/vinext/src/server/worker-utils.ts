@@ -4,6 +4,7 @@
  * Used by hand-written example worker entries and by the generated Pages
  * Router worker entry through "vinext/server/worker-utils".
  */
+import { isMiddlewareSetCookieHeader } from "../utils/protocol-headers.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
 
@@ -26,6 +27,13 @@ function isVinextStreamedHtmlResponse(response: Response): boolean {
 
 function isContentLengthHeader(name: string): boolean {
   return name.toLowerCase() === "content-length";
+}
+
+function isClientHiddenMergeHeader(name: string): boolean {
+  // `x-middleware-set-cookie` stays on staged headers so this render can read
+  // middleware's cookies and skip a shared cache entry. It is not a response
+  // header. Content-Length from the staged message does not describe this body.
+  return isContentLengthHeader(name) || isMiddlewareSetCookieHeader(name);
 }
 
 function cancelResponseBody(response: Response): void {
@@ -54,7 +62,13 @@ function buildHeaderRecord(
   const omitted = new Set(omitNames.map((name) => name.toLowerCase()));
   const headers: Record<string, string | string[]> = {};
   response.headers.forEach((value, key) => {
-    if (omitted.has(key.toLowerCase()) || key === "set-cookie") return;
+    if (
+      omitted.has(key.toLowerCase()) ||
+      key === "set-cookie" ||
+      isMiddlewareSetCookieHeader(key)
+    ) {
+      return;
+    }
     headers[key] = value;
   });
   const cookies = response.headers.getSetCookie?.() ?? [];
@@ -72,7 +86,7 @@ export function mergeHeaders(
   const status = response.status === 304 ? 304 : (statusOverride ?? response.status);
   const merged = new Headers();
   for (const [k, v] of Object.entries(extraHeaders)) {
-    if (isContentLengthHeader(k)) continue;
+    if (isClientHiddenMergeHeader(k)) continue;
     if (Array.isArray(v)) {
       for (const item of v) merged.append(k, item);
     } else {
@@ -80,7 +94,7 @@ export function mergeHeaders(
     }
   }
   response.headers.forEach((v, k) => {
-    if (k === "set-cookie") return;
+    if (k === "set-cookie" || isMiddlewareSetCookieHeader(k)) return;
     merged.set(k, v);
   });
   const responseCookies = response.headers.getSetCookie?.() ?? [];
@@ -91,12 +105,18 @@ export function mergeHeaders(
     isVinextStreamedHtmlResponse(response) && merged.has("content-length");
 
   if (
-    !Object.keys(extraHeaders).some((key) => !isContentLengthHeader(key)) &&
+    !Object.keys(extraHeaders).some((key) => !isClientHiddenMergeHeader(key)) &&
     statusOverride === undefined &&
     !shouldDropBody &&
     !shouldStripStreamLength
   ) {
-    return response;
+    if (!response.headers.has("x-middleware-set-cookie")) return response;
+    try {
+      response.headers.delete("x-middleware-set-cookie");
+      return response;
+    } catch {
+      // Fall through and send the copy that already omitted the header.
+    }
   }
 
   if (shouldDropBody) {

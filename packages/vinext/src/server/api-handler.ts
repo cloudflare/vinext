@@ -26,6 +26,7 @@ import {
   isJsonMediaType,
 } from "./pages-media-type.js";
 import { finalizeEdgeApiResponse, isEdgeApiRuntime } from "./edge-api-runtime.js";
+import { isMiddlewareSetCookieHeader } from "./headers.js";
 import {
   DEFAULT_PAGES_API_BODY_SIZE_LIMIT,
   resolveBodyParserConfig,
@@ -483,8 +484,10 @@ export async function handleApiRoute(
 
       res.statusCode = response.status;
       res.statusMessage = response.statusText;
+      // Drop a copy middleware staged on `res` before the edge handler ran.
+      res.removeHeader("x-middleware-set-cookie");
       response.headers.forEach((value, name) => {
-        if (name !== "set-cookie") res.setHeader(name, value);
+        if (name !== "set-cookie" && !isMiddlewareSetCookieHeader(name)) res.setHeader(name, value);
       });
       // Append after any cookies middleware already staged on `res`, as
       // Next.js's send-response does.
