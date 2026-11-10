@@ -815,10 +815,15 @@ test("fills the revision a read in the same request missed", async () => {
       expect(await write()).not.toHaveProperty("replacesRevision");
     }
 
-    // A later read of the key replaces the miss it recorded.
-    missAs("3");
+    // Overlapping reads of the key each have their fill, which passes the earliest revision
+    // they missed.
+    missAs("4");
+    missAs("2");
+    await expect(handler.get("key")).resolves.toBeNull();
     await expect(handler.get("key")).resolves.toBeNull();
     await expect(handler.get("key")).resolves.not.toBeNull();
+    expect(await write()).toMatchObject({ replacesRevision: 2 });
+    expect(await write()).toMatchObject({ replacesRevision: 2 });
     expect(await write()).not.toHaveProperty("replacesRevision");
 
     // A miss without a revision leaves an ordinary write.

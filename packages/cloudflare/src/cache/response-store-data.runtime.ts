@@ -366,8 +366,14 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     CacheHandlerValue,
     { revision: number; tagExpiration?: { tags: string[]; expiration: number } }
   >();
-  /** The revision each key's latest read in this request missed, for the write filling it. */
-  private readonly missRevisions = cacheForRequest(() => new Map<string, number>());
+  /**
+   * The Store misses of each key this request's reads have yet to fill, for the writes
+   * filling them. Overlapping reads of a key share the earliest revision they missed: the
+   * Store still lands a fill whose own read came after an invalidation since that revision.
+   */
+  private readonly unfilledMisses = cacheForRequest(
+    () => new Map<string, { revision: number; reads: number }>(),
+  );
 
   constructor(private readonly store: WorkersResponseStore = responseStore!) {
     if (!store) {
@@ -381,8 +387,6 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     if (regenerationStorage.getStore()?.targetKey === key) return null;
 
     const request = await cacheRequest(key);
-    const missRevisions = this.missRevisions();
-    missRevisions.delete(key);
     try {
       const response = await this.store.fetch(request);
       if (!response.ok) {
@@ -394,7 +398,12 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
           // The revision it missed, 0 for none, lets the Store drop a duplicate fill.
           const revision = Number(response.headers.get("X-Workers-Response-Store-Revision"));
           if (response.headers.has("X-Workers-Response-Store-Revision") && revision >= 0) {
-            missRevisions.set(key, revision);
+            const misses = this.unfilledMisses();
+            const unfilled = misses.get(key);
+            misses.set(key, {
+              revision: Math.min(revision, unfilled?.revision ?? revision),
+              reads: (unfilled?.reads ?? 0) + 1,
+            });
           }
           return null;
         }
@@ -607,15 +616,19 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     // passing a stale one as `staleEntry`. Once one has replaced that revision, the Store drops
     // the rest instead of replacing it again and spending an edge purge on each.
     const staleEntry = context?.staleEntry;
-    const missRevisions = this.missRevisions();
-    const missRevision = missRevisions.get(key);
-    missRevisions.delete(key);
-    const replaces =
-      staleEntry && typeof staleEntry === "object"
-        ? this.staleRevisions.get(staleEntry as CacheHandlerValue)
-        : missRevision !== undefined
-          ? { revision: missRevision }
-          : undefined;
+    let replaces:
+      | { revision: number; tagExpiration?: { tags: string[]; expiration: number } }
+      | undefined;
+    if (staleEntry && typeof staleEntry === "object") {
+      replaces = this.staleRevisions.get(staleEntry as CacheHandlerValue);
+    } else {
+      const misses = this.unfilledMisses();
+      const unfilled = misses.get(key);
+      if (unfilled) {
+        replaces = { revision: unfilled.revision };
+        if (--unfilled.reads === 0) misses.delete(key);
+      }
+    }
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),
       // A read that finds a page-replay entry expired must not wait for the replay: a page
