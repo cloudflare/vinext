@@ -1501,7 +1501,7 @@ const RESOLVED_INSTRUMENTATION_CLIENT = `${VIRTUAL_PREFIX}${VIRTUAL_INSTRUMENTAT
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
-// Page files vinext:strip-server-exports loads for client sourcemaps, and the
+// Page files vinext:page-source-content loads for client sourcemaps, and the
 // language each is compiled as. Plain `.js` pages may contain JSX.
 const PAGE_SCRIPT_LANGS: Record<string, "jsx" | "ts" | "tsx"> = {
   ".js": "jsx",
@@ -2096,7 +2096,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const relativePath = canonicalId.slice(canonicalPagesDir.length);
     return !/^\/(?:_app|_document|_error)(?:\.[^/]*)?$/.test(relativePath);
   };
-  // Client build pages loaded by vinext:strip-server-exports.
+  // Client build pages loaded by vinext:page-source-content.
   const clientSourcemapPageIds = new Set<string>();
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
@@ -7948,16 +7948,21 @@ export const loadServerActionClient = ${
       // sourcesContent. As a post-ordered load, it runs only when no other
       // plugin loaded the page.
       name: "vinext:page-source-content",
+      applyToEnvironment(environment) {
+        return (
+          environment.name === "client" &&
+          environment.config.command === "build" &&
+          Boolean(environment.config.build.sourcemap)
+        );
+      },
       buildStart() {
-        if (this.environment.name === "client") clientSourcemapPageIds.clear();
+        clientSourcemapPageIds.clear();
       },
       load: {
         order: "post",
         filter: { id: { include: PAGE_SCRIPT_RE, exclude: VIRTUAL_MODULE_ID_RE } },
         async handler(id) {
-          const environment = this.environment;
-          if (environment.name !== "client" || environment.mode !== "build") return null;
-          if (!environment.config.build.sourcemap || !isClientPageWithDataExports(id)) return null;
+          if (!isClientPageWithDataExports(id)) return null;
           const source = await fs.promises.readFile(id, "utf8");
           if (!hasServerExportCandidate(source)) return null;
           let sourcesContent: string;
@@ -7971,7 +7976,7 @@ export const loadServerActionClient = ${
                 sourcemap: true,
               },
               undefined,
-              environment.config,
+              this.environment.config,
             );
             sourcesContent = blankServerExportSource(
               source,
@@ -8012,7 +8017,8 @@ export const loadServerActionClient = ${
           // line shifts from removed exports stay debuggable in client builds.
           const result = stripServerExports(code);
           // A page vinext:page-source-content did not load (another plugin's
-          // loader or file type) gets no map, so its source stays out.
+          // loader or file type) gets no map, so its source stays out. Rolldown
+          // keeps an earlier map's source after an empty map before 1.2.18.
           if (
             result &&
             this.environment.mode === "build" &&
