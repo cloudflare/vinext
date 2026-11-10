@@ -24,7 +24,7 @@ export default function BeforeInteractiveScriptDataPage(): React.ReactElement {
         {`self.__vinextScriptData = ${JSON.stringify(PROFILE)};`}
       </Script>
       {/* Module scripts, external or inline, run in registration order and
-          before hydration starts. */}
+          before hydration starts, including after their own imports. */}
       <Script
         id="vinext-test-external-module"
         src="/before-interactive-module.js"
@@ -35,7 +35,7 @@ export default function BeforeInteractiveScriptDataPage(): React.ReactElement {
         {moduleLogScript("module-1")}
       </Script>
       <Script id="vinext-test-module-2" strategy="beforeInteractive" type="module">
-        {moduleLogScript("module-2")}
+        {`import "/before-interactive-module-import.js";\n${moduleLogScript("module-2")}`}
       </Script>
       <h1 id="script-data-heading">beforeInteractive script data</h1>
     </main>

@@ -149,14 +149,19 @@ test.describe("inline beforeInteractive head ordering", () => {
 });
 
 // Loads the module fixture with its external module held back, so the inline
-// modules after it and the bootstrap are both ready first, and checks that all
-// three modules still ran in order before hydration.
+// modules after it and the bootstrap are both ready first, and the second
+// inline module's import held back longer still. All three modules must still
+// run in order before hydration.
 async function expectModulesRunInOrderBeforeHydration(
   page: Page,
   search: string,
 ): Promise<Response | null> {
   await page.route("**/before-interactive-module.js", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1000));
+    await route.continue();
+  });
+  await page.route("**/before-interactive-module-import.js", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     await route.continue();
   });
   const response = await page.goto(`${BASE}/beforeinteractive-script-data${search}`);
@@ -168,6 +173,7 @@ async function expectModulesRunInOrderBeforeHydration(
   expect(moduleLog).toEqual([
     { name: "external-module", hydrated: false },
     { name: "module-1", hydrated: false },
+    { name: "module-2-import", hydrated: false },
     { name: "module-2", hydrated: false },
   ]);
 
