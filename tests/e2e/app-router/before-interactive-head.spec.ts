@@ -1,6 +1,4 @@
-import type { Page, Response } from "@playwright/test";
 import { test, expect } from "../fixtures";
-import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -86,31 +84,6 @@ test.describe("inline beforeInteractive head ordering", () => {
     void consoleErrors;
   });
 
-  for (const { name, search, csp } of [
-    { name: "", search: "", csp: undefined },
-    {
-      name: " under a nonce-based CSP",
-      search: "?csp-nonce=before-interactive-nonce",
-      csp: "script-src 'nonce-before-interactive-nonce' 'strict-dynamic';",
-    },
-    {
-      name: " under a same-origin and inline CSP",
-      search: "?csp-self",
-      csp: "script-src 'self' 'unsafe-inline' 'unsafe-eval';",
-    },
-  ]) {
-    test(`queued beforeInteractive scripts run in order${name}`, async ({
-      page,
-      consoleErrors,
-    }) => {
-      const response = await expectQueuedScriptsRunInOrder(page, search);
-      expect(response?.headers()["content-security-policy"]).toBe(csp);
-      expect(
-        consoleErrors.filter((message) => message.includes("Content Security Policy")),
-      ).toEqual([]);
-    });
-  }
-
   test("inline beforeInteractive script runs under a nonce-based CSP", async ({
     page,
     consoleErrors,
@@ -137,65 +110,3 @@ test.describe("inline beforeInteractive head ordering", () => {
     );
   });
 });
-
-// Loads the fixture with its deferred classic script held back, so the module
-// after it is ready first, and the second inline module's import held back
-// longer still. The queued scripts must run in order, with hydration waiting
-// for the external ones but not for the inline module's import.
-async function expectQueuedScriptsRunInOrder(page: Page, search: string): Promise<Response | null> {
-  await page.route("**/before-interactive-deferred.js", async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    await route.continue();
-  });
-  await page.route("**/before-interactive-module-import.js", async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    await route.continue();
-  });
-  const response = await page.goto(`${BASE}/beforeinteractive-script-data${search}`);
-  await waitForAppRouterHydration(page);
-
-  const readLog = () =>
-    page.evaluate(
-      () =>
-        (self as unknown as { __vinextModuleLog?: { name: string; hydrated: boolean }[] })
-          .__vinextModuleLog ?? [],
-    );
-  await expect.poll(async () => (await readLog()).length).toBe(5);
-  const log = await readLog();
-  expect(log.map((entry) => entry.name)).toEqual([
-    "deferred-classic",
-    "external-module",
-    "module-1",
-    "module-2-import",
-    "module-2",
-  ]);
-  expect(log.filter((entry) => entry.hydrated).map((entry) => entry.name)).toEqual([
-    "module-2-import",
-    "module-2",
-  ]);
-
-  const scripts = await page.evaluate(() =>
-    [
-      "vinext-test-deferred-classic",
-      "vinext-test-external-module",
-      "vinext-test-module-1",
-      "vinext-test-module-2",
-    ].map((id) => {
-      const element = document.getElementById(id) as HTMLScriptElement | null;
-      return {
-        parent: element?.parentElement?.tagName,
-        type: element?.type,
-        async: element?.async,
-        marker: element?.getAttribute("data-nscript"),
-      };
-    }),
-  );
-  const expected = { parent: "HEAD", async: false, marker: "beforeInteractive" };
-  expect(scripts).toEqual([
-    { ...expected, type: "" },
-    { ...expected, type: "module" },
-    { ...expected, type: "module" },
-    { ...expected, type: "module" },
-  ]);
-  return response;
-}

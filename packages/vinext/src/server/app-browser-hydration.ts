@@ -1,8 +1,5 @@
 import type { hydrateRoot, ReactFormState } from "react-dom/client";
-import {
-  BEFORE_INTERACTIVE_QUEUE_GLOBAL,
-  RSC_FORM_STATE_GLOBAL,
-} from "../client/browser-globals.js";
+import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
 
 type HydrateRootOptions = NonNullable<Parameters<typeof hydrateRoot>[2]>;
 type HydrateRoot = typeof hydrateRoot;
@@ -22,65 +19,6 @@ export function consumeInitialFormState(global: FormStateGlobal): ReactFormState
   const formState = global[RSC_FORM_STATE_GLOBAL] ?? null;
   delete global[RSC_FORM_STATE_GLOBAL];
   return formState;
-}
-
-/** A queued beforeInteractive script: attribute pairs, then the body (null for `src`). */
-export type BeforeInteractiveQueueEntry = [attributes: [string, string][], content: string | null];
-
-type BeforeInteractiveQueueGlobal = {
-  [BEFORE_INTERACTIVE_QUEUE_GLOBAL]?: BeforeInteractiveQueueEntry[];
-};
-
-type ScriptDocument = {
-  createElement(tagName: "script"): HTMLScriptElement;
-  head: Pick<HTMLHeadElement, "appendChild">;
-};
-
-/**
- * Inserts the queued beforeInteractive scripts (see
- * server/before-interactive-head.ts) one at a time, in order, like Next.js's
- * `loadScriptsInSequence`: each one after the previous `src` script has loaded,
- * or a task after the previous inline one. Settles after the last, so
- * hydration starts after them. If a `src` script fails to load or inserting
- * one throws (for example, a Trusted Types policy rejects its body), it logs
- * the error and settles without the rest, which may depend on it, so
- * hydration still starts, as in Next.js. Returns null when nothing is queued,
- * so hydration does not wait at all.
- */
-export function runBeforeInteractiveQueue(
-  global: BeforeInteractiveQueueGlobal,
-  doc?: ScriptDocument,
-): Promise<void> | null {
-  const queue = global[BEFORE_INTERACTIVE_QUEUE_GLOBAL];
-  if (queue === undefined || queue.length === 0) return null;
-  const target: ScriptDocument = doc ?? document;
-  let previous = Promise.resolve();
-  for (const [attributes, content] of queue) {
-    previous = previous.then(
-      () =>
-        new Promise<void>((resolve, reject) => {
-          const script = target.createElement("script");
-          // Created scripts start out async; clear it so queued modules keep
-          // their order unless the author asked for `async`.
-          script.async = false;
-          // The first of any case-insensitive duplicate wins, as in the parser.
-          for (const [name, value] of attributes) {
-            if (!script.hasAttribute(name)) script.setAttribute(name, value);
-          }
-          if (content === null) {
-            script.onload = () => resolve();
-            script.onerror = reject;
-          } else {
-            script.text = content;
-            setTimeout(resolve);
-          }
-          target.head.appendChild(script);
-        }),
-    );
-  }
-  return previous.catch((error: unknown) => {
-    console.error(error);
-  });
 }
 
 export function createVinextHydrateRootOptions(options: {

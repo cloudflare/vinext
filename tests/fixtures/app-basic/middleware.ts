@@ -627,16 +627,6 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     const nonce = request.nextUrl.searchParams.get("csp-nonce") ?? "vinext-test-nonce";
     r.headers.set("content-security-policy", `script-src 'nonce-${nonce}' 'strict-dynamic';`);
   }
-  if (pathname === "/beforeinteractive-script-data") {
-    if (request.nextUrl.searchParams.has("csp-nonce")) {
-      const nonce = request.nextUrl.searchParams.get("csp-nonce") ?? "vinext-test-nonce";
-      r.headers.set("content-security-policy", `script-src 'nonce-${nonce}' 'strict-dynamic';`);
-    } else if (request.nextUrl.searchParams.has("csp-self")) {
-      // No nonce and no `strict-dynamic`: only same-origin and inline scripts
-      // (and dev-mode eval) may run, so a `data:` script would be blocked.
-      r.headers.set("content-security-policy", "script-src 'self' 'unsafe-inline' 'unsafe-eval';");
-    }
-  }
   if (
     pathname.startsWith("/nextjs-compat/dynamic") &&
     request.nextUrl.searchParams.has("csp-nonce")
@@ -755,6 +745,5 @@ export const config = {
     "/actions",
     "/beforeinteractive-head-ordering/:path*",
     "/beforeinteractive-head-ordering",
-    "/beforeinteractive-script-data",
   ],
 };

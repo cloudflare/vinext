@@ -25,16 +25,12 @@ import {
   shouldSyncServerActionHttpFallbackHead,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
-import {
-  BEFORE_INTERACTIVE_QUEUE_GLOBAL,
-  RSC_FORM_STATE_GLOBAL,
-} from "../packages/vinext/src/client/browser-globals.js";
+import { RSC_FORM_STATE_GLOBAL } from "../packages/vinext/src/client/browser-globals.js";
 import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,
   hydrateRootInTransition,
   resolveFetchedHydrationLocation,
-  runBeforeInteractiveQueue,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "../packages/vinext/src/server/app-browser-navigation-response.js";
@@ -10479,129 +10475,6 @@ describe("app browser form-state hydration", () => {
       onRecoverableError,
       onUncaughtError,
     });
-  });
-
-  it("inserts queued beforeInteractive scripts in order before settling", async () => {
-    expect(runBeforeInteractiveQueue({})).toBeNull();
-    expect(runBeforeInteractiveQueue({ [BEFORE_INTERACTIVE_QUEUE_GLOBAL]: [] })).toBeNull();
-
-    type FakeScript = {
-      async: boolean;
-      attributes: Record<string, string>;
-      text?: string;
-      onload?: () => void;
-      onerror?: () => void;
-      hasAttribute(name: string): boolean;
-      setAttribute(name: string, value: string): void;
-    };
-    const inserted: FakeScript[] = [];
-    const doc = {
-      createElement(): FakeScript {
-        const attributes: Record<string, string> = {};
-        return {
-          async: true,
-          attributes,
-          hasAttribute: (name) => name.toLowerCase() in attributes,
-          setAttribute(name, value) {
-            attributes[name.toLowerCase()] = value;
-          },
-        };
-      },
-      head: {
-        appendChild(script: FakeScript) {
-          inserted.push(script);
-          return script;
-        },
-      },
-    };
-    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-    let settled = false;
-    void runBeforeInteractiveQueue(
-      {
-        [BEFORE_INTERACTIVE_QUEUE_GLOBAL]: [
-          [
-            [
-              ["src", "/a.js"],
-              ["ID", "a"],
-              ["id", "ignored"],
-            ],
-            null,
-          ],
-          [[["type", "module"]], "inline"],
-          [[["src", "/c.js"]], null],
-          [[["src", "/d.js"]], null],
-        ],
-      },
-      doc as never,
-    )?.then(() => {
-      settled = true;
-    });
-
-    // A src script holds the queue until it loads.
-    await tick();
-    expect(inserted).toHaveLength(1);
-    expect(inserted[0]).toMatchObject({ async: false, attributes: { src: "/a.js", id: "a" } });
-    inserted[0].onload?.();
-    // An inline script lets the queue move on a task later.
-    await tick();
-    await tick();
-    expect(inserted).toHaveLength(3);
-    expect(inserted[1]).toMatchObject({ text: "inline", attributes: { type: "module" } });
-    expect(settled).toBe(false);
-    // A failed src script skips the rest of the queue, which may depend on
-    // it, but still lets hydration start.
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      inserted[2].onerror?.();
-      await tick();
-      expect(settled).toBe(true);
-      expect(inserted).toHaveLength(3);
-      expect(consoleError).toHaveBeenCalledTimes(1);
-    } finally {
-      consoleError.mockRestore();
-    }
-  });
-
-  it("settles the beforeInteractive queue when inserting a script throws", async () => {
-    const failure = new TypeError("This document requires 'TrustedScript' assignment.");
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    const inserted: string[] = [];
-    const doc = {
-      createElement() {
-        return {
-          hasAttribute: () => false,
-          setAttribute() {},
-          set text(_value: string) {
-            throw failure;
-          },
-        };
-      },
-      head: {
-        appendChild(script: unknown) {
-          inserted.push(String(script));
-          return script;
-        },
-      },
-    };
-    try {
-      await expect(
-        runBeforeInteractiveQueue(
-          {
-            [BEFORE_INTERACTIVE_QUEUE_GLOBAL]: [
-              [[], "first"],
-              [[], "second"],
-            ],
-          },
-          doc as never,
-        ),
-      ).resolves.toBeUndefined();
-      // Like Next.js, the rest of the queue is skipped and hydration goes on.
-      expect(inserted).toEqual([]);
-      expect(consoleError).toHaveBeenCalledWith(failure);
-    } finally {
-      consoleError.mockRestore();
-    }
   });
 
   it("preserves null form state as an explicit hydrateRoot option", () => {

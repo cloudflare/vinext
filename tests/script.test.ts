@@ -20,7 +20,6 @@ import {
   type BeforeInteractiveInlineScript,
 } from "../packages/vinext/src/shims/before-interactive-context.js";
 import { renderBeforeInteractiveInlineScripts } from "../packages/vinext/src/server/before-interactive-head.js";
-import { BEFORE_INTERACTIVE_QUEUE_GLOBAL } from "../packages/vinext/src/client/browser-globals.js";
 import { NAVIGATION_RUNTIME_KEY } from "../packages/vinext/src/client/navigation-runtime.js";
 
 const originalDocument = globalThis.document;
@@ -764,15 +763,25 @@ function runHoistedLoader(
 ): {
   attributes: Record<string, string>;
   text: string;
+  operations: string[];
   placement: "replaced-loader" | "appended-to-head";
 } {
   const loader = /^<script\b[^>]*>([^<]*)<\/script[^>]*>$/i.exec(html)?.[1];
   if (loader === undefined) throw new Error(`not a single hoisted loader: ${html}`);
-  const created = { attributes: {} as Record<string, string>, text: "" };
+  const created = {
+    attributes: {} as Record<string, string>,
+    text: "",
+    operations: [] as string[],
+  };
   let placement: "replaced-loader" | "appended-to-head" | undefined;
   const element = {
+    set async(value: boolean) {
+      created.operations.push(`async=${value}`);
+      if (!value) delete created.attributes.async;
+    },
     hasAttribute: (name: string) => name.toLowerCase() in created.attributes,
     setAttribute(name: string, value: string) {
+      created.operations.push(`setAttribute(${name})`);
       created.attributes[name.toLowerCase()] = value;
     },
     set text(value: string) {
@@ -798,18 +807,6 @@ function runHoistedLoader(
   runInNewContext(loader, { document: fakeDocument });
   if (!placement) throw new Error("loader did not insert the script");
   return { ...created, placement };
-}
-
-/**
- * Run a hoisted queue push against a stand-in `self` and return what it
- * queued for the App Router bootstrap.
- */
-function readQueuedScripts(html: string): unknown[] {
-  const self: Record<string, unknown[] | undefined> = {};
-  for (const match of html.matchAll(/<script\b[^>]*>([^<]*)<\/script[^>]*>/gi)) {
-    if (match[1].startsWith("(self.")) runInNewContext(match[1], { self });
-  }
-  return self[BEFORE_INTERACTIVE_QUEUE_GLOBAL] ?? [];
 }
 
 describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
@@ -884,83 +881,17 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
     expect(runHoistedLoader(html).attributes.nonce).toBe("first");
   });
 
-  it("queues deferred externals only when the browser runs them as classic scripts", () => {
-    for (const type of ["", "text/javascript", " Application/X-JavaScript ", "text/jscript"]) {
-      const html = renderBeforeInteractiveInlineScripts([
-        { id: "t", src: "/t.js", attributes: { defer: true, type } },
-      ]);
-      expect(readQueuedScripts(html)).toHaveLength(1);
-    }
-  });
-
-  it("queues scripts that run after parsing for the bootstrap, in order", () => {
-    const html = renderBeforeInteractiveInlineScripts([
-      { id: "deferred", src: "/deferred.js", nonce: "n1", attributes: { defer: true } },
-      { id: "external", src: "/external.js", attributes: { type: "module" } },
-      { id: "inline", content: "import '/a.js'</script>", attributes: { type: "Module" } },
-    ]);
-    // Every queued script carries its own nonce and nothing outside the tags
-    // can be read as markup.
-    expect(html.match(/<script nonce="n1">/g)).toHaveLength(1);
-    expect(html.match(/</g)).toHaveLength(6);
-    expect(readQueuedScripts(html)).toEqual([
-      [
-        [
-          ["id", "deferred"],
-          ["src", "/deferred.js"],
-          ["nonce", "n1"],
-          ["defer", ""],
-          ["data-nscript", "beforeInteractive"],
-        ],
-        null,
-      ],
-      [
-        [
-          ["id", "external"],
-          ["src", "/external.js"],
-          ["type", "module"],
-          ["data-nscript", "beforeInteractive"],
-        ],
-        null,
-      ],
-      [
-        [
-          ["id", "inline"],
-          ["type", "Module"],
-          ["data-nscript", "beforeInteractive"],
-        ],
-        "import '/a.js'</script>",
-      ],
-    ]);
-  });
-
-  it("leaves scripts that run during parsing out of the queue", () => {
-    // Browsers treat any type other than an exact (case-insensitive) `module`,
-    // such as " module ", as a classic script or a data block.
-    const inline = renderBeforeInteractiveInlineScripts([
-      { id: "t", content: "1", attributes: { type: " module " } },
-    ]);
-    expect(readQueuedScripts(inline)).toEqual([]);
-    expect(runHoistedLoader(inline).attributes.type).toBe(" module ");
-
-    // Deferred externals the browser never fetches (nomodule, data blocks)
-    // fire no `load` or `error`, so queueing them would stall hydration.
-    const parsingAttributes: Record<string, string | boolean>[] = [
-      { type: " module " },
-      { defer: true, async: true },
-      { defer: true, nomodule: true },
-      { defer: true, type: "text/plain" },
-      { defer: true, type: "module " },
-      // Browsers trim only ASCII whitespace from the type.
-      { defer: true, type: "\u00a0text/javascript\u00a0" },
-      {},
-    ];
-    for (const attributes of parsingAttributes) {
-      const external = renderBeforeInteractiveInlineScripts([
-        { id: "t", src: "/t.js", attributes },
-      ]);
-      expect(external).toMatch(/^<script id="t" src="\/t\.js"[^>]*><\/script>$/);
-    }
+  it("keeps created module scripts ordered unless the author asked for async", () => {
+    // Created scripts start out force-async; clearing `async` first puts a
+    // module in the in-order queue, and an author `async` attribute still wins.
+    const render = (attributes: Record<string, string | boolean>) =>
+      renderBeforeInteractiveInlineScripts([{ id: "m", content: "1", attributes }]);
+    const ordered = runHoistedLoader(render({ type: "module" }));
+    expect(ordered.operations[0]).toBe("async=false");
+    expect(ordered.attributes).not.toHaveProperty("async");
+    const asyncModule = runHoistedLoader(render({ type: "module", async: true }));
+    expect(asyncModule.operations[0]).toBe("async=false");
+    expect(asyncModule.attributes.async).toBe("");
   });
 
   it("emits a <script src> tag (with no body) for registered src scripts", () => {
@@ -968,12 +899,12 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
       {
         id: "a",
         src: "/a.js",
-        attributes: { crossorigin: "anonymous", async: true },
+        attributes: { crossorigin: "anonymous", defer: true },
       },
     ]);
     expect(html).toMatch(/<script\b[^>]*src="\/a\.js"/);
     expect(html).toContain('crossorigin="anonymous"');
-    expect(html).toContain(" async");
+    expect(html).toContain(" defer");
     expect(html).toContain('data-nscript="beforeInteractive"');
     // src-only scripts have no inline body.
     expect(html).toMatch(/<script[^>]*><\/script>/);
