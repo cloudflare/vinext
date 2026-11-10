@@ -4127,6 +4127,60 @@ describe("app page dispatch", () => {
     );
   });
 
+  it("renders a same-route interception's layout fallback under the source's params", async () => {
+    // app/shots/[id]/@modal/(.)photos/[pid] intercepts from /shots/1 itself.
+    const route = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }, { default: () => null }],
+      layoutTreePositions: [0, 2],
+      params: ["id"],
+      pattern: "/shots/[id]",
+      routeSegments: ["shots", "[id]"],
+      segmentNotFounds: [{ default: () => null }],
+      segmentNotFoundTreePositions: [0],
+    });
+    const buildPageElement = vi.fn(async () => {
+      const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+      throw tagAppPageLayoutError(Object.assign(new Error(digest), { digest }), 1);
+    });
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/shots/2",
+      findIntercept: () => ({
+        matchedParams: { id: "2" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/shots/[id]/@modal",
+        sourceMatchedParams: { id: "1" },
+        sourceRouteIndex: 0,
+      }),
+      getSourceRoute: (sourceRouteIndex) => (sourceRouteIndex === 0 ? route : undefined),
+      interceptionContext: "/shots/1",
+      isRscRequest: true,
+      params: { id: "2" },
+      route,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(404);
+    expect(buildPageElement).toHaveBeenCalledWith(
+      route,
+      { id: "1" },
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({ matchedParams: { id: "1" } }),
+      null,
+    );
+  });
+
   it("classifies a sibling interception by its own dynamic segment", async () => {
     // app/shots/(.)[id]/page.tsx intercepts from the static app/shots/page.tsx.
     // The route graph strips the marker, so its branch is `[id]`.

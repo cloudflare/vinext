@@ -8517,47 +8517,60 @@ describe("createAppRscHandler", () => {
         "x-middleware-set-cookie": "source-session=1; Path=/",
       }),
     },
-  ])("fails closed when source authorization changes $kind", async ({ sourceResponseHeaders }) => {
-    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
-    const sourceRoute = createPageRoute({ pattern: "/feed" });
-    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
-    const handler = createHandler({
-      configHeaders: [],
-      dispatchMatchedPage,
-      matchInterceptRoute: (_pathname, sourcePathname) =>
-        sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
-      matchRoute: (pathname: string) =>
-        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
-      middlewareModule: {
-        default(request: NextRequest) {
-          if (request.nextUrl.pathname !== "/feed") {
-            return new Response(null, { headers: { "x-middleware-next": "1" } });
-          }
-          return new Response(null, { headers: sourceResponseHeaders });
+  ])(
+    "keeps the $kind source authorization sets out of the target render",
+    async ({ sourceResponseHeaders }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({ pattern: "/feed" });
+      const dispatchMatchedPage = vi.fn(async () => {
+        const currentHeaders = await requestHeaders();
+        const currentCookies = await requestCookies();
+        return new Response(
+          `${currentHeaders.get("x-source-only") ?? "no-header"} ${
+            currentCookies.get("source-session")?.value ?? "no-cookie"
+          }`,
+        );
+      });
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+        matchRoute: (pathname: string) =>
+          pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+        middlewareModule: {
+          default(request: NextRequest) {
+            if (request.nextUrl.pathname !== "/feed") {
+              return new Response(null, { headers: { "x-middleware-next": "1" } });
+            }
+            return new Response(null, { headers: sourceResponseHeaders });
+          },
         },
-      },
-    });
+      });
 
-    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
-    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
-    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
 
-    expect(response.status).toBe(404);
-    expect(dispatchMatchedPage).not.toHaveBeenCalled();
-  });
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe("no-header no-cookie");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+    },
+  );
 
-  it("invalidates a primed headers snapshot when source middleware adds a header", async () => {
+  it("keeps a header source middleware adds out of the target render", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const sourceRoute = createPageRoute({ pattern: "/feed" });
     const dispatchMatchedPage = vi.fn(async () => {
       const currentHeaders = await requestHeaders();
       return new Response(currentHeaders.get("x-source") ?? "missing");
     });
-    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
-      async (_request, _props, options) => {
-        expect(options).toEqual({ cache: "bypass" });
-        return dispatchMatchedPage();
-      },
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      dispatchMatchedPage(),
     );
     const handler = createHandler({
       configHeaders: [],
@@ -8586,7 +8599,7 @@ describe("createAppRscHandler", () => {
     );
 
     expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toBe("added");
+    await expect(response.text()).resolves.toBe("missing");
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
   });
 

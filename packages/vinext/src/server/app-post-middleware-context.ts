@@ -1,4 +1,4 @@
-import { getHeadersContext } from "vinext/shims/headers";
+import { getHeadersContext, type HeadersContext } from "vinext/shims/headers";
 import {
   normalizeHost,
   requestContextFromRequest,
@@ -11,12 +11,14 @@ import {
  * Used for afterFiles and fallback rewrite has/missing evaluation — these
  * run after middleware in the App Router execution order.
  *
- * Falls back to `requestContextFromRequest(request)` when no HeadersContext
- * is set (no middleware ran, or middleware didn't set request headers).
+ * `ctx` defaults to the live context. Falls back to
+ * `requestContextFromRequest(request)` when no HeadersContext is set (no middleware ran, or middleware didn't set request headers).
  */
-export function buildPostMwRequestContext(request: Request): RequestContext {
+export function buildPostMwRequestContext(
+  request: Request,
+  ctx: HeadersContext | null = getHeadersContext(),
+): RequestContext {
   const url = new URL(request.url);
-  const ctx = getHeadersContext();
   if (!ctx) return requestContextFromRequest(request);
   const cookiesRecord: Record<string, string> = Object.fromEntries(ctx.cookies);
   return {
