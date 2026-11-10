@@ -257,6 +257,28 @@ test.describe("encoded App route parity", () => {
     }
   });
 
+  // Next.js 16.2.7 routes a rewrite destination exactly like a direct request
+  // to it, so an encoded static segment does not name the literal one.
+  test("routes middleware rewrite destinations on their raw static segments", async () => {
+    const literal = await getRawPath("/encoded-parity/rewrite-any/member/bob/settings");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("settings for bob");
+    expect(literal.body).not.toContain("tab settings");
+
+    const encoded = await getRawPath("/encoded-parity/rewrite-any/member/bob/%73ettings");
+    expect(encoded.status).toBe(200);
+    expect(encoded.body).toContain("tab settings for bob");
+
+    const forceDynamic = await getRawPath("/encoded-parity/rewrite-any/sibling/%6Cive");
+    expect(forceDynamic.status).toBe(200);
+    expect(forceDynamic.body).toContain("dynamic sibling live");
+    expect(forceDynamic.body).not.toContain("forced dynamic page");
+
+    const unmatched = await getRawPath("/encoded-parity/rewrite-any/%6Dember/bob/settings");
+    expect(unmatched.status).toBe(404);
+    expect(unmatched.body).not.toContain("settings for bob");
+  });
+
   test("dynamicParams=false only accepts the encoded literal static value", async () => {
     const allowed = await getRawPath("/encoded-parity/static/a%252Fb");
     expect(allowed.status).toBe(200);

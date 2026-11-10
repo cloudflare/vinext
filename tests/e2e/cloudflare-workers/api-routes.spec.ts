@@ -93,4 +93,17 @@ test.describe("Cloudflare Workers API Routes", () => {
     expect(response.headers["x-mw-body-null"]).toBe("true");
     expect(JSON.parse(response.body)).toEqual({ bodyNull: true });
   });
+
+  test("an edge API route sends only Set-Cookie for NextResponse cookies", async ({ request }) => {
+    const response = await request.get(`${BASE}/api/edge-next-response-cookie`);
+
+    expect(response.status()).toBe(200);
+    expect(
+      response
+        .headersArray()
+        .filter(({ name }) => name.toLowerCase() === "set-cookie")
+        .map(({ value }) => value),
+    ).toEqual(["edge-session=abc123; Path=/; HttpOnly"]);
+    expect(response.headers()["x-middleware-set-cookie"]).toBeUndefined();
+  });
 });

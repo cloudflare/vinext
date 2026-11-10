@@ -1667,6 +1667,46 @@ describe("matchAppRoute - URL matching", () => {
     });
   });
 
+  it("finds every error file on a slot's active branch", async () => {
+    await withTempDir("vinext-app-slot-errors-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      const teamDir = path.join(appDir, "@team");
+
+      await mkdir(path.join(teamDir, "x", "[id]"), { recursive: true });
+      await mkdir(path.join(appDir, "x", "[id]"), { recursive: true });
+      await mkdir(path.join(appDir, "y"), { recursive: true });
+
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "x", "[id]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "y", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(teamDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(teamDir, "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(teamDir, "error.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(teamDir, "x", "[id]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(teamDir, "x", "[id]", "error.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const teamSlot = (pattern: string) =>
+        routes
+          .find((route) => route.pattern === pattern)
+          ?.parallelSlots.find((slot) => slot.name === "team");
+
+      const active = teamSlot("/x/:id");
+      expect(active?.errorPaths).toEqual([
+        canonical(path.join(teamDir, "error.tsx")),
+        canonical(path.join(teamDir, "x", "[id]", "error.tsx")),
+      ]);
+      expect(active?.errorTreePositions).toEqual([0, 2]);
+
+      // A default branch keeps only the slot root's error.
+      const fallback = teamSlot("/y");
+      expect(fallback?.errorPaths).toEqual([canonical(path.join(teamDir, "error.tsx"))]);
+      expect(fallback?.errorTreePositions).toEqual([0]);
+    });
+  });
+
   it("keeps source-route not-found ownership for slot-less sibling intercepts", async () => {
     await withTempDir("vinext-app-sibling-intercept-not-found-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");

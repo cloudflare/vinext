@@ -418,6 +418,19 @@ describe("cloudflare dev module URLs plugin", () => {
     expect(calls).toEqual([]);
   });
 
+  it("sends a URL that parses as an invalid host to the Worker", async () => {
+    const calls: string[] = [];
+    const { run } = setup({
+      enabled: true,
+      viteMiddlewares: [passThrough("viteServeStaticMiddleware", calls)],
+    });
+
+    for (const url of ["//", "//:80", "//%", "/\\:80"]) {
+      expect(await run(url)).toEqual({ args: [], url });
+    }
+    expect(calls).toEqual([]);
+  });
+
   it("sends project files that no importer references to the Worker", async () => {
     const calls: string[] = [];
     const { run } = setup({

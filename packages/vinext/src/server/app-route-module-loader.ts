@@ -72,6 +72,7 @@ type LazyLoadableSlot = {
   loading?: unknown;
   loadings?: readonly unknown[];
   error?: unknown;
+  errors?: readonly unknown[];
   notFound?: unknown;
   notFounds?: readonly unknown[];
   __loadPage?: LazyModuleThunk | null;
@@ -81,6 +82,7 @@ type LazyLoadableSlot = {
   __loadLoading?: LazyModuleThunk | null;
   __loadLoadings?: LazyModuleLoaderArray | null;
   __loadError?: LazyModuleThunk | null;
+  __loadErrors?: LazyModuleLoaderArray | null;
   __loadNotFound?: LazyModuleThunk | null;
   __loadNotFounds?: LazyModuleLoaderArray | null;
   /** Hydrated only after an intercept matches, not with the slot's base modules. */
@@ -299,6 +301,7 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
     pushFieldLoad(loads, slot as Record<string, unknown>, "loading", slot.__loadLoading);
     pushArrayLoads(loads, slot.loadings, slot.__loadLoadings);
     pushFieldLoad(loads, slot as Record<string, unknown>, "error", slot.__loadError);
+    pushArrayLoads(loads, slot.errors, slot.__loadErrors);
     pushFieldLoad(loads, slot as Record<string, unknown>, "notFound", slot.__loadNotFound);
     pushArrayLoads(loads, slot.notFounds, slot.__loadNotFounds);
   }

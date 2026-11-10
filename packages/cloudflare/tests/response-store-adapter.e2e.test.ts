@@ -10,7 +10,10 @@ import {
   type Request as MiniflareRequest,
 } from "miniflare";
 import { afterEach, beforeEach, describe, test } from "vite-plus/test";
-import { createRscRequestUrl } from "vinext/internal/server/app-rsc-cache-busting";
+import {
+  createRscRequestHeaders,
+  createRscRequestUrl,
+} from "vinext/internal/server/app-rsc-cache-busting";
 import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "vinext/internal/server/headers";
 
 const root = path.resolve(import.meta.dirname, "../../..");
@@ -411,9 +414,9 @@ describe("Cloudflare Workers Response Store adapter", () => {
     );
 
     const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
-    const firstRsc = await request("/static-default.rsc?_rsc=", rscInit);
+    const firstRsc = await request("/static-default?_rsc=", rscInit);
     await firstRsc.arrayBuffer();
-    const secondRsc = await request("/static-default.rsc?_rsc=", rscInit);
+    const secondRsc = await request("/static-default?_rsc=", rscInit);
     await secondRsc.arrayBuffer();
     assert.equal(secondRsc.status, 200);
     assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
@@ -427,17 +430,17 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const onHost = (host: string, pathname: string, init?: Init) =>
       miniflare.dispatchFetch(`https://${host}${pathname}`, init);
     const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
-    // A page's document stores its RSC payload too; a `.rsc` path stores its
-    // payload alone.
+    // A page's document stores its RSC payload too, and an RSC miss stores its
+    // document. A special error's RSC render has no document to store.
     const entries: Array<[string, Init | undefined, number, number]> = [
       ["/static-default", undefined, 200, 2],
-      ["/static-default.rsc?_rsc=", rscInit, 200, 1],
+      ["/cached/host-shared-rsc?_rsc=", rscInit, 200, 2],
       ["/api/host-shared", undefined, 200, 1],
       ["/metadata-storage/status-404/opengraph-image", undefined, 404, 1],
-      ["/special-error/absolute-redirect.rsc?_rsc=", rscInit, 200, 1],
+      ["/special-error/absolute-redirect?_rsc=", rscInit, 200, 1],
     ];
     for (const [pathname, init, status, stored] of entries) {
-      const entryPath = new URL(pathname, "https://app.test").pathname.replace(/\.rsc$/, "");
+      const entryPath = new URL(pathname, "https://app.test").pathname;
       const before = (await responseEntries(entryPath)).length;
       const fill = await onHost("tenant-a.test", pathname, init);
       const fillBody = await fill.text();
@@ -456,7 +459,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     // The shared redirect keeps the absolute target the page wrote.
     const redirect = await onHost(
       "tenant-b.test",
-      "/special-error/absolute-redirect.rsc?_rsc=",
+      "/special-error/absolute-redirect?_rsc=",
       rscInit,
     );
     assert.match(
@@ -620,7 +623,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const firstBody = await first.text();
     const second = await request("/dynamic-segment/a");
     const secondBody = await second.text();
-    const rsc = await request("/dynamic-segment/a.rsc?_rsc=", {
+    const rsc = await request("/dynamic-segment/a?_rsc=", {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     await rsc.text();
@@ -681,6 +684,55 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
+  // Next.js keys a route handler, metadata routes included, by its pathname,
+  // so neither the query nor an RSC selector header adds an entry.
+  test("shares one route handler and metadata route entry across queries and RSC selectors", async () => {
+    const selectorHeaders = [
+      {},
+      { "Next-Url": `/${crypto.randomUUID()}` },
+      { "Next-Router-State-Tree": crypto.randomUUID() },
+      { Accept: "text/x-component", RSC: "1" },
+      { "X-Vinext-Mounted-Slots": crypto.randomUUID() },
+    ];
+    for (const [pathname, status] of [
+      ["/api/host-shared", 200],
+      ["/metadata-storage/status-404/opengraph-image", 404],
+    ] as const) {
+      const queries = selectorHeaders.map(() => crypto.randomUUID());
+      const bodies: string[] = [];
+      const statuses: Array<string | null> = [];
+      for (const [index, headers] of selectorHeaders.entries()) {
+        const response = await request(`${pathname}?q=${queries[index]}`, { headers });
+        assert.equal(response.status, status, pathname);
+        statuses.push(response.headers.get("x-vinext-cache"));
+        const renderId = response.headers.get("x-render-id");
+        const body = await response.text();
+        bodies.push(renderId ?? body);
+        if (index === 0) await waitForResponseEntries(pathname, 1);
+      }
+      assert.deepEqual(statuses, ["MISS", "HIT", "HIT", "HIT", "HIT"], pathname);
+      assert.equal(new Set(bodies).size, 1, pathname);
+      await waitForResponseEntries(pathname, 1);
+      const [entry] = await responseEntries(pathname);
+      for (const query of queries) assert.doesNotMatch(JSON.stringify(entry), new RegExp(query));
+    }
+
+    // A handler filled from a query regenerates in the background into its
+    // one entry.
+    const fill = await cacheStatus(`/api/now?q=${crypto.randomUUID()}`);
+    assert.equal(fill.status, "MISS");
+    const fillId = JSON.parse(fill.body).renderId as string;
+    await waitForResponseEntries("/api/now", 1);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stale = await cacheStatus(`/api/now?q=${crypto.randomUUID()}`);
+    assert.equal(JSON.parse(stale.body).renderId, fillId);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const fresh = await cacheStatus("/api/now");
+    assert.equal(fresh.status, "HIT");
+    assert.notEqual(JSON.parse(fresh.body).renderId, fillId);
+    await waitForResponseEntries("/api/now", 1);
+  });
+
   // Next.js stores a page's notFound() with its 404 and answers a Link's
   // segment prefetch of it with a 200, so the router renders the fallback
   // without loading the document. The prefetch shares the navigation's entry.
@@ -712,6 +764,67 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(await prefetch.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
   });
 
+  // With Cache Components, a Link's search-param prefetch of a static route
+  // renders the page with an empty query, as Next.js's static prefetch of a
+  // page segment never varies on search params (vary-path.ts). So every query
+  // shares the page's own entry.
+  test("serves a static page's dynamic-shell prefetch from its navigation entry", async () => {
+    const pathname = "/static-default";
+    const prefetch = async (search: string, nextUrl: string) => {
+      const headers = createRscRequestHeaders({
+        nextUrl,
+        prefetchRouterState: { pathAndSearch: nextUrl, routeId: "route:/" },
+        renderMode: "prefetch-dynamic-shell",
+      });
+      headers.set("Next-Router-Segment-Prefetch", "1");
+      return request(await createRscRequestUrl(`${pathname}${search}`, headers), {
+        headers: Object.fromEntries(headers),
+      });
+    };
+
+    const fill = await prefetch("?tab=1", "/");
+    assert.equal(fill.status, 200);
+    const fillBody = await fill.text();
+    assert.match(fillBody, /static-default-render-id/);
+    await waitForResponseEntries(pathname, 2);
+
+    for (const [search, nextUrl] of [
+      ["?tab=1", "/"],
+      ["?tab=2", "/cached/local"],
+    ] as const) {
+      const hit = await prefetch(search, nextUrl);
+      assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await hit.text(), fillBody);
+    }
+    const navigation = await request(`${pathname}?_rsc=`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    assert.equal(navigation.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await navigation.text(), fillBody);
+  });
+
+  // Next.js answers a pre-PPR prefetch with no loading boundary with only the
+  // router state and runs no layout (walkTreeWithFlightRouterState()), so a
+  // static route's shell runs none either.
+  test("runs no layout for a static page's loading-shell prefetch without a loading boundary", async () => {
+    const pathname = "/static-default";
+    const headers = createRscRequestHeaders({
+      nextUrl: "/",
+      prefetchRouterState: { pathAndSearch: "/", routeId: "route:/" },
+      renderMode: "prefetch-loading-shell",
+    });
+    headers.set("Next-Router-Segment-Prefetch", "1");
+    const response = await request(await createRscRequestUrl(pathname, headers), {
+      headers: Object.fromEntries(headers),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    assert.match(body, /route:\/static-default/);
+    assert.doesNotMatch(body, /"lang":"en"/);
+    assert.doesNotMatch(body, /Demo deployments/);
+    assert.doesNotMatch(body, /static-default-render-id/);
+  });
+
   // An html-limited bot blocks on metadata, so generateMetadata()'s notFound()
   // rejects the shell. As in Next.js, its 404 is stored and served to every
   // user agent.
@@ -736,16 +849,17 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
     const html = await request(`${pathname}?canary=${canary}`);
     await html.text();
-    const rsc = await request(`${pathname}.rsc?canary=${canary}&_rsc=`, rscInit);
-    await rsc.arrayBuffer();
     assert.equal(html.headers.get("x-vinext-cache"), "MISS");
-    assert.equal(rsc.status, 200);
     // The HTML miss stored the payload a client navigation reads too.
-    await waitForResponseEntries(pathname, 3);
+    await waitForResponseEntries(pathname, 2);
+    const rsc = await request(`${pathname}?canary=${canary}&_rsc=`, rscInit);
+    await rsc.arrayBuffer();
+    assert.equal(rsc.status, 200);
+    assert.equal(rsc.headers.get("x-vinext-cache"), "HIT");
 
     const queryless = await request(pathname);
     const querylessBody = await queryless.text();
-    const querylessRsc = await request(`${pathname}.rsc?_rsc=`, rscInit);
+    const querylessRsc = await request(`${pathname}?_rsc=`, rscInit);
     const storedRscBody = await querylessRsc.text();
     assert.equal(queryless.headers.get("x-vinext-cache"), "HIT");
     assert.equal(querylessRsc.headers.get("x-vinext-cache"), "HIT");
@@ -780,7 +894,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const firstBody = await first.text();
     const second = await request(pathname);
     const secondBody = await second.text();
-    const rsc = await request(`${pathname}.rsc?_rsc=`, {
+    const rsc = await request(`${pathname}?_rsc=`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     await rsc.text();
@@ -923,7 +1037,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
 
     // The page's searchParams no longer travel through Flight.
-    const rsc = await request(`/client-search-params/ignores.rsc?q=${query}&_rsc=`, {
+    const rsc = await request(`/client-search-params/ignores?q=${query}&_rsc=`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     assert.equal(rsc.status, 200);
@@ -1166,17 +1280,16 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
 
     const init = { headers: { Accept: "text/x-component", RSC: "1" } };
-    const firstRsc = await request("/cached/rsc.rsc?_rsc=", init);
+    const firstRsc = await request("/cached/rsc?_rsc=", init);
     const firstBody = await firstRsc.text();
-    await waitForResponseEntries("/cached/rsc", 1);
-    const secondRsc = await request("/cached/rsc.rsc?_rsc=", init);
+    await waitForResponseEntries("/cached/rsc", 2);
+    const secondRsc = await request("/cached/rsc?_rsc=", init);
     assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
     assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
     assert.equal(await secondRsc.text(), firstBody);
-    // A `.rsc` path reaches its page's HTML path only through the app's
-    // trailingSlash policy, so it stores its payload alone.
+    // The RSC miss stored the page's document too.
     const document = await request("/cached/rsc");
-    assert.equal(document.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(document.headers.get("x-vinext-cache"), "HIT");
     await document.arrayBuffer();
   });
 
@@ -1613,6 +1726,38 @@ describe("Cloudflare Workers Response Store adapter", () => {
 
     const serialized = JSON.stringify((await metadataEntries()).flat());
     assert.doesNotMatch(serialized, /first-secret|second-secret/);
+  });
+
+  // A 206 holds the part one request's Range selected, and Range is not part
+  // of the key. Next.js never stores a Pages API response at all.
+  test("never stores a Pages API's partial response to a Range request", async () => {
+    const pathname = "/api/byte-range";
+    for (const [range, contentRange, body] of [
+      ["bytes=2-4", "bytes 2-4/10", "234"],
+      ["bytes=5-7", "bytes 5-7/10", "567"],
+    ]) {
+      const partial = await request(pathname, { headers: { range } });
+      assert.equal(partial.status, 206);
+      assert.notEqual(partial.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(partial.headers.get("content-range"), contentRange);
+      assert.equal(await partial.text(), body);
+    }
+    await assertNeverStored(pathname);
+
+    // The same route is stored for a request without Range, so the ranged
+    // requests above were rejected for their partial responses alone.
+    const whole = await request(pathname);
+    assert.equal(whole.status, 200);
+    assert.equal(whole.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(await whole.text(), "0123456789");
+    await waitForResponseEntries(pathname, 1);
+    // A stored response answers a Range request whole, as Next.js answers a
+    // cached page or route handler.
+    const hit = await request(pathname, { headers: { range: "bytes=2-4" } });
+    assert.equal(hit.status, 200);
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(hit.headers.get("content-range"), null);
+    assert.equal(await hit.text(), "0123456789");
   });
 
   test.each(["authorization", "cookie", "proxy-authorization", "x-api-key"])(

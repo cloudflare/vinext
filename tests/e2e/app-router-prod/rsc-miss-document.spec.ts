@@ -37,7 +37,7 @@ test("serves a page's first document request from the entry its soft navigation 
   // The RSC entry is written first, then the document beside it.
   await expect
     .poll(async () => {
-      const response = await page.request.get(`${TARGET}.rsc`, {
+      const response = await page.request.get(`${TARGET}?_rsc`, {
         headers: { Accept: "text/x-component", RSC: "1" },
       });
       return response.headers()["x-vinext-cache"] ?? null;
