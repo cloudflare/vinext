@@ -95,6 +95,28 @@ export default function Page() { return null; }
     ).toThrow(generateStaticParamsMessage);
   });
 
+  it("rejects unstable_instant from a client page or default file", () => {
+    const unstableInstantMessage =
+      'Next.js can\'t recognize the exported `unstable_instant` field in route. App pages cannot export "unstable_instant" from a Client Component module. To use this API, convert this module to a Server Component by removing the "use client" directive.';
+    const source = `"use client";
+export const unstable_instant = { prefetch: "static" };
+export default function Page() { return null; }
+`;
+    expect(() => validateAppClientEntryExports(source, "/app/page.tsx", "entry")).toThrow(
+      unstableInstantMessage,
+    );
+    expect(() =>
+      validateAppClientEntryExports(source, "/app/@slot/default.tsx", "default"),
+    ).toThrow(unstableInstantMessage);
+    expect(() =>
+      validateAppClientEntryExports(
+        `"use client";\nconst instant = {};\nexport { instant as unstable_instant };`,
+        "/app/layout.js",
+        "entry",
+      ),
+    ).toThrow(unstableInstantMessage);
+  });
+
   it("checks metadata only in page, layout and route files", () => {
     const source = `"use client";
 export const metadata = { title: "y" };
