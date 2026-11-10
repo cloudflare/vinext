@@ -1,5 +1,15 @@
 # @cloudflare/workers-response-store
 
+## 1.1.5
+
+### Bug Fixes
+
+- **Response Store:** mark pre-upgrade entries instead of rewriting them in migration 9 (#4478)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.1.4
 
 Read the [Vinext 1.4 release post](https://vinext.dev/blog/vinext-1-4) for the highlights.

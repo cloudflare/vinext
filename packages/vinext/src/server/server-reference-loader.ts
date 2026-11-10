@@ -27,8 +27,12 @@ export function isolateServerReferenceLoads(): void {
   const load: ServerReferenceRequire | undefined = globalThis.__vite_rsc_server_require__;
   if (typeof load !== "function" || ISOLATED in load) return;
   // plugin-rsc memoizes each load for the isolate and returns the same promise
-  // to every later caller, so only its first caller started it.
-  const started = new WeakSet<Promise<unknown>>();
+  // to every later caller, so only its first caller started it. That promise
+  // can come from optimized code, which leaves it without a request tag, so
+  // every caller gets one tagged promise for it instead. React records the
+  // module's load state on the promise it is given, so it must be the same
+  // promise for every caller.
+  const shared = new WeakMap<Promise<unknown>, Promise<unknown>>();
   const isolated: ServerReferenceRequire = (id) => {
     // Resolve the requesting request before leaving its scopes so the request
     // that starts a load stays alive until the shared load settles.
@@ -42,9 +46,13 @@ export function isolateServerReferenceLoads(): void {
     // `loadOutsideRequestScopes()` does.
     const ctx = getRequestExecutionContext();
     const loaded = runOutsideRequestScopes(() => load(id));
-    if (!(loaded instanceof Promise) || started.has(loaded)) return loaded;
-    started.add(loaded);
-    return shareIsolatePromise(loaded, ctx);
+    if (!(loaded instanceof Promise)) return loaded;
+    let promise = shared.get(loaded);
+    if (!promise) {
+      promise = shareIsolatePromise(loaded, ctx);
+      shared.set(loaded, promise);
+    }
+    return promise;
   };
   Object.defineProperty(isolated, ISOLATED, { value: true });
   globalThis.__vite_rsc_server_require__ = isolated;

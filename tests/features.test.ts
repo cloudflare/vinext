@@ -20,6 +20,7 @@ import {
   PAGES_I18N_DOMAINS_BASEPATH_FIXTURE_DIR,
   PAGES_I18N_DOMAINS_FIXTURE_DIR,
   createIsolatedFixture,
+  fetchRsc,
   requestNodeServerWithHost,
   startFixtureServer,
 } from "./helpers.js";
@@ -713,10 +714,8 @@ describe("ISR (App Router)", () => {
     expect(res2.headers.get("x-vinext-cache")).toBeNull();
   });
 
-  it("dev: RSC requests (.rsc suffix) return RSC stream with Cache-Control but no X-Vinext-Cache", async () => {
-    const res = await fetch(`${baseUrl}/isr-test.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+  it("dev: RSC requests return RSC stream with Cache-Control but no X-Vinext-Cache", async () => {
+    const res = await fetchRsc(baseUrl, "/isr-test");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
     // ISR cache reads/writes are prod-only, so no X-Vinext-Cache in dev
@@ -727,8 +726,8 @@ describe("ISR (App Router)", () => {
   });
 
   it("dev: RSC prefetch requests (Next-Router-Prefetch header) return RSC stream with Cache-Control", async () => {
-    const res = await fetch(`${baseUrl}/isr-test.rsc`, {
-      headers: { Accept: "text/x-component", "Next-Router-Prefetch": "1" },
+    const res = await fetchRsc(baseUrl, "/isr-test", {
+      headers: { "Next-Router-Prefetch": "1" },
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");

@@ -68,6 +68,7 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
       slot.loadingPath,
       ...(slot.loadingPaths ?? []),
       slot.errorPath,
+      ...(slot.errorPaths ?? []),
       slot.notFoundPath,
       ...(slot.notFoundPaths ?? []),
       ...slot.interceptingRoutes.flatMap((intercept) => [

@@ -1,5 +1,60 @@
 # @vinext/cloudflare
 
+## 1.3.4
+
+### Bug Fixes
+
+This release changes the `@vinext/cloudflare previews deploy` command to use a `--preview-name` flag instead of a positional arg for preview names, to align with an upstream breaking change that the cf CLI did.
+
+#### Cloudflare
+
+- pass the Preview name with --preview-name like cf (#4572)
+- never store a Range request's 206 in the Response Store (#4622)
+- read the log cf writes to stderr during version deploys (#4609)
+
+#### Misc
+
+- **Init:** stop adding nodejs_compat now that compat dates enable it (#4580)
+
+### Contributors
+
+- @james-elicx
+
+## 1.3.3
+
+### Bug Fixes
+
+- **Cloudflare:** reject --config for cloudflare.config.ts deploys and show Wrangler-only flags only for Wrangler projects (#4521)
+
+### Contributors
+
+- @james-elicx
+
+## 1.3.2
+
+### Bug Fixes
+
+- **App Router:** send an intercepted response's params to useParams() (#4489)
+- **Cloudflare:** skip /cdn-cgi and static asset paths in traffic-aware warming (#4480)
+
+### Contributors
+
+- @james-elicx
+
+## 1.3.1
+
+### Bug Fixes
+
+#### Cache
+
+- key Response Store route handlers and metadata routes by path like Next.js (#4445)
+- support custom cacheLife profiles from next.config (#4398)
+- return unstable_cache and "use cache" misses without waiting for the write (#4465)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.3.0
 
 Read the [Vinext 1.4 release post](https://vinext.dev/blog/vinext-1-4) for the highlights.

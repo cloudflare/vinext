@@ -48,6 +48,16 @@ test.describe("image optimization endpoint behind middleware", () => {
     });
   }
 
+  // Next.js compares the raw pathname with `/_next/image`, so an encoded
+  // spelling is not the endpoint and is a 404.
+  test("does not serve the endpoint through an encoded pathname", async ({ request }) => {
+    for (const endpoint of ["/_next/%69mage", "/_vinext/%69mage"]) {
+      const image = await request.get(imagePath(endpoint, "/image-endpoint-guarded.png"));
+      expect(image.status(), endpoint).toBe(404);
+      expect(image.headers()["content-type"] ?? "", endpoint).not.toContain("image/");
+    }
+  });
+
   test("fetches the source without the caller's cookies", async ({ request }) => {
     const privatePng = await readPrivatePng(request);
     const image = await request.get(imagePath("/_next/image", "/members only/private.png"), {
@@ -70,7 +80,27 @@ test.describe("image optimization endpoint behind middleware", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(image.headers()["x-mw-image-endpoint"]).toBe("true");
+    // Next.js's image policy at the default `images.minimumCacheTTL`.
+    expect(image.headers()["cache-control"]).toBe("public, max-age=14400, must-revalidate");
     expect(Buffer.from(await image.body()).equals(heartPng)).toBe(true);
+  });
+
+  // Verified against Next.js 16.2.7 `next start`: next.config headers() go on
+  // the image and on the 400 for a source it cannot serve, below middleware's
+  // headers and, on the image, below its own Content-Security-Policy and
+  // Content-Type.
+  test("sends next.config headers with the image", async ({ request }) => {
+    for (const [source, status, csp, contentType] of [
+      ["/heart.png", 200, "script-src 'none'; frame-src 'none'; sandbox;", "image/png"],
+      ["/missing.png", 400, "config-csp", "text/x-config-image"],
+    ] as const) {
+      const image = await request.get(imagePath("/_next/image", source));
+      expect(image.status(), source).toBe(status);
+      expect(image.headers()["x-e2e-header"], source).toBe("vinext-e2e");
+      expect(image.headers()["x-mw-image-endpoint"], source).toBe("true");
+      expect(image.headers()["content-security-policy"], source).toBe(csp);
+      expect(image.headers()["content-type"], source).toBe(contentType);
+    }
   });
 
   test("serves the image query middleware or config rewrites to", async ({ request }) => {
@@ -101,7 +131,9 @@ test.describe("image optimization endpoint behind middleware", () => {
     for (const source of ["/logo/logo.svg", "/logo/logo.svg?.png", "/logo/logo.svg#.png"]) {
       const svg = await request.get(imagePath("/_next/image", source));
       expect(svg.status(), source).toBe(400);
-      expect(await svg.text(), source).toBe("The requested resource is not an allowed image type");
+      expect(await svg.text(), source).toBe(
+        '"url" parameter is valid but image type is not allowed',
+      );
     }
   });
 });

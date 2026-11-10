@@ -39,6 +39,7 @@ import {
   buildAppRouteCacheValue,
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
+  stripAppRouteHandlerRouteMissMarker,
   type RouteHandlerMiddlewareContext,
 } from "./app-route-handler-response.js";
 import {
@@ -59,6 +60,7 @@ import {
 } from "./cacheability-limits.js";
 import { frameworkTracer } from "./tracer.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
+import { logRequestError } from "./request-error-log.js";
 
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
@@ -291,7 +293,9 @@ export async function runAppRouteHandler(
       options.markDynamicUsage();
     },
     requestMode:
-      options.dynamicConfig === "force-static" || options.dynamicConfig === "error"
+      options.dynamicConfig === "force-dynamic" ||
+      options.dynamicConfig === "force-static" ||
+      options.dynamicConfig === "error"
         ? options.dynamicConfig
         : "auto",
     signal: options.requestSignal,
@@ -448,6 +452,7 @@ async function executeAppRouteHandlerImpl(
 
     // Stream producers may add, replace, or remove headers while completing.
     // Snapshot user policy only after EOF and before framework ISR headers.
+    response = stripAppRouteHandlerRouteMissMarker(response);
     const browserCacheControl = response.headers.get("Cache-Control") ?? undefined;
     const handlerSetCachePolicy = hasCdnResponsePolicy(response.headers);
     if (handlerSetCachePolicy) markRouteCacheabilityExplicitResponsePolicy();
@@ -680,7 +685,7 @@ async function executeAppRouteHandlerImpl(
       );
     }
 
-    console.error("[vinext] Route handler error:", error);
+    logRequestError("[vinext] Route handler error:", error);
     await options.reportRequestError(
       error,
       {

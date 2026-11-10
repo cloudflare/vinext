@@ -162,7 +162,7 @@ describe("normalizeRscRequest — basePath", () => {
     (assetPrefix) => {
       const pathname = `${assetPrefix ? "/cdn" : ""}/_next/static/missing.js`;
       const result = normalized(normalizeRscRequest(req(pathname), "/app", false, assetPrefix));
-      expect(result.cleanPathname).toBe(pathname);
+      expect(result.pathname).toBe(pathname);
       expect(result.hadBasePath).toBe(false);
       expect(normalizeRscRequest(req("/cdn/page"), "/app", false, assetPrefix)).toBeInstanceOf(
         Response,
@@ -181,7 +181,6 @@ describe("normalizeRscRequest — basePath", () => {
     const result = normalized(normalizeRscRequest(req("/outside"), "/app", true));
 
     expect(result.pathname).toBe("/outside");
-    expect(result.cleanPathname).toBe("/outside");
     expect(result.hadBasePath).toBe(false);
   });
 
@@ -249,11 +248,17 @@ describe("normalizeRscRequest — path normalization", () => {
 
 // ── RSC request detection ────────────────────────────────────────────────────
 
-describe("normalizeRscRequest — RSC detection and cleanPathname", () => {
-  it("detects RSC request by .rsc suffix and strips it from cleanPathname", () => {
-    const result = normalized(normalizeRscRequest(req("/about.rsc"), ""));
-    expect(result.isRscRequest).toBe(true);
-    expect(result.cleanPathname).toBe("/about");
+describe("normalizeRscRequest — RSC detection", () => {
+  // Next.js selects the RSC payload only with `RSC: 1`; a `.rsc` suffix is an
+  // ordinary part of the pathname (`/open/acme.rsc` binds slug "acme.rsc").
+  it.each([
+    ["/about.rsc", "/about.rsc"],
+    ["/dashboard/...rsc", "/dashboard/...rsc"],
+    ["/dashboard/%2E%2E.rsc", "/dashboard/...rsc"],
+  ])("treats a .rsc suffix in %s as part of the pathname", (path, pathname) => {
+    const result = normalized(normalizeRscRequest(req(path, { accept: "text/x-component" }), ""));
+    expect(result.isRscRequest).toBe(false);
+    expect(result.pathname).toBe(pathname);
   });
 
   it("does not select RSC rendering by Accept: text/x-component header alone", () => {
@@ -269,7 +274,13 @@ describe("normalizeRscRequest — RSC detection and cleanPathname", () => {
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts
     const result = normalized(normalizeRscRequest(req("/about", { [RSC_HEADER]: "1" }), ""));
     expect(result.isRscRequest).toBe(true);
-    expect(result.cleanPathname).toBe("/about");
+    expect(result.pathname).toBe("/about");
+  });
+
+  it("keeps a .rsc suffix in the pathname of an RSC request", () => {
+    const result = normalized(normalizeRscRequest(req("/about.rsc", { [RSC_HEADER]: "1" }), ""));
+    expect(result.isRscRequest).toBe(true);
+    expect(result.pathname).toBe("/about.rsc");
   });
 
   it("does not select RSC rendering by _rsc query alone on an HTML URL", () => {
@@ -277,7 +288,7 @@ describe("normalizeRscRequest — RSC detection and cleanPathname", () => {
       normalizeRscRequest(req(`/about?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`), ""),
     );
     expect(result.isRscRequest).toBe(false);
-    expect(result.cleanPathname).toBe("/about");
+    expect(result.pathname).toBe("/about");
   });
 
   it("detects Next-style RSC requests by RSC header plus _rsc query on an HTML URL", () => {
@@ -289,29 +300,12 @@ describe("normalizeRscRequest — RSC detection and cleanPathname", () => {
     );
     expect(result.isRscRequest).toBe(true);
     expect(result.pathname).toBe("/about");
-    expect(result.cleanPathname).toBe("/about");
   });
 
-  it("cleanPathname equals pathname when inert RSC headers appear on an HTML URL", () => {
-    const result = normalized(
-      normalizeRscRequest(req("/about", { accept: "text/x-component" }), ""),
-    );
-    expect(result.isRscRequest).toBe(false);
-    expect(result.cleanPathname).toBe("/about");
-  });
-
-  it("cleanPathname equals pathname for a plain (non-RSC) request", () => {
+  it("detects a plain (non-RSC) request", () => {
     const result = normalized(normalizeRscRequest(req("/about"), ""));
     expect(result.isRscRequest).toBe(false);
-    expect(result.cleanPathname).toBe("/about");
-  });
-
-  it("strips .rsc suffix from cleanPathname when RSC headers are also present", () => {
-    const result = normalized(
-      normalizeRscRequest(req("/about.rsc", { accept: "text/x-component" }), ""),
-    );
-    expect(result.isRscRequest).toBe(true);
-    expect(result.cleanPathname).toBe("/about");
+    expect(result.pathname).toBe("/about");
   });
 });
 
@@ -486,11 +480,15 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
 
   it("normalizes the semantic render mode marker", () => {
     const normal = normalized(
-      normalizeRscRequest(req("/page.rsc", { [VINEXT_RSC_RENDER_MODE_HEADER]: "true" }), ""),
+      normalizeRscRequest(
+        req("/page", { [RSC_HEADER]: "1", [VINEXT_RSC_RENDER_MODE_HEADER]: "true" }),
+        "",
+      ),
     );
     const prefetchShell = normalized(
       normalizeRscRequest(
-        req("/page.rsc", {
+        req("/page", {
+          [RSC_HEADER]: "1",
           [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
         }),
         "",
@@ -721,10 +719,12 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
 // ── Compound scenarios ───────────────────────────────────────────────────────
 
 describe("normalizeRscRequest — compound scenarios", () => {
-  it("basePath + .rsc: strips basePath from pathname and .rsc from cleanPathname", () => {
-    const result = normalized(normalizeRscRequest(req("/app/dashboard.rsc"), "/app"));
+  it("basePath + RSC: strips basePath and keeps a .rsc suffix in the pathname", () => {
+    const result = normalized(
+      normalizeRscRequest(req("/app/dashboard.rsc", { [RSC_HEADER]: "1" }), "/app"),
+    );
     expect(result.pathname).toBe("/dashboard.rsc");
-    expect(result.cleanPathname).toBe("/dashboard");
+    expect(result.requestPathname).toBe("/dashboard.rsc");
     expect(result.isRscRequest).toBe(true);
     expect(result.hadBasePath).toBe(true);
   });
@@ -732,7 +732,6 @@ describe("normalizeRscRequest — compound scenarios", () => {
   it("preserves outside-basePath pathnames when config rules opt out", () => {
     const result = normalized(normalizeRscRequest(req("/outside"), "/app", true));
     expect(result.pathname).toBe("/outside");
-    expect(result.cleanPathname).toBe("/outside");
     expect(result.hadBasePath).toBe(false);
   });
 
