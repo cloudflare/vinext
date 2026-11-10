@@ -884,6 +884,15 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
     expect(runHoistedLoader(html).attributes.nonce).toBe("first");
   });
 
+  it("queues deferred externals only when the browser runs them as classic scripts", () => {
+    for (const type of ["", "text/javascript", " Application/X-JavaScript ", "text/jscript"]) {
+      const html = renderBeforeInteractiveInlineScripts([
+        { id: "t", src: "/t.js", attributes: { defer: true, type } },
+      ]);
+      expect(readQueuedScripts(html)).toHaveLength(1);
+    }
+  });
+
   it("queues scripts that run after parsing for the bootstrap, in order", () => {
     const html = renderBeforeInteractiveInlineScripts([
       { id: "deferred", src: "/deferred.js", nonce: "n1", attributes: { defer: true } },
@@ -934,9 +943,14 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
     expect(readQueuedScripts(inline)).toEqual([]);
     expect(runHoistedLoader(inline).attributes.type).toBe(" module ");
 
+    // Deferred externals the browser never fetches (nomodule, data blocks)
+    // fire no `load` or `error`, so queueing them would stall hydration.
     const parsingAttributes: Record<string, string | boolean>[] = [
       { type: " module " },
       { defer: true, async: true },
+      { defer: true, nomodule: true },
+      { defer: true, type: "text/plain" },
+      { defer: true, type: "module " },
       {},
     ];
     for (const attributes of parsingAttributes) {

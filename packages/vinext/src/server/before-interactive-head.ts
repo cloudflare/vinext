@@ -47,6 +47,13 @@ const QUEUE_SCRIPT = `(self.${BEFORE_INTERACTIVE_QUEUE_GLOBAL}=self.${BEFORE_INT
 // case-insensitive match. Any other non-JavaScript type is a data block.
 const MODULE_TYPE = /^module$/i;
 
+// The `type` values (after trimming) that make the browser run a classic
+// script: the HTML spec's JavaScript MIME type essences. A missing or empty
+// `type` is classic too. Anything else is a data block, which the browser
+// never fetches, so it fires neither `load` nor `error`.
+const CLASSIC_TYPE =
+  /^\s*(?:(?:text|application)\/(?:x-)?(?:java|ecma)script|text\/(?:javascript1\.[0-5]|jscript|livescript))?\s*$/i;
+
 function findAttribute(attrs: readonly [string, string][], name: string): string | undefined {
   return attrs.find(([key]) => key.toLowerCase() === name)?.[1];
 }
@@ -61,10 +68,15 @@ function runsAfterParsing(
 ): boolean {
   const type = findAttribute(attrs, "type");
   if (type !== undefined && MODULE_TYPE.test(type)) return true;
+  // A deferred classic external. With `nomodule` (in a browser with module
+  // support) or a data-block type the browser never runs it, so it stays a tag
+  // rather than holding the queue on a `load` that never fires.
   return (
     script.content === undefined &&
     findAttribute(attrs, "defer") !== undefined &&
-    findAttribute(attrs, "async") === undefined
+    findAttribute(attrs, "async") === undefined &&
+    findAttribute(attrs, "nomodule") === undefined &&
+    (type === undefined || CLASSIC_TYPE.test(type))
   );
 }
 
