@@ -100,7 +100,9 @@ const projectServers = {
       "app-router-prod/server-action-late-routing.spec.ts",
       "app-router-prod/image-middleware.spec.ts",
       "app-router-prod/image-get-image-props.spec.ts",
+      "app-router-prod/image-default-qualities.spec.ts",
       "app-router-prod/image-config-chunk.spec.ts",
+      "app-router-prod/pages-navigation-chunk.spec.ts",
       "app-router-prod/pages-res-revalidate.spec.ts",
       "app-router-prod/client-reference-groups.spec.ts",
       "app-router-prod/route-manifest-chunk.spec.ts",
@@ -114,9 +116,12 @@ const projectServers = {
       "app-router-prod/prefetched-shell-async-metadata.spec.ts",
       "app-router-prod/soft-nav-rsc-cache.spec.ts",
       "app-router-prod/rsc-miss-document.spec.ts",
+      "app-router-prod/image-local-patterns.spec.ts",
+      "app-router-prod/image-source-cache-control.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
       "app-router/tsconfig-exact-path.spec.ts",
+      "app-router/nextjs-compat/segment-cache-dynamic-params.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
     server: {
@@ -178,6 +183,20 @@ const projectServers = {
       port: 4205,
       reuseExistingServer: false,
       timeout: 60_000,
+    },
+  },
+  // The same BFCache specs against a production build, where Links prefetch
+  // and the client runs minified React.
+  "app-router-bfcache-prod": {
+    testDir: "./tests/e2e/app-router-bfcache",
+    use: { baseURL: "http://localhost:4238" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4238",
+      cwd: "./tests/fixtures/app-bfcache",
+      port: 4238,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
     },
   },
   "catch-error": {

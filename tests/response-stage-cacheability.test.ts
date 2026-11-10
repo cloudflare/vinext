@@ -252,6 +252,7 @@ describe("response-stage cacheability", () => {
     const admitted: Response[] = [];
     const render = (options: {
       cache: "bypass" | "shared";
+      keepsParamsHeader?: boolean;
       rawManifest: string | null;
       recomposesRequestScopedHeaders: boolean;
     }) =>
@@ -305,6 +306,17 @@ describe("response-stage cacheability", () => {
     expect(admitted).toHaveLength(1);
     expect(admitted[0]!.headers.has(VINEXT_PARAMS_HEADER)).toBe(false);
     expect(admitted[0]!.headers.has(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(false);
+
+    // An intercepted response keeps its params, which the request stage can't
+    // recompose.
+    const intercepted = await render({
+      cache: "shared",
+      keepsParamsHeader: true,
+      rawManifest,
+      recomposesRequestScopedHeaders: true,
+    });
+    expect(intercepted.headers.get(VINEXT_PARAMS_HEADER)).toBe(encodeURIComponent('{"id":"one"}'));
+    expect(intercepted.headers.has(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(false);
 
     for (const kept of [
       await render({ cache: "bypass", rawManifest, recomposesRequestScopedHeaders: true }),
@@ -728,7 +740,9 @@ describe("response-stage metadata route admission", () => {
       servedUrl: "/[locale]/event/[city]/[eventId]/opengraph-image",
       patternParts: [":locale", "event", ":city", ":eventId", "opengraph-image"],
       contentType: "image/png",
-      module: { default: response },
+      // Next.js stores a metadata route under a dynamic segment only when
+      // it generates its params.
+      module: { default: response, generateStaticParams: () => [] },
     };
   }
 

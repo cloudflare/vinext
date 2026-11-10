@@ -37,6 +37,7 @@ import {
   type StaticParamsMap,
 } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
+import { tryRealpathSync } from "./ssr-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
 import { loadMdxEsmReader } from "../utils/mdx-scan.js";
 import { findDir } from "../utils/project.js";
@@ -48,6 +49,10 @@ import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtua
 import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
+import {
+  normalizeNextDataPagePathname,
+  shouldAddTrailingSlashToPagesDataPath,
+} from "../server/pages-data-route.js";
 import {
   extractLocaleFromUrl,
   normalizeDefaultLocalePathname,
@@ -1242,6 +1247,10 @@ function configuredRewritesCanReplaceWarmPath(
   return configuredRulesAffectWarmPath(pathname, applicableRewrites, config);
 }
 
+function canonicalDir(dir: string): string {
+  return toSlash(tryRealpathSync(dir) ?? dir);
+}
+
 function findMiddlewareConventionFile(
   root: string,
   appDir: string | null,
@@ -1250,7 +1259,9 @@ function findMiddlewareConventionFile(
 ): string | null {
   const routeDir = appDir ?? pagesDir;
   const routeRoot = routeDir ? path.dirname(routeDir) : root;
-  const conventionDir = routeRoot === path.join(root, "src") ? routeRoot : root;
+  // Compare real paths: `root` is resolved through symlinks, a user appDir may not be.
+  const conventionDir =
+    canonicalDir(routeRoot) === canonicalDir(path.join(root, "src")) ? routeRoot : root;
   for (const name of ["proxy", "middleware"]) {
     for (const extension of pageExtensions) {
       const filePath = path.join(conventionDir, `${name}.${extension}`);
@@ -1265,8 +1276,32 @@ export function matchesMiddlewareWarmPath(
   pathname: string,
   matcher: MatcherConfig | undefined,
   i18n: ResolvedNextConfig["i18n"],
+  options: {
+    basePath?: string;
+    /**
+     * Whether the path's Pages data request reaches middleware slashed
+     * (`shouldAddTrailingSlashToPagesDataPath`). Omit for a path without a
+     * Pages data target.
+     */
+    pagesDataTrailingSlash?: boolean;
+    skipProxyUrlNormalize?: boolean;
+    trailingSlash?: boolean;
+  } = {},
 ): boolean {
   const encodedPathname = new URL(pathname, "https://vinext.invalid").pathname;
+  // Runtime middleware gates on the pathname as requested. The HTML warm
+  // request carries the configured terminal slash, and its default-locale
+  // root is tested as `/en/` where Next.js restores that slash. A Pages data
+  // request is matched as its page, slashed as the runtime normalizes it.
+  const trailingSlash = options.trailingSlash ?? false;
+  // The warmer slashes the basePath-prefixed path, so a file-like basePath
+  // keeps an unslashed root.
+  const htmlRequestPathname = normalizePathTrailingSlash(
+    options.basePath
+      ? `${options.basePath}${encodedPathname === "/" ? "" : encodedPathname}`
+      : encodedPathname,
+    trailingSlash,
+  );
   const firstSegment = encodedPathname.split("/", 3)[1]?.toLowerCase();
   const localeContexts: Array<MiddlewareLocaleMatchContext | undefined> = i18n
     ? i18n.locales.some((locale) => locale.toLowerCase() === firstSegment)
@@ -1279,18 +1314,46 @@ export function matchesMiddlewareWarmPath(
           (defaultLocale) => ({ defaultLocale, kind: "defaulted" as const }),
         )
     : [undefined];
-  const matchPathnames = [encodedPathname];
-  try {
-    const decodedPathname = decodeURIComponent(encodedPathname);
-    if (decodedPathname !== encodedPathname) matchPathnames.push(decodedPathname);
-  } catch {
-    // Match runtime middleware behavior: malformed encoding is non-fatal.
+  const requestSpellings = [
+    {
+      localeContexts: shouldRestoreLocaleRootTrailingSlash(htmlRequestPathname, options)
+        ? localeContexts.map((localeContext) =>
+            localeContext?.kind === "defaulted"
+              ? { ...localeContext, restoreRootTrailingSlash: true }
+              : localeContext,
+          )
+        : localeContexts,
+      pathname: normalizePathTrailingSlash(encodedPathname, trailingSlash),
+    },
+  ];
+  if (options.pagesDataTrailingSlash !== undefined) {
+    // The emitted data URL names the build's default locale, which the
+    // runtime then matches as a literal locale segment.
+    const dataLocaleContexts: Array<MiddlewareLocaleMatchContext | undefined> = [
+      i18n ? { kind: "literal" } : undefined,
+    ];
+    requestSpellings.push({
+      localeContexts: dataLocaleContexts,
+      pathname: normalizeNextDataPagePathname(
+        localizePagesDataPath(encodedPathname, i18n),
+        options.pagesDataTrailingSlash,
+      ),
+    });
   }
-  return matchPathnames.some((matchPathname) =>
-    localeContexts.some((localeContext) =>
-      matchesMiddlewarePathname(matchPathname, matcher, i18n, localeContext),
-    ),
-  );
+  return requestSpellings.some((spelling) => {
+    const matchPathnames = [spelling.pathname];
+    try {
+      const decodedPathname = decodeURIComponent(spelling.pathname);
+      if (decodedPathname !== spelling.pathname) matchPathnames.push(decodedPathname);
+    } catch {
+      // Match runtime middleware behavior: malformed encoding is non-fatal.
+    }
+    return matchPathnames.some((matchPathname) =>
+      spelling.localeContexts.some((localeContext) =>
+        matchesMiddlewarePathname(matchPathname, matcher, i18n, localeContext),
+      ),
+    );
+  });
 }
 
 async function startPathDiscoveryServer(options: {
@@ -1495,40 +1558,7 @@ export async function discoverPrerenderPathManifest(
     ? extractMiddlewareMatcherConfig(middlewarePath)
     : undefined;
   const configuredMatcher = middlewareMatcher as MatcherConfig | undefined;
-  const middlewareMayRouteWarmPath = (pathname: string): boolean =>
-    middlewarePath !== null && matchesMiddlewareWarmPath(pathname, configuredMatcher, config.i18n);
   const routedWarmPaths = [...paths, ...discoveredRouteHandlerPaths];
-  const routeMayResolveWarmPathSet = new Set(
-    hasStagedRequestRouting
-      ? routedWarmPaths.filter(
-          (pathname) =>
-            middlewareMayRouteWarmPath(pathname) ||
-            configuredRewritesCanReplaceWarmPath(
-              pathname,
-              config.rewrites,
-              discoveredNonDynamicPathSet.has(pathname),
-              config,
-              (rewrite) => !isExternalUrl(rewrite.destination),
-            ),
-        )
-      : [],
-  );
-  const requestStageMayTerminateWarmPathSet = new Set(
-    hasStagedRequestRouting
-      ? routedWarmPaths.filter(
-          (pathname) =>
-            middlewareMayRouteWarmPath(pathname) ||
-            configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
-            configuredRewritesCanReplaceWarmPath(
-              pathname,
-              config.rewrites,
-              discoveredNonDynamicPathSet.has(pathname),
-              config,
-              (rewrite) => isExternalUrl(rewrite.destination),
-            ),
-        )
-      : [],
-  );
   const excludedWarmPathSet = new Set(
     options.responseVary && !hasStagedRequestRouting
       ? routedWarmPaths.filter(
@@ -1593,6 +1623,56 @@ export async function discoverPrerenderPathManifest(
         routePatterns: pagesWarmMetadata.routePatterns,
         rscPaths: [],
       };
+  const pagesDataRequestsGetTrailingSlash = shouldAddTrailingSlashToPagesDataPath(
+    true,
+    config.trailingSlash,
+    config.skipProxyUrlNormalize,
+  );
+  // Route metadata is shared by a Pages page and its data target. In a hybrid
+  // app, only a path the Pages Router owns emits that target.
+  const pagesOwnedPathSet = appDir ? new Set(appOwnedWarmPaths.pagesPaths) : null;
+  const middlewareMatchesWarmPath = (pathname: string): boolean =>
+    middlewarePath !== null &&
+    matchesMiddlewareWarmPath(pathname, configuredMatcher, config.i18n, {
+      basePath: config.basePath,
+      pagesDataTrailingSlash:
+        discoveredPagesDataPathSet.has(pathname) && (pagesOwnedPathSet?.has(pathname) ?? true)
+          ? pagesDataRequestsGetTrailingSlash
+          : undefined,
+      skipProxyUrlNormalize: config.skipProxyUrlNormalize,
+      trailingSlash: config.trailingSlash,
+    });
+  const routeMayResolveWarmPathSet = new Set(
+    hasStagedRequestRouting
+      ? routedWarmPaths.filter(
+          (pathname) =>
+            middlewareMatchesWarmPath(pathname) ||
+            configuredRewritesCanReplaceWarmPath(
+              pathname,
+              config.rewrites,
+              discoveredNonDynamicPathSet.has(pathname),
+              config,
+              (rewrite) => !isExternalUrl(rewrite.destination),
+            ),
+        )
+      : [],
+  );
+  const requestStageMayTerminateWarmPathSet = new Set(
+    hasStagedRequestRouting
+      ? routedWarmPaths.filter(
+          (pathname) =>
+            middlewareMatchesWarmPath(pathname) ||
+            configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
+            configuredRewritesCanReplaceWarmPath(
+              pathname,
+              config.rewrites,
+              discoveredNonDynamicPathSet.has(pathname),
+              config,
+              (rewrite) => isExternalUrl(rewrite.destination),
+            ),
+        )
+      : [],
+  );
   for (const pathname of configuredCandidatePaths) {
     if (
       appOwnedWarmPaths.routePatterns[pathname] ||

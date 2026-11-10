@@ -37,60 +37,71 @@ const BLOCK_MESSAGE = "Next.js has blocked a javascript: URL as a security preca
 
 describe("App Router appRouterInstance blocks dangerous URI schemes", () => {
   it("router.push throws on javascript: URL", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.push("javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
   });
 
   it("router.replace throws on javascript: URL", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.replace("javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
   });
 
   it("router.prefetch throws on javascript: URL", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.prefetch("javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
   });
 
   it("router.push throws on data: URL", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.push("data:text/html,<script>alert(1)</script>")).toThrow(
       BLOCK_MESSAGE,
     );
   });
 
   it("router.push throws on vbscript: URL", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.push("vbscript:MsgBox(1)")).toThrow(BLOCK_MESSAGE);
   });
 
   it("router.push throws on obfuscated javascript: URL with embedded tabs", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.push("java\tscript:alert(1)")).toThrow(BLOCK_MESSAGE);
   });
 
   it("router.push throws on uppercase JAVASCRIPT: URL", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.push("JAVASCRIPT:alert(1)")).toThrow(BLOCK_MESSAGE);
   });
 
   it("router.push throws on leading-whitespace javascript: URL", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.push("   javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
   });
 
   // Safe URLs must not throw — guard must not over-block.
   it("router.push does not throw on a normal pathname", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.push("/safe")).not.toThrow();
   });
 
   it("router.replace does not throw on absolute https URL", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.replace("https://example.com/path")).not.toThrow();
   });
 
   it("router.prefetch does not throw on a normal pathname", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(() => appRouterInstance.prefetch("/safe")).not.toThrow();
   });
 });
@@ -99,7 +110,8 @@ describe("App Router appRouterInstance emits console.error on dangerous URI sche
   it("router.push logs to console.error before throwing", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      const { appRouterInstance } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       expect(() => appRouterInstance.push("javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
       expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
     } finally {
@@ -110,7 +122,8 @@ describe("App Router appRouterInstance emits console.error on dangerous URI sche
   it("router.replace logs to console.error before throwing", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      const { appRouterInstance } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       expect(() => appRouterInstance.replace("javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
       expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
     } finally {
@@ -121,7 +134,8 @@ describe("App Router appRouterInstance emits console.error on dangerous URI sche
   it("router.prefetch logs to console.error before throwing", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      const { appRouterInstance } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       expect(() => appRouterInstance.prefetch("javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
       expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
     } finally {
@@ -132,7 +146,8 @@ describe("App Router appRouterInstance emits console.error on dangerous URI sche
   it("does not log when the URL is safe", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      const { appRouterInstance } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       appRouterInstance.push("/safe");
       expect(consoleError).not.toHaveBeenCalledWith(BLOCK_MESSAGE);
     } finally {

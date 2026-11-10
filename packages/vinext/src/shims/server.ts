@@ -1450,9 +1450,11 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
       requestContext,
       Promise.resolve(task).catch((error) => {
         console.error("[vinext] after() task failed:", error);
+        requestContext.afterContext.onTaskError?.(error);
       }),
     );
-    getRequestExecutionContext()?.waitUntil(guarded);
+    if (requestContext.afterContext.waitUntil) requestContext.afterContext.waitUntil(guarded);
+    else getRequestExecutionContext()?.waitUntil(guarded);
     return;
   }
 
@@ -1472,7 +1474,13 @@ export async function connection(): Promise<void> {
     suspendConnectionProbe,
     throwIfInsideCacheScope,
   } = await import("./headers.js");
-  if (getHeadersContext()?.forceStatic) {
+  const headersContext = getHeadersContext();
+  if (headersContext?.staticParamsRoute !== undefined && headersContext.accessError) {
+    // A cache scope still fails to store what it computed after the error.
+    throwIfInsideCacheScope("connection()");
+    throw headersContext.accessError;
+  }
+  if (headersContext?.forceStatic) {
     return;
   }
   markRenderRequestApiUsage("connection");

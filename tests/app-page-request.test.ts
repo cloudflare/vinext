@@ -1,4 +1,7 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { revalidatePath } from "../packages/vinext/src/shims/cache.js";
 import { resolveAppPageSpecialError } from "../packages/vinext/src/server/app-page-execution.js";
 import {
   buildAppPageElement,
@@ -11,14 +14,124 @@ import {
   resolveAppPageGeneratedStaticParamsFor,
   validateAppPageDynamicParams,
   type GeneratedStaticParamsMemo,
+  validateAppPageRouteDynamicParams,
 } from "../packages/vinext/src/server/app-page-request.js";
-import { cookies, headersContextFromRequest } from "../packages/vinext/src/shims/headers.js";
+import {
+  cookies,
+  headersContextFromRequest,
+  runStaticParamsCheckDetached,
+} from "../packages/vinext/src/shims/headers.js";
 import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 
 describe("app page request helpers", () => {
+  it("keeps an on-demand revalidation from refreshing generateStaticParams' cached data", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    try {
+      for (const isOnDemandRevalidate of [false, true]) {
+        const response = await runWithRequestContext(
+          createRequestContext({ isOnDemandRevalidate }),
+          () =>
+            runStaticParamsCheckDetached(() =>
+              validateAppPageRouteDynamicParams({
+                dynamicParamsConfig: false,
+                async generateStaticParams() {
+                  await (await fetch(url, { cache: "force-cache" })).text();
+                  return [{ slug: "known" }];
+                },
+                isDynamicRoute: true,
+                isProduction: true,
+                params: { slug: "unknown" },
+              }),
+            ),
+        );
+        expect(response?.status).toBe(404);
+      }
+      // Next.js runs generateStaticParams outside the revalidation, so the
+      // generator reads its cached fetch.
+      expect(hits).toBe(1);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("runs a route's generateStaticParams with its fetchCache, as Next.js does", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    try {
+      for (let request = 0; request < 2; request++) {
+        const response = await runWithRequestContext(createRequestContext(), () =>
+          runStaticParamsCheckDetached(() =>
+            validateAppPageRouteDynamicParams({
+              dynamicParamsConfig: false,
+              fetchCache: "force-no-store",
+              async generateStaticParams() {
+                await (await fetch(url, { cache: "force-cache" })).text();
+                return [{ slug: "known" }];
+              },
+              isDynamicRoute: true,
+              isProduction: true,
+              params: { slug: "unknown" },
+            }),
+          ),
+        );
+        expect(response?.status).toBe(404);
+      }
+      // force-no-store keeps the generator's force-cache fetch out of the cache.
+      expect(hits).toBe(2);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("tags generateStaticParams' fetches with the route's implicit tags, as Next.js does", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    const check = () =>
+      runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          validateAppPageRouteDynamicParams({
+            dynamicParamsConfig: false,
+            async generateStaticParams() {
+              await (await fetch(url, { cache: "force-cache" })).text();
+              return [{ slug: "known" }];
+            },
+            isDynamicRoute: true,
+            isProduction: true,
+            params: { slug: "unknown" },
+            routeSegments: ["tagged-posts", "[slug]"],
+          }),
+        ),
+      );
+    try {
+      await check();
+      revalidatePath("/tagged-posts/[slug]", "page");
+      await check();
+      // revalidatePath() expires the cached fetch through the page's tag.
+      expect(hits).toBe(2);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it("returns 404 when dynamicParams=false receives unknown params", async () => {
     const response = await validateAppPageDynamicParams({
       enforceStaticParamsOnly: true,
@@ -900,6 +1013,12 @@ describe("app page request helpers", () => {
       new URLSearchParams("from=feed"),
     );
     expect(renderInterceptResponse).toHaveBeenCalledTimes(1);
+    // The response carries the same params for the client's useParams().
+    expect(renderInterceptResponse).toHaveBeenCalledWith(
+      sourceRoute,
+      { type: "intercept-element" },
+      { locale: "en", tab: "recent", id: "123", catchAll: ["photos", "123"] },
+    );
   });
 
   it("returns intercept opts when the source route is the current route", async () => {

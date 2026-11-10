@@ -87,7 +87,7 @@ test.describe("RSC fetch non-ok response handling", () => {
     // the fix is incomplete and a reload loop develops, the intercept hit
     // count will grow without bound.
     let targetRscHits = 0;
-    await page.route(/\/rsc-fetch-error-target(\.rsc)?(\?|$)/, (route) => {
+    await page.route(/\/rsc-fetch-error-target(\?|$)/, (route) => {
       if (!isAppRouterRscRequestForPath(route.request(), targetPath)) {
         return route.continue();
       }
@@ -153,7 +153,7 @@ test.describe("RSC fetch non-ok response handling", () => {
     // triggers the hard-nav. The target route is intentionally absent from the
     // home page's visible Links, so a count of 0 means the test skipped the
     // !ok guard path, while a count above 1 means hydration fell back to a
-    // post-reload .rsc fetch or entered a reload loop.
+    // post-reload RSC fetch or entered a reload loop.
     expect(targetRscHits).toBe(1);
 
     const rscParseError = consoleErrors.find((msg) => isRscStreamParseError(msg));
@@ -168,7 +168,7 @@ test.describe("RSC fetch non-ok response handling", () => {
 
     // Chain: client nav to /rsc-fetch-redirect-src → fetch
     // /rsc-fetch-redirect-src?_rsc → real server redirect to
-    // /rsc-fetch-error-target.rsc → 500. The hard-nav target must be
+    // /rsc-fetch-error-target, whose RSC fetch → 500. The hard-nav target must be
     // /rsc-fetch-error-target (the post-redirect URL), not
     // /rsc-fetch-redirect-src (the original request).
     // Without the navResponseUrl ?? navResponse.url branch in the nav-site
@@ -199,11 +199,18 @@ test.describe("RSC fetch non-ok response handling", () => {
         isAppRouterRscRequestForPath(response.request(), sourcePath) && response.status() === 307,
       { timeout: 10_000 },
     );
+    // The fetch follows the 307 itself, so Playwright reports the followed
+    // request with provisional headers; match it by the request it came from.
     const targetErrorPromise = page.waitForResponse(
-      (response) =>
-        (isAppRouterRscRequestForPath(response.request(), targetPath) ||
-          new URL(response.url()).pathname === `${targetPath}.rsc`) &&
-        response.status() === 500,
+      (response) => {
+        const redirectedFrom = response.request().redirectedFrom();
+        return (
+          new URL(response.url()).pathname === targetPath &&
+          redirectedFrom !== null &&
+          isAppRouterRscRequestForPath(redirectedFrom, sourcePath) &&
+          response.status() === 500
+        );
+      },
       { timeout: 10_000 },
     );
     const navigationPromise = page.waitForURL(`${BASE}${targetPath}`, { timeout: 10_000 });

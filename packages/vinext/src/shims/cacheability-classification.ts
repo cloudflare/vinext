@@ -125,6 +125,14 @@ export function beginRouteCacheability(
   return true;
 }
 
+/** Forget the route a dispatch began classifying when routing resumes after rejecting it. */
+export function resetRouteCacheability(): void {
+  const state = readRouteCacheabilityState();
+  if (!state) return;
+  state.route = undefined;
+  state.patternDynamicReason = undefined;
+}
+
 /** Prevent shared caching when request processing before route dispatch was request-specific. */
 export function markRouteCacheabilityDynamic(reason: string): void {
   const state = readRouteCacheabilityState();

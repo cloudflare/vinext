@@ -30,6 +30,13 @@ export type ResponseStageCacheabilityOptions = {
    * shared response drops them before admission and storage.
    */
   recomposesRequestScopedHeaders?: boolean;
+  /**
+   * Keeps `X-Vinext-Params` when the request scoped headers are dropped. An
+   * intercepted response's params include its target's, which the request
+   * stage doesn't match. Its identity holds the interception context, so the
+   * stored params are its own.
+   */
+  keepsParamsHeader?: boolean;
   /** Generated adapter registration, deferred until the response stage executes. */
   registerCacheAdapters(): void;
   request: Request;
@@ -82,7 +89,9 @@ export async function withResponseStageCacheability(
     !options.probeMode;
   if (!cacheability) {
     const rendered = await render(context);
-    return stripsRequestScopedHeaders ? withoutRequestScopedHeaders(rendered) : rendered;
+    return stripsRequestScopedHeaders
+      ? withoutRequestScopedHeaders(rendered, options.keepsParamsHeader === true)
+      : rendered;
   }
   if (options.policyHeadersAppliedBeforeRender) {
     cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);
@@ -98,7 +107,7 @@ export async function withResponseStageCacheability(
   }
   const renderedResponse = await render(context);
   const rendered = stripsRequestScopedHeaders
-    ? withoutRequestScopedHeaders(renderedResponse)
+    ? withoutRequestScopedHeaders(renderedResponse, options.keepsParamsHeader === true)
     : renderedResponse;
   const response = options.policyHeadersAppliedBeforeRender
     ? rendered
@@ -118,15 +127,13 @@ export async function withResponseStageCacheability(
   return complete(response);
 }
 
-function withoutRequestScopedHeaders(response: Response): Response {
-  if (
-    !response.headers.has(VINEXT_PARAMS_HEADER) &&
-    !response.headers.has(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)
-  ) {
+function withoutRequestScopedHeaders(response: Response, keepsParams: boolean): Response {
+  const dropsParams = !keepsParams && response.headers.has(VINEXT_PARAMS_HEADER);
+  if (!dropsParams && !response.headers.has(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)) {
     return response;
   }
   const headers = new Headers(response.headers);
-  headers.delete(VINEXT_PARAMS_HEADER);
+  if (dropsParams) headers.delete(VINEXT_PARAMS_HEADER);
   headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
   return preserveFullyBufferedBodyMetadata(
     response,
