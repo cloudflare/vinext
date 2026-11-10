@@ -28,6 +28,7 @@ import type { ClientReferenceChunks } from "./client-reference-chunks.js";
 type ClientRuntimeMetadata = {
   clientEntryFile?: string;
   appBootstrapPreinitModules?: string[];
+  appBootstrapPreloadModules?: string[];
   appRouteManifestModule?: string;
   appClientReferenceChunks?: ClientReferenceChunks;
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
@@ -86,19 +87,38 @@ function collectCssGraph(
   return Object.keys(cssGraph).length > 0 ? cssGraph : undefined;
 }
 
-function collectAppBootstrapPreinitModules(
+/**
+ * The chunks the App Router browser entry statically imports, split by whether
+ * they can run ahead of the shell. A preinitialized module evaluates as soon as
+ * it loads, which on a reload can be before `<body>` has streamed. Evaluating
+ * the browser runtime starts hydration, so a chunk that holds or imports it is
+ * only preloaded, and runs when React's bootstrap script does. A user chunk
+ * group can put the runtime in one of these chunks.
+ */
+function collectAppBootstrapModules(
   buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
   appBrowserEntry: string | undefined,
+  appBrowserRuntime: string | undefined,
   applyBase: (file: string) => string,
-): string[] | undefined {
-  if (!appBrowserEntry) return undefined;
+): { preinit?: string[]; preload?: string[] } {
+  if (!appBrowserEntry) return {};
 
   const entryKey = Object.keys(buildManifest).find(
     (key) => buildManifest[key].file === appBrowserEntry,
   );
-  if (!entryKey) return undefined;
+  if (!entryKey) return {};
 
-  const modules: string[] = [];
+  function evaluatesRuntime(key: string, seen = new Set<string>()): boolean {
+    if (seen.has(key)) return false;
+    seen.add(key);
+    const chunk = buildManifest[key];
+    if (!chunk) return false;
+    if (chunk.file === appBrowserRuntime) return true;
+    return (chunk.imports ?? []).some((importedKey) => evaluatesRuntime(importedKey, seen));
+  }
+
+  const preinit: string[] = [];
+  const preload: string[] = [];
   const seenFiles = new Set<string>();
   const visitedChunks = new Set<string>();
 
@@ -113,20 +133,27 @@ function collectAppBootstrapPreinitModules(
       const importedChunk = buildManifest[importedKey];
       if (importedChunk?.file.endsWith(".js") && !seenFiles.has(importedChunk.file)) {
         seenFiles.add(importedChunk.file);
-        modules.push(applyBase(importedChunk.file));
+        (evaluatesRuntime(importedKey) ? preload : preinit).push(applyBase(importedChunk.file));
       }
       visit(importedKey);
     }
   }
 
   visit(entryKey);
-  return modules.length > 0 ? modules : undefined;
+  return {
+    ...(preinit.length > 0 ? { preinit } : {}),
+    ...(preload.length > 0 ? { preload } : {}),
+  };
 }
 
 /**
  * Read the client build manifest and compute runtime metadata used by
  * Cloudflare worker entry injection and Node production server startup.
  *
+ * - `appBootstrapPreinitModules` — chunks the App Router browser entry imports,
+ *   preinitialized during SSR.
+ * - `appBootstrapPreloadModules` — those of them that would start hydration if
+ *   evaluated ahead of the shell, preloaded during SSR instead.
  * - `appRouteManifestModule` — the App Router RouteManifest chunk, which the
  *   browser entry imports as it boots, preloaded during SSR.
  * - `appClientReferenceChunks` — what each App Router client reference loads
@@ -200,11 +227,14 @@ export function computeClientRuntimeMetadata(opts: {
     );
   }
 
-  metadata.appBootstrapPreinitModules = collectAppBootstrapPreinitModules(
+  const appBootstrapModules = collectAppBootstrapModules(
     buildManifest,
     clientEntryManifest?.appBrowserEntry,
+    clientEntryManifest?.appBrowserRuntime,
     appAssetUrl,
   );
+  metadata.appBootstrapPreinitModules = appBootstrapModules.preinit;
+  metadata.appBootstrapPreloadModules = appBootstrapModules.preload;
   if (clientEntryManifest?.appRouteManifest) {
     metadata.appRouteManifestModule = appAssetUrl(clientEntryManifest.appRouteManifest);
   }

@@ -83,6 +83,17 @@ export default function HomePage() {
           </p>
           <Link prefetch={false} href="/force-dynamic">Open /force-dynamic &rarr;</Link>
         </div>
+
+        <div className="card">
+          <h3>
+            <span className="badge">Prefetch</span> Prefetch shells
+          </h3>
+          <p>
+            Logs the loading-shell and search-param prefetches of static pages, with their cache
+            status and size.
+          </p>
+          <Link prefetch={false} href="/prefetch-shells">Open /prefetch-shells &rarr;</Link>
+        </div>
       </section>
     </main>
   );

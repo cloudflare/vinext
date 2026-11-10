@@ -1,12 +1,12 @@
 /**
  * App Router prefetch policy resolution, shared by `<Link>` (`link.tsx`) and
- * `router.prefetch()` (`navigation.ts`).
+ * `router.prefetch()` (`app-router-navigation.ts`).
  *
  * Decides, from the client prefetch route manifest
  * (`__VINEXT_LINK_PREFETCH_ROUTES__`), whether a prefetched RSC payload can be
  * cached for navigation reuse or must stay a learning-only / loading-shell
  * prefetch. Lives in `shims/internal/` because `link.tsx` is a `"use client"`
- * React module while `navigation.ts` must stay importable without React —
+ * React module while `app-router-navigation.ts` must stay importable without React —
  * mirrors the layering of `internal/app-route-detection.ts`.
  */
 import type {

@@ -1,6 +1,6 @@
 /**
  * Static-shell reuse across the params a shell's render didn't read, shared by
- * `<Link>` (`link.tsx`) and `router.prefetch()` (`navigation.ts`). Loaded on
+ * `<Link>` (`link.tsx`) and `router.prefetch()` (`app-router-navigation.ts`). Loaded on
  * demand, as it needs the route manifest's matcher.
  *
  * Ported from Next.js's segment cache (`varyParams`): a prefetched segment is
@@ -16,7 +16,7 @@ import {
 import { stripRscCacheBustingSearchParam } from "../../server/app-rsc-cache-busting.js";
 import { stripBasePath } from "../../utils/base-path.js";
 import { isUnknownRecord } from "../../utils/record.js";
-import type { CachedRscResponse } from "../navigation.js";
+import type { CachedRscResponse } from "../app-router-navigation.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";

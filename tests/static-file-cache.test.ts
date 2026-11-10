@@ -137,13 +137,13 @@ describe("StaticFileCache", () => {
     expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
   });
 
-  it("sets short cache-control for non-hashed files", async () => {
+  it("sets revalidating cache-control for non-hashed files", async () => {
     await writeFile(clientDir, "favicon.ico", "icon-data");
 
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/favicon.ico");
 
-    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=3600");
+    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=0");
   });
 
   it("generates weak etag from filename hash for hashed assets", async () => {
@@ -328,27 +328,18 @@ describe("StaticFileCache", () => {
     expect(cache.lookup("/_next/static/app-abc123.js.zst")).toBeUndefined();
   });
 
-  // ── HTML fallbacks ─────────────────────────────────────────────
+  // ── HTML files ─────────────────────────────────────────────────
 
-  it("resolves .html extension fallback for prerendered pages", async () => {
+  it("serves an .html file only under its own pathname", async () => {
     await writeFile(clientDir, "about.html", "<html>About</html>");
-
-    const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/about");
-
-    expect(entry).toBeDefined();
-    expect(entry!.original.path).toBe(toSlash(path.join(clientDir, "about.html")));
-    expect(entry!.original.headers["Content-Type"]).toBe("text/html; charset=utf-8");
-  });
-
-  it("resolves /index.html fallback for directory paths", async () => {
     await writeFile(clientDir, "blog/index.html", "<html>Blog</html>");
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/blog");
 
-    expect(entry).toBeDefined();
-    expect(entry!.original.path).toBe(toSlash(path.join(clientDir, "blog/index.html")));
+    expect(cache.lookup("/about.html")).toBeDefined();
+    expect(cache.lookup("/blog/index.html")).toBeDefined();
+    expect(cache.lookup("/about")).toBeUndefined();
+    expect(cache.lookup("/blog")).toBeUndefined();
   });
 
   // ── Directory traversal protection ─────────────────────────────

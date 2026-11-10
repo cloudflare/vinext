@@ -307,6 +307,37 @@ describe("app page boundary render helpers", () => {
     expect(body).not.toContain('data-boundary="not-found"');
   });
 
+  it("lets a failing boundary render reject instead of answering with the error document", async () => {
+    // The error document would carry the boundary's 404 status, which the
+    // ISR guards accept as the boundary's own document and store.
+    const common = createCommonOptions();
+    let fallbackToErrorDocumentOnShellError: boolean | undefined;
+    common.loadSsrHandler.mockImplementation(async () => ({
+      async handleSsr(
+        rscStream: ReadableStream<Uint8Array>,
+        _navContext?: unknown,
+        _fontData?: unknown,
+        options?: { fallbackToErrorDocumentOnShellError?: boolean },
+      ) {
+        fallbackToErrorDocumentOnShellError = options?.fallbackToErrorDocumentOnShellError;
+        return rscStream;
+      },
+    }));
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [rootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(common.loadSsrHandler).toHaveBeenCalledTimes(1);
+    expect(fallbackToErrorDocumentOnShellError).not.toBe(true);
+  });
+
   it("renders HTTP access fallbacks with layout metadata and wrapped HTML", async () => {
     const common = createCommonOptions();
 
@@ -457,8 +488,8 @@ describe("app page boundary render helpers", () => {
       isRscRequest: true,
       matchedParams: { id: "alice", rest: ["tail"] },
       renderToReadableStream: renderWirePayloadToStream,
-      request: new Request("https://example.com/base/distinct/alice/tail.rsc"),
-      requestUrl: "https://example.com/base/distinct/alice/tail.rsc",
+      request: new Request("https://example.com/base/distinct/alice/tail"),
+      requestUrl: "https://example.com/base/distinct/alice/tail",
       route,
       statusCode: 404,
     });
@@ -1201,8 +1232,8 @@ describe("app page boundary render helpers", () => {
           isRscRequest: true,
           matchedParams: { slug: "missing" },
           renderToReadableStream: renderWirePayloadToStream,
-          request: new Request("https://example.com/posts/missing.rsc"),
-          requestUrl: "https://example.com/posts/missing.rsc",
+          request: new Request("https://example.com/posts/missing"),
+          requestUrl: "https://example.com/posts/missing",
           route: {
             layoutTreePositions: [0],
             layouts: [rootLayoutModule],
@@ -1495,8 +1526,8 @@ describe("app page boundary render helpers", () => {
         isRscRequest: true,
         matchedParams: {},
         renderToReadableStream: renderWirePayloadToStream,
-        request: new Request("https://example.com/photo/1.rsc"),
-        requestUrl: "https://example.com/photo/1.rsc",
+        request: new Request("https://example.com/photo/1"),
+        requestUrl: "https://example.com/photo/1",
         route: {
           ...(page
             ? {}
@@ -1573,8 +1604,8 @@ describe("app page boundary render helpers", () => {
       isRscRequest: true,
       matchedParams: { slug: "missing" },
       renderToReadableStream: renderWirePayloadToStream,
-      request: new Request("https://example.com/posts/missing.rsc"),
-      requestUrl: "https://example.com/posts/missing.rsc",
+      request: new Request("https://example.com/posts/missing"),
+      requestUrl: "https://example.com/posts/missing",
       route,
       routeHead,
       statusCode: 404,
@@ -1606,8 +1637,8 @@ describe("app page boundary render helpers", () => {
       layoutModules: [rootLayoutModule],
       matchedParams: { team: "acme" },
       renderToReadableStream: renderWirePayloadToStream,
-      request: new Request("https://example.com/acme/settings.rsc"),
-      requestUrl: "https://example.com/acme/settings.rsc",
+      request: new Request("https://example.com/acme/settings"),
+      requestUrl: "https://example.com/acme/settings",
       route: {
         layoutTreePositions: [0, 1],
         layouts: [rootLayoutModule, leafLayoutModule],
@@ -1902,7 +1933,11 @@ describe("app page boundary render helpers", () => {
       sanitizeErrorForClient,
     });
 
-    expect(response?.status).toBe(200);
+    // Next.js sends a render error's document with a 500, whichever boundary catches it.
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(sanitizeErrorForClient).toHaveBeenCalledTimes(1);
 
     const html = await response?.text();
@@ -1910,6 +1945,29 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-boundary="route-error"');
     expect(html).toContain("route:safe:secret");
+  });
+
+  it("streams a route error boundary's RSC payload with a 200", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageErrorBoundary<TestModule>({
+      ...common,
+      error: new Error("secret"),
+      isRscRequest: true,
+      matchedParams: { slug: "post" },
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        error: routeErrorModule,
+        layouts: [rootLayoutModule],
+        params: { slug: "post" },
+        pattern: "/posts/[slug]",
+      },
+      sanitizeErrorForClient: (error: Error) => error,
+    });
+
+    // As Next.js's payload carrying the error does.
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("Content-Type")).toBe("text/x-component");
   });
 
   it("does not serialize production SSR stacks into the global error payload", async () => {
@@ -1981,7 +2039,7 @@ describe("app page boundary render helpers", () => {
       },
     });
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(500);
     expect(response?.headers.get("x-middleware-security")).toBe("present");
     expect(response?.headers.get("vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, x-auth-state`);
     expect(response?.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
@@ -2028,7 +2086,7 @@ describe("app page boundary render helpers", () => {
         },
       });
 
-      expect(response?.status).toBe(200);
+      expect(response?.status).toBe(500);
       expect(consoleError).toHaveBeenCalledWith(
         "[vinext] File-based metadata resolution failed while rendering error boundary for /posts/[slug]:",
         error,
@@ -2042,6 +2100,56 @@ describe("app page boundary render helpers", () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it("marks the global-error boundary that wraps an RSC error boundary payload", async () => {
+    const common = createCommonOptions();
+    let payload: unknown;
+
+    await renderAppPageErrorBoundary<TestModule>({
+      ...common,
+      error: new Error("secret"),
+      globalErrorModule,
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream(element: unknown) {
+        payload = element;
+        return createStreamFromMarkup("");
+      },
+      route: {
+        error: routeErrorModule,
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      sanitizeErrorForClient(error: Error) {
+        return error;
+      },
+    });
+
+    const boundaryProps: Record<string, unknown>[] = [];
+    const visit = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(visit);
+      if (!React.isValidElement(node)) return;
+      const props = node.props as Record<string, unknown>;
+      if ("fallback" in props) boundaryProps.push(props);
+      visit(props.children);
+    };
+    const record = payload as Record<string, unknown>;
+    visit(record[record.__route as string]);
+
+    expect(
+      boundaryProps
+        .filter((props) => props.isGlobalErrorBoundary === true)
+        .map((props) => props.fallback),
+    ).toEqual([GlobalErrorBoundary]);
+    expect(
+      boundaryProps
+        .filter((props) => props.wrapsGlobalErrorBoundary === true)
+        .map((props) => (props.fallback as { name?: string }).name),
+    ).toEqual(["DefaultGlobalError"]);
   });
 
   it("renders error boundary RSC responses as flat payloads", async () => {

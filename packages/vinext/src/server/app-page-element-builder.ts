@@ -42,6 +42,7 @@ import {
   isAppPageRouteGroupSegment,
   resolveAppPagePatternStateKey,
   resolveAppPageRouteStateKey,
+  resolveAppPageSemanticSegmentStateKey,
   type AppPageSemanticSegment,
 } from "./app-page-segment-state.js";
 import {
@@ -54,7 +55,7 @@ import type { AppPageParams } from "./app-page-boundary.js";
 import { tagAppPagePageError, tagAppPageSlotError } from "./app-page-execution.js";
 import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
-import { matchRoutePattern } from "../routing/route-pattern.js";
+import { resolveSlotParamOverrides } from "./app-page-navigation-params.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
@@ -265,6 +266,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   isForceStatic?: boolean;
   /** The render can never be stored (see buildAppPageElements). */
   isUncacheableRender?: boolean;
+  /** A loading shell without a loading boundary is the route tree (see buildAppPageElements). */
+  routeTreeOnlyPrefetchShell?: boolean;
   /** Layouts the navigating client holds (see buildAppPageElements). */
   mountedLayouts?: ReadonlySet<string> | null;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
@@ -320,28 +323,6 @@ export type BuildPageElementsOptions<
   scriptNonce?: string;
 };
 
-type AppPageNavigationParamModule = {
-  default?: unknown;
-};
-
-type AppPageNavigationParamSlot = {
-  default?: AppPageNavigationParamModule | null;
-  page?: AppPageNavigationParamModule | null;
-  slotPatternParts?: readonly string[] | null;
-  slotParamNames?: readonly string[] | null;
-};
-
-type AppPageNavigationParamRoute = {
-  params?: readonly string[] | null;
-  slots?: Readonly<Record<string, AppPageNavigationParamSlot>> | null;
-};
-
-type AppPageNavigationParamInterceptOptions = {
-  interceptPage?: unknown;
-  interceptParams?: AppPageParams | null;
-  interceptSlotKey?: string | null;
-};
-
 /**
  * Build the App Router element tree for a matched route.
  *
@@ -385,6 +366,7 @@ export async function buildPageElements<
     observePageSearchParamsAccess = false,
     isForceStatic = false,
     isUncacheableRender = false,
+    routeTreeOnlyPrefetchShell = false,
     mountedLayouts = null,
     serveStreamingMetadata,
     placeStreamedMetadataInHead = false,
@@ -1043,6 +1025,7 @@ export async function buildPageElements<
         globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
       isRscRequest,
       isUncacheableRender,
+      routeTreeOnlyPrefetchShell,
       interceptionId: opts?.interceptionId ?? null,
       mountedLayouts,
       mountedSlotIds,
@@ -1058,6 +1041,15 @@ export async function buildPageElements<
       routePath,
       semanticPageIdentity,
       semanticInterceptionTargetRouteId: opts?.interceptTargetRouteGraphId ?? null,
+      siblingInterceptSegmentKeys: isSiblingIntercept
+        ? resolveSiblingInterceptSegmentKeys(
+            sourcePageSegments,
+            route.routeSegments,
+            opts,
+            params,
+            effectiveParams,
+          )
+        : null,
       sourcePageSegments,
       rootNotFoundModule: rootNotFoundModule ?? null,
       rootForbiddenModule: rootForbiddenModule ?? null,
@@ -1081,9 +1073,9 @@ export async function buildPageElements<
  *    slot-scoped params, which `app-page-route-wiring` then hands to the
  *    slot page instead of the route's matched params.
  *
- * `routePath` is the already-normalized request pathname (basePath stripped,
- * RSC suffix removed). Re-parsing `request.url` here would re-introduce the
- * basePath and silently break the match for any app that configures one.
+ * `routePath` is the already-normalized request pathname (basePath stripped).
+ * Re-parsing `request.url` here would re-introduce the basePath and silently
+ * break the match for any app that configures one.
  */
 function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends AppPageErrorModule>(
   route: AppPageBuildRoute<TModule, TErrorModule>,
@@ -1135,6 +1127,66 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
   }
 
   return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+/**
+ * The state key of each segment a sibling intercept's levels retain, from the
+ * app root down to the segment its element renders, so its Activity lists key
+ * like Next.js's for the intercepting route: the marker segment carries its
+ * marker, and a dynamic marker segment keys per value. The intercepting
+ * route's own layouts and boundaries render inside its page element, so the
+ * levels stop above the first of them.
+ */
+export function resolveSiblingInterceptSegmentKeys(
+  sourcePageSegments: readonly string[] | null | undefined,
+  routeSegments: readonly string[] | null | undefined,
+  opts: AppPageInterceptOptions | null | undefined,
+  routeParams: AppPageParams,
+  interceptParams: AppPageParams,
+): readonly string[] | null {
+  if (!sourcePageSegments || !routeSegments) return null;
+  const markerIndex = sourcePageSegments.findIndex((segment) =>
+    APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.some(({ prefix }) => segment.startsWith(prefix)),
+  );
+  if (markerIndex < 0) return null;
+  // The levels above the marker are the rendered route's own spine. Only key
+  // them by the intercepting route when that spine is exactly the marker's
+  // parent directory; any other source keeps its route template keys.
+  if (
+    routeSegments.length !== markerIndex ||
+    routeSegments.some((segment, index) => segment !== sourcePageSegments[index])
+  ) {
+    return null;
+  }
+  // Intercept tree positions count from the directory that owns the marker.
+  const branchTreePositions = [
+    ...(opts?.interceptLayouts ?? []).flatMap((layoutModule, index) =>
+      layoutModule?.default ? [opts?.interceptLayoutSegments?.[index]?.length ?? 0] : [],
+    ),
+    ...(opts?.interceptLoadingTreePositions ?? []),
+    ...(opts?.interceptNotFoundTreePositions ?? []),
+    ...(opts?.interceptForbiddenTreePositions ?? []),
+    ...(opts?.interceptUnauthorizedTreePositions ?? []),
+    ...(opts?.interceptErrorTreePositions ?? []),
+  ];
+  const segmentCount = Math.max(
+    markerIndex,
+    Math.min(sourcePageSegments.length, markerIndex + Math.min(...branchTreePositions) - 1),
+  );
+  return sourcePageSegments.slice(0, segmentCount).map((segment, index) => {
+    const marker =
+      index === markerIndex
+        ? APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.find(({ prefix }) => segment.startsWith(prefix))
+        : undefined;
+    return resolveAppPageSemanticSegmentStateKey(
+      {
+        marker: marker?.prefix ?? null,
+        paramSource: "route",
+        segment: marker ? segment.slice(marker.prefix.length) : segment,
+      },
+      index < markerIndex ? routeParams : interceptParams,
+    );
+  });
 }
 
 export const APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS = [
@@ -1266,96 +1318,4 @@ export function resolveInterceptedSlotSegments(
   );
 
   return routeSegments;
-}
-
-export function resolveSlotParamOverrides(
-  route: AppPageNavigationParamRoute,
-  routePath: string,
-): Readonly<Record<string, AppPageParams>> | null {
-  const overrides: Record<string, AppPageParams> = {};
-  const slots = route.slots;
-  if (slots) {
-    let urlParts: string[] | null = null;
-    const routeParamSet = collectParamNameSet(route.params);
-    for (const [slotKey, slot] of Object.entries(slots)) {
-      const patternParts = slot.slotPatternParts;
-      const paramNames = slot.slotParamNames;
-      if (!patternParts || patternParts.length === 0) continue;
-      // Skip when every slot param is already a route param — the route's
-      // matched params already carry the values the slot page expects.
-      // Empty `paramNames` (slot pattern has no dynamic markers) also skips:
-      // there's nothing to extract, so the route's matched params suffice.
-      if (paramNames && paramNames.every((name) => routeParamSet.has(name))) continue;
-
-      if (urlParts === null) {
-        urlParts = routePath.split("/").filter(Boolean);
-      }
-      const matched = matchRoutePattern(urlParts, patternParts);
-      if (!matched) continue;
-
-      overrides[slotKey] = matched;
-    }
-  }
-
-  return Object.keys(overrides).length > 0 ? overrides : null;
-}
-
-function mergeAppPageParams(target: AppPageParams, source: AppPageParams): void {
-  for (const [key, value] of Object.entries(source)) {
-    target[key] = value;
-  }
-}
-
-function isDefaultExportModule(module: unknown): module is AppPageNavigationParamModule {
-  return typeof module === "object" && module !== null;
-}
-
-function hasDefaultExport(module: unknown): boolean {
-  if (!isDefaultExportModule(module)) return false;
-  return module?.default !== null && module?.default !== undefined;
-}
-
-export function resolveAppPageNavigationParams(
-  route: AppPageNavigationParamRoute,
-  routeParams: AppPageParams,
-  routePath: string,
-  opts?: AppPageNavigationParamInterceptOptions | null,
-): AppPageParams {
-  const navigationParams: AppPageParams = { ...routeParams };
-  const slotParamOverrides = resolveSlotParamOverrides(route, routePath);
-
-  for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
-    const isInterceptedSlot =
-      opts?.interceptSlotKey === slotKey &&
-      opts.interceptSlotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
-      hasDefaultExport(opts.interceptPage);
-    // A slot is considered active here if it exports a default component (page or fallback).
-    // This is distinct from the optimistic-routing path (which keys off manifest bindings)
-    // and the route graph (which keys off pagePath existence), but functionally equivalent
-    // for param extraction today since default-only slots do not specify pattern parts.
-    if (!isInterceptedSlot && !hasDefaultExport(slot.page) && !hasDefaultExport(slot.default)) {
-      continue;
-    }
-
-    mergeAppPageParams(
-      navigationParams,
-      isInterceptedSlot
-        ? (opts?.interceptParams ?? routeParams)
-        : // Fallback to routeParams when slotParamOverrides missing — the slot
-          // is active but contributes no new params (all its param names are
-          // already route params, or the slot has no pattern parts). Merging
-          // routeParams here is a deliberate no-op that keeps the loop uniform.
-          (slotParamOverrides?.[slotKey] ?? routeParams),
-    );
-  }
-
-  return navigationParams;
-}
-
-function collectParamNameSet(params: readonly string[] | undefined | null): Set<string> {
-  const set = new Set<string>();
-  if (params) {
-    for (const name of params) set.add(name);
-  }
-  return set;
 }
