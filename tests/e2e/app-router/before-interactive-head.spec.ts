@@ -1,4 +1,5 @@
 import { test, expect } from "../fixtures";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -80,6 +81,40 @@ test.describe("inline beforeInteractive head ordering", () => {
       })};`,
       marker: "beforeInteractive",
     });
+
+    void consoleErrors;
+  });
+
+  test("inline beforeInteractive module scripts run in order before hydration", async ({
+    page,
+    consoleErrors,
+  }) => {
+    await page.goto(`${BASE}/beforeinteractive-script-data`);
+    await waitForAppRouterHydration(page);
+
+    // The loader inserts each module with `async` cleared, so modules without
+    // imports run in registration order ahead of the deferred bootstrap.
+    const moduleLog = await page.evaluate(
+      () => (self as unknown as { __vinextModuleLog?: unknown }).__vinextModuleLog,
+    );
+    expect(moduleLog).toEqual([
+      { name: "module-1", hydrated: false },
+      { name: "module-2", hydrated: false },
+    ]);
+
+    const modules = await page.evaluate(() =>
+      ["vinext-test-module-1", "vinext-test-module-2"].map((id) => {
+        const element = document.getElementById(id) as HTMLScriptElement | null;
+        return {
+          parent: element?.parentElement?.tagName,
+          type: element?.type,
+          async: element?.async,
+          marker: element?.getAttribute("data-nscript"),
+        };
+      }),
+    );
+    const expected = { parent: "HEAD", type: "module", async: false, marker: "beforeInteractive" };
+    expect(modules).toEqual([expected, expected]);
 
     void consoleErrors;
   });

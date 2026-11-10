@@ -26,12 +26,13 @@ const EVENT_HANDLER_ATTR_NAME = /^on/i;
 // payload (`[[name, value], ...]` attribute pairs plus the body) and swaps
 // itself for the real script element. A classic script runs on insertion, at
 // the same point in the parse as a parser-inserted tag. A module script is
-// inserted at the same point, ahead of vinext's parser-deferred bootstrap and
-// therefore before hydration, like the scripts Next.js inserts in sequence
-// from `appBootstrap` before it hydrates. Clearing `async` before applying
-// the attributes keeps modules in registration order unless the author asked
-// for `async`. The first of any case-insensitive duplicate attribute wins, as
-// when the parser reads the tag.
+// inserted at the same point, ahead of vinext's parser-deferred bootstrap, so
+// it is queued before hydration starts. As with the scripts Next.js inserts
+// from `appBootstrap` before it hydrates, a module still waits for its own
+// imports and can therefore run after hydration starts. Clearing `async`
+// before applying the attributes keeps modules in registration order unless
+// the author asked for `async`. The first of any case-insensitive duplicate
+// attribute wins, as when the parser reads the tag.
 const INLINE_SCRIPT_LOADER =
   '(function(c,p,s){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});s.text=p[1];(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s)})';
 
