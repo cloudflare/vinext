@@ -147,9 +147,14 @@ export function appendRscCompletionMetadata(
   getMetadata: () => RscCompletionMetadata | undefined,
 ): ReadableStream<Uint8Array> {
   const reader = source.getReader();
+  let cancelled = false;
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       const next = await reader.read();
+      // The consumer may have cancelled while the read was settling. That
+      // settles the read as done, but the render behind the source goes on,
+      // so its completion metadata is not known yet.
+      if (cancelled) return;
       if (!next.done) {
         controller.enqueue(escapeFlightChunk(next.value));
         return;
@@ -159,6 +164,7 @@ export function appendRscCompletionMetadata(
       controller.close();
     },
     cancel(reason) {
+      cancelled = true;
       return reader.cancel(reason);
     },
   });

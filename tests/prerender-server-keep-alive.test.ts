@@ -8,7 +8,10 @@ import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
 
 const SERVER_ENTRIES = {
   app: ["server/index.js", "export default () => new Response('pong');"],
-  pages: ["server/entry.js", "export const vinextConfig = {};"],
+  pages: [
+    "server/entry.js",
+    'export const vinextConfig = {};\nexport const publicFiles = new Set(["/ping.txt"]);',
+  ],
 } as const;
 
 function createBuild(router: keyof typeof SERVER_ENTRIES): string {

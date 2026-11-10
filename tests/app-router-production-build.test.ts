@@ -16,7 +16,7 @@ import {
 } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.js";
+import { APP_FIXTURE_DIR, createIsolatedFixture, fetchRsc, testCacheDir } from "./helpers.js";
 
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
@@ -156,6 +156,13 @@ describe("App Router Production build", () => {
     ]) {
       expect(clientJs).not.toContain(devOnlyNeedle);
     }
+
+    // A "use cache" module that a Client Component imports reaches the
+    // browser as server references, `.mts` modules included: neither its
+    // function bodies nor its module-scope values are bundled.
+    expect(clientJs).toContain("call-client-imported-mts-cache");
+    expect(clientJs).not.toContain("mts-cache-server-marker");
+    expect(clientJs).not.toContain("client-mts-cache:");
 
     // Ported from the client-reference chunk ownership covered by Next.js:
     // test/e2e/app-dir/client-reference-chunking/client-reference-chunking.test.ts
@@ -1522,8 +1529,8 @@ export default async function OpenGraphImage() {
       const notFoundRes = await fetch(`${previewUrl}/no-such-page`);
       expect(notFoundRes.status).toBe(404);
 
-      // RSC endpoint works
-      const rscRes = await fetch(`${previewUrl}/about.rsc`);
+      // RSC requests work
+      const rscRes = await fetchRsc(previewUrl!, "/about");
       expect(rscRes.status).toBe(200);
       expect(rscRes.headers.get("content-type")).toContain("text/x-component");
     } finally {

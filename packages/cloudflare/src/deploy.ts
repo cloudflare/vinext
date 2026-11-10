@@ -723,7 +723,7 @@ export function buildCfDeployArgs(
   const mode = options.env || (options.preview ? "preview" : undefined);
   const isPreviewDeploy = options.target?.type === "preview";
   const args = isPreviewDeploy ? ["previews", "deploy"] : ["deploy"];
-  if (isPreviewDeploy && options.target?.name) args.push(options.target.name);
+  if (isPreviewDeploy && options.target?.name) args.push("--preview-name", options.target.name);
   args.push("--prebuilt");
   if (mode) args.push("--mode", validateWranglerEnvName(mode));
   return { args, mode };
@@ -2212,6 +2212,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
       "--name is not supported for cloudflare.config.ts projects. Set `name` in cloudflare.config.ts instead.",
     );
   }
+  if (deploymentTool === "cf" && options.config) {
+    throw new Error(
+      "--config is not supported for cloudflare.config.ts projects. cf always uses cloudflare.config.ts in the project root; select a mode with --env instead.",
+    );
+  }
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);
   // Undefined keeps Vite's default vite.config.* lookup in the root.
   const viteConfigFile = options.viteConfig ? path.resolve(root, options.viteConfig) : undefined;
@@ -2415,6 +2420,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
         hostname: warmCdnTarget ? new URL(warmCdnTarget).hostname : undefined,
         typedConfig: deploymentTool === "cf",
         window: Math.max(1, options.tprWindow ?? 24),
+        assetsDir: path.resolve(info.root, prerenderOutputDirs?.clientOutDir ?? "dist/client"),
+        basePath: nextConfig.basePath,
       })
     : null;
   if (tpr?.skipped) console.log(`  TPR: Skipped (${tpr.skipped})`);

@@ -1783,11 +1783,6 @@ function hasClientRewriteRules(): boolean {
   );
 }
 
-function hasClientRedirectRules(): boolean {
-  const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
-  return Array.isArray(redirects) && redirects.length > 0;
-}
-
 function hasClientAppRouteManifest(): boolean {
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   const routeHandlers = window.__VINEXT_APP_ROUTE_HANDLERS__;
@@ -1797,12 +1792,14 @@ function hasClientAppRouteManifest(): boolean {
   );
 }
 
-function getClientConfigRouteContext(href: string): {
+type ClientConfigRouteContext = {
   basePathState: { basePath: string; hadBasePath: boolean };
   context: RequestContext;
   pathname: string;
   search: string;
-} | null {
+};
+
+function getClientConfigRouteContext(href: string): ClientConfigRouteContext | null {
   let parsed: URL;
   try {
     parsed = new URL(href, window.location.href);
@@ -1839,12 +1836,11 @@ function configRedirectLeavesBasePath(location: string): boolean {
   return !hasBasePath(new URL(location, "http://vinext.local").pathname, __basePath);
 }
 
-async function resolveClientConfigRedirect(href: string): Promise<string | null> {
+async function resolveClientConfigRedirect(
+  routeContext: ClientConfigRouteContext,
+): Promise<string | null> {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
   if (!redirects || redirects.length === 0) return null;
-
-  const routeContext = getClientConfigRouteContext(href);
-  if (!routeContext) return null;
 
   const [{ matchClientRedirect }, { encodeRedirectLocation, preserveRedirectDestinationQuery }] =
     await Promise.all([
@@ -1871,14 +1867,14 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   );
 }
 
-async function applyClientConfigRewrite(
+function applyClientConfigRewrite(
   href: string,
   rewrite: ClientRewrite,
-): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
+  matchClientRewrite: typeof import("../client/client-rewrite-matcher.js").matchClientRewrite,
+): { href: string; kind: "rewrite" } | { kind: "document" } | null {
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
-  const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
   const result = matchClientRewrite(
     routeContext.pathname,
     rewrite,
@@ -1918,21 +1914,26 @@ function isExternalClientConfigUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
-function clientConfigRedirectCouldMatch(href: string): boolean {
+/**
+ * The route context of `href` when some config redirect source matches it, so
+ * resolveClientConfigRedirect can reuse it instead of parsing the URL and
+ * cookies again. Null when no redirect can match.
+ */
+function getClientConfigRedirectRouteContext(href: string): ClientConfigRouteContext | null {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
-  if (!redirects || redirects.length === 0) return false;
+  if (!redirects || redirects.length === 0) return null;
 
   const routeContext = getClientConfigRouteContext(href);
-  if (!routeContext) return false;
+  if (!routeContext) return null;
 
   for (const redirect of redirects) {
     if (!shouldEvaluateClientConfigRule(redirect.basePath, routeContext.basePathState)) {
       continue;
     }
-    if (execConfigSource(routeContext.pathname, redirect.source) !== null) return true;
+    if (execConfigSource(routeContext.pathname, redirect.source) !== null) return routeContext;
   }
 
-  return false;
+  return null;
 }
 
 function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolution {
@@ -1991,7 +1992,7 @@ function reusesMountedConfigRewritePage(href: string): boolean {
 
   if (target.origin !== current.origin || target.pathname !== current.pathname) return false;
   if (target.search === current.search) return false;
-  if (clientConfigRedirectCouldMatch(href)) return false;
+  if (getClientConfigRedirectRouteContext(href)) return false;
 
   const rewrite = resolveClientConfigRewriteSync(href);
   if (rewrite?.kind !== "rewrite") return false;
@@ -2016,12 +2017,13 @@ async function resolveClientConfigRewrite(
   href: string,
 ): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
-  if (!rewrites) return null;
+  if (!rewrites || rewrites.beforeFiles.length === 0) return null;
 
+  const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
-    const result = await applyClientConfigRewrite(currentHref, rewrite);
+    const result = applyClientConfigRewrite(currentHref, rewrite, matchClientRewrite);
     if (result?.kind === "document") return result;
     if (result?.kind !== "rewrite") continue;
     currentHref = result.href;
@@ -2866,10 +2868,10 @@ async function navigateClient(
       let browserUrl = url;
       let htmlFetchUrl = fetchUrl;
       const routeMasked = options.routeMasked ?? routeUrl !== url;
-      const configRedirect =
-        hasClientRedirectRules() && clientConfigRedirectCouldMatch(browserUrl)
-          ? await resolveClientConfigRedirect(browserUrl)
-          : null;
+      const redirectRouteContext = getClientConfigRedirectRouteContext(browserUrl);
+      const configRedirect = redirectRouteContext
+        ? await resolveClientConfigRedirect(redirectRouteContext)
+        : null;
       if (configRedirect) {
         const redirectedUrl = configRedirectLeavesBasePath(configRedirect)
           ? null
@@ -4649,8 +4651,7 @@ if (typeof window !== "undefined") {
 // Register the Pages Router compat shim source for `next/navigation` hooks
 // (useParams / useSearchParams / usePathname). The accessor is exposed
 // through a well-known Symbol.for so navigation.ts can read it without
-// importing this module — that avoids triggering navigation.ts's
-// `window.history.pushState` patch in tests that only need next/router.
+// importing this module, and pages that use those hooks don't load it.
 //
 // Mirrors Next.js's behavior where the pages-router server (render.tsx) and
 // client (client/index.tsx) wrap pages with SearchParamsContext /

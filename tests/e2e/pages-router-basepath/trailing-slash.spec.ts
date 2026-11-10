@@ -52,6 +52,15 @@ test.describe("basePath + trailingSlash", () => {
     expect(outside.status).toBe(404);
   });
 
+  // "/slashed-guard/" accepts /docs/slashed-guard/ only as requested, slash
+  // included. Next.js then retests without the slash and ends the request with
+  // an empty 200; vinext runs middleware.
+  test("runs middleware for a request only the slashed matcher accepts", async () => {
+    const response = await getRawPath("/docs/slashed-guard/");
+    expect(response.status).toBe(403);
+    expect(response.body).toBe("blocked by middleware");
+  });
+
   // Next.js renders the shared getStaticProps /404 for "/404", keeping only
   // the request's trailing slash under trailingSlash:
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts

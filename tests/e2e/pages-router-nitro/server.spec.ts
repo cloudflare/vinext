@@ -1,4 +1,6 @@
+import http from "node:http";
 import { test, expect } from "@playwright/test";
+import { getWithHost, startRewriteUpstream } from "../helpers";
 
 // tests/fixtures/pages-router-nitro built with `vite build` and served by
 // Nitro's Node server.
@@ -15,6 +17,26 @@ test.describe("Pages Router on Nitro (node server)", () => {
     expect(response.headers()["content-type"]).toContain("text/plain");
     expect(response.headers()["x-vinext-proxy"]).toBe("active");
     expect(await response.text()).toBe("Hello from public/\n");
+  });
+
+  // Nitro's Node server keeps a `#fragment` sent on the request line; Next.js
+  // drops it before proxy runs.
+  test("drops a request-line fragment before proxy", async ({ baseURL }) => {
+    const port = new URL(baseURL!).port;
+    const body = await new Promise<string>((resolve, reject) => {
+      http
+        .get({ host: "localhost", port, path: "/proxy-request-url?q=1#planted" }, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => (text += chunk));
+          res.on("end", () => resolve(text));
+        })
+        .on("error", reject);
+    });
+    expect(JSON.parse(body)).toEqual({
+      url: `http://localhost:${port}/proxy-request-url?q=1`,
+      hash: "",
+    });
   });
 
   test("lets proxy answer a request for a public file", async ({ request }) => {
@@ -48,10 +70,54 @@ test.describe("Pages Router on Nitro (node server)", () => {
     expect(await response.text()).toBe("");
   });
 
+  // The image endpoint fetches `/_next/static` sources without proxy. h3
+  // decodes these sources again and resolves them to /blocked.png.
+  test("doesn't serve a public image that proxy guards from the image endpoint", async ({
+    request,
+  }) => {
+    for (const url of [
+      "/blocked.png",
+      "/_next/static/..%5C..%5Cblocked.png",
+      "/_next/static/.%09./.%09./blocked.png",
+    ]) {
+      const response = await request.get(`/_next/image?url=${encodeURIComponent(url)}&w=64&q=75`);
+      expect(response.status(), url).toBe(400);
+    }
+  });
+
   test("serves a public image from the image endpoint", async ({ request }) => {
     const response = await request.get("/_next/image?url=%2Fpixel.png&w=64&q=75");
     expect(response.status()).toBe(200);
     expect(response.headers()["content-type"]).toBe("image/png");
     expect((await response.body()).subarray(1, 4).toString()).toBe("PNG");
+  });
+
+  // Next.js decides whether a proxy rewrite is external against its own
+  // hostname and port. Nitro's Node server builds the request URL from the
+  // Host header, which must not make a rewrite to the host it names internal
+  // and serve the target path without proxy's check for it.
+  test("a Host header cannot turn an external proxy rewrite into an internal one", async ({
+    baseURL,
+  }) => {
+    const upstream = await startRewriteUpstream();
+    try {
+      const attack = await getWithHost(baseURL!, "/legacy/blocked.txt", upstream.host, {
+        "x-legacy-origin": `http://${upstream.host}`,
+      });
+      expect({ status: attack.status, body: attack.body }).toEqual({
+        status: 200,
+        body: "external upstream",
+      });
+      expect(upstream.hits).toEqual(["/blocked.txt"]);
+    } finally {
+      await upstream.close();
+    }
+
+    // Proxy's `new URL(path, request.url)` rewrites stay internal for any Host.
+    const rewritten = await getWithHost(baseURL!, "/rewrite-to-hello", "public.example");
+    expect({ status: rewritten.status, body: rewritten.body }).toEqual({
+      status: 200,
+      body: "Hello from public/\n",
+    });
   });
 });

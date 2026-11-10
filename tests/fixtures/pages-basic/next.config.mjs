@@ -16,6 +16,18 @@ const nextConfig = {
   experimental: {
     allowedRevalidateHeaderKeys: ["x-revalidate-token"],
   },
+  // Used by E2E: pages-router-prod/image-local-patterns.spec.ts — every local
+  // path without a query string (the Next.js default), plus one query string
+  // the default rejects, so the spec observes the configured list. The SVG
+  // query is listed for image-middleware.spec.ts, so that source reaches the
+  // content-type check.
+  images: {
+    localPatterns: [
+      { pathname: "/**", search: "" },
+      { pathname: "/heart.png", search: "?v=listed" },
+      { pathname: "/logo.svg", search: "?.png" },
+    ],
+  },
   async redirects() {
     return [
       {
@@ -190,6 +202,17 @@ const nextConfig = {
           has: [{ type: "query", key: "host", value: "(?<proxyHost>.*)" }],
           destination: "http://:proxyHost.invalid/host-capture",
         },
+        // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
+        // capture in an external destination path must stay inside that path
+        // and keep the destination's own query.
+        {
+          source: "/proxy-external-path-capture",
+          has: [
+            { type: "header", key: "x-test-upstream-port", value: "(?<upstreamPort>\\d+)" },
+            { type: "query", key: "file", value: "(?<file>.*)" },
+          ],
+          destination: "http://127.0.0.1::upstreamPort/public/:file?revision=published",
+        },
         // Used by Vitest: pages-router.test.ts — beforeFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-before-user=1
         // when ?mw-auth is present. The beforeFiles rewrite should see this
@@ -246,14 +269,21 @@ const nextConfig = {
           headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
         }),
       ),
-      // Used by Vitest: pages-router.test.ts. A config Cache-Control replaces
-      // the getServerSideProps default on redirect and notFound exits, as in
-      // Next.js.
-      ...["/gssp-redirect", "/gssp-not-found"].map((source) => ({
+      // Used by Vitest: pages-router.test.ts, and Playwright:
+      // pages-router-prod/initial-props-cache-control.spec.ts. A config
+      // Cache-Control replaces the getServerSideProps default on redirect and
+      // notFound exits, and the getInitialProps default, as in Next.js.
+      ...["/gssp-redirect", "/gssp-not-found", "/nav-compat-gip/cache-policy"].map((source) => ({
         source,
         has: [{ type: "query", key: "config-cache-control" }],
         headers: [{ key: "Cache-Control", value: "public, max-age=60" }],
       })),
+      // Used by Playwright: pages-router-prod/image-bypass-types.spec.ts. Like
+      // Next.js, /_next/image keeps a source max-age above minimumCacheTTL.
+      {
+        source: "/vinext-image.jxl",
+        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
+      },
       {
         source: "/storage-policy/short-browser",
         headers: [{ key: "Cache-Control", value: "public, max-age=1" }],
