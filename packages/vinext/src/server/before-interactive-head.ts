@@ -29,7 +29,8 @@ const EVENT_HANDLER_ATTR_NAME = /^on/i;
 // inserted at the same point, ahead of vinext's parser-deferred bootstrap, so
 // it is queued before hydration starts; like the scripts Next.js inserts from
 // `appBootstrap`, it still waits for its own imports and can run after
-// hydration starts. Clearing `async` before applying
+// hydration starts. Being script-inserted, it is not ordered against
+// parser-deferred `defer`/module `src` scripts. Clearing `async` before applying
 // the attributes keeps modules in registration order unless the author asked
 // for `async`. The first of any case-insensitive duplicate attribute wins, as
 // when the parser reads the tag.
