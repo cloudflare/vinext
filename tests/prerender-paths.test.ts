@@ -1942,6 +1942,56 @@ describe("prerender path manifest", () => {
         i18n,
       ),
     ).toBe(false);
+    const slashed = { trailingSlash: true };
+    // A trailingSlash warm request reaches middleware as /admin/.
+    expect(matchesMiddlewareWarmPath("/admin", "/admin/", null)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/admin", "/admin/", null, slashed)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/admin", "/admin/(.*)", null, slashed)).toBe(true);
+    // Only the requested spelling counts, and file-like paths stay unslashed.
+    expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null, slashed)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/robots.txt", "/robots.txt", null, slashed)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/robots.txt", "/robots.txt/", null, slashed)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/admin", "/admin", null, slashed)).toBe(true);
+    // A file-like Pages page's data request reaches middleware slashed.
+    expect(
+      matchesMiddlewareWarmPath("/report.csv", "/report.csv/", null, {
+        pagesDataTrailingSlash: true,
+        trailingSlash: true,
+      }),
+    ).toBe(true);
+    // With skipProxyUrlNormalize, that data request is matched unslashed.
+    const unslashedData = { pagesDataTrailingSlash: false, ...slashed };
+    expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null, unslashedData)).toBe(
+      true,
+    );
+    // The default-locale root is requested as /en/, but not with
+    // skipProxyUrlNormalize.
+    const enRoot = [{ locale: false as const, source: "/en/" }];
+    expect(matchesMiddlewareWarmPath("/", enRoot, i18n, slashed)).toBe(true);
+    expect(
+      matchesMiddlewareWarmPath("/", enRoot, i18n, { ...slashed, skipProxyUrlNormalize: true }),
+    ).toBe(false);
+    // The warmer slashes the basePath-prefixed root, unless it looks like a file.
+    expect(matchesMiddlewareWarmPath("/", enRoot, i18n, { ...slashed, basePath: "/docs" })).toBe(
+      true,
+    );
+    expect(
+      matchesMiddlewareWarmPath("/", enRoot, i18n, { ...slashed, basePath: "/docs.json" }),
+    ).toBe(false);
+    // Its data request names the locale, so it reaches middleware as /en/.
+    expect(
+      matchesMiddlewareWarmPath("/", enRoot, i18n, {
+        ...slashed,
+        basePath: "/docs.json",
+        pagesDataTrailingSlash: true,
+      }),
+    ).toBe(true);
+    // That data URL names the build's default locale, never a domain's.
+    const frData = [{ locale: false as const, source: "/fr/r1/((?!.*\\/$).*)" }];
+    const enData = [{ locale: false as const, source: "/en/r1/((?!.*\\/$).*)" }];
+    expect(matchesMiddlewareWarmPath("/r1/x", frData, i18n, unslashedData)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/r1/x", enData, i18n, unslashedData)).toBe(true);
   });
 
   it("retains redirect sources only when routing runs in an uncached stage", async () => {

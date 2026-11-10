@@ -31,9 +31,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-static-assets-worker-"));
     fs.symlinkSync(CLOUDFLARE_NODE_MODULES, path.join(root, "node_modules"), "junction");
     write(root, "package.json", JSON.stringify({ name: "static-assets-cache", type: "module" }));
-    write(
-      root,
-      "wrangler.jsonc",
+    const wranglerConfig = JSON.parse(
       generateWranglerConfig(
         {
           root,
@@ -45,7 +43,11 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
         { cdnCache: "static-assets", dataCache: "none", imageOptimization: "none" },
         "2026-04-01",
       ),
-    );
+    ) as Record<string, unknown>;
+    // The fixture's Cloudflare Vite plugin v1 bundles a miniflare that predates
+    // nodejs_compat being on by default (2026-08-04), so it needs the flag.
+    wranglerConfig.compatibility_flags = ["nodejs_compat"];
+    write(root, "wrangler.jsonc", JSON.stringify(wranglerConfig, null, 2));
     write(
       root,
       "app/layout.tsx",
@@ -105,7 +107,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
           persist: false;
           logLevel: "none";
           watch: false;
-          server: { port: 0 };
+          server: { hostname: string; port: 0 };
           inspector: false;
         };
       }): Promise<{
@@ -126,7 +128,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
         persist: false,
         logLevel: "none",
         watch: false,
-        server: { port: 0 },
+        server: { hostname: "127.0.0.1", port: 0 },
         // The tests never use the inspector. With it on, wrangler probes for a
         // free port near 9229, which parallel test processes can race for, and
         // waits on an inspector WebSocket that never settles `url` if it errors.

@@ -39,6 +39,8 @@ function writeTestFixture(name: string, source: string): string {
   return path.join(testFixtureLinkDir, name);
 }
 
+// Each call spawns a full `vp lint` run, which can outlast the default 5s
+// test timeout on a busy CI runner, so the tests below set their own.
 function runLint(files: readonly string[]): { status: number | null; output: string } {
   const result = spawnSync("vp", ["lint", ...files], {
     cwd: path.resolve(import.meta.dirname, ".."),
@@ -153,7 +155,7 @@ function findFileWithExts(value) {
     expect(result.output).toContain("Use shared compareStrings");
     expect(result.output).toContain("Use shared compareAppElementsSlotIds");
     expect(result.output).toContain("Use shared findFileWithExts");
-  });
+  }, 30_000);
 
   it("reports local shared-helper definitions in tests", () => {
     const testHelperFile = writeTestFixture(
@@ -172,7 +174,64 @@ void isUnknownRecord({});
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("copied-record-helper.test.ts");
     expect(result.output).toContain("Use shared isUnknownRecord");
-  });
+  }, 30_000);
+
+  it("reports each helper once after many comments and escaped strings", () => {
+    const file = writeFixture(
+      "many-masked-spans.ts",
+      [
+        "export const docs = [",
+        ...Array.from(
+          { length: 2_000 },
+          () => String.raw`/* 😀 */ "escaped \" function isPromiseLike() {}", 'user\'s // docs',`,
+        ),
+        "].join('');",
+        "/* adjacent *//* comments */ function /* separator */ isPromiseLike(value: unknown) {",
+        "  return value !== null;",
+        "}",
+        "export const generatedSource = `",
+        "The user's output contains /* comments */ and // text.",
+        "An escaped backtick: \\`",
+        "function isPromiseLike(value) { return value !== null; }",
+        "`;",
+        "// A declaration after the generated template must still be checked.",
+        "export const compareStrings = (left: string, right: string) => left.localeCompare(right);",
+        "void isPromiseLike(null);",
+      ].join("\n"),
+    );
+
+    const result = runLint([file]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output.match(/Use shared isPromiseLike from/g)).toHaveLength(1);
+    expect(result.output.match(/Use shared compareStrings from/g)).toHaveLength(1);
+  }, 30_000);
+
+  it("masks test templates and escaped quotes without hiding later declarations", () => {
+    const file = writeTestFixture(
+      "escaped-templates.test.ts",
+      [
+        "export const fixture = `",
+        "The user's fixture contains /* and // and an escaped backtick: \\`",
+        "function isPromiseLike(value) { return value !== null; }",
+        "`;",
+        String.raw`export const doubleQuoted = "escaped \" function compareStrings() {}";`,
+        String.raw`export const singleQuoted = 'escaped \' function findFileWithExts() {}';`,
+        String.raw`export const backslash = "\\";`,
+        "// function isPromiseLike() {}",
+        "/* function compareStrings() {} */",
+        "export function isUnknownRecord(value: unknown) { return value !== null; }",
+      ].join("\r\n"),
+    );
+
+    const result = runLint([file]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output.match(/Use shared isUnknownRecord from/g)).toHaveLength(1);
+    expect(result.output).not.toContain("Use shared isPromiseLike");
+    expect(result.output).not.toContain("Use shared compareStrings");
+    expect(result.output).not.toContain("Use shared findFileWithExts");
+  }, 30_000);
 
   it("allows canonical modules, comments, and ordinary strings", () => {
     const commentsAndStringsFile = writeFixture(
@@ -193,5 +252,5 @@ export const docs = "function isPromiseLike(value) { return true; }";
 
     expect(result.status).toBe(0);
     expect(result.output).not.toContain("prefer-shared-utils");
-  });
+  }, 30_000);
 });

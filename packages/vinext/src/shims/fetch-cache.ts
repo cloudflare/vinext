@@ -1509,13 +1509,17 @@ function createPatchedFetch(): typeof globalThis.fetch {
         // Like Next.js, an entry past its `expire` is a miss.
         if (cached?.cacheState === "expired") cached = null;
         if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
+          // Awaited so the rewrite of this old body can't land after a later write
+          // of the key. A failed rewrite keeps the hit.
           await lowerFetchCacheRevalidateIfNeeded(
             handler,
             cacheKey,
             cached.value,
             tags,
             revalidateSeconds,
-          );
+          ).catch((err) => {
+            console.error("[vinext] fetch cache write error:", err);
+          });
           const cachedData = cached.value.data;
           collectFetchResumeDataCacheEntry(cacheKey, cachedData);
           return recordFetchOutcome(
@@ -1532,6 +1536,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           staleEntry = cached;
           if (shouldRefreshStaleFetchInForeground()) {
             const freshResponse = await dedupeFetch(input, fetchInit);
+            // A failed write keeps the fresh response rather than fetching again.
             const freshValue = await writeFetchCacheResponse(
               handler,
               cacheKey,
@@ -1539,7 +1544,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
               tags,
               revalidateSeconds,
               { staleEntry: cached },
-            );
+            ).catch((err) => {
+              console.error("[vinext] fetch cache write error:", err);
+              return null;
+            });
             if (freshValue) collectFetchResumeDataCacheEntry(cacheKey, freshValue.data);
             return recordFetchOutcome(freshResponse, "miss", cacheReason);
           }

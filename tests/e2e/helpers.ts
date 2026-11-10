@@ -125,6 +125,56 @@ export async function expectHostCaptureCannotRetargetProxy(
   }
 }
 
+/**
+ * Drive the `/proxy-external-path-capture` rewrite in the pages-basic and
+ * app-basic fixtures (`http://127.0.0.1::upstreamPort/public/:file?revision=published`,
+ * `file` from `?file=`). A decoded capture must not leave `/public/` or
+ * displace `revision=published`. Next.js 16.2.7 sends the same paths, except
+ * that it sends a captured `..` literally, which a parsed URL cannot carry.
+ */
+export async function expectPathCaptureStaysInDestination(
+  request: APIRequestContext,
+  base = "",
+): Promise<void> {
+  const received: string[] = [];
+  const upstream = createServer((req, res) => {
+    received.push(req.url ?? "");
+    res.end("upstream");
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const { port } = upstream.address() as AddressInfo;
+    for (const [query, expectedPath] of [
+      ["file=report.txt&revision=draft", "/public/report.txt"],
+      [
+        `file=${encodeURIComponent("../private/secret.txt")}`,
+        "/public/%252E%252E/private/secret.txt",
+      ],
+      [
+        `file=${encodeURIComponent("report.txt?revision=draft&x=")}`,
+        "/public/report.txt%3Frevision=draft&x=",
+      ],
+      [`file=${encodeURIComponent("x#y")}`, "/public/x"],
+      [`file=${encodeURIComponent("a\tb")}`, "/public/a%09b"],
+    ]) {
+      received.length = 0;
+      const response = await request.get(`${base}/proxy-external-path-capture?${query}`, {
+        headers: { "x-test-upstream-port": String(port) },
+      });
+      expect(response.status(), query).toBe(200);
+      expect(received, query).toHaveLength(1);
+      const [path, search = ""] = received[0].split("?", 2);
+      expect(path, query).toBe(expectedPath);
+      expect(new URLSearchParams(search).getAll("revision"), query).toEqual(["published"]);
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      upstream.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+}
+
 /** GET `path` with a raw Host header, which fetch() cannot set. */
 export function getWithHost(
   baseURL: string,

@@ -58,7 +58,8 @@ export type RepeatedSlashRedirect = { status: 308; location: string } | { status
  * `//` after the scheme trips the same check) and 500s `OPTIONS *`. Routing
  * them would let the request line choose the origin of `request.url` that
  * middleware and handlers see, bypassing the Host trust policy. Request-based
- * entries always pass a pathname.
+ * entries pass a pathname. Where srvx builds `request.url` from the raw target
+ * (Nitro's Node server), `isSrvxAbsoluteFormTarget` 404s these instead.
  *
  * @param rawUrl - The raw request target: pathname plus optional `?query`
  */

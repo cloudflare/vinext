@@ -701,6 +701,42 @@ describe("computeClientRuntimeMetadata", () => {
     ).toEqual(["/cdn/_next/static/shared.js", "/cdn/_next/static/runtime.js"]);
   });
 
+  it("preloads rather than preinitializes chunks that would start App Router hydration", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-app-browser-entry": {
+          file: "_next/static/app-entry.js",
+          isEntry: true,
+          imports: ["polyfill.js", "wrapper.js", "cycle-a.js"],
+        },
+        "polyfill.js": { file: "_next/static/polyfill.js" },
+        "wrapper.js": { file: "_next/static/wrapper.js", imports: ["vendor.js"] },
+        "vendor.js": { file: "_next/static/vendor.js", imports: ["polyfill.js"] },
+        "cycle-a.js": { file: "_next/static/cycle-a.js", imports: ["cycle-b.js"] },
+        "cycle-b.js": { file: "_next/static/cycle-b.js", imports: ["cycle-a.js"] },
+      }),
+    );
+    await fsp.writeFile(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({
+        appBrowserEntry: "_next/static/app-entry.js",
+        appBrowserRuntime: "_next/static/vendor.js",
+      }),
+    );
+
+    const metadata = computeClientRuntimeMetadata({ clientDir, assetBase: "/", assetPrefix: "" });
+    expect(metadata.appBootstrapPreinitModules).toEqual([
+      "/_next/static/polyfill.js",
+      "/_next/static/cycle-a.js",
+      "/_next/static/cycle-b.js",
+    ]);
+    expect(metadata.appBootstrapPreloadModules).toEqual([
+      "/_next/static/wrapper.js",
+      "/_next/static/vendor.js",
+    ]);
+  });
+
   it("finds the App Router RouteManifest chunk, with the asset prefix", async () => {
     await fsp.writeFile(
       path.join(clientDir, ".vite", "manifest.json"),

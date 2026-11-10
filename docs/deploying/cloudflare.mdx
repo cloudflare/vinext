@@ -32,6 +32,46 @@ Response Store service-binding mode declares its second Worker in the typed conf
 
 For TypeScript projects, add `.cloudflare/types` to the `include` list in `tsconfig.json`. The plugin generates binding and runtime declarations there during development and builds; these files stay gitignored. Run `cf workers types` to generate them before a standalone type-check without building the app.
 
+### Cache and image choices
+
+Each Cloudflare choice that init asks about has a flag:
+
+- **`--cdn-cache`** chooses how rendered responses are cached:
+  - `none`: no shared response or data cache.
+  - `response-store`: [Workers Response Store](/docs/guides/caching#workers-response-store), which also handles the data cache. This is the default when you enable caching at the prompt.
+  - `workers-cache`: Workers Cache for responses, with the data cache chosen by `--data-cache`.
+  - `static-assets`: read-only responses prerendered at build time and served from Workers Static Assets. Init configures prerendering for all routes, so `--no-prerender` is rejected.
+  - `data-cache`: no separate response cache; responses and data are both cached in Workers KV.
+- **`--response-store-mode`** applies only to `--cdn-cache=response-store`: `service-binding` (the default) runs the cache in a separate Worker that you deploy with `deploy:response-store`, and `self-contained` adds the cache bindings to the application Worker.
+- **`--data-cache`** chooses where cached `fetch` calls, `unstable_cache`, and `"use cache"` results are stored: `kv` (Workers KV) or `none`. With `--cdn-cache=none` or `response-store` it must be `none`, and with `--cdn-cache=data-cache` it must be `kv`.
+- **`--image-optimization`** chooses how `next/image` requests are optimized: `cloudflare-images` adds Cloudflare Images (an `IMAGES` binding and `imagesOptimizer()`), and `none` configures no optimizer.
+
+If `cloudflare.config.ts` already exists, init leaves it unchanged. It keeps any adapters already in the Vite config, and for some choices it stops with instructions for setting them up manually. After init, check both files and the adapters they use, then add any missing bindings yourself (such as `IMAGES: bindings.images()` when the Vite config uses `imagesOptimizer()`). See [Caching on Cloudflare](/docs/guides/caching) for each cache's complete setup.
+
+Init also asks whether to prerender all static routes, and, when you choose a cache, whether the deploy script runs [cache warming](/docs/guides/caching#cache-warming). Answer these with `--prerender` or `--no-prerender` and `--warm-cache` or `--no-warm-cache`. Init accepts `--warm-cache` with every `--cdn-cache` except `none`; warming also needs a cache adapter that supports it, which the built-in adapters init generates do. Unless the app is a static export (`output: "export"`), Cloudflare deploys serve `--prerender` output only with the Static Assets cache, so with the other caches, cache warming is usually the better way to have pages cached before traffic arrives. See [Caching on Cloudflare](/docs/guides/caching) to choose between the caches.
+
+### Run init without prompts
+
+In an interactive terminal, init prompts for each choice. Agents and CI must pass all three flags: `--cdn-cache`, `--data-cache`, and `--image-optimization`. In an agent session, init errors out without them. Agents should ask the user for each choice instead of picking one. This command sets up Cloudflare with no cache and no image optimization:
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender",
+    npm: "npx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender",
+    yarn: "yarn dlx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender",
+    bun: "bunx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender",
+    vp: "vpx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender",
+  }}
+/>
+
+To set up Workers Response Store and Cloudflare Images instead:
+
+```sh
+npx vinext init --platform=cloudflare --cdn-cache=response-store \
+  --response-store-mode=service-binding --data-cache=none \
+  --image-optimization=cloudflare-images --no-prerender --no-warm-cache
+```
+
 ## 2. Authenticate
 
 <PackageManagerCommand
@@ -58,7 +98,7 @@ Set `accountId` at the top level of `defineConfig` in `cloudflare.config.ts` (ou
   }}
 />
 
-The deploy command validates the initialized setup, builds all Vite environments, and deploys the application Worker's Build Output using `cf`. `--env staging` selects the staging Vite mode. The existing `--preview` flag is an alias for `--env preview`; it selects the preview mode but does not create a Worker Preview. If your vinext and `cloudflare()` config is not the root `vite.config.*` (for example because another tool owns that file), pass it with `--vite-config vite.web.config.ts`. `--config` remains the Wrangler config path.
+The deploy command validates the initialized setup, builds all Vite environments, and deploys the application Worker's Build Output using `cf`. `--env staging` selects the staging Vite mode. The existing `--preview` flag is an alias for `--env preview`; it selects the preview mode but does not create a Worker Preview. If your vinext and `cloudflare()` config is not the root `vite.config.*` (for example because another tool owns that file), pass it with `--vite-config vite.web.config.ts`. The Worker name and settings come from `cloudflare.config.ts`, so the Wrangler-only `--name` and `--config` flags are rejected.
 
 For Response Store service-binding mode, build and deploy the cache Worker explicitly before the first application deployment:
 
@@ -78,15 +118,15 @@ Use `previews deploy` with a project that has `cloudflare.config.ts` and the `cf
 
 <PackageManagerCommand
   commands={{
-    pnpm: "pnpm dlx @vinext/cloudflare previews deploy\npnpm dlx @vinext/cloudflare previews deploy pr-123\npnpm dlx @vinext/cloudflare previews deploy pr-123 --mode staging\npnpm dlx @vinext/cloudflare previews deploy pr-123 --skip-build",
-    npm: "npx @vinext/cloudflare previews deploy\nnpx @vinext/cloudflare previews deploy pr-123\nnpx @vinext/cloudflare previews deploy pr-123 --mode staging\nnpx @vinext/cloudflare previews deploy pr-123 --skip-build",
-    yarn: "yarn dlx @vinext/cloudflare previews deploy\nyarn dlx @vinext/cloudflare previews deploy pr-123\nyarn dlx @vinext/cloudflare previews deploy pr-123 --mode staging\nyarn dlx @vinext/cloudflare previews deploy pr-123 --skip-build",
-    bun: "bunx @vinext/cloudflare previews deploy\nbunx @vinext/cloudflare previews deploy pr-123\nbunx @vinext/cloudflare previews deploy pr-123 --mode staging\nbunx @vinext/cloudflare previews deploy pr-123 --skip-build",
-    vp: "vpx @vinext/cloudflare previews deploy\nvpx @vinext/cloudflare previews deploy pr-123\nvpx @vinext/cloudflare previews deploy pr-123 --mode staging\nvpx @vinext/cloudflare previews deploy pr-123 --skip-build",
+    pnpm: "pnpm dlx @vinext/cloudflare previews deploy\npnpm dlx @vinext/cloudflare previews deploy --preview-name pr-123\npnpm dlx @vinext/cloudflare previews deploy --preview-name pr-123 --mode staging\npnpm dlx @vinext/cloudflare previews deploy --preview-name pr-123 --skip-build",
+    npm: "npx @vinext/cloudflare previews deploy\nnpx @vinext/cloudflare previews deploy --preview-name pr-123\nnpx @vinext/cloudflare previews deploy --preview-name pr-123 --mode staging\nnpx @vinext/cloudflare previews deploy --preview-name pr-123 --skip-build",
+    yarn: "yarn dlx @vinext/cloudflare previews deploy\nyarn dlx @vinext/cloudflare previews deploy --preview-name pr-123\nyarn dlx @vinext/cloudflare previews deploy --preview-name pr-123 --mode staging\nyarn dlx @vinext/cloudflare previews deploy --preview-name pr-123 --skip-build",
+    bun: "bunx @vinext/cloudflare previews deploy\nbunx @vinext/cloudflare previews deploy --preview-name pr-123\nbunx @vinext/cloudflare previews deploy --preview-name pr-123 --mode staging\nbunx @vinext/cloudflare previews deploy --preview-name pr-123 --skip-build",
+    vp: "vpx @vinext/cloudflare previews deploy\nvpx @vinext/cloudflare previews deploy --preview-name pr-123\nvpx @vinext/cloudflare previews deploy --preview-name pr-123 --mode staging\nvpx @vinext/cloudflare previews deploy --preview-name pr-123 --skip-build",
   }}
 />
 
-The optional name identifies the Preview, not the Worker or the build mode. If you omit it, CF uses the current CI or Git branch. If no branch is available, provide a name.
+The optional `--preview-name` identifies the Preview, not the Worker or the build mode. If you omit it, CF uses the current CI or Git branch. If no branch is available, pass `--preview-name`.
 
 As with `cf previews deploy`, the Preview name and the Vite mode are independent. The build uses the default `production` mode unless you pass `--mode`, and loads the matching `.env*` files. Functions in `cloudflare.config.ts` receive the selected `mode` and `isPreview: true`. The command deploys the Preview Build Output with `cf previews deploy` and prints the Preview URL. Preview deployments do not use cache warming or version promotion.
 
@@ -94,15 +134,31 @@ As with `cf previews deploy`, the Preview name and the Vite mode are independent
 
 <PackageManagerCommand
   commands={{
-    pnpm: "CLOUDFLARE_PREVIEW_BUILD=true pnpm exec vite build\npnpm dlx @vinext/cloudflare previews deploy pr-123 --skip-build",
-    npm: "CLOUDFLARE_PREVIEW_BUILD=true npx vite build\nnpx @vinext/cloudflare previews deploy pr-123 --skip-build",
-    yarn: "CLOUDFLARE_PREVIEW_BUILD=true yarn vite build\nyarn dlx @vinext/cloudflare previews deploy pr-123 --skip-build",
-    bun: "CLOUDFLARE_PREVIEW_BUILD=true bunx vite build\nbunx @vinext/cloudflare previews deploy pr-123 --skip-build",
-    vp: "CLOUDFLARE_PREVIEW_BUILD=true vp build\nvpx @vinext/cloudflare previews deploy pr-123 --skip-build",
+    pnpm: "CLOUDFLARE_PREVIEW_BUILD=true pnpm exec vite build\npnpm dlx @vinext/cloudflare previews deploy --preview-name pr-123 --skip-build",
+    npm: "CLOUDFLARE_PREVIEW_BUILD=true npx vite build\nnpx @vinext/cloudflare previews deploy --preview-name pr-123 --skip-build",
+    yarn: "CLOUDFLARE_PREVIEW_BUILD=true yarn vite build\nyarn dlx @vinext/cloudflare previews deploy --preview-name pr-123 --skip-build",
+    bun: "CLOUDFLARE_PREVIEW_BUILD=true bunx vite build\nbunx @vinext/cloudflare previews deploy --preview-name pr-123 --skip-build",
+    vp: "CLOUDFLARE_PREVIEW_BUILD=true vp build\nvpx @vinext/cloudflare previews deploy --preview-name pr-123 --skip-build",
   }}
 />
 
-The subcommand accepts the optional name, `--mode`, `--skip-build`, `--vite-config`, and `--help`. Configure Preview-specific settings in `cloudflare.config.ts` using `isPreview`.
+The subcommand accepts `--preview-name`, `--mode`, `--skip-build`, `--vite-config`, and `--help`. Configure Preview-specific settings in `cloudflare.config.ts` using `isPreview`.
+
+### Deploy with Workers Builds
+
+[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) deploys a Worker on each push to a connected Git repository. Its default deploy command, `npx wrangler deploy`, and its default Preview command for other branches, `npx wrangler preview`, read a Wrangler config file, not `cloudflare.config.ts`, so they cannot deploy a `cloudflare.config.ts` project. Set these build settings instead (under the Worker's **Settings** > **Build**, or when you connect the repository):
+
+- **Build command**: empty. Clear it if it is set.
+- **Deploy command**: `pnpm run deploy`, or `pnpm run deploy:vinext` for projects set up with `vinext init`.
+- **Preview command**: `pnpm exec vinext-cloudflare previews deploy`. Pull request comments show the Preview URL only with `cf` 1.0.0-beta.18 or later.
+
+Use the equivalent commands for your package manager. Workers Builds runs the same build command before both the deploy and Preview commands, and each of those already builds the app. A Preview also needs a Preview build, which a normal `vite build` does not produce, so leave the build command empty rather than building separately and deploying with `--skip-build`. Without a name, `previews deploy` names the Preview after the branch.
+
+The Worker connected to the repository must have the same name as the Worker in `cloudflare.config.ts`, because the deploy command deploys to the Worker named there.
+
+A first deployment cannot use [cache warming](/docs/guides/caching#cache-warming). If the deploy script passes `--warm-cache`, deploy once without it, from your machine or with a temporary deploy command, before relying on the script.
+
+In Response Store service-binding mode, deploy the Response Store from your machine with `build:vinext` and `deploy:response-store` (`build` and `deploy:response-store` for `create-vinext-app` projects) before the first Workers Builds deployment. Until it exists, deploying the application fails because the application's `RESPONSE_STORE` service binding refers to a Worker that is not found. Workers Builds deployments do not deploy the Response Store, so redeploy it the same way when its package or config changes.
 
 ## Use Workers bindings
 

@@ -335,9 +335,20 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     options.currentState.activeOperation?.navigationId === options.startedNavigationId &&
     options.currentState.activeOperation.navigationCommitKind === "detached" &&
     options.pending.action.operation.navigationCommitKind === "authoritative";
-  const visibleCommitVersion = isAuthoritativeSameNavigationHandoff
-    ? options.pending.action.operation.startedVisibleCommitVersion
-    : options.currentState.visibleCommitVersion;
+  // A navigation this one superseded can still advance the version: React may
+  // already be rendering its tree, or committed it before this payload
+  // arrived. That is not newer state than this navigation's, so as in Next.js
+  // the latest navigation commits on top of it. HMR passes its render id as
+  // startedNavigationId, so only a pending navigation compares ids.
+  const isSupersededNavigationCommit =
+    options.pending.action.operation.navigationId === options.startedNavigationId &&
+    options.currentState.activeOperation?.lane === "navigation" &&
+    options.currentState.activeOperation.navigationId !== undefined &&
+    options.currentState.activeOperation.navigationId < options.startedNavigationId;
+  const visibleCommitVersion =
+    isAuthoritativeSameNavigationHandoff || isSupersededNavigationCommit
+      ? options.pending.action.operation.startedVisibleCommitVersion
+      : options.currentState.visibleCommitVersion;
   const verdict = verifyOperationTokenForCommit(token, {
     activeNavigationId: options.activeNavigationId,
     visibleCommitVersion,

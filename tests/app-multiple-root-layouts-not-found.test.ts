@@ -6,17 +6,18 @@
  * Next.js has no multiple-root-layout not-found test. A real next@16 build of
  * this app answers with the same status codes and never shows the [locale]
  * not-found or its metadata outside the [locale] tree. Where the built-in
- * not-found renders differs: Next.js serves its error shell when a page or
- * layout calls notFound() and its /_not-found page for a dynamicParams miss,
- * while vinext renders it inside the route's layouts. So these tests check the
- * not-found's text and what is absent, not where it renders.
+ * not-found renders differs when a page or layout calls notFound(): Next.js
+ * serves its error shell, while vinext renders it inside the route's layouts.
+ * So these tests check the not-found's text and what is absent, not where it
+ * renders. A dynamicParams miss renders Next.js' /_not-found page, which has
+ * no root layout in an app without app/layout.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { startFixtureServer } from "./helpers.js";
+import { fetchRsc, startFixtureServer } from "./helpers.js";
 
 // Every studio and docs route is a catch-all, so it sorts after the [locale]
 // routes and the route list starts in the [locale] tree, as in the issue.
@@ -144,7 +145,7 @@ describe("multiple root layouts: not-found boundaries stay in their root layout'
   });
 
   it("does not put another root layout's not-found in the RSC payload", async () => {
-    const res = await fetch(`${baseUrl}/studio.rsc`, { headers: { RSC: "1" } });
+    const res = await fetchRsc(baseUrl, "/studio");
     expect(res.status).toBe(200);
     expect(await res.text()).not.toContain("locale-not-found");
   });
@@ -172,6 +173,28 @@ describe("multiple root layouts: not-found boundaries stay in their root layout'
       expect(html).not.toMatch(/<title>(?!404: This page could not be found\.)/);
     },
   );
+
+  it.each([
+    ["a dynamicParams = false miss", "/docs/b", 200],
+    ["an unmatched URL", "/no/such/route", 404],
+  ])("renders %s without any root layout", async (_, pathname, treeStatus) => {
+    const treePrefetch = await fetchRsc(baseUrl, pathname, {
+      headers: { "Next-Router-Prefetch": "1", "Next-Router-Segment-Prefetch": "/_tree" },
+    });
+    for (const res of [await fetch(`${baseUrl}${pathname}`), await fetchRsc(baseUrl, pathname)]) {
+      expect(res.status).toBe(404);
+      const body = await res.text();
+      expect(body).toContain("This page could not be found.");
+      expect(body).not.toContain("docs-root-layout");
+      expect(body).not.toContain("locale-root-layout");
+    }
+    // Next.js 404s a dynamicParams = false miss's route tree too. vinext builds
+    // the tree from the route's segments alone, so nothing renders for it.
+    expect(treePrefetch.status).toBe(treeStatus);
+    const tree = await treePrefetch.text();
+    expect(tree).not.toContain("docs-root-layout");
+    expect(tree).not.toContain("locale-root-layout");
+  });
 
   it("keeps the [locale] not-found for the [locale] tree", async () => {
     const res = await fetch(`${baseUrl}/en`);
