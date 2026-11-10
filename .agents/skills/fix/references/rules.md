@@ -85,7 +85,7 @@ Performance:
 
 ## 5. Validate
 
-1. Run the regression test and see it pass. Then prove it fails without the fix: commit first, so the paths you swap have no uncommitted changes. Put the implementation paths the fix touched back in their pre-fix state with `git restore --source=<base> --staged --worktree -- <paths>`, run the test, then restore them with `git restore --source=HEAD --staged --worktree -- <paths>`. Git handles added, deleted and symlinked paths both ways. Never use `git stash` for this; the stash is shared across worktrees.
+1. Run the regression test and see it pass. Then prove it fails without the fix. Commit the fix, and check that the paths you swap have no other uncommitted changes, since the swap overwrites them. Put the implementation paths the fix touched back in their pre-fix state with `git restore --source=<base> --staged --worktree -- <paths>`, run the test, then restore them with `git restore --source=HEAD --staged --worktree -- <paths>`. Git handles added, deleted and symlinked paths both ways. Never use `git stash` for this; the stash is shared across worktrees.
 2. Run only one to three targeted test files with `vp test run <file>`, plus `vp check` (format, lint, type check). **Never run the full Vitest or Playwright suite.** CI covers breadth. Format with `vp fmt`, never Prettier.
 3. Run `git status --short` afterwards and remove stray files. A `next build` probe can rewrite `pnpm-lock.yaml` and `pnpm-workspace.yaml`. A pre-fix test run can leave generated output behind.
 4. When searching `dist/`, `node_modules` or other gitignored paths, make sure the search tool doesn't skip ignored files (for example, `rg -uu`).
