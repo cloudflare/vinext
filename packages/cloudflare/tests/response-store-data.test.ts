@@ -839,6 +839,23 @@ test("fills the revision a read in the same request missed", async () => {
     missAs(null);
     await expect(handler.get("key")).resolves.toBeNull();
     expect(await write()).not.toHaveProperty("replacesRevision");
+
+    // Nor is a null that isn't a Store miss one: a soft-tag expiration found the entry, and a
+    // regeneration's read of its own key never reaches the Store.
+    missAs("0");
+    await expect(handler.get("key")).resolves.toBeNull();
+    store.tagExpiration = Number.MAX_SAFE_INTEGER;
+    await expect(handler.get("key", { softTags: ["_N_T_/a"] })).resolves.toBeNull();
+    store.tagExpiration = 0;
+    expect(await write()).not.toHaveProperty("replacesRevision");
+    const fetch = vi.spyOn(store, "fetch");
+    const reads = fetch.mock.calls.length;
+    await captureResponseStoreDataRegeneration("key", async () => {
+      await expect(handler.get("key")).resolves.toBeNull();
+      await handler.set("key", null, { revalidate: 60 });
+    });
+    expect(fetch.mock.calls.length).toBe(reads);
+    expect(await write()).not.toHaveProperty("replacesRevision");
   });
 
   // Another request's miss is not this one's.

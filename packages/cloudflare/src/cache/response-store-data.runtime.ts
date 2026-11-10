@@ -615,9 +615,11 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     }
     if (regeneration && !revalidator) return;
 
-    // Concurrent requests that read the entry stale, or missed it, each refresh or fill it,
-    // passing a stale one as `staleEntry`. Once one has replaced that revision, the Store drops
-    // the rest instead of replacing it again and spending an edge purge on each.
+    // Concurrent requests that read the entry stale, or missed it, each refresh or fill it.
+    // A refresh passes the stale entry as `staleEntry`, whose revision `staleRevisions` holds;
+    // a fill passes none, and sends the revision this request missed, from `unfilledMisses`.
+    // Once one has replaced that revision, the Store drops the rest instead of replacing it
+    // again and spending an edge purge on each.
     const staleEntry = context?.staleEntry;
     let replaces:
       | { revision: number; tagExpiration?: { tags: string[]; expiration: number } }
