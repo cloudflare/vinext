@@ -15,7 +15,7 @@ import { getResponseStartCompletion } from "./response-start-tracing.js";
 
 type ActiveRequestTrace = {
   recordError(error: Error): void;
-  setRoute(route: string | undefined, isRsc?: boolean): void;
+  setRoute(route: string | undefined, isRsc?: boolean, replace?: boolean): void;
 };
 
 type RequestTraceInput<T> = {
@@ -33,6 +33,16 @@ const activeRequestTrace = getOrCreateAls<ActiveRequestTrace>("vinext.requestTra
 
 export function setFrameworkRequestRoute(route: string | undefined, isRsc?: boolean): void {
   activeRequestTrace.getStore()?.setRoute(route, isRsc);
+}
+
+/** Relabel a request that routing rejected after it recorded the matched route. */
+export function replaceFrameworkRequestRoute(route: string): void {
+  activeRequestTrace.getStore()?.setRoute(route, undefined, true);
+}
+
+/** Forget the recorded route when routing resumes after rejecting it. */
+export function resetFrameworkRequestRoute(): void {
+  activeRequestTrace.getStore()?.setRoute(undefined, undefined, true);
 }
 
 function updateResponseHeader(
@@ -58,14 +68,14 @@ function updateResponseHeader(
 
 export async function captureFrameworkRequestRoute<T>(
   callback: () => Promise<T>,
-  onRoute?: (route: string) => void,
+  onRoute?: (route: string | undefined) => void,
 ): Promise<{ result: T; route: string | undefined }> {
   let route: string | undefined;
   const result = await activeRequestTrace.run(
     {
       recordError() {},
-      setRoute(nextRoute) {
-        if (route === undefined && nextRoute !== undefined) {
+      setRoute(nextRoute, _isRsc, replace) {
+        if (replace || (route === undefined && nextRoute !== undefined)) {
           route = nextRoute;
           onRoute?.(nextRoute);
         }
@@ -195,8 +205,10 @@ export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T
                 recordError(error) {
                   carriedError = error;
                 },
-                setRoute(nextRoute, nextIsRsc) {
-                  if (route === undefined && nextRoute !== undefined) route = nextRoute;
+                setRoute(nextRoute, nextIsRsc, replace) {
+                  if (replace || (route === undefined && nextRoute !== undefined)) {
+                    route = nextRoute;
+                  }
                   if (nextIsRsc !== undefined) isRsc = nextIsRsc;
                 },
               },

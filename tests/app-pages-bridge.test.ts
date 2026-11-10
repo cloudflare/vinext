@@ -347,6 +347,38 @@ describe("renderPagesFallback", () => {
     expect(await response!.text()).toBe("pages");
   });
 
+  it("renders a Pages route with the request's basePath removed once", async () => {
+    let renderedRequestUrl: string | null = null;
+    const renderPage = vi.fn((renderedRequest: Request) => {
+      renderedRequestUrl = renderedRequest.url;
+      return new Response("page");
+    });
+    const request = new Request("http://localhost/docs/docs/guide?x=1");
+
+    await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        pathname: "/docs/guide?x=1",
+        request,
+        requestBasePath: "/docs",
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({
+          matchPageRoute: () => ({
+            params: {},
+            route: { isDynamic: false, pattern: "/docs/guide" },
+          }),
+          renderPage,
+        }),
+      },
+    );
+
+    expect(renderedRequestUrl).toBe("http://localhost/docs/guide?x=1");
+  });
+
   it("matches hybrid Pages data requests against their normalized page pathname", async () => {
     const matchPageRoute = vi.fn(() => ({
       route: { isDynamic: false, pattern: "/pages-dir/search" },

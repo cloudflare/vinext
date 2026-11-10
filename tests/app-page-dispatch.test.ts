@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import React from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
@@ -64,11 +66,13 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
   cookies,
   draftMode,
+  getDraftModeCookieHeader,
   getHeadersContext,
   headers,
   headersContextFromRequest,
@@ -84,20 +88,31 @@ import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MOUNTED_LAYOUTS_HEADER,
+  VINEXT_ROUTE_MISS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
 } from "../packages/vinext/src/server/headers.js";
-import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import {
+  hasFrameworkLinkHeaders,
+  markFrameworkLinkHeaders,
+} from "../packages/vinext/src/server/app-response-header-provenance.js";
 import {
   createWorkerCacheabilityAdmissionContext,
   finalizeWorkerCacheabilityResponse,
 } from "../packages/vinext/src/server/cacheability-request.js";
+import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
 import {
   usePathname,
   useSearchParams,
   type NavigationContext,
 } from "../packages/vinext/src/shims/navigation.js";
 import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import { cacheLife, io } from "../packages/vinext/src/shims/cache.js";
+import {
+  setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
+  setCurrentForceDynamicFetchDefault,
+} from "../packages/vinext/src/shims/fetch-cache.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -109,6 +124,17 @@ import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-
 // stream's first chunk, and keeps draining the rest.
 const ssrFlight = vi.hoisted(() => ({ payload: undefined as unknown }));
 vi.mock("virtual:vite-rsc/client-references", () => ({ default: {}, routeClientReferences: null }));
+// Spies on the fetch defaults a render activates, which have no reader.
+vi.mock("vinext/shims/fetch-cache", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../packages/vinext/src/shims/fetch-cache.js")>();
+  return {
+    ...actual,
+    setCurrentFetchCacheMode: vi.fn(actual.setCurrentFetchCacheMode),
+    setCurrentFetchRevalidate: vi.fn(actual.setCurrentFetchRevalidate),
+    setCurrentForceDynamicFetchDefault: vi.fn(actual.setCurrentForceDynamicFetchDefault),
+  };
+});
 vi.mock("virtual:vinext-pages-client-assets", () => ({ default: {} }));
 vi.mock("@vitejs/plugin-rsc/ssr", () => ({
   async createFromReadableStream(stream: ReadableStream<Uint8Array>) {
@@ -138,6 +164,7 @@ type TestRoute = {
   layouts: readonly {
     default?: unknown;
     dynamic?: unknown;
+    generateStaticParams?: unknown;
     revalidate?: unknown;
     unstable_instant?: unknown;
   }[];
@@ -146,6 +173,7 @@ type TestRoute = {
   loadings?: readonly ({ default?: unknown } | null | undefined)[];
   loadingTreePositions?: readonly number[];
   notFounds?: readonly ({ default?: unknown } | null | undefined)[];
+  page?: { default?: unknown; dynamic?: unknown } | null;
   params: readonly string[];
   pattern: string;
   routeSegments: readonly string[];
@@ -153,11 +181,18 @@ type TestRoute = {
     Record<
       string,
       {
+        configLayouts?: readonly (Record<string, unknown> | null | undefined)[] | null;
+        configLayoutTreePositions?: readonly number[] | null;
         default?: { default?: unknown } | null;
+        layout?: Record<string, unknown> | null;
+        layoutIndex?: number;
         loading?: { default?: unknown } | null;
         loadings?: readonly ({ default?: unknown } | null | undefined)[] | null;
         loadingTreePositions?: readonly number[] | null;
+        name?: string;
+        ownerTreePosition?: number | null;
         page?: { default?: unknown; generateMetadata?: unknown } | null;
+        routeSegments?: readonly string[] | null;
         slotParamNames?: readonly string[] | null;
         slotPatternParts?: readonly string[] | null;
       }
@@ -398,7 +433,6 @@ type CreateDispatchOptionsOverrides = {
   findIntercept?: DispatchOptions["findIntercept"];
   ensureRouteLoaded?: DispatchOptions["ensureRouteLoaded"];
   generateStaticParams?: DispatchOptions["generateStaticParams"];
-  hasCustomGlobalError?: DispatchOptions["hasCustomGlobalError"];
   hasAnyGenerateStaticParams?: DispatchOptions["hasAnyGenerateStaticParams"];
   hasGenerateStaticParams?: DispatchOptions["hasGenerateStaticParams"];
   isStaticGenerationEdgeRuntime?: DispatchOptions["isStaticGenerationEdgeRuntime"];
@@ -490,7 +524,6 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
       typeof overrides.generateStaticParams === "function",
     hasGenerateStaticParams:
       overrides.hasGenerateStaticParams ?? typeof overrides.generateStaticParams === "function",
-    hasCustomGlobalError: overrides.hasCustomGlobalError,
     hasPageDefaultExport: true,
     hasPageModule: true,
     handlerStart: 10,
@@ -1297,10 +1330,16 @@ describe("app page dispatch", () => {
     });
   });
 
-  // Only a render that can never be stored may skip its layouts in a
+  // Only a render that can never be stored may skip the layouts a navigation's
+  // client holds. Only a render without PPR sends just the route tree for a
   // loading-shell prefetch without a loading boundary (buildAppPageElements).
   it.each([
-    { name: "a production static route", overrides: { isProduction: true }, expected: false },
+    {
+      name: "a production static route",
+      overrides: { isProduction: true },
+      expected: false,
+      ppr: false,
+    },
     {
       name: "a PPR fallback shell",
       overrides: {
@@ -1309,17 +1348,20 @@ describe("app page dispatch", () => {
         pprFallbackShell: { fallbackParamNames: ["slug"], routePattern: "/posts/[slug]" },
       },
       expected: false,
+      ppr: true,
     },
     {
       name: "a dynamic route without generateStaticParams",
       overrides: { isProduction: true, route: createRoute({ isDynamic: true }) },
       expected: true,
+      ppr: false,
     },
-    { name: "dev", overrides: { isProduction: false }, expected: true },
+    { name: "dev", overrides: { isProduction: false }, expected: true, ppr: false },
     {
       name: "a force-dynamic route",
       overrides: { isProduction: true, dynamicConfig: "force-dynamic" as const },
       expected: true,
+      ppr: false,
     },
     {
       name: "a draft-mode render",
@@ -1330,6 +1372,7 @@ describe("app page dispatch", () => {
         }),
       },
       expected: true,
+      ppr: false,
     },
     // Next.js renders layouts for every production prefetch with Cache
     // Components (isRoutePPREnabled in walkTreeWithFlightRouterState()).
@@ -1343,13 +1386,15 @@ describe("app page dispatch", () => {
         }),
       },
       expected: false,
+      ppr: true,
     },
     {
       name: "a Cache Components dev render",
       overrides: { isProduction: false, pprRuntime: appPagePprRuntime },
       expected: true,
+      ppr: false,
     },
-  ])("marks $name as uncacheable: $expected", async ({ overrides, expected }) => {
+  ])("marks $name as uncacheable: $expected, PPR: $ppr", async ({ overrides, expected, ppr }) => {
     const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
       React.createElement("main", null, "page"),
     );
@@ -1363,6 +1408,7 @@ describe("app page dispatch", () => {
     await response.text();
 
     expect(buildPageElement.mock.calls[0]?.[4]?.isUncacheableRender).toBe(expected);
+    expect(buildPageElement.mock.calls[0]?.[4]?.routeTreeOnlyPrefetchShell).toBe(!ppr);
   });
 
   // Next.js renders only below where a navigation diverges from the client's
@@ -1987,6 +2033,114 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(404);
     expect(ensureRouteLoaded).not.toHaveBeenCalled();
+  });
+
+  it("keeps a rejected param's generator cacheForRequest values out of its 404", async () => {
+    const readRequestData = vi.fn(() => ({}));
+    const cachedRequestData = cacheForRequest(readRequestData);
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      async generateStaticParams() {
+        cachedRequestData();
+        return [{ slug: "known" }];
+      },
+      isProduction: true,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderHttpAccessFallbackPage = vi.fn(async () => {
+      cachedRequestData();
+      return new Response("not found", { status: 404 });
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+    );
+
+    expect(response.status).toBe(404);
+    // Next.js runs generateStaticParams apart from the request, so the 404
+    // computes its own value.
+    expect(readRequestData).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a rejected param's generator fetches out of its 404's request memoization", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    try {
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw new Error("unknown static params should not render the page");
+        },
+        async generateStaticParams() {
+          await (await fetch(url, { cache: "no-store" })).text();
+          return [{ slug: "known" }];
+        },
+        isProduction: true,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+      });
+      let notFoundData = "";
+      options.renderHttpAccessFallbackPage = vi.fn(async () => {
+        notFoundData = await (await fetch(url, { cache: "no-store" })).text();
+        return new Response("not found", { status: 404 });
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+      );
+
+      expect(response.status).toBe(404);
+      // The 404 fetches anew rather than reading the generator's response.
+      expect(notFoundData).toBe("2");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("renders an unlisted param in draft mode, also when middleware enabled it", async () => {
+    for (const [draft, dynamicConfig] of [
+      ["cookie", undefined],
+      ["middleware", undefined],
+      ["middleware", "force-static"],
+    ] as const) {
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("not found", { status: 404 }),
+      );
+      const isrGet = vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>")),
+      );
+      const { options } = createDispatchOptions({
+        dynamicConfig,
+        async generateStaticParams() {
+          return [{ slug: "known" }];
+        },
+        isProduction: true,
+        isrGet,
+        request: new Request("https://example.com/posts/unknown", {
+          headers: draft === "cookie" ? { cookie: "__prerender_bypass=draft-secret" } : {},
+        }),
+        revalidateSeconds: 60,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+      if (draft === "middleware") {
+        setHeadersContext({ cookies: new Map(), draftModeEnabled: true, headers: new Headers() });
+      }
+
+      const response = await dispatchAppPage({ ...options, dynamicParamsConfig: false });
+
+      // Draft mode bypasses the cache and renders the param on demand.
+      expect(response.status).toBe(200);
+      expect(await response.text()).not.toBe("<html>cached</html>");
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(renderHttpAccessFallbackPage).not.toHaveBeenCalled();
+      setHeadersContext(null);
+    }
   });
 
   it("bounds a redirect from a generated-param miss by the route's dynamic stale time (#3745)", async () => {
@@ -3718,9 +3872,24 @@ describe("app page dispatch", () => {
   });
 
   it("returns not found for dynamicParams=false paths outside generated params", async () => {
-    const renderHttpAccessFallbackPage = vi.fn(
-      async () => new Response('<html><h1 class="next-error-h1">404</h1></html>', { status: 404 }),
-    );
+    let renderState: unknown = null;
+    const renderHttpAccessFallbackPage = vi.fn(async () => {
+      renderState = {
+        navigationParams: navigationContext.params,
+        lang: await getRootParam("lang"),
+      };
+      const notFound = new Response('<html><h1 class="next-error-h1">404</h1></html>', {
+        status: 404,
+        headers: { Link: '</not-found.css>; rel="preload"; as="style"' },
+      });
+      markFrameworkLinkHeaders(notFound.headers, notFound.headers.get("link"));
+      return notFound;
+    });
+    let navigationContext = {
+      pathname: "/posts/hello",
+      searchParams: new URLSearchParams(),
+      params: { slug: "hello" } as Record<string, string | string[]>,
+    };
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw new Error("unknown static params should not render the page");
@@ -3728,24 +3897,214 @@ describe("app page dispatch", () => {
       async generateStaticParams() {
         return [{ slug: "known" }];
       },
+      getNavigationContext: () => navigationContext,
       route: createRoute({ isDynamic: true, params: ["slug"] }),
+      setNavigationContext(context) {
+        navigationContext = context;
+      },
     });
     options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
 
-    const response = await dispatchAppPage({
-      ...options,
-      dynamicParamsConfig: false,
-    });
+    const requestContext = createRequestContext({ rootParams: { lang: "fr" } });
+    const response = await runWithRequestContext(requestContext, () =>
+      dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+    );
 
     expect(response.status).toBe(404);
     await expect(response.text()).resolves.toContain('class="next-error-h1"');
-    // The route has no not-found of its own, so the built-in one renders.
+    // Next.js rejects the params while routing: no route segment renders, and
+    // nothing in the not-found render observes the rejected params.
     expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
       404,
-      { boundaryModule: DEFAULT_NOT_FOUND_MODULE, matchedParams: { slug: "hello" } },
+      { matchedParams: {}, routeMiss: true },
       options.middlewareContext,
     );
+    expect(renderState).toEqual({ navigationParams: {}, lang: undefined });
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response.headers.get(VINEXT_ROUTE_MISS_HEADER)).toBe("1");
+    // Config Link headers still go before the not-found render's own.
+    expect(hasFrameworkLinkHeaders(response.headers)).toBe(true);
   });
+
+  it.each([undefined, "force-static"] as const)(
+    "leaves a dynamicParams=false miss to the fallback rewrites when routing resumes (dynamic = %s)",
+    async (dynamicConfig) => {
+      let navigationContext = {
+        pathname: "/posts/hello",
+        searchParams: new URLSearchParams(),
+        params: { slug: "hello" } as Record<string, string | string[]>,
+      };
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw new Error("unknown static params should not render the page");
+        },
+        async generateStaticParams() {
+          return [{ slug: "known" }];
+        },
+        getNavigationContext: () => navigationContext,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+        setNavigationContext(context) {
+          navigationContext = context;
+        },
+      });
+      const renderHttpAccessFallbackPage = vi.fn(async () => new Response("404", { status: 404 }));
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+      const resumeRoutingAfterMiss = vi.fn(() => true);
+
+      const cacheability: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      const context: ExecutionContextLike = { waitUntil() {} };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, cacheability);
+
+      const requestContext = createRequestContext({
+        headersContext: {
+          headers: new Headers(),
+          cookies: new Map([["__prerender_bypass", "draft-secret"]]),
+          draftModeSecret: "draft-secret",
+        },
+        rootParams: { lang: "fr" },
+      });
+      const { pendingDraftCookie, response } = await runWithExecutionContext(context, () =>
+        runWithRequestContext(requestContext, async () => {
+          // What middleware's draftMode().disable() leaves for the response.
+          (await draftMode()).disable();
+          const response = await dispatchAppPage({
+            ...options,
+            dynamicConfig,
+            dynamicParamsConfig: false,
+            resumeRoutingAfterMiss,
+          });
+          return { pendingDraftCookie: getDraftModeCookieHeader(), response };
+        }),
+      );
+
+      expect(resumeRoutingAfterMiss).toHaveBeenCalledOnce();
+      expect(response.status).toBe(404);
+      // Routing discards the response, so nothing keeps the fallback rewrite's
+      // response out of the shared cache.
+      expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+      expect(cacheability.finalResponseVetoReason).toBeUndefined();
+      // No 404 renders, and the fallback rewrite's render sees none of this
+      // route's params.
+      expect(renderHttpAccessFallbackPage).not.toHaveBeenCalled();
+      expect(navigationContext.params).toEqual({});
+      // The dispatch runs in its own copy of the request state, so the fallback
+      // rewrite's response still sends middleware's draft-mode transition.
+      expect(pendingDraftCookie).toContain("__prerender_bypass=;");
+    },
+  );
+
+  it("keeps a dynamicParams=false miss out of a split stage's shared cache under a public config policy", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const request = new Request("https://example.com/posts/hello", {
+        headers: { Accept: "text/html" },
+      });
+      const { options } = createDispatchOptions({
+        async generateStaticParams() {
+          return [{ slug: "known" }];
+        },
+        isProduction: true,
+        request,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+      });
+      options.renderHttpAccessFallbackPage = async () => new Response("not found", { status: 404 });
+
+      const response = await withResponseStageCacheability(
+        {
+          buildId: "build-a",
+          cache: "shared",
+          context: { waitUntil() {} },
+          policyHeaders: [["Cloudflare-CDN-Cache-Control", "public, s-maxage=3600"]],
+          rawManifest: null,
+          registerCacheAdapters() {},
+          request,
+          resolvedRoutePathname: "/posts/hello",
+        },
+        (context) =>
+          runWithRequestContext(
+            createRequestContext({
+              executionContext: context,
+              headersContext: headersContextFromRequest(request),
+            }),
+            () =>
+              runWithExecutionContext(context, () =>
+                dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+              ),
+          ),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      // The request stage reads the marker to reassert the never-cache policy.
+      expect(response.headers.get(VINEXT_ROUTE_MISS_HEADER)).toBe("1");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it.each(["force-static", "error"])(
+    "renders a dynamic = %s route's miss with the unmatched route's request state",
+    async (dynamicConfig) => {
+      let observed: unknown = null;
+      let navigationContext = {
+        pathname: "/posts/hello",
+        searchParams: new URLSearchParams("q=1"),
+        params: { slug: "hello" } as Record<string, string | string[]>,
+      };
+      const { options } = createDispatchOptions({
+        dynamicConfig,
+        async generateStaticParams() {
+          return [{ slug: "known" }];
+        },
+        getNavigationContext: () => navigationContext,
+        revalidateSeconds: 60,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+        setNavigationContext(context) {
+          navigationContext = context;
+        },
+      });
+      options.fetchCache = "force-cache";
+      options.searchParams = new URLSearchParams("q=1");
+      options.renderHttpAccessFallbackPage = async () => {
+        const context = getRequestContext();
+        observed = {
+          cacheMode: context.currentFetchCacheMode,
+          forceDynamic: context.currentForceDynamicFetchDefault,
+          header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+          revalidate: context.currentFetchRevalidate,
+          searchParams: navigationContext.searchParams.toString(),
+          softTags: context.currentFetchSoftTags,
+        };
+        return new Response("not found", { status: 404 });
+      };
+      const requestContext = createRequestContext({
+        headersContext: {
+          cookies: new Map(),
+          headers: new Headers({ "x-request-value": "available" }),
+        },
+      });
+
+      const response = await runWithRequestContext(requestContext, () =>
+        dispatchAppPage({ ...options, dynamicParamsConfig: false }),
+      );
+
+      expect(response.status).toBe(404);
+      expect(observed).toEqual({
+        cacheMode: null,
+        forceDynamic: false,
+        header: "available",
+        revalidate: null,
+        searchParams: "q=1",
+        softTags: [],
+      });
+    },
+  );
 
   it("keeps request context alive while rendering a generated-param not-found response", async () => {
     const observedHeaderValues: Array<string | null> = [];
@@ -3988,9 +4347,15 @@ describe("app page dispatch", () => {
     expect(response.status).toBe(202);
     expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-from-middleware")).toBe("yes");
-    // The response renders the static /feed source, so the dynamic target's
-    // classification doesn't make it uncacheable.
-    expect(response.headers.get("cache-control")).toBeNull();
+    // As in Next.js, the interception is its own route, /feed/(.)photos/[id],
+    // which is dynamic without generateStaticParams, so it's never cacheable.
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    // The client's useParams() reads the target's params from this header.
+    expect(response.headers.get("x-vinext-params")).toBe(
+      encodeURIComponent(JSON.stringify({ id: "123", catchAll: ["photos", "123"] })),
+    );
     await expect(response.text()).resolves.toBe("/feed:{}:modal@app/feed/@modal");
     expect(capturedInterceptOpts).toMatchObject({
       interceptGraphId: "graph-interception:/feed->/photos/:id",
@@ -4005,54 +4370,493 @@ describe("app page dispatch", () => {
     });
   });
 
-  it("sends the never-cache header on intercepted RSC of a source route that can't be static", async () => {
-    // app/photos/[id]/page.tsx generates its params, so the target is static,
-    // but app/feed/page.tsx sets dynamic = "force-dynamic".
-    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
-    const currentRoute = createRoute({
-      isDynamic: true,
-      params: ["id"],
-      pattern: "/photos/[id]",
-      routeSegments: ["photos", "[id]"],
+  it("sends the never-cache header on intercepted RSC of an interception that can't be static", async () => {
+    // app/feed/@modal/(.)photos/[id]/page.tsx generates its params, so the
+    // interception is static unless app/feed/layout.tsx sets
+    // dynamic = "force-dynamic". app/feed/page.tsx isn't part of it. Dev
+    // shows the classification: production never caches an interception
+    // that can read the request.
+    const dispatchWithFeedLayout = async (layout: TestRoute["layouts"][number]) => {
+      const sourceRoute = createRoute({
+        layouts: [layout],
+        page: { default: () => null, dynamic: "force-dynamic" },
+        params: [],
+        pattern: "/feed",
+        routeSegments: ["feed"],
+      });
+      const currentRoute = createRoute({
+        isDynamic: true,
+        params: ["id"],
+        pattern: "/photos/[id]",
+        routeSegments: ["photos", "[id]"],
+      });
+      const { options } = createDispatchOptions({
+        async buildPageElement(route) {
+          return route.pattern;
+        },
+        cleanPathname: "/photos/123",
+        findIntercept: () => ({
+          matchedParams: { id: "123" },
+          page: { default: "modal-page", generateStaticParams: async () => [{ id: "123" }] },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        }),
+        getSourceRoute(sourceRouteIndex) {
+          return sourceRouteIndex === 1 ? sourceRoute : undefined;
+        },
+        isProduction: false,
+        isRscRequest: true,
+        renderToReadableStream(element) {
+          return createStream([typeof element === "string" ? element : "unexpected-element"]);
+        },
+        route: currentRoute,
+      });
+      const response = await dispatchAppPage(options);
+      await expect(response.text()).resolves.toBe("/feed");
+      return { options, response };
+    };
+
+    const staticResponse = await dispatchWithFeedLayout({ default: () => null });
+    expect(staticResponse.response.headers.get("cache-control")).toBeNull();
+
+    const { options, response } = await dispatchWithFeedLayout({
+      default: () => null,
+      dynamic: "force-dynamic",
     });
-    const resolveRouteStaticEligible = vi.fn((route: TestRoute) => route !== sourceRoute);
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    const productionResponse = await dispatchAppPage({ ...options, isProduction: true });
+    expect(productionResponse.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    await productionResponse.text();
+  });
+
+  it("keeps a source's layouts below the slot's owner out of a slot interception", async () => {
+    // app/@modal/(.)photos/[id] intercepts from app/feed/page.tsx, whose
+    // app/feed/layout.tsx sits below the root layout that owns @modal.
+    const sourceRoute = createRoute({
+      layouts: [{ default: () => null }, { default: () => null, dynamic: "force-dynamic" }],
+      layoutTreePositions: [0, 1],
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+      slots: {
+        "modal@app/@modal": { layoutIndex: 0, ownerTreePosition: 0, page: { default: () => null } },
+      },
+    });
     const { options } = createDispatchOptions({
       async buildPageElement(route) {
         return route.pattern;
       },
       cleanPathname: "/photos/123",
       findIntercept: () => ({
+        interceptBranchSegments: ["photos", "[id]"],
         matchedParams: { id: "123" },
-        page: { default: "modal-page" },
-        slotKey: "modal@app/feed/@modal",
+        page: { default: "modal-page", generateStaticParams: async () => [{ id: "123" }] },
+        slotKey: "modal@app/@modal",
         sourceRouteIndex: 1,
       }),
-      generateStaticParams: async () => [{ id: "123" }],
       getSourceRoute(sourceRouteIndex) {
         return sourceRouteIndex === 1 ? sourceRoute : undefined;
       },
-      isProduction: true,
+      isProduction: false,
       isRscRequest: true,
       renderToReadableStream(element) {
         return createStream([typeof element === "string" ? element : "unexpected-element"]);
       },
-      resolveRouteDynamicConfig: (route) => (route === sourceRoute ? "force-dynamic" : undefined),
-      resolveRouteStaticEligible,
-      route: currentRoute,
+      route: createRoute({ params: ["id"], pattern: "/photos/[id]" }),
     });
 
     const response = await dispatchAppPage(options);
 
     await expect(response.text()).resolves.toBe("/feed");
-    expect(resolveRouteStaticEligible).toHaveBeenCalledWith(sourceRoute);
-    expect(response.headers.get("cache-control")).toBe(
-      "private, no-cache, no-store, max-age=0, must-revalidate",
-    );
-    // Dev keeps its no-store header.
-    const devResponse = await dispatchAppPage({ ...options, isProduction: false });
-    expect(devResponse.headers.get("cache-control")).toBe("no-store, must-revalidate");
-    await devResponse.text();
+    expect(response.headers.get("cache-control")).toBeNull();
+    expect(setCurrentForceDynamicFetchDefault).toHaveBeenLastCalledWith(false);
   });
+
+  it.each([
+    {
+      name: "a static loader tree",
+      cacheControl: null,
+      intercept: {},
+      slots: {},
+    },
+    {
+      name: "a retained default slot, without its unrendered layouts",
+      cacheControl: null,
+      intercept: {},
+      slots: {
+        side: {
+          configLayouts: [{ default: () => null, dynamic: "force-dynamic" }],
+          configLayoutTreePositions: [1],
+          default: { default: () => null },
+          layout: { default: () => null, dynamic: "force-dynamic" },
+          page: null,
+        },
+      },
+    },
+    {
+      name: "the intercepted slot's own layout",
+      intercept: {},
+      slots: { layout: { default: () => null, dynamic: "force-dynamic" } },
+    },
+    {
+      name: "a retained slot's nested layout",
+      intercept: {},
+      slots: {
+        side: {
+          configLayouts: [{ default: () => null, dynamic: "force-dynamic" }],
+          configLayoutTreePositions: [1],
+          routeSegments: ["feed"],
+        },
+      },
+    },
+    {
+      name: "a retained slot page's edge runtime",
+      intercept: {
+        page: { default: "modal-page", generateStaticParams: async () => [], runtime: "nodejs" },
+      },
+      slots: { side: { page: { default: () => null, runtime: "edge" } } },
+    },
+    {
+      name: "a generator above the interception's last dynamic segment",
+      intercept: {
+        interceptBranchSegments: ["photos", "[id]"],
+        page: { default: "modal-page" },
+      },
+      ownerLayout: { default: () => null, generateStaticParams: async () => [] },
+      slots: {},
+    },
+  ])("takes an interception's cacheability from $name", async (testCase) => {
+    const { intercept, slots } = testCase;
+    const ownerLayout = "ownerLayout" in testCase ? testCase.ownerLayout : undefined;
+    // app/[team]/@modal/(.)photos/[id] beside app/[team]/@side, intercepting
+    // from app/[team]/page.tsx. Dev shows the classification: production
+    // never caches an interception that can read the request.
+    const sourceRoute = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }, ownerLayout ?? { default: () => null }],
+      layoutTreePositions: [0, 1],
+      params: ["team"],
+      pattern: "/[team]",
+      routeSegments: ["[team]"],
+      slots: {
+        "modal@app/[team]/@modal": {
+          layout: null,
+          layoutIndex: 1,
+          name: "modal",
+          ownerTreePosition: 1,
+          ...("layout" in slots ? { layout: slots.layout } : {}),
+        },
+        "side@app/[team]/@side": {
+          layoutIndex: 1,
+          name: "side",
+          ownerTreePosition: 1,
+          page: { default: () => null },
+          ...("side" in slots ? slots.side : {}),
+        },
+      },
+    });
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/acme/photos/123",
+      findIntercept: () => ({
+        interceptBranchSegments: ["photos", "123"],
+        matchedParams: { id: "123", team: "acme" },
+        page: { default: "modal-page", generateStaticParams: async () => [] },
+        slotKey: "modal@app/[team]/@modal",
+        sourceRouteIndex: 1,
+        ...intercept,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      isProduction: false,
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      route: createRoute({ params: ["team", "id"], pattern: "/[team]/photos/[id]" }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    await expect(response.text()).resolves.toBe("/[team]");
+    expect(response.headers.get("cache-control")).toBe(
+      "cacheControl" in testCase ? testCase.cacheControl : "no-store, must-revalidate",
+    );
+  });
+
+  it("classifies a sibling interception by its own dynamic segment", async () => {
+    // app/shots/(.)[id]/page.tsx intercepts from the static app/shots/page.tsx.
+    // The route graph strips the marker, so its branch is `[id]`.
+    const dispatchSibling = async (page: Record<string, unknown>) => {
+      const { options } = createDispatchOptions({
+        async buildPageElement(route) {
+          return route.pattern;
+        },
+        cleanPathname: "/shots/123",
+        findIntercept: () => ({
+          interceptBranchSegments: ["[id]"],
+          matchedParams: { id: "123" },
+          page,
+          slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+          sourcePageSegments: ["shots", "(.)[id]"],
+          sourceRouteIndex: 1,
+        }),
+        getSourceRoute(sourceRouteIndex) {
+          return sourceRouteIndex === 1
+            ? createRoute({
+                layouts: [{ default: () => null }],
+                layoutTreePositions: [0],
+                params: [],
+                pattern: "/shots",
+                routeSegments: ["shots"],
+              })
+            : undefined;
+        },
+        isProduction: false,
+        isRscRequest: true,
+        renderToReadableStream(element) {
+          return createStream([typeof element === "string" ? element : "unexpected-element"]);
+        },
+        route: createRoute({
+          isDynamic: true,
+          params: ["id"],
+          pattern: "/shots/[id]",
+          routeSegments: ["shots", "[id]"],
+        }),
+      });
+      const response = await dispatchAppPage(options);
+      await expect(response.text()).resolves.toBe("/shots");
+      return response.headers.get("cache-control");
+    };
+
+    await expect(dispatchSibling({ default: "modal-page" })).resolves.toBe(
+      "no-store, must-revalidate",
+    );
+    await expect(
+      dispatchSibling({ default: "modal-page", generateStaticParams: async () => [] }),
+    ).resolves.toBeNull();
+  });
+
+  it("renders an interception from its own matched route under the interception's config", async () => {
+    // app/shots/[id]/page.tsx beside app/shots/@modal/(.)[id]/page.tsx, from
+    // /shots/1 to /shots/2: the interception's source is the matched route.
+    const dispatchCurrentRouteIntercept = async (
+      dynamicConfig: string | undefined,
+      interceptPage: Record<string, unknown>,
+      sidebarPage?: Record<string, unknown>,
+      isEdgeRuntime = false,
+    ) => {
+      const route = createRoute({
+        isDynamic: true,
+        layouts: [{ default: () => null }, { default: () => null }],
+        layoutTreePositions: [0, 1],
+        params: ["id"],
+        pattern: "/shots/[id]",
+        routeSegments: ["shots", "[id]"],
+        slots: {
+          "modal@app/shots/@modal": { layoutIndex: 1, name: "modal", ownerTreePosition: 1 },
+          ...(sidebarPage && {
+            "sidebar@app/shots/@sidebar": {
+              layoutIndex: 1,
+              name: "sidebar",
+              ownerTreePosition: 1,
+              page: { default: () => null, ...sidebarPage },
+            },
+          }),
+        },
+      });
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => ({
+        "page:/shots/[id]": "page",
+      }));
+      let renderedPayload: unknown;
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        renderToReadableStream(element) {
+          renderedPayload = element;
+          return createStream(["flight"]);
+        },
+        cleanPathname: "/shots/2",
+        dynamicConfig,
+        findIntercept: () => ({
+          interceptBranchSegments: ["[id]"],
+          matchedParams: { id: "2" },
+          page: { default: "modal-page", ...interceptPage },
+          slotKey: "modal@app/shots/@modal",
+          sourceRouteIndex: 0,
+        }),
+        getSourceRoute: () => route,
+        isRscRequest: true,
+        route,
+        searchParams: new URLSearchParams("q=1"),
+      });
+      const response = await dispatchAppPage({
+        ...options,
+        dynamicStaleTimeSeconds: 300,
+        isEdgeRuntime,
+      });
+      await response.text();
+      const [, , interceptOpts, searchParams, renderOptions] = buildPageElement.mock.calls[0];
+      return {
+        dynamicStaleTime: (renderedPayload as Record<string, unknown>)[
+          AppElementsWire.keys.dynamicStaleTime
+        ],
+        edgeRuntime: response.headers.get("x-edge-runtime"),
+        interceptSlotKey: interceptOpts?.interceptSlotKey,
+        isForceStatic: renderOptions?.isForceStatic,
+        search: searchParams.toString(),
+      };
+    };
+
+    // The matched page's force-static isn't part of the interception.
+    await expect(dispatchCurrentRouteIntercept("force-static", {})).resolves.toEqual({
+      // The configured staleTimes.dynamic, not the matched page's 300.
+      dynamicStaleTime: 0,
+      edgeRuntime: null,
+      interceptSlotKey: "modal@app/shots/@modal",
+      isForceStatic: false,
+      search: "q=1",
+    });
+    expect(setCurrentForceDynamicFetchDefault).toHaveBeenLastCalledWith(false);
+    // The intercepting page's own config is.
+    await expect(
+      dispatchCurrentRouteIntercept(undefined, { dynamic: "force-static" }),
+    ).resolves.toEqual({
+      dynamicStaleTime: undefined,
+      edgeRuntime: null,
+      interceptSlotKey: "modal@app/shots/@modal",
+      isForceStatic: true,
+      search: "",
+    });
+    // The dynamicParams check sets its own defaults apart from the request, so
+    // these check that the dispatch set the interception's.
+    vi.mocked(setCurrentForceDynamicFetchDefault).mockClear();
+    await dispatchCurrentRouteIntercept(undefined, { dynamic: "force-dynamic" });
+    expect(setCurrentForceDynamicFetchDefault).toHaveBeenCalledWith(true);
+    vi.mocked(setCurrentFetchRevalidate).mockClear();
+    await dispatchCurrentRouteIntercept(undefined, { revalidate: 7 });
+    expect(setCurrentFetchRevalidate).toHaveBeenCalledWith(7);
+    await expect(
+      dispatchCurrentRouteIntercept(undefined, { unstable_dynamicStaleTime: 15 }),
+    ).resolves.toMatchObject({ dynamicStaleTime: 15 });
+    // As does a slot rendered beside it.
+    await expect(
+      dispatchCurrentRouteIntercept(
+        undefined,
+        { unstable_dynamicStaleTime: 15 },
+        { unstable_dynamicStaleTime: 10 },
+      ),
+    ).resolves.toMatchObject({ dynamicStaleTime: 10 });
+    // Its runtime is the interception's, not the matched page's.
+    await expect(
+      dispatchCurrentRouteIntercept(undefined, {}, undefined, true),
+    ).resolves.toMatchObject({ edgeRuntime: null });
+    await expect(
+      dispatchCurrentRouteIntercept(undefined, { runtime: "edge" }),
+    ).resolves.toMatchObject({ edgeRuntime: "1" });
+  });
+
+  // app/shots/[id]/page.tsx is force-static with revalidate = 3600;
+  // app/shots/@modal/(.)[id]/page.tsx generates its params, with or without a
+  // revalidate of its own.
+  it.each([
+    { expectedRevalidate: 30, name: "its own revalidate", revalidate: 30 },
+    // As the first render does, from Next.js's static `revalidate = false`.
+    { expectedRevalidate: Infinity, name: "no revalidate", revalidate: undefined },
+  ])(
+    "regenerates a stale interception of its own matched route with $name under the interception's config",
+    async ({ expectedRevalidate, revalidate }) => {
+      const route = createRoute({
+        isDynamic: true,
+        layouts: [{ default: () => null }, { default: () => null }],
+        layoutTreePositions: [0, 1],
+        params: ["id"],
+        pattern: "/shots/[id]",
+        routeSegments: ["shots", "[id]"],
+        slots: {
+          "modal@app/shots/@modal": { layoutIndex: 1, name: "modal", ownerTreePosition: 1 },
+        },
+      });
+      const fetchDefaults: { mode: unknown; revalidate: unknown }[] = [];
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => {
+        const context = getRequestContext();
+        fetchDefaults.push({
+          mode: context.currentFetchCacheMode,
+          revalidate: context.currentFetchRevalidate,
+        });
+        return React.createElement("main", null, "page");
+      });
+      let scheduledRender: unknown = null;
+      const findIntercept = vi.fn(() => ({
+        interceptBranchSegments: ["[id]"],
+        matchedParams: { id: "2" },
+        page: { default: "modal-page", generateStaticParams: async () => [], revalidate },
+        slotKey: "modal@app/shots/@modal",
+        sourceRouteIndex: 0,
+      }));
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/shots/2",
+        findIntercept,
+        getSourceRoute: () => route,
+        interceptionContext: "/shots/1",
+        isProduction: true,
+        isRscRequest: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(
+            buildCachedAppPageValue(
+              "",
+              new TextEncoder().encode("stale-flight").buffer,
+              undefined,
+              buildQueryInvariantRenderObservation(),
+            ),
+            true,
+          ),
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef) {
+              captureOptions.capturedRscDataRef.value = Promise.resolve(
+                new TextEncoder().encode("fresh-flight").buffer,
+              );
+            }
+            void captureOptions?.sideStream?.cancel().catch(() => {});
+            return createStream(["<html>fresh</html>"]);
+          },
+        }),
+        renderToReadableStream: () => createStream(["fresh-flight"]),
+        resolveRouteDynamicConfig: () => "force-static",
+        resolveRouteFetchCacheMode: () => "force-cache",
+        resolveRouteRevalidateSeconds: () => 3600,
+        route,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+      if (typeof scheduledRender !== "function") {
+        throw new Error("expected the stale entry to schedule regeneration");
+      }
+      expect(setCurrentFetchRevalidate).toHaveBeenLastCalledWith(expectedRevalidate);
+      buildPageElement.mockClear();
+
+      await scheduledRender();
+
+      const [, , interceptOpts, , renderOptions] = buildPageElement.mock.calls[0];
+      expect(interceptOpts?.interceptSlotKey).toBe("modal@app/shots/@modal");
+      expect(renderOptions?.isForceStatic).toBe(false);
+      // The regeneration's fetch defaults, not the direct page's.
+      expect(fetchDefaults.at(-1)).toEqual({ mode: null, revalidate: expectedRevalidate });
+      // The request, its cache read and its regeneration share one lookup.
+      expect(findIntercept).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
@@ -4083,18 +4887,12 @@ describe("app page dispatch", () => {
     ) => {
       scheduledRender = renderFn;
     };
-    const resolveRouteFetchCacheMode = vi.fn((route: TestRoute) =>
-      route === sourceRoute ? "force-cache" : null,
-    );
-    const resolveRouteRevalidateSeconds = vi.fn((route: TestRoute) =>
-      route === sourceRoute ? 30 : null,
-    );
     const { options } = createDispatchOptions({
       buildPageElement,
       cleanPathname: "/photos/123",
       findIntercept: () => ({
         matchedParams: { id: "123" },
-        page: { default: "modal-page" },
+        page: { default: "modal-page", fetchCache: "force-cache", revalidate: 30 },
         slotId: "slot:modal:/feed",
         slotKey: "modal@app/feed/@modal",
         sourceRouteIndex: 1,
@@ -4132,8 +4930,6 @@ describe("app page dispatch", () => {
       }),
       mountedSlotsHeader: "slot:modal:/feed",
       revalidateSeconds: 60,
-      resolveRouteFetchCacheMode,
-      resolveRouteRevalidateSeconds,
       route: currentRoute,
       scheduleBackgroundRegeneration,
       searchParams: new URLSearchParams("tab=popular"),
@@ -4146,8 +4942,8 @@ describe("app page dispatch", () => {
     expect(scheduledRender).toBeNull();
 
     const [routeArg, paramsArg, optsArg, searchParamsArg] = buildPageElement.mock.calls[0];
-    expect(resolveRouteFetchCacheMode).toHaveBeenCalledWith(sourceRoute);
-    expect(resolveRouteRevalidateSeconds).toHaveBeenCalledWith(sourceRoute);
+    expect(setCurrentFetchCacheMode).toHaveBeenLastCalledWith("force-cache");
+    expect(setCurrentFetchRevalidate).toHaveBeenLastCalledWith(30);
     expect(routeArg).toBe(sourceRoute);
     expect(paramsArg).toEqual({});
     expect(searchParamsArg.toString()).toBe("tab=popular");
@@ -4162,9 +4958,10 @@ describe("app page dispatch", () => {
     expect(options.isrSet).not.toHaveBeenCalled();
   });
 
-  it("fails regenerating a stale intercepted entry whose source route turned revalidate = 0", async () => {
-    // app/feed/page.tsx now sets dynamic = "force-dynamic" (revalidate 0),
-    // while the matched /photos/[id] route keeps revalidate = 60.
+  it("fails regenerating a stale intercepted entry whose interception turned revalidate = 0", async () => {
+    // app/feed/@modal/(.)photos/[id]/page.tsx now sets revalidate = 0, while
+    // the matched /photos/[id] route keeps revalidate = 60. The source's own
+    // page isn't part of the interception.
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
     const currentRoute = createRoute({
       params: ["id"],
@@ -4172,17 +4969,18 @@ describe("app page dispatch", () => {
       routeSegments: ["photos", "[id]"],
     });
     let scheduledRender: unknown = null;
+    const findIntercept = vi.fn(() => ({
+      matchedParams: { id: "123" },
+      page: { default: "modal-page", revalidate: 0 },
+      slotKey: "modal@app/feed/@modal",
+      sourceRouteIndex: 1,
+    }));
     const { options } = createDispatchOptions({
       async buildPageElement(route) {
         return route.pattern;
       },
       cleanPathname: "/photos/123",
-      findIntercept: () => ({
-        matchedParams: { id: "123" },
-        page: { default: "modal-page" },
-        slotKey: "modal@app/feed/@modal",
-        sourceRouteIndex: 1,
-      }),
+      findIntercept,
       getSourceRoute(sourceRouteIndex) {
         return sourceRouteIndex === 1 ? sourceRoute : undefined;
       },
@@ -4212,7 +5010,7 @@ describe("app page dispatch", () => {
         },
       }),
       renderToReadableStream: () => createStream(["fresh-flight"]),
-      resolveRouteRevalidateSeconds: (route) => (route === sourceRoute ? 0 : null),
+      resolveRouteRevalidateSeconds: (route) => (route === sourceRoute ? 3600 : null),
       revalidateSeconds: 60,
       route: currentRoute,
       scheduleBackgroundRegeneration(_key, renderFn) {
@@ -4230,6 +5028,7 @@ describe("app page dispatch", () => {
       "Page changed from static to dynamic at runtime /photos/123",
     );
     expect(options.isrSet).not.toHaveBeenCalled();
+    expect(findIntercept).toHaveBeenCalledTimes(1);
   });
 
   // Next.js's ResponseCache doesn't resolve the previous entry for an
@@ -4416,10 +5215,9 @@ describe("app page dispatch", () => {
     expect(isrSet).not.toHaveBeenCalled();
   });
 
-  it("resolves the intercept source route's dynamic config for force-dynamic fetch defaults", async () => {
-    // When the current route is not force-dynamic but the intercepted source route is,
-    // the dispatch must resolve the source route's dynamic config so that fetch
-    // defaults come from the source route, not the current route.
+  it("activates an interception's force-dynamic config for its fetch defaults", async () => {
+    // The owner's layout is force-dynamic and the current route is not, so the
+    // interception's fetch defaults come from the owner's layout.
     const sourceRoute = createRoute({
       params: [],
       pattern: "/feed",
@@ -4432,17 +5230,12 @@ describe("app page dispatch", () => {
       routeSegments: ["photos", "[id]"],
     });
 
-    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
-      route === sourceRoute ? "force-dynamic" : undefined,
-    );
-
     const { options } = createDispatchOptions({
       async buildPageElement(route, params, opts) {
         return `${route.pattern}:${JSON.stringify(params)}:${opts?.interceptSlotKey ?? "direct"}`;
       },
       isRscRequest: true,
       route: currentRoute,
-      resolveRouteDynamicConfig,
     });
 
     const response = await dispatchAppPage({
@@ -4461,13 +5254,10 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+    expect(setCurrentForceDynamicFetchDefault).toHaveBeenLastCalledWith(true);
   });
 
-  it("does not leak the current route's force-dynamic config into the intercept source route", async () => {
-    // When the current route is force-dynamic but the intercepted source route is not,
-    // the dispatch must resolve the source route's dynamic config so that fetch
-    // defaults do NOT leak from the current route into the source route.
+  it("does not leak the current route's force-dynamic config into an interception", async () => {
     const sourceRoute = createRoute({
       params: [],
       pattern: "/feed",
@@ -4479,10 +5269,6 @@ describe("app page dispatch", () => {
       routeSegments: ["photos", "[id]"],
       layouts: [{ default: () => null, dynamic: "force-dynamic" }],
     });
-
-    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
-      route === currentRoute ? "force-dynamic" : undefined,
-    );
 
     const { options } = createDispatchOptions({
       async buildPageElement(route, params, opts) {
@@ -4491,7 +5277,7 @@ describe("app page dispatch", () => {
       dynamicConfig: "force-dynamic",
       isRscRequest: true,
       route: currentRoute,
-      resolveRouteDynamicConfig,
+      resolveRouteDynamicConfig: (route) => (route === currentRoute ? "force-dynamic" : undefined),
     });
 
     const response = await dispatchAppPage({
@@ -4510,10 +5296,10 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+    expect(setCurrentForceDynamicFetchDefault).toHaveBeenLastCalledWith(false);
   });
 
-  describe("intercepted RSC of a known-dynamic source or current route", () => {
+  describe("intercepted RSC of a known-dynamic interception or current route", () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
     const currentRoute = createRoute({
       params: ["id"],
@@ -4525,15 +5311,24 @@ describe("app page dispatch", () => {
       { dynamicConfig: undefined, revalidateSeconds: 0 },
     ];
 
-    function dispatchIntercept(overrides: CreateDispatchOptionsOverrides) {
+    function dispatchIntercept(
+      overrides: CreateDispatchOptionsOverrides,
+      interceptPageConfig: Record<string, unknown> = {},
+    ) {
       const { options } = createDispatchOptions({
         async buildPageElement(route) {
           return route.pattern;
         },
         cleanPathname: "/photos/123",
+        // The page generates its params, so only its config can make the
+        // interception dynamic.
         findIntercept: () => ({
           matchedParams: { id: "123" },
-          page: { default: "modal-page" },
+          page: {
+            default: "modal-page",
+            generateStaticParams: async () => [{ id: "123" }],
+            ...interceptPageConfig,
+          },
           slotKey: "modal@app/feed/@modal",
           sourceRouteIndex: 1,
         }),
@@ -4554,17 +5349,14 @@ describe("app page dispatch", () => {
     for (const config of knownDynamicConfigs) {
       const label = config.dynamicConfig ?? "revalidate = 0";
 
-      // A standard build already classifies such a source as non-static. A
-      // cacheComponents build keeps every route static-eligible, so only the
-      // source's own dynamic config marks the response.
-      it(`sends the never-cache header for a ${label} source in a cacheComponents build`, async () => {
-        const response = await dispatchIntercept({
-          pprRuntime: appPagePprRuntime,
-          resolveRouteDynamicConfig: (route) =>
-            route === sourceRoute ? config.dynamicConfig : undefined,
-          resolveRouteRevalidateSeconds: (route) =>
-            route === sourceRoute ? config.revalidateSeconds : null,
-        });
+      // A standard build already classifies such an interception as
+      // non-static. A cacheComponents build keeps every route static-eligible,
+      // so only the interception's own dynamic config marks the response.
+      it(`sends the never-cache header for a ${label} interception in a cacheComponents build`, async () => {
+        const response = await dispatchIntercept(
+          { pprRuntime: appPagePprRuntime },
+          { dynamic: config.dynamicConfig, revalidate: config.revalidateSeconds },
+        );
 
         await expect(response.text()).resolves.toBe("/feed");
         expect(response.headers.get("cache-control")).toBe(
@@ -4575,7 +5367,7 @@ describe("app page dispatch", () => {
       for (const pprRuntime of [undefined, appPagePprRuntime]) {
         const build = pprRuntime ? "a cacheComponents build" : "a standard build";
 
-        it(`keeps a ${label} current route's header off a static source in ${build}`, async () => {
+        it(`keeps a ${label} current route's header off a static interception in ${build}`, async () => {
           const response = await dispatchIntercept({
             dynamicConfig: config.dynamicConfig,
             pprRuntime,
@@ -4588,13 +5380,44 @@ describe("app page dispatch", () => {
           });
 
           await expect(response.text()).resolves.toBe("/feed");
-          expect(response.headers.get("cache-control")).toBeNull();
+          expect(response.headers.get("cache-control")).toBe(
+            "private, no-cache, no-store, max-age=0, must-revalidate",
+          );
         });
       }
     }
+
+    it("never caches a static interception's payload unless middleware sets a policy", async () => {
+      const response = await dispatchIntercept({});
+      await expect(response.text()).resolves.toBe("/feed");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+
+      const middlewareCacheControl = "public, max-age=5";
+      const withMiddlewarePolicy = await dispatchIntercept({
+        middlewareContext: {
+          headers: new Headers({ "cache-control": middlewareCacheControl }),
+          status: null,
+        },
+      });
+      expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
+    });
+
+    it("sends no policy for an interception that can't read the request, or in dev", async () => {
+      for (const [overrides, interceptPageConfig] of [
+        [{}, { dynamic: "force-static" }],
+        [{}, { dynamic: "error" }],
+        [{ isProduction: false }, {}],
+      ] satisfies [CreateDispatchOptionsOverrides, Record<string, unknown>][]) {
+        const response = await dispatchIntercept(overrides, interceptPageConfig);
+        await expect(response.text()).resolves.toBe("/feed");
+        expect(response.headers.get("cache-control")).toBeNull();
+      }
+    });
   });
 
-  it("passes empty searchParams to a force-static intercept source route", async () => {
+  it("passes empty searchParams to a force-static interception", async () => {
     const sourceRoute = createRoute({
       params: [],
       pattern: "/feed",
@@ -4609,12 +5432,10 @@ describe("app page dispatch", () => {
       async (_route, _params, _opts, searchParams) => searchParams.get("tab") ?? "empty",
     );
     const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
-    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
-      route === sourceRoute && route.layouts.length > 0 ? "force-static" : undefined,
-    );
     const { options } = createDispatchOptions({
       buildPageElement,
       cleanPathname: "/photos/123",
+      // The owner's layout is read once its route is loaded.
       ensureRouteLoaded(route) {
         if (route === sourceRoute) {
           sourceRoute.layouts = [{ default: () => null, dynamic: "force-static" }];
@@ -4625,7 +5446,6 @@ describe("app page dispatch", () => {
       renderToReadableStream(element) {
         return createStream([typeof element === "string" ? element : "unexpected-element"]);
       },
-      resolveRouteDynamicConfig,
       route: currentRoute,
       searchParams: new URLSearchParams("tab=popular"),
       setNavigationContext,
@@ -4655,11 +5475,9 @@ describe("app page dispatch", () => {
     );
     const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
     expect(navigationContext?.searchParams.toString()).toBe("");
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledTimes(1);
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
   });
 
-  it("observes searchParams access for a dynamic-error intercept source route", async () => {
+  it("observes searchParams access for a dynamic-error interception", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
     const currentRoute = createRoute({
       params: ["id"],
@@ -4676,9 +5494,6 @@ describe("app page dispatch", () => {
         return searchParams.get("tab") ?? "empty";
       },
     );
-    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
-      route === sourceRoute && route.layouts.length > 0 ? "error" : undefined,
-    );
     const { options } = createDispatchOptions({
       buildPageElement,
       cleanPathname: "/photos/123",
@@ -4692,7 +5507,6 @@ describe("app page dispatch", () => {
       renderToReadableStream(element) {
         return createStream([typeof element === "string" ? element : "unexpected-element"]);
       },
-      resolveRouteDynamicConfig,
       route: currentRoute,
       searchParams: new URLSearchParams("tab=popular"),
     });
@@ -4717,6 +5531,7 @@ describe("app page dispatch", () => {
       {
         isForceStatic: false,
         isUncacheableRender: true,
+        routeTreeOnlyPrefetchShell: true,
         observeMetadataSearchParamsAccess: true,
         observePageSearchParamsAccess: true,
         onHeadPrepared: expect.any(Function),
@@ -4800,6 +5615,54 @@ describe("app page dispatch", () => {
     }
   });
 
+  // A stale entry regenerates in the shape it was stored: a loading shell
+  // without a loading boundary is the route tree only without PPR, and keeps
+  // its layouts with Cache Components in production.
+  it.each([
+    { name: "without PPR", pprRuntime: undefined, expected: true },
+    { name: "with Cache Components", pprRuntime: appPagePprRuntime, expected: false },
+  ])(
+    "regenerates a stale entry with the foreground's shell shape $name",
+    async ({ pprRuntime, expected }) => {
+      let scheduledRender: (() => Promise<void>) | null = null;
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "fresh"),
+      );
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        isProduction: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef) {
+              captureOptions.capturedRscDataRef.value = Promise.resolve(
+                new TextEncoder().encode("fresh-flight").buffer,
+              );
+            }
+            void captureOptions?.sideStream?.cancel().catch(() => {});
+            return createStream(["<html>fresh</html>"]);
+          },
+        }),
+        pprRuntime,
+        revalidateSeconds: 60,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+      expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+      expect(scheduledRender).not.toBeNull();
+      await scheduledRender!();
+
+      expect(buildPageElement).toHaveBeenCalledTimes(1);
+      expect(buildPageElement.mock.calls[0]?.[4]?.routeTreeOnlyPrefetchShell).toBe(expected);
+    },
+  );
+
   it("regenerates stale HTML cache entries with waitForAllReady so suspense fallbacks never leak into the cache", async () => {
     // Stale-while-revalidate regeneration must await React's `allReady` before
     // transforming/buffering the HTML stream — same guarantee as the prerender
@@ -4834,7 +5697,6 @@ describe("app page dispatch", () => {
         buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
       ),
       isrSet,
-      hasCustomGlobalError: false,
       loadSsrHandler: async () => ({
         async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
           capturedWaitForAllReady = captureOptions?.waitForAllReady;
@@ -5961,10 +6823,6 @@ describe("app page dispatch", () => {
       scheduledRender = renderFn;
     };
 
-    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
-      route === targetRoute ? "force-dynamic" : undefined,
-    );
-
     const buildPageElement = vi.fn(
       async (
         route: TestRoute,
@@ -6024,7 +6882,6 @@ describe("app page dispatch", () => {
       }),
       mountedSlotsHeader: "slot:modal:/feed",
       revalidateSeconds: 60,
-      resolveRouteDynamicConfig,
       route: currentRoute,
       scheduleBackgroundRegeneration,
       searchParams: new URLSearchParams("tab=popular"),
@@ -6035,7 +6892,7 @@ describe("app page dispatch", () => {
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     await expect(response.text()).resolves.toBe("flight");
     expect(scheduledRender).toBeNull();
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(targetRoute);
+    expect(setCurrentForceDynamicFetchDefault).toHaveBeenLastCalledWith(true);
     const [routeArg] = buildPageElement.mock.calls[0];
     expect(routeArg).toBe(targetRoute);
   });
@@ -6126,10 +6983,10 @@ describe("app page dispatch", () => {
 
     // A force-dynamic current route skips the cache read entirely, so there is no
     // revalidation path. The intercept path is still exercised, and it must resolve
-    // the target route's dynamic config instead of inheriting the current route's.
+    // the interception's dynamic config instead of inheriting the current route's.
     const response = await dispatchAppPage(options);
     expect(response.status).toBe(200);
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(targetRoute);
+    expect(setCurrentForceDynamicFetchDefault).toHaveBeenLastCalledWith(false);
   });
 
   it("serves exact cache HIT instead of fallback shell", async () => {
@@ -7697,15 +8554,56 @@ describe("app page dispatch", () => {
         expect(response.status).toBe(404);
         expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
 
-        // Middleware's own cache policy still wins.
+        // As for an unmatched route, Next.js' routing-level 404 replaces
+        // middleware's own cache policy.
         if (fallback === "rendered") {
           const withMiddlewarePolicy = await dispatch(
             new Headers({ "cache-control": middlewareCacheControl }),
           );
-          expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
+          expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
         }
       });
     }
+
+    it("never caches a static generated-param miss", async () => {
+      const dispatch = async (
+        overrides: CreateDispatchOptionsOverrides = {},
+        middlewareHeaders?: Headers,
+      ) => {
+        const { options } = createDispatchOptions({
+          async generateStaticParams() {
+            return [{ slug: "known" }];
+          },
+          hasGenerateStaticParams: true,
+          isProduction: true,
+          route: createDynamicSegmentRoute(),
+          ...overrides,
+        });
+        options.renderHttpAccessFallbackPage = async () =>
+          new Response("not found", { headers: middlewareHeaders, status: 404 });
+        if (middlewareHeaders) options.middlewareContext.headers = middlewareHeaders;
+        return dispatchAppPage({ ...options, dynamicParamsConfig: false });
+      };
+
+      // Next.js serves the miss as an unmatched route's 404, whose never-cache
+      // policy replaces middleware's and applies to force-static and
+      // dynamic = "error" routes too.
+      for (const overrides of [
+        {},
+        { dynamicConfig: "force-static" },
+        { dynamicConfig: "error" },
+        { isProduction: false },
+      ]) {
+        const response = await dispatch(overrides);
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+      }
+      const withMiddlewarePolicy = await dispatch(
+        {},
+        new Headers({ "cache-control": "public, max-age=5" }),
+      );
+      expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+    });
 
     it("never caches the missing default export response of a non-static page", async () => {
       const dispatch = async (overrides: CreateDispatchOptionsOverrides) => {
@@ -7724,10 +8622,18 @@ describe("app page dispatch", () => {
         expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
       }
 
-      // A static page's response keeps no policy of its own.
+      // A static page's response isn't known dynamic, but it is never stored,
+      // so it is never cached either.
       const staticResponse = await dispatch({});
       expect(staticResponse.status).toBe(500);
-      expect(staticResponse.headers.get("cache-control")).toBeNull();
+      expect(staticResponse.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+
+      // The build's prerender reads no-store as a dynamic render, so it gets
+      // no pending policy.
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      const prerenderResponse = await dispatch({});
+      expect(prerenderResponse.status).toBe(500);
+      expect(prerenderResponse.headers.get("cache-control")).toBeNull();
     });
 
     it("renders non-GET requests to a dynamic-segment route without generateStaticParams", async () => {

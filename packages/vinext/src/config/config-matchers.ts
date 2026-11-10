@@ -269,18 +269,15 @@ const REQUEST_HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 
+/**
+ * Strip the fixed request hop-by-hop list. Fields the client nominates in
+ * `Connection` are forwarded, like Next.js: the headers here already include
+ * middleware's request overrides, so honouring the client's list would let it
+ * drop headers middleware set.
+ */
 function stripHopByHopRequestHeaders(headers: Headers): void {
-  const connectionTokens = (headers.get("connection") || "")
-    .split(",")
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean);
-
   for (const header of REQUEST_HOP_BY_HOP_HEADERS) {
     headers.delete(header);
-  }
-
-  for (const token of connectionTokens) {
-    headers.delete(token);
   }
 }
 
@@ -1156,8 +1153,10 @@ const LOCATION_STRIPPED_RE = /^[\u0000- ]+|[\u0000- ]+$|[\t\n\r]/g;
 // oxlint-disable-next-line no-control-regex -- C0 controls are the point
 const LOCATION_UNSAFE_RE = /[\u0000-\u0008\u000A-\u001F\u007F]|[^\u0000-\u007F]/gu;
 // encodeURIComponent throws on a lone UTF-16 surrogate; the URL parser
-// serializes it as U+FFFD.
-const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+// serializes it as U+FFFD. A valid pair matches first and is kept, so any other
+// surrogate match is a lone one. No lookbehind: this module reaches the client,
+// and a bundler cannot lower one for a target without it (Safari below 16.4).
+const SURROGATE_RE = /[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g;
 
 /**
  * Percent-encode what a config-redirect `Location` header cannot carry.
@@ -1171,7 +1170,7 @@ const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF
  */
 export function encodeRedirectLocation(location: string): string {
   return location
-    .replace(LONE_SURROGATE_RE, "\uFFFD")
+    .replace(SURROGATE_RE, (surrogate) => (surrogate.length === 2 ? surrogate : "\uFFFD"))
     .replace(LOCATION_UNSAFE_RE, encodeURIComponent);
 }
 
@@ -1219,6 +1218,9 @@ export async function proxyExternalRequest(
 
   // Forward the request with appropriate headers
   const headers = new Headers(request.headers);
+  // The inbound Host after any middleware request-header override. Like
+  // Next.js, a Host that middleware dropped forwards as an empty value.
+  const requestHost = headers.get("host") ?? "";
   // Set Host to the external target (required for correct routing)
   headers.set("host", targetUrl.host);
   // Remove headers that should not be forwarded to external services.
@@ -1228,6 +1230,9 @@ export async function proxyExternalRequest(
   // proxy and backend (defense-in-depth against request smuggling,
   // ref: CVE GHSA-ggv3-7p47-pfv8).
   stripHopByHopRequestHeaders(headers);
+  // Like Next.js, replace the client's X-Forwarded-Host with the inbound Host
+  // so the upstream never sees a forwarded host this proxy did not vouch for.
+  headers.set("x-forwarded-host", requestHost);
   // Next.js forwards truthy x-middleware-request-* values that were not
   // consumed by an override list under their literal names. Other middleware
   // protocol controls must not escape to the external origin.

@@ -1,6 +1,10 @@
 import { type ViteDevServer } from "vite";
 import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
-import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
+import {
+  INTERNAL_HEADERS,
+  VINEXT_INTERNAL_HEADERS,
+} from "../packages/vinext/src/server/headers.js";
+import { APP_FIXTURE_DIR, fetchHtml, fetchRsc, startFixtureServer } from "./helpers.js";
 
 describe("App Router middleware with NextRequest", () => {
   let server: ViteDevServer;
@@ -23,12 +27,11 @@ describe("App Router middleware with NextRequest", () => {
     expect(res.headers.get("x-mw-pathname")).toBe("/about");
   });
 
-  it("middleware NextRequest.nextUrl.pathname strips .rsc suffix", async () => {
-    // Regression: .rsc is an internal transport detail; middleware should see
-    // the clean pathname (/about), not the raw URL (/about.rsc).
+  it("middleware NextRequest.nextUrl.pathname keeps a .rsc suffix as part of the path", async () => {
+    // As in Next.js, `.rsc` is an ordinary part of the pathname.
     const res = await fetch(`${baseUrl}/about.rsc`);
     expect(res.headers.get("x-mw-ran")).toBe("true");
-    expect(res.headers.get("x-mw-pathname")).toBe("/about");
+    expect(res.headers.get("x-mw-pathname")).toBe("/about.rsc");
   });
 
   it("middleware receives NextRequest and can use .cookies", async () => {
@@ -43,12 +46,22 @@ describe("App Router middleware with NextRequest", () => {
     expect(res.headers.get("x-mw-has-session")).toBe("true");
   });
 
-  it("runs an exact API middleware matcher for a trailing-slash request", async () => {
-    const res = await fetch(`${baseUrl}/api/header-override-delete/`);
+  // Like Next.js, a trailing-slash Route Handler request is redirected before
+  // middleware runs, so middleware only sees the canonical pathname.
+  it("redirects a trailing-slash route handler request before middleware", async () => {
+    const res = await fetch(`${baseUrl}/api/header-override-delete/?a=1`, { redirect: "manual" });
 
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-mw-ran")).toBe("true");
-    expect(res.headers.get("x-mw-pathname")).toBe("/api/header-override-delete/");
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/api/header-override-delete?a=1");
+    expect(res.headers.get("x-mw-ran")).toBeNull();
+
+    // Following the redirect reaches middleware's exact-pathname branch.
+    const followed = await fetch(`${baseUrl}/api/header-override-delete/`);
+    expect(followed.status).toBe(200);
+    expect(followed.url).toBe(`${baseUrl}/api/header-override-delete`);
+    await expect(followed.json()).resolves.toMatchObject({
+      requestMiddlewareHeader: "hello-from-middleware",
+    });
   });
 
   it("object-form matcher requires has and missing conditions", async () => {
@@ -158,6 +171,75 @@ describe("App Router middleware with NextRequest", () => {
     });
   });
 
+  // Next.js's resolve-routes.ts copies every non-empty middleware response
+  // header onto the request after the override translation, so middleware's
+  // value replaces the client's. Confirmed against Next.js 16.2.7.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  it("copies middleware response headers onto the App page request", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/header-response-merge", {
+      headers: { "x-viewer-role": "staff", "x-empty-from-middleware": "client" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-viewer-role")).toBe("visitor");
+    expect(html).toContain('id="viewer-role">visitor<');
+    expect(html).toContain('id="empty">client<');
+    expect(html).toContain('id="set-cookie">merged-cookie=1; Path=/, merged-cookie-2=2; Path=/<');
+  });
+
+  it("copies middleware response headers onto App Route request.headers", async () => {
+    for (const search of ["", "?override"]) {
+      const res = await fetch(`${baseUrl}/api/header-response-merge${search}`, {
+        headers: { "x-viewer-role": "staff", "x-empty-from-middleware": "client" },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        viewerRole: "visitor",
+        empty: "client",
+        setCookie: "merged-cookie=1; Path=/, merged-cookie-2=2; Path=/",
+        headersApiViewerRole: "visitor",
+      });
+    }
+  });
+
+  it("copies middleware response headers onto Pages requests in mixed projects", async () => {
+    const { html } = await fetchHtml(baseUrl, "/pages-header-response-merge", {
+      headers: { "x-viewer-role": "staff", "x-empty-from-middleware": "client" },
+    });
+    expect(html).toContain('id="viewer-role">visitor<');
+    expect(html).toContain('id="empty">client<');
+
+    const res = await fetch(`${baseUrl}/api/pages-header-response-merge`, {
+      headers: { "x-viewer-role": "staff" },
+    });
+    expect(await res.json()).toEqual({
+      viewerRole: "visitor",
+      empty: null,
+      setCookie: ["merged-cookie=1; Path=/", "merged-cookie-2=2; Path=/"],
+    });
+  });
+
+  it("removes forged internal headers from Pages API rawHeaders and headersDistinct in mixed projects", async () => {
+    const internalHeaders = [...INTERNAL_HEADERS, ...VINEXT_INTERNAL_HEADERS];
+    const res = await fetch(`${baseUrl}/api/pages-raw-header-names`, {
+      headers: {
+        ...Object.fromEntries(internalHeaders.map((name) => [name, "1"])),
+        "x-client-header": "1",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const { names, distinctNames } = (await res.json()) as {
+      names: string[];
+      distinctNames: string[];
+    };
+    expect(names).toContain("x-client-header");
+    expect(names.filter((name) => internalHeaders.includes(name))).toEqual([]);
+    expect(distinctNames).toContain("x-client-header");
+    expect(distinctNames.filter((name) => internalHeaders.includes(name))).toEqual([]);
+  });
+
   it("middleware request header overrides can delete credential headers before pages getServerSideProps in mixed projects", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/pages-header-override-delete", {
       headers: {
@@ -248,11 +330,8 @@ describe("App Router middleware with NextRequest", () => {
     // Intercepting route responses are constructed via renderInterceptResponse(),
     // which must merge _mwCtx.headers into the Response — same as the normal
     // page path through buildAppPageRscResponse().
-    const res = await fetch(`${baseUrl}/photos/42.rsc`, {
-      headers: {
-        Accept: "text/x-component",
-        "X-Vinext-Interception-Context": "/feed",
-      },
+    const res = await fetchRsc(baseUrl, "/photos/42", {
+      headers: { "X-Vinext-Interception-Context": "/feed" },
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");

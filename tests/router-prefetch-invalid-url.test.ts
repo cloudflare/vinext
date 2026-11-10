@@ -23,7 +23,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 
-type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
+type Navigation = typeof import("../packages/vinext/src/shims/app-router-navigation.js");
 let appRouterInstance: Navigation["appRouterInstance"];
 
 beforeEach(async () => {
@@ -45,7 +45,7 @@ beforeEach(async () => {
     dispatchEvent: () => {},
   };
   vi.resetModules();
-  const nav = await import("../packages/vinext/src/shims/navigation.js");
+  const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
   appRouterInstance = nav.appRouterInstance;
 });
 

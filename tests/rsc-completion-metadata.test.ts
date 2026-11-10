@@ -238,6 +238,31 @@ describe("RSC completion metadata", () => {
     expect(cancel).toHaveBeenCalledWith("navigation superseded");
   });
 
+  it("does not read the completion metadata of a stream cancelled mid-render", async () => {
+    const getMetadata = vi.fn(() => undefined);
+    // A source that never settles its pending read on its own, as a render
+    // still waiting on I/O when the client leaves.
+    let pulled!: () => void;
+    const sourcePulled = new Promise<void>((resolve) => {
+      pulled = resolve;
+    });
+    const source = new ReadableStream<Uint8Array>({
+      pull() {
+        pulled();
+        return new Promise(() => {});
+      },
+    });
+    const reader = appendRscCompletionMetadata(source, getMetadata).getReader();
+
+    const pendingRead = reader.read();
+    await sourcePulled;
+    await reader.cancel("client disconnected");
+    await expect(pendingRead).resolves.toMatchObject({ done: true });
+    // Cancelling settled the read parked on the source as done.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getMetadata).not.toHaveBeenCalled();
+  });
+
   it("propagates source errors through framing and stripping", async () => {
     const failure = new Error("Flight source failed");
     let fail!: () => void;

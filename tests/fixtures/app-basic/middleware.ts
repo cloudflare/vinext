@@ -18,6 +18,25 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
+  // Copies the request's headers onto middleware's response, the mix-up of
+  // `{ headers }` with `{ request: { headers } }` that the Next.js docs warn
+  // about. The request's framing headers must not frame what is sent.
+  // Coverage: tests/app-router-production-server.test.ts
+  if (request.nextUrl.searchParams.has("mw-mirror-request-headers")) {
+    const headers = new Headers(request.headers);
+    headers.set("x-mw-mirrored", "1");
+    const target = request.nextUrl.searchParams.get("mw-mirror-request-headers");
+    if (target === "redirect") {
+      return NextResponse.redirect(new URL("/about", request.url), { headers });
+    }
+    if (target === "response") {
+      return new Response("blocked by middleware", { status: 403, headers });
+    }
+    return target
+      ? NextResponse.rewrite(new URL(target, request.url), { headers })
+      : NextResponse.next({ headers });
+  }
+
   // Client-disconnect coverage: tests/node-request-cancellation.test.ts
   if (pathname === "/api/request-signal") {
     if (!request.nextUrl.searchParams.has("override")) return NextResponse.next();
@@ -49,6 +68,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       status: 403,
       headers: { "content-type": "text/plain" },
     });
+  }
+  // A middleware Cache-Control replaces an admitted public file's default, as
+  // in Next.js. Coverage: tests/e2e/app-router-prod/public-file-encoding.spec.ts
+  if (
+    pathname.startsWith("/members%20only/") &&
+    request.nextUrl.searchParams.has("middleware-cache-control")
+  ) {
+    return NextResponse.next({ headers: { "cache-control": "private, no-store" } });
   }
 
   if (pathname === "/middleware-image-rewrite") {
@@ -134,6 +161,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     target.pathname = pathname.replace("/encoded-parity/middleware/", "/encoded-parity/page/");
     return NextResponse.rewrite(target);
   }
+  if (pathname.startsWith("/encoded-parity/rewrite-any/")) {
+    const target = request.nextUrl.clone();
+    target.pathname = pathname.replace("/encoded-parity/rewrite-any/", "/encoded-parity/");
+    return NextResponse.rewrite(target);
+  }
 
   // Record this invocation so tests can detect double-execution.
   // In a hybrid app+pages fixture the Vite connect handler runs middleware
@@ -151,17 +183,35 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next();
   }
 
+  if (
+    pathname.startsWith("/action-cache-control") &&
+    request.nextUrl.searchParams.has("middleware-cache-control")
+  ) {
+    const response = NextResponse.next();
+    response.headers.set("Cache-Control", "public, max-age=60");
+    if (request.nextUrl.searchParams.has("middleware-action-redirect")) {
+      response.headers.set("x-action-redirect", "/action-cache-control/config-policy");
+    }
+    return response;
+  }
+
   // next.config.ts adds config headers to /external-headers/* and proxies its
   // before-files, after-files and fallback paths to the local upstream.
   // Middleware proxies /external-headers/middleware/* there itself.
   if (pathname.startsWith("/external-headers/")) {
     const upstreamPort = request.headers.get("x-test-upstream-port");
     const middlewarePath = pathname.slice("/external-headers/middleware".length);
+    const search = request.nextUrl.searchParams;
+    // Middleware's request header override for the upstream.
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.set("x-mw-request-header", "1");
+    const init = search.has("middleware-request-header")
+      ? { request: { headers: requestHeaders } }
+      : undefined;
     const response =
       pathname.startsWith("/external-headers/middleware/") && /^\d+$/.test(upstreamPort ?? "")
-        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`)
-        : NextResponse.next();
-    const search = request.nextUrl.searchParams;
+        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`, init)
+        : NextResponse.next(init);
     if (search.has("middleware-cookie")) {
       response.cookies.set("middleware-cookie", "1", { path: "/" });
     }
@@ -206,7 +256,7 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   const acceptsRsc = request.headers.get("accept")?.startsWith("text/x-component") ?? false;
 
   if (acceptsRsc && pathname === "/rsc-fetch-redirect-src") {
-    return NextResponse.redirect(new URL("/rsc-fetch-error-target.rsc", request.url), 307);
+    return NextResponse.redirect(new URL("/rsc-fetch-error-target", request.url), 307);
   }
 
   if (acceptsRsc && pathname === "/rsc-fetch-error-target") {
@@ -355,6 +405,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return new Response("Blocked by middleware", { status: 403 });
   }
 
+  // A pathname comparison, as in the Next.js authentication guide.
+  if (pathname === "/encoded-parity/sibling/guarded") {
+    return new Response("Blocked by middleware", { status: 403 });
+  }
+
   // Throw an error to test that middleware errors return 500, not bypass auth
   if (pathname === "/middleware-throw") {
     throw new Error("middleware crash");
@@ -452,6 +507,26 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   if (pathname === "/api/header-override-stray") {
     const response = NextResponse.next();
     response.headers.set("x-middleware-request-x-added", "forged-by-middleware");
+    return response;
+  }
+
+  // Next.js copies every non-empty middleware response header onto the
+  // request after the override translation, replacing what the client sent.
+  if (
+    pathname === "/header-response-merge" ||
+    pathname === "/api/header-response-merge" ||
+    pathname === "/pages-header-response-merge" ||
+    pathname === "/api/pages-header-response-merge"
+  ) {
+    const headers = new Headers(request.headers);
+    headers.set("x-viewer-role", "from-override");
+    const response = request.nextUrl.searchParams.has("override")
+      ? NextResponse.next({ request: { headers } })
+      : NextResponse.next();
+    response.headers.set("x-viewer-role", "visitor");
+    response.headers.set("x-empty-from-middleware", "");
+    response.cookies.set("merged-cookie", "1");
+    response.cookies.set("merged-cookie-2", "2");
     return response;
   }
 
@@ -616,6 +691,8 @@ export const config = {
     "/admin",
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
+    "/encoded-parity/rewrite-any/:path*",
+    "/encoded-parity/sibling/:path*",
     "/middleware-throw",
     "/middleware-event",
     "/middleware-fetch-dedupe",
@@ -631,6 +708,10 @@ export const config = {
     "/config-cookie-response",
     "/external-headers/:path*",
     "/api/header-override-stray",
+    "/header-response-merge",
+    "/api/header-response-merge",
+    "/pages-header-response-merge",
+    "/api/pages-header-response-merge",
     "/api/pages-og",
     "/api/pages-append-header",
     "/api/pages-fallback-to-app/:path*",
@@ -643,6 +724,7 @@ export const config = {
     "/nextjs-compat/dynamic/:path*",
     "/nextjs-compat/action-forward-loop",
     "/nextjs-compat/action-node-mw",
+    "/action-cache-control/:path*",
     "/metadata-icons-stream/:path*",
     "/config-link-preload",
     "/use-client-page-pathname/:path*",

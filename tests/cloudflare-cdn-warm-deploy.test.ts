@@ -23,6 +23,7 @@ import {
 } from "../packages/vinext/src/server/headers.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
+const spawnSyncMock = vi.hoisted(() => vi.fn());
 const delayMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -30,6 +31,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return {
     ...actual,
     execFileSync: execFileSyncMock,
+    spawnSync: spawnSyncMock,
   };
 });
 
@@ -321,6 +323,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-warm-deploy-test-"));
     execFileSyncMock.mockReset();
+    spawnSyncMock.mockReset();
     delayMock.mockReset();
     vi.stubGlobal(
       "fetch",
@@ -489,31 +492,41 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     writeFile("node_modules/cf/bin/cf", "#!/usr/bin/env node\n");
     const events: string[] = [];
-    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+    // cf writes its log to stderr and only JSON results to stdout.
+    spawnSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("create") && args.includes("versions")) {
         events.push("upload");
-        return JSON.stringify({
-          id: PROBE_VERSION,
-          preview_url: "https://preview.example.workers.dev",
-        });
+        return {
+          status: 0,
+          stdout: "",
+          stderr: `│  Worker Version ID: ${PROBE_VERSION}\n│  Version Preview URL: https://preview.example.workers.dev\n`,
+        };
       }
       if (args.includes("list")) {
         events.push("status");
-        return JSON.stringify({
-          deployments: [
-            { id: "active", versions: [{ version_id: OLD_VERSION, percentage: 100 }] },
-            { id: "older", versions: [{ version_id: FINAL_VERSION, percentage: 100 }] },
-          ],
-        });
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            deployments: [
+              { id: "active", versions: [{ version_id: OLD_VERSION, percentage: 100 }] },
+              { id: "older", versions: [{ version_id: FINAL_VERSION, percentage: 100 }] },
+            ],
+          }),
+          stderr: "",
+        };
       }
       if (args.includes("create") && args.includes("deployments")) {
         const versions = JSON.parse(args[args.indexOf("--versions") + 1]!);
         events.push(versions.length === 2 ? "stage" : "promote");
-        return "https://app.example.workers.dev";
+        return { status: 0, stdout: "", stderr: "https://app.example.workers.dev\n" };
       }
       if (args.includes("triggers")) {
         events.push("triggers");
-        return "Deployed my-worker triggers\n  https://app.example.workers.dev\n";
+        return {
+          status: 0,
+          stdout: "",
+          stderr: "Deployed my-worker triggers\n  https://app.example.workers.dev\n",
+        };
       }
       throw new Error(`Unexpected cf args: ${args.join(" ")}`);
     });
@@ -531,9 +544,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }),
     ).resolves.toBe("https://app.example.workers.dev");
     expect(events).toEqual(["upload", "status", "stage", "triggers", "discover", "promote"]);
-    const args = (execFileSyncMock.mock.calls as Array<[string, string[]]>).map(
-      ([, value]) => value,
-    );
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    const args = (spawnSyncMock.mock.calls as Array<[string, string[]]>).map(([, value]) => value);
     expect(args).toContainEqual(
       expect.arrayContaining(["workers", "deployments", "create", "--strategy", "percentage"]),
     );

@@ -716,6 +716,94 @@ describe("navigationPlanner root-boundary decisions", () => {
     ]);
   });
 
+  // Next.js requires MPA navigation between root layouts, including action redirects:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/root-layout/root-layout.test.ts
+  // Regression: https://github.com/cloudflare/vinext/issues/4554
+  it.each(["server-action", "refresh"] as const)(
+    "hard-navigates a rewritten PIN root on the %s lane even when the visible URL is unchanged",
+    (lane) => {
+      const routeManifest = createTestRouteManifest([
+        {
+          layoutIds: ["layout:/(pin)"],
+          pattern: "/pin",
+          rootBoundaryId: "root-boundary:/(pin)",
+        },
+        {
+          layoutIds: ["layout:/(site)"],
+          pattern: "/",
+          rootBoundaryId: "root-boundary:/(site)",
+        },
+      ]);
+      const currentSnapshot: RouteSnapshot = {
+        ...createRouteSnapshot("/(pin)"),
+        displayUrl: "https://example.com/",
+        matchedUrl: "/",
+        routeId: "route:/pin",
+      };
+      const targetSnapshot: RouteSnapshot = {
+        ...createRouteSnapshot("/(site)"),
+        displayUrl: "https://example.com/",
+        matchedUrl: "/",
+        routeId: "route:/",
+      };
+
+      // The visible / URL resolves to the site root in the manifest, but the
+      // document actually rendered the rewritten PIN root before the action.
+      const decision = planFlightResponseFromSnapshots({
+        currentSnapshot,
+        lane,
+        routeManifest,
+        targetSnapshot,
+      });
+
+      expect(decision.kind).toBe("hardNavigate");
+      if (decision.kind !== "hardNavigate") {
+        throw new Error("Expected hardNavigate decision");
+      }
+      expect(decision.reason).toBe("rootBoundaryChanged");
+      expect(decision.url).toBe("https://example.com/");
+      expect(decision.trace.entries[0]?.fields.currentRootLayoutTreePath).toBe("/(pin)");
+      expect(decision.trace.entries[0]?.fields.nextRootLayoutTreePath).toBe("/(site)");
+    },
+  );
+
+  it("hard-navigates different rendered roots even before the manifest is available", () => {
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot: createRouteSnapshot("/(pin)"),
+      lane: "server-action",
+      routeManifest: null,
+      targetSnapshot: createRouteSnapshot("/(site)"),
+    });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
+    }
+    expect(decision.reason).toBe("rootBoundaryChanged");
+  });
+
+  it.each([
+    ["/(site)", "/(site)"],
+    [null, "/(site)"],
+    ["/(pin)", null],
+    [null, null],
+  ])("does not infer a root change from %s to %s without a manifest", (currentRoot, nextRoot) => {
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot: createRouteSnapshot(currentRoot),
+      lane: "server-action",
+      routeManifest: null,
+      targetSnapshot: createRouteSnapshot(nextRoot),
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") {
+      throw new Error("Expected proposeCommit decision");
+    }
+    expect(decision.proposal.reason).toBe("unprovenTopologyFallback");
+    expect(decision.proposal.preserveElementIds).toEqual([]);
+    expect(decision.proposal.preservePreviousSlotIds).toEqual([]);
+  });
+
   it("keeps accepted runtime cache proof fields on later root-boundary rejections", () => {
     const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/"),
@@ -1467,6 +1555,63 @@ describe("navigationPlanner root-boundary decisions", () => {
     expect(decision.proposal.preserveElementIds).toEqual(["layout:/", "layout:/feed"]);
   });
 
+  // Next.js checks for a new root layout on intercepted navigations too.
+  it("hard-navigates intercepted payloads that render another root layout", () => {
+    const routeManifest = createTestRouteManifest([
+      {
+        layoutIds: ["layout:/", "layout:/feed"],
+        pattern: "/feed",
+        rootBoundaryId: "root-boundary:/",
+        interceptions: [
+          {
+            ownerLayoutId: "layout:/feed",
+            slotId: "slot:modal:/feed",
+            sourcePattern: "/feed",
+            targetPattern: "/photos/:id",
+          },
+        ],
+      },
+      {
+        layoutIds: ["layout:/photos", "layout:/photos/photo"],
+        pattern: "/photos/:id",
+        rootBoundaryId: "root-boundary:/photos",
+      },
+    ]);
+    // The visible page was rewritten to /feed but renders another root layout.
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/(pin)", []),
+      matchedUrl: "/feed",
+      routeId: "route:/pin",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        [],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      routeManifest,
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
+    }
+    expect(decision.reason).toBe("rootBoundaryChanged");
+    expect(decision.trace.entries[0]?.fields.currentRootLayoutTreePath).toBe("/(pin)");
+    expect(decision.trace.entries[0]?.fields.nextRootLayoutTreePath).toBe("/");
+  });
+
   it("approves manifest-declared dynamic interception topology with concrete wire route ids", () => {
     const routeManifest = createTestRouteManifest([
       {
@@ -1788,7 +1933,7 @@ describe("navigationPlanner root-boundary decisions", () => {
     };
     const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
-        "/marketing",
+        "/",
         ["layout:/marketing"],
         [],
         [createSlotBinding("slot:modal:/feed", "layout:/marketing", "active")],

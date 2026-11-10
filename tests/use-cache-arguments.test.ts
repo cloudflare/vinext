@@ -228,6 +228,44 @@ describe("use cache argument identity", () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    ["Blob", (bytes: Uint8Array<ArrayBuffer>) => new Blob([bytes])],
+    ["File", (bytes: Uint8Array<ArrayBuffer>) => new File([bytes], "id.bin")],
+    ["ArrayBuffer", (bytes: Uint8Array<ArrayBuffer>) => bytes.buffer],
+    ["typed array", (bytes: Uint8Array<ArrayBuffer>) => bytes],
+    ["DataView", (bytes: Uint8Array<ArrayBuffer>) => new DataView(bytes.buffer)],
+    [
+      "FormData",
+      (bytes: Uint8Array<ArrayBuffer>) => {
+        const form = new FormData();
+        form.append("id", new Blob([bytes]));
+        return form;
+      },
+    ],
+  ])(
+    "serves %s callers differing only in a trailing zero byte their own entries",
+    async (_label, wrap) => {
+      const short = () => new Uint8Array([0x44]);
+      const long = () => new Uint8Array([0x44, 0x00]);
+      for (const [first, second] of [
+        [short, long],
+        [long, short],
+      ]) {
+        setCacheHandler(new MemoryCacheHandler());
+        const fn = vi.fn(async (value: unknown) => {
+          const binary = value instanceof FormData ? value.get("id") : value;
+          if (binary instanceof Blob) return binary.size;
+          if (binary instanceof ArrayBuffer || ArrayBuffer.isView(binary)) return binary.byteLength;
+          throw new Error("unexpected argument");
+        });
+        const cached = registerCachedFunction(fn, "test:binary-length");
+        expect(await cached(wrap(first()))).toBe(first().length);
+        expect(await cached(wrap(second()))).toBe(second().length);
+        expect(fn).toHaveBeenCalledTimes(2);
+      }
+    },
+  );
+
   it("serves each Map-scoped caller its own entry", async () => {
     const fn = vi.fn(async (scope: Map<string, string>) => `record:${scope.get("tenant")}`);
     const cached = registerCachedFunction(fn, "test:map-scope");
@@ -569,4 +607,26 @@ describe("binary cache key framing", () => {
       expect(await replyToCacheKey(first)).not.toBe(await replyToCacheKey(second));
     },
   );
+
+  const binaryReply = (bytes: number[]) => {
+    const form = new FormData();
+    form.append("0", new Blob([new Uint8Array(bytes)]));
+    return form;
+  };
+
+  it.each([
+    [[0x44], [0x44, 0x00]],
+    [[0x44], [0x00, 0x44]],
+    [[], [0x00]],
+  ])("keys binary entries by their exact bytes (%j vs %j)", async (first, second) => {
+    expect(await replyToCacheKey(binaryReply(first))).not.toBe(
+      await replyToCacheKey(binaryReply(second)),
+    );
+  });
+
+  it("distinguishes a binary entry from a string entry", async () => {
+    const text = new FormData();
+    text.append("0", "D");
+    expect(await replyToCacheKey(binaryReply([0x44]))).not.toBe(await replyToCacheKey(text));
+  });
 });

@@ -275,12 +275,13 @@ describe("next/navigation shim", () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigationRuntime = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { AppRouterContext } =
       await import("../packages/vinext/src/shims/internal/app-router-context.js");
     const customRefresh = vi.fn();
     const customMethod = vi.fn(() => "custom");
     const mountedRouter = {
-      ...navigation.appRouterInstance,
+      ...navigationRuntime.appRouterInstance,
       refresh: customRefresh,
       customMethod,
     };
@@ -317,7 +318,7 @@ describe("next/navigation shim", () => {
 
   it("appRouterInstance singleton exposes the expected navigation methods", async () => {
     const { appRouterInstance: router } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(typeof router.push).toBe("function");
     expect(typeof router.replace).toBe("function");
     expect(typeof router.back).toBe("function");
@@ -327,7 +328,8 @@ describe("next/navigation shim", () => {
   });
 
   it("appRouterInstance exposes the stable bfcacheId placeholder", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(typeof appRouterInstance.bfcacheId).toBe("string");
     expect(appRouterInstance.bfcacheId).toBe("0");
   });
@@ -336,6 +338,7 @@ describe("next/navigation shim", () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigationRuntime = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { AppRouterContext } =
       await import("../packages/vinext/src/shims/internal/app-router-context.js");
     const BfcacheIdMapContext = navigation.getBfcacheIdMapContext();
@@ -352,7 +355,7 @@ describe("next/navigation shim", () => {
       renderToStaticMarkup(
         React.createElement(
           AppRouterContext.Provider,
-          { value: navigation.appRouterInstance },
+          { value: navigationRuntime.appRouterInstance },
           React.createElement(
             BfcacheIdMapContext.Provider,
             { value: { "page:/x/1": "_b_7_" } },
@@ -371,6 +374,7 @@ describe("next/navigation shim", () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigationRuntime = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { AppRouterContext } =
       await import("../packages/vinext/src/shims/internal/app-router-context.js");
     const BfcacheIdMapContext = navigation.getBfcacheIdMapContext();
@@ -387,7 +391,7 @@ describe("next/navigation shim", () => {
       renderToStaticMarkup(
         React.createElement(
           AppRouterContext.Provider,
-          { value: navigation.appRouterInstance },
+          { value: navigationRuntime.appRouterInstance },
           React.createElement(
             BfcacheIdMapContext.Provider,
             { value: { "": "_b_9_" } },
@@ -406,6 +410,7 @@ describe("next/navigation shim", () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigationRuntime = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { AppRouterContext } =
       await import("../packages/vinext/src/shims/internal/app-router-context.js");
     const BfcacheIdMapContext = navigation.getBfcacheIdMapContext();
@@ -422,7 +427,7 @@ describe("next/navigation shim", () => {
       renderToStaticMarkup(
         React.createElement(
           AppRouterContext.Provider,
-          { value: navigation.appRouterInstance },
+          { value: navigationRuntime.appRouterInstance },
           React.createElement(
             BfcacheIdMapContext.Provider,
             { value: { "page:/x/1": "0" } },
@@ -479,7 +484,8 @@ describe("next/navigation shim", () => {
 
     try {
       vi.resetModules();
-      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      const { appRouterInstance } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       appRouterInstance.refresh();
       // refresh() schedules the rscNavigate inside React.startTransition, so
       // the navigate call lands after the synchronous clear but is dispatched
@@ -549,7 +555,7 @@ describe("next/navigation shim", () => {
 
     try {
       vi.resetModules();
-      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
       trackInFlight = nav.trackAppRouterNavigationInFlight;
       nav.appRouterInstance.refresh();
       await vi.waitFor(() => expect(calls).toContain("navigate:refresh"));
@@ -587,13 +593,13 @@ describe("next/navigation shim", () => {
       vi.stubEnv("__NEXT_GESTURE_TRANSITION", "");
       vi.resetModules();
       const { appRouterInstance: withoutDefine } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       expect(typeof withoutDefine.experimental_gesturePush).toBe("undefined");
 
       vi.stubEnv("__NEXT_GESTURE_TRANSITION", "true");
       vi.resetModules();
       const { appRouterInstance: withDefine } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       expect(typeof withDefine.experimental_gesturePush).toBe("function");
     } finally {
       vi.unstubAllEnvs();
@@ -627,7 +633,8 @@ describe("next/navigation shim", () => {
     try {
       vi.stubEnv("__NEXT_GESTURE_TRANSITION", "true");
       vi.resetModules();
-      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      const { appRouterInstance } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       if (!appRouterInstance.experimental_gesturePush) {
         throw new Error("Expected experimental_gesturePush to be attached");
       }
@@ -708,7 +715,8 @@ describe("next/navigation shim", () => {
 
     try {
       vi.resetModules();
-      const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
+      const { navigateClientSide } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       await navigateClientSide("#content", "push", true, true);
 
@@ -792,7 +800,8 @@ describe("next/navigation shim", () => {
           navigateExternal,
         },
       };
-      const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
+      const { navigateClientSide } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       await navigateClientSide("/redirect/result", "replace", true, true);
 
@@ -853,6 +862,8 @@ describe("next/navigation shim", () => {
       const React = await import("react");
       const { renderToStaticMarkup } = await import("react-dom/server");
       const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      // The App Router runtime installs the history.pushState patch.
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
       const Context = navigation.getClientNavigationRenderContext();
       if (!Context) {
         throw new Error("Expected client navigation render context");
@@ -891,6 +902,57 @@ describe("next/navigation shim", () => {
         pathname: "/pending",
         search: "from=snapshot",
       });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("keeps a history wrapper added after the hooks' state when the runtime loads later", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null,
+        pushState(_data: unknown, _unused: string, url?: string | URL | null) {
+          calls.push(`native:${String(url)}`);
+        },
+        replaceState(_data: unknown, _unused: string, url?: string | URL | null) {
+          calls.push(`native-replace:${String(url)}`);
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      // A Pages Router page's hooks create the shared state while hydrating.
+      expect(navigation.getClientNavigationState()).not.toBeNull();
+      // An analytics script then wraps pushState.
+      const nativePushState = win.history.pushState.bind(win.history);
+      win.history.pushState = (data, unused, url) => {
+        calls.push(`analytics:${String(url)}`);
+        nativePushState(data, unused, url);
+      };
+      // A later page renders next/form, which loads the App Router runtime.
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
+
+      win.history.pushState(null, "", "/b");
+
+      expect(calls).toEqual(["analytics:/b", "native:/b"]);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -963,7 +1025,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl,
       });
       const { pushHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       win.history.pushState({ myData: { foo: "bar" } }, "", "/photo/1?filter=active");
       expect(win.history.state).toEqual({
@@ -1107,7 +1169,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl,
       });
       const { pushHistoryStateWithoutNotify, replaceHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       // Shaped like delayed-scroll-restoration-polyfill: its pushState wrapper
       // first stamps the current entry through the replaceState it saved. The
@@ -1245,7 +1307,7 @@ describe("next/navigation shim", () => {
           flushCommittingNavigationUrl: vi.fn(),
         });
         const { pushHistoryStateWithoutNotify } =
-          await import("../packages/vinext/src/shims/navigation.js");
+          await import("../packages/vinext/src/shims/app-router-navigation.js");
 
         const savedPushState = win.history.pushState.bind(win.history);
         win.history.pushState = function (data, unused, url) {
@@ -1313,7 +1375,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl: vi.fn(),
       });
       const { pushHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const savedPushState = win.history.pushState.bind(win.history);
       win.history.pushState = function (data, unused, url) {
@@ -1386,7 +1448,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl: vi.fn(),
       });
       const { pushHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const savedPushState = win.history.pushState.bind(win.history);
       win.history.pushState = function (data, unused, url) {
@@ -1466,7 +1528,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl: vi.fn(),
       });
       const { pushHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const savedPushState = win.history.pushState.bind(win.history);
       // An inner wrapper retries, then rethrows; an outer wrapper retries too.
@@ -1547,7 +1609,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl: vi.fn(),
       });
       const { pushHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const savedPushState = win.history.pushState.bind(win.history);
       win.history.pushState = function (data, unused, url) {
@@ -1611,7 +1673,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl: vi.fn(),
       });
       const { replaceHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const savedReplaceState = win.history.replaceState.bind(win.history);
       win.history.replaceState = function (data, unused, url) {
@@ -3856,7 +3918,8 @@ describe("window.next debug global", () => {
 
   it("appRouterInstance exported from the navigation shim has the public router surface", async () => {
     vi.resetModules();
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     // Ported from Next.js: publicAppRouterInstance shape in
     // packages/next/src/client/components/app-router-instance.ts (line 392).
@@ -6183,6 +6246,7 @@ describe("next/server shim", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -6370,6 +6434,7 @@ describe("next/server shim", () => {
               {
                 tags: [],
                 lifeConfigs: [],
+                nestedLifeConfigs: [],
                 variant: "default",
                 hasExplicitRevalidate: false,
                 hasExplicitExpire: false,
@@ -6627,7 +6692,7 @@ describe("next/cache shim", () => {
     try {
       await unstable_cache(async (value: string) => value, ["x".repeat(1000)])("y".repeat(1000));
       expect(keys).toHaveLength(1);
-      expect(keys[0]).toMatch(/^unstable_cache:v2:[0-9a-f]{64}$/);
+      expect(keys[0]).toMatch(/^unstable_cache:v4:[0-9a-f]{64}$/);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -7461,12 +7526,11 @@ describe("next/cache shim", () => {
     expect(() => cacheLife({ stale: 60, revalidate: 300, expire: 3600 })).not.toThrow();
   });
 
-  it("cacheLife warns on unknown profile", async () => {
+  it("cacheLife throws on unknown profile", async () => {
     const { cacheLife } = await import("../packages/vinext/src/shims/cache.js");
-    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    cacheLife("nonexistent-profile");
-    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("unknown profile"));
-    consoleWarn.mockRestore();
+    expect(() => cacheLife("nonexistent-profile")).toThrow(
+      'Unknown `cacheLife()` profile "nonexistent-profile" is not configured in next.config.js',
+    );
   });
 
   it("cacheLife warns when expire < revalidate", async () => {
@@ -7491,10 +7555,12 @@ describe("next/cache shim", () => {
       cacheLife({ expire: 60 });
 
       expect(_peekRequestScopedCacheLife()).toEqual({
+        stale: 300,
         revalidate: 900,
         expire: 60,
       });
       expect(_consumeRequestScopedCacheLife()).toEqual({
+        stale: 300,
         revalidate: 900,
         expire: 60,
       });
@@ -7623,7 +7689,7 @@ describe("next/cache shim", () => {
             data: {
               headers: {},
               body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v2:stale-swr-test:[]",
+              url: "unstable_cache:v4:stale-swr-test:[]",
             },
             tags: ["stale-swr"],
             revalidate: 1,
@@ -7770,7 +7836,7 @@ describe("next/cache shim", () => {
             data: {
               headers: {},
               body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v2:foreground-test:[]",
+              url: "unstable_cache:v4:foreground-test:[]",
             },
             tags: ["foreground"],
             revalidate: 1,
@@ -8190,6 +8256,42 @@ describe('"use cache" runtime', () => {
     expect(outerCalls).toBe(2);
   });
 
+  // The inner result reads a root param only in a Promise that is still pending
+  // when the function returns, and the outer drops that Promise. The outer entry
+  // must still vary by the param, so the nested call has to finish serializing
+  // before it resolves to the outer.
+  it("partitions an outer cache by a root param read in a dropped nested Promise", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let outerCalls = 0;
+    const inner = registerCachedFunction(
+      async () => ({
+        early: "early",
+        tail: (async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return getRootParam("lang");
+        })(),
+      }),
+      "test:nested-root-param-pending-tail-inner",
+    );
+    const outer = registerCachedFunction(async () => {
+      outerCalls++;
+      return `${(await inner()).early}:${outerCalls}`;
+    }, "test:nested-root-param-pending-tail-outer");
+    const invoke = (lang: string) => runWithRootParamsScope({ lang }, () => outer());
+
+    await expect(invoke("en")).resolves.toBe("early:1");
+    await expect(invoke("fr")).resolves.toBe("early:2");
+    await expect(invoke("en")).resolves.toBe("early:1");
+    await expect(invoke("fr")).resolves.toBe("early:2");
+  });
+
   // Ported from Next.js: getRenderResumeDataCache() and getPrerenderResumeDataCache()
   // return null inside a cache scope (server/app-render/work-unit-async-storage.external.ts).
   it("keeps nested caches out of the resume data cache", async () => {
@@ -8329,6 +8431,44 @@ describe('"use cache" runtime', () => {
       expect(await cached()).toBe("PUBLIC");
     } finally {
       setHeadersContext(null);
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("keeps bypassing the shared cache once a draft request's headers context is cleared", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let draftContent = true;
+    const cached = registerCachedFunction(
+      async () => (draftContent ? "DRAFT" : "PUBLIC"),
+      "test:draft-bypass-cleared-context",
+    );
+    const headersContext = (draftModeEnabled: boolean) =>
+      createRequestContext({
+        headersContext: { headers: new Headers(), cookies: new Map(), draftModeEnabled },
+      });
+
+    try {
+      // A render, or an after() callback, still running once the response
+      // body has closed and cleared the headers context.
+      await runWithRequestContext(headersContext(true), async () => {
+        setHeadersContext(null);
+        expect(await cached()).toBe("DRAFT");
+      });
+
+      draftContent = false;
+      await runWithRequestContext(headersContext(false), async () => {
+        setHeadersContext(null);
+        expect(await cached()).toBe("PUBLIC");
+      });
+    } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
   });
@@ -9034,6 +9174,149 @@ describe('"use cache" runtime', () => {
     if (entry?.value && entry.value.kind === "FETCH") {
       expect(entry.value.revalidate).toBe(1);
     }
+  });
+
+  // Ported from Next.js's `cacheLife()` (cache-life.ts) and `collectResult`
+  // (use-cache-wrapper.ts): a call sets only the fields it defines, and those
+  // win over nested caches; other fields take the minimum of the default
+  // profile and the nested caches.
+  describe("cacheLife resolution parity", () => {
+    async function setup() {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const cache = await import("../packages/vinext/src/shims/cache.js");
+      cache.setCacheHandler(new cache.MemoryCacheHandler());
+      const resolveRequestLife = (fn: () => Promise<unknown>) =>
+        cache._runWithCacheState(async () => {
+          await fn();
+          return cache._peekRequestScopedCacheLife();
+        });
+      return { registerCachedFunction, cacheLife: cache.cacheLife, resolveRequestLife };
+    }
+
+    it("does not fill object fields from the default profile across repeated calls", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const cached = registerCachedFunction(async () => {
+        cacheLife({ stale: 10 });
+        cacheLife({ revalidate: 3600 });
+        return "value";
+      }, "test:life-parity-objects");
+
+      // Filled from `default`, the first call would have pinned revalidate
+      // to 900 under the per-field minimum.
+      expect(await resolveRequestLife(() => cached())).toEqual({
+        stale: 10,
+        revalidate: 3600,
+        expire: 4294967294,
+      });
+    });
+
+    it("takes the per-field minimum across profile names and objects", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const cached = registerCachedFunction(async () => {
+        cacheLife("hours"); // { stale: 300, revalidate: 3600, expire: 86400 }
+        cacheLife({ stale: 60, revalidate: 7200 });
+        return "value";
+      }, "test:life-parity-mixed");
+
+      expect(await resolveRequestLife(() => cached())).toEqual({
+        stale: 60,
+        revalidate: 3600,
+        expire: 86400,
+      });
+    });
+
+    it("lets an explicit field win over nested caches and collects the rest", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const inner = registerCachedFunction(async () => {
+        cacheLife("minutes"); // { stale: 300, revalidate: 60, expire: 3600 }
+        return "inner";
+      }, "test:life-parity-nested-inner");
+      const outer = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 600 });
+        return await inner();
+      }, "test:life-parity-nested-outer");
+
+      // Only the outermost entry reaches the request: the inner's 60s
+      // revalidate stays inside the outer entry, where the explicit 600 wins.
+      const expected = { stale: 300, revalidate: 600, expire: 3600 };
+      expect(await resolveRequestLife(() => outer())).toEqual(expected);
+      // A warm outer hit replays the same stored life.
+      expect(await resolveRequestLife(() => outer())).toEqual(expected);
+    });
+
+    it("a second zero-lifetime cacheLife() keeps a fallback result out of the cache", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      let upstreamUp = false;
+      let calls = 0;
+      const models = registerCachedFunction(async () => {
+        calls++;
+        cacheLife("hours");
+        if (!upstreamUp) {
+          cacheLife({ stale: 0, revalidate: 0, expire: 1 });
+          return "fallback";
+        }
+        return "models";
+      }, "test:life-parity-fallback");
+
+      // The fallback resolves the zero lifetime, so it is neither stored nor
+      // left to give the page a cacheable lifetime.
+      expect(await resolveRequestLife(() => models())).toEqual({
+        stale: 0,
+        revalidate: 0,
+        expire: 1,
+      });
+      upstreamUp = true;
+      const hours = { stale: 300, revalidate: 3600, expire: 86400 };
+      expect(await resolveRequestLife(() => models())).toEqual(hours);
+      expect(calls).toBe(2);
+      // The real result is stored with the profile's lifetime.
+      expect(await resolveRequestLife(() => models())).toEqual(hours);
+      expect(calls).toBe(2);
+    });
+
+    it("keeps the outer lifetime when nested caches live longer", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const inner = registerCachedFunction(async () => {
+        cacheLife("max"); // { stale: 300, revalidate: 2592000, expire: 31536000 }
+        return "inner";
+      }, "test:life-parity-longer-inner");
+      const explicitOuter = registerCachedFunction(async () => {
+        cacheLife("minutes"); // { stale: 300, revalidate: 60, expire: 3600 }
+        return await inner();
+      }, "test:life-parity-longer-explicit-outer");
+      const defaultOuter = registerCachedFunction(
+        async () => await inner(),
+        "test:life-parity-longer-default-outer",
+      );
+
+      expect(await resolveRequestLife(() => explicitOuter())).toEqual({
+        stale: 300,
+        revalidate: 60,
+        expire: 3600,
+      });
+      // Without cacheLife(), the default profile still caps what the nested
+      // cache can contribute: only fields shorter than the default lower it.
+      expect(await resolveRequestLife(() => defaultOuter())).toEqual({
+        stale: 300,
+        revalidate: 900,
+        expire: 31536000,
+      });
+    });
+
+    it("propagates the cache life of a function that throws", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const cached = registerCachedFunction(async () => {
+        cacheLife("hours");
+        throw new Error("boom");
+      }, "test:life-parity-throws");
+
+      expect(await resolveRequestLife(() => cached().catch(() => {}))).toEqual({
+        stale: 300,
+        revalidate: 3600,
+        expire: 86400,
+      });
+    });
   });
 
   it("getCacheContext returns null outside cache function", async () => {
@@ -10312,17 +10595,11 @@ describe('"use cache" runtime', () => {
     });
   });
 
-  it("explicit cacheLife on outer suppresses throw but minimum-wins still applies to effective cache life", async () => {
-    // Documents a potentially surprising behavior: when the outer has an
-    // explicit `cacheLife({ revalidate: 60 })` and the inner is dynamic
-    // (`revalidate: 0`), the throw is suppressed (outer made an explicit
-    // choice), but the outer's effective `revalidate` resolves to 0 via
-    // minimum-wins (because the inner's resolved life is pushed into the
-    // outer's `lifeConfigs`). MemoryCacheHandler treats `revalidate: 0` as
-    // not cached, so the outer function executes on every call. This matches
-    // Next.js's `propagateCacheLifeAndTagsToRevalidateStore` semantics —
-    // the outer's explicit cacheLife() opts it out of the throw, but does
-    // not override the inner's minimum-wins contribution.
+  it("explicit cacheLife on outer wins over a dynamic nested cache's revalidate", async () => {
+    // Like Next.js's `collectResult`: the outer's explicit
+    // `cacheLife({ revalidate: 60 })` is its entry's revalidate, whatever the
+    // nested caches resolve, so the outer entry is stored and its second call
+    // is a hit that never reaches the dynamic inner.
     await withPrerenderFlag(async () => {
       const { registerCachedFunction } =
         await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -10349,12 +10626,84 @@ describe('"use cache" runtime', () => {
       const second = await outerCached();
       expect(first).toBe("outer-inner");
       expect(second).toBe("outer-inner");
-      // The outer function must execute twice — minimum-wins resolved its
-      // effective revalidate to 0, so the result was not cached despite the
-      // explicit `cacheLife({ revalidate: 60 })`.
-      expect(outerCalls).toBe(2);
-      // Inner is also dynamic (revalidate: 0) so it re-executes too.
-      expect(innerCalls).toBe(2);
+      expect(outerCalls).toBe(1);
+      expect(innerCalls).toBe(1);
+    });
+  });
+
+  it("an outer cacheLife without revalidate does not suppress the nested zero-revalidate error", async () => {
+    // Next.js's `hasExplicitRevalidate` is per field: `cacheLife({ expire })`
+    // leaves the entry's revalidate to the nested caches.
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerCached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      }, "test:per-field-explicit-inner");
+      const outerCached = registerCachedFunction(async () => {
+        cacheLife({ expire: 3600 });
+        return await innerCached();
+      }, "test:per-field-explicit-outer");
+
+      await expect(outerCached()).rejects.toThrow(/zero `revalidate`/);
+    });
+  });
+
+  it("a caught error from a dynamic nested cache still raises the nested-cache error", async () => {
+    // Like Next.js, whose `collectResult` propagates an errored entry's
+    // metadata, the outer still sees the inner's zero revalidate.
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerCached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        throw new Error("inner failed");
+      }, "test:caught-dynamic-inner");
+      const outerCached = registerCachedFunction(
+        async () => await innerCached().catch(() => "fallback"),
+        "test:caught-dynamic-outer",
+      );
+
+      await expect(outerCached()).rejects.toThrow(/zero `revalidate`/);
+    });
+  });
+
+  it("a middle cache's explicit cacheLife shields its parent from a dynamic grandchild", async () => {
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const grandchild = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "grandchild";
+      }, "test:three-level-grandchild");
+      const middle = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 60 });
+        return await grandchild();
+      }, "test:three-level-middle");
+      let outerCalls = 0;
+      const outer = registerCachedFunction(async () => {
+        outerCalls++;
+        return await middle();
+      }, "test:three-level-outer");
+
+      // The middle entry resolves revalidate 60, so the outer resolves 60 too:
+      // no error, and the outer entry is stored.
+      expect(await outer()).toBe("grandchild");
+      expect(await outer()).toBe("grandchild");
+      expect(outerCalls).toBe(1);
     });
   });
 
@@ -11242,6 +11591,25 @@ describe("middleware matcher patterns", () => {
         defaultLocale: "en",
       }),
     ).toBe(true);
+  });
+
+  // Next.js compiles every matcher with optional App Router transport suffixes:
+  // packages/next/src/build/analysis/get-page-static-info.ts
+  it("matchesMiddleware: matchers cover App Router transport suffixes", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { matchesMiddlewarePathname } =
+      await import("../packages/vinext/src/server/middleware-matcher.js");
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+    for (const pathname of ["/about.rsc", "/about.segments/_tree.segment.rsc"]) {
+      expect(matchesMiddleware(pathname, "/about"), pathname).toBe(true);
+      expect(matchesMiddleware(pathname, [{ source: "/about" }]), pathname).toBe(true);
+      expect(matchesMiddlewarePathname(pathname, ["/about"]), pathname).toBe(true);
+      expect(matchesMiddleware(`/fr${pathname}`, "/about", undefined, i18n), pathname).toBe(true);
+    }
+    expect(matchesMiddleware("/admin/dashboard.rsc", "/admin/dashboard")).toBe(true);
+    expect(matchesMiddleware("/index.rsc", "/")).toBe(true);
+    expect(matchesMiddleware("/about.rsc", "/")).toBe(false);
+    expect(matchesMiddleware("/aboutx.rsc", "/about")).toBe(false);
   });
 
   it("matchesMiddleware: locale-prefixed negative-lookahead matchers keep internal paths excluded", async () => {
@@ -16552,7 +16920,7 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/proxy", {
       method: "DELETE",
       headers: {
-        connection: "keep-alive, x-custom-hop",
+        connection: "keep-alive, x-custom-hop, not a header",
         "keep-alive": "timeout=5",
         te: "trailers",
         trailers: "x-trailer",
@@ -16580,7 +16948,9 @@ describe("proxyExternalRequest", () => {
       expect(capturedHeaders!.get("trailers")).toBeNull();
       expect(capturedHeaders!.get("transfer-encoding")).toBeNull();
       expect(capturedHeaders!.get("upgrade")).toBeNull();
-      expect(capturedHeaders!.get("x-custom-hop")).toBeNull();
+      // Like Next.js, fields nominated in Connection are forwarded, and an
+      // invalid token does not fail the request.
+      expect(capturedHeaders!.get("x-custom-hop")).toBe("secret");
       // Request credentials that are not connection-scoped should still forward.
       expect(capturedHeaders!.get("proxy-authorization")).toBe("Basic cHJveHk=");
       expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
@@ -16927,6 +17297,82 @@ describe("matchRewrite with external URLs", () => {
       expect(result).toContain(".api.example.com/v1/");
       expect(URL.canParse(result)).toBe(false);
     }
+  });
+
+  it("keeps has captures inside a rewrite destination path like Next.js", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const match = (destination: string, file: string) =>
+      matchRewrite(
+        "/download",
+        [
+          {
+            source: "/download",
+            has: [{ type: "query" as const, key: "file", value: "(?<file>[^]*)" }],
+            destination,
+          },
+        ],
+        { ...emptyCtx, query: new URLSearchParams({ file }) },
+      );
+    const external = "https://storage.example.com/public/:file?revision=published";
+
+    // Next.js 16.2.7 escapes `?`, cuts the path at `#` and always keeps the
+    // destination's query; the upstream receives control characters and
+    // spaces percent-encoded, and `\` as `/`.
+    for (const [file, expected] of [
+      ["a/b.txt", "https://storage.example.com/public/a/b.txt?revision=published"],
+      [
+        "a.txt?revision=draft&x=",
+        "https://storage.example.com/public/a.txt%3Frevision=draft&x=?revision=published",
+      ],
+      ["x#y", "https://storage.example.com/public/x?revision=published#y"],
+      ["a\tb c", "https://storage.example.com/public/a%09b%20c?revision=published"],
+      ["a%2Fb", "https://storage.example.com/public/a%2Fb?revision=published"],
+      // A parsed URL cannot carry the `..` Next.js sends, so captured dot
+      // segments are escaped once more instead of being resolved.
+      [
+        "../private/secret.txt",
+        "https://storage.example.com/public/%252E%252E/private/secret.txt?revision=published",
+      ],
+      [
+        "%2e%2E/private",
+        "https://storage.example.com/public/%252e%252E/private?revision=published",
+      ],
+      ["..\\private", "https://storage.example.com/public/%252E%252E\\private?revision=published"],
+      ["x/.", "https://storage.example.com/public/x/%252E?revision=published"],
+      ["..#", "https://storage.example.com/public/%252E%252E?revision=published"],
+    ]) {
+      expect(match(external, file), file).toBe(expected);
+    }
+    // A param also escapes a dot segment it completes or ends.
+    for (const [destination, file, expected] of [
+      ["https://s.example.com/p/.:file?r=1", ".", "https://s.example.com/p/%252E%252E?r=1"],
+      ["https://s.example.com/p/%2:file?r=1", "e", "https://s.example.com/p/%252e?r=1"],
+      ["https://s.example.com/p/..:file?r=1", "/x", "https://s.example.com/p/%252E%252E/x?r=1"],
+      ["https://s.example.com/p/:file..?r=1", "x/", "https://s.example.com/p/x/%252E%252E?r=1"],
+      ["https://s.example.com/p/:file/../x?r=1", "a\t", "https://s.example.com/p/a%09/../x?r=1"],
+    ]) {
+      expect(match(destination, file), destination).toBe(expected);
+    }
+    // The URL parser would trim a trailing space or control character; Next.js
+    // sends the space encoded too (and answers 500 for a NUL).
+    for (const [file, expected] of [
+      [".. ", "/public/..%20"],
+      ["..\0", "/public/..%00"],
+      ["..\n", "/public/..%0A"],
+    ]) {
+      const url = new URL(match("https://storage.example.com/public/:file", file)!);
+      expect(url.pathname, file).toBe(expected);
+    }
+    // The destination's own dot segments still resolve.
+    expect(match("https://storage.example.com/a/../b/:file", "c")).toBe(
+      "https://storage.example.com/a/../b/c",
+    );
+
+    // A local destination keeps a `?` in the routed path and drops what follows `#`.
+    expect(match("/echo/:file?fixed=1", "x?fixed=2&y=")).toBe("/echo/x%3Ffixed=2&y=?fixed=1");
+    expect(match("/echo/:file?fixed=1", "x#y")).toBe("/echo/x?fixed=1#y");
+    expect(match("/echo/:file?fixed=1", "x#")).toBe("/echo/x?fixed=1");
+    expect(match("/echo/:file?fixed=1", "../a\tb")).toBe("/echo/../a\tb?fixed=1");
   });
 
   it("encodes a host capture after extra slashes the URL parser skips", async () => {
@@ -18912,7 +19358,7 @@ describe("app router route-transition scroll honours data-scroll-behavior", () =
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { documentElement, writes } = createDocumentElement("smooth");
 
     clearAppRouterScrollIntent();
@@ -18931,7 +19377,7 @@ describe("app router route-transition scroll honours data-scroll-behavior", () =
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { documentElement, writes } = createDocumentElement(undefined);
 
     clearAppRouterScrollIntent();
@@ -19010,7 +19456,7 @@ describe("app router route-transition scroll honours data-scroll-behavior", () =
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { documentElement } = createDocumentElement("smooth");
     const scrollBehaviorDuringScroll: string[] = [];
     const scrollIntoView = vi.fn(() => {
@@ -19117,7 +19563,7 @@ describe("app router scroll document-top fallback", () => {
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const scrollIntoView = vi.fn();
     let frame: (() => void) | null = null;
     const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -19196,7 +19642,7 @@ describe("app router scroll document-top fallback", () => {
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     // Regression: an ordinary navigation whose intent was never marked as
     // head-hoisted must still scroll to the document top. The presence of a
@@ -19214,7 +19660,7 @@ describe("app router scroll document-top fallback", () => {
 
   it("does not scroll to the document top when this navigation's target was hoisted into <head>", async () => {
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     const intent = {
       commitId: 1,
@@ -19240,7 +19686,7 @@ describe("app router scroll document-top fallback", () => {
       markAppRouterScrollIntentHeadHoisted,
     } = await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     // Start with a clean slate — no leftover intent from a prior test.
     clearAppRouterScrollIntent();
@@ -25307,7 +25753,7 @@ describe("notify-suppressed history writes", () => {
     try {
       vi.resetModules();
       const { pushHistoryStateWithoutNotify, replaceHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       expect(() => replaceHistoryStateWithoutNotify({ __vinext_historyIndex: 0 }, "", "/")).toThrow(
         securityError,
@@ -29673,6 +30119,59 @@ describe("image optimization URL generation", () => {
     expect(url).toContain("q=80");
   });
 
+  it("imageOptimizationUrl rounds quality only when images.qualities is configured", async () => {
+    // Deliberately generous when unset (Next.js 14/15 behaviour, not Next.js
+    // 16's `[75]` default): the prop is used as written, 75 when absent.
+    const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
+    expect(imageOptimizationUrl("/img.png", 640, 90)).toContain("q=90");
+    expect(imageOptimizationUrl("/img.png", 640, 1)).toContain("q=1");
+    expect(imageOptimizationUrl("/img.png", 640, 0)).toContain("q=75");
+    expect(imageOptimizationUrl("/img.png", 640)).toContain("q=75");
+
+    // With a list, match the Next.js default loader
+    // (shared/lib/find-closest-quality.ts): the closest entry wins.
+    vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[50,90]");
+    vi.resetModules();
+    try {
+      const configured = await import("../packages/vinext/src/shims/image.js");
+      expect(configured.imageOptimizationUrl("/img.png", 640, 90)).toContain("q=90");
+      expect(configured.imageOptimizationUrl("/img.png", 640, 60)).toContain("q=50");
+      expect(configured.imageOptimizationUrl("/img.png", 640)).toContain("q=90");
+
+      // Next.js sorts the list first, so a tie resolves to the lower quality.
+      vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[90,60]");
+      vi.resetModules();
+      const unsorted = await import("../packages/vinext/src/shims/image.js");
+      expect(unsorted.imageOptimizationUrl("/img.png", 640, 75)).toContain("q=60");
+
+      // Next.js parses the prop with getInt first: non-finite numbers and
+      // non-digit strings become NaN, which rounds from the default 75.
+      vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[25,60,90]");
+      vi.resetModules();
+      const parsed = await import("../packages/vinext/src/shims/image.js");
+      const qualityOf = (quality: unknown) =>
+        new URL(
+          parsed.getImageProps({
+            src: "/img.png",
+            alt: "",
+            width: 64,
+            height: 64,
+            quality: quality as number,
+          }).props.src,
+          "http://localhost",
+        ).searchParams.get("q");
+      expect(qualityOf(Infinity)).toBe("60");
+      expect(qualityOf("1e2")).toBe("60");
+      expect(qualityOf("90")).toBe("90");
+      // Only real strings are parsed, as in Next.js.
+      expect(qualityOf(new String("90"))).toBe("60");
+      expect(qualityOf(90n)).toBe("60");
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("imageOptimizationUrl uses default quality of 75", async () => {
     const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
     const url = imageOptimizationUrl("/img.png", 640);
@@ -29833,9 +30332,9 @@ describe("image optimization request parsing", () => {
   });
 
   it("parseImageParams permits any quality 1-100 when qualities is unset", async () => {
-    // Matches Next.js: an unset `images.qualities` is not restricted to a single
-    // value. Regression test for non-75 qualities (e.g. `<Image quality={90}>`)
-    // returning 400 from the image optimization endpoint.
+    // Intentional divergence from Next.js 16 (which defaults the list to [75]):
+    // an unset `images.qualities` keeps the Next.js 14/15 behaviour so apps
+    // migrating from those versions don't get 400s for `<Image quality={90}>`.
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     for (const q of [1, 50, 75, 90, 100]) {
@@ -29969,8 +30468,8 @@ describe("image optimization request parsing", () => {
   });
 
   it("parseImageParams allows any quality 1-100 when qualities is unset", async () => {
-    // Matches Next.js: an unset `images.qualities` does not restrict the quality
-    // to a single value — any integer from 1-100 is accepted.
+    // Intentional divergence from Next.js 16's [75] default: an unset
+    // `images.qualities` accepts any integer from 1-100, like Next.js 14/15.
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(
@@ -30206,7 +30705,8 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("original-image-data");
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    // Next.js's image policy at the default `images.minimumCacheTTL`.
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
     expect(response.headers.get("Vary")).toBe("Accept");
   });
 
@@ -30330,7 +30830,7 @@ describe("handleImageOptimization", () => {
         fetchCount += 1;
         return new Response(fetchCount === 1 ? "original" : "refetched", {
           status: 200,
-          headers: { "Content-Type": "image/png" },
+          headers: { "Content-Type": "image/jpeg" },
         });
       },
       transformImage: async (body: ReadableStream) => {
@@ -30355,7 +30855,7 @@ describe("handleImageOptimization", () => {
         return new Response(fetchCount === 1 ? "original" : "refetched", {
           status: 200,
           headers: {
-            "Content-Type": fetchCount === 1 ? "image/png" : "image/jpeg",
+            "Content-Type": fetchCount === 1 ? "image/jpeg" : "image/avif",
             ETag: fetchCount === 1 ? '"source-etag"' : '"refetched-etag"',
           },
         });
@@ -30368,9 +30868,9 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
     expect(fetchCount).toBe(2);
-    expect(response.headers.get("Content-Type")).toBe("image/jpeg");
+    expect(response.headers.get("Content-Type")).toBe("image/avif");
     expect(response.headers.get("ETag")).toBe('"refetched-etag"');
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
     expect(response.headers.get("Vary")).toBe("Accept");
   });
 
@@ -30385,7 +30885,7 @@ describe("handleImageOptimization", () => {
         if (fetchCount === 1) {
           return new Response("original", {
             status: 200,
-            headers: { "Content-Type": "image/png" },
+            headers: { "Content-Type": "image/jpeg" },
           });
         }
         return new Response("", { status: 404 });
@@ -30412,7 +30912,7 @@ describe("handleImageOptimization", () => {
         return new Response(fetchCount === 1 ? "original" : "<html>bad</html>", {
           status: 200,
           headers: {
-            "Content-Type": fetchCount === 1 ? "image/png" : "text/html",
+            "Content-Type": fetchCount === 1 ? "image/jpeg" : "text/html",
           },
         });
       },
@@ -30424,7 +30924,7 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(fetchCount).toBe(2);
     expect(response.status).toBe(400);
-    expect(await response.text()).toBe("The requested resource is not an allowed image type");
+    expect(await response.text()).toBe('"url" parameter is valid but image type is not allowed');
   });
 
   it("returns 400 for backslash open redirect (/\\evil.com)", async () => {
@@ -30469,7 +30969,7 @@ describe("handleImageOptimization", () => {
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(400);
-    expect(await response.text()).toBe("The requested resource is not an allowed image type");
+    expect(await response.text()).toBe('"url" parameter is valid but image type is not allowed');
   });
 
   it("blocks text/html content type", async () => {
@@ -32359,6 +32859,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32385,6 +32886,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32408,6 +32910,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32437,6 +32940,7 @@ describe("cache scope guards for dynamic APIs", () => {
         {
           tags: [],
           lifeConfigs: [],
+          nestedLifeConfigs: [],
           variant: "private",
           hasExplicitRevalidate: false,
           hasExplicitExpire: false,
@@ -32467,6 +32971,7 @@ describe("cache scope guards for dynamic APIs", () => {
         {
           tags: [],
           lifeConfigs: [],
+          nestedLifeConfigs: [],
           variant: "private",
           hasExplicitRevalidate: false,
           hasExplicitExpire: false,
@@ -32497,6 +33002,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32518,6 +33024,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32636,6 +33143,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32716,6 +33224,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32766,6 +33275,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32836,6 +33346,7 @@ describe("cache scope guards for dynamic APIs", () => {
           {
             tags: [],
             lifeConfigs: [],
+            nestedLifeConfigs: [],
             variant: "default",
             hasExplicitRevalidate: false,
             hasExplicitExpire: false,

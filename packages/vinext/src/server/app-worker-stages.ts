@@ -6,7 +6,7 @@ import {
   cacheabilityRoutePathname,
   type CacheabilityManifest,
 } from "./cacheability-manifest.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
   VINEXT_CACHE_IDENTITY_ORIGIN,
   withCacheIdentityOrigin,
@@ -176,9 +176,8 @@ export function createSharedAppCacheIdentity(
 
 /**
  * Build the query-free cache identity of a shared App page dispatch. The user
- * query leaves both the URL and `resolvedUrl`; the `.rsc` suffix, an RSC
- * request's validated `_rsc`, and the render mode stay because they select the
- * representation. HTML identities also drop the RSC selector headers.
+ * query leaves both the URL and `resolvedUrl`; an RSC request's validated
+ * `_rsc` and the render mode stay because they select the representation. HTML identities also drop the RSC selector headers.
  */
 export function createSharedAppPageCacheIdentity(
   request: Request,
@@ -194,6 +193,44 @@ export function createSharedAppPageCacheIdentity(
   }
   return {
     ...sharedAppCacheIdentity(queryFree.url, { headers, method: request.method }, queryFree.props),
+    queryFree: true,
+  };
+}
+
+/**
+ * Build the query-free cache identity of a shared Route Handler or metadata
+ * route dispatch. Next.js keys a route handler by its pathname: the query and
+ * the RSC selectors pick no representation of a handler's response, and a
+ * handler that reads the request's URL or headers is dynamic, so admission
+ * refuses its response. Keeping them in the identity would only let a client
+ * store one entry per query or selector value. The method, path and route
+ * props stay; the selector headers and the props derived from them leave.
+ */
+export function createSharedAppRouteCacheIdentity(
+  request: Request,
+  props: AppMatchedWorkerResponseStageProps | AppMetadataWorkerResponseStageProps,
+): SharedAppCacheIdentity {
+  const url = new URL(request.url);
+  url.search = "";
+  const headers = new Headers(request.headers);
+  for (const name of VINEXT_RSC_VARY_HEADER.split(",")) headers.delete(name.trim());
+  const searchIndex = props.resolvedUrl.indexOf("?");
+  return {
+    ...sharedAppCacheIdentity(
+      url.toString(),
+      { headers, method: request.method },
+      {
+        ...props,
+        ...(props.kind === "app-metadata"
+          ? {}
+          : { interceptionContext: null, interceptionId: null }),
+        isRscRequest: false,
+        mountedSlotsHeader: null,
+        renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
+        resolvedUrl:
+          searchIndex === -1 ? props.resolvedUrl : props.resolvedUrl.slice(0, searchIndex),
+      },
+    ),
     queryFree: true,
   };
 }

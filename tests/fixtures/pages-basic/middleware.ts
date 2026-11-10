@@ -8,6 +8,11 @@ import {
 export function middleware(request: NextRequest) {
   const url = new URL(request.url);
 
+  // Coverage: tests/pages-router.test.ts ("drops a request-line fragment")
+  if (url.pathname === "/mw-request-url") {
+    return Response.json({ url: request.url, hash: request.nextUrl.hash });
+  }
+
   // Client-disconnect coverage: tests/node-request-cancellation.test.ts
   if (url.pathname === "/middleware-request-signal") {
     return handleRequestSignalProbe(request);
@@ -31,6 +36,14 @@ export function middleware(request: NextRequest) {
     res.cookies.set("mw", "1");
     return res;
   }
+  // Matched only with ?mw. Middleware cookies precede the edge API route's own
+  // NextResponse cookies, with no internal x-middleware-set-cookie copy.
+  // Coverage: tests/pages-router.test.ts
+  if (url.pathname === "/api/edge-next-response-cookie") {
+    const res = NextResponse.next();
+    res.cookies.set("mw-edge", "1", { httpOnly: true, path: "/" });
+    return res;
+  }
   if (url.pathname === "/api/edge-request-signal") {
     if (!url.searchParams.has("override")) return NextResponse.next();
     const headers = new Headers(request.headers);
@@ -50,6 +63,14 @@ export function middleware(request: NextRequest) {
       headers: { "content-type": "text/plain" },
     });
   }
+  // A middleware Cache-Control replaces an admitted public file's default, as
+  // in Next.js. Coverage: tests/e2e/pages-router-prod/public-file-cache-control.spec.ts
+  if (
+    url.pathname.startsWith("/members%20only/") &&
+    url.searchParams.has("middleware-cache-control")
+  ) {
+    return NextResponse.next({ headers: { "cache-control": "private, no-store" } });
+  }
   if (url.pathname === "/image-source-redirect.png") {
     return NextResponse.redirect(new URL("/heart.png", request.url));
   }
@@ -65,10 +86,14 @@ export function middleware(request: NextRequest) {
   }
 
   // A middleware Cache-Control replaces the getServerSideProps default on
-  // redirect and notFound exits, as in Next.js.
-  // Coverage: tests/pages-router.test.ts
+  // redirect and notFound exits, and the getInitialProps default, as in
+  // Next.js.
+  // Coverage: tests/pages-router.test.ts,
+  // tests/e2e/pages-router-prod/initial-props-cache-control.spec.ts
   if (
-    (url.pathname === "/gssp-redirect" || url.pathname === "/gssp-not-found") &&
+    (url.pathname === "/gssp-redirect" ||
+      url.pathname === "/gssp-not-found" ||
+      url.pathname === "/nav-compat-gip/cache-policy") &&
     url.searchParams.has("mw-cache-control")
   ) {
     return NextResponse.next({ headers: { "cache-control": "public, max-age=60" } });
@@ -99,11 +124,17 @@ export function middleware(request: NextRequest) {
   if (url.pathname.startsWith("/external-headers/")) {
     const upstreamPort = request.headers.get("x-test-upstream-port");
     const middlewarePath = url.pathname.slice("/external-headers/middleware".length);
+    const search = url.searchParams;
+    // Middleware's request header override for the upstream.
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.set("x-mw-request-header", "1");
+    const init = search.has("middleware-request-header")
+      ? { request: { headers: requestHeaders } }
+      : undefined;
     const response =
       url.pathname.startsWith("/external-headers/middleware/") && /^\d+$/.test(upstreamPort ?? "")
-        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`)
-        : NextResponse.next();
-    const search = url.searchParams;
+        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`, init)
+        : NextResponse.next(init);
     if (search.has("middleware-cookie")) {
       response.cookies.set("middleware-cookie", "1", { path: "/" });
     }
@@ -420,6 +451,10 @@ export const config = {
     "/api/append-header",
     "/edge-api-rewrite/:path*",
     "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
+    {
+      source: "/api/edge-next-response-cookie",
+      has: [{ type: "query", key: "mw" }],
+    },
     {
       source: "/mw-object-gated",
       has: [{ type: "header", key: "x-mw-allow", value: "1" }],

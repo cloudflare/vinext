@@ -121,6 +121,118 @@ test.describe("Dev error overlay", () => {
     );
   });
 
+  test("surfaces an error that only the HTML render throws", async ({ page }) => {
+    // The shell error sends the `__next_error__` document, and the browser
+    // renders the page without the error, so only the document carries it.
+    const response = await page.goto(`${BASE}/dev-overlay-ssr-only-throw`);
+    expect(response?.status()).toBe(500);
+    await expect(page.getByTestId("ssr-only-throw-content")).toBeVisible();
+
+    const dialog = page.getByTestId("vinext-dev-error-overlay");
+    const indicator = page.getByTestId("vinext-dev-error-indicator");
+    await expect(dialog.or(indicator).first()).toBeVisible({ timeout: 10_000 });
+    if ((await dialog.count()) === 0) await indicator.click();
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText(
+      "ssr-only render failure",
+    );
+
+    // Client-rendering the error document clears the body, which detaches the
+    // host of an overlay mounted before it commits. Removing the host stands
+    // in for that: the next error attaches it again.
+    await page.evaluate(() => {
+      document.getElementById("__vinext_dev_error_overlay_root")?.remove();
+      setTimeout(() => {
+        throw new Error("error after the body was cleared");
+      });
+    });
+    await expect(page.locator("#__vinext_dev_error_overlay_root")).toBeAttached();
+    await expect(page.getByTestId("vinext-dev-error-pagination")).toBeVisible();
+  });
+
+  test("reports an error the browser's render throws again once", async ({ page }) => {
+    // The client page throws in the HTML render and again in the browser,
+    // where global-error.tsx catches it.
+    const response = await page.goto(`${BASE}/nextjs-compat/global-error-ssr`);
+    expect(response?.status()).toBe(500);
+    await page.waitForLoadState("networkidle");
+    await expect(page.locator('[data-testid="global-error-message"]')).toHaveText(
+      "client page error",
+    );
+
+    const dialog = page.getByTestId("vinext-dev-error-overlay");
+    const indicator = page.getByTestId("vinext-dev-error-indicator");
+    await expect(dialog.or(indicator).first()).toBeVisible({ timeout: 10_000 });
+    if ((await dialog.count()) === 0) await indicator.click();
+    // A root-level boundary caught the browser's error, so the replay drops
+    // the document's copy and the overlay shows only the browser's report.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { __VINEXT_INITIAL_DEV_ERRORS__?: unknown[] })
+              .__VINEXT_INITIAL_DEV_ERRORS__?.length,
+        ),
+      )
+      .toBe(0);
+    await expect(page.getByTestId("vinext-dev-error-title")).toContainText("Runtime Error");
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText("client page error");
+    await expect(page.getByTestId("vinext-dev-error-pagination")).toBeHidden();
+  });
+
+  test("replays no HTML render error once global-error.tsx catches the browser's", async ({
+    page,
+  }) => {
+    // The browser's render throws again with a different message, and
+    // global-error.tsx catches it.
+    const response = await page.goto(`${BASE}/dev-overlay-root-rethrow`);
+    expect(response?.status()).toBe(500);
+    await page.waitForLoadState("networkidle");
+    await expect(page.getByTestId("global-error-message")).toHaveText(
+      "root rethrow in the browser",
+    );
+
+    const dialog = page.getByTestId("vinext-dev-error-overlay");
+    const indicator = page.getByTestId("vinext-dev-error-indicator");
+    await expect(dialog.or(indicator).first()).toBeVisible({ timeout: 10_000 });
+    if ((await dialog.count()) === 0) await indicator.click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { __VINEXT_INITIAL_DEV_ERRORS__?: unknown[] })
+              .__VINEXT_INITIAL_DEV_ERRORS__?.length,
+        ),
+      )
+      .toBe(0);
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText(
+      "root rethrow in the browser",
+    );
+    await expect(page.getByTestId("vinext-dev-error-pagination")).toBeHidden();
+  });
+
+  test("replays the HTML render error when global-error.tsx throws in the browser", async ({
+    page,
+  }) => {
+    // React reports only global-error.tsx's throw, which the default global
+    // error catches, so the replay still reports the page's error.
+    const response = await page.goto(`${BASE}/dev-overlay-root-rethrow/global-error-throws`);
+    expect(response?.status()).toBe(500);
+    await page.waitForLoadState("networkidle");
+
+    const dialog = page.getByTestId("vinext-dev-error-overlay");
+    const indicator = page.getByTestId("vinext-dev-error-indicator");
+    await expect(dialog.or(indicator).first()).toBeVisible({ timeout: 10_000 });
+    if ((await dialog.count()) === 0) await indicator.click();
+    await expect(page.getByTestId("vinext-dev-error-counter")).toHaveText("2 of 2");
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText(
+      "root rethrow on the server",
+    );
+    await page.getByTestId("vinext-dev-error-prev").click();
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText(
+      "global error threw in the browser",
+    );
+  });
+
   test("surfaces global script errors via window.onerror", async ({ page }) => {
     await page.goto(`${BASE}/dev-overlay-test`);
     await expect(page.getByTestId("dev-overlay-content")).toBeVisible();
