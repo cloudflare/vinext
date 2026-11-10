@@ -635,9 +635,6 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       // No nonce and no `strict-dynamic`: only same-origin and inline scripts
       // (and dev-mode eval) may run, so a `data:` script would be blocked.
       r.headers.set("content-security-policy", "script-src 'self' 'unsafe-inline' 'unsafe-eval';");
-    } else if (request.nextUrl.searchParams.has("csp-report-only")) {
-      // Reports every script but blocks none.
-      r.headers.set("content-security-policy-report-only", "script-src 'none';");
     }
   }
   if (

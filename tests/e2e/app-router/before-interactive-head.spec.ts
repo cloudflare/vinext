@@ -99,27 +99,17 @@ test.describe("inline beforeInteractive head ordering", () => {
       csp: "script-src 'self' 'unsafe-inline' 'unsafe-eval';",
     },
   ]) {
-    test(`beforeInteractive module scripts run in order before hydration${name}`, async ({
+    test(`queued beforeInteractive scripts run in order${name}`, async ({
       page,
       consoleErrors,
     }) => {
-      const response = await expectModulesRunInOrderBeforeHydration(page, search);
+      const response = await expectQueuedScriptsRunInOrder(page, search);
       expect(response?.headers()["content-security-policy"]).toBe(csp);
       expect(
         consoleErrors.filter((message) => message.includes("Content Security Policy")),
       ).toEqual([]);
     });
   }
-
-  // A report-only policy reports every script here but blocks none, so the
-  // modules must still hold hydration back. Its reports are console errors,
-  // so this test does not use the consoleErrors fixture.
-  test("beforeInteractive module scripts run in order before hydration under a report-only CSP", async ({
-    page,
-  }) => {
-    const response = await expectModulesRunInOrderBeforeHydration(page, "?csp-report-only");
-    expect(response?.headers()["content-security-policy-report-only"]).toBe("script-src 'none';");
-  });
 
   test("inline beforeInteractive script runs under a nonce-based CSP", async ({
     page,
@@ -148,15 +138,12 @@ test.describe("inline beforeInteractive head ordering", () => {
   });
 });
 
-// Loads the module fixture with its external module held back, so the inline
-// modules after it and the bootstrap are both ready first, and the second
-// inline module's import held back longer still. All three modules must still
-// run in order before hydration.
-async function expectModulesRunInOrderBeforeHydration(
-  page: Page,
-  search: string,
-): Promise<Response | null> {
-  await page.route("**/before-interactive-module.js", async (route) => {
+// Loads the fixture with its deferred classic script held back, so the module
+// after it is ready first, and the second inline module's import held back
+// longer still. The queued scripts must run in order, with hydration waiting
+// for the external ones but not for the inline module's import.
+async function expectQueuedScriptsRunInOrder(page: Page, search: string): Promise<Response | null> {
+  await page.route("**/before-interactive-deferred.js", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     await route.continue();
   });
@@ -167,18 +154,33 @@ async function expectModulesRunInOrderBeforeHydration(
   const response = await page.goto(`${BASE}/beforeinteractive-script-data${search}`);
   await waitForAppRouterHydration(page);
 
-  const moduleLog = await page.evaluate(
-    () => (self as unknown as { __vinextModuleLog?: unknown }).__vinextModuleLog,
-  );
-  expect(moduleLog).toEqual([
-    { name: "external-module", hydrated: false },
-    { name: "module-1", hydrated: false },
-    { name: "module-2-import", hydrated: false },
-    { name: "module-2", hydrated: false },
+  const readLog = () =>
+    page.evaluate(
+      () =>
+        (self as unknown as { __vinextModuleLog?: { name: string; hydrated: boolean }[] })
+          .__vinextModuleLog ?? [],
+    );
+  await expect.poll(async () => (await readLog()).length).toBe(5);
+  const log = await readLog();
+  expect(log.map((entry) => entry.name)).toEqual([
+    "deferred-classic",
+    "external-module",
+    "module-1",
+    "module-2-import",
+    "module-2",
+  ]);
+  expect(log.filter((entry) => entry.hydrated).map((entry) => entry.name)).toEqual([
+    "module-2-import",
+    "module-2",
   ]);
 
-  const modules = await page.evaluate(() =>
-    ["vinext-test-external-module", "vinext-test-module-1", "vinext-test-module-2"].map((id) => {
+  const scripts = await page.evaluate(() =>
+    [
+      "vinext-test-deferred-classic",
+      "vinext-test-external-module",
+      "vinext-test-module-1",
+      "vinext-test-module-2",
+    ].map((id) => {
       const element = document.getElementById(id) as HTMLScriptElement | null;
       return {
         parent: element?.parentElement?.tagName,
@@ -188,13 +190,12 @@ async function expectModulesRunInOrderBeforeHydration(
       };
     }),
   );
-  const expected = { parent: "HEAD", type: "module", async: false, marker: "beforeInteractive" };
-  expect(modules).toEqual([expected, expected, expected]);
-  // The sentinels queued after the inline modules removed themselves.
-  expect(
-    await page.evaluate(
-      () => document.querySelectorAll('script[type="module"]:not([src]):not([id])').length,
-    ),
-  ).toBe(0);
+  const expected = { parent: "HEAD", async: false, marker: "beforeInteractive" };
+  expect(scripts).toEqual([
+    { ...expected, type: "" },
+    { ...expected, type: "module" },
+    { ...expected, type: "module" },
+    { ...expected, type: "module" },
+  ]);
   return response;
 }

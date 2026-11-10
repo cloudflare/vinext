@@ -23,8 +23,15 @@ export default function BeforeInteractiveScriptDataPage(): React.ReactElement {
       <Script id="vinext-test-script-data" strategy="beforeInteractive">
         {`self.__vinextScriptData = ${JSON.stringify(PROFILE)};`}
       </Script>
-      {/* Module scripts, external or inline, run in registration order and
-          before hydration starts, including after their own imports. */}
+      {/* Scripts that run after parsing (a deferred classic script and
+          modules) run in registration order. Hydration waits for the external
+          ones, but not for an inline module's imports, as in Next.js. */}
+      <Script
+        id="vinext-test-deferred-classic"
+        src="/before-interactive-deferred.js"
+        strategy="beforeInteractive"
+        defer
+      />
       <Script
         id="vinext-test-external-module"
         src="/before-interactive-module.js"

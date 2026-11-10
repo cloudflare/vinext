@@ -1,5 +1,5 @@
 import type { BeforeInteractiveInlineScript } from "vinext/shims/before-interactive-context";
-import { BEFORE_INTERACTIVE_MODULES_GLOBAL } from "../client/browser-globals.js";
+import { BEFORE_INTERACTIVE_QUEUE_GLOBAL } from "../client/browser-globals.js";
 import { createNonceAttribute, escapeHtmlAttr, safeJsonStringify } from "./html.js";
 
 // Conservative subset of the HTML attribute-name grammar. Must start with a
@@ -23,37 +23,49 @@ const EVENT_HANDLER_ATTR_NAME = /^on/i;
 // escapes (.nextjs-ref/packages/next/src/client/script.tsx). vinext encodes
 // the body and attributes the same way, so no part of the body can be read
 // as markup by the browser or by the stream transform's string searches
-// (`</head>`, `</body></html>`, stylesheet links). The loader carries its own
-// payload (`[[name, value], ...]` attribute pairs plus the body) and swaps
-// itself for the real script element. A classic script runs on insertion, at
-// the same point in the parse as a parser-inserted tag.
+// (`</head>`, `</body></html>`, stylesheet links). Each payload is
+// `[[name, value], ...]` attribute pairs plus the body (null for `src`).
 //
-// Module scripts, inline or `src`, all go through the module loader so they
-// share one queue: clearing `async` before applying the attributes keeps them
-// in registration order unless the author asked for `async`. A parser-inserted
-// `src` module would instead wait for parsing to finish and run after the
-// created ones. Each created module also registers a promise, and the App
-// Router bootstrap awaits them before it hydrates. This keeps the ordering
-// Next.js gets from inserting its queue in sequence in `appBootstrap`, waiting
-// on each external script, before it hydrates. A `src` module settles its
-// promise on `load` or `error`. An inline module fires neither, so a one-line
-// inline module queued right after it (same nonce, so CSP treats both alike)
-// settles the promise by index once the inline one has run, then removes
-// itself. Each also settles if CSP blocks it, but not on a report-only
-// violation, which lets the script run. The first of any case-insensitive
+// A classic inline script runs where it is hoisted, before any stylesheet:
+// its loader swaps itself for the real script element, which runs on
+// insertion like a parser-inserted tag. The first of any case-insensitive
 // duplicate attribute wins, as when the parser reads the tag.
 const CLASSIC_SCRIPT_LOADER =
-  '(function(c,p,s){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});s.text=p[1];(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s)})';
-const MODULE_SCRIPT_LOADER = `(function(c,p,s,t,q,n,d){s=document.createElement("script");s.async=!1;p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});p[1]!=null?s.text=p[1]:0;(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s);q=self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}=self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}||[];n=q.length;q.push(new Promise(function(r){d=function(){t===s||t.remove();r()};t=s;if(p[1]!=null){t=document.createElement("script");t.async=!1;t.type="module";t.nonce=s.nonce;t.text="self.${BEFORE_INTERACTIVE_MODULES_GLOBAL}["+n+"].d()";s.after(t)}t.onload=t.onerror=d;t.onsecuritypolicyviolation=function(e){e.disposition=="report"||d()}}));q[n].d=d})`;
+  '(function(c,p,s){s=document.createElement("script");p[0].forEach(function(a){s.hasAttribute(a[0])||s.setAttribute(a[0],a[1])});s.text=p[1];(c||{}).parentNode?c.replaceWith(s):document.head.appendChild(s)})';
+
+// Scripts that would otherwise wait for parsing to finish (module scripts,
+// inline or `src`, and `defer` classic externals) are queued instead. The App
+// Router bootstrap inserts them in order and then hydrates, waiting for each
+// `src` script to load and advancing past each inline one on the next task, as
+// Next.js's `loadScriptsInSequence` does with `self.__next_s`
+// (.nextjs-ref/packages/next/src/client/app-bootstrap.ts). Mixing these with
+// scripts created in `<head>` would split them across the browser's separate
+// script queues and lose their order.
+const QUEUE_SCRIPT = `(self.${BEFORE_INTERACTIVE_QUEUE_GLOBAL}=self.${BEFORE_INTERACTIVE_QUEUE_GLOBAL}||[]).push`;
 
 // The script `type` that makes the browser run it as a module: an exact,
-// case-insensitive match. Any other non-JavaScript type is a data block that
-// fires no events, so it must stay on the classic path, which never waits.
+// case-insensitive match. Any other non-JavaScript type is a data block.
 const MODULE_TYPE = /^module$/i;
 
-function isModuleScript(attrs: readonly [string, string][]): boolean {
-  const type = attrs.find(([name]) => name.toLowerCase() === "type");
-  return type !== undefined && MODULE_TYPE.test(type[1]);
+function findAttribute(attrs: readonly [string, string][], name: string): string | undefined {
+  return attrs.find(([key]) => key.toLowerCase() === name)?.[1];
+}
+
+/**
+ * Whether the browser would run this script after parsing finishes, so it
+ * belongs in the bootstrap's queue rather than running where it is hoisted.
+ */
+function runsAfterParsing(
+  script: BeforeInteractiveInlineScript,
+  attrs: readonly [string, string][],
+): boolean {
+  const type = findAttribute(attrs, "type");
+  if (type !== undefined && MODULE_TYPE.test(type)) return true;
+  return (
+    script.content === undefined &&
+    findAttribute(attrs, "defer") !== undefined &&
+    findAttribute(attrs, "async") === undefined
+  );
 }
 
 /**
@@ -96,11 +108,11 @@ function collectAttributes(script: BeforeInteractiveInlineScript): [string, stri
  * Render captured `<Script strategy="beforeInteractive">` scripts to HTML,
  * ready to splice immediately after `<head ...>` opens.
  *
- * Classic external (`src`) scripts render as a plain `<script src>` tag with
- * quoted attributes and no body. Inline scripts and module scripts render as a
- * loader whose payload is HTML-safe JSON (see the loaders above); the loader
- * itself carries the nonce so it runs under the same CSP as the script it
- * creates.
+ * Classic external (`src`) scripts that run during parsing render as a plain
+ * `<script src>` tag with quoted attributes and no body. Classic inline
+ * scripts render as a loader, and scripts that run after parsing as a push
+ * onto the bootstrap's queue; both carry HTML-safe JSON (see above) and the
+ * nonce, so they run under the same CSP as the script they become.
  *
  * Keeping this function in its own module makes the boundary obvious: anything
  * passed through here is being concatenated directly into HTML; treat the
@@ -113,18 +125,19 @@ export function renderBeforeInteractiveInlineScripts(
   let html = "";
   for (const script of scripts) {
     const attrs = collectAttributes(script);
-    const isModule = isModuleScript(attrs);
-    if (script.content === undefined && !isModule) {
+    const payload = safeJsonStringify([attrs, script.content ?? null]);
+    const nonce = createNonceAttribute(script.nonce);
+    if (runsAfterParsing(script, attrs)) {
+      html += `<script${nonce}>${QUEUE_SCRIPT}(${payload})</script>`;
+    } else if (script.content !== undefined) {
+      html += `<script${nonce}>${CLASSIC_SCRIPT_LOADER}(document.currentScript,${payload})</script>`;
+    } else {
       let attrHtml = "";
       for (const [key, value] of attrs) {
         attrHtml += value === "" ? ` ${key}` : ` ${key}="${escapeHtmlAttr(value)}"`;
       }
       html += `<script${attrHtml}></script>`;
-      continue;
     }
-    const loader = isModule ? MODULE_SCRIPT_LOADER : CLASSIC_SCRIPT_LOADER;
-    const payload = safeJsonStringify([attrs, script.content ?? null]);
-    html += `<script${createNonceAttribute(script.nonce)}>${loader}(document.currentScript,${payload})</script>`;
   }
   return html;
 }

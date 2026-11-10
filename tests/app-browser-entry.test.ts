@@ -26,7 +26,7 @@ import {
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
 import {
-  BEFORE_INTERACTIVE_MODULES_GLOBAL,
+  BEFORE_INTERACTIVE_QUEUE_GLOBAL,
   RSC_FORM_STATE_GLOBAL,
 } from "../packages/vinext/src/client/browser-globals.js";
 import {
@@ -34,7 +34,7 @@ import {
   createVinextHydrateRootOptions,
   hydrateRootInTransition,
   resolveFetchedHydrationLocation,
-  waitForBeforeInteractiveModules,
+  runBeforeInteractiveQueue,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "../packages/vinext/src/server/app-browser-navigation-response.js";
@@ -10481,27 +10481,76 @@ describe("app browser form-state hydration", () => {
     });
   });
 
-  it("waits for hoisted beforeInteractive modules only when the page has some", async () => {
-    expect(waitForBeforeInteractiveModules({})).toBeNull();
-    expect(waitForBeforeInteractiveModules({ [BEFORE_INTERACTIVE_MODULES_GLOBAL]: [] })).toBeNull();
+  it("inserts queued beforeInteractive scripts in order before settling", async () => {
+    expect(runBeforeInteractiveQueue({})).toBeNull();
+    expect(runBeforeInteractiveQueue({ [BEFORE_INTERACTIVE_QUEUE_GLOBAL]: [] })).toBeNull();
 
-    let settleModule: (value?: unknown) => void = () => {};
-    const pending = waitForBeforeInteractiveModules({
-      [BEFORE_INTERACTIVE_MODULES_GLOBAL]: [
-        Promise.resolve(),
-        new Promise((resolve) => {
-          settleModule = resolve;
-        }),
-      ],
-    });
+    type FakeScript = {
+      async: boolean;
+      attributes: Record<string, string>;
+      text?: string;
+      onload?: () => void;
+      onerror?: () => void;
+      hasAttribute(name: string): boolean;
+      setAttribute(name: string, value: string): void;
+    };
+    const inserted: FakeScript[] = [];
+    const doc = {
+      createElement(): FakeScript {
+        const attributes: Record<string, string> = {};
+        return {
+          async: true,
+          attributes,
+          hasAttribute: (name) => name.toLowerCase() in attributes,
+          setAttribute(name, value) {
+            attributes[name.toLowerCase()] = value;
+          },
+        };
+      },
+      head: {
+        appendChild(script: FakeScript) {
+          inserted.push(script);
+          return script;
+        },
+      },
+    };
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
     let settled = false;
-    void pending?.then(() => {
+    void runBeforeInteractiveQueue(
+      {
+        [BEFORE_INTERACTIVE_QUEUE_GLOBAL]: [
+          [
+            [
+              ["src", "/a.js"],
+              ["ID", "a"],
+              ["id", "ignored"],
+            ],
+            null,
+          ],
+          [[["type", "module"]], "inline"],
+          [[["src", "/c.js"]], null],
+        ],
+      },
+      doc as never,
+    )?.then(() => {
       settled = true;
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // A src script holds the queue until it loads.
+    await tick();
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toMatchObject({ async: false, attributes: { src: "/a.js", id: "a" } });
+    inserted[0].onload?.();
+    // An inline script lets the queue move on a task later.
+    await tick();
+    await tick();
+    expect(inserted).toHaveLength(3);
+    expect(inserted[1]).toMatchObject({ text: "inline", attributes: { type: "module" } });
     expect(settled).toBe(false);
-    settleModule();
-    await pending;
+    // A failed src script still lets hydration start.
+    inserted[2].onerror?.();
+    await tick();
     expect(settled).toBe(true);
   });
 
