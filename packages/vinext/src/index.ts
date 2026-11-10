@@ -280,6 +280,10 @@ import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-on
 import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
 import { createCloudflareDevModuleUrlsPlugin } from "./plugins/cloudflare-dev-module-urls.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
+import {
+  APP_CLIENT_ENTRY_EXPORT_CANDIDATE_RE,
+  validateAppClientEntryExports,
+} from "./plugins/app-client-entry-exports.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
@@ -1892,6 +1896,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesDir: string;
   let canonicalPagesDir: string;
   let appDir: string;
+  let canonicalAppDir: string;
   let hasAppDir = false;
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
@@ -2979,6 +2984,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         pagesDir = path.join(baseDir, "pages");
         canonicalPagesDir = canonicalize(pagesDir);
         appDir = path.join(baseDir, "app");
+        canonicalAppDir = canonicalize(appDir);
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
 
@@ -7906,6 +7912,35 @@ export const loadServerActionClient = ${
           if (!fileMatcher.isPageFile(canonicalId)) return null;
           if (isApiPage(canonicalId)) return null;
           validatePageExports(code);
+          return null;
+        },
+      },
+    },
+    // Next.js rejects metadata and generateStaticParams exports from App Router
+    // entry files marked "use client". Runs before @vitejs/plugin-rsc replaces
+    // such a module with client references in the rsc environment, which
+    // loads every page, layout, default and route file.
+    {
+      name: "vinext:validate-app-client-entry-exports",
+      enforce: "pre",
+      transform: {
+        filter: {
+          id: { exclude: VIRTUAL_MODULE_ID_RE },
+          code: /use client/,
+        },
+        handler(code, id) {
+          if (this.environment?.name !== "rsc" || !hasAppDir) return null;
+          if (!APP_CLIENT_ENTRY_EXPORT_CANDIDATE_RE.test(code)) return null;
+          const canonicalId = canonicalizePageTransformPath(stripViteModuleQuery(id));
+          if (!isPathInside(canonicalAppDir, canonicalId)) return null;
+          if (
+            fileMatcher.isAppRouterPage(canonicalId) ||
+            fileMatcher.isAppLayoutFile(canonicalId)
+          ) {
+            validateAppClientEntryExports(code, canonicalId, "entry");
+          } else if (fileMatcher.isAppDefaultFile(canonicalId)) {
+            validateAppClientEntryExports(code, canonicalId, "default");
+          }
           return null;
         },
       },
