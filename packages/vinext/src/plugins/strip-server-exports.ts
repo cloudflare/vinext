@@ -465,11 +465,14 @@ export function serverExportRewrittenRanges(
   if (!edits) return null;
   return edits.flatMap((edit) => {
     // Pair each gap between copies with the replacement text between them;
-    // copies rendered out of order leave their gaps unpaired.
+    // copies the replacement reorders leave their gaps unpaired. Copies are
+    // recorded in render order (an object pattern renders a property's value
+    // before its key), so walk them in source order.
+    const copies = [...edit.copies].sort((left, right) => left.start - right.start);
     const gaps: Array<{ start: number; end: number; replacement: string }> = [];
     let cursor = edit.start;
     let replacementCursor: number | null = 0;
-    for (const copy of edit.copies) {
+    for (const copy of copies) {
       const position: number =
         replacementCursor === null || copy.start < cursor
           ? -1

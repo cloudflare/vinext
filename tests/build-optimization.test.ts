@@ -6700,6 +6700,22 @@ export function getStaticProps() {
     expect(lines.join("\n")).not.toMatch(/serverA|serverB|helper|getStaticProps/);
   });
 
+  it("keeps a destructured declaration whose pattern renders values before keys", async () => {
+    const source = `import { source } from "./lib";
+export const { secret: helper, live: value } = source;
+export default function Page() {
+  return <p>{value}</p>;
+}
+export function getStaticProps() {
+  return { props: { value: helper } };
+}
+`;
+    const lines = (await blankPage(source, "jsx")).split("\n");
+    expect(lines[0]).toBe(`import { source } from "./lib";`);
+    expect(lines[1]).toMatch(/^export const \{ +live: value \} = source;$/);
+    expect(lines.join("\n")).not.toMatch(/secret|helper|getStaticProps/);
+  });
+
   it("blanks static data exports in a JavaScript page", async () => {
     const source = `export default function Page({ value }) {
   return <p>PAGE_BODY {value}</p>;
