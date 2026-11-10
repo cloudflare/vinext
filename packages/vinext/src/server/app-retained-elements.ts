@@ -92,9 +92,11 @@ export function resolveHeldRetainedElementIds(
         }
       }
     } else if (
-      !ROUTE_ELEMENT_ID_PREFIXES.some((prefix) => id === prefix + nextMetadata.routeId) ||
-      // An intercepted state's own head and its tags are the intercept's: only
-      // the ones it kept from the source are the source's.
+      (!ROUTE_ELEMENT_ID_PREFIXES.some((prefix) => id === prefix + nextMetadata.routeId) &&
+        !AppElementsWire.isRouteFallbackIdFor(id, nextMetadata.routeId)) ||
+      // An intercepted state's own head, its tags and its boundary fallbacks
+      // are the intercept's: only the ones it kept from the source are the
+      // source's.
       (currentMetadata.interception !== null && !currentMetadata.retainedElementIds.includes(id))
     ) {
       return null;

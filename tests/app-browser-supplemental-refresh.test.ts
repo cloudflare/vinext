@@ -561,6 +561,7 @@ describe("parallel route supplemental refreshes", () => {
       "route:/drawer": "stale drawer route",
       "__vinext_route_head:route:/": "page head",
       "__vinext_route_head:route:/drawer": "stale drawer head",
+      "__vinext_route_fallback:404:0:route:/drawer": "stale drawer not-found",
     };
 
     const drawerRefresh = mergeRefreshedParallelSlot(current, {
@@ -568,10 +569,15 @@ describe("parallel route supplemental refreshes", () => {
       "slot:drawer:/": "fresh drawer",
       "route:/drawer": "fresh drawer route",
       "__vinext_route_head:route:/drawer": "fresh drawer head",
+      "__vinext_route_fallback:404:0:route:/drawer": "fresh drawer not-found",
     });
     expect(drawerRefresh["route:/drawer"]).toBe("fresh drawer route");
     expect(drawerRefresh["__vinext_route_head:route:/drawer"]).toBe("fresh drawer head");
     expect(drawerRefresh["__vinext_route_head:route:/"]).toBe("page head");
+    // So do its boundary fallbacks.
+    expect(drawerRefresh["__vinext_route_fallback:404:0:route:/drawer"]).toBe(
+      "fresh drawer not-found",
+    );
 
     // A source-tree refresh keeps the routes it does not carry, heads included.
     const sourceRefresh = mergeRefreshedParallelSlot(current, {

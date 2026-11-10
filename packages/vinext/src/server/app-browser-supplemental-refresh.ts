@@ -2,6 +2,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_INTERCEPTION_KEY,
+  APP_ROUTE_FALLBACK_ID_PREFIX,
   APP_ROUTE_HEAD_ID_PREFIX,
   APP_SLOT_BINDINGS_KEY,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
@@ -309,10 +310,14 @@ function copyRefreshedBranchElements(
 ): void {
   for (const [elementId, element] of Object.entries(refreshedElements)) {
     const parsed = AppElementsWire.parseElementKey(elementId);
-    // A route's head is its own entry, so it travels with the route.
+    // A route's head and its boundary fallbacks are their own entries, so
+    // they travel with the route.
     const isHead = elementId.startsWith(APP_ROUTE_HEAD_ID_PREFIX);
     if (
-      (parsed?.kind === "page" || parsed?.kind === "route" || isHead) &&
+      (parsed?.kind === "page" ||
+        parsed?.kind === "route" ||
+        isHead ||
+        elementId.startsWith(APP_ROUTE_FALLBACK_ID_PREFIX)) &&
       (options.overwrite !== false || !Object.hasOwn(target, elementId))
     ) {
       target[elementId] = element;

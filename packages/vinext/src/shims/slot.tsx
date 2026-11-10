@@ -26,6 +26,7 @@ import {
   getBfcacheSegmentIdContext,
   notFound,
 } from "./navigation-server.js";
+import { forbidden, unauthorized } from "./navigation-errors.js";
 import type { ClientNavigationRenderSnapshot } from "./navigation.js";
 
 const EMPTY_ELEMENTS: AppElements = Object.freeze({});
@@ -886,6 +887,32 @@ export function Slot({
     <BfcacheSlotBoundary id={id} content={content} />
   ) : (
     content
+  );
+}
+
+/**
+ * An access boundary's not-found, forbidden or unauthorized file, rendered
+ * from its own element. A payload for an intercepted route leaves the ones
+ * beneath the intercepted slot's owner for the client to keep with the source
+ * segments, as Next.js keeps a segment's rendered boundary in its cache node.
+ * One the client doesn't hold passes the signal up to the next boundary.
+ */
+export function HttpAccessFallbackSlot({ id, status }: { id: string; status: 401 | 403 | 404 }) {
+  const elements = React.useContext(ElementsContext);
+  const element = Object.hasOwn(elements, id) ? elements[id] : undefined;
+  if (
+    element === undefined ||
+    element === UNMATCHED_SLOT ||
+    isTransportMetadataValue(id, element)
+  ) {
+    if (status === 403) forbidden();
+    if (status === 401) unauthorized();
+    notFound();
+  }
+  return (
+    <RenderedSearchContext.Provider value={getElementRenderedSearch(element)}>
+      {element}
+    </RenderedSearchContext.Provider>
   );
 }
 

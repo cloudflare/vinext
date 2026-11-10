@@ -2937,6 +2937,7 @@ describe("app browser entry state helpers", () => {
           [rootLayoutId]: React.createElement("section", null, "layout"),
           [routeId]: React.createElement("div", null, "route shell"),
           [routeHeadId]: currentHead,
+          [AppElementsWire.encodeRouteFallbackId(routeId, 404, 0)]: "current not-found",
           "page:/hmr-head": React.createElement("main", null, "page"),
         },
         [rootLayoutId],
@@ -2981,6 +2982,12 @@ describe("app browser entry state helpers", () => {
     // renders, which HMR replaces with the route the client holds.
     expect((await commitHmr({})).elements[routeHeadId]).toBe(currentHead);
     expect((await commitHmr({ [routeHeadId]: nextHead })).elements[routeHeadId]).toBe(nextHead);
+    // So do the kept route's boundary fallbacks.
+    const fallbackId = AppElementsWire.encodeRouteFallbackId(routeId, 404, 0);
+    expect((await commitHmr({})).elements[fallbackId]).toBe("current not-found");
+    expect((await commitHmr({ [fallbackId]: "next not-found" })).elements[fallbackId]).toBe(
+      "next not-found",
+    );
   });
 
   it("preserves planner-approved named slot state across HMR replacement", async () => {
@@ -11033,6 +11040,47 @@ describe("elements an intercepted payload leaves for the client to keep", () => 
 
     expect(nextState.elements[HEAD_ID]).toBe(head);
     expect(nextState.elements[BODY_ID]).toBe(body);
+  });
+
+  it("keeps the source's boundary fallbacks beneath the slot owner", async () => {
+    const fallbackId = AppElementsWire.encodeRouteFallbackId(ROUTE_ID, 404, 2);
+    const fallback = React.createElement("p", null, "member not found");
+    const sourceState = createSourceState();
+    const currentState = {
+      ...sourceState,
+      elements: { ...sourceState.elements, [fallbackId]: fallback },
+    };
+    const nextElements = createInterceptedElements({
+      entries: { [AppElementsWire.keys.retainedElementIds]: [...RETAINED_IDS, fallbackId] },
+    });
+    expect(resolveHeldRetainedElementIds(currentState, nextElements, "/members/7")).toEqual([
+      ...RETAINED_IDS,
+      fallbackId,
+    ]);
+    // A state that holds none, as after a 404 document, fetches the source.
+    expect(resolveHeldRetainedElementIds(sourceState, nextElements, "/members/7")).toBeNull();
+
+    const approval = await approve(currentState, nextElements);
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+    expect(nextState.elements[fallbackId]).toBe(fallback);
+    // Only the source's own route keys its fallbacks.
+    const otherRouteFallbackId = AppElementsWire.encodeRouteFallbackId("route:/members/8", 404, 2);
+    expect(
+      resolveHeldRetainedElementIds(
+        {
+          ...currentState,
+          elements: { ...currentState.elements, [otherRouteFallbackId]: fallback },
+        },
+        createInterceptedElements({
+          entries: {
+            [AppElementsWire.keys.retainedElementIds]: [...RETAINED_IDS, otherRouteFallbackId],
+          },
+        }),
+        "/members/7",
+      ),
+    ).toBeNull();
   });
 
   async function commitIntercepted(nextElements: AppElements): Promise<AppRouterState> {

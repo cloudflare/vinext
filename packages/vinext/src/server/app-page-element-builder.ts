@@ -51,11 +51,12 @@ import {
   traceGetLayoutOrPageModule,
 } from "./app-page-tracing.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import type { AppPageParams } from "./app-page-boundary.js";
+import { resolveAppPageLayoutHttpAccessBoundary, type AppPageParams } from "./app-page-boundary.js";
 import { tagAppPagePageError, tagAppPageSlotError } from "./app-page-execution.js";
 import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { resolveSlotParamOverrides } from "./app-page-navigation-params.js";
+import { filterMetadataRoutesForSegments } from "./metadata-route-segments.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
@@ -242,6 +243,12 @@ export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModul
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
   interceptSlotId?: string | null;
+  /**
+   * The render is of the source route beneath its intercepted target, not of
+   * the current route. A slot intercept then renders only what Next.js renders
+   * for the intercepting route, and leaves the rest for the client to keep.
+   */
+  rendersInterceptionSource?: boolean;
   interceptSlotKey?: string | null;
   interceptSourceMatchedUrl?: string | null;
   interceptSourcePageSegments?: readonly string[] | null;
@@ -357,7 +364,10 @@ export async function buildPageElements<
     rootUnauthorizedModule,
     metadataRoutes,
   } = options;
-  const slotParamOverrides = resolveSlotParamOverrides(route, routePath);
+  const slotParamOverrides = resolveSlotParamOverrides(
+    route,
+    resolveSlotParamsPathname(routePath, options.pageRequest.opts),
+  );
   const {
     opts,
     searchParams,
@@ -602,10 +612,35 @@ export async function buildPageElements<
       : -1;
   const outletParallelRouteIndex =
     outletSlotIndex === -1 ? null : outletSlotIndex + (primaryParallelRouteHeadInput ? 1 : 0);
+  // Beneath a slot intercept, Next.js renders the intercepting route's tree:
+  // the layouts down to the slot's owner and the intercepting branch, with a
+  // default in every other slot. The client keeps the source page and the
+  // other slots it already shows, and the source's head when that heads the
+  // route, so none of them runs here, under the intercepted target's request.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/ppr-navigations.ts
+  const retainedSourceInterceptInput =
+    opts?.rendersInterceptionSource === true && interceptSlotKey !== null
+      ? activeParallelRouteHeadInputs.find((input) => input.slotKey === interceptSlotKey)
+      : undefined;
+  const retainedSourceLayoutCount = (() => {
+    if (!retainedSourceInterceptInput || !interceptSlotKey) return null;
+    const layoutIndex = route.slots?.[interceptSlotKey]?.layoutIndex;
+    if (layoutIndex === undefined) return null;
+    return (layoutIndex >= 0 ? layoutIndex : route.layouts.length - 1) + 1;
+  })();
+  if (
+    opts?.rendersInterceptionSource === true &&
+    isSlotIntercept &&
+    retainedSourceLayoutCount === null
+  ) {
+    throw new Error(
+      `[vinext] Missing the intercepted slot ${String(interceptSlotKey)} on ${route.pattern}`,
+    );
+  }
   const metadataSearchParamsObserver = createAppPageMetadataSearchParamsObserver(
     observeMetadataSearchParamsAccess,
   );
-  const headOptions = {
+  const sourceHeadOptions = {
     applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
     hiddenParallelRoutes,
@@ -621,6 +656,47 @@ export async function buildPageElements<
     searchParams,
     searchParamsObserver: metadataSearchParamsObserver,
   };
+  // The intercepting tree's head reads the files of the segments down to the
+  // slot's owner and of the intercepted slot's folders above the interception
+  // marker, which the intercepting tree renders, not those of the segments and
+  // the other slots the client keeps.
+  // The folder holding the slot's directory owns it, which can sit below the
+  // layout that renders it, as `app/(group)/@modal` does beneath `app/layout`.
+  const retainedSourceOwnerTreePosition =
+    retainedSourceLayoutCount === null
+      ? undefined
+      : ((interceptSlotKey ? route.slots?.[interceptSlotKey]?.ownerTreePosition : null) ??
+        route.layoutTreePositions?.[retainedSourceLayoutCount - 1]);
+  const headMetadataRoutes =
+    retainedSourceInterceptInput &&
+    interceptSlotKey &&
+    retainedSourceOwnerTreePosition !== undefined
+      ? filterMetadataRoutesForSegments(
+          metadataRoutes,
+          resolveInterceptSlotHeadSegments(
+            (route.routeSegments ?? []).slice(0, retainedSourceOwnerTreePosition),
+            `@${route.slots?.[interceptSlotKey]?.name ?? interceptSlotKey}`,
+            opts?.interceptSourcePageSegments,
+          ),
+        )
+      : metadataRoutes;
+  // The intercepting page's own errors still reach its outlet in the slot.
+  const headOptions =
+    retainedSourceInterceptInput && retainedSourceLayoutCount !== null
+      ? {
+          ...sourceHeadOptions,
+          metadataRoutes: headMetadataRoutes,
+          hiddenParallelRoutes: null,
+          layoutModules: route.layouts.slice(0, retainedSourceLayoutCount),
+          layoutTreePositions:
+            route.layoutTreePositions?.slice(0, retainedSourceLayoutCount) ?? null,
+          outletParallelRouteIndex: 0,
+          pageModule: null,
+          parallelRoutes: [retainedSourceInterceptInput.head],
+        }
+      : sourceHeadOptions;
+  const retainsInterceptionSource = headOptions !== sourceHeadOptions;
+  const retainsSourceHead = retainsInterceptionSource && keepsSourceHead;
   const hasDynamicMetadata = hasAppPageDynamicMetadata(headOptions);
   const { pageSearchParams } = collectAppPageSearchParams(searchParams);
   const streamGeneratedHead =
@@ -647,17 +723,34 @@ export async function buildPageElements<
     const recoveredHead = recoverAppPageRouteHead(preparedHead, {
       applyFileBasedMetadata: options.applyFileBasedMetadata,
       basePath: options.basePath ?? "",
-      metadataRoutes,
+      metadataRoutes: headMetadataRoutes,
       // The not-found head recovers from the same branches as the visible
       // head: the source tree's, when a slot intercept keeps the source head.
       resolvePlanOptions: () =>
-        createRouteNotFoundHeadPlanOptions({
-          parallelBranches: headParallelRouteInputs,
-          params: effectiveParams,
-          primaryParallelBranch: primaryParallelRouteHeadInput,
-          rootNotFoundModule,
-          route,
-        }),
+        createRouteNotFoundHeadPlanOptions(
+          retainedSourceInterceptInput && retainedSourceLayoutCount !== null
+            ? {
+                parallelBranches: [retainedSourceInterceptInput],
+                params: effectiveParams,
+                primaryParallelBranch: null,
+                rootNotFoundModule,
+                // Nor do the not-found files of the segments the client keeps.
+                route: {
+                  ...route,
+                  ...resolveRetainedSourceNotFound(route, retainedSourceOwnerTreePosition),
+                  layouts: headOptions.layoutModules,
+                  layoutTreePositions: headOptions.layoutTreePositions,
+                  notFounds: route.notFounds?.slice(0, retainedSourceLayoutCount),
+                },
+              }
+            : {
+                parallelBranches: headParallelRouteInputs,
+                params: effectiveParams,
+                primaryParallelBranch: primaryParallelRouteHeadInput,
+                rootNotFoundModule,
+                route,
+              },
+        ),
       routePath: route.pattern,
     });
     onHeadPrepared?.({ ...recoveredHead, metadataPlacement });
@@ -695,7 +788,9 @@ export async function buildPageElements<
   const hasEmptyClientPageSearchParams =
     isForceStatic || (isProduction && process.env.__NEXT_CONFIG_OUTPUT === "export");
   const pageRenderDependency =
-    EffectivePageComponent && !isReactOwnedAppComponent(EffectivePageComponent)
+    !retainsInterceptionSource &&
+    EffectivePageComponent &&
+    !isReactOwnedAppComponent(EffectivePageComponent)
       ? createAppPageRenderDependency()
       : null;
   const createPageElement = (
@@ -825,7 +920,7 @@ export async function buildPageElements<
   // boundaries inside the slot, and the source page stays beside it.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
   const interceptMetadataOutlet =
-    hiddenParallelRoutes || outletParallelRouteIndex !== null
+    headOptions.hiddenParallelRoutes || headOptions.outletParallelRouteIndex !== null
       ? (() => {
           const outlet = createElement(AppPageInterceptMetadataOutlet, {
             head: createAppPageRouteHeadRef(resolveHead),
@@ -999,7 +1094,7 @@ export async function buildPageElements<
     }
     return buildAppPageElements({
       element:
-        !isSiblingIntercept && EffectivePageComponent
+        !isSiblingIntercept && !retainsInterceptionSource && EffectivePageComponent
           ? createPageElement(
               EffectivePageComponent,
               pageProps,
@@ -1029,6 +1124,13 @@ export async function buildPageElements<
       isUncacheableRender,
       routeTreeOnlyPrefetchShell,
       interceptionId: opts?.interceptionId ?? null,
+      interceptionSourceRetention: retainsInterceptionSource
+        ? {
+            ownerTreePosition: retainedSourceOwnerTreePosition ?? null,
+            retainsHead: retainsSourceHead,
+            retainsPage: EffectivePageComponent != null,
+          }
+        : null,
       mountedLayouts,
       mountedSlotIds,
       makeThenableParams,
@@ -1063,6 +1165,28 @@ export async function buildPageElements<
       trailingSlash: options.trailingSlash,
     });
   });
+}
+
+/**
+ * The pathname a route's slots take their own params from. Beneath a slot
+ * intercept the route renders for the source, under the target's URL, and the
+ * client keeps the source's other slots as the source's own render gave them,
+ * with params from the source's pathname. It stays as the client sent it, the
+ * form the payload's route identity takes too.
+ */
+function resolveSlotParamsPathname(
+  routePath: string,
+  opts: AppPageInterceptOptions | null | undefined,
+): string {
+  if (
+    opts?.rendersInterceptionSource !== true ||
+    !opts.interceptSourceMatchedUrl ||
+    !opts.interceptSlotKey ||
+    opts.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY
+  ) {
+    return routePath;
+  }
+  return opts.interceptSourceMatchedUrl.split("?")[0];
 }
 
 /**
@@ -1122,7 +1246,10 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
     };
   }
 
-  const slotParamOverrides = resolveSlotParamOverrides(route, routePath);
+  const slotParamOverrides = resolveSlotParamOverrides(
+    route,
+    resolveSlotParamsPathname(routePath, opts),
+  );
   for (const [slotKey, params] of Object.entries(slotParamOverrides ?? {})) {
     const existing = overrides[slotKey];
     overrides[slotKey] = existing ? { ...existing, params: existing.params ?? params } : { params };
@@ -1189,6 +1316,31 @@ export function resolveSiblingInterceptSegmentKeys(
       index < markerIndex ? routeParams : interceptParams,
     );
   });
+}
+
+/**
+ * The segments whose metadata files head a slot intercept: the owner's, then
+ * the slot's folders down to the interception marker. The intercepting page's
+ * own folders are left out.
+ */
+function resolveInterceptSlotHeadSegments(
+  ownerSegments: readonly string[],
+  slotSegment: string,
+  interceptSourcePageSegments: readonly string[] | null | undefined,
+): string[] {
+  const markerIndex =
+    interceptSourcePageSegments?.findIndex((segment) =>
+      APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.some(({ prefix }) => segment.startsWith(prefix)),
+    ) ?? -1;
+  if (
+    !interceptSourcePageSegments ||
+    markerIndex <= ownerSegments.length ||
+    interceptSourcePageSegments[ownerSegments.length] !== slotSegment ||
+    ownerSegments.some((segment, index) => segment !== interceptSourcePageSegments[index])
+  ) {
+    return [...ownerSegments, slotSegment];
+  }
+  return interceptSourcePageSegments.slice(0, markerIndex);
 }
 
 export const APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS = [
@@ -1320,4 +1472,33 @@ export function resolveInterceptedSlotSegments(
   );
 
   return routeSegments;
+}
+
+/**
+ * The not-found file nearest the intercepted slot's owner, at or above it: the
+ * route's own when it sits there, or else the deepest segment's, which can sit
+ * on a segment without a layout.
+ */
+function resolveRetainedSourceNotFound<TModule>(
+  route: {
+    notFound?: TModule | null;
+    notFoundTreePosition?: number | null;
+    segmentNotFounds?: readonly (TModule | null | undefined)[] | null;
+    segmentNotFoundTreePositions?: readonly number[] | null;
+  },
+  ownerTreePosition: number | undefined,
+): { notFound: TModule | null; notFoundTreePosition: number | null } {
+  if (ownerTreePosition === undefined) return { notFound: null, notFoundTreePosition: null };
+  if (route.notFoundTreePosition != null && route.notFoundTreePosition <= ownerTreePosition) {
+    return { notFound: route.notFound ?? null, notFoundTreePosition: route.notFoundTreePosition };
+  }
+  const boundary = resolveAppPageLayoutHttpAccessBoundary({
+    boundaryModules: route.segmentNotFounds ?? [],
+    boundaryTreePositions: route.segmentNotFoundTreePositions ?? [],
+    layoutTreePosition: ownerTreePosition + 1,
+  });
+  return {
+    notFound: boundary?.module ?? null,
+    notFoundTreePosition: boundary?.treePosition ?? null,
+  };
 }

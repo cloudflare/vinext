@@ -9,6 +9,8 @@ const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/interception-s
 const GUARDED_MARKER = "SECRET-FEED-CONTENT";
 const GUARDED_OWNER_MARKER = "SECRET-VAULT-CONTENT";
 const GUARDED_MEMBER_MARKER = "SECRET-MEMBER-CONTENT";
+const GUARDED_NOTE_MARKER = "SECRET-NOTE-CONTENT";
+const GUARDED_VIEWER_MARKER = "SECRET-VIEWER-CONTENT";
 
 type StartedServer = {
   baseUrl: string;
@@ -21,6 +23,13 @@ function interceptionHeaders(source: string): Record<string, string> {
     RSC: "1",
     "X-Vinext-Interception-Context": source,
   };
+}
+
+// The ids an RSC payload leaves for the client to keep, read from its Flight
+// rows rather than decoded.
+function retainedElementIds(flight: string): string[] {
+  const list = flight.match(/"__retainedElementIds":(\[[^\]]*\])/)?.[1];
+  return list ? (JSON.parse(list) as string[]) : [];
 }
 
 function forgedActionRequest(
@@ -246,6 +255,8 @@ describe.each([
       exposedGuardedContent: false,
     });
 
+    // The client keeps the member page it shows beneath the modal, so the
+    // intercepted payload names it rather than rendering it again.
     const member = await fetch(`${baseUrl}/photos/1`, {
       headers: { ...interceptionHeaders("/members/7"), ...passcode },
     });
@@ -254,10 +265,75 @@ describe.each([
       status: member.status,
       rendersSource: memberBody.includes(GUARDED_MEMBER_MARKER),
       rendersModal: memberBody.includes("MEMBERS-PHOTO-MODAL"),
+      retainsSource: retainedElementIds(memberBody).includes("page:/members/7"),
     }).toEqual({
       status: 200,
-      rendersSource: true,
+      rendersSource: false,
       rendersModal: true,
+      retainsSource: true,
+    });
+  }, 30_000);
+
+  // middleware.ts gives every /photos request a trusted-viewer request header
+  // and admits only trusted viewers to /viewers/[id]; /notes/[id] checks the
+  // same header in its page. Neither may see the header a target's middleware
+  // set: a direct request to the source never carries it.
+  it("authorizes and renders an interception source without the target's request headers", async () => {
+    if (!server) throw new Error("Interception authorization fixture server did not start");
+    const { baseUrl } = server;
+    const trusted = { "X-Trusted-Viewer": "1" };
+
+    const direct = await fetch(`${baseUrl}/viewers/7`);
+    expect(direct.status).toBe(403);
+    expect(await direct.text()).not.toContain(GUARDED_VIEWER_MARKER);
+
+    const intercepted = await fetch(`${baseUrl}/photos/1`, {
+      headers: interceptionHeaders("/viewers/7"),
+    });
+    expect(intercepted.status).toBe(403);
+    expect(intercepted.headers.get("x-auth-guard")).toBe("blocked");
+    expect(await intercepted.text()).not.toContain(GUARDED_VIEWER_MARKER);
+
+    const trustedDirect = await fetch(`${baseUrl}/viewers/7`, { headers: trusted });
+    expect(trustedDirect.status).toBe(200);
+    expect(await trustedDirect.text()).toContain(GUARDED_VIEWER_MARKER);
+
+    const trustedIntercepted = await fetch(`${baseUrl}/photos/1`, {
+      headers: { ...interceptionHeaders("/viewers/7"), ...trusted },
+    });
+    const trustedInterceptedBody = await trustedIntercepted.text();
+    expect({
+      status: trustedIntercepted.status,
+      rendersSource: trustedInterceptedBody.includes(GUARDED_VIEWER_MARKER),
+      rendersModal: trustedInterceptedBody.includes("VIEWERS-PHOTO-MODAL"),
+      retainsSource: retainedElementIds(trustedInterceptedBody).includes("page:/viewers/7"),
+    }).toEqual({
+      status: 200,
+      rendersSource: false,
+      rendersModal: true,
+      retainsSource: true,
+    });
+
+    const directNote = await fetch(`${baseUrl}/notes/7`);
+    expect(directNote.status).toBe(200);
+    const directNoteBody = await directNote.text();
+    expect(directNoteBody).toContain("NOTE-LOCKED");
+    expect(directNoteBody).not.toContain(GUARDED_NOTE_MARKER);
+
+    const interceptedNote = await fetch(`${baseUrl}/photos/1`, {
+      headers: interceptionHeaders("/notes/7"),
+    });
+    const interceptedNoteBody = await interceptedNote.text();
+    expect({
+      status: interceptedNote.status,
+      rendersSource: interceptedNoteBody.includes(GUARDED_NOTE_MARKER),
+      rendersModal: interceptedNoteBody.includes("NOTES-PHOTO-MODAL"),
+      retainsSource: retainedElementIds(interceptedNoteBody).includes("page:/notes/7"),
+    }).toEqual({
+      status: 200,
+      rendersSource: false,
+      rendersModal: true,
+      retainsSource: true,
     });
   }, 30_000);
 });

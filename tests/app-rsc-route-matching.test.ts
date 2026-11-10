@@ -913,6 +913,103 @@ describe("App RSC route matching", () => {
       });
     });
 
+    // A source outside the owner's tree, such as a static sibling in another
+    // route group, has no slot to render the intercept into, so the request
+    // renders the target directly. A Route Handler owner never renders.
+    it("does not intercept from a source without the intercepted slot", () => {
+      const matcher = createAppRscRouteMatcher([
+        route("/club/:slug", ["club", ":slug"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/club/:slug",
+                targetPattern: "/club/:slug/pics/:id",
+                interceptLayouts: [],
+                page: "pics-modal",
+                params: ["slug", "id"],
+              },
+            ],
+          },
+        }),
+        route("/club/static", ["club", "static"]),
+      ]);
+
+      expect(matcher.findIntercept("/club/static/pics/1", "/club/static")).toBeNull();
+      expect(matcher.findIntercept("/club/acme/pics/1", "/club/acme")).toMatchObject({
+        sourceRouteIndex: 0,
+        sourceRouteLacksSlot: false,
+      });
+      // The request handler accepts it until source middleware has run, since
+      // a rewrite can still reach a route that has the slot.
+      expect(
+        matcher.findIntercept("/club/static/pics/1", "/club/static", null, true),
+      ).toMatchObject({
+        page: "pics-modal",
+        sourceRouteIndex: 1,
+        sourceRouteLacksSlot: true,
+      });
+
+      const handlerMatcher = createAppRscRouteMatcher([
+        {
+          ...route("/feed", ["feed"], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/feed",
+                  targetPattern: "/feed/hidden",
+                  interceptLayouts: [],
+                  page: "hidden-modal",
+                  params: [],
+                },
+              ],
+            },
+          }),
+          routeHandler: {},
+        },
+        route("/feed/about", ["feed", "about"]),
+      ]);
+      expect(handlerMatcher.findIntercept("/feed/hidden", "/feed/about")).toBeNull();
+    });
+
+    it("prefers an intercept whose source has the slot over one whose source lacks it", () => {
+      const matcher = createAppRscRouteMatcher([
+        route("/club/:slug", ["club", ":slug"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/club/:slug",
+                targetPattern: "/club/:slug/pics/:id",
+                interceptLayouts: [],
+                page: "pics-modal",
+                params: ["slug", "id"],
+              },
+            ],
+          },
+        }),
+        route("/club/static", ["club", "static"], {
+          drawer: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/club/static",
+                targetPattern: "/club/:slug/pics/:id",
+                interceptLayouts: [],
+                page: "pics-drawer",
+                params: ["slug", "id"],
+              },
+            ],
+          },
+        }),
+      ]);
+
+      expect(
+        matcher.findIntercept("/club/static/pics/1", "/club/static", null, true),
+      ).toMatchObject({
+        page: "pics-drawer",
+        sourceRouteIndex: 1,
+        sourceRouteLacksSlot: false,
+      });
+    });
+
     it("never promotes a Route Handler as the concrete interception source", () => {
       // The source pathname arrives as an unauthenticated client header
       // (X-Vinext-Interception-Context / Next-URL), and the resolved source
@@ -923,22 +1020,24 @@ describe("App RSC route matching", () => {
       // intercepted target to a fixed destination (the intercepting route), so
       // falling back to the slot owner is also the parity-correct choice.
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
+      const feedModal = {
+        modal: {
+          intercepts: [
+            {
+              sourceMatchPattern: "/feed",
+              targetPattern: "/hidden",
+              interceptLayouts: ["layout"],
+              page: "modal-hidden",
+              params: [],
+            },
+          ],
+        },
+      };
       const matcher = createAppRscRouteMatcher([
-        route("/feed", ["feed"], {
-          modal: {
-            intercepts: [
-              {
-                sourceMatchPattern: "/feed",
-                targetPattern: "/hidden",
-                interceptLayouts: ["layout"],
-                page: "modal-hidden",
-                params: [],
-              },
-            ],
-          },
-        }),
+        route("/feed", ["feed"], feedModal),
         { ...route("/feed/admin", ["feed", "admin"]), routeHandler: {} },
-        route("/feed/:tab", ["feed", ":tab"]),
+        // A page beneath the owner's layout carries its slot.
+        route("/feed/:tab", ["feed", ":tab"], feedModal),
       ]);
 
       // A Route Handler descendant falls back to the slot owner (index 0).

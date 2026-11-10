@@ -307,17 +307,6 @@ function markConditionalRedirectCacheability(redirect: NextRedirect): void {
   }
 }
 
-function haveSameRequestCookies(
-  first: ReadonlyMap<string, string>,
-  second: ReadonlyMap<string, string>,
-): boolean {
-  if (first.size !== second.size) return false;
-  for (const [name, value] of first) {
-    if (second.get(name) !== value) return false;
-  }
-  return true;
-}
-
 function haveSamePageParams(first: AppPageParams, second: AppPageParams): boolean {
   const firstKeys = Object.keys(first);
   const secondKeys = Object.keys(second);
@@ -428,6 +417,11 @@ type AppRscRouteMatch<TRoute> = {
   authorizationParams?: AppPageParams;
   authorizationRoute?: TRoute;
   interceptionSourceIsConcrete?: boolean;
+  /**
+   * The source has no slot to render the intercept into. Only a source rewrite
+   * to a route that has the slot can still make the request intercept.
+   */
+  interceptionSourceLacksSlot?: boolean;
   params: AppPageParams;
   route: TRoute;
 };
@@ -818,6 +812,7 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     pathname: string,
     sourcePathname: string,
     interceptionId?: string | null,
+    acceptsSourceWithoutSlot?: boolean,
   ) => AppRscRouteMatch<TRoute> | null;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
@@ -1226,7 +1221,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     sourceMatch: AppRscRouteMatch<TRoute> | null,
     sourceContext: string | null = interceptionContextHeader,
   ): boolean => {
-    if (sourceMatch === null) return false;
+    if (sourceMatch === null || sourceMatch.interceptionSourceLacksSlot === true) return false;
     if (sourceMatch.interceptionSourceIsConcrete !== undefined) {
       return sourceMatch.interceptionSourceIsConcrete;
     }
@@ -1959,6 +1954,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // server action POST without `RSC: 1`, renders without one.
   let interceptionSourceContext =
     interceptionSourcePathname !== null ? interceptionContextHeader : null;
+  // The public pathname the client sends can name a route without the
+  // intercepted slot that its middleware rewrites to one with it, so accept
+  // such a source until authorization below reaches the final one.
   let interceptionSourceMatch =
     filesystemRouteEligible &&
     interceptionSourcePathname !== null &&
@@ -1967,6 +1965,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           preActionRoutePathname,
           interceptionContextHeader,
           interceptionIdHeader,
+          true,
         ) ?? null)
       : null;
   let hasVerifiedInterceptionSource = provesConcreteInterceptionSource(interceptionSourceMatch);
@@ -2037,6 +2036,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch)
       );
     };
+    // A source without the intercepted slot intercepts only through a rewrite
+    // that reaches a route with it. When authorization refuses one instead,
+    // the request renders the target directly, as one without an interception
+    // context does, since that source never renders.
+    let droppedSourceWithoutSlot = false;
+    const dropsSourceWithoutSlot = (): boolean => {
+      if (interceptionSourceMatch?.interceptionSourceLacksSlot !== true) return false;
+      interceptionSourceMatch = null;
+      interceptionSourceContext = null;
+      droppedSourceWithoutSlot = true;
+      return true;
+    };
     // A direct request to a redirected source never renders it.
     if (
       configMatchers?.matchRedirect(
@@ -2045,7 +2056,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         preMiddlewareRequestContext,
         currentBasePathState(),
         dispatchResponseStage ? undefined : markConditionalRedirectCacheability,
-      )
+      ) &&
+      !dropsSourceWithoutSlot()
     ) {
       options.clearRequestContext();
       return notFoundResponse();
@@ -2053,7 +2065,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // Raw pathname the source's config rewrites match, like `paramsPathname`
     // for the target's beforeFiles rewrites.
     let sourceRulesPathname = sourceRequestPathname;
-    if (runMiddleware) {
+    // The request headers source middleware left, which the source's config
+    // rewrites match as they would a direct request's.
+    let sourceRulesHeadersContext: ReturnType<typeof headersContextFromRequest> | null = null;
+    if (runMiddleware && !droppedSourceWithoutSlot) {
       const sourceUrl = new URL(userlandRequest.url);
       sourceUrl.search = new URL(resolvedUrl, url).search;
       // Source middleware must see the URL a direct request to the source
@@ -2079,24 +2094,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       sourceMiddlewareRequest.headers.delete(VINEXT_MW_CTX_HEADER);
       // Strip Flight headers on this owned branch before applyAppMiddleware so
       // it does not need another body tee solely to hide transport metadata.
+      // Source middleware sees the client's own headers, as a direct request to
+      // the source carries them, never what the target's middleware set.
       for (const header of FLIGHT_HEADERS) sourceMiddlewareRequest.headers.delete(header);
-      const targetHeadersContext = getHeadersContext();
-      const targetRequestHeaders = targetHeadersContext
-        ? new Headers(targetHeadersContext.headers)
-        : null;
-      targetRequestHeaders?.delete(VINEXT_MW_CTX_HEADER);
-      for (const header of FLIGHT_HEADERS) targetRequestHeaders?.delete(header);
-      // Chain source authorization from the request identity already established
-      // by target middleware, while keeping transport-only headers hidden.
-      if (targetRequestHeaders) {
-        const sourceHeaderNames = Array.from(sourceMiddlewareRequest.headers.keys());
-        for (const header of sourceHeaderNames) {
-          sourceMiddlewareRequest.headers.delete(header);
-        }
-        for (const [name, value] of targetRequestHeaders) {
-          sourceMiddlewareRequest.headers.append(name, value);
-        }
-      }
       const sourceMiddlewareContext: AppRscMiddlewareContext = {
         headers: null,
         requestHeaders: null,
@@ -2108,7 +2108,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // Keep source authorization in a child request context. In particular,
       // NextResponse.next({ request: { headers } }) mutates the live headers
       // context; allowing those overrides to escape would make the target render
-      // observe headers from a different route.
+      // observe headers from a different route. Next.js renders the intercepted
+      // tree under the target's request alone.
       let sourceMiddlewareResult: ApplyAppMiddlewareResult;
       try {
         sourceMiddlewareResult = await runWithHeadersContext(sourceHeadersContext, () =>
@@ -2162,78 +2163,50 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         );
       }
       if (sourceMiddlewareResult.kind === "response") {
-        if (request.body && !request.body.locked) {
-          void request.body.cancel().catch(() => {});
-        }
-        options.clearRequestContext();
-        // As for the target's middleware, this ends in the uncached request stage.
-        return dispatchResponseStage
-          ? withRequestStageBypassCacheState(sourceMiddlewareResult.response)
-          : sourceMiddlewareResult.response;
-      }
-      // The source and target share one render context. Existing target headers
-      // and all cookies are identity-bearing and may not be replaced/deleted by
-      // source middleware. Pure header additions are safe to retain and are
-      // copied into the live render context instead of silently discarded.
-      let sourceHeadersCompatible = true;
-      if (targetRequestHeaders) {
-        for (const [name, value] of targetRequestHeaders) {
-          if (sourceHeadersContext.headers.get(name) !== value) {
-            sourceHeadersCompatible = false;
-            break;
+        if (!dropsSourceWithoutSlot()) {
+          if (request.body && !request.body.locked) {
+            void request.body.cancel().catch(() => {});
           }
-        }
-      }
-      if (
-        !targetHeadersContext ||
-        !targetRequestHeaders ||
-        !sourceHeadersCompatible ||
-        !haveSameRequestCookies(targetHeadersContext.cookies, sourceHeadersContext.cookies)
-      ) {
-        options.clearRequestContext();
-        return notFoundResponse();
-      }
-      let addedSourceHeader = false;
-      for (const [name, value] of sourceHeadersContext.headers) {
-        if (!targetRequestHeaders.has(name)) {
-          targetHeadersContext.headers.set(name, value);
-          addedSourceHeader = true;
-        }
-      }
-      if (addedSourceHeader) {
-        targetHeadersContext.readonlyHeaders = undefined;
-        // Source-route middleware runs after the initial response-stage
-        // eligibility decision. A header added here is observable by the
-        // intercepted render, so its representation is request-specific.
-        canUseSharedWorkerResponseStage = false;
-      }
-      if (sourceMiddlewareResult.rewritten) {
-        // Rewrites such as locale insertion are valid only when they resolve to
-        // the exact source route and params selected for interception. A
-        // different route, params, or query would authorize one identity and
-        // render another, so fail closed instead. A destination outside the
-        // basePath resolves no route at all.
-        if (
-          (options.basePath && sourceMiddlewareResult.rewriteHadBasePath === false) ||
-          sourceMiddlewareResult.search !== sourceUrl.search ||
-          !adoptRewrittenInterceptionSource(sourceMiddlewareResult.cleanPathname)
-        ) {
           options.clearRequestContext();
-          return notFoundResponse();
+          // As for the target's middleware, this ends in the uncached request stage.
+          return dispatchResponseStage
+            ? withRequestStageBypassCacheState(sourceMiddlewareResult.response)
+            : sourceMiddlewareResult.response;
         }
-        sourceRulesPathname = sourceMiddlewareResult.cleanPathname;
+        void sourceMiddlewareResult.response.body?.cancel().catch(() => {});
+      } else {
+        sourceRulesHeadersContext = sourceHeadersContext;
+        if (sourceMiddlewareResult.rewritten) {
+          // Rewrites such as locale insertion are valid only when they resolve to
+          // the exact source route and params selected for interception. A
+          // different route, params, or query would authorize one identity and
+          // render another, so fail closed instead. A destination outside the
+          // basePath resolves no route at all.
+          if (
+            ((options.basePath && sourceMiddlewareResult.rewriteHadBasePath === false) ||
+              sourceMiddlewareResult.search !== sourceUrl.search ||
+              !adoptRewrittenInterceptionSource(sourceMiddlewareResult.cleanPathname)) &&
+            !dropsSourceWithoutSlot()
+          ) {
+            options.clearRequestContext();
+            return notFoundResponse();
+          }
+          sourceRulesPathname = sourceMiddlewareResult.cleanPathname;
+        }
       }
     }
     if (
       HAS_CONFIG_REWRITES &&
+      !droppedSourceWithoutSlot &&
       (options.configRewrites.beforeFiles.length || options.configRewrites.afterFiles.length)
     ) {
       const { matchRewrite } = await import("../config/config-matchers.js");
-      // The source request shares the target's cookies and query. Rebuild
-      // the rest from the live headers context, which now also carries any
-      // header source middleware added, such as a `Host` the target lacked.
+      // The source request shares the target's query. Its headers and cookies
+      // are those source middleware left, as for a direct request to it.
       const sourceRewriteContext = requestContextForResolvedUrl(
-        buildPostMwRequestContext(userlandRequest),
+        sourceRulesHeadersContext === null
+          ? buildPostMwRequestContext(userlandRequest)
+          : buildPostMwRequestContext(userlandRequest, sourceRulesHeadersContext),
         resolvedUrl,
         url,
       );
@@ -2266,9 +2239,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // that rewrites the source away for this client refuses it here too. A
       // static route is final before afterFiles.
       if (
-        !rewriteSource(options.configRewrites.beforeFiles, false) ||
-        ((interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route).isDynamic &&
-          !rewriteSource(options.configRewrites.afterFiles, true))
+        (!rewriteSource(options.configRewrites.beforeFiles, false) ||
+          ((interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route)
+            .isDynamic &&
+            !rewriteSource(options.configRewrites.afterFiles, true))) &&
+        !dropsSourceWithoutSlot()
       ) {
         options.clearRequestContext();
         return notFoundResponse();
@@ -2282,9 +2257,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     );
     if (!hasVerifiedInterceptionSource) {
       // A slot-owner fallback stands in for a source with no route of its own,
-      // so a direct request to that source renders no such tree. Render the
-      // target as a direct request instead, as Next.js does when its
-      // interception rewrite does not apply.
+      // so a direct request to that source renders no such tree, and a source
+      // without the intercepted slot has nowhere to render the intercept.
+      // Render the target as a direct request instead, as Next.js does when
+      // its interception rewrite does not apply.
       if (interceptionIdHeader !== null) {
         options.clearRequestContext();
         setInterceptionResponseUncacheable(true);
