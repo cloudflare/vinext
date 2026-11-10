@@ -216,8 +216,8 @@ describe("app page cache helpers", () => {
   });
 
   it("advertises no client stale time when the entry carries no claim", () => {
-    // The `default` profile is { revalidate: 900, expire: 4294967294 } with no
-    // `stale`. Synthesizing one from those would license ~136 years of client
+    // An entry of { revalidate: 900, expire: 4294967294 } with no `stale`.
+    // Synthesizing one from those would license ~136 years of client
     // reuse without a refresh; omitting the header leaves the client on its
     // configured experimental.staleTimes value.
     const response = buildAppPageCachedResponse(buildCachedAppPageValue("<h1>cached</h1>"), {

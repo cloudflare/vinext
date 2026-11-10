@@ -1,5 +1,13 @@
 import type { AppPageSpecialError } from "./app-page-execution.js";
-import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import {
+  runWithFetchDedupe,
+  setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
+  setCurrentFetchSoftTags,
+  setCurrentForceDynamicFetchDefault,
+  type FetchCacheMode,
+} from "vinext/shims/fetch-cache";
+import { buildAppStaticParamsTags } from "./implicit-tags.js";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
@@ -120,19 +128,19 @@ type AppPageInterceptMatch<TPage = unknown> = {
   targetRouteGraphId?: string | null;
 };
 
-type AppPageInterceptState<TRoute, TPage> =
+export type AppPageInterceptState<TRoute, TPage> =
   | { kind: "none" }
   | { kind: "current-route"; intercept: AppPageInterceptMatch<TPage> }
   | { kind: "source-route"; intercept: AppPageInterceptMatch<TPage>; sourceRoute: TRoute };
 
-type ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts> = {
+type AppPageInterceptStateLookup<TRoute, TPage> = {
   cleanPathname: string;
   currentRoute: TRoute;
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
-  getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
+  /** The state this request already resolved, which is then reused. */
+  interceptState?: AppPageInterceptState<TRoute, TPage>;
   isRscRequest: boolean;
-  toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
 
 type ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> = {
@@ -142,6 +150,7 @@ type ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOp
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
+  interceptState?: AppPageInterceptState<TRoute, TPage>;
   isRscRequest: boolean;
   toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
@@ -175,6 +184,7 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
+  interceptState?: AppPageInterceptState<TRoute, TPage>;
   isRscRequest: boolean;
   resolveNavigationParams: (
     route: TRoute,
@@ -182,10 +192,15 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     pathname: string,
     interceptOpts: TInterceptOpts,
   ) => AppPageParams;
-  renderInterceptResponse: (route: TRoute, element: TElement) => Promise<Response> | Response;
+  renderInterceptResponse: (
+    route: TRoute,
+    element: TElement,
+    navigationParams: AppPageParams,
+  ) => Promise<Response> | Response;
   resolveSearchParams?: (
     route: TRoute,
     searchParams: URLSearchParams,
+    interceptOpts: TInterceptOpts,
   ) => Awaitable<URLSearchParams>;
   searchParams: URLSearchParams;
   setNavigationContext: (context: {
@@ -648,6 +663,19 @@ function normalizeGenerateStaticParams(
   });
 }
 
+export function routePatternParamNames(patternParts: readonly string[]): string[] {
+  return patternParts.flatMap((part) => {
+    if (!part.startsWith(":")) return [];
+    return [part.slice(1, part.endsWith("+") || part.endsWith("*") ? -1 : undefined)];
+  });
+}
+
+export function routePatternOptionalCatchAllParamNames(patternParts: readonly string[]): string[] {
+  return patternParts.flatMap((part) =>
+    part.startsWith(":") && part.endsWith("*") ? [part.slice(1, -1)] : [],
+  );
+}
+
 export async function validateAppPageDynamicParams(
   options: ValidateAppPageDynamicParamsOptions,
 ): Promise<Response | null> {
@@ -776,9 +804,51 @@ async function matchGeneratedStaticParams(
   return isGenerated;
 }
 
-async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
-  options: ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts>,
+type ValidateAppPageRouteDynamicParamsOptions = {
+  dynamicConfig?: string;
+  dynamicParamsConfig?: boolean;
+  fetchCache?: FetchCacheMode | null;
+  generateStaticParams?: ValidateAppPageDynamicParamsOptions["generateStaticParams"];
+  isDynamicRoute: boolean;
+  isProduction: boolean;
+  params: AppPageParams;
+  routeSegments?: readonly string[];
+};
+
+/**
+ * Next.js rejects a `dynamicParams = false` miss while routing, before any of
+ * the route's segments render: it serves `/_not-found` instead.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/base-server.ts
+ */
+export function validateAppPageRouteDynamicParams(
+  options: ValidateAppPageRouteDynamicParamsOptions,
+): Promise<Response | null> {
+  // Next.js' production force-dynamic routes are absent from the prerender
+  // manifest, so they never enter its generated-path fallback gate. Dev still
+  // resolves and exact-matches generateStaticParams for the same route.
+  if (options.isProduction && options.dynamicConfig === "force-dynamic") {
+    return Promise.resolve(null);
+  }
+  // Next.js runs generateStaticParams in a work store of its own: the route's
+  // fetchCache and implicit tags, and no revalidate or force-dynamic default.
+  // Callers run this check apart from the request, so these stay out of it.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+  setCurrentFetchCacheMode(options.fetchCache ?? null);
+  setCurrentFetchSoftTags(buildAppStaticParamsTags(options.routeSegments ?? []));
+  setCurrentFetchRevalidate(null);
+  setCurrentForceDynamicFetchDefault(false);
+  return validateAppPageDynamicParams({
+    enforceStaticParamsOnly: options.dynamicParamsConfig === false,
+    generateStaticParams: options.generateStaticParams,
+    isDynamicRoute: options.isDynamicRoute,
+    params: options.params,
+  });
+}
+
+export async function resolveAppPageInterceptState<TRoute, TPage>(
+  options: AppPageInterceptStateLookup<TRoute, TPage>,
 ): Promise<AppPageInterceptState<TRoute, TPage>> {
+  if (options.interceptState) return options.interceptState;
   if (!options.isRscRequest) {
     return { kind: "none" };
   }
@@ -820,10 +890,9 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     cleanPathname: options.cleanPathname,
     currentRoute: options.currentRoute,
     findIntercept: options.findIntercept,
-    getRouteParamNames: options.getRouteParamNames,
     getSourceRoute: options.getSourceRoute,
+    interceptState: options.interceptState,
     isRscRequest: options.isRscRequest,
-    toInterceptOpts: options.toInterceptOpts,
   });
 
   if (interceptState.kind === "source-route") {
@@ -867,10 +936,9 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
     cleanPathname: options.cleanPathname,
     currentRoute: options.currentRoute,
     findIntercept: options.findIntercept,
-    getRouteParamNames: options.getRouteParamNames,
     getSourceRoute: options.getSourceRoute,
+    interceptState: options.interceptState,
     isRscRequest: options.isRscRequest,
-    toInterceptOpts: options.toInterceptOpts,
   });
 
   if (interceptState.kind === "source-route") {
@@ -883,20 +951,21 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
       ...interceptState.intercept.matchedParams,
     };
     const renderSearchParams = options.resolveSearchParams
-      ? await options.resolveSearchParams(renderRoute, options.searchParams)
+      ? await options.resolveSearchParams(renderRoute, options.searchParams, interceptOpts)
       : options.searchParams;
     const renderParams = pickRouteParams(
       sourceMatchedParams,
       options.getRouteParamNames(interceptState.sourceRoute),
     );
 
+    const resolvedNavigationParams = options.resolveNavigationParams(
+      renderRoute,
+      navigationParams,
+      options.cleanPathname,
+      interceptOpts,
+    );
     options.setNavigationContext({
-      params: options.resolveNavigationParams(
-        renderRoute,
-        navigationParams,
-        options.cleanPathname,
-        interceptOpts,
-      ),
+      params: resolvedNavigationParams,
       pathname: options.cleanPathname,
       searchParams: renderSearchParams,
     });
@@ -909,7 +978,11 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
 
     return {
       interceptOpts: undefined,
-      response: await options.renderInterceptResponse(renderRoute, interceptElement),
+      response: await options.renderInterceptResponse(
+        renderRoute,
+        interceptElement,
+        resolvedNavigationParams,
+      ),
     };
   }
 

@@ -4,10 +4,14 @@ import type {
   ReportedSentryTransaction as ReportedTransaction,
 } from "../../fixtures/sentry-test-state";
 
+// The Worker sends each Sentry envelope back to itself from waitUntil after the
+// response finishes, which can take longer than the default 5s on a busy runner.
+const expectSentryReport = expect.configure({ timeout: 15_000 });
+
 async function expectReportedError(request: APIRequestContext, message: string) {
   const state: { errors: ReportedError[] } = { errors: [] };
 
-  await expect
+  await expectSentryReport
     .poll(async () => {
       const stateRes = await request.get("/api/sentry-test-state");
       expect(stateRes.status()).toBe(200);
@@ -25,7 +29,7 @@ async function expectErrorTraceCorrelation(
 ): Promise<void> {
   expect(error.traceId).toMatch(/^[0-9a-f]{32}$/);
   expect(error.spanId).toMatch(/^[0-9a-f]{16}$/);
-  await expect
+  await expectSentryReport
     .poll(async () => {
       const stateRes = await request.get("/api/sentry-test-state");
       expect(stateRes.status()).toBe(200);
@@ -48,7 +52,7 @@ async function expectReportedTransaction(
 ) {
   let transaction: ReportedTransaction | undefined;
 
-  await expect
+  await expectSentryReport
     .poll(async () => {
       const stateRes = await request.get("/api/sentry-test-state");
       expect(stateRes.status()).toBe(200);
@@ -70,7 +74,7 @@ async function expectReportedTransactionMatching(
 ): Promise<ReportedTransaction> {
   let transaction: ReportedTransaction | undefined;
 
-  await expect
+  await expectSentryReport
     .poll(async () => {
       const stateRes = await request.get("/api/sentry-test-state");
       expect(stateRes.status()).toBe(200);
@@ -376,7 +380,7 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
       }),
     ]);
 
-    await expect
+    await expectSentryReport
       .poll(async () => {
         const stateRes = await request.get("/api/sentry-test-state");
         expect(stateRes.status()).toBe(200);

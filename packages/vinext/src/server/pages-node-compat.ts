@@ -35,7 +35,7 @@ export type PagesRequestQuery = Record<string, string | string[]>;
 export type PagesReqResRequest = Readable & {
   method: string;
   url: string;
-  headers: Record<string, string>;
+  headers: Record<string, string | string[] | undefined>;
   query: PagesRequestQuery;
   body: unknown;
   cookies: Record<string, string>;
@@ -401,11 +401,17 @@ class PagesResponseStream extends Writable {
   }
 
   json(data: unknown): void {
-    this.resHeaders["content-type"] = "application/json";
+    this.resHeaders["content-type"] = "application/json; charset=utf-8";
     this.end(JSON.stringify(data));
   }
 
   send(data: unknown): void {
+    // Next.js ends a nullish send without a body.
+    if (data === null || data === undefined) {
+      this.end();
+      return;
+    }
+
     // Next.js's sendData() ends 204/304 responses before it inspects the data,
     // so a stream is never piped into them. Fetch also forbids a 205 body.
     // resolveOnce() strips the headers.
@@ -431,8 +437,8 @@ class PagesResponseStream extends Writable {
       return;
     }
 
-    if (typeof data === "object" && data !== null) {
-      this.resHeaders["content-type"] = "application/json";
+    if (typeof data === "object" || typeof data === "number" || typeof data === "boolean") {
+      this.resHeaders["content-type"] = "application/json; charset=utf-8";
       this.end(JSON.stringify(data));
       return;
     }
@@ -440,7 +446,7 @@ class PagesResponseStream extends Writable {
     if (!this.resHeaders["content-type"]) {
       this.resHeaders["content-type"] = "text/plain";
     }
-    this.end(String(data));
+    this.end(String(data as unknown));
   }
 
   redirect(statusOrUrl: number | string, url?: string): PagesReqResResponse {
@@ -668,10 +674,14 @@ export function isVinextStreamedApiResponse(response: Response): boolean {
 }
 
 export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePagesReqResResult {
-  const headersObj: Record<string, string> = {};
+  const headersObj: Record<string, string | string[]> = {};
   for (const [key, value] of options.request.headers) {
     headersObj[key.toLowerCase()] = value;
   }
+  // Iteration yields each Set-Cookie separately. Like Next.js's
+  // toNodeOutgoingHttpHeaders, keep several of them as an array.
+  const setCookies = options.request.headers.getSetCookie();
+  if (setCookies.length > 1) headersObj["set-cookie"] = setCookies;
 
   // Next.js Pages API routes receive Node IncomingMessage/ServerResponse
   // objects. The Workers/prod adapter starts from a Fetch Request, so expose a

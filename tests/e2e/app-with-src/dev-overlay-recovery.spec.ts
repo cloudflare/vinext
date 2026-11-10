@@ -11,6 +11,34 @@ const BASE = "http://localhost:4181";
 // catches via the user boundary first; this spec covers the gap.
 
 test.describe("Dev recovery boundary (no global-error.tsx)", () => {
+  test("reports an error the HTML render and the browser both throw once", async ({ page }) => {
+    // The shell error sends the error document, and the browser's render
+    // throws again, where the default global error boundary catches it.
+    const response = await page.goto(`${BASE}/dev-overlay-recovery`);
+    expect(response?.status()).toBe(500);
+    await page.waitForLoadState("networkidle");
+
+    const dialog = page.getByTestId("vinext-dev-error-overlay");
+    const indicator = page.getByTestId("vinext-dev-error-indicator");
+    await expect(dialog.or(indicator).first()).toBeVisible({ timeout: 10_000 });
+    if ((await dialog.count()) === 0) await indicator.click();
+    // A root-level boundary caught the browser's error, so the replay drops
+    // the document's copy and the overlay shows only the browser's report.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { __VINEXT_INITIAL_DEV_ERRORS__?: unknown[] })
+              .__VINEXT_INITIAL_DEV_ERRORS__?.length,
+        ),
+      )
+      .toBe(0);
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText(
+      "dev-overlay-recovery: bare-bones render failure",
+    );
+    await expect(page.getByTestId("vinext-dev-error-pagination")).toBeHidden();
+  });
+
   test("soft-nav to a broken route still updates the URL", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("#app-with-src-home")).toBeVisible();

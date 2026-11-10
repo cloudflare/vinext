@@ -78,23 +78,32 @@ function toH3Pathname(pathname: string): string | undefined {
 }
 
 /**
+ * The key Nitro's static handler looks a pathname up under, following
+ * `runtime/internal/static.mjs`: without one trailing slash and decoded
+ * except for `%2F`.
+ */
+function toAssetId(pathname: string): string {
+  const id = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  try {
+    return decodeURIComponent(id.replace(/%2f/gi, "%252F"));
+  } catch {
+    // Nitro looks up a malformed pathname as it is.
+    return id;
+  }
+}
+
+/**
  * Whether Nitro's static handler would answer a request for a pathname with
- * a public file, following its lookup in `runtime/internal/static.mjs`. It
- * looks h3's pathname up without one trailing slash and decoded except for
- * `%2F`, and then as a directory with an `index.html`, each first with the
- * extension of a compressed copy for every encoding the request accepts.
+ * a public file. It looks h3's pathname up under its key, and then as a
+ * directory with an `index.html`, each first with the extension of a
+ * compressed copy for every encoding the request accepts.
  */
 function isPublicFilePathname(
   pathname: string,
   extensions: string[],
   publicAssets: Set<string>,
 ): boolean {
-  let id = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
-  try {
-    id = decodeURIComponent(id.replace(/%2f/gi, "%252F"));
-  } catch {
-    // Nitro looks up a malformed pathname as it is.
-  }
+  const id = toAssetId(pathname);
   const index = id.endsWith("/") ? `${id}index.html` : `${id}/index.html`;
   return extensions.some(
     (extension) => publicAssets.has(id + extension) || publicAssets.has(index + extension),
@@ -140,6 +149,14 @@ export function createNitroPublicFilesPlugin(
     const token = crypto.randomUUID();
     const assets: NitroAssets = {
       async fetch(request) {
+        // Callers name the file the pathname decodes to once, as an asset
+        // binding reads it. h3 decodes and resolves it again, where `..%5C`
+        // or `.%09.` would name another file, so such a fetch finds nothing.
+        const { pathname } = new URL(request.url);
+        const h3Pathname = toH3Pathname(pathname);
+        if (h3Pathname === undefined || toAssetId(h3Pathname) !== toAssetId(pathname)) {
+          return new Response(null, { status: 404 });
+        }
         const headers = new Headers(request.headers);
         headers.set(ASSET_REQUEST_HEADER, token);
         return appFetch(new Request(request, { headers }));

@@ -5,6 +5,7 @@ export type AssetCrossOrigin = "" | "anonymous" | "use-credentials";
 export type PagesClientAssets = {
   clientEntry?: string;
   appBootstrapPreinitModules?: string[];
+  appBootstrapPreloadModules?: string[];
   appRouteManifestModule?: string;
   /** What each App Router client reference loads in the browser, by URL. */
   appClientReferenceChunks?: ClientReferenceChunks;

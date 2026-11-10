@@ -43,7 +43,11 @@ test("renders the page before its metadata after a completed loading-shell prefe
   await expect(page.locator("title", { hasText: "Async Title" })).toHaveCount(1);
 });
 
-test("renders the page before its metadata on a second navigation to the route", async ({
+// A search change keeps the route, so Next.js reconciles its metadata outlet
+// boundary in place: the whole navigation, URL included, waits for the new
+// metadata and the current page stays until then, even with a prefetched
+// loading shell.
+test("keeps the page until the metadata resolves on a search change within the route", async ({
   page,
 }) => {
   const prefetch = waitForPrefetch(page, "");
@@ -60,6 +64,12 @@ test("renders the page before its metadata on a second navigation to the route",
   await page.waitForTimeout(500);
 
   await page.click(`a[href="${SECOND_TARGET}"]`);
-  await expect(page.locator("#version")).toHaveText("2", { timeout: BEFORE_METADATA_MS });
-  expect(await page.locator("title", { hasText: "Async Title" }).count()).toBe(1);
+  await page.waitForTimeout(BEFORE_METADATA_MS);
+  await expect(page.locator("#version")).toHaveText("1");
+  await expect(page).toHaveURL(TARGET);
+  await expect(page.locator("#loading")).toHaveCount(0);
+
+  await expect(page.locator("#version")).toHaveText("2", { timeout: 4000 });
+  await expect(page).toHaveURL(SECOND_TARGET);
+  await expect(page.locator("title", { hasText: "Async Title" })).toHaveCount(1);
 });
