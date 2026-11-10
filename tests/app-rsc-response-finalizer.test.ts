@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   finalizeAppRscResponse,
+  markAppRscApplicationResponse,
   markAppRscResponseConfigHeadersApplied,
 } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
@@ -521,7 +522,7 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
 
 // ── redirect responses skipped ──────────────────────────────────────────
 
-describe("finalizeAppRscResponse — redirect responses are not mutated", () => {
+describe("finalizeAppRscResponse — routing redirect responses are not mutated", () => {
   it("does not throw when called with an immutable 307 redirect response", async () => {
     // Behavior: Response.redirect() creates immutable headers; calling finalizeAppRscResponse
     // on such a response must never throw "Cannot modify immutable headers".
@@ -553,6 +554,90 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     });
 
     expect(response.headers.get("x-added")).toBeNull();
+  });
+});
+
+describe("finalizeAppRscResponse — application redirect responses", () => {
+  const configHeaders = [
+    {
+      source: "/old",
+      headers: [
+        { key: "x-added", value: "yes" },
+        { key: "Cache-Control", value: "private, no-store" },
+      ],
+    },
+  ];
+
+  it("applies config headers to an immutable Response.redirect()", async () => {
+    // Next.js stages config headers before application code runs, so a
+    // redirect a Route Handler returns carries them.
+    const response = markAppRscApplicationResponse(
+      Response.redirect("http://example.com/new", 307),
+    );
+
+    const finalized = await finalizeAppRscResponse(
+      response,
+      new Request("http://example.com/old"),
+      {
+        basePath: "",
+        configHeaders,
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      },
+    );
+
+    expect(finalized.status).toBe(307);
+    expect(finalized.headers.get("location")).toBe("http://example.com/new");
+    expect(finalized.headers.get("x-added")).toBe("yes");
+    expect(finalized.headers.get("cache-control")).toBe("private, no-store");
+    expect(finalized.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+  });
+
+  it("keeps the identity of a redirect whose headers are mutable", async () => {
+    const response = markAppRscApplicationResponse(
+      new Response(null, {
+        status: 303,
+        headers: { Location: "/new", "x-vinext-mutable-headers-probe": "app" },
+      }),
+    );
+
+    const finalized = await finalizeAppRscResponse(
+      response,
+      new Request("http://example.com/old"),
+      {
+        basePath: "",
+        configHeaders,
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      },
+    );
+
+    expect(finalized).toBe(response);
+    expect(finalized.headers.get("x-added")).toBe("yes");
+    expect(finalized.headers.get("x-vinext-mutable-headers-probe")).toBe("app");
+  });
+
+  it("does not apply config headers twice to a response-stage redirect", async () => {
+    const response = markAppRscResponseConfigHeadersApplied(
+      markAppRscApplicationResponse(
+        new Response(null, { status: 307, headers: { Location: "/new", "x-added": "stage" } }),
+      ),
+    );
+
+    const finalized = await finalizeAppRscResponse(
+      response,
+      new Request("http://example.com/old"),
+      {
+        basePath: "",
+        configHeaders,
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      },
+    );
+
+    expect(finalized).toBe(response);
+    expect(finalized.headers.get("x-added")).toBe("stage");
+    expect(finalized.headers.get("cache-control")).toBeNull();
   });
 });
 

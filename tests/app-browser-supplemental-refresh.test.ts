@@ -3,6 +3,7 @@ import {
   createSupplementalRefreshCoordinator,
   mergeRefreshedParallelSlot,
   requireCompleteSupplementalRefresh,
+  resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
@@ -10,6 +11,10 @@ import {
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
 import { AppElementsWire, type AppElements } from "../packages/vinext/src/server/app-elements.js";
 import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
+import type {
+  BrowserRouteManifest,
+  BrowserRouteManifestInterception,
+} from "../packages/vinext/src/routing/browser-route-manifest.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -62,6 +67,70 @@ describe("parallel route supplemental refreshes", () => {
         },
       }),
     ).toEqual(["/docs/nested-revalidate/drawer", "/docs/nested-revalidate?view=current"]);
+  });
+
+  it("keeps a route segment that repeats the basePath when adding it back", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        activeRoutePaths: ["/docs/guide"],
+        basePath: "/docs",
+        refreshUrl: new URL("https://example.com/docs/docs/guide/modal"),
+        state: {
+          previousNextUrl: null,
+          slotBindings: [],
+        },
+      }),
+    ).toEqual(["/docs/docs/guide"]);
+  });
+
+  it("keeps a route segment that repeats the basePath in a persisted interception target", () => {
+    const interception: BrowserRouteManifestInterception = {
+      id: "interception:slot:modal:/docs/feed->/docs/guide",
+      ownerLayoutId: "layout:/",
+      slotId: "slot:modal:/",
+      sourcePatternParts: ["docs", "feed"],
+      targetPatternParts: ["docs", "guide"],
+      targetRouteId: "route:/docs/guide",
+    };
+    const routeManifest: BrowserRouteManifest = {
+      graphVersion: "test",
+      segmentGraph: {
+        interceptions: new Map([[interception.id, interception]]),
+        interceptionsBySlotId: new Map(),
+        layouts: new Map(),
+        rootBoundaries: new Map(),
+        routes: new Map(),
+        slotBindings: new Map(),
+      },
+    };
+
+    expect(
+      resolvePersistedRefreshInterceptions({
+        basePath: "/docs",
+        refreshUrl: new URL("https://example.com/docs/docs/feed?tab=new"),
+        requestInterceptionContext: null,
+        routeManifest,
+        state: {
+          interception: null,
+          slotBindings: [
+            {
+              activeRouteId: "route:/docs/guide",
+              interceptionId: interception.id,
+              interceptionSourceMatchedUrl: "/docs/feed",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:modal:/",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      {
+        interception,
+        interceptionContext: "/docs/feed",
+        targetPathname: "/docs/docs/guide?tab=new",
+      },
+    ]);
   });
 
   it("uses the traversed-to history entry instead of routes from the page being left", () => {

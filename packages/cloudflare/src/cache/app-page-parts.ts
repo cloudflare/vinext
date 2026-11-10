@@ -19,12 +19,3 @@ export function isCanonicalAppPage(responseStageProps: unknown, isRscRequest: bo
     Reflect.get(responseStageProps, "mountedSlotsHeader") === null
   );
 }
-
-/**
- * Whether a canonical RSC request has a document part. A `.rsc` path reaches
- * its page's HTML path only through the app's trailingSlash policy, and
- * vinext's client never sends one, so it stores its payload alone.
- */
-export function hasDocumentPart(rscRequestUrl: string): boolean {
-  return !new URL(rscRequestUrl).pathname.endsWith(".rsc");
-}

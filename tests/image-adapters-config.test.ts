@@ -24,7 +24,10 @@ import {
   handleConfiguredImageOptimization,
   type ImageOptimizer,
 } from "../packages/vinext/src/server/image-optimization.js";
-import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import {
+  generateAppRequestRscEntry,
+  generateRscEntry,
+} from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 import { imagesOptimizer } from "../packages/cloudflare/src/images/images-optimizer.js";
 import createCloudflareImageOptimizer from "../packages/cloudflare/src/images/images-optimizer.runtime.js";
@@ -170,7 +173,8 @@ describe("image optimizer registry", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("source-bytes");
-    expect(response.headers.get("Cache-Control")).toContain("immutable");
+    // Next.js's image policy at the default `images.minimumCacheTTL`.
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
   });
 });
 
@@ -276,6 +280,7 @@ describe("registration is wired into the router/runtime entries", () => {
       layouts: ["/tmp/test/app/layout.tsx"],
       templates: [],
       parallelSlots: [],
+      siblingIntercepts: [],
       loadingPath: null,
       errorPath: null,
       layoutErrorPaths: [null],
@@ -308,6 +313,53 @@ describe("registration is wired into the router/runtime entries", () => {
     expect(code).toContain("[320,640,16,32]");
     expect(code).toContain('"dangerouslyAllowSVG":true');
     expect(code).toContain('"qualities":[75,90]');
+  });
+
+  it("App Router entries inline images.localPatterns for the image endpoint", () => {
+    const config = {
+      imageConfig: { localPatterns: [{ pathname: "/photos/**", search: "" }] },
+    };
+    for (const code of [
+      generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, config),
+      generateAppRequestRscEntry(
+        "/tmp/test/app",
+        minimalAppRoutes,
+        null,
+        [],
+        null,
+        "",
+        false,
+        config,
+      ),
+    ]) {
+      const imageConfig = code.match(/^export const __imageConfig = (.+);$/m)?.[1];
+      expect(JSON.parse(imageConfig ?? "{}").localPatterns).toEqual([
+        { pathname: "/photos/**", search: "" },
+      ]);
+    }
+  });
+
+  it("App Router entries inline the image endpoint's cache TTL and source size limit", () => {
+    const config = { imageConfig: { minimumCacheTTL: 60, maximumResponseBody: 1024 } };
+    for (const code of [
+      generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, config),
+      generateAppRequestRscEntry(
+        "/tmp/test/app",
+        minimalAppRoutes,
+        null,
+        [],
+        null,
+        "",
+        false,
+        config,
+      ),
+    ]) {
+      const imageConfig = code.match(/^export const __imageConfig = (.+);$/m)?.[1];
+      expect(JSON.parse(imageConfig ?? "{}")).toMatchObject({
+        minimumCacheTTL: 60,
+        maximumResponseBody: 1024,
+      });
+    }
   });
 
   it("App Router RSC entry falls back to Next.js default widths when images is unset", () => {

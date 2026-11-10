@@ -2,6 +2,10 @@ import type { NextConfig } from "vinext";
 
 const nextConfig: NextConfig = {
   cacheComponents: true,
+  // Next.js enables Strict Mode in App Router dev by default, which doubles
+  // effects on mount. vinext doesn't apply it to the App Router yet
+  // (cloudflare/vinext#2676), so opt out to compare the same effect counts.
+  reactStrictMode: false,
   async rewrites() {
     return [
       {

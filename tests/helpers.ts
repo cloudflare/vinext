@@ -8,6 +8,7 @@
  */
 
 import http, { type IncomingHttpHeaders } from "node:http";
+import zlib from "node:zlib";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -20,6 +21,10 @@ import {
   type ViteDevServer,
 } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import {
+  createRscRequestHeaders,
+  createRscRequestUrl,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import path from "node:path";
 import type { NextConfigInput } from "../packages/vinext/src/config/next-config.js";
 import type { VinextCacheConfig } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
@@ -198,6 +203,34 @@ export async function fetchHtml(
   const res = await fetch(`${baseUrl}${urlPath}`, init);
   const html = await res.text();
   return { res, html };
+}
+
+/**
+ * The path and query the client fetches for an App Router RSC payload: the
+ * `_rsc` cache-busting param matching `headers` (`RSC: 1` alone by default).
+ */
+export function rscRequestPath(
+  urlPath: string,
+  headers: Headers = createRscRequestHeaders(),
+): Promise<string> {
+  return createRscRequestUrl(urlPath, headers);
+}
+
+/**
+ * Fetch an App Router RSC payload the way the client does: `RSC: 1` plus the
+ * matching `_rsc` cache-busting param. Extra headers join the hash input.
+ * Server Action POSTs go to the plain path, as the client sends them.
+ */
+export async function fetchRsc(
+  baseUrl: string,
+  urlPath: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = createRscRequestHeaders();
+  new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  const requestPath =
+    init.method?.toUpperCase() === "POST" ? urlPath : await rscRequestPath(urlPath, headers);
+  return fetch(`${baseUrl}${requestPath}`, { ...init, headers });
 }
 
 /**
@@ -603,6 +636,94 @@ export async function requestExternalRewriteHeaders(
       middlewareHeader: response.headers.get("x-mw-response-header"),
       cacheControl: response.headers.get("cache-control"),
       upstreamHeader: response.headers.get("x-upstream"),
+    };
+  } finally {
+    upstream.closeAllConnections();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  }
+}
+
+/**
+ * Start an upstream that answers every request with a gzip-encoded text body,
+ * framed by its compressed Content-Length.
+ */
+export async function startGzipUpstream(): Promise<{
+  port: number;
+  body: string;
+  hits: (pathAndQuery: string) => number;
+  close: () => Promise<void>;
+}> {
+  const body = "gzip upstream body ".repeat(64);
+  const compressed = zlib.gzipSync(body);
+  const hits = new Map<string, number>();
+  const upstream = http.createServer((req, res) => {
+    hits.set(req.url ?? "", (hits.get(req.url ?? "") ?? 0) + 1);
+    res.writeHead(200, {
+      "Content-Type": "text/plain",
+      "Content-Encoding": "gzip",
+      "Content-Length": compressed.length,
+    });
+    res.end(compressed);
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  return {
+    port: (upstream.address() as { port: number }).port,
+    body,
+    hits: (pathAndQuery) => hits.get(pathAndQuery) ?? 0,
+    close: async () => {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    },
+  };
+}
+
+// next.config's three rewrite phases and a middleware rewrite.
+export const EXTERNAL_REWRITE_PATHS = ["before-files", "after-files", "fallback", "middleware"].map(
+  (phase) => `/external-headers/${phase}/a`,
+);
+
+/**
+ * Request an /external-headers/* path with middleware's `x-mw-request-header`
+ * override and a client `Connection` header naming it, a client header and an
+ * invalid token. Uses node:http because fetch() rejects such a header.
+ */
+export async function requestExternalRewriteWithConnectionTokens(
+  baseUrl: string,
+  requestPath: string,
+): Promise<{
+  status: number;
+  middlewareRequestHeader: string | string[] | undefined;
+  clientNominatedHeader: string | string[] | undefined;
+}> {
+  let upstreamHeaders: IncomingHttpHeaders = {};
+  const upstream = http.createServer((req, res) => {
+    upstreamHeaders = req.headers;
+    res.end("upstream");
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = upstream.address() as { port: number };
+    const url = new URL(`${requestPath}?middleware-request-header`, baseUrl);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(url, {
+        agent: false,
+        headers: {
+          connection: "keep-alive, X-Mw-Request-Header, x-client-nominated, not a header",
+          "x-client-nominated": "1",
+          "x-test-upstream-port": String(port),
+        },
+      });
+      req.on("response", (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode ?? 0));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    return {
+      status,
+      middlewareRequestHeader: upstreamHeaders["x-mw-request-header"],
+      clientNominatedHeader: upstreamHeaders["x-client-nominated"],
     };
   } finally {
     upstream.closeAllConnections();

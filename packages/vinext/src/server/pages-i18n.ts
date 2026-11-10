@@ -47,6 +47,24 @@ function readHeader(headers: HeaderBag, name: string): string | undefined {
 const normalizeHostname = normalizeDomainHostname;
 export { detectDomainLocale };
 
+const LOCALE_REDIRECT = Symbol.for("vinext.pages-locale-redirect");
+
+/**
+ * Mark a locale-detection redirect. Next.js answers it before next.config
+ * headers are staged, so it goes out without them. The global symbol crosses
+ * the App Router / Pages Router module graph boundary.
+ */
+export function markLocaleRedirect(response: Response): Response {
+  if (!isLocaleRedirect(response)) {
+    Object.defineProperty(response, LOCALE_REDIRECT, { value: true });
+  }
+  return response;
+}
+
+export function isLocaleRedirect(response: Response): boolean {
+  return LOCALE_REDIRECT in response;
+}
+
 /**
  * Return the configured locale that the first pathname segment names, compared
  * case-insensitively (`/EN/about` -> `"en"`), or `undefined` when there is none.

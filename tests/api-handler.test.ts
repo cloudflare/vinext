@@ -132,6 +132,18 @@ function mockRes(): http.ServerResponse & {
     setHeader(name: string, value: string | string[]) {
       headers[name.toLowerCase()] = value;
     },
+    appendHeader(name: string, value: string | string[]) {
+      const key = name.toLowerCase();
+      const existing = headers[key];
+      const values = Array.isArray(value) ? value : [value];
+      headers[key] =
+        existing === undefined
+          ? Array.isArray(value)
+            ? [...values]
+            : value
+          : [...(Array.isArray(existing) ? existing : [existing]), ...values];
+      return res;
+    },
     getHeader(name: string) {
       return headers[name.toLowerCase()];
     },
@@ -816,7 +828,7 @@ describe("handleApiRoute", () => {
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(res._statusCode).toBe(201);
-      expect(res._headers["content-type"]).toBe("application/json");
+      expect(res._headers["content-type"]).toBe("application/json; charset=utf-8");
       expect(JSON.parse(res._body as string)).toEqual({ ok: true });
     });
   });
@@ -832,7 +844,7 @@ describe("handleApiRoute", () => {
 
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
-      expect(res._headers["content-type"]).toBe("application/json");
+      expect(res._headers["content-type"]).toBe("application/json; charset=utf-8");
       expect(JSON.parse(res._body as string)).toEqual({ message: "hello" });
     });
 
@@ -862,7 +874,7 @@ describe("handleApiRoute", () => {
 
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
-      expect(res._headers["content-type"]).toBe("application/json");
+      expect(res._headers["content-type"]).toBe("application/json; charset=utf-8");
       expect(JSON.parse(res._body as string)).toEqual({ key: "value" });
     });
 
@@ -896,20 +908,6 @@ describe("handleApiRoute", () => {
       expect((res._body as Buffer).equals(Buffer.from([1, 2, 3]))).toBe(true);
     });
 
-    it("sends number data as text/plain string", async () => {
-      const handler = vi.fn((_req: any, res: any) => {
-        res.send(42);
-      });
-      const server = mockServer({ default: handler });
-      const req = mockReq("GET", "/api/users");
-      const res = mockRes();
-
-      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
-
-      expect(res._headers["content-type"]).toBe("text/plain");
-      expect(res._body).toBe("42");
-    });
-
     it("preserves existing content-type for non-object data", async () => {
       const handler = vi.fn((_req: any, res: any) => {
         res.setHeader("Content-Type", "text/html");
@@ -923,22 +921,6 @@ describe("handleApiRoute", () => {
 
       expect(res._headers["content-type"]).toBe("text/html");
       expect(res._body).toBe("<h1>Hello</h1>");
-    });
-
-    it("sends null as text/plain, not JSON (typeof null is object but excluded)", async () => {
-      // null is typeof 'object' but the code checks `data !== null`
-      // so null falls through to text/plain
-      const handler = vi.fn((_req: any, res: any) => {
-        res.send(null);
-      });
-      const server = mockServer({ default: handler });
-      const req = mockReq("GET", "/api/users");
-      const res = mockRes();
-
-      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
-
-      expect(res._headers["content-type"]).toBe("text/plain");
-      expect(res._body).toBe("null");
     });
   });
 
@@ -1414,18 +1396,20 @@ describe("handleApiRoute", () => {
       });
     });
 
-    it("reconstructs Vite-stripped basePath for edge API nextUrl", async () => {
+    it("uses the dev server's basePath-restored pathname for edge API nextUrl", async () => {
       const handler = vi.fn((request: Request) => {
         const nextUrl = (request as Request & { nextUrl?: { basePath: string; pathname: string } })
           .nextUrl;
         return Response.json({ basePath: nextUrl?.basePath, pathname: nextUrl?.pathname });
       });
       const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      // Vite has stripped the basePath from req.url.
       const req = mockReq("GET", "/api/hello?a=b", undefined, { host: "example.com" });
       const res = mockRes();
 
       await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")], {
         basePath: "/docs",
+        requestPathname: "/docs/api/hello",
       });
 
       expect(JSON.parse(res._body.toString())).toEqual({
@@ -1434,17 +1418,25 @@ describe("handleApiRoute", () => {
       });
     });
 
-    it("does not double-prefix an exact basePath edge API rewrite", async () => {
-      const handler = vi.fn((request: Request) => Response.json({ url: request.url }));
+    it("keeps a route segment equal to the basePath in the restored pathname", async () => {
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (request as Request & { nextUrl?: { pathname: string } }).nextUrl;
+        return Response.json({ url: request.url, pathname: nextUrl?.pathname });
+      });
       const server = mockServer({ config: { runtime: "edge" }, default: handler });
-      const req = mockReq("GET", "/docs", undefined, { host: "example.com" });
+      // basePath "/api" and pages/api/hello: Vite strips /api/api/hello to /api/hello.
+      const req = mockReq("GET", "/api/hello?a=b", undefined, { host: "example.com" });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/hello", [route("/api/hello")], {
-        basePath: "/docs",
+      await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")], {
+        basePath: "/api",
+        requestPathname: "/api/api/hello",
       });
 
-      expect(JSON.parse(res._body.toString())).toEqual({ url: "http://example.com/docs" });
+      expect(JSON.parse(res._body.toString())).toEqual({
+        url: "http://example.com/api/api/hello?a=b",
+        pathname: "/api/hello",
+      });
     });
 
     it("recognises bare \"export const runtime = 'edge'\" as an edge API route", async () => {

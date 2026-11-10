@@ -18,16 +18,21 @@ import {
   deriveBfcacheSegmentIdentity,
   isNestedBfcacheSlotSegmentId,
 } from "./bfcache-identity.js";
-import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
+import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 import {
   AppElementsWire,
+  APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
+  setOptimisticStateKeyRebinder,
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
 import {
+  APP_PAGE_DEFAULT_SEGMENT_KEY,
+  APP_PAGE_SEGMENT_KEY,
   canonicalizeAppPageParams,
+  createAppPageSegmentStateKeyRebinder,
   resolveAppPagePatternStateKey,
   resolveAppPageSemanticSegmentStateKey,
 } from "./app-page-segment-state.js";
@@ -41,6 +46,8 @@ export type OptimisticRouteTemplate = {
   omittedBfcacheSegmentIds: readonly string[];
   omittedLayoutIds: readonly string[];
   pageElementIds: readonly string[];
+  /** The navigation params of the URL the template was learned from. */
+  params: Readonly<Record<string, string | string[]>>;
   routeId: string;
 };
 
@@ -106,8 +113,7 @@ function hrefToRouteParts(
   }
 
   stripRscCacheBustingSearchParam(url);
-  const withoutRscSuffix = stripRscSuffix(url.pathname);
-  const appPathname = stripBasePath(withoutRscSuffix, basePath);
+  const appPathname = stripBasePath(url.pathname, basePath);
   const pathname = appPathname === "" ? "/" : appPathname;
   return {
     normalized: splitPathnameForRouteMatch(pathname),
@@ -269,6 +275,18 @@ function resolveTargetBfcacheSegmentIdentity(options: {
     const ownerStateKey = ownerLayout
       ? resolveAppPagePatternStateKey(ownerLayout.patternParts, options.targetRouteParams)
       : "";
+    const deriveLevelIdentity = (segmentKeys: readonly string[]) => {
+      const identityKey = JSON.stringify(segmentKeys);
+      return deriveBfcacheSegmentIdentity({
+        activeRouteGraphId: null,
+        boundSegmentKey: ownerStateKey ? JSON.stringify([ownerStateKey, identityKey]) : identityKey,
+        interceptionTargetRouteGraphId: null,
+        kind: "slot",
+        ownerLayoutGraphId: binding.ownerLayoutId,
+        slotGraphId: binding.slotId,
+        state: binding.state,
+      });
+    };
     const boundSegmentKeys: string[] = [];
     let level = 0;
     for (const segment of binding.routeSegments ?? []) {
@@ -282,16 +300,18 @@ function resolveTargetBfcacheSegmentIdentity(options: {
       );
       if (createNestedBfcacheSlotSegmentId(binding.slotId, level) !== options.segmentId) continue;
 
-      const identityKey = JSON.stringify(boundSegmentKeys);
-      return deriveBfcacheSegmentIdentity({
-        activeRouteGraphId: null,
-        boundSegmentKey: ownerStateKey ? JSON.stringify([ownerStateKey, identityKey]) : identityKey,
-        interceptionTargetRouteGraphId: null,
-        kind: "slot",
-        ownerLayoutGraphId: binding.ownerLayoutId,
-        slotGraphId: binding.slotId,
-        state: binding.state,
-      });
+      return deriveLevelIdentity(boundSegmentKeys);
+    }
+    // The level below the last segment is keyed by the page or default it
+    // renders, as the segment plan keys it.
+    if (
+      level > 0 &&
+      createNestedBfcacheSlotSegmentId(binding.slotId, level + 1) === options.segmentId
+    ) {
+      return deriveLevelIdentity([
+        ...boundSegmentKeys,
+        binding.state === "default" ? APP_PAGE_DEFAULT_SEGMENT_KEY : APP_PAGE_SEGMENT_KEY,
+      ]);
     }
 
     if (level === 0 && createNestedBfcacheSlotSegmentId(binding.slotId, 1) === options.segmentId) {
@@ -391,6 +411,8 @@ export function createOptimisticRouteTemplate(options: {
 
   const pageElementIds = getPageElementIds(options.elements, match.route);
   if (pageElementIds.length === 0) return null;
+  const urlParts = hrefToRouteParts(options.href, options.basePath);
+  if (urlParts === null) return null;
 
   return {
     elements: options.elements,
@@ -404,14 +426,39 @@ export function createOptimisticRouteTemplate(options: {
         ? metadata.layoutIds.filter((layoutId) => !Object.hasOwn(options.elements, layoutId))
         : [],
     pageElementIds,
+    params: resolveOptimisticNavigationParams({
+      match,
+      rawUrlParts: urlParts.raw,
+      routeManifest: options.routeManifest,
+      urlParts: urlParts.normalized,
+    }).navigationParams,
     routeId: match.route.id,
   };
 }
 
-export function createOptimisticRouteElements(template: OptimisticRouteTemplate): AppElements {
+export function createOptimisticRouteElements(
+  template: OptimisticRouteTemplate,
+  params: Readonly<Record<string, string | string[]>> = template.params,
+): AppElements {
   const elements: Record<string, AppElementValue> = { ...template.elements };
   for (const pageElementId of template.pageElementIds) {
     elements[pageElementId] = createElement(OptimisticRouteSegment);
+  }
+  // Like Next.js's reifyRouteTree for the route tree it learned: segments keyed
+  // by a param the two URLs bind differently key by the target's value, so the
+  // optimistic segments don't replace the learned URL's retained entry. A
+  // level without a layout keeps its key on a retention boundary inside the
+  // learned tree, which rebinds it with the same function.
+  const reify = createAppPageSegmentStateKeyRebinder(template.params, params);
+  if (reify === null) return elements;
+  setOptimisticStateKeyRebinder(elements, reify);
+
+  const metadata = AppElementsWire.readMetadata(template.elements);
+  const identities = metadata.bfcacheSegmentIdentities;
+  if (Object.keys(identities).length > 0) {
+    elements[APP_BFCACHE_SEGMENT_IDENTITIES_KEY] = Object.fromEntries(
+      Object.entries(identities).map(([id, identity]) => [id, reify(identity)]),
+    );
   }
   return elements;
 }
@@ -507,11 +554,46 @@ export function canCommitOptimisticRouteTemplate(options: {
   currentElements: AppElements;
   currentLayoutIds: readonly string[];
   currentParams: Readonly<Record<string, string | string[]>>;
+  /** Whether a hidden BFCache entry retains a segment identity. */
+  isBfcacheIdentityRetained?: (identity: string) => boolean;
   routeManifest: BrowserRouteManifest;
+  /**
+   * The elements on screen, when a shell earlier in this navigation replaced
+   * the current ones. Defaults to `currentElements`.
+   */
+  shownElements?: AppElements;
+  /** The shell's elements for the target. */
+  targetElements?: AppElements;
   targetRouteParams: Readonly<Record<string, string | string[]>>;
   targetUrlParts: readonly string[];
   template: OptimisticRouteTemplate;
 }): boolean {
+  const currentIdentities = AppElementsWire.readMetadata(
+    options.currentElements,
+  ).bfcacheSegmentIdentities;
+
+  // A target segment retained in a hidden BFCache entry is shown again with
+  // its state. The shell replaces its page with a placeholder, under
+  // boundaries keyed for the URL it was learned from, so committing it would
+  // remount the entry. Next.js shows the entry's loading state while keeping
+  // it mounted; without the shell, the current page stays until the payload
+  // reveals the entry.
+  const { isBfcacheIdentityRetained, targetElements } = options;
+  if (isBfcacheIdentityRetained && targetElements) {
+    const shownIdentities = new Set(
+      Object.values(
+        options.shownElements
+          ? AppElementsWire.readMetadata(options.shownElements).bfcacheSegmentIdentities
+          : currentIdentities,
+      ),
+    );
+    for (const identity of Object.values(
+      AppElementsWire.readMetadata(targetElements).bfcacheSegmentIdentities,
+    )) {
+      if (!shownIdentities.has(identity) && isBfcacheIdentityRetained(identity)) return false;
+    }
+  }
+
   if (
     options.template.omittedLayoutIds.length === 0 &&
     options.template.omittedBfcacheSegmentIds.length === 0
@@ -520,9 +602,6 @@ export function canCommitOptimisticRouteTemplate(options: {
   }
 
   const currentLayoutIds = new Set(options.currentLayoutIds);
-  const currentIdentities = AppElementsWire.readMetadata(
-    options.currentElements,
-  ).bfcacheSegmentIdentities;
 
   for (const layoutId of options.template.omittedLayoutIds) {
     if (!currentLayoutIds.has(layoutId)) continue;
@@ -611,7 +690,7 @@ export function resolveOptimisticNavigationPayload(options: {
     urlParts: urlParts.normalized,
   });
   return {
-    elements: createOptimisticRouteElements(template),
+    elements: createOptimisticRouteElements(template, navigationParams),
     params: navigationParams,
     routeParams,
     template,

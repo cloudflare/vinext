@@ -22,7 +22,7 @@
  * - dynamic(() => import('./Component'), { ssr: false })
  */
 import React, { type ComponentType } from "react";
-import { AppRouterTreeContext } from "./app-router-tree-context.js";
+import { useIsAppRouterTree } from "./app-router-tree-context.js";
 import { DynamicPreloadChunks } from "./dynamic-preload-chunks.js";
 import type {
   DynamicOptions,
@@ -214,21 +214,6 @@ function getDynamicErrorBoundary() {
 
 // Detect server vs client
 const isServer = typeof window === "undefined";
-
-/**
- * Whether this dynamic() renders in an App Router tree. RSC renders the App
- * Router only, and react-server has no context support. On the server, the
- * App Router SSR entry marks its tree; in the browser, App Router documents
- * set `window.next.appDir` before anything renders, which also covers
- * separate client roots (e.g. a modal rendered with createRoot). Everything
- * else (Pages Router pages, `pages/_document`, ad-hoc react-dom/server
- * renders) keeps the boundary, since Pages next/dynamic is react-loadable,
- * which never suspends.
- */
-function useIsAppRouterTree(): boolean {
-  if (!isServer) return window.next?.appDir === true;
-  return AppRouterTreeContext ? React.use(AppRouterTreeContext) : true;
-}
 
 /**
  * The element tree around an SSR-enabled dynamic() component. The client
