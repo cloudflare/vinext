@@ -39,7 +39,7 @@ import {
   hasPrefetchCacheEntryForNavigation,
   navigateClientSide,
   prefetchRscResponse,
-} from "./navigation.js";
+} from "./app-router-navigation.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { withBasePath } from "./url-utils.js";
 import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
@@ -326,7 +326,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               // navigation later looks up matches what we prefetch here. Without
               // this, intercepted routes or pages with mounted parallel slots
               // would key under a different context and miss the cached payload.
-              // (See link.tsx:373-389 and navigation.ts:1909-1916.) The context
+              // (See link.tsx and app-router-navigation.ts.) The context
               // is captured now; the interception context, which reads the
               // RouteManifest, resolves from it once the manifest has loaded.
               const currentPathname = window.location.pathname;

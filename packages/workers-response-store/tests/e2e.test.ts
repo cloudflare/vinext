@@ -3494,13 +3494,14 @@ test("the previous metadata schema is upgraded in place", async () => {
       // The purge above recorded the revision it tombstoned.
       [{ expiry_behavior: null, invalidated_revision: 2, replaced_revision: null }],
     );
-    // Invalidations before the upgrade weren't recorded, so the active revision counts as one.
+    // Invalidations before the upgrade weren't recorded: the entry is marked for its next publish
+    // to count the active revision as one.
     assert.deepEqual(
       await storage.exec(
         "SELECT replaced_revision, invalidated_revision FROM entries WHERE key_hash = ?",
         "legacy-kept",
       ),
-      [{ invalidated_revision: 3, replaced_revision: null }],
+      [{ invalidated_revision: Number.MAX_SAFE_INTEGER, replaced_revision: null }],
     );
     assert.deepEqual(await storage.exec("SELECT tag, key_hash FROM entry_tags"), []);
     assert.deepEqual(
@@ -3545,6 +3546,177 @@ test("the previous metadata schema is upgraded in place", async () => {
         { name: "pending_r2_tombstones_r2_pending" },
         { name: "pending_r2_tombstones_r2_sequence" },
       ],
+    );
+  } finally {
+    await legacy?.dispose();
+    await upgraded?.dispose();
+    await rm(persistencePath, { force: true, recursive: true });
+  }
+});
+
+test("upgrading from schema 8 leaves existing entries untouched", async () => {
+  const persistencePath = await mkdtemp(path.join(tmpdir(), "response-store-migration-9-"));
+  let legacy;
+  let upgraded;
+
+  try {
+    legacy = new Miniflare({
+      compatibilityDate: "2026-04-08",
+      resourcePersistencePath: persistencePath,
+      unsafeEphemeralDurableObjects: true,
+      workers: [
+        {
+          name: "migration-worker",
+          modules: true,
+          script: `
+            import { DurableObject } from "cloudflare:workers";
+            export class CacheMetadata extends DurableObject {
+              seed() {
+                this.ctx.storage.sql.exec(\`
+                  CREATE TABLE entries (
+                    key_hash TEXT PRIMARY KEY,
+                    cache_key TEXT NOT NULL,
+                    active_revision INTEGER,
+                    latest_revision INTEGER NOT NULL,
+                    object_key TEXT,
+                    status_text TEXT,
+                    response_headers TEXT,
+                    fresh_until INTEGER,
+                    swr_until INTEGER,
+                    revalidator_id TEXT,
+                    revalidator_args TEXT,
+                    expiry_behavior TEXT,
+                    cache_tags TEXT,
+                    tombstoned INTEGER NOT NULL DEFAULT 0
+                  );
+                  CREATE TABLE metadata_schema_migrations (version INTEGER PRIMARY KEY);
+                  INSERT INTO metadata_schema_migrations (version)
+                    VALUES (1), (2), (3), (4), (5), (6), (7), (8);
+                  WITH RECURSIVE bulk(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM bulk WHERE n < 1000)
+                  INSERT INTO entries (key_hash, cache_key, active_revision, latest_revision, object_key, status_text, response_headers, fresh_until, swr_until, cache_tags, tombstoned)
+                    SELECT 'bulk-' || n, '/bulk/' || n, 1, 1, 'bulk-object-' || n, '', '[]', 1, 1, '[]', 0 FROM bulk;
+                  INSERT INTO entries (key_hash, cache_key, active_revision, latest_revision, object_key, status_text, response_headers, fresh_until, swr_until, cache_tags, tombstoned)
+                    VALUES ('legacy-kept', '/legacy-kept', 3, 3, 'legacy-kept-object', '', '[]', 1, 1, '[]', 0);
+                  CREATE TABLE bulk_entry_updates (count INTEGER NOT NULL);
+                  INSERT INTO bulk_entry_updates (count) VALUES (0);
+                  CREATE TRIGGER count_bulk_entry_updates AFTER UPDATE ON entries
+                    WHEN OLD.cache_key LIKE '/bulk/%'
+                    BEGIN UPDATE bulk_entry_updates SET count = count + 1; END;
+                \`);
+              }
+            }
+            export default { fetch() { return new Response("ok"); } };
+          `,
+          durableObjects: {
+            CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+          },
+        },
+      ],
+    });
+    const legacyNamespace = await legacy.getDurableObjectNamespace(
+      "CACHE_METADATA",
+      "migration-worker",
+    );
+    await (legacyNamespace.getByName(metadataName) as any).seed();
+    await legacy.dispose();
+    legacy = undefined;
+
+    upgraded = new Miniflare({
+      compatibilityDate: "2026-04-08",
+      compatibilityFlags: ["nodejs_compat"],
+      resourcePersistencePath: persistencePath,
+      unsafeEphemeralDurableObjects: true,
+      unsafeInspectDurableObjects: true,
+      workers: [
+        {
+          name: "migration-worker",
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat"],
+          modules: true,
+          scriptPath: workerScript,
+          durableObjects: {
+            CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+          },
+          r2Buckets: { CACHE_BODIES: "migration-test" },
+          bindings: {
+            CF_VERSION_METADATA: {
+              id: versionId,
+              tag: "test",
+              timestamp: "2026-09-04T00:00:00Z",
+            },
+          },
+        },
+      ],
+    });
+    const namespace = await upgraded.getDurableObjectNamespace(
+      "CACHE_METADATA",
+      "migration-worker",
+    );
+    const stub = namespace.getByName(metadataName) as any;
+    const refresh = async (replaces: number) => {
+      const reservation = await stub.reserveWrite(
+        "legacy-kept",
+        "/legacy-kept",
+        "runtime-cache/poc-v2/legacy-kept",
+        Date.now(),
+      );
+      const publication = await stub.publish(
+        "legacy-kept",
+        reservation.revision,
+        {
+          objectKey: reservation.objectKey,
+          statusText: "",
+          responseHeaders: [],
+          freshUntil: Date.now() + 60_000,
+          swrUntil: Date.now() + 60_000,
+          revalidator: null,
+          cacheTags: [],
+          fenceTags: [],
+        },
+        undefined,
+        undefined,
+        { revision: replaces },
+      );
+      return publication.published;
+    };
+
+    // Invalidations before the upgrade weren't recorded, so the revision active at the upgrade
+    // counts as one: refreshes of an older revision all land, duplicate ones of it don't.
+    assert.equal(await refresh(2), true);
+    assert.equal(await refresh(2), true);
+    assert.equal(await refresh(3), true);
+    assert.equal(await refresh(3), false);
+
+    const storage = await upgraded.unsafeGetDurableObjectStorage(
+      "migration-worker",
+      "CacheMetadata",
+      { name: metadataName },
+    );
+    assert.deepEqual(
+      await storage.exec("SELECT version FROM metadata_schema_migrations WHERE version >= 8"),
+      [{ version: 8 }, { version: 9 }, { version: 10 }],
+    );
+    // The migration runs in the constructor's transaction, so it must not scale with the table.
+    assert.deepEqual(await storage.exec("SELECT count FROM bulk_entry_updates"), [{ count: 0 }]);
+    // The previous release drops a refresh when `invalidated_revision <= replaces.revision`. Marked
+    // entries never match that, so after a rollback to it their refreshes still land.
+    assert.deepEqual(
+      await storage.exec("SELECT invalidated_revision FROM entries WHERE key_hash = 'bulk-1'"),
+      [{ invalidated_revision: Number.MAX_SAFE_INTEGER }],
+    );
+    // An entry created after the upgrade has no unrecorded invalidations: it isn't marked.
+    await stub.reserveWrite(
+      "post-upgrade",
+      "/post-upgrade",
+      "runtime-cache/poc-v2/post-upgrade",
+      Date.now(),
+    );
+    assert.deepEqual(
+      await storage.exec(
+        "SELECT invalidated_revision FROM entries WHERE key_hash = ?",
+        "post-upgrade",
+      ),
+      [{ invalidated_revision: null }],
     );
   } finally {
     await legacy?.dispose();

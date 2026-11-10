@@ -85,7 +85,11 @@ import {
   generateAppResponseRscEntry,
   generateRscEntry,
 } from "./entries/app-rsc-entry.js";
-import { rootBoundaryFiles, rootBoundaryRouteFiles } from "./entries/app-rsc-manifest.js";
+import {
+  appDirectoryNotFoundPath,
+  rootBoundaryFiles,
+  rootBoundaryRouteFiles,
+} from "./entries/app-rsc-manifest.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { resolveRuntimeEntryModule } from "./entries/runtime-entry-module.js";
 import {
@@ -122,7 +126,8 @@ import {
   normalizePathnameForRouteMatch,
   normalizePathnameForRouteMatchStrict,
 } from "./routing/utils.js";
-import { hasBasePath, stripBasePath } from "./utils/base-path.js";
+import { hasBasePath, restoreBasePath, stripBasePath } from "./utils/base-path.js";
+import { serializeCacheLifeProfiles } from "./utils/cache-life-profiles.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
@@ -156,7 +161,6 @@ import {
 import {
   resolvePagesI18nRequest,
   shouldRestoreLocaleRootTrailingSlash,
-  stripI18nLocaleForApiRoute,
 } from "./server/pages-i18n.js";
 import {
   MIDDLEWARE_NEXT_HEADER,
@@ -168,9 +172,9 @@ import {
 } from "./server/headers.js";
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
+import { removeRequestHeaders } from "./server/remove-request-headers.js";
 import {
   canonicalizeRequestUrlPathname,
-  filterInternalHeaders,
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
   normalizeTrailingSlash,
@@ -224,7 +228,7 @@ import {
   pagesRouteHasPriorityOverAppRoute,
   validateHybridRouteConflicts,
 } from "./server/hybrid-route-priority.js";
-import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
+import { proxyExternalRequest } from "./config/config-matchers.js";
 import { encodeMiddlewareRequestHeaders } from "./utils/middleware-request-headers.js";
 import {
   detectPackageManager,
@@ -252,10 +256,12 @@ import {
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
+import { createNitroDevDepsOptimizerGatePlugin } from "./plugins/nitro-dev-deps-optimizer-gate.js";
 import { createClientCompileHintsPlugin } from "./plugins/client-compile-hints.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
+import { createCssTargetPlugin } from "./plugins/css-target.js";
 import {
   createRouteClientReferencesFallbackPlugin,
   createRscClientReferenceLoadersPlugin,
@@ -502,16 +508,16 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
 const VINEXT_GENERATED_DIR_RE = /(?:^|[/\\])\.vinext(?:[/\\]|$)/;
 
-// Node keeps each client header in req.rawHeaders as well as req.headers, and
-// srvx (plugin-rsc's dev request adapter) answers Headers reads from rawHeaders
-// once anything iterates them. Keep both views in sync so the App Router only
-// ever sees the forwarded middleware context the hybrid Pages handler attached.
+const FORWARDED_MIDDLEWARE_CONTEXT_HEADERS: ReadonlySet<string> = new Set([VINEXT_MW_CTX_HEADER]);
+const STRIPPED_INTERNAL_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  ...INTERNAL_HEADERS,
+  ...VINEXT_INTERNAL_HEADERS,
+]);
+
+// The App Router only ever sees the forwarded middleware context the hybrid
+// Pages handler attached.
 function removeForwardedMiddlewareContext(req: import("node:http").IncomingMessage): void {
-  delete req.headers[VINEXT_MW_CTX_HEADER];
-  const rawHeaders = req.rawHeaders;
-  for (let i = rawHeaders.length - 2; i >= 0; i -= 2) {
-    if (rawHeaders[i].toLowerCase() === VINEXT_MW_CTX_HEADER) rawHeaders.splice(i, 2);
-  }
+  removeRequestHeaders(req, FORWARDED_MIDDLEWARE_CONTEXT_HEADERS);
 }
 
 function setForwardedMiddlewareContext(
@@ -1478,6 +1484,7 @@ const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage
 const PAGES_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("pages-response-stage-entry");
 const NITRO_PUBLIC_FILES_ENTRY = resolveRuntimeEntryModule("nitro-public-files");
 const NITRO_PUBLIC_FILES_PLUGIN = resolveRuntimeEntryModule("nitro-public-files-plugin");
+const SRVX_MIDDLEWARE_ORIGIN_ENTRY = resolveRuntimeEntryModule("srvx-middleware-origin");
 const WORKER_ROUTER_ENTRIES = new Set([
   resolveRuntimeEntryModule("app-router-entry"),
   resolveRuntimeEntryModule("pages-router-entry"),
@@ -1603,6 +1610,23 @@ function hasReactDirective(code: string): boolean {
   return getLeadingReactDirective(code) !== null;
 }
 
+/**
+ * Resolve a project directory through symlinks the way Vite resolves
+ * `config.root` (and Next.js its project dir), so route files, `server.config.root`
+ * and module ids all share one path. Windows uses the JS realpath, as Vite
+ * does, to keep mapped network drives.
+ */
+function resolveProjectDir(dir: string, preserveSymlinks: boolean | undefined): string {
+  if (preserveSymlinks) return toSlash(dir);
+  try {
+    return toSlash(
+      process.platform === "win32" ? fs.realpathSync(dir) : fs.realpathSync.native(dir),
+    );
+  } catch {
+    return toSlash(dir);
+  }
+}
+
 function generateRootParamsModule(rootParamNames: Iterable<string>): string {
   const names = Array.from(new Set(rootParamNames)).filter(isValidExportIdentifier).sort();
   if (names.length === 0) return "export {};\n";
@@ -1647,11 +1671,15 @@ const clientManualChunks = createClientManualChunks(_shimsDir);
 const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualChunks);
 const appClientManualChunks = createClientManualChunks(_shimsDir, true);
 const appClientCodeSplittingConfig = createClientCodeSplittingConfig(appClientManualChunks);
+const appOnlyClientManualChunks = createClientManualChunks(_shimsDir, true, false);
+const appOnlyClientCodeSplittingConfig = createClientCodeSplittingConfig(appOnlyClientManualChunks);
 
-function getClientOutputConfig(preserveAppRouteBoundaries = false) {
-  const codeSplitting = preserveAppRouteBoundaries
-    ? appClientCodeSplittingConfig
-    : clientCodeSplittingConfig;
+function getClientOutputConfig(preserveAppRouteBoundaries = false, hasPagesRouter = true) {
+  const codeSplitting = !preserveAppRouteBoundaries
+    ? clientCodeSplittingConfig
+    : hasPagesRouter
+      ? appClientCodeSplittingConfig
+      : appOnlyClientCodeSplittingConfig;
   // File names are defaults that yield to user config; see
   // createClientOutputFileNameDefaults and vinext:css-url-assets-defaults.
   return { codeSplitting };
@@ -2601,6 +2629,39 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   const plugins: PluginOption[] = [
     buildLifecyclePlugins[0],
+    {
+      // ── Dev request origin check ─────────────────────────────────────
+      // Vite registers pre plugins' middlewares first, so listing this pre
+      // plugin first validates every request (including /@*, /__vite*,
+      // /node_modules* and source file paths) before Vite or any other vinext
+      // middleware serves content, such as vinext:cloudflare-dev-module-urls,
+      // which runs Vite's module middlewares itself.
+      name: "vinext:dev-origin-check",
+      apply: "serve",
+      enforce: "pre",
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          const blockReason = validateDevRequest(
+            {
+              origin: req.headers.origin as string | undefined,
+              host: req.headers.host,
+              "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
+              "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
+              "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
+            },
+            nextConfig?.allowedDevOrigins,
+          );
+          if (blockReason) {
+            console.warn(`[vinext] Blocked dev request: ${blockReason} (${req.url})`);
+            res.writeHead(403, { "Content-Type": "text/plain" });
+            res.end("Forbidden");
+            return;
+          }
+          next();
+        });
+      },
+    },
+    createNitroDevDepsOptimizerGatePlugin(() => hasNitroPlugin),
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
@@ -2768,6 +2829,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // `css-modules-data-urls` fixture. See plugins/css-data-url.ts.
     dataUrlCssPlugin(),
     createCssModuleImportCompatibilityPlugin(),
+    // Pins `build.cssTarget` where the app leaves it unset. See plugins/css-target.ts.
+    createCssTargetPlugin(),
     createDevServerLifecyclePlugin(
       {},
       (config) => (config as InternalUserConfig)[VINEXT_DEV_CLI_LIFECYCLE] === true,
@@ -2811,7 +2874,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // dependency, so a bare `import "ipaddr.js"` left in dist/server cannot
         // be resolved from the app under strict layouts such as pnpm's.
         const ipaddrSsrExternal = env.command === "serve" ? ["ipaddr.js"] : [];
-        root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
+        root = resolveProjectDir(
+          path.resolve(toSlash(process.cwd()), config.root ?? "."),
+          config.resolve?.preserveSymlinks,
+        );
         if (env.command === "build") assertClientOutDirIsSeparate(root, options);
         const devCliLifecycleEnabled =
           env.command === "serve" &&
@@ -2845,7 +2911,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : config.envDir
               ? path.resolve(root, config.envDir)
               : root;
-        if (earlyDotenv && envDir !== earlyDotenv.dir) {
+        // Compare both resolved, so another spelling of the same directory
+        // (e.g. through a symlink) keeps the early pass's values.
+        if (
+          earlyDotenv &&
+          (envDir === undefined ||
+            resolveProjectDir(envDir, config.resolve?.preserveSymlinks) !==
+              resolveProjectDir(earlyDotenv.dir, config.resolve?.preserveSymlinks))
+        ) {
           // Values the early pass read from another directory must not shadow
           // this envDir's. Variables set before vinext loaded stay.
           for (const [key, value] of Object.entries(earlyDotenv.env)) {
@@ -2888,7 +2961,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const dir = path.isAbsolute(options.appDir)
             ? options.appDir
             : path.resolve(root, options.appDir);
-          baseDir = toSlash(dir);
+          baseDir = resolveProjectDir(dir, config.resolve?.preserveSymlinks);
         } else {
           // Auto-detect: prefer root-level app/ and pages/, fall back to src/
           const hasRootApp = fs.existsSync(path.join(root, "app"));
@@ -3162,6 +3235,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Next.js uses this compile-time value to switch App Router navigation
         // from header-selected RSC responses to static `.txt` Flight assets.
         defines["process.env.__NEXT_CONFIG_OUTPUT"] = JSON.stringify(nextConfig.output ?? "");
+        // Next.js defines `process.env.__NEXT_CACHE_LIFE` for every bundle;
+        // the cacheLife() shim reads its profiles from this define.
+        defines["process.env.__VINEXT_CACHE_LIFE_PROFILES"] = JSON.stringify(
+          serializeCacheLifeProfiles(nextConfig.cacheLife),
+        );
         // Expose image remote patterns for validation in next/image shim
         defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.remotePatterns ?? []),
@@ -3181,9 +3259,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             JSON.stringify(deviceSizes),
           );
           defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(JSON.stringify(imageSizes));
-          // Emit the configured qualities allowlist, or `null` when unset so the
-          // runtime permits any quality 1-100 (matches Next.js: an unset
-          // `images.qualities` is not restricted to a single value).
+          // Emit the configured qualities allowlist, or `null` when unset. With a
+          // list, the default loader rounds `quality` to the closest entry like
+          // Next.js. When unset, vinext deliberately keeps the Next.js 14/15
+          // behaviour (any quality 1-100, the prop used as written) rather than
+          // Next.js 16's `[75]` default, so migrating apps don't break.
           defines["process.env.__VINEXT_IMAGE_QUALITIES"] = JSON.stringify(
             JSON.stringify(nextConfig.images?.qualities ?? null),
           );
@@ -3637,6 +3717,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         const viteConfig: UserConfig = {
+          // Vite resolves `root` after every config hook. Hand it the root
+          // resolved above, so a later plugin enabling resolve.preserveSymlinks
+          // cannot leave Vite on the symlinked path while vinext uses the real one.
+          root,
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           ...(devCliLifecycleEnabled ? { [VINEXT_DEV_CLI_LIFECYCLE]: true } : {}),
@@ -3682,42 +3766,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // the same reason; this mirrors that for `ssr`. Affects only
             // the build pipeline.
             ssrEmitAssets: true,
-            // CSS minification target. Vite/esbuild defaults to the same target
-            // as JS (modern evergreens), which lets esbuild's CSS minifier rewrite
-            // `@media (max-width: 768px)` to the Media Queries Level 4 range
-            // syntax `@media (width <= 768px)`. Both forms are semantically
-            // equivalent in modern browsers, but the rewrite is observable to
-            // user code that inspects `cssText` of `CSSMediaRule`s and breaks
-            // tools that pattern-match the raw query string. Next.js does not
-            // perform this rewrite by default (its webpack/lightningcss CSS
-            // pipeline preserves the original syntax), so user code carried
-            // over from Next.js can break when migrating to vinext.
-            //
-            // esbuild lowers a CSS feature when ANY target in the list lacks
-            // support, so we only need to pin one engine below the range-syntax
-            // baseline. Range syntax shipped in Chrome 104, Edge 104, Firefox 63,
-            // and Safari 16.4 (per esbuild's `internal/compat/css_table.go`
-            // MediaRange entry — and caniuse). Of those, Safari is the latest:
-            // pinning `safari15` (semantically Safari 15.0, which predates
-            // Safari 16.4) is sufficient to suppress the rewrite on its own.
-            //
-            // The other three targets are pinned to ~2023 baselines instead of
-            // the absolute oldest supported version so esbuild does NOT
-            // collaterally downlevel unrelated modern CSS features. With
-            // chrome111/edge111/firefox114 we keep through:
-            //   - `:is()` pseudo-class (Chrome 88, Firefox 78)
-            //   - `hwb()` colors (Chrome 101, Firefox 96)
-            //   - `lab()`, `oklch()`, `color()` (Chrome 111, Firefox 113)
-            //   - gradient interpolation hints (Chrome 111)
-            // CSS Nesting (Chrome 120, Safari 17.2) and Firefox-137 gradient
-            // interpolation will still be lowered; that is an intentional
-            // trade-off — those features are newer than the baseline and
-            // lowering them is the correct behavior for our target audience.
-            //
-            // Mirrors the Next.js fixture
-            // test/e2e/app-dir/css-media-query/css-media-query.test.ts which
-            // asserts `cssText` preserves `max-width: 768px`.
-            cssTarget: ["chrome111", "edge111", "firefox114", "safari15"],
             // Direct Vite to write build output under the canonical Next.js
             // layout so the on-disk path mirrors the emitted URL path:
             //   - empty `assetPrefix`     → `_next/static/`
@@ -4207,6 +4255,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             instrumentationClientPath,
           ].flatMap((entry) => (entry ? [toRelativeFileEntry(root, entry)] : []));
           const optimizeEntries = [...new Set([...appEntries, ...explicitInstrumentationEntries])];
+          // Pages Router modules render in ssr and hydrate in client, never in
+          // rsc. Without these, each dependency only pages/ imports is found on
+          // the first request for its page, re-optimizing and reloading.
+          const ssrAndClientOptimizeEntries = hasPagesDir
+            ? [...optimizeEntries, toRelativeFileEntry(root, pagesDir) + "/**/*.{tsx,ts,jsx,js}"]
+            : optimizeEntries;
           const additionalRscOptimizeIncludes: string[] = [];
           if (
             env.command === "serve" &&
@@ -4435,7 +4489,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...(userSsrExternal === true || externalizeSsrReactInDev || hasCloudflarePlugin
                   ? {}
                   : { include: ["react-dom/server", "react-dom/static"] }),
-                entries: optimizeEntries,
+                entries: ssrAndClientOptimizeEntries,
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -4467,10 +4521,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   shimOptimizeDepsExclude,
                   nextServerExternal,
                 ),
-                // Crawl app/ source files up front so client-only deps imported
-                // by user components are discovered during startup instead of
-                // triggering a late re-optimisation + full page reload.
-                entries: optimizeEntries,
+                // Crawl app/ and pages/ source files up front so client-only
+                // deps imported by user components are discovered during startup
+                // instead of triggering a late re-optimisation + full page reload.
+                entries: ssrAndClientOptimizeEntries,
                 // React packages aren't crawled from app/ source files,
                 // so must be pre-included to avoid late discovery (#25).
                 include: [
@@ -4503,7 +4557,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: appClientInput,
-                  output: getClientOutputConfig(true),
+                  output: getClientOutputConfig(true, hasPagesDir),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -5249,8 +5303,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ? "vinext/server/app-router-entry"
               : "vinext/server/pages-router-entry";
             if (!hasAppDir && hasNitroPlugin) {
+              // Nitro's Node presets build request.url from the client's Host
+              // header, so middleware gets the server's own origin.
               return [
                 `import pagesWorker from ${JSON.stringify(entry)};`,
+                `import { resolveSrvxMiddlewareOrigin } from ${JSON.stringify(SRVX_MIDDLEWARE_ORIGIN_ENTRY)};`,
                 ...(nitroPublicFiles
                   ? [
                       `import { withNitroPagesPublicFiles } from ${JSON.stringify(NITRO_PUBLIC_FILES_ENTRY)};`,
@@ -5258,7 +5315,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     ]
                   : ["const worker = pagesWorker;"]),
                 "export default { fetch(request, env, ctx) {",
-                `  return worker.fetch(request, env, { ...ctx, hostRuntime: ${JSON.stringify(nitroHostRuntime)} });`,
+                "  return worker.fetch(request, env, {",
+                "    ...ctx,",
+                `    hostRuntime: ${JSON.stringify(nitroHostRuntime)},`,
+                "    middlewareOrigin: resolveSrvxMiddlewareOrigin(request),",
+                "  });",
                 "} };",
               ].join("\n");
             }
@@ -5364,19 +5425,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const globalNotFoundPath = nextConfig?.globalNotFound
               ? findFileWithExts(appDir, "global-not-found", fileMatcher)
               : null;
+            const appNotFoundPath = findFileWithExts(appDir, "not-found", fileMatcher);
             if (id !== RESOLVED_APP_REQUEST_ENTRY) {
               rscActionOwnerRoutes =
                 this.environment.config.command === "build" && hasServerActions ? routes : null;
-              rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
-                (path): path is string => path !== null,
-              );
+              rscActionOwnerSharedRoots = [
+                globalErrorPath,
+                globalNotFoundPath,
+                // Without app/layout, every 404 without a matched route renders
+                // app/not-found, which no route may list.
+                appDirectoryNotFoundPath(routes, appNotFoundPath),
+              ].filter((path): path is string => path !== null);
               clientReferenceRoutes = this.environment.config.command === "build" ? routes : null;
               clientReferenceAlwaysRenderedFiles = [
                 ...(globalErrorPath ? [globalErrorPath] : []),
                 ...rootBoundaryFiles(routes),
               ];
               clientReferenceRoutelessFiles = [
-                ...rootBoundaryRouteFiles(routes),
+                ...rootBoundaryRouteFiles(routes, appNotFoundPath),
                 ...(globalNotFoundPath ? [globalNotFoundPath] : []),
               ];
             }
@@ -5428,10 +5494,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   deviceSizes: nextConfig?.images?.deviceSizes,
                   imageSizes: nextConfig?.images?.imageSizes,
                   qualities: nextConfig?.images?.qualities,
+                  localPatterns: nextConfig?.images?.localPatterns,
                   dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
                   dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
                   contentDispositionType: nextConfig?.images?.contentDispositionType,
                   contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+                  minimumCacheTTL: nextConfig?.images?.minimumCacheTTL,
+                  maximumResponseBody: nextConfig?.images?.maximumResponseBody,
                 },
                 hasPagesDir,
                 publicFiles:
@@ -5444,6 +5513,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                           : this.environment.config.publicDir,
                       ),
                 globalNotFoundPath,
+                appNotFoundPath,
                 draftModeSecret,
                 prerenderSecret,
                 // Dev-only, and never emitted into a client-environment copy.
@@ -5967,6 +6037,7 @@ export const loadServerActionClient = ${
           if (this.environment?.name !== "client") return;
 
           const manifest: ClientEntryManifest = {};
+          const appBrowserRuntimeModule = toSlash(resolveRuntimeEntryModule("app-browser-entry"));
           for (const chunk of Object.values(bundle)) {
             if (chunk.type !== "chunk") continue;
 
@@ -5975,6 +6046,9 @@ export const loadServerActionClient = ${
               isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_APP_ROUTE_MANIFEST)
             ) {
               manifest.appRouteManifest = chunk.fileName;
+            }
+            if (chunk.moduleIds.some((id) => toSlash(id) === appBrowserRuntimeModule)) {
+              manifest.appBrowserRuntime = chunk.fileName;
             }
             if (!chunk.isEntry) continue;
 
@@ -6676,36 +6750,11 @@ export const loadServerActionClient = ${
           return isExistingDevPublicFile(pathname);
         };
 
-        // ── Dev request origin check ─────────────────────────────────────
-        // Registered directly (not in the returned function) so it runs
-        // BEFORE Vite's built-in middleware. This ensures all requests
-        // (including /@*, /__vite*, /node_modules* paths) are validated
-        // before Vite serves any content.
-        server.middlewares.use((req, res, next) => {
-          const blockReason = validateDevRequest(
-            {
-              origin: req.headers.origin as string | undefined,
-              host: req.headers.host,
-              "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
-              "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
-              "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
-            },
-            nextConfig?.allowedDevOrigins,
-          );
-          if (blockReason) {
-            console.warn(`[vinext] Blocked dev request: ${blockReason} (${req.url})`);
-            res.writeHead(403, { "Content-Type": "text/plain" });
-            res.end("Forbidden");
-            return;
-          }
-          next();
-        });
-
         // Like Next.js, redirect any path containing a backslash or a repeated
-        // slash once the origin check has passed (router-server.ts runs
-        // blockCrossSiteDEV before resolveRoutes) and before anything below
-        // parses it: `new URL("//", base)` throws, and `//host/x` parses as a
-        // different origin.
+        // slash once the origin check (vinext:dev-origin-check) has passed
+        // (router-server.ts runs blockCrossSiteDEV before resolveRoutes) and
+        // before anything below parses it: `new URL("//", base)` throws, and
+        // `//host/x` parses as a different origin.
         server.middlewares.use((req, res, next) => {
           if (!sendRepeatedSlashRedirect(req.url ?? "/", res)) next();
         });
@@ -6872,15 +6921,15 @@ export const loadServerActionClient = ${
           if (hasAppDir) {
             server.middlewares.use((req, res, next) => {
               const url = req.url ?? "/";
-              // Skip Vite internals, HMR, and static assets.
-              // Do NOT skip .rsc-suffixed URLs or RSC wire requests (Accept: text/x-component)
-              // — those are soft navigations and should be logged like any other page request.
+              // Skip Vite internals, HMR, and static assets. RSC wire requests
+              // (`RSC: 1`) are soft navigations and are logged like any other
+              // page request.
               const [pathname] = url.split("?");
               if (
                 url.startsWith("/@") ||
                 url.startsWith("/__vite") ||
                 url.startsWith("/node_modules") ||
-                (url.includes(".") && !pathname.endsWith(".html") && !pathname.endsWith(".rsc"))
+                (url.includes(".") && !pathname.endsWith(".html"))
               ) {
                 return next();
               }
@@ -6963,9 +7012,6 @@ export const loadServerActionClient = ${
               };
 
               res.on("finish", () => {
-                // Strip .rsc suffix — it's an internal RSC protocol detail,
-                // not part of the actual page path the user navigated to.
-                const logUrl = url.replace(/\.rsc(\?|$)/, "$1");
                 const totalMs = now() - _reqStart;
 
                 // For RSC-only responses (soft nav), renderMs is -1 (sentinel meaning
@@ -6981,7 +7027,7 @@ export const loadServerActionClient = ${
 
                 logRequest({
                   method: req.method ?? "GET",
-                  url: logUrl,
+                  url,
                   status: res.statusCode,
                   totalMs,
                   compileMs: _compileMs,
@@ -7002,7 +7048,7 @@ export const loadServerActionClient = ${
               let url: string = req.url ?? "/";
               const originalRequestUrl = url;
               // ── Cross-origin request protection (defense-in-depth) ──────
-              // The pre-Vite middleware above already blocks cross-origin
+              // The vinext:dev-origin-check middleware already blocks cross-origin
               // requests before Vite serves any content. This second check
               // guards the Pages Router handler specifically, in case the
               // middleware ordering changes or new middleware is added between
@@ -7035,6 +7081,12 @@ export const loadServerActionClient = ${
                   nextConfig?.i18n,
                 );
               }
+              // Strip internal headers from inbound requests so they cannot be
+              // forged to influence routing or impersonate internal state. Do it
+              // before any branch below hands the request on, and in rawHeaders
+              // too, so middleware, the SSR handler, API routes and the App
+              // Router all see clean headers.
+              removeRequestHeaders(req, STRIPPED_INTERNAL_REQUEST_HEADERS);
               const requestHost =
                 revalidationHostname ??
                 ((Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
@@ -7110,16 +7162,23 @@ export const loadServerActionClient = ${
               // NOTE: When basePath is set, we also set Vite's `base` config to
               // `basePath + "/"`. Vite's connect middleware stack strips the base
               // prefix from req.url before passing it to our middleware, so the
-              // URL will already lack the basePath prefix. We still attempt to
-              // strip it (for robustness) but don't reject paths that don't start
-              // with basePath — Vite has already done the filtering.
+              // URL will usually already lack the basePath prefix. Strip it here
+              // only when Vite has not (the pre-Vite public-file hook), and don't
+              // reject paths that don't start with basePath — Vite has already
+              // done the filtering.
               const bp = nextConfig?.basePath ?? "";
               const viteBase = server.config.base;
               const viteBasePath =
                 viteBase.startsWith("/") && viteBase !== "/" ? viteBase.replace(/\/+$/, "") : "";
               const routingBasePath = bp || viteBasePath;
+              // Every URL below loses the basePath at most once: a route like
+              // /docs/a under basePath /docs still starts with the basePath once
+              // stripped. Middleware gets that basePath back, so record whether
+              // it was there.
+              const viteStrippedBasePath = originalRequestUrl !== originalEncodedUrl;
+              let originalUrlHadBasePath = false;
               if (routingBasePath) {
-                if (hasBasePath(pathname, routingBasePath)) {
+                if (!viteStrippedBasePath && hasBasePath(pathname, routingBasePath)) {
                   const stripped = stripBasePath(pathname, routingBasePath);
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                   url = stripped + qs;
@@ -7127,6 +7186,7 @@ export const loadServerActionClient = ${
                 }
                 const middlewarePathname = middlewareUrl.split("?")[0];
                 if (hasBasePath(middlewarePathname, routingBasePath)) {
+                  originalUrlHadBasePath = true;
                   const middlewareQs = middlewareUrl.includes("?")
                     ? middlewareUrl.slice(middlewareUrl.indexOf("?"))
                     : "";
@@ -7140,7 +7200,7 @@ export const loadServerActionClient = ${
                   routeUrl = stripBasePath(routePathname, routingBasePath) + routeQs;
                 }
               }
-              let configMatchPathname = stripBasePath(middlewareUrl.split("?")[0], routingBasePath);
+              let configMatchPathname = middlewareUrl.split("?")[0];
 
               if (nextConfig && !nextConfig.skipTrailingSlashRedirect) {
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
@@ -7189,7 +7249,9 @@ export const loadServerActionClient = ${
                 // for page requests and the production data normalization:
                 // `/%66r/...` is no locale and `a%2561` decodes once.
                 const rawDataMatch = parseNextDataPathname(rawRoutePathname, devBuildId);
-                const dataMatch = rawDataMatch ? parseNextDataPathname(pathname, devBuildId) : null;
+                const dataMatch = rawDataMatch
+                  ? parseNextDataPathname(pathname, devBuildId, true)
+                  : null;
                 if (dataMatch && rawDataMatch) {
                   isDataReq = true;
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
@@ -7239,67 +7301,11 @@ export const loadServerActionClient = ${
                 }
               }
 
-              // Skip file-looking requests after trailing-slash canonicalization,
-              // except rewrites and Pages routes that should stay in the pipeline.
-              // This still lets dynamic routes like /catch-all/hello.world/ receive
-              // the same Next.js redirects and route matching as extensionless URLs.
-              const filePathMatchesRewrite = [
-                ...(nextConfig?.rewrites.beforeFiles ?? []),
-                ...(nextConfig?.rewrites.afterFiles ?? []),
-                ...(nextConfig?.rewrites.fallback ?? []),
-              ].some((rewrite) =>
-                matchesRewriteSource(pathname, rewrite, {
-                  basePath: bp,
-                  hadBasePath: true,
-                }),
-              );
-              const isFilePathRequest = pathname.includes(".") && !pathname.endsWith(".html");
-              const isExistingPublicMutation =
-                req.method !== "GET" && req.method !== "HEAD" && isExistingDevPublicFile(pathname);
-              let filePathMatchesPagesRoute = false;
-              const requestHostname = getUrlHostname(requestOrigin);
-              if (isFilePathRequest && !filePathMatchesRewrite && !isDataReq) {
-                const [pageRoutes, apiRoutes] = await Promise.all([
-                  pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
-                  apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
-                ]);
-                // Page matching follows matchPageRoute's full i18n resolution. API matching
-                // mirrors the shared Pages pipeline lookup, which only strips a locale prefix.
-                const pageRouteUrl = nextConfig?.i18n
-                  ? resolvePagesI18nRequest(
-                      pathname,
-                      nextConfig.i18n,
-                      req.headers,
-                      requestHostname,
-                      bp,
-                      nextConfig.trailingSlash ?? false,
-                    ).url
-                  : pathname;
-                const apiRouteUrl = stripI18nLocaleForApiRoute(pathname, nextConfig?.i18n ?? null);
-                filePathMatchesPagesRoute =
-                  matchRoute(pageRouteUrl, pageRoutes) !== null ||
-                  matchRoute(apiRouteUrl, apiRoutes) !== null;
-              }
-              if (
-                isFilePathRequest &&
-                !isDataReq &&
-                !filePathMatchesRewrite &&
-                !filePathMatchesPagesRoute &&
-                !isNextStaticPath(
-                  pathname,
-                  "",
-                  assetPrefixPathname(nextConfig?.assetPrefix ?? ""),
-                ) &&
-                !isExistingPublicMutation
-              ) {
-                return next();
-              }
-
               // Snapshot of req.headers before middleware runs. Used for both
               // preMiddlewareReqCtx and the middleware Request itself. Intentionally
               // captured once here — applyRequestHeadersToNodeRequest() mutates
               // req.headers later, but by then this Headers object is no longer read.
-              const rawHeaders = new Headers(
+              const nodeRequestHeaders = new Headers(
                 Object.fromEntries(
                   Object.entries(req.headers)
                     // Drop `undefined` values and HTTP/2 pseudo-headers
@@ -7314,18 +7320,7 @@ export const loadServerActionClient = ${
               // The inbound x-nextjs-data header is internal and must not let
               // callers opt normal URLs into the data redirect protocol.
               const isDataRequest = isDataReq;
-              // Strip internal headers from inbound requests so they cannot be
-              // forged to influence routing or impersonate internal state.
-              // Both the middleware Request (built below) and the SSR handler
-              // (which reads req.headers directly) must see clean headers.
-              const nodeRequestHeaders = filterInternalHeaders(rawHeaders);
               if (revalidationHostname) nodeRequestHeaders.set("host", revalidationHostname);
-              for (const header of INTERNAL_HEADERS) {
-                delete req.headers[header];
-              }
-              for (const header of VINEXT_INTERNAL_HEADERS) {
-                delete req.headers[header];
-              }
 
               // Build a Web Request for the pipeline (no body — middleware and
               // SSR read req directly). The pipeline only needs the body when
@@ -7348,6 +7343,10 @@ export const loadServerActionClient = ${
                 for (const [key, value] of nextRequestHeaders) {
                   req.headers[key] = value;
                 }
+                // Like Next.js's toNodeOutgoingHttpHeaders, keep several
+                // Set-Cookie values (iterated separately) as an array.
+                const setCookies = nextRequestHeaders.getSetCookie();
+                if (setCookies.length > 1) req.headers["set-cookie"] = setCookies;
               };
 
               // devRunMiddlewareAdapter: wraps the dev runMiddleware call and
@@ -7369,7 +7368,14 @@ export const loadServerActionClient = ${
                       const mwProto =
                         rawProto === "https" || rawProto === "http" ? rawProto : "http";
                       const mwOrigin = `${mwProto}://${requestHost}`;
-                      const middlewareRequest = new Request(new URL(middlewareUrl, mwOrigin), {
+                      const middlewareRequestUrl = new URL(middlewareUrl, mwOrigin);
+                      if (originalUrlHadBasePath) {
+                        middlewareRequestUrl.pathname = restoreBasePath(
+                          middlewareRequestUrl.pathname,
+                          bp,
+                        );
+                      }
+                      const middlewareRequest = new Request(middlewareRequestUrl, {
                         method: req.method,
                         headers: nodeRequestHeaders,
                         signal: webRequest.signal,
@@ -7385,6 +7391,7 @@ export const loadServerActionClient = ${
                         pathname,
                         opts.isStaleDataRequest,
                         nextConfig?.skipTrailingSlashRedirect,
+                        opts.restoreLocaleRootTrailingSlash,
                       );
 
                       // Forward middleware context to the RSC entry so it can
@@ -7685,6 +7692,9 @@ export const loadServerActionClient = ${
                     allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys,
                     trailingSlash: nextConfig?.trailingSlash,
                     skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect,
+                    requestPathname: originalUrlHadBasePath
+                      ? restoreBasePath(routeUrl.split("?")[0], bp)
+                      : routeUrl.split("?")[0],
                   },
                 );
                 if (handled) return;
@@ -7816,9 +7826,6 @@ export const loadServerActionClient = ${
             ) {
               return next();
             }
-
-            // Skip .rsc requests — those are for the App Router RSC handler
-            if (url.split("?")[0].endsWith(".rsc")) return next();
 
             // The Cloudflare dev proxy owns request execution and tracing in
             // workerd. Do not create a second Node-side request root here.
@@ -8666,6 +8673,16 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
+          // Saves each request's raw target before h3 can rewrite req.url. The
+          // dev server checks the raw target itself.
+          if (!nitro.options.dev) {
+            const requestTargetPlugin = resolveRuntimeEntryModule("nitro-request-target-plugin");
+            nitro.options.plugins ??= [];
+            if (!nitro.options.plugins.includes(requestTargetPlugin)) {
+              nitro.options.plugins.push(requestTargetPlugin);
+            }
+          }
+
           nitroPublicFiles = registerNitroPublicFiles(
             nitro.options,
             NITRO_PUBLIC_FILES_PLUGIN,
@@ -8890,6 +8907,7 @@ export const loadServerActionClient = ${
             pagesClientAssetsModule = buildPagesClientAssetsModule({
               clientEntry: runtimeMetadata.clientEntryFile ?? undefined,
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
+              appBootstrapPreloadModules: runtimeMetadata.appBootstrapPreloadModules,
               appRouteManifestModule: runtimeMetadata.appRouteManifestModule,
               appClientReferenceChunks: runtimeMetadata.appClientReferenceChunks,
               ssrManifest,
@@ -9253,10 +9271,17 @@ export const loadServerActionClient = ${
           : {
               isAlwaysLoadedClientModule(id) {
                 const chunkName = appClientManualChunks(id);
-                return chunkName === "framework" || chunkName === "vinext";
+                // The App Router browser entry imports the navigation runtime
+                // chunk, so every App Router page loads it too.
+                return (
+                  chunkName === "framework" ||
+                  chunkName === "vinext" ||
+                  chunkName === "vinext-app-router"
+                );
               },
               ownClientChunkGroups: new Set([
                 ...appClientCodeSplittingConfig.groups,
+                ...appOnlyClientCodeSplittingConfig.groups,
                 ...clientCodeSplittingConfig.groups,
               ]),
             },

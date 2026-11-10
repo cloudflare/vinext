@@ -34,7 +34,6 @@ import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { NextRequest } from "vinext/shims/server";
 import { signalFromNodeResponse } from "./node-response-signal.js";
-import { hasBasePath } from "../utils/base-path.js";
 import {
   attachPagesPreviewApi,
   attachPagesRequestCookies,
@@ -42,6 +41,7 @@ import {
   type PagesReqResResponse,
 } from "./pages-node-compat.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
+import { logRequestError } from "./request-error-log.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -198,7 +198,7 @@ function createEdgeApiRequest(
   res: ServerResponse,
   url: string,
   params: Record<string, string | string[]>,
-  nextConfig?: { basePath?: string },
+  requestPathname: string | undefined,
 ): Request {
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
@@ -223,14 +223,11 @@ function createEdgeApiRequest(
   const host = resolveRequestHost(req, "localhost");
   // Keep this in sync with pages-api-route.ts: preserve the visible incoming
   // pathname while replacing only the resolved query and dynamic params.
-  // Dev runs after Vite has stripped its configured basePath, so reconstruct
-  // it here; prod/Workers do this earlier in pages-request-pipeline.ts using
-  // the adapter's hadBasePath state before calling pages-api-route.ts.
+  // Vite has stripped its configured basePath from req.url, so the dev server
+  // passes the pathname with that basePath restored, as prod/Workers do in
+  // pages-request-pipeline.ts from the adapter's hadBasePath state.
   const requestUrl = new URL(req.url ?? url, `${proto}://${host}`);
-  const basePath = nextConfig?.basePath;
-  if (basePath && !hasBasePath(requestUrl.pathname, basePath)) {
-    requestUrl.pathname = `${basePath}${requestUrl.pathname}`;
-  }
+  if (requestPathname !== undefined) requestUrl.pathname = requestPathname;
   const query = mergeRouteParamsIntoQuery(parseQueryString(url), params);
   requestUrl.search = urlQueryToSearchParams(query).toString();
   // Match prod/Next.js: edge API handlers observe client disconnects, and an
@@ -342,11 +339,17 @@ function enhanceApiObjects(
     },
 
     json(this: NextApiResponse, data: unknown) {
-      this.setHeader("Content-Type", "application/json");
+      this.setHeader("Content-Type", "application/json; charset=utf-8");
       this.end(JSON.stringify(data));
     },
 
     send(this: NextApiResponse, data: unknown) {
+      // Next.js ends a nullish send without a body.
+      if (data === null || data === undefined) {
+        this.end();
+        return;
+      }
+
       // Next.js's sendData() ends 204/304 responses before it inspects the
       // data, so a stream is never piped into them.
       if (this.statusCode === 204 || this.statusCode === 304) {
@@ -374,14 +377,14 @@ function enhanceApiObjects(
         return;
       }
 
-      if (typeof data === "object" && data !== null) {
-        this.setHeader("Content-Type", "application/json");
+      if (typeof data === "object" || typeof data === "number" || typeof data === "boolean") {
+        this.setHeader("Content-Type", "application/json; charset=utf-8");
         this.end(JSON.stringify(data));
       } else {
         if (!this.getHeader("Content-Type")) {
           this.setHeader("Content-Type", "text/plain");
         }
-        this.end(String(data));
+        this.end(String(data as unknown));
       }
     },
 
@@ -441,6 +444,8 @@ export async function handleApiRoute(
     allowedRevalidateHeaderKeys?: readonly string[];
     trailingSlash?: boolean;
     skipTrailingSlashRedirect?: boolean;
+    /** Edge API request pathname, with any basePath the dev server stripped restored. */
+    requestPathname?: string;
   },
 ): Promise<boolean> {
   const match = matchRoute(url, apiRoutes);
@@ -456,7 +461,7 @@ export async function handleApiRoute(
       // edge API handlers, so handlers can use `req.nextUrl.searchParams`,
       // `req.cookies`, etc. (Cf. NextRequestHint in next/src/server/web/adapter.ts.)
       const nextRequest = new NextRequest(
-        createEdgeApiRequest(req, res, url, params, nextConfig),
+        createEdgeApiRequest(req, res, url, params, nextConfig?.requestPathname),
         nextConfig
           ? {
               nextConfig: {
@@ -478,12 +483,13 @@ export async function handleApiRoute(
 
       res.statusCode = response.status;
       res.statusMessage = response.statusText;
-      const setCookieHeaders = response.headers.getSetCookie();
       response.headers.forEach((value, name) => {
         if (name !== "set-cookie") res.setHeader(name, value);
       });
-      if (setCookieHeaders.length) {
-        res.setHeader("set-cookie", setCookieHeaders);
+      // Append after any cookies middleware already staged on `res`, as
+      // Next.js's send-response does.
+      for (const cookie of response.headers.getSetCookie()) {
+        res.appendHeader("set-cookie", cookie);
       }
       await writeEdgeApiResponseBody(res, response.body, nextRequest.signal);
       return true;
@@ -539,7 +545,7 @@ export async function handleApiRoute(
 
     // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
     // when using ModuleRunner — no stack trace fixup is needed here.
-    console.error(e);
+    logRequestError(e);
     await reportRequestError(
       e,
       {

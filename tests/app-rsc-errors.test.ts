@@ -230,6 +230,23 @@ describe("app RSC error primitives", () => {
     expect(error).not.toHaveProperty("digest");
   });
 
+  it("rewrites a client hook error in development, and leaves a frozen one as it is", () => {
+    const onError = createRscOnErrorHandler({
+      errorContext: null,
+      nodeEnv: "development",
+      reportRequestError() {},
+      requestInfo: null,
+    });
+    const error = new TypeError("useState is not a function or its return value is not iterable");
+    onError(error);
+    expect(error.message).toMatch(/^useState only works in Client Components/);
+    expect(error.stack?.split("\n")[0]).toBe(error.message);
+
+    const frozen = Object.freeze(new TypeError("useState is not a function"));
+    expect(() => onError(frozen)).not.toThrow();
+    expect(frozen.message).toBe("useState is not a function");
+  });
+
   // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
   // It reports getProperError(thrownValue) and only hashes a thrown string.
   it.each([

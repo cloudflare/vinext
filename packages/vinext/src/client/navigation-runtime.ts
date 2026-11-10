@@ -6,7 +6,7 @@ import {
 } from "../routing/browser-route-manifest.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
-import type { CachedRscResponse } from "vinext/shims/navigation";
+import type { CachedRscResponse } from "vinext/shims/app-router-navigation";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "./browser-globals.js";
 
 type NavigationRuntimeSnapshot = {
@@ -87,7 +87,8 @@ export type NavigationRuntimeFunctions = {
    * reset any link that is still showing a `useLinkStatus()` pending state but
    * is not the one driving this navigation (e.g. a programmatic router.push or
    * a shallow-routing transition). Registered by shims/link.tsx; decoupled
-   * through the runtime to avoid a circular import with shims/navigation.ts.
+   * through the runtime to avoid a circular import with
+   * shims/app-router-navigation.ts.
    */
   notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;

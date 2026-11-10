@@ -36,6 +36,10 @@ export type TPROptions = {
   typedConfig?: boolean;
   /** Analytics lookback window in hours. Default: 24. */
   window: number;
+  /** Built static assets directory; requests for its files are not rendered pages. */
+  assetsDir?: string;
+  /** Next.js basePath; public files are served below it but built at the assets root. */
+  basePath?: string;
 };
 
 export type TPRRouteResult = {
@@ -183,27 +187,61 @@ async function queryTraffic(
   const groups = data.data?.viewer?.zones?.[0]?.httpRequestsAdaptiveGroups;
   if (!groups || groups.length === 0) return [];
 
-  return filterTrafficPaths(
-    groups.map((g) => ({
-      path: g.dimensions.clientRequestPath,
-      requests: g.count,
-    })),
+  return groups.map((g) => ({
+    path: g.dimensions.clientRequestPath,
+    requests: g.count,
+  }));
+}
+
+/** URL pathnames of every file in the built static assets directory. */
+function readStaticAssetPaths(assetsDir: string): Set<string> {
+  if (!fs.existsSync(assetsDir)) return new Set();
+  return new Set(
+    fs
+      .readdirSync(assetsDir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map(
+        (entry) =>
+          `/${path.relative(assetsDir, path.join(entry.parentPath, entry.name)).split(path.sep).join("/")}`,
+      ),
+  );
+}
+
+/** Whether a request path names a built asset file, with or without basePath. */
+function isStaticAssetPath(assetPaths: Set<string>, pathname: string, basePath = ""): boolean {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
+  // Public files sit at the assets root but are served below basePath.
+  return (
+    assetPaths.has(decoded) ||
+    (Boolean(basePath) &&
+      decoded.startsWith(`${basePath}/`) &&
+      assetPaths.has(decoded.slice(basePath.length)))
   );
 }
 
 /** Filter out non-page requests (static assets, API routes, internal routes). */
-export function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
+export function filterTrafficPaths(
+  entries: TrafficEntry[],
+  options: { assetsDir?: string; basePath?: string } = {},
+): TrafficEntry[] {
+  const assetPaths = options.assetsDir ? readStaticAssetPaths(options.assetsDir) : undefined;
   return entries.filter((e) => {
     if (!e.path.startsWith("/")) return false;
+    // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
+    if (e.path.startsWith("/cdn-cgi/")) return false;
     // Static assets
     if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path))
       return false;
+    if (assetPaths && isStaticAssetPath(assetPaths, e.path, options.basePath)) return false;
     // API routes
     if (e.path.startsWith("/api/")) return false;
     // Internal routes
     if (e.path.startsWith("/_next/") || e.path.startsWith("/__vinext/")) return false;
-    // RSC requests
-    if (e.path.endsWith(".rsc")) return false;
     return true;
   });
 }
@@ -300,6 +338,10 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
       `analytics query failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  traffic = filterTrafficPaths(traffic, {
+    assetsDir: options.assetsDir,
+    basePath: options.basePath,
+  });
   if (traffic.length === 0) return skip("no traffic data available (first deploy?)");
 
   return { routes: traffic, targetUrl };

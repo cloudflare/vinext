@@ -73,9 +73,9 @@ test.describe('production "use cache" server function references', () => {
     });
 
     test(`rejects an RSC action request for derived id ${actionId}`, async ({ request }) => {
-      const exploit = await request.post("/use-cache-hidden-reference.rsc", {
+      const exploit = await request.post("/use-cache-hidden-reference", {
         data: JSON.stringify(["victim"]),
-        headers: { "Content-Type": "text/plain", "x-rsc-action": actionId },
+        headers: { "Content-Type": "text/plain", RSC: "1", "x-rsc-action": actionId },
       });
 
       expect(exploit.status()).toBe(404);
@@ -158,6 +158,24 @@ test.describe('production "use cache" server function references', () => {
     const genuine = await invokeGetOrders(getOrders.body, getOrders.contentType);
     expect(genuine.status()).toBe(200);
     expect(await genuine.text()).toContain("ACME_PRIVATE_ORDER");
+  });
+
+  test("invokes cached exports of an .mts module imported by a Client Component", async ({
+    page,
+  }) => {
+    await page.goto("/use-cache-client-import");
+    await waitForAppRouterHydration(page);
+
+    await page.locator("#call-client-imported-mts-cache").click();
+    await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("1");
+    await expect(page.getByTestId("client-imported-cache-result")).toHaveText(
+      /^client-mts-cache:direct:mts-cache-server-marker:[0-9.e+-]+$/,
+    );
+    const firstResult = await page.getByTestId("client-imported-cache-result").innerText();
+
+    await page.locator("#call-client-imported-mts-cache").click();
+    await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("2");
+    await expect(page.getByTestId("client-imported-cache-result")).toHaveText(firstResult);
   });
 
   test("invokes default-exported server actions from cached modules", async ({ page }) => {
@@ -397,4 +415,47 @@ test.describe('production "use cache" FormData arguments', () => {
       expect(await (await publicCaller()).json()).toEqual(publicResult);
     });
   }
+});
+
+// next.config `cacheLife` profiles set a cached page's lifetime like the
+// built-ins do: Next.js derives s-maxage from revalidate and
+// stale-while-revalidate from expire - revalidate, and sends stale as the
+// client stale time.
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/use-cache/cache-life.ts
+test.describe("production next.config cacheLife profiles", () => {
+  async function waitForCacheHit(request: APIRequestContext, path: string, rsc = false) {
+    let headers: Record<string, string> = {};
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(
+            path,
+            rsc ? { headers: { Accept: "text/x-component", RSC: "1" } } : undefined,
+          );
+          headers = response.headers();
+          return headers["x-vinext-cache"];
+        },
+        { timeout: 5_000, intervals: [50, 100, 250] },
+      )
+      .toBe("HIT");
+    return headers;
+  }
+
+  test("a custom profile sets the cached page's Cache-Control", async ({ request }) => {
+    const headers = await waitForCacheHit(request, "/use-cache-custom-profile");
+    expect(headers["cache-control"]).toBe("s-maxage=120, stale-while-revalidate=3480");
+
+    // The profile sets no stale, so it takes the default profile's, which
+    // Next.js fills from experimental.staleTimes.static (300).
+    const rsc = await waitForCacheHit(request, "/use-cache-custom-profile?_rsc", true);
+    expect(rsc["x-nextjs-stale-time"]).toBe("300");
+  });
+
+  test("a configured profile replaces the built-in of the same name", async ({ request }) => {
+    const html = await waitForCacheHit(request, "/use-cache-overridden-profile");
+    expect(html["cache-control"]).toBe("s-maxage=90, stale-while-revalidate=1710");
+
+    const rsc = await waitForCacheHit(request, "/use-cache-overridden-profile?_rsc", true);
+    expect(rsc["x-nextjs-stale-time"]).toBe("30");
+  });
 });

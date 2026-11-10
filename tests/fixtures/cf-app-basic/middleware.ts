@@ -56,6 +56,10 @@ export async function middleware(request: NextRequest) {
     response.headers.set("x-cdn-stage-visitor", visitorId);
     return response;
   }
+  // A pathname comparison, as in the Next.js authentication guide.
+  if (request.nextUrl.pathname === "/encoded-parity/sibling/guarded") {
+    return new NextResponse("blocked by middleware", { status: 403 });
+  }
   if (request.nextUrl.pathname === "/%61dmin") {
     return NextResponse.rewrite(new URL("/admin", request.url));
   }
