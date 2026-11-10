@@ -94,7 +94,7 @@ test.describe("React cache() in generateMetadata() and generateViewport()", () =
   });
 
   test("shares cache() values in the RSC payload", async ({ request }) => {
-    const response = await request.get("/nextjs-compat/metadata-cache-deduping.rsc", {
+    const response = await request.get("/nextjs-compat/metadata-cache-deduping?_rsc", {
       headers: RSC_HEADERS,
     });
     expect(response.status()).toBe(200);
@@ -127,7 +127,7 @@ test.describe("React cache() in generateMetadata() and generateViewport()", () =
     for (const rsc of [false, true]) {
       for (const user of users) {
         const response = await request.get(
-          rsc ? "/metadata-react-cache/user.rsc" : "/metadata-react-cache/user",
+          rsc ? "/metadata-react-cache/user?_rsc" : "/metadata-react-cache/user",
           { headers: { ...(rsc ? RSC_HEADERS : {}), Cookie: `${USER_COOKIE}=${user}` } },
         );
         expect(response.status()).toBe(200);

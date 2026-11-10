@@ -56,7 +56,7 @@ async function holdPrefetchSlots(page: Page) {
     if (request.headers()["next-router-prefetch"] !== "1" || !pathname.startsWith(TARGET_PREFIX)) {
       return route.continue();
     }
-    const target = pathname.slice(TARGET_PREFIX.length).replace(/\.rsc$/, "");
+    const target = pathname.slice(TARGET_PREFIX.length);
     state.requestedTargets.push(target);
     state.requestNextUrls.push(request.headers()["next-url"]);
     if (state.heldTargets.size < 4) {
@@ -217,7 +217,7 @@ test("prefetches a Form's destination while a Link's prefetch for it is queued",
     const { pathname } = new URL(request.url());
     // Unlike a Link's, the Form's prefetch has no router state headers.
     if (
-      pathname.replace(/\.rsc$/, "") === `${TARGET_PREFIX}9` &&
+      pathname === `${TARGET_PREFIX}9` &&
       headers["x-vinext-rsc-render-mode"] === "prefetch-loading-shell" &&
       headers["next-router-prefetch"] === undefined
     ) {

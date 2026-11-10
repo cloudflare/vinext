@@ -380,7 +380,7 @@ function printHelp(cmd?: string) {
     --prerender          Configure Vite builds to pre-render static routes
                          (Cloudflare deploy won't serve them unless using Static Assets)
     --warm-cache         Add cache warming to the Cloudflare deploy script
-                         (Response Store or Workers Cache, default: prompt with No)
+                         (requires a --cdn-cache other than none, default: prompt with No)
     --legacy-wrangler-cloudflare-init
                          Use the legacy Wrangler setup instead of cf
     --ignore-wrangler-config

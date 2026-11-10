@@ -3,11 +3,11 @@ import { shareIsolatePromise } from "../packages/vinext/src/server/isolate-share
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 describe("shareIsolatePromise", () => {
-  it("registers the promise with the given context and returns it unchanged", async () => {
+  it("registers the promise with the given context and returns a promise that follows it", async () => {
     const ctx = { waitUntil: vi.fn() };
     const shared = Promise.resolve("value");
 
-    expect(shareIsolatePromise(shared, ctx)).toBe(shared);
+    await expect(shareIsolatePromise(shared, ctx)).resolves.toBe("value");
     expect(ctx.waitUntil).toHaveBeenCalledOnce();
     await expect(ctx.waitUntil.mock.calls[0]![0]).resolves.toBeUndefined();
   });
@@ -34,8 +34,7 @@ describe("shareIsolatePromise", () => {
   it("registers nothing outside a request", async () => {
     const shared = Promise.resolve("value");
 
-    expect(shareIsolatePromise(shared)).toBe(shared);
-    await expect(shared).resolves.toBe("value");
+    await expect(shareIsolatePromise(shared)).resolves.toBe("value");
   });
 
   // The request's copy must not surface the shared promise's rejection again;
@@ -46,6 +45,20 @@ describe("shareIsolatePromise", () => {
 
     await expect(shareIsolatePromise(shared, ctx)).rejects.toThrow("failed");
     await expect(ctx.waitUntil.mock.calls[0]![0]).resolves.toBeUndefined();
+  });
+
+  // Node 20 has no Promise.withResolvers, and only workerd tags promises.
+  it("returns the promise itself where Promise.withResolvers is missing", () => {
+    const shared = Promise.resolve("value");
+    vi.stubGlobal(
+      "Promise",
+      Object.assign(function () {}, { withResolvers: undefined }),
+    );
+    try {
+      expect(shareIsolatePromise(shared, { waitUntil: vi.fn() })).toBe(shared);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   // Shims that are also bundled for the browser, such as next/dynamic, reach

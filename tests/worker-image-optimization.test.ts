@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import { handleImageOptimization } from "../packages/vinext/src/server/image-optimization.js";
 import { createStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
 import {
   fetchSignalledPublicFile,
@@ -155,6 +156,54 @@ describe("fetchWorkerImageSource", () => {
       expect(await response.text()).toBe("The requested resource isn't a valid image.");
     }
     expect(cancel).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Worker image source Cache-Control", () => {
+  // Next.js serves only its `_next/static` output immutably (`isStatic` in
+  // packages/next/src/server/image-optimizer.ts); a public file keeps the
+  // larger of minimumCacheTTL and the max-age a direct request receives.
+  const icon = (cacheControl?: string) =>
+    new Response("icon", {
+      headers: {
+        "Content-Type": "image/x-icon",
+        ...(cacheControl ? { "Cache-Control": cacheControl } : {}),
+      },
+    });
+  const serve = (source: string, options: WorkerImageSourceOptions) =>
+    handleImageOptimization(
+      new Request(`https://example.com/_next/image?url=${encodeURIComponent(source)}&w=64&q=75`),
+      { fetchAsset: (url, request) => fetchWorkerImageSource(url, request, options) },
+    );
+
+  it("keeps build output immutable", async () => {
+    const { options } = sourceOptions({ assets: { fetch: async () => icon() } });
+    const response = await serve("/_next/static/media/a.ico", options);
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+  });
+
+  it("revalidates a public file under a _next/static folder", async () => {
+    const { options } = sourceOptions({ fetchPublicFile: async () => icon() });
+    const response = await serve("/avatars/_next/static/a.ico", options);
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
+  });
+
+  it("keeps the max-age staged for a signalled public file", async () => {
+    const assets = { fetch: async () => icon("public, max-age=0, must-revalidate") };
+    const { options } = sourceOptions({
+      assets,
+      fetchPublicFile: async (sourceRequest) =>
+        fetchSignalledPublicFile(
+          createStaticFileSignal("/a.ico", {
+            headers: new Headers({ "Cache-Control": "public, max-age=86400" }),
+            status: null,
+          }),
+          sourceRequest,
+          assets,
+        ),
+    });
+    const response = await serve("/a.ico", options);
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=86400, must-revalidate");
   });
 });
 

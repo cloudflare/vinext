@@ -3,6 +3,10 @@ import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import type { AppMiddlewareContext } from "./app-middleware.js";
+import {
+  isStreamedActionRedirectResponse,
+  markStreamedActionRedirectResponse,
+} from "./app-rsc-response-finalizer.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import {
   ACTION_FORWARDED_HEADER,
@@ -10,10 +14,8 @@ import {
   NEXTJS_ACTION_NOT_FOUND_HEADER,
 } from "./headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
-import {
-  createServerActionNotFoundResponse,
-  getServerActionNotFoundMessage,
-} from "./server-action-not-found.js";
+import { VINEXT_RSC_CONTENT_TYPE } from "./app-rsc-cache-busting.js";
+import { respondServerActionNotFound } from "./server-action-not-found.js";
 import {
   attachRequestCfMetadata,
   processMiddlewareHeaders,
@@ -126,11 +128,14 @@ function filterActionForwardResponse(
   const preserveResponseStatus =
     response.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1" ||
     response.headers.has(ACTION_REDIRECT_HEADER);
-  return new Response(response.body, {
+  const forwardedResponse = new Response(response.body, {
     headers,
     status: preserveResponseStatus ? response.status : (sourceMiddlewareStatus ?? response.status),
     statusText: response.statusText,
   });
+  return isStreamedActionRedirectResponse(response)
+    ? markStreamedActionRedirectResponse(forwardedResponse)
+    : forwardedResponse;
 }
 
 function emptyActionForwardResponse(middlewareContext: AppMiddlewareContext): Response {
@@ -201,10 +206,8 @@ export async function forwardServerActionIfNeeded(
 
   const ownerPath = ownerPatterns?.[0];
   if (!ownerPath) {
-    console.warn(getServerActionNotFoundMessage(options.actionId));
-    options.clearRequestContext();
     return filterActionForwardResponse(
-      createServerActionNotFoundResponse(),
+      respondServerActionNotFound(options.actionId, options.clearRequestContext),
       options.middlewareContext.headers,
       options.middlewareContext.status,
     );
@@ -242,7 +245,7 @@ export async function forwardServerActionIfNeeded(
   if (
     forwardResponse.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1" ||
     forwardResponse.headers.has(ACTION_REDIRECT_HEADER) ||
-    forwardResponse.headers.get("content-type")?.startsWith("text/x-component")
+    forwardResponse.headers.get("content-type")?.startsWith(VINEXT_RSC_CONTENT_TYPE)
   ) {
     return filterActionForwardResponse(
       forwardResponse,

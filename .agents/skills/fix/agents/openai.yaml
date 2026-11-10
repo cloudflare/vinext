@@ -1,0 +1,3 @@
+# Codex: only run when invoked explicitly as `$fix`.
+policy:
+  allow_implicit_invocation: false
