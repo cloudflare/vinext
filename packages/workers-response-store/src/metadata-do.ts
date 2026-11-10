@@ -1202,8 +1202,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       // Like a first write, replacing a stale entry needs no purge: its edge copy went stale
       // with it. One without a revalidator ended there; Workers Cache revalidates one with a
       // revalidator on its next read, and gets this replacement. Nor does replacing a
-      // tombstone once its edge purge completed: the edge holds no copy of the key. Either
-      // still needs one while a purge() or invalidate() edge update for the key is queued.
+      // tombstone once its edge purge completed: the edge holds no copy of the key, short of a
+      // fill racing that purge (see the README). Either still needs one while a purge() or
+      // invalidate() edge update for the key is queued.
       const replacedEdgeCopyGone =
         (current.tombstoned || (current.fresh_until !== null && now >= current.fresh_until)) &&
         this.ctx.storage.sql
