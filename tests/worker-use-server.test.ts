@@ -68,4 +68,30 @@ describe("worker Server Function references", () => {
     expect(result?.code).toContain('"worker-key#keyLength"');
     expect(result?.code).not.toContain("./impl");
   });
+
+  // Next.js compiles workers as part of the browser graph and fails the build
+  // for inline "use server" functions there, as in Client Components.
+  it("rejects inline Server Functions in modules without a use-server directive", async () => {
+    const plugin = await createUseServerPlugin();
+    const transform = hookHandler(plugin.transform) as unknown as (
+      this: object,
+      code: string,
+      id: string,
+    ) => Promise<{ code: string } | null>;
+
+    await expect(
+      transform.call(
+        {
+          environment: { mode: "build" },
+          error: (message: string) => {
+            throw new Error(message);
+          },
+        },
+        'export async function keyLength() {\n  "use server";\n  return 1;\n}\nexport const label = "label";\n',
+        "/app/shared.ts",
+      ),
+    ).rejects.toThrow(
+      'It is not allowed to define inline "use server" annotated Server Actions in Client Components.',
+    );
+  });
 });

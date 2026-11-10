@@ -264,6 +264,34 @@ function getCacheWrapperOptions(
 }
 
 /**
+ * Reject inline "use server" functions in a module compiled for a browser
+ * graph, as Next.js does in Client Components. A module-level "use server" or
+ * "use cache" directive turns the module's exports into server references
+ * instead.
+ */
+export function rejectInlineServerFunctions(
+  transforms: RscTransforms,
+  code: string,
+  ast: Program,
+): void {
+  if (
+    !code.includes("use server") ||
+    transforms.hasDirective(ast.body, "use server") ||
+    findModuleUseCacheDirective(ast)
+  ) {
+    return;
+  }
+  transforms.transformHoistInlineDirective(code, ast, {
+    directive: "use server",
+    runtime: () => {
+      throw new Error(
+        'It is not allowed to define inline "use server" annotated Server Actions in Client Components.\nTo use Server Actions in a Client Component, you can either export them from a separate file with "use server" at the top, or pass them down through props from a Server Component.\n\nRead more: https://nextjs.org/docs/app/api-reference/directives/use-server#using-server-functions-in-a-client-component',
+      );
+    },
+  });
+}
+
+/**
  * Compile a module for a browser graph: module-level cache functions become
  * server references, and inline ones are rejected as in Next.js Client
  * Components. Returns undefined when the module is unchanged.
@@ -277,6 +305,7 @@ function transformBrowserModule(
   options: BrowserTransformOptions,
 ): { output: BrowserTransformOutput["output"]; referenceNames: string[] } | undefined {
   if (!moduleDirective) {
+    rejectInlineServerFunctions(transforms, code, ast);
     transforms.transformHoistInlineDirective(code, ast, {
       directive: USE_CACHE_DIRECTIVE_CANDIDATE,
       rejectNonAsyncFunction: true,
@@ -377,6 +406,10 @@ export async function createUseCacheCallablePlugin(
     if (!manager || !secret) return;
     if (!code.includes("use cache")) {
       manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
+      // Outside rsc, @vitejs/plugin-rsc compiles only module-level "use server".
+      if (this.environment.name !== "rsc" && code.includes("use server")) {
+        rejectInlineServerFunctions(transforms, code, await parseProgramAsync(code));
+      }
       return;
     }
 

@@ -524,6 +524,54 @@ describe("plugin-rsc inline use-cache references", () => {
     },
   );
 
+  // Next.js fails the build with this error for a Client Component or any
+  // module it imports, including modules without a directive of their own.
+  it.each(["ssr", "client"])(
+    "rejects inline use-server functions in the %s graph",
+    async (environmentName) => {
+      const plugins = await getPlugins();
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+      const source = [
+        `export async function action(value) {`,
+        `  "use server";`,
+        `  return value;`,
+        `}`,
+        `export const label = "label";`,
+      ].join("\n");
+
+      await expect(
+        transform.call({ environment: { name: environmentName, mode: "build" } }, source, moduleId),
+      ).rejects.toThrow(
+        'It is not allowed to define inline "use server" annotated Server Actions in Client Components.\nTo use Server Actions in a Client Component, you can either export them from a separate file with "use server" at the top, or pass them down through props from a Server Component.',
+      );
+    },
+  );
+
+  it("leaves use-server functions to plugin-rsc in the rsc graph and in use-server modules", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const transform = unwrapHook(plugin.transform)!;
+    const inlineSource = [`export async function action() {`, `  "use server";`, `}`].join("\n");
+
+    await expect(
+      transform.call({ environment: { name: "rsc", mode: "build" } }, inlineSource, moduleId),
+    ).resolves.toBeUndefined();
+    await expect(
+      transform.call(
+        { environment: { name: "client", mode: "build" } },
+        `"use server";\n${inlineSource}`,
+        moduleId,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
   it("supports destructured file-level exports", async () => {
     const plugins = await getPlugins();
     await configurePluginRsc(plugins);
