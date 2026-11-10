@@ -12,6 +12,36 @@ import { waitForAppRouterHydration } from "../../helpers";
 
 const ROOT = "/nextjs-compat/client-cache";
 
+// Next.js without PPR renders no page segment for an automatic prefetch, so a
+// page that requires a query never runs before navigation:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+for (const mode of ["link", "router"]) {
+  test(`automatic ${mode} prefetch does not render a required-query page`, async ({ page }) => {
+    const target = "/nextjs-compat/prefetch-required-query/record";
+    const prefetch = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === target &&
+        url.searchParams.get("item") === "sample" &&
+        response.request().headers()["next-router-prefetch"] === "1"
+      );
+    });
+    await page.goto(`/nextjs-compat/prefetch-required-query?mode=${mode}`);
+    await waitForAppRouterHydration(page);
+    if (mode === "router") await page.getByRole("button", { name: "Prefetch record" }).click();
+    const response = await prefetch;
+    expect(response.status()).toBe(200);
+    const body = await response.text();
+    expect(body).not.toMatch(/:E\{/);
+    expect(body).not.toContain("required-query-item");
+
+    if (mode === "link") await page.getByRole("link", { name: "Open record" }).click();
+    else await page.getByRole("button", { name: "Open record" }).click();
+    await expect(page.locator("#required-query-item")).toHaveText("sample");
+    await expect(page).toHaveTitle("Record sample");
+  });
+}
+
 type RscRequest = {
   partial: boolean;
   pathname: string;

@@ -400,10 +400,9 @@ export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): bool
 
 /**
  * Convert a search-param shell prefetch to the canonical navigation of its
- * page. The shell renders the page with an empty query (app-page-dispatch.ts),
- * which is what the query-free navigation renders, as Next.js's static
- * prefetch of a page segment never varies on search params. The caller drops
- * the query from the URL.
+ * page. The caller drops the query from the URL, so it converts only a shell
+ * that renders the same with any query: a PPR shell, which renders the page
+ * with an empty query (app-page-dispatch.ts), or a static-candidate page.
  */
 export function canonicalizeDynamicShellRscRequestHeaders(headers: Headers): boolean {
   if (

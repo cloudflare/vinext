@@ -1527,20 +1527,28 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             props.mountedSlotsHeader === null
           ) {
             const headers = new Headers(dispatchRequest.headers);
+            const projection = readCacheabilityRequestProjection(options);
+            const canCanonicalizeQueryPrefetch =
+              options.createPprFallbackShells !== undefined ||
+              (projection !== null &&
+                isStaticCandidateAppPageDispatch(projection, dispatchRequest, {
+                  ...props,
+                  cacheability: { ...props.cacheability, representation: "rsc-full" },
+                }));
             const canonicalized =
               props.renderMode === "navigation"
                 ? canonicalizePrewarmableRscRequestHeaders(headers)
                 : props.renderMode === "prefetch-loading-shell" && props.canUseCanonicalLoadingShell
                   ? canonicalizeLoadingShellRscRequestHeaders(headers)
-                  : props.renderMode === "prefetch-dynamic-shell"
+                  : props.renderMode === "prefetch-dynamic-shell" && canCanonicalizeQueryPrefetch
                     ? canonicalizeDynamicShellRscRequestHeaders(headers)
                     : false;
             if (canonicalized) {
               const navigation = props.renderMode !== "prefetch-loading-shell";
               canonicalRsc = { headers, navigation };
               dispatchRequest = cloneRequestWithHeaders(dispatchRequest, headers);
-              // A search-param shell is the query-free page's navigation, so
-              // it's dispatched as one and shares that page's entry.
+              // A shell of a page proven not to read searchParams is the
+              // query-free page's navigation, so it shares that page's entry.
               if (props.renderMode === "prefetch-dynamic-shell") {
                 const queryFree = withoutAppPageDispatchQuery(dispatchRequest.url, {
                   ...props,

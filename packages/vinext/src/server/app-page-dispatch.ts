@@ -96,6 +96,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -351,6 +352,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     opts: AppPageDispatchInterceptOptions | undefined,
     searchParams: URLSearchParams,
     options?: {
+      renderMode?: AppRscRenderMode;
       isForceStatic?: boolean;
       isUncacheableRender?: boolean;
       routeTreeOnlyPrefetchShell?: boolean;
@@ -682,6 +684,25 @@ function hasNoManifestAdmissionState(routePattern: string): boolean {
 export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
+  if (
+    options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL &&
+    options.pprRuntime === undefined
+  ) {
+    // Without PPR, Next.js renders no page segment for an automatic prefetch
+    // of a page that may read searchParams, so the shell stops at the loading
+    // boundary like a loading-shell prefetch. PPR shells keep their existing
+    // empty-query render.
+    const buildPageElement = options.buildPageElement;
+    options = {
+      ...options,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      buildPageElement: (route, params, opts, searchParams, buildOptions) =>
+        buildPageElement(route, params, opts, searchParams, {
+          ...buildOptions,
+          renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        }),
+    };
+  }
   const dispatch = () =>
     runWithFetchDedupe(async () => dispatchAppPageInner(await withResolvedIntercept(options)));
   let response: Response;

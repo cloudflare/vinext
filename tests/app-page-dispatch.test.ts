@@ -2716,7 +2716,7 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>cached force static</html>");
   });
 
-  it("renders prefetch dynamic shells with empty page searchParams", async () => {
+  it("renders PPR prefetch dynamic shells with empty page searchParams", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
@@ -2731,6 +2731,7 @@ describe("app page dispatch", () => {
     const { options } = createDispatchOptions({
       buildPageElement,
       isRscRequest: true,
+      pprRuntime: appPagePprRuntime,
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
       renderToReadableStream(element) {
         if (typeof element !== "string") {
@@ -2748,6 +2749,38 @@ describe("app page dispatch", () => {
     expect(buildQueries).toEqual([""]);
     const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
     expect(navigationContext?.searchParams.toString()).toBe("");
+  });
+
+  it("renders a prefetch dynamic shell without PPR as a loading shell with the request query", async () => {
+    // Next.js without PPR renders no page segment for an automatic prefetch:
+    // packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+    const builds: { query: string; renderMode: string | undefined }[] = [];
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
+      async (_route, _params, _opts, searchParams, buildOptions) => {
+        builds.push({ query: searchParams.toString(), renderMode: buildOptions?.renderMode });
+        return "shell";
+      },
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      isRscRequest: true,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+      renderToReadableStream(element) {
+        if (typeof element !== "string") {
+          throw new Error("Expected string loading shell test element");
+        }
+        return createStream([element]);
+      },
+      searchParams: new URLSearchParams("item=sample"),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    await expect(response.text()).resolves.toBe("shell");
+    expect(builds).toEqual([
+      { query: "item=sample", renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL },
+    ]);
   });
 
   it.each([

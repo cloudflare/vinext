@@ -1572,7 +1572,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           isRscRequest,
           request,
           mountedSlotsHeader,
-          renderMode,
+          renderMode: buildOptions?.renderMode ?? renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
           isForceStatic: buildOptions?.isForceStatic === true,
