@@ -12,7 +12,7 @@ metadata:
 
 Issue: $ARGUMENTS
 
-Establish the issue's live state below, then follow [`references/rules.md`](references/rules.md) for everything else: safety, the parity check, reproducing, the verdict and the reply. Its "Automated Runs" section doesn't apply here. In those rules, "the fix step" means fixing the bug through the "Fixing Bugs" workflow in `AGENTS.md`, or through your own fix skill if you have one.
+Establish the issue's live state below, then follow [`references/rules.md`](references/rules.md) for everything else: safety, the parity check, reproducing, the verdict and the reply. Its "Automated Runs" section doesn't apply here. In those rules, "the fix step" means the `fix` skill (`/fix <github-issue-url>`, `$fix` in Codex).
 
 Do not open a PR, post a comment, change labels or close the issue without confirmation.
 
