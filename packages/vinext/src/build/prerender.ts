@@ -50,6 +50,7 @@ import {
   VINEXT_CACHE_HEADER,
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_LINK_HEADER,
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
@@ -2019,7 +2020,10 @@ export async function prerenderApp({
           async () => {
             const response = await rscHandler(htmlRequest);
             const cacheControl = response.headers.get("cache-control") ?? "";
-            const linkHeader = response.headers.get("link");
+            // The public Link header includes config and middleware values.
+            // Serving the cached page applies those again, so only the
+            // renderer's own link is stored.
+            const linkHeader = response.headers.get(VINEXT_PRERENDER_LINK_HEADER);
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
             const cacheTags = readPrerenderCacheTagsHeader(response.headers);
             const fatal = response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1";
