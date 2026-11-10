@@ -2559,6 +2559,7 @@ describe("Link prefetch scheduling", () => {
   });
 
   it("prefetches visible links with search params as non-consumable shells", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({
@@ -2603,7 +2604,43 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("prefetches visible links with search params as loading shells without Cache Components", async () => {
+    // Without PPR, Next.js's automatic prefetch never renders a page that may
+    // read searchParams (walkTreeWithFlightRouterState()), so a page that
+    // requires a query never runs with an empty one (issue #4637).
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target?searchParam=a",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const fetchedInput = result.fetch.mock.calls[0]?.[0];
+      expect(typeof fetchedInput).toBe("string");
+      const fetchedUrl = new URL(fetchedInput as string, "https://example.com");
+      expect(fetchedUrl.pathname).toBe("/viewport-prefetch-target");
+      expect(fetchedUrl.searchParams.get("searchParam")).toBe("a");
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      );
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry?.cacheForNavigation).toBe(false);
+      expect(entry?.optimisticRouteShell).toBe(true);
+      expect(entry?.searchAgnosticShell).not.toBe(true);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches a loading shell when a search-agnostic shell already covers another query", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({

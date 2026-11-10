@@ -793,34 +793,24 @@ test("prefetches only the route tree for a static page's loading shell", async (
   expect(prefetchTargetRenderId(body)).toBeUndefined();
 });
 
-// Issue #4496: a search-param shell renders its page with empty search params,
-// so it is served from the page's own navigation entry, whatever the query.
-test("serves a static page's search-param prefetches from its navigation entry", async ({
+// Issue #4637: without PPR, Next.js's automatic prefetch never renders a page
+// that may read searchParams (walkTreeWithFlightRouterState()). A search-param
+// prefetch of a static page with no loading boundary is its route tree,
+// whatever the query.
+test("prefetches only the route tree for a static page's search-param prefetches", async ({
   baseURL,
   page,
-  request,
 }) => {
-  test.skip(!baseURL || !hasResponseCache, "requires a Response Store or Workers Cache backend");
-  let navigationRenderId: string | undefined;
-  await expect
-    .poll(
-      async () => {
-        const response = await request.get(`${baseURL}/prefetch-shells/search-params?_rsc`, {
-          headers: RSC_HEADERS,
-        });
-        navigationRenderId = prefetchTargetRenderId(await response.text());
-        return response.headers()[cacheStatusHeader];
-      },
-      { intervals: [1_000], timeout: 15_000 },
-    )
-    .toBe("HIT");
-
+  test.skip(!baseURL || !backend, "requires a configured response-store-demo backend");
   const prefetches = [1, 2].map((tab) =>
-    waitForPrefetch(page, "prefetch-dynamic-shell", `/prefetch-shells/search-params?tab=${tab}`),
+    waitForPrefetch(page, "prefetch-loading-shell", `/prefetch-shells/search-params?tab=${tab}`),
   );
   await page.goto(`${baseURL}/prefetch-shells`);
   for (const response of await Promise.all(prefetches)) {
-    expect(response.headers()[cacheStatusHeader], response.url()).toBe("HIT");
-    expect(prefetchTargetRenderId(await response.text())).toBe(navigationRenderId);
+    expect(response.status(), response.url()).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("route:/prefetch-shells/search-params");
+    expect(body).not.toContain("Demo deployments");
+    expect(prefetchTargetRenderId(body)).toBeUndefined();
   }
 });

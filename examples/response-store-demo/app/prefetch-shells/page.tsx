@@ -33,8 +33,9 @@ export default function PrefetchShellsPage() {
             <span className="badge">Search params</span> Automatic prefetch
           </h3>
           <p>
-            A link with a query prefetches the page&apos;s search-param shell. It is served from
-            the page&apos;s cached navigation entry, so every query shows the same render ID.
+            A link with a query prefetches the page&apos;s loading shell, which never renders a
+            page that may read the query. With no loading boundary, it is just the route tree,
+            whatever the query.
           </p>
           <Link data-testid="search-params-link-1" href="/prefetch-shells/search-params?tab=1">
             Open ?tab=1 &rarr;
