@@ -41,8 +41,10 @@ type ScriptDocument = {
  * server/before-interactive-head.ts) one at a time, in order, like Next.js's
  * `loadScriptsInSequence`: each `src` script once the previous one has loaded
  * or failed, each inline one a task after the previous one. Settles after the
- * last, so hydration starts after them. Returns null when nothing is queued,
- * so hydration does not wait at all.
+ * last, so hydration starts after them. If inserting one throws (for example,
+ * a Trusted Types policy rejects its body), it logs the error and settles
+ * without the rest, so hydration still starts, as in Next.js. Returns null
+ * when nothing is queued, so hydration does not wait at all.
  */
 export function runBeforeInteractiveQueue(
   global: BeforeInteractiveQueueGlobal,
@@ -74,7 +76,9 @@ export function runBeforeInteractiveQueue(
         }),
     );
   }
-  return previous;
+  return previous.catch((error: unknown) => {
+    console.error(error);
+  });
 }
 
 export function createVinextHydrateRootOptions(options: {

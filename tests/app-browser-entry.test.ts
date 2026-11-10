@@ -10554,6 +10554,47 @@ describe("app browser form-state hydration", () => {
     expect(settled).toBe(true);
   });
 
+  it("settles the beforeInteractive queue when inserting a script throws", async () => {
+    const failure = new TypeError("This document requires 'TrustedScript' assignment.");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const inserted: string[] = [];
+    const doc = {
+      createElement() {
+        return {
+          hasAttribute: () => false,
+          setAttribute() {},
+          set text(_value: string) {
+            throw failure;
+          },
+        };
+      },
+      head: {
+        appendChild(script: unknown) {
+          inserted.push(String(script));
+          return script;
+        },
+      },
+    };
+    try {
+      await expect(
+        runBeforeInteractiveQueue(
+          {
+            [BEFORE_INTERACTIVE_QUEUE_GLOBAL]: [
+              [[], "first"],
+              [[], "second"],
+            ],
+          },
+          doc as never,
+        ),
+      ).resolves.toBeUndefined();
+      // Like Next.js, the rest of the queue is skipped and hydration goes on.
+      expect(inserted).toEqual([]);
+      expect(consoleError).toHaveBeenCalledWith(failure);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("preserves null form state as an explicit hydrateRoot option", () => {
     const onUncaughtError = vi.fn();
 
