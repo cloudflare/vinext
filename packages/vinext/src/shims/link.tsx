@@ -523,16 +523,22 @@ function prefetchUrl(
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
           mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
-        // A prefetch never renders the page of a route that renders
-        // dynamically, so its search-param href fetches the loading shell.
-        const hasSearchAgnosticShell =
+        // Only the Cache Components dynamic shell renders the page, with empty
+        // search params. Without Cache Components, Next.js's automatic
+        // prefetch never renders a page that may read searchParams
+        // (walkTreeWithFlightRouterState()), and no prefetch renders the page
+        // of a route that renders dynamically. Those hrefs, and one whose
+        // route a search-agnostic shell already covers, fetch the loading
+        // shell.
+        const fetchesDynamicShell =
           isAutomaticSearchParamShell &&
-          (autoPrefetch.rendersDynamically === true ||
-            hasSearchAgnosticPrefetchShellForRoute(
-              await createRscRequestUrl(fullHref, new Headers()),
-              interceptionContext,
-              mountedSlotsHeader,
-            ));
+          String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
+          autoPrefetch.rendersDynamically !== true &&
+          !hasSearchAgnosticPrefetchShellForRoute(
+            await createRscRequestUrl(fullHref, new Headers()),
+            interceptionContext,
+            mountedSlotsHeader,
+          );
         const headers = createAppPrefetchRequestHeaders({
           interceptionContext,
           fetchPriority: priority,
@@ -540,11 +546,9 @@ function prefetchUrl(
           // its first, loading-shell request is not.
           prefetchKind: mode === "full" || mode === "full-after-shell" ? "full" : "auto",
           renderMode: isOptimisticRouteShellPrefetch
-            ? hasSearchAgnosticShell
-              ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-              : isAutomaticSearchParamShell
-                ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
-                : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+            ? fetchesDynamicShell
+              ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
+              : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
             : undefined,
         });
         if (mountedSlotsHeader) {
@@ -797,7 +801,7 @@ function prefetchUrl(
             prepareSnapshot: autoPrefetch.cacheForNavigation
               ? prepareNavigationPrefetchSnapshot
               : undefined,
-            searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
+            searchAgnosticShell: fetchesDynamicShell,
           },
         );
       } else if (HAS_PAGES_ROUTER && window.__NEXT_DATA__) {
