@@ -24,7 +24,7 @@ Require one GitHub issue URL, passed as the `/fix` argument. If it is missing, a
 
 - **Fix against current main.** Run `git fetch origin main` and branch from it. The local `main` ref is often stale: squash or diff against `git merge-base HEAD origin/main`, never local `main`.
 - **Protect the GitHub API budget.** Every session and automation on the account shares the quota. Prefer plain `gh` reads, keep `first:` small, and stop when fewer than ~1,500 calls remain.
-- **Don't let a Bonk trigger get dropped.** A running Big Bonk review is never cancelled, but a trigger posted while one runs waits as pending, and any later PR comment or review-thread reply (Bonk's own included) replaces it. Batch replies into the trigger comment, and post nothing else on the PR until that trigger's run has started.
+- **Don't let a Bonk trigger get dropped.** A PR comment never cancels a running Big Bonk review, but a trigger posted while one runs waits as pending, and any later PR comment or review-thread reply (Bonk's own included) replaces it. Batch replies into the trigger comment, and post nothing else on the PR until that trigger's run has started.
 - **Finish the feature.** If a finding is in the PR's scope and the fix is clear, fix it without asking. Stop and ask only when the PR's direction is wrong, the fix would balloon past its scope, it needs a new dependency, or parity and the request conflict.
 
 ## 1. Establish Live State
@@ -68,7 +68,7 @@ After the fix and focused validation pass, spawn one independent review sub-agen
 
    Take `<sha>` from `git rev-parse HEAD` right after pushing, not from `gh pr view`, which lags. Never tell Bonk what changed, what to focus on or which findings to confirm. For transform or analysis PRs prone to edge-case churn, you may add that it should only flag issues affecting real-world usage. Never use `/bonk`, only `/bigbonk`.
 
-2. Before triggering, check `gh run list --workflow bigbonk.yml` for a run in progress. If one is, wait for its review first.
+2. Before triggering, check `gh run list --workflow bigbonk.yml` for a run in progress for this PR (its title is the PR's title; runs for other PRs don't matter). If one is, wait for its review first.
 3. Watch CI in parallel. If CI goes red, fix it before the next round.
 4. Watch for the first new ask-bonk comment or new PR review posted after the trigger, and address it the moment it lands. Don't re-trigger a silent run before 10 minutes. If a run's log goes quiet for several minutes, cancel it and re-trigger. A posted verdict wins over a later "cancelled" notice.
 5. Handle every finding as "Review Findings" below. Reply to each declined finding in the next trigger comment, then re-trigger on the new head right away. A decline doesn't end the loop.
@@ -92,7 +92,7 @@ Mark the draft ready with `gh pr ready <n>` once all of these hold:
 - the CI workflow's checks on the latest head are green (fix Deploy Examples failures too; don't hold the PR in draft for one pending slow check once everything else is green and Bonk approved);
 - the latest Big Bonk review on the latest head has no actionable findings.
 
-clanky reviews a PR only once it is ready. Read its full review and inline comments (`gh api repos/cloudflare/vinext/pulls/<n>/reviews` and `/comments`), including INFO findings and "approved with comments", and handle them as "Review Findings". Once they are handled, comment `clanky review` to request a fresh review, and treat that as another round.
+clanky reviews a PR only once it is ready. Read its full review and inline comments (`gh api --paginate repos/{owner}/{repo}/pulls/<n>/reviews` and `gh api --paginate repos/{owner}/{repo}/pulls/<n>/comments`), including INFO findings and "approved with comments", and handle them as "Review Findings". Once they are handled, comment `clanky review` to request a fresh review, and treat that as another round.
 
 ## 8. Report
 
