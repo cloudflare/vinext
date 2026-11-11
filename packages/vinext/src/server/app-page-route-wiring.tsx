@@ -395,11 +395,7 @@ type BuildAppPageElementsOptions<
   isRscRequest?: boolean;
   /**
    * The render can never be stored and, in production, is never sent with
-   * static cache headers (see app-page-dispatch.ts), so a loading-shell
-   * prefetch without a loading boundary may skip its layouts. A render that
-   * may be stored keeps them, so a layout's dynamic API read still keeps it
-   * out of the cache. An explicit CDN cache policy on a dynamic route can
-   * still store the route tree, as a CDN would store Next.js's.
+   * static cache headers (see app-page-dispatch.ts).
    */
   isUncacheableRender?: boolean;
   /**
@@ -411,6 +407,12 @@ type BuildAppPageElementsOptions<
   mountedLayouts?: ReadonlySet<string> | null;
   mountedSlotIds?: ReadonlySet<string> | null;
   renderIdentity?: AppPageRenderIdentity;
+  /**
+   * The render has no PPR (see app-page-dispatch.ts), so a loading-shell
+   * prefetch without a loading boundary sends only the route tree. Without it,
+   * the layouts render, as Next.js renders them with isRoutePPREnabled.
+   */
+  routeTreeOnlyPrefetchShell?: boolean;
   renderMode?: AppRscRenderMode;
   routePath: string;
   semanticPageIdentity?: Readonly<{
@@ -1347,12 +1349,13 @@ export function buildAppPageElements<
   // and a [null, null] head (walkTreeWithFlightRouterState() in
   // server/app-render/walk-tree-with-flight-router-state.tsx). The client only
   // learns the route from it, so no layout, template, slot or head renders.
-  // Only for a render that can never be stored: a stored shell keeps rendering
-  // its layouts, so what is cached stays the same.
+  // A static route's shell does the same, as it's learning-only too, where
+  // Next.js serves the route's prerendered payload. With PPR, Next.js renders
+  // the layouts.
   if (
     isPrefetchLoadingShell &&
     !shouldRenderPrefetchLoadingShell &&
-    options.isUncacheableRender === true
+    options.routeTreeOnlyPrefetchShell === true
   ) {
     return {
       ...metadataEntries,
@@ -2476,9 +2479,14 @@ export function buildAppPageElements<
 
   const globalErrorComponent = getErrorBoundaryExport(options.globalErrorModule);
   routeChildren = (
-    <GlobalErrorBoundary fallback={DEFAULT_GLOBAL_ERROR_COMPONENT}>
+    <GlobalErrorBoundary
+      fallback={DEFAULT_GLOBAL_ERROR_COMPONENT}
+      wrapsGlobalErrorBoundary={globalErrorComponent !== null}
+    >
       {globalErrorComponent ? (
-        <ErrorBoundary fallback={globalErrorComponent}>{routeChildren}</ErrorBoundary>
+        <ErrorBoundary fallback={globalErrorComponent} isGlobalErrorBoundary>
+          {routeChildren}
+        </ErrorBoundary>
       ) : (
         routeChildren
       )}

@@ -275,12 +275,13 @@ describe("next/navigation shim", () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigationRuntime = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { AppRouterContext } =
       await import("../packages/vinext/src/shims/internal/app-router-context.js");
     const customRefresh = vi.fn();
     const customMethod = vi.fn(() => "custom");
     const mountedRouter = {
-      ...navigation.appRouterInstance,
+      ...navigationRuntime.appRouterInstance,
       refresh: customRefresh,
       customMethod,
     };
@@ -317,7 +318,7 @@ describe("next/navigation shim", () => {
 
   it("appRouterInstance singleton exposes the expected navigation methods", async () => {
     const { appRouterInstance: router } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(typeof router.push).toBe("function");
     expect(typeof router.replace).toBe("function");
     expect(typeof router.back).toBe("function");
@@ -327,7 +328,8 @@ describe("next/navigation shim", () => {
   });
 
   it("appRouterInstance exposes the stable bfcacheId placeholder", async () => {
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     expect(typeof appRouterInstance.bfcacheId).toBe("string");
     expect(appRouterInstance.bfcacheId).toBe("0");
   });
@@ -336,6 +338,7 @@ describe("next/navigation shim", () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigationRuntime = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { AppRouterContext } =
       await import("../packages/vinext/src/shims/internal/app-router-context.js");
     const BfcacheIdMapContext = navigation.getBfcacheIdMapContext();
@@ -352,7 +355,7 @@ describe("next/navigation shim", () => {
       renderToStaticMarkup(
         React.createElement(
           AppRouterContext.Provider,
-          { value: navigation.appRouterInstance },
+          { value: navigationRuntime.appRouterInstance },
           React.createElement(
             BfcacheIdMapContext.Provider,
             { value: { "page:/x/1": "_b_7_" } },
@@ -371,6 +374,7 @@ describe("next/navigation shim", () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigationRuntime = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { AppRouterContext } =
       await import("../packages/vinext/src/shims/internal/app-router-context.js");
     const BfcacheIdMapContext = navigation.getBfcacheIdMapContext();
@@ -387,7 +391,7 @@ describe("next/navigation shim", () => {
       renderToStaticMarkup(
         React.createElement(
           AppRouterContext.Provider,
-          { value: navigation.appRouterInstance },
+          { value: navigationRuntime.appRouterInstance },
           React.createElement(
             BfcacheIdMapContext.Provider,
             { value: { "": "_b_9_" } },
@@ -406,6 +410,7 @@ describe("next/navigation shim", () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigationRuntime = await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { AppRouterContext } =
       await import("../packages/vinext/src/shims/internal/app-router-context.js");
     const BfcacheIdMapContext = navigation.getBfcacheIdMapContext();
@@ -422,7 +427,7 @@ describe("next/navigation shim", () => {
       renderToStaticMarkup(
         React.createElement(
           AppRouterContext.Provider,
-          { value: navigation.appRouterInstance },
+          { value: navigationRuntime.appRouterInstance },
           React.createElement(
             BfcacheIdMapContext.Provider,
             { value: { "page:/x/1": "0" } },
@@ -479,7 +484,8 @@ describe("next/navigation shim", () => {
 
     try {
       vi.resetModules();
-      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      const { appRouterInstance } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       appRouterInstance.refresh();
       // refresh() schedules the rscNavigate inside React.startTransition, so
       // the navigate call lands after the synchronous clear but is dispatched
@@ -549,7 +555,7 @@ describe("next/navigation shim", () => {
 
     try {
       vi.resetModules();
-      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      const nav = await import("../packages/vinext/src/shims/app-router-navigation.js");
       trackInFlight = nav.trackAppRouterNavigationInFlight;
       nav.appRouterInstance.refresh();
       await vi.waitFor(() => expect(calls).toContain("navigate:refresh"));
@@ -587,13 +593,13 @@ describe("next/navigation shim", () => {
       vi.stubEnv("__NEXT_GESTURE_TRANSITION", "");
       vi.resetModules();
       const { appRouterInstance: withoutDefine } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       expect(typeof withoutDefine.experimental_gesturePush).toBe("undefined");
 
       vi.stubEnv("__NEXT_GESTURE_TRANSITION", "true");
       vi.resetModules();
       const { appRouterInstance: withDefine } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       expect(typeof withDefine.experimental_gesturePush).toBe("function");
     } finally {
       vi.unstubAllEnvs();
@@ -627,7 +633,8 @@ describe("next/navigation shim", () => {
     try {
       vi.stubEnv("__NEXT_GESTURE_TRANSITION", "true");
       vi.resetModules();
-      const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+      const { appRouterInstance } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
       if (!appRouterInstance.experimental_gesturePush) {
         throw new Error("Expected experimental_gesturePush to be attached");
       }
@@ -708,7 +715,8 @@ describe("next/navigation shim", () => {
 
     try {
       vi.resetModules();
-      const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
+      const { navigateClientSide } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       await navigateClientSide("#content", "push", true, true);
 
@@ -792,7 +800,8 @@ describe("next/navigation shim", () => {
           navigateExternal,
         },
       };
-      const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
+      const { navigateClientSide } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       await navigateClientSide("/redirect/result", "replace", true, true);
 
@@ -853,6 +862,8 @@ describe("next/navigation shim", () => {
       const React = await import("react");
       const { renderToStaticMarkup } = await import("react-dom/server");
       const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      // The App Router runtime installs the history.pushState patch.
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
       const Context = navigation.getClientNavigationRenderContext();
       if (!Context) {
         throw new Error("Expected client navigation render context");
@@ -891,6 +902,57 @@ describe("next/navigation shim", () => {
         pathname: "/pending",
         search: "from=snapshot",
       });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("keeps a history wrapper added after the hooks' state when the runtime loads later", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null,
+        pushState(_data: unknown, _unused: string, url?: string | URL | null) {
+          calls.push(`native:${String(url)}`);
+        },
+        replaceState(_data: unknown, _unused: string, url?: string | URL | null) {
+          calls.push(`native-replace:${String(url)}`);
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      // A Pages Router page's hooks create the shared state while hydrating.
+      expect(navigation.getClientNavigationState()).not.toBeNull();
+      // An analytics script then wraps pushState.
+      const nativePushState = win.history.pushState.bind(win.history);
+      win.history.pushState = (data, unused, url) => {
+        calls.push(`analytics:${String(url)}`);
+        nativePushState(data, unused, url);
+      };
+      // A later page renders next/form, which loads the App Router runtime.
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
+
+      win.history.pushState(null, "", "/b");
+
+      expect(calls).toEqual(["analytics:/b", "native:/b"]);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -963,7 +1025,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl,
       });
       const { pushHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       win.history.pushState({ myData: { foo: "bar" } }, "", "/photo/1?filter=active");
       expect(win.history.state).toEqual({
@@ -1107,7 +1169,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl,
       });
       const { pushHistoryStateWithoutNotify, replaceHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       // Shaped like delayed-scroll-restoration-polyfill: its pushState wrapper
       // first stamps the current entry through the replaceState it saved. The
@@ -1245,7 +1307,7 @@ describe("next/navigation shim", () => {
           flushCommittingNavigationUrl: vi.fn(),
         });
         const { pushHistoryStateWithoutNotify } =
-          await import("../packages/vinext/src/shims/navigation.js");
+          await import("../packages/vinext/src/shims/app-router-navigation.js");
 
         const savedPushState = win.history.pushState.bind(win.history);
         win.history.pushState = function (data, unused, url) {
@@ -1313,7 +1375,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl: vi.fn(),
       });
       const { pushHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const savedPushState = win.history.pushState.bind(win.history);
       win.history.pushState = function (data, unused, url) {
@@ -1386,7 +1448,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl: vi.fn(),
       });
       const { pushHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const savedPushState = win.history.pushState.bind(win.history);
       win.history.pushState = function (data, unused, url) {
@@ -1466,7 +1528,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl: vi.fn(),
       });
       const { pushHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const savedPushState = win.history.pushState.bind(win.history);
       // An inner wrapper retries, then rethrows; an outer wrapper retries too.
@@ -1547,7 +1609,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl: vi.fn(),
       });
       const { pushHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const savedPushState = win.history.pushState.bind(win.history);
       win.history.pushState = function (data, unused, url) {
@@ -1611,7 +1673,7 @@ describe("next/navigation shim", () => {
         flushCommittingNavigationUrl: vi.fn(),
       });
       const { replaceHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       const savedReplaceState = win.history.replaceState.bind(win.history);
       win.history.replaceState = function (data, unused, url) {
@@ -3856,7 +3918,8 @@ describe("window.next debug global", () => {
 
   it("appRouterInstance exported from the navigation shim has the public router surface", async () => {
     vi.resetModules();
-    const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
+    const { appRouterInstance } =
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     // Ported from Next.js: publicAppRouterInstance shape in
     // packages/next/src/client/components/app-router-instance.ts (line 392).
@@ -6629,7 +6692,7 @@ describe("next/cache shim", () => {
     try {
       await unstable_cache(async (value: string) => value, ["x".repeat(1000)])("y".repeat(1000));
       expect(keys).toHaveLength(1);
-      expect(keys[0]).toMatch(/^unstable_cache:v3:[0-9a-f]{64}$/);
+      expect(keys[0]).toMatch(/^unstable_cache:v4:[0-9a-f]{64}$/);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -7626,7 +7689,7 @@ describe("next/cache shim", () => {
             data: {
               headers: {},
               body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v3:stale-swr-test:[]",
+              url: "unstable_cache:v4:stale-swr-test:[]",
             },
             tags: ["stale-swr"],
             revalidate: 1,
@@ -7773,7 +7836,7 @@ describe("next/cache shim", () => {
             data: {
               headers: {},
               body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v3:foreground-test:[]",
+              url: "unstable_cache:v4:foreground-test:[]",
             },
             tags: ["foreground"],
             revalidate: 1,
@@ -8191,6 +8254,42 @@ describe('"use cache" runtime', () => {
     await expect(invoke("gb")).resolves.toEqual({ countryCode: "gb", outerCalls: 2 });
     await expect(invoke("us")).resolves.toEqual({ countryCode: "us", outerCalls: 1 });
     expect(outerCalls).toBe(2);
+  });
+
+  // The inner result reads a root param only in a Promise that is still pending
+  // when the function returns, and the outer drops that Promise. The outer entry
+  // must still vary by the param, so the nested call has to finish serializing
+  // before it resolves to the outer.
+  it("partitions an outer cache by a root param read in a dropped nested Promise", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let outerCalls = 0;
+    const inner = registerCachedFunction(
+      async () => ({
+        early: "early",
+        tail: (async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return getRootParam("lang");
+        })(),
+      }),
+      "test:nested-root-param-pending-tail-inner",
+    );
+    const outer = registerCachedFunction(async () => {
+      outerCalls++;
+      return `${(await inner()).early}:${outerCalls}`;
+    }, "test:nested-root-param-pending-tail-outer");
+    const invoke = (lang: string) => runWithRootParamsScope({ lang }, () => outer());
+
+    await expect(invoke("en")).resolves.toBe("early:1");
+    await expect(invoke("fr")).resolves.toBe("early:2");
+    await expect(invoke("en")).resolves.toBe("early:1");
+    await expect(invoke("fr")).resolves.toBe("early:2");
   });
 
   // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
@@ -16722,7 +16821,7 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/proxy", {
       method: "DELETE",
       headers: {
-        connection: "keep-alive, x-custom-hop",
+        connection: "keep-alive, x-custom-hop, not a header",
         "keep-alive": "timeout=5",
         te: "trailers",
         trailers: "x-trailer",
@@ -16750,7 +16849,9 @@ describe("proxyExternalRequest", () => {
       expect(capturedHeaders!.get("trailers")).toBeNull();
       expect(capturedHeaders!.get("transfer-encoding")).toBeNull();
       expect(capturedHeaders!.get("upgrade")).toBeNull();
-      expect(capturedHeaders!.get("x-custom-hop")).toBeNull();
+      // Like Next.js, fields nominated in Connection are forwarded, and an
+      // invalid token does not fail the request.
+      expect(capturedHeaders!.get("x-custom-hop")).toBe("secret");
       // Request credentials that are not connection-scoped should still forward.
       expect(capturedHeaders!.get("proxy-authorization")).toBe("Basic cHJveHk=");
       expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
@@ -19158,7 +19259,7 @@ describe("app router route-transition scroll honours data-scroll-behavior", () =
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { documentElement, writes } = createDocumentElement("smooth");
 
     clearAppRouterScrollIntent();
@@ -19177,7 +19278,7 @@ describe("app router route-transition scroll honours data-scroll-behavior", () =
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { documentElement, writes } = createDocumentElement(undefined);
 
     clearAppRouterScrollIntent();
@@ -19256,7 +19357,7 @@ describe("app router route-transition scroll honours data-scroll-behavior", () =
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const { documentElement } = createDocumentElement("smooth");
     const scrollBehaviorDuringScroll: string[] = [];
     const scrollIntoView = vi.fn(() => {
@@ -19363,7 +19464,7 @@ describe("app router scroll document-top fallback", () => {
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
     const scrollIntoView = vi.fn();
     let frame: (() => void) | null = null;
     const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -19442,7 +19543,7 @@ describe("app router scroll document-top fallback", () => {
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     // Regression: an ordinary navigation whose intent was never marked as
     // head-hoisted must still scroll to the document top. The presence of a
@@ -19460,7 +19561,7 @@ describe("app router scroll document-top fallback", () => {
 
   it("does not scroll to the document top when this navigation's target was hoisted into <head>", async () => {
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     const intent = {
       commitId: 1,
@@ -19486,7 +19587,7 @@ describe("app router scroll document-top fallback", () => {
       markAppRouterScrollIntentHeadHoisted,
     } = await import("../packages/vinext/src/shims/app-router-scroll-state.js");
     const { applyAppRouterScrollFallback } =
-      await import("../packages/vinext/src/shims/navigation.js");
+      await import("../packages/vinext/src/shims/app-router-navigation.js");
 
     // Start with a clean slate — no leftover intent from a prior test.
     clearAppRouterScrollIntent();
@@ -25553,7 +25654,7 @@ describe("notify-suppressed history writes", () => {
     try {
       vi.resetModules();
       const { pushHistoryStateWithoutNotify, replaceHistoryStateWithoutNotify } =
-        await import("../packages/vinext/src/shims/navigation.js");
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
 
       expect(() => replaceHistoryStateWithoutNotify({ __vinext_historyIndex: 0 }, "", "/")).toThrow(
         securityError,
@@ -30505,7 +30606,8 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("original-image-data");
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    // Next.js's image policy at the default `images.minimumCacheTTL`.
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
     expect(response.headers.get("Vary")).toBe("Accept");
   });
 
@@ -30629,7 +30731,7 @@ describe("handleImageOptimization", () => {
         fetchCount += 1;
         return new Response(fetchCount === 1 ? "original" : "refetched", {
           status: 200,
-          headers: { "Content-Type": "image/png" },
+          headers: { "Content-Type": "image/jpeg" },
         });
       },
       transformImage: async (body: ReadableStream) => {
@@ -30654,7 +30756,7 @@ describe("handleImageOptimization", () => {
         return new Response(fetchCount === 1 ? "original" : "refetched", {
           status: 200,
           headers: {
-            "Content-Type": fetchCount === 1 ? "image/png" : "image/jpeg",
+            "Content-Type": fetchCount === 1 ? "image/jpeg" : "image/avif",
             ETag: fetchCount === 1 ? '"source-etag"' : '"refetched-etag"',
           },
         });
@@ -30667,9 +30769,9 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
     expect(fetchCount).toBe(2);
-    expect(response.headers.get("Content-Type")).toBe("image/jpeg");
+    expect(response.headers.get("Content-Type")).toBe("image/avif");
     expect(response.headers.get("ETag")).toBe('"refetched-etag"');
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
     expect(response.headers.get("Vary")).toBe("Accept");
   });
 
@@ -30684,7 +30786,7 @@ describe("handleImageOptimization", () => {
         if (fetchCount === 1) {
           return new Response("original", {
             status: 200,
-            headers: { "Content-Type": "image/png" },
+            headers: { "Content-Type": "image/jpeg" },
           });
         }
         return new Response("", { status: 404 });
@@ -30711,7 +30813,7 @@ describe("handleImageOptimization", () => {
         return new Response(fetchCount === 1 ? "original" : "<html>bad</html>", {
           status: 200,
           headers: {
-            "Content-Type": fetchCount === 1 ? "image/png" : "text/html",
+            "Content-Type": fetchCount === 1 ? "image/jpeg" : "text/html",
           },
         });
       },
@@ -30723,7 +30825,7 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(fetchCount).toBe(2);
     expect(response.status).toBe(400);
-    expect(await response.text()).toBe("The requested resource is not an allowed image type");
+    expect(await response.text()).toBe('"url" parameter is valid but image type is not allowed');
   });
 
   it("returns 400 for backslash open redirect (/\\evil.com)", async () => {
@@ -30768,7 +30870,7 @@ describe("handleImageOptimization", () => {
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(400);
-    expect(await response.text()).toBe("The requested resource is not an allowed image type");
+    expect(await response.text()).toBe('"url" parameter is valid but image type is not allowed');
   });
 
   it("blocks text/html content type", async () => {

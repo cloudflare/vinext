@@ -16,7 +16,11 @@ import {
   toLinkPrefetchRoute,
   toLinkPrefetchRoutes,
 } from "../packages/vinext/src/entries/app-browser-entry.js";
-import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
+import {
+  buildAppRscManifestCode,
+  rootBoundaryFiles,
+  rootBoundaryRouteFiles,
+} from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import {
   isAppInterceptRenderedDynamically,
   isAppPageRouteRenderedDynamically,
@@ -1492,6 +1496,147 @@ describe("App Router generated manifest construction", () => {
     expect(routeEntry).toContain("errorTreePositions: [0,1]");
   });
 
+  it("keeps a grouped root page's layout and not-found out of the root boundaries", () => {
+    const routes = [
+      {
+        pattern: "/",
+        patternParts: [],
+        pagePath: "/tmp/test/app/(marketing)/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx", "/tmp/test/app/(marketing)/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null, null],
+        notFoundPath: "/tmp/test/app/(marketing)/not-found.tsx",
+        notFoundPaths: ["/tmp/test/app/not-found.tsx", "/tmp/test/app/(marketing)/not-found.tsx"],
+        forbiddenPath: null,
+        forbiddenPaths: [null, null],
+        unauthorizedPath: null,
+        unauthorizedPaths: [null, null],
+        routeSegments: ["(marketing)"],
+        templateTreePositions: [],
+        layoutTreePositions: [0, 1],
+        isDynamic: false,
+        params: [],
+        siblingIntercepts: [],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({ routes, metadataRoutes: [], globalErrorPath: null });
+    const imports = manifest.imports.join("\n");
+
+    expect(rootBoundaryRouteFiles(routes, "/tmp/test/app/not-found.tsx")).toEqual([
+      "/tmp/test/app/layout.tsx",
+      "/tmp/test/app/not-found.tsx",
+    ]);
+    expect(manifest.rootLayoutVars).toHaveLength(1);
+    expect(imports).toContain(
+      `import * as ${manifest.rootLayoutVars[0]} from "/tmp/test/app/layout.tsx";`,
+    );
+    expect(imports).toContain(
+      `import * as ${manifest.rootNotFoundVar} from "/tmp/test/app/not-found.tsx";`,
+    );
+  });
+
+  it("renders app/not-found in an app without app/layout", () => {
+    const routes = [
+      {
+        pattern: "/:locale",
+        patternParts: [":locale"],
+        pagePath: "/tmp/test/app/[locale]/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/[locale]/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null],
+        notFoundPath: "/tmp/test/app/[locale]/not-found.tsx",
+        notFoundPaths: ["/tmp/test/app/[locale]/not-found.tsx"],
+        segmentNotFoundPaths: [
+          "/tmp/test/app/not-found.tsx",
+          "/tmp/test/app/[locale]/not-found.tsx",
+        ],
+        segmentNotFoundTreePositions: [0, 1],
+        forbiddenPath: null,
+        forbiddenPaths: [null],
+        unauthorizedPath: null,
+        unauthorizedPaths: [null],
+        routeSegments: ["[locale]"],
+        templateTreePositions: [],
+        layoutTreePositions: [1],
+        isDynamic: true,
+        params: ["locale"],
+        siblingIntercepts: [],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+      appNotFoundPath: "/tmp/test/app/not-found.tsx",
+    });
+
+    expect(manifest.hasAppRootLayout).toBe(false);
+    expect(manifest.imports.join("\n")).toContain(
+      `import * as ${manifest.appNotFoundVar} from "/tmp/test/app/not-found.tsx";`,
+    );
+    // A render without a matched route ships only the not-found's client
+    // references, not those of a route group's root layout it never renders.
+    expect(rootBoundaryRouteFiles(routes, "/tmp/test/app/not-found.tsx")).toEqual([
+      "/tmp/test/app/not-found.tsx",
+    ]);
+    // Nor does any render load a route group's boundaries outside its routes.
+    expect(rootBoundaryFiles(routes)).toEqual([]);
+  });
+
+  it("renders app/not-found in an app with only route handlers, also below a nearer not-found", () => {
+    const routes = [
+      {
+        pattern: "/api",
+        patternParts: ["api"],
+        pagePath: null,
+        routePath: "/tmp/test/app/api/route.ts",
+        layouts: [],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [],
+        notFoundPath: "/tmp/test/app/api/not-found.tsx",
+        notFoundTreePosition: 1,
+        notFoundPaths: [],
+        segmentNotFoundPaths: [],
+        segmentNotFoundTreePositions: [],
+        forbiddenPath: null,
+        forbiddenPaths: [],
+        unauthorizedPath: null,
+        unauthorizedPaths: [],
+        routeSegments: ["api"],
+        templateTreePositions: [],
+        layoutTreePositions: [],
+        isDynamic: false,
+        params: [],
+        siblingIntercepts: [],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+      appNotFoundPath: "/tmp/test/app/not-found.tsx",
+    });
+
+    expect(manifest.hasAppRootLayout).toBe(false);
+    expect(manifest.imports.join("\n")).toContain(
+      `import * as ${manifest.appNotFoundVar} from "/tmp/test/app/not-found.tsx";`,
+    );
+  });
+
   it("derives route-miss root boundaries when the app has no root page", () => {
     const routes = [
       {
@@ -2956,45 +3101,53 @@ describe("Pages Router entry template", () => {
     }
   });
 
-  it("reports trusted _next/data classification from URL normalization", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-entry-"));
-    const pagesDir = path.join(tmpDir, "pages");
-    const middlewarePath = path.join(tmpDir, "middleware.ts");
+  it.each([
+    ["server", generateServerEntry],
+    ["request-stage", generatePagesRequestEntry],
+  ] as const)(
+    "reports trusted _next/data classification from URL normalization in the %s entry",
+    async (_, generate) => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-entry-"));
+      const pagesDir = path.join(tmpDir, "pages");
+      const middlewarePath = path.join(tmpDir, "middleware.ts");
 
-    try {
-      fs.mkdirSync(pagesDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(pagesDir, "index.tsx"),
-        "export default function Page() { return null; }",
-      );
-      fs.writeFileSync(
-        middlewarePath,
-        'export function middleware() { return new Response(null, { headers: { "x-middleware-next": "1" } }); }',
-      );
+      try {
+        fs.mkdirSync(pagesDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(pagesDir, "index.tsx"),
+          "export default function Page() { return null; }",
+        );
+        fs.writeFileSync(
+          middlewarePath,
+          'export function middleware() { return new Response(null, { headers: { "x-middleware-next": "1" } }); }',
+        );
 
-      const code = await generateServerEntry(
-        pagesDir,
-        await resolveNextConfig({
-          basePath: "/root",
-          generateBuildId: () => "test-build-id",
-          skipProxyUrlNormalize: true,
-        }),
-        createValidFileMatcher(),
-        middlewarePath,
-        null,
-      );
+        const code = await generate(
+          pagesDir,
+          await resolveNextConfig({
+            basePath: "/root",
+            generateBuildId: () => "test-build-id",
+            skipProxyUrlNormalize: true,
+          }),
+          createValidFileMatcher(),
+          middlewarePath,
+          null,
+        );
 
-      expect(code).toContain("export function normalizeDataRequest(request)");
-      expect(code).toContain(
-        "vinextConfig.basePath,\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize",
-      );
-      expect(code).toContain("export const hasMiddleware = true");
-      expect(code).toContain('"skipProxyUrlNormalize":true');
-      expect(code).not.toContain('request.headers.get("x-nextjs-data")');
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
+        expect(code).toContain("export function normalizeDataRequest(request)");
+        // The Worker request stage strips basePath before calling it, so it must
+        // not strip it again.
+        expect(code).toContain(
+          'buildId,\n    "",\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize',
+        );
+        expect(code).toContain("export const hasMiddleware = true");
+        expect(code).toContain('"skipProxyUrlNormalize":true');
+        expect(code).not.toContain('request.headers.get("x-nextjs-data")');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("installs server globals before Pages Router user modules are imported", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-entry-"));

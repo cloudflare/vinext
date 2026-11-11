@@ -1,5 +1,8 @@
 import { formatRscRequestPath, stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
-import { peekPrefetchResponseForNavigation, type CachedRscResponse } from "vinext/shims/navigation";
+import {
+  peekPrefetchResponseForNavigation,
+  type CachedRscResponse,
+} from "vinext/shims/app-router-navigation";
 
 export function peekSettledPrefetchResponseForNavigation(options: {
   additionalRscUrls: readonly string[];

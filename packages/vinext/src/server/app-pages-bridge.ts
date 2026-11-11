@@ -7,10 +7,12 @@ import {
 } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
+import { isLocaleRedirect, markLocaleRedirect } from "./pages-i18n.js";
 import type { RuntimePagesDataKind } from "./pages-route-data-kind.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { VINEXT_PAGES_NOT_FOUND_HEADER } from "./headers.js";
 import { mergeHeaders } from "./worker-utils.js";
+import { stripBasePath } from "../utils/base-path.js";
 
 export type PagesEntry = {
   getRuntimePageDataKind?: (url: string, request: Request) => RuntimePagesDataKind;
@@ -90,6 +92,12 @@ type RenderPagesFallbackOptions = {
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
+  /**
+   * The basePath `request.url` still carries. The page renderer receives the
+   * URL without it, as in the Pages Router pipeline, so `req.url` and `asPath`
+   * leave it out like Next.js.
+   */
+  requestBasePath?: string;
   /** The shared cache entry answers every host; a request-time render is not stored. */
   sharedAcrossHosts?: boolean;
   url: URL;
@@ -140,6 +148,7 @@ export async function renderPagesFallback(
     pathname = options.url.pathname,
     pagesDataRequest = null,
     request,
+    requestBasePath = "",
     sharedAcrossHosts = false,
     url,
   } = options;
@@ -252,9 +261,14 @@ export async function renderPagesFallback(
     }
   }
   const pagesRequest = claimPagesRequest();
-  const renderRequest = pagesDataRequest
-    ? cloneRequestWithUrl(pagesRequest, pagesDataRequest.url)
-    : pagesRequest;
+  const renderRequestUrl = new URL(pagesDataRequest?.url ?? pagesRequest.url);
+  if (!pagesDataRequest) {
+    renderRequestUrl.pathname = stripBasePath(renderRequestUrl.pathname, requestBasePath);
+  }
+  const renderRequest =
+    renderRequestUrl.href === pagesRequest.url
+      ? pagesRequest
+      : cloneRequestWithUrl(pagesRequest, renderRequestUrl.href);
   const renderArgs = [
     renderRequest,
     pagesUrl,
@@ -276,10 +290,11 @@ export async function renderPagesFallback(
           ? pagesEntry.renderPage(...renderArgs, { markNotFound: true }, initialResponseHeaders)
           : pagesEntry.renderPage(...renderArgs, { markNotFound: true }));
   if (pagesRes.status === 404 && pageMatch === null) return null;
-  return applyDraftModeCookie(
+  const response = applyDraftModeCookie(
     applyPagesMiddlewareContext(pagesRes, middlewareContext),
     getDraftModeCookieHeader(),
   );
+  return isLocaleRedirect(pagesRes) ? markLocaleRedirect(response) : response;
 }
 
 /**

@@ -100,6 +100,7 @@ import {
   getPendingAppRouterScrollIntent,
   isLatestAppRouterScrollIntent,
 } from "../packages/vinext/src/shims/app-router-scroll-state.js";
+import * as appRouterNavigationShim from "../packages/vinext/src/shims/app-router-navigation.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createBfcacheSegmentIdentityMap,
@@ -493,9 +494,12 @@ function createRootChangeRouteManifest(
 
 type TestPendingDispositionOptions = {
   activeNavigationId: number;
+  currentActiveOperation?: AppRouterState["activeOperation"];
   currentRootLayoutTreePath: string | null;
   currentVisibleCommitVersion: number;
   nextRootLayoutTreePath: string | null;
+  // Omitted for an HMR-shaped operation, which carries no navigation id.
+  pendingNavigationId?: number | null;
   renderId?: number;
   startedNavigationId: number;
   startedVisibleCommitVersion: number;
@@ -509,6 +513,7 @@ async function resolveTestPendingNavigationCommitDispositionDecision(
     visibleCommitVersion: options.startedVisibleCommitVersion,
   });
   const currentState = createState({
+    activeOperation: options.currentActiveOperation ?? null,
     rootLayoutTreePath: options.currentRootLayoutTreePath,
     visibleCommitVersion: options.currentVisibleCommitVersion,
   });
@@ -518,6 +523,10 @@ async function resolveTestPendingNavigationCommitDispositionDecision(
     nextElements: Promise.resolve(
       createResolvedElements("route:/dashboard", options.nextRootLayoutTreePath),
     ),
+    navigationId:
+      options.pendingNavigationId === null
+        ? undefined
+        : (options.pendingNavigationId ?? options.startedNavigationId),
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
     operationLane: "navigation",
     renderId: options.renderId ?? options.startedNavigationId,
@@ -1161,7 +1170,7 @@ describe("app browser entry navigation scheduling", () => {
     stubWindow("https://example.com/current");
 
     const responseUrl = "https://example.com/target?_rsc=fresh";
-    const snapshot = navigationShim.createCachedRscResponseSnapshot(
+    const snapshot = appRouterNavigationShim.createCachedRscResponseSnapshot(
       new Response("unused", {
         headers: {
           "content-type": "text/x-component",
@@ -1186,7 +1195,7 @@ describe("app browser entry navigation scheduling", () => {
       }),
     ).toEqual({ kind: "compatible" });
 
-    const replayed = navigationShim.restoreRscResponse(snapshot);
+    const replayed = appRouterNavigationShim.restoreRscResponse(snapshot);
     expect(replayed.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
     expect(replayed.headers.get(VINEXT_MOUNTED_SLOTS_HEADER)).toBe("children");
     expect(replayed.headers.get(VINEXT_PARAMS_HEADER)).toBe("%7B%22slug%22%3A%22target%22%7D");
@@ -2206,6 +2215,78 @@ describe("app browser entry state helpers", () => {
       currentVisibleCommitVersion: 1,
       currentRootLayoutTreePath: "/",
       nextRootLayoutTreePath: "/",
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision.disposition).toBe("skip");
+    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.staleOperation);
+  });
+
+  it("commits over a visible commit from a navigation it superseded", async () => {
+    // Rapid same-route clicks: the first navigation's render advances the
+    // version after the second one started. The latest navigation still wins.
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentActiveOperation: {
+        id: 1,
+        lane: "navigation",
+        navigationId: 1,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision.disposition).toBe("dispatch");
+  });
+
+  it("stays stale after a refresh commit that started under an older navigation", async () => {
+    // A server action revalidation commits on the refresh lane under the
+    // navigation id it started with; it is not a superseded navigation.
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentActiveOperation: {
+        id: 1,
+        lane: "refresh",
+        navigationId: 1,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision.disposition).toBe("skip");
+    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.staleOperation);
+  });
+
+  it("stays stale for an operation without a navigation id that compares a render id", async () => {
+    // HMR approval passes its render id as startedNavigationId, so an id
+    // ahead of a committed navigation's must not read as superseding it.
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentActiveOperation: {
+        id: 1,
+        lane: "navigation",
+        navigationId: 1,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      pendingNavigationId: null,
       startedNavigationId: 2,
       startedVisibleCommitVersion: 0,
     });
@@ -5255,7 +5336,9 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("does not hard-navigate same-URL server action payloads from snapshot root topology alone", async () => {
+  // Like Next.js, which compares the rendered router trees, a payload that
+  // renders another root layout loads a new document, also without a manifest.
+  it("hard-navigates same-URL server action payloads that render another root layout", async () => {
     const actionTargetHref = "https://example.com/marketing?from=action";
     const initialState = createState({
       rootLayoutTreePath: "/(marketing)",
@@ -5282,8 +5365,8 @@ describe("app browser navigation controller", () => {
       );
 
       expect(result).toBeUndefined();
-      expect(assign).not.toHaveBeenCalled();
-      expect(stateRef.current.routeId).toBe("route:/dashboard");
+      expect(assign).toHaveBeenCalledWith(actionTargetHref);
+      expect(stateRef.current.routeId).toBe("route:/marketing");
     } finally {
       detach();
     }
@@ -6698,7 +6781,7 @@ describe("app browser entry previousNextUrl helpers", () => {
     });
   });
 
-  it("classifies same-url payloads without treating snapshot root topology as authority", async () => {
+  it("classifies same-url payloads that render another root layout as hard navigations", async () => {
     const currentState = createState({
       rootLayoutTreePath: "/(marketing)",
     });
@@ -6716,11 +6799,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       type: "navigate",
     });
 
-    expect(result.decision.disposition).toBe("commit");
+    expect(result.decision.disposition).toBe("hard-navigate");
     expect(result.pending.routeId).toBe("route:/dashboard");
     expect(result.pending.action.renderId).toBe(3);
-    expect(result.trace.entries[0]?.code).toBe(NavigationTraceTransactionCodes.visibleCommit);
-    expect(result.trace.entries[1]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryUnknown);
+    expect(result.trace.entries[0]?.code).toBe(NavigationTraceTransactionCodes.hardNavigate);
+    expect(result.trace.entries[1]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryChanged);
     expect(result.trace.entries[1]?.fields.targetHref).toBe(
       "https://example.com/dashboard?action=same-url",
     );
@@ -9351,6 +9434,39 @@ describe("devOnCaughtError (hydrateRoot dev handler)", () => {
     expect(onCaughtError).not.toHaveBeenCalled();
   });
 
+  it("notes a catch by the implicit root or a global-error boundary", () => {
+    const onRootErrorBoundaryCatch = vi.fn();
+    const handler = createDevOnCaughtError(vi.fn(), vi.fn(), onRootErrorBoundaryCatch);
+
+    handler(new Error("route error"), { errorBoundary: { props: {} } });
+    expect(onRootErrorBoundaryCatch).not.toHaveBeenCalled();
+
+    handler(new Error("global error"), {
+      errorBoundary: { props: { isGlobalErrorBoundary: true } },
+    });
+    handler(new Error("root error"), {
+      errorBoundary: { props: { isImplicitRootErrorBoundary: true } },
+    });
+    expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
+
+    // The root boundary around a global-error boundary only catches the
+    // global-error fallback's own throw.
+    handler(new Error("global-error threw"), {
+      errorBoundary: {
+        props: { isImplicitRootErrorBoundary: true, wrapsGlobalErrorBoundary: true },
+      },
+    });
+    expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
+
+    handler(
+      Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" }),
+      {
+        errorBoundary: { props: { isGlobalErrorBoundary: true } },
+      },
+    );
+    expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps explicit dev error boundaries on the caught-error path", () => {
     const onCaughtError = vi.fn();
     const onImplicitRootError = vi.fn();
@@ -9958,6 +10074,16 @@ describe("selectUnreportedInitialDevServerErrors", () => {
         [reported("caught", "Error", "load failed")],
       ),
     ).toEqual([typeError]);
+  });
+
+  it("replays nothing once a root-level boundary caught the browser's error", () => {
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [{ name: "TypeError", message: "(0 , __vite_ssr_import_0__.fn) is not a function" }],
+        [reported("window-error", "TypeError", "fn is not a function")],
+        true,
+      ),
+    ).toEqual([]);
   });
 
   it("matches a thrown non-Error value, reported raw or coerced to an Error", () => {

@@ -85,6 +85,7 @@ export default {
         "src/server/app-page-head.ts",
         "src/server/app-page-ppr-runtime.ts",
         "src/server/app-prerender-static-params.ts",
+        "src/server/app-route-handler-dispatch.ts",
         "src/server/app-route-module-loader.ts",
         "src/server/nitro-public-files.ts",
         "src/server/nitro-public-files-plugin.ts",

@@ -723,7 +723,7 @@ export function buildCfDeployArgs(
   const mode = options.env || (options.preview ? "preview" : undefined);
   const isPreviewDeploy = options.target?.type === "preview";
   const args = isPreviewDeploy ? ["previews", "deploy"] : ["deploy"];
-  if (isPreviewDeploy && options.target?.name) args.push(options.target.name);
+  if (isPreviewDeploy && options.target?.name) args.push("--preview-name", options.target.name);
   args.push("--prebuilt");
   if (mode) args.push("--mode", validateWranglerEnvName(mode));
   return { args, mode };
@@ -2210,6 +2210,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (deploymentTool === "cf" && options.name) {
     throw new Error(
       "--name is not supported for cloudflare.config.ts projects. Set `name` in cloudflare.config.ts instead.",
+    );
+  }
+  if (deploymentTool === "cf" && options.config) {
+    throw new Error(
+      "--config is not supported for cloudflare.config.ts projects. cf always uses cloudflare.config.ts in the project root; select a mode with --env instead.",
     );
   }
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);

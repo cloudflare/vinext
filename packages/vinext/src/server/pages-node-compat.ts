@@ -401,11 +401,17 @@ class PagesResponseStream extends Writable {
   }
 
   json(data: unknown): void {
-    this.resHeaders["content-type"] = "application/json";
+    this.resHeaders["content-type"] = "application/json; charset=utf-8";
     this.end(JSON.stringify(data));
   }
 
   send(data: unknown): void {
+    // Next.js ends a nullish send without a body.
+    if (data === null || data === undefined) {
+      this.end();
+      return;
+    }
+
     // Next.js's sendData() ends 204/304 responses before it inspects the data,
     // so a stream is never piped into them. Fetch also forbids a 205 body.
     // resolveOnce() strips the headers.
@@ -431,8 +437,8 @@ class PagesResponseStream extends Writable {
       return;
     }
 
-    if (typeof data === "object" && data !== null) {
-      this.resHeaders["content-type"] = "application/json";
+    if (typeof data === "object" || typeof data === "number" || typeof data === "boolean") {
+      this.resHeaders["content-type"] = "application/json; charset=utf-8";
       this.end(JSON.stringify(data));
       return;
     }
@@ -440,7 +446,7 @@ class PagesResponseStream extends Writable {
     if (!this.resHeaders["content-type"]) {
       this.resHeaders["content-type"] = "text/plain";
     }
-    this.end(String(data));
+    this.end(String(data as unknown));
   }
 
   redirect(statusOrUrl: number | string, url?: string): PagesReqResResponse {

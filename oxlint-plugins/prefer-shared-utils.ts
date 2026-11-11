@@ -108,27 +108,31 @@ const SHARED_UTILITY_DECLARATION =
         "g",
       );
 
-function maskRange(source: string, start: number, end: number) {
-  return `${source.slice(0, start)}${" ".repeat(end - start)}${source.slice(end)}`;
-}
-
 function maskCommentsAndQuotedStrings(source: string, options = { scanTemplateBodies: true }) {
-  let masked = source;
+  const parts: string[] = [];
+  let unmaskedStart = 0;
+  // Scan the original source and join once. Rebuilding the whole string for
+  // each span makes subsequent indexing repeatedly flatten it on large files.
+  function maskRange(start: number, end: number) {
+    parts.push(source.slice(unmaskedStart, start), " ".repeat(end - start));
+    unmaskedStart = end;
+  }
+
   let i = 0;
-  while (i < masked.length) {
-    const current = masked[i];
-    const next = masked[i + 1];
+  while (i < source.length) {
+    const current = source[i];
+    const next = source[i + 1];
     if (current === "/" && next === "/") {
-      const end = masked.indexOf("\n", i + 2);
-      const rangeEnd = end === -1 ? masked.length : end;
-      masked = maskRange(masked, i, rangeEnd);
+      const end = source.indexOf("\n", i + 2);
+      const rangeEnd = end === -1 ? source.length : end;
+      maskRange(i, rangeEnd);
       i = rangeEnd;
       continue;
     }
     if (current === "/" && next === "*") {
-      const end = masked.indexOf("*/", i + 2);
-      const rangeEnd = end === -1 ? masked.length : end + 2;
-      masked = maskRange(masked, i, rangeEnd);
+      const end = source.indexOf("*/", i + 2);
+      const rangeEnd = end === -1 ? source.length : end + 2;
+      maskRange(i, rangeEnd);
       i = rangeEnd;
       continue;
     }
@@ -138,19 +142,19 @@ function maskCommentsAndQuotedStrings(source: string, options = { scanTemplateBo
       // fixtures as template strings; mask those like ordinary strings so the
       // lint rule validates the test file itself, not its fixture payloads.
       let end = i + 1;
-      while (end < masked.length) {
-        if (masked[end] === "\\") {
+      while (end < source.length) {
+        if (source[end] === "\\") {
           end += 2;
           continue;
         }
-        if (masked[end] === "`") {
+        if (source[end] === "`") {
           end += 1;
           break;
         }
         end += 1;
       }
       if (!options.scanTemplateBodies) {
-        masked = maskRange(masked, i, end);
+        maskRange(i, end);
       }
       i = end;
       continue;
@@ -158,24 +162,26 @@ function maskCommentsAndQuotedStrings(source: string, options = { scanTemplateBo
     if (current === '"' || current === "'") {
       const quote = current;
       let end = i + 1;
-      while (end < masked.length) {
-        if (masked[end] === "\\") {
+      while (end < source.length) {
+        if (source[end] === "\\") {
           end += 2;
           continue;
         }
-        if (masked[end] === quote) {
+        if (source[end] === quote) {
           end += 1;
           break;
         }
         end += 1;
       }
-      masked = maskRange(masked, i, end);
+      maskRange(i, end);
       i = end;
       continue;
     }
     i += 1;
   }
-  return masked;
+  if (parts.length === 0) return source;
+  parts.push(source.slice(unmaskedStart));
+  return parts.join("");
 }
 
 function isCanonicalDefinitionFile(filename: string, modulePath: string) {

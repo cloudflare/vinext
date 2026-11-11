@@ -31,6 +31,8 @@ declare module "virtual:vinext-rsc-entry" {
     dangerouslyAllowLocalIP?: boolean;
     contentDispositionType?: "inline" | "attachment";
     contentSecurityPolicy?: string;
+    minimumCacheTTL?: number;
+    maximumResponseBody?: number;
   };
 }
 
@@ -66,6 +68,8 @@ declare module "virtual:vinext-app-request-entry" {
     dangerouslyAllowLocalIP?: boolean;
     contentDispositionType?: "inline" | "attachment";
     contentSecurityPolicy?: string;
+    minimumCacheTTL?: number;
+    maximumResponseBody?: number;
   };
 }
 

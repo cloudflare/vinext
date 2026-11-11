@@ -3,7 +3,7 @@ import {
   createTemporaryReferenceSet,
   encodeReply,
 } from "@vitejs/plugin-rsc/browser";
-import { parseRenderedPathAndSearchHeader } from "vinext/shims/navigation";
+import { parseRenderedPathAndSearchHeader } from "vinext/shims/app-router-navigation";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import {
   createServerActionResultFacts,

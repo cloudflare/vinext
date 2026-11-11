@@ -83,6 +83,24 @@ describe.each(["development", "production"] as const)(
       expect(await res.text()).toBe("blocked by middleware");
     });
 
+    // No page matches these paths, so they reach the 404 page only if
+    // middleware lets them through.
+    it.each([
+      ["/docs/docs/a/v1.2", "/docs/a/v1.2"],
+      ["/docs/private/report.json", "/private/report.json"],
+    ])("runs middleware for the unrouted file-looking path %s", async (url, guardPathname) => {
+      const res = await fetch(`${baseUrl}${url}`, { redirect: "manual" });
+      expect(res.status).toBe(403);
+      expect(res.headers.get("x-guard-pathname")).toBe(guardPathname);
+      expect(await res.text()).toBe("blocked by middleware");
+    });
+
+    it("renders the 404 page for an unrouted file-looking path middleware skips", async () => {
+      const res = await fetch(`${baseUrl}/docs/missing.json`, { redirect: "manual" });
+      expect(res.status).toBe(404);
+      expect(await res.text()).toContain("404 - Page Not Found");
+    });
+
     it("runs middleware for the page's data request", async () => {
       const html = await (await fetch(`${baseUrl}/docs/hello/`)).text();
       const buildId = /"buildId":"([^"]+)"/.exec(html)?.[1];

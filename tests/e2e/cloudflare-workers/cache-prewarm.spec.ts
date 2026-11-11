@@ -1,6 +1,6 @@
 import { testPagesStoragePolicies } from "../pages-storage-policy";
 import { testRouteHandlerStoragePolicies } from "../route-handler-storage-policy";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { waitForStablePromotion } from "./promotion.js";
 import { randomUUID } from "node:crypto";
@@ -757,3 +757,60 @@ for (const [first, other] of [
     cachedPageRenderId(await hit.text());
   });
 }
+
+/** Waits for the Link prefetch of `path` in `renderMode` from the page. */
+function waitForPrefetch(page: Page, renderMode: string, pathAndSearch: string) {
+  return page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    url.searchParams.delete("_rsc");
+    return (
+      response.request().headers()["x-vinext-rsc-render-mode"] === renderMode &&
+      url.pathname + url.search === pathAndSearch
+    );
+  });
+}
+
+/** The render id in a /prefetch-shells target's RSC payload. */
+function prefetchTargetRenderId(body: string): string | undefined {
+  return /"render-id","children":"([^"]+)"/.exec(body)?.[1];
+}
+
+// Issue #4496: a static page with no loading boundary needs no layout for its
+// loading shell. Without PPR, Next.js sends only the router state there.
+test("prefetches only the route tree for a static page's loading shell", async ({
+  baseURL,
+  page,
+}) => {
+  test.skip(!baseURL || !backend, "requires a configured response-store-demo backend");
+  const shell = waitForPrefetch(page, "prefetch-loading-shell", "/prefetch-shells/route-tree");
+  await page.goto(`${baseURL}/prefetch-shells`);
+  const response = await shell;
+  expect(response.status()).toBe(200);
+  const body = await response.text();
+  expect(body).toContain("route:/prefetch-shells/route-tree");
+  // The root layout's nav, and the page itself.
+  expect(body).not.toContain("Demo deployments");
+  expect(prefetchTargetRenderId(body)).toBeUndefined();
+});
+
+// Issue #4637: without PPR, Next.js's automatic prefetch never renders a page
+// that may read searchParams (walkTreeWithFlightRouterState()). A search-param
+// prefetch of a static page with no loading boundary is its route tree,
+// whatever the query.
+test("prefetches only the route tree for a static page's search-param prefetches", async ({
+  baseURL,
+  page,
+}) => {
+  test.skip(!baseURL || !backend, "requires a configured response-store-demo backend");
+  const prefetches = [1, 2].map((tab) =>
+    waitForPrefetch(page, "prefetch-loading-shell", `/prefetch-shells/search-params?tab=${tab}`),
+  );
+  await page.goto(`${baseURL}/prefetch-shells`);
+  for (const response of await Promise.all(prefetches)) {
+    expect(response.status(), response.url()).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("route:/prefetch-shells/search-params");
+    expect(body).not.toContain("Demo deployments");
+    expect(prefetchTargetRenderId(body)).toBeUndefined();
+  }
+});

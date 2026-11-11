@@ -112,7 +112,7 @@ test("init sets up cf alongside an unrelated Wrangler config", async ({ page }) 
       skipCheck: true,
       install: false,
       ...(await resolveInitOptions(args, { env: {}, isInteractive: false })),
-      _today: "2026-04-08",
+      _today: "2026-09-15",
     });
 
     expect(await fs.readFile(path.join(root, "wrangler.toml"), "utf8")).toBe(otherWorkerConfig);

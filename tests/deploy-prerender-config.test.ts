@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import type { TPRRouteResult } from "../packages/cloudflare/src/tpr.js";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
@@ -78,6 +78,7 @@ vi.mock("node:child_process", async (importOriginal) => {
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     }),
+    spawnSync: vi.fn(actual.spawnSync),
     spawn: vi.fn(() => {
       const child = new EventEmitter() as ChildProcess;
       const childStdout = new PassThrough();
@@ -298,6 +299,7 @@ describe("deploy prerender config wiring", () => {
     resolveTPRRoutesMock.mockClear();
     vi.mocked(execFileSync).mockClear();
     vi.mocked(spawn).mockClear();
+    vi.mocked(spawnSync).mockClear();
   });
 
   afterEach(() => {
@@ -387,6 +389,7 @@ describe("deploy prerender config wiring", () => {
       expect.stringContaining(path.join("cf", "bin", "cf")),
       "previews",
       "deploy",
+      "--preview-name",
       "pr-123",
       "--prebuilt",
       "--mode",
@@ -451,6 +454,7 @@ describe("deploy prerender config wiring", () => {
         expect.any(String),
         "previews",
         "deploy",
+        "--preview-name",
         "pr-123",
         "--prebuilt",
         "--mode",
@@ -1139,27 +1143,38 @@ export function createBuilder(config) {
       ".cloudflare/output/v0/workers/response-store/worker.config.json",
       JSON.stringify({ name: "response-store" }),
     );
-    const originalExecute = vi.mocked(execFileSync).getMockImplementation()!;
-    vi.mocked(execFileSync).mockImplementation(((_file, args) => {
+    const originalExecute = vi.mocked(spawnSync).getMockImplementation()!;
+    // cf writes its log to stderr and only JSON results to stdout.
+    vi.mocked(spawnSync).mockImplementation(((_file, args) => {
       const cfArgs = args as string[];
       if (cfArgs.includes("versions") && cfArgs.includes("create")) {
-        return JSON.stringify({
-          id: "22222222-2222-4222-8222-222222222222",
-          preview_url: "https://preview.example.workers.dev",
-        });
+        return {
+          status: 0,
+          stdout: "",
+          stderr:
+            "│  Worker Version ID: 22222222-2222-4222-8222-222222222222\n│  Version Preview URL: https://preview.example.workers.dev\n",
+        };
       }
       if (cfArgs.includes("list")) {
-        return JSON.stringify({
-          deployments: [
-            {
-              id: "active-deployment",
-              versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
-            },
-          ],
-        });
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            deployments: [
+              {
+                id: "active-deployment",
+                versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+              },
+            ],
+          }),
+          stderr: "",
+        };
       }
-      return "Deployed test-worker\n  https://app.example.workers.dev\n";
-    }) as typeof execFileSync);
+      return {
+        status: 0,
+        stdout: "",
+        stderr: "Deployed test-worker\n  https://app.example.workers.dev\n",
+      };
+    }) as typeof spawnSync);
     try {
       const { deploy } = await import("../packages/cloudflare/src/deploy.js");
       await deploy({ root: tmpDir, skipBuild: true, ...options });
@@ -1177,11 +1192,13 @@ export function createBuilder(config) {
       }
       expect(
         vi
-          .mocked(execFileSync)
-          .mock.calls.some(([, args]) => (args as string[]).includes("response-store")),
+          .mocked(spawnSync)
+          .mock.calls.some(([, args]) =>
+            (args as string[] | undefined)?.includes("response-store"),
+          ),
       ).toBe(false);
     } finally {
-      vi.mocked(execFileSync).mockImplementation(originalExecute);
+      vi.mocked(spawnSync).mockImplementation(originalExecute);
     }
   });
 

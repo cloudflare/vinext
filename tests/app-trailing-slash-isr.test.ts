@@ -51,6 +51,34 @@ describe("App Router trailing-slash ISR with generated static params", () => {
     expect(html).toContain('id="lang">en');
   });
 
+  // "/guarded/(.*)" accepts /guarded/ only as requested, slash included.
+  // Next.js then retests without the slash and ends the request with an empty
+  // 200; vinext runs middleware.
+  it("runs middleware for a request only the slashed matcher accepts", async () => {
+    // The RSC request follows the cache-busting `_rsc` redirect first.
+    for (const headers of [{}, { RSC: "1" }] as Record<string, string>[]) {
+      const response = await fetch(`${baseUrl}/guarded/`, { headers });
+
+      expect(new URL(response.url).pathname).toBe("/guarded/");
+      expect(response.status).toBe(403);
+      expect(await response.text()).toBe("blocked by middleware");
+    }
+
+    const nested = await fetch(`${baseUrl}/guarded/inner/`, { redirect: "manual" });
+    expect(nested.status).toBe(403);
+    expect(await nested.text()).toBe("blocked by middleware");
+  });
+
+  // Next.js matches /guarded/.rsc whole: the slash before the suffix is not a
+  // terminal slash, and the compiled matcher permits the suffix, so middleware
+  // runs.
+  it("runs middleware for a .rsc payload URL that a slash-ending matcher accepts", async () => {
+    const response = await fetch(`${baseUrl}/guarded/.rsc`);
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe("blocked by middleware");
+  });
+
   // Next.js's trailingSlash: true redirect has no /api exception.
   it("redirects an unslashed route handler request to its slashed spelling", async () => {
     const response = await fetch(`${baseUrl}/api/revalidate?lang=en`, { redirect: "manual" });
