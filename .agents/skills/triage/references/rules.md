@@ -61,7 +61,7 @@ Pick exactly one verdict and back it with evidence:
 
 Scope notes for valid bugs:
 
-- **Size the fix minimally.** Write down the minimal change set. Adjacent findings and "audit similar options" ideas are not scope: list them separately.
+- **Size the fix minimally.** Write down the minimal change set. It covers every place that mishandles the same thing in the same way, including paths the reporter's setup doesn't use. A similar problem with a different field, option or header is a different bug. Different bugs, and "audit similar options" ideas, are not scope: list them separately.
 - For Linux-, WSL- or container-only dev-tooling gaps, recommend documenting them as known limitations. Target macOS first.
 - A perf report is only worth fixing if there is a measurable end-to-end gain.
 - If full parity needs more than one PR, recommend full parity split into stacked PRs, not a known limitation.
