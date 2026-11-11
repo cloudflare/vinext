@@ -79,6 +79,8 @@ test.describe("fallback shells on a warmed deploy", () => {
 });
 
 test.describe("fallback shells filled by warming", () => {
+  // A failed attempt stores the shell at runtime, which a retry would resume.
+  test.describe.configure({ retries: 0 });
   test.skip(!backend, "requires app-router-playground deployed with a cache backend");
 
   test("resumes the shell warming stored with the generated path", async ({ baseURL, request }) => {

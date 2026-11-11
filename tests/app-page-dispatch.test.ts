@@ -7914,6 +7914,52 @@ describe("app page dispatch", () => {
     await vi.waitFor(() => expect([...jobs.keys()]).toContain("shell:/en/blog/hello"));
   });
 
+  it.each([{ late: false }, { late: true }])(
+    "produces a path's own shell after an RSC request renders it dynamically (late: $late)",
+    async ({ late }) => {
+      const jobs = new Map<string, () => Promise<void>>();
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement("fresh"),
+        cleanPathname: "/en/blog/hello",
+        isProduction: true,
+        isRscRequest: true,
+        isrGet: vi.fn(async () => null),
+        params: { locale: "en", slug: "hello" },
+        renderToReadableStream() {
+          const encoder = new TextEncoder();
+          if (!late) markDynamicUsage();
+          let sent = false;
+          // A late render reads cookies in a boundary that resolves after
+          // the payload's first chunk.
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!sent) {
+                sent = true;
+                controller.enqueue(encoder.encode("shell"));
+                return;
+              }
+              if (late) markDynamicUsage();
+              controller.enqueue(encoder.encode("hole"));
+              controller.close();
+            },
+          });
+        },
+        request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          scheduleFallbackShellRegeneration(key, job) {
+            if (!jobs.has(key)) jobs.set(key, job);
+          },
+        }),
+      );
+      await response.text();
+      await vi.waitFor(() => expect([...jobs.keys()]).toContain("shell:/en/blog/hello"));
+    },
+  );
+
   it("renders an on-demand revalidation blocking instead of resuming its fallback shell", async () => {
     const buildPageElement = createParamTextPageElement();
     const isrGet = createPprBlogFallbackShellGetter(false);
@@ -8214,47 +8260,57 @@ describe("app page dispatch", () => {
     consoleError.mockRestore();
   });
 
-  it("produces a generated path's missing shell when it regenerates", async () => {
-    let scheduledRender: (() => Promise<void>) | null = null;
-    const scheduleFallbackShellRegeneration = vi.fn();
-    const { options } = createPprBlogDispatchOptions({
-      buildPageElement: createParamTextPageElement("fresh"),
-      cleanPathname: "/en/blog/hello",
-      isrGet: vi.fn(async () =>
-        buildISRCacheEntry(buildCachedAppPageValue("<html><body>stale</body></html>"), true),
-      ),
-      loadSsrHandler: async () => ({
-        async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
-          if (captureOptions?.capturedRscDataRef) {
-            captureOptions.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("fresh-flight").buffer,
-            );
-          }
-          void captureOptions?.sideStream?.cancel().catch(() => {});
-          return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+  it.each([{ isRscRequest: false }, { isRscRequest: true }])(
+    "produces a generated path's missing shell when it regenerates (isRscRequest: $isRscRequest)",
+    async ({ isRscRequest }) => {
+      let scheduledRender: (() => Promise<void>) | null = null;
+      const scheduleFallbackShellRegeneration = vi.fn();
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement("fresh"),
+        cleanPathname: "/en/blog/hello",
+        isRscRequest,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(
+            buildCachedAppPageValue(
+              "<html><body>stale</body></html>",
+              new TextEncoder().encode("stale-flight").buffer,
+            ),
+            true,
+          ),
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef) {
+              captureOptions.capturedRscDataRef.value = Promise.resolve(
+                new TextEncoder().encode("fresh-flight").buffer,
+              );
+            }
+            void captureOptions?.sideStream?.cancel().catch(() => {});
+            return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+          },
+        }),
+        params: { locale: "en", slug: "hello" },
+        request: new Request("https://example.test/en/blog/hello"),
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
         },
-      }),
-      params: { locale: "en", slug: "hello" },
-      request: new Request("https://example.test/en/blog/hello"),
-      scheduleBackgroundRegeneration(_key, renderFn) {
-        scheduledRender = renderFn;
-      },
-    });
+      });
 
-    const response = await runWithRequestContext(createRequestContext(), () =>
-      dispatchAppPage({ ...options, scheduleFallbackShellRegeneration }),
-    );
-    await response.text();
-    expect(scheduleFallbackShellRegeneration).not.toHaveBeenCalled();
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, scheduleFallbackShellRegeneration }),
+      );
+      await response.text();
+      expect(scheduleFallbackShellRegeneration).not.toHaveBeenCalled();
 
-    if (!scheduledRender) throw new Error("expected the stale page to regenerate");
-    await runWithRequestContext(createRequestContext(), () => scheduledRender!());
-    expect(scheduleFallbackShellRegeneration).toHaveBeenCalledWith(
-      "shell:/en/blog/[slug]",
-      expect.any(Function),
-      expect.anything(),
-    );
-  });
+      if (!scheduledRender) throw new Error("expected the stale page to regenerate");
+      await runWithRequestContext(createRequestContext(), () => scheduledRender!());
+      expect(scheduleFallbackShellRegeneration).toHaveBeenCalledWith(
+        "shell:/en/blog/[slug]",
+        expect.any(Function),
+        expect.anything(),
+      );
+    },
+  );
 
   it("regenerates a page even when finding its shells fails", async () => {
     let scheduledRender: (() => Promise<void>) | null = null;
