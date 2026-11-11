@@ -83,6 +83,7 @@ With `cacheComponents`, vinext resumes stored shells as Next.js does (see [Parti
 
 - Next.js prerenders a route's shells at build. vinext renders a path in full on its first request and, when that render is dynamic and returns a 200, renders the path's own shell in the background after it, so each new path costs a second render. It renders a fallback shell on the first request that needs it.
 - On a Workers Cache deployment, a path the deploy manifest certifies as static is dispatched without its query, unless a `next.config` header sets its cache policy, so a resumed shell's `useSearchParams()` holes, and a client page's `searchParams`, render in the browser, as the path's static render does.
+- While a static render runs, a `"use client"` page's `searchParams` reject, where Next.js leaves them pending. A page that catches the rejection, for example with `searchParams.catch(...)`, stores what it renders instead in the static HTML, and the browser then renders the real query over it, with a hydration mismatch. Don't catch a client page's `searchParams`.
 
 ## Routing config
 
