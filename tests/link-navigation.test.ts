@@ -59,12 +59,11 @@ type CapturedPrefetchLinkElement = {
 
 const linkPrefetchRoutes = [
   { canPrefetchLoadingShell: false, patternParts: ["viewport-prefetch-target"], isDynamic: false },
-  // A dynamic route with parallel slots has no static shell.
+  // An href of this route with an encoded path delimiter has no static shell.
   {
     canPrefetchLoadingShell: false,
     isDynamic: true,
-    patternParts: ["slotted-prefetch-target", ":id"],
-    requiresDynamicNavigationRequest: true,
+    patternParts: ["learning-prefetch-target", ":id"],
   },
   { canPrefetchLoadingShell: false, patternParts: ["intent-prefetch-target"], isDynamic: false },
   { canPrefetchLoadingShell: false, patternParts: ["touch-prefetch-target"], isDynamic: false },
@@ -2616,7 +2615,7 @@ describe("Link prefetch scheduling", () => {
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({
-      href: "/slotted-prefetch-target/1?searchParam=a_PPR",
+      href: "/learning-prefetch-target/a%2Fb?searchParam=a_PPR",
       nodeEnv: "production",
     });
 
@@ -2629,7 +2628,7 @@ describe("Link prefetch scheduling", () => {
       // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
       expectCanonicalRscFetchCall(
         result.fetch.mock.calls[0],
-        "/slotted-prefetch-target/1",
+        "/learning-prefetch-target/a%2Fb",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -2784,7 +2783,7 @@ describe("Link prefetch scheduling", () => {
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({
-      href: "/slotted-prefetch-target/1?searchParam=c_PPR",
+      href: "/learning-prefetch-target/a%2Fb?searchParam=c_PPR",
       nodeEnv: "production",
     });
 
@@ -2792,7 +2791,7 @@ describe("Link prefetch scheduling", () => {
       const { getPrefetchCache, prefetchRscResponse } =
         await import("../packages/vinext/src/shims/app-router-navigation.js");
       prefetchRscResponse(
-        "/slotted-prefetch-target/1?searchParam=a_PPR&_rsc=first",
+        "/learning-prefetch-target/a%2Fb?searchParam=a_PPR&_rsc=first",
         Promise.resolve(createFlightResponse("target-page-with-search-param")),
         null,
         null,
@@ -2813,7 +2812,7 @@ describe("Link prefetch scheduling", () => {
       // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
       expectCanonicalRscFetchCall(
         result.fetch.mock.calls[0],
-        "/slotted-prefetch-target/1",
+        "/learning-prefetch-target/a%2Fb",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
