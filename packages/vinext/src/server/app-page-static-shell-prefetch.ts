@@ -13,6 +13,8 @@ import { VINEXT_STATIC_SHELL_HEADER } from "./app-rsc-render-mode.js";
 import {
   NEXT_CACHE_TAGS_HEADER,
   NEXT_ROUTER_STALE_TIME_HEADER,
+  NEXTJS_CACHE_HEADER,
+  VINEXT_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
 } from "./headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -45,6 +47,9 @@ const UNREPLAYED_HEADERS = new Set([
   "transfer-encoding",
   NEXT_CACHE_TAGS_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  // The render's own cache state, which says nothing about the stored shell.
+  NEXTJS_CACHE_HEADER,
+  VINEXT_CACHE_HEADER.toLowerCase(),
 ]);
 
 function hasRuntimePrefetchConfig(module: unknown): boolean {
@@ -140,6 +145,10 @@ function buildStaticShellResponse(
   // Each client keeps the shell for its own stale time, read from its headers.
   headers.set("Cache-Control", NO_STORE_CACHE_CONTROL);
   mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+  // Whether the shell is the whole page decides if a navigation fetches its
+  // holes, so it stays the renderer's.
+  const shell = value.headers?.[VINEXT_STATIC_SHELL_HEADER.toLowerCase()];
+  if (typeof shell === "string") headers.set(VINEXT_STATIC_SHELL_HEADER, shell);
   return new Response(value.rscData ?? null, {
     headers,
     status: middlewareContext.status ?? value.status ?? 200,

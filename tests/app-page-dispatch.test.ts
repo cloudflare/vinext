@@ -1557,12 +1557,16 @@ describe("app page dispatch", () => {
       const [value] = [...stored.values()];
       expect(Object.keys(value?.headers ?? {})).not.toContain("x-next-cache-tags");
       expect(Object.keys(value?.headers ?? {})).not.toContain("x-vinext-prerender-cache-life");
+      // The producing render's cache state isn't the stored shell's.
+      expect(Object.keys(value?.headers ?? {})).not.toContain("x-nextjs-cache");
+      expect(Object.keys(value?.headers ?? {})).not.toContain("x-vinext-cache");
 
       const cached = await runWithRequestContext(createRequestContext(), () =>
         dispatchAppPage(options),
       );
       expect(cached.headers.get("x-next-cache-tags")).toBeNull();
       expect(cached.headers.get("x-vinext-prerender-cache-life")).toBeNull();
+      expect(cached.headers.get("x-nextjs-cache")).toBeNull();
     });
 
     it("leaves what follows io() a hole", async () => {
@@ -1628,6 +1632,16 @@ describe("app page dispatch", () => {
       );
       expect(second.headers.get("x-middleware")).toBe("second");
       expect(second.status).toBe(203);
+
+      // Whether the shell is the whole page stays the renderer's.
+      options.middlewareContext = {
+        headers: new Headers({ "x-vinext-static-shell": "partial" }),
+        status: null,
+      };
+      const third = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(third.headers.get("x-vinext-static-shell")).toBe("complete");
     });
 
     it("keys a rewritten page's shell by its cache pathname and keeps mounted slots", async () => {
