@@ -7181,6 +7181,42 @@ describe("app page dispatch", () => {
     expect(generateStaticParams).not.toHaveBeenCalled();
   });
 
+  it("renders a path a stored fallback shell records as generated even when scheduling its missing shells fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const isrGet = vi.fn(async (key: string) =>
+      key === "shell:/en/blog/[slug]"
+        ? buildRecordedFallbackShellEntry("<html><head></head><body>Locale: en</body></html>", [
+            { locale: "en", slug: "hello" },
+          ])
+        : null,
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      isrGet,
+      loadSsrHandler: createFreshBodySsrHandler("generated page"),
+      params: { locale: "en", slug: "hello" },
+      request: new Request("https://example.test/en/blog/hello"),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({
+        ...options,
+        scheduleFallbackShellRegeneration() {
+          throw new Error("schedule failed");
+        },
+      }),
+    );
+
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toContain("generated page");
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] ISR fallback shell discovery error:",
+      expect.objectContaining({ message: "schedule failed" }),
+    );
+    consoleError.mockRestore();
+  });
+
   it("regenerates a stale fallback shell that records the request's path as generated", async () => {
     const jobs = new Map<string, () => Promise<void>>();
     const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
@@ -8145,6 +8181,35 @@ describe("app page dispatch", () => {
       expect(isrSetFallbackShell).toHaveBeenCalledTimes(produced);
     },
   );
+
+  it("renders a generated path even when scheduling its missing shell fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      isrGet: vi.fn(async () => null),
+      loadSsrHandler: createFreshBodySsrHandler("fresh render"),
+      params: { locale: "en", slug: "hello" },
+      request: new Request("https://example.test/en/blog/hello"),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({
+        ...options,
+        isrGetFallbackShell: vi.fn(async () => null),
+        scheduleFallbackShellRegeneration() {
+          throw new Error("schedule failed");
+        },
+      }),
+    );
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toContain("fresh render");
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] ISR fallback shell discovery error:",
+      expect.objectContaining({ message: "schedule failed" }),
+    );
+    consoleError.mockRestore();
+  });
 
   it("produces a generated path's missing shell when it regenerates", async () => {
     let scheduledRender: (() => Promise<void>) | null = null;
