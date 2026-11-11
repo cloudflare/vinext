@@ -2,7 +2,12 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { deriveCachePolicy, edgeCacheControl, representationAge } from "./cache-policy";
 import { IsolateNegativeCache } from "./isolate-negative-cache";
-import type { CacheMetadataStub, PurgeReservation, RefreshedRevision } from "./metadata-do";
+import type {
+  CacheMetadataStub,
+  PurgeReservation,
+  RefreshedRevision,
+  TombstoneDrainResult,
+} from "./metadata-do";
 
 type RevalidatorDescriptor = {
   id: string;
@@ -1185,7 +1190,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             publication.entry.activeRevision,
             edgeFlushAt,
           )
-          .catch((reconciliationError) => ({
+          .catch((reconciliationError): TombstoneDrainResult => ({
             failures: [
               reconciliationError instanceof Error
                 ? reconciliationError.message
@@ -1196,7 +1201,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           }));
         const reconciliationFailures = reconciliation.failures.map((failure) => new Error(failure));
         // With `purgeBatchWindow`, the metadata DO purges the edge with the window's batch.
-        if (reconciliation.purged.length && edgeFlushAt === undefined) {
+        if (reconciliation.purged.length && !reconciliation.edgeFlushScheduled) {
           try {
             if (await this.updateEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry))) {
               await metadata.markTombstonesEdgePurged(reconciliation.purged);
@@ -1722,10 +1727,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         ),
       ),
     );
-    // With `purgeBatchWindow`, each metadata DO sends the edge work it queued with the window's
-    // batch.
-    const edgePurgeAccepted =
-      edgeFlushAt !== undefined || (await this.updatePendingEdges(reservations, failures));
+    const edgePurgeAccepted = await this.updatePendingEdges(reservations, failures);
 
     if (failures.length) {
       throw new AggregateError(failures, "One or more metadata shards failed to invalidate");
@@ -1771,7 +1773,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return { failures, reservations };
   }
 
-  /** Update the edge responses of drained entries, collecting failures. */
+  /**
+   * Update the edge responses of drained entries, collecting failures. With `purgeBatchWindow`, a
+   * metadata DO that scheduled its alarm sends its own with the window's batch instead.
+   */
   private async updatePendingEdges(
     reservations: { metadata: CacheMetadataStub; reservation: PurgeReservation }[],
     failures: unknown[],
@@ -1779,7 +1784,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     let edgePurgeAccepted = true;
     const acknowledged = await Promise.allSettled(
       reservations
-        .filter(({ reservation }) => reservation.pendingTombstones > 0)
+        .filter(
+          ({ reservation }) => reservation.pendingTombstones > 0 && !reservation.edgeFlushScheduled,
+        )
         .map(({ metadata, reservation }) =>
           this.purgePendingEdgeEntries(metadata, reservation.tombstoneSequence),
         ),
@@ -1828,7 +1835,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         edgePurgeAccepted = false;
         failures.push(error);
       }
-    } else if (edgeFlushAt === undefined) {
+    } else {
       edgePurgeAccepted =
         (await this.updatePendingEdges(reservations, failures)) && !options.purgeEverything;
     }

@@ -43,6 +43,8 @@ type RegenerationReservation = {
 
 export type PurgeReservation = {
   backingStoreUpdated: boolean;
+  /** The alarm sends the queued edge work at the requested flush time, not the caller. */
+  edgeFlushScheduled?: true;
   pendingTombstones: number;
   tombstoneSequence: number;
 };
@@ -54,8 +56,10 @@ export type RefreshedRevision = {
   tagExpiration?: number;
 };
 
-type TombstoneDrainResult = {
+export type TombstoneDrainResult = {
   cursor?: string;
+  /** The alarm sends the purged entries' edge purges at the requested flush time. */
+  edgeFlushScheduled?: true;
   failures: string[];
   pending: PurgedEntry[];
   purged: PurgedEntry[];
@@ -556,6 +560,20 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     this.cleanupAlarmKnown = true;
   }
 
+  /**
+   * Schedule the alarm that retries queued R2 and edge work, or with `edgeFlushAt` sends the edge
+   * work then. Returns whether the alarm sends it, so the caller sends it otherwise.
+   */
+  private async scheduleEdgeFlush(edgeFlushAt?: number): Promise<boolean> {
+    try {
+      await this.scheduleCleanupAlarm(edgeFlushAt ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS);
+      return edgeFlushAt !== undefined;
+    } catch (error) {
+      this.logCleanupFailure(error);
+      return false;
+    }
+  }
+
   private logCleanupFailure(error: unknown): void {
     console.error(
       JSON.stringify({
@@ -789,8 +807,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           error: error instanceof Error ? error.message : String(error),
         }),
       );
-      await this.ctx.storage.setAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
-      this.cleanupAlarmKnown = true;
+      // Work queued since this started keeps an earlier flush it scheduled.
+      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
     }
   }
 
@@ -1293,10 +1311,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     });
 
     if (!queued) return { failures: [], pending: [], purged: [] };
-    await this.scheduleCleanupAlarm(edgeFlushAt ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch(
-      (error) => this.logCleanupFailure(error),
-    );
-    return this.drainPendingTombstones(1, keyHash);
+    const edgeFlushScheduled = await this.scheduleEdgeFlush(edgeFlushAt);
+    return {
+      ...(await this.drainPendingTombstones(1, keyHash)),
+      ...(edgeFlushScheduled ? { edgeFlushScheduled: true as const } : {}),
+    };
   }
 
   /**
@@ -1548,11 +1567,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         tombstoneSequence,
       };
     });
-    if (reservation.pendingTombstones > 0) {
-      // Without a flush time, the caller sends the edge work, and the alarm only retries it.
-      await this.scheduleCleanupAlarm(edgeFlushAt ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch(
-        (error) => this.logCleanupFailure(error),
-      );
+    // Without a flush time, the caller sends the edge work, and the alarm only retries it.
+    if (reservation.pendingTombstones > 0 && (await this.scheduleEdgeFlush(edgeFlushAt))) {
+      return { ...reservation, edgeFlushScheduled: true };
     }
     return reservation;
   }
@@ -1664,11 +1681,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         tombstoneSequence,
       };
     });
-    if (reservation.pendingTombstones > 0) {
-      // Without a flush time, the caller sends the edge work, and the alarm only retries it.
-      await this.scheduleCleanupAlarm(edgeFlushAt ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch(
-        (error) => this.logCleanupFailure(error),
-      );
+    // Without a flush time, the caller sends the edge work, and the alarm only retries it.
+    if (reservation.pendingTombstones > 0 && (await this.scheduleEdgeFlush(edgeFlushAt))) {
+      return { ...reservation, edgeFlushScheduled: true };
     }
     return reservation;
   }
@@ -1793,9 +1808,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         );
         for (const batch of batches(completed, MAX_SQL_PARAMETERS / 2 - 1)) {
           this.ctx.storage.sql.exec(
-            `UPDATE pending_r2_tombstones SET r2_complete = 1, edge_invalidate = ? WHERE ${batch
-              .map(() => "(key_hash = ? AND revision = ?)")
-              .join(" OR ")}`,
+            // A purge queued for the key while the R2 write ran stays a purge.
+            `UPDATE pending_r2_tombstones SET r2_complete = 1,
+              edge_invalidate = MIN(edge_invalidate, ?) WHERE ${batch
+                .map(() => "(key_hash = ? AND revision = ?)")
+                .join(" OR ")}`,
             Number(edgeInvalidate),
             ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
           );

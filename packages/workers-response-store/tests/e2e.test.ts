@@ -68,9 +68,37 @@ beforeEach(async () => {
             type: "ESModule",
             path: "edge-purge-fixture.js",
             contents: `
-              import worker, { ResponseStoreBinding as BaseBinding } from "./worker.js";
-              export { CacheMetadata, ResponseStoreRevalidator } from "./worker.js";
+              import worker, {
+                CacheMetadata as BaseMetadata,
+                ResponseStoreBinding as BaseBinding,
+              } from "./worker.js";
+              export { ResponseStoreRevalidator } from "./worker.js";
               let purgeMode;
+              let metadataR2DelayMs = 0;
+              let failAlarm = false;
+              export class CacheMetadata extends BaseMetadata {
+                constructor(ctx, env) {
+                  super(ctx, {
+                    ...env,
+                    CACHE_BODIES: new Proxy(env.CACHE_BODIES, {
+                      get(bucket, key) {
+                        const value = Reflect.get(bucket, key);
+                        if (key === "put" && metadataR2DelayMs) {
+                          return async (...args) => {
+                            await new Promise((resolve) => setTimeout(resolve, metadataR2DelayMs));
+                            return value.apply(bucket, args);
+                          };
+                        }
+                        return typeof value === "function" ? value.bind(bucket) : value;
+                      },
+                    }),
+                  });
+                }
+                scheduleCleanupAlarm(scheduledTime) {
+                  if (failAlarm) return Promise.reject(new Error("Alarm unavailable"));
+                  return super.scheduleCleanupAlarm(scheduledTime);
+                }
+              }
               let exposeInvalidate = false;
               let edgeCalls = [];
               let failR2Write = false;
@@ -118,6 +146,10 @@ beforeEach(async () => {
                     purgeMode = new URL(request.url).searchParams.get("mode");
                     exposeInvalidate = new URL(request.url).searchParams.has("invalidate");
                     failR2Write = new URL(request.url).searchParams.has("fail-r2");
+                    failAlarm = new URL(request.url).searchParams.has("fail-alarm");
+                    metadataR2DelayMs = Number(
+                      new URL(request.url).searchParams.get("metadata-r2-delay-ms") ?? 0,
+                    );
                     delayFirstPurgeMs = Number(
                       new URL(request.url).searchParams.get("delay-first-ms") ?? 0,
                     );
@@ -504,6 +536,36 @@ test("purgeBatchWindow sends a window's edge purges and invalidations together",
     { operation: "invalidate", tags: await edgeTags("/batched-a") },
   ]);
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+});
+
+test("purgeBatchWindow sends the edge update itself when the alarm can't be scheduled", async () => {
+  await put("/batched-unscheduled", "first", { tags: ["batched-unscheduled"] });
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate&fail-alarm");
+  assert.deepEqual(await batchedMutation("invalidate", { tags: ["batched-unscheduled"] }), {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+  assert.deepEqual(await edgeCallTags(), [
+    { operation: "invalidate", tags: await edgeTags("/batched-unscheduled") },
+  ]);
+});
+
+test("a purge queued while an invalidation's R2 rewrite runs stays a purge", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&metadata-r2-delay-ms=500");
+  await put("/batched-merge", "first", { tags: ["batched-merge"] });
+  const invalidated = batchedMutation("invalidate", { tags: ["batched-merge"] });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await (
+    await metadataStub()
+  ).queueEdgePurge(await cacheKeyHash("/batched-merge"), 10, Date.now() + 60_000);
+  await invalidated;
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  assert.deepEqual(
+    await storage.exec("SELECT r2_complete, edge_invalidate FROM pending_r2_tombstones"),
+    [{ r2_complete: 1, edge_invalidate: 0 }],
+  );
 });
 
 test("purgeBatchWindow retries a refused batch", async () => {
