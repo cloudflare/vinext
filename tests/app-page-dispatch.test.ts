@@ -8242,6 +8242,51 @@ describe("app page dispatch", () => {
     },
   );
 
+  it.each([
+    { name: "a document request", isRscRequest: false },
+    { name: "an RSC request", isRscRequest: true },
+  ])(
+    "regenerates a stale own shell it can't use after a dynamic render ($name)",
+    async ({ isRscRequest }) => {
+      const scheduledKeys: string[] = [];
+      const unusable = buildISRCacheEntry(buildCachedAppPageValue(""), true);
+      unusable.value.value = null;
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement("fresh"),
+        cleanPathname: "/en/blog/hello",
+        isRscRequest,
+        isrGet: vi.fn(async (key: string) => (key === "shell:/en/blog/hello" ? unusable : null)),
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            markDynamicUsage();
+            return createStream(["<html><head></head><body>page</body></html>"]);
+          },
+        }),
+        params: { locale: "en", slug: "hello" },
+        renderToReadableStream() {
+          markDynamicUsage();
+          return createStream(["payload"]);
+        },
+        request: new Request(
+          "https://example.test/en/blog/hello",
+          isRscRequest ? { headers: { RSC: "1" } } : undefined,
+        ),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          scheduleFallbackShellRegeneration(key) {
+            scheduledKeys.push(key);
+          },
+        }),
+      );
+      await response.text();
+
+      expect(scheduledKeys).toContain("shell:/en/blog/hello");
+    },
+  );
+
   it("renders an on-demand revalidation blocking instead of resuming its fallback shell", async () => {
     const buildPageElement = createParamTextPageElement();
     const isrGet = createPprBlogFallbackShellGetter(false);

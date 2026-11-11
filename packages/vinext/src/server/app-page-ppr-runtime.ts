@@ -667,10 +667,17 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
     // An RSC request its shell didn't seed produces the shell as a document
     // request does.
     if (decision.kind !== "probe-shells" && decision.kind !== "seed-rsc-request") return;
-    // A stored shell the request read is left alone: the request regenerated
-    // it if it was stale.
+    // A stored shell the request read is left alone. The request regenerates
+    // a stale one it could use, so only an unusable one regenerates here.
     const { cached } = ownShellRead;
-    if (cached !== undefined && cached !== null && cached.isExpired !== true) return;
+    if (
+      cached !== undefined &&
+      cached !== null &&
+      cached.isExpired !== true &&
+      (!cached.isStale || cached.value.value?.kind === "APP_PAGE")
+    ) {
+      return;
+    }
     const concreteShell = createAppPprRequestConcreteShell(options.route, options.params);
     if (concreteShell) {
       scheduleShellProduction(
