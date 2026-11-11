@@ -816,6 +816,21 @@ type ValidateAppPageRouteDynamicParamsOptions = {
 };
 
 /**
+ * Next.js runs generateStaticParams in a work store of its own: the route's
+ * fetchCache and implicit tags, and no revalidate or force-dynamic default.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+ */
+export function enterAppStaticParamsWorkStore(
+  fetchCache: FetchCacheMode | null,
+  routeSegments: readonly string[],
+): void {
+  setCurrentFetchCacheMode(fetchCache);
+  setCurrentFetchSoftTags(buildAppStaticParamsTags(routeSegments));
+  setCurrentFetchRevalidate(null);
+  setCurrentForceDynamicFetchDefault(false);
+}
+
+/**
  * Next.js rejects a `dynamicParams = false` miss while routing, before any of
  * the route's segments render: it serves `/_not-found` instead.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/base-server.ts
@@ -829,14 +844,8 @@ export function validateAppPageRouteDynamicParams(
   if (options.isProduction && options.dynamicConfig === "force-dynamic") {
     return Promise.resolve(null);
   }
-  // Next.js runs generateStaticParams in a work store of its own: the route's
-  // fetchCache and implicit tags, and no revalidate or force-dynamic default.
   // Callers run this check apart from the request, so these stay out of it.
-  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
-  setCurrentFetchCacheMode(options.fetchCache ?? null);
-  setCurrentFetchSoftTags(buildAppStaticParamsTags(options.routeSegments ?? []));
-  setCurrentFetchRevalidate(null);
-  setCurrentForceDynamicFetchDefault(false);
+  enterAppStaticParamsWorkStore(options.fetchCache ?? null, options.routeSegments ?? []);
   return validateAppPageDynamicParams({
     enforceStaticParamsOnly: options.dynamicParamsConfig === false,
     generateStaticParams: options.generateStaticParams,

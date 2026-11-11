@@ -74,6 +74,7 @@ import {
 import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
 import type { AppPageFallbackRouteHead, AppPagePreparedRouteHead } from "./app-page-head.js";
 import {
+  enterAppStaticParamsWorkStore,
   type AppPageInterceptState,
   buildAppPageElement,
   resolveAppPageInterceptionRerenderTarget,
@@ -709,7 +710,12 @@ export function runAppPageStaticGenerationWork<TRoute extends AppPageDispatchRou
       routeSegments: options.route.routeSegments,
       setNavigationContext: options.setNavigationContext,
     },
-    work,
+    () => {
+      // As the routing check runs them (validateAppPageRouteDynamicParams),
+      // so both see the same generated params.
+      enterAppStaticParamsWorkStore(options.fetchCache ?? null, options.route.routeSegments);
+      return work();
+    },
   );
 }
 
