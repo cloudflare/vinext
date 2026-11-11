@@ -350,6 +350,7 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isDraftMode: boolean,
     isForceStatic: boolean,
     isForceDynamic: boolean,
+    ownShellRead: AppPagePprOwnShellRead,
   ): Promise<Response | AppPagePprShellResume | null>;
   /**
    * After a page rendered dynamically, produce in the background the shell of
@@ -360,6 +361,7 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     currentRevalidateSeconds: number | null,
     isDraftMode: boolean,
     isForceDynamic: boolean,
+    ownShellRead: AppPagePprOwnShellRead,
   ): void;
   /** Produce the missing shells of a generated path rendered for the cache. */
   produceMissingShells(
@@ -368,6 +370,12 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
   ): Promise<void>;
   warm(options: WarmPprFallbackShellCachesOptions): Promise<void>;
 };
+
+/**
+ * The request's read of its path's own shell, which producing the shell after
+ * its render reuses instead of reading the shell again.
+ */
+export type AppPagePprOwnShellRead = { cached?: ISRCacheEntry | null };
 
 export type AppPagePprState = PprFallbackShellState;
 
@@ -1742,6 +1750,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
+  const pprOwnShellRead: AppPagePprOwnShellRead = {};
   const fallbackShellResult = options.pprRuntime
     ? await options.pprRuntime.tryServe(
         options,
@@ -1749,6 +1758,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isDraftMode,
         isForceStatic,
         isForceDynamic,
+        pprOwnShellRead,
       )
     : null;
   if (fallbackShellResult instanceof Response) {
@@ -2004,6 +2014,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             currentRevalidateSeconds,
             isDraftMode,
             isForceDynamic,
+            pprOwnShellRead,
           )
       : undefined;
   const lifecycleOptions: Parameters<typeof renderAppPageLifecycle>[0] = {
