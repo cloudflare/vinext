@@ -431,7 +431,11 @@ async function serveStoredFallbackShell<TRoute extends AppPageDispatchRoute>(
       if (read.cached!.isStale) {
         scheduleShellProduction(options, fallbackShell, currentRevalidateSeconds, false, true);
       }
-      await produceMissingFallbackShells(options, fallbackShells, currentRevalidateSeconds);
+      try {
+        await produceMissingFallbackShells(options, fallbackShells, currentRevalidateSeconds);
+      } catch (shellError) {
+        console.error("[vinext] ISR fallback shell discovery error:", shellError);
+      }
       return null;
     }
     const isEligible = (shell: AppPagePprFallbackCacheShell) => {
