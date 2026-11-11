@@ -119,7 +119,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     revision: number,
     edgeFlushAt?: number,
   ): Promise<TombstoneDrainResult>;
-  queueEdgePurge(keyHash: string, revision: number, edgeFlushAt: number): Promise<void>;
+  queueEdgePurge(keyHash: string, revision: number, edgeFlushAt: number): Promise<boolean>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
   getTagExpiration(tags: string[]): Promise<number>;
   findRefreshCandidates(options: ResponseStoreRefreshOptions): Promise<StoredEntry[]>;
@@ -818,6 +818,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   /** Whether R2 or edge work is left once this run's batch is flushed, and why. */
   private async flushPendingTombstones(): Promise<"none" | "queued" | "backlog"> {
+    // Edge work queued while the R2 work runs waits for the flush it scheduled.
+    const queuedThrough = this.tombstoneSequence();
     const drained = await this.drainPendingTombstones(PENDING_TOMBSTONE_FLUSH_LIMIT);
     if (drained.failures.length) {
       throw new AggregateError(
@@ -825,7 +827,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         "R2 tombstone cleanup failed",
       );
     }
-    const edgeEntries = this.listPendingEdgePurges(PENDING_TOMBSTONE_FLUSH_LIMIT);
+    const edgeEntries = this.listPendingEdgePurges(
+      PENDING_TOMBSTONE_FLUSH_LIMIT,
+      undefined,
+      queuedThrough,
+    );
     if (edgeEntries.length) {
       if (!(await this.getR2TombstoneEdgePurger().purgeR2TombstoneEdges(edgeEntries))) {
         throw new Error("Workers Response Store cache purge is unavailable");
@@ -1323,9 +1329,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
    * to send at `edgeFlushAt` with the rest of the queued edge work. Called once the
    * replacement is in R2, so the edge can only refill with it. Work already queued for the
    * key purges instead of invalidating, and gets this revision, so a flush that listed it
-   * before can't mark this purge sent.
+   * before can't mark this purge sent. Returns whether the alarm will send it; if not, the
+   * caller sends it and marks it sent.
    */
-  async queueEdgePurge(keyHash: string, revision: number, edgeFlushAt: number): Promise<void> {
+  async queueEdgePurge(keyHash: string, revision: number, edgeFlushAt: number): Promise<boolean> {
     this.ctx.storage.transactionSync(() =>
       this.ctx.storage.sql.exec(
         `INSERT INTO pending_r2_tombstones
@@ -1348,7 +1355,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         keyHash,
       ),
     );
-    await this.scheduleCleanupAlarm(edgeFlushAt);
+    return this.scheduleEdgeFlush(edgeFlushAt);
   }
 
   getEntry(keyHash: string): StoredEntry | null {
@@ -1832,14 +1839,27 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     };
   }
 
-  listPendingEdgePurges(limit: number, tombstoneSequence?: number): PurgedEntry[] {
-    const sequenceFilter = tombstoneSequence === undefined ? "" : " AND tombstone_sequence = ?";
+  listPendingEdgePurges(
+    limit: number,
+    tombstoneSequence?: number,
+    queuedThrough?: number,
+  ): PurgedEntry[] {
+    const filters = ["r2_complete = 1", "edge_purge_complete = 0"];
+    const parameters: number[] = [];
+    if (tombstoneSequence !== undefined) {
+      filters.push("tombstone_sequence = ?");
+      parameters.push(tombstoneSequence);
+    }
+    if (queuedThrough !== undefined) {
+      filters.push("tombstone_sequence <= ?");
+      parameters.push(queuedThrough);
+    }
     return this.ctx.storage.sql
       .exec<PendingTombstoneRow>(
         `SELECT * FROM pending_r2_tombstones
-        WHERE r2_complete = 1 AND edge_purge_complete = 0${sequenceFilter}
+        WHERE ${filters.join(" AND ")}
         ORDER BY key_hash LIMIT ?`,
-        ...(tombstoneSequence === undefined ? [] : [tombstoneSequence]),
+        ...parameters,
         limit,
       )
       .toArray()

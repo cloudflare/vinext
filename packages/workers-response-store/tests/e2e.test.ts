@@ -83,7 +83,7 @@ beforeEach(async () => {
                     CACHE_BODIES: new Proxy(env.CACHE_BODIES, {
                       get(bucket, key) {
                         const value = Reflect.get(bucket, key);
-                        if (key === "put" && metadataR2DelayMs) {
+                        if (["get", "head", "put"].includes(key) && metadataR2DelayMs) {
                           return async (...args) => {
                             await new Promise((resolve) => setTimeout(resolve, metadataR2DelayMs));
                             return value.apply(bucket, args);
@@ -540,6 +540,7 @@ test("purgeBatchWindow sends a window's edge purges and invalidations together",
 
 test("purgeBatchWindow sends the edge update itself when the alarm can't be scheduled", async () => {
   await put("/batched-unscheduled", "first", { tags: ["batched-unscheduled"] });
+  await put("/batched-unscheduled-put", "first", { tags: ["batched-unscheduled-put"] });
   await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate&fail-alarm");
   assert.deepEqual(await batchedMutation("invalidate", { tags: ["batched-unscheduled"] }), {
     backingStoreUpdated: true,
@@ -548,6 +549,42 @@ test("purgeBatchWindow sends the edge update itself when the alarm can't be sche
   assert.deepEqual(await edgeCallTags(), [
     { operation: "invalidate", tags: await edgeTags("/batched-unscheduled") },
   ]);
+  const replaced = await put("/batched-unscheduled-put", "second", {
+    purgeBatchWindow: true,
+    purgeExisting: true,
+    tags: ["batched-unscheduled-put"],
+  });
+  assert.deepEqual(replaced.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.deepEqual((await edgeCallTags()).slice(1), [
+    { operation: "purge", tags: await edgeTags("/batched-unscheduled-put") },
+  ]);
+  // The row it queued is settled, so no later flush sends it again.
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+});
+
+test("a running flush leaves edge work queued since it started for that work's own flush", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/batched-running", "first", { tags: ["batched-running"] });
+  await put("/batched-later", "first", { tags: ["batched-later"] });
+  await batchedMutation("invalidate", { tags: ["batched-running"] });
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  // Leave the invalidation's R2 rewrite for the flush to redo, slowly.
+  await storage.exec("UPDATE pending_r2_tombstones SET r2_complete = 0");
+  await worker.fetch(
+    "https://user.test/admin/edge-purge?mode=success&invalidate&metadata-r2-delay-ms=500",
+  );
+  const stub = await metadataStub();
+  const flushed = stub.retryPendingTombstones();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await stub.queueEdgePurge(await cacheKeyHash("/batched-later"), 10, Date.now() + 60_000);
+  assert.equal(await flushed, true);
+  assert.deepEqual(await edgeCallTags(), [
+    { operation: "invalidate", tags: await edgeTags("/batched-running") },
+  ]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+  await storage.exec("DELETE FROM pending_r2_tombstones");
 });
 
 test("a purge queued while an invalidation's R2 rewrite runs stays a purge", async () => {

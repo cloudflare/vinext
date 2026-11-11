@@ -572,20 +572,34 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     entry: StoredEntry,
   ): Promise<boolean> {
     const edgeFlushAt = this.edgeFlushAt();
-    if (edgeFlushAt !== undefined) {
-      try {
-        await metadata.queueEdgePurge(entry.keyHash, entry.activeRevision, edgeFlushAt);
-        return true;
-      } catch (error) {
-        console.error(
-          JSON.stringify({
-            message: "Workers Response Store edge purge could not be queued",
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-      }
+    if (edgeFlushAt === undefined) return this.updateEdgeCacheByTags([purgeTagForEntry(entry)]);
+    let scheduled: boolean;
+    try {
+      scheduled = await metadata.queueEdgePurge(entry.keyHash, entry.activeRevision, edgeFlushAt);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          message: "Workers Response Store edge purge could not be queued",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return this.updateEdgeCacheByTags([purgeTagForEntry(entry)]);
     }
-    return this.updateEdgeCacheByTags([purgeTagForEntry(entry)]);
+    if (scheduled) return true;
+    // The purge is queued, but no alarm will send it.
+    if (!(await this.updateEdgeCacheByTags([purgeTagForEntry(entry)]))) return false;
+    await metadata
+      .markTombstonesEdgePurged([
+        {
+          keyHash: entry.keyHash,
+          cacheKey: entry.cacheKey,
+          objectKey: "",
+          revision: entry.activeRevision,
+        },
+      ])
+      // Left unmarked, the next flush sends it again.
+      .catch(() => {});
+    return true;
   }
 
   private getVersionId(): string {
