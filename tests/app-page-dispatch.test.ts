@@ -1592,12 +1592,16 @@ describe("app page dispatch", () => {
       const [value] = [...stored.values()];
       expect(Object.keys(value?.headers ?? {})).not.toContain("x-next-cache-tags");
       expect(Object.keys(value?.headers ?? {})).not.toContain("x-vinext-prerender-cache-life");
+      // The producing render's cache state isn't the stored shell's.
+      expect(Object.keys(value?.headers ?? {})).not.toContain("x-nextjs-cache");
+      expect(Object.keys(value?.headers ?? {})).not.toContain("x-vinext-cache");
 
       const cached = await runWithRequestContext(createRequestContext(), () =>
         dispatchAppPage(options),
       );
       expect(cached.headers.get("x-next-cache-tags")).toBeNull();
       expect(cached.headers.get("x-vinext-prerender-cache-life")).toBeNull();
+      expect(cached.headers.get("x-nextjs-cache")).toBeNull();
     });
 
     // Like Next.js's `varyParams`, the client reuses the shell for another URL
@@ -1618,12 +1622,33 @@ describe("app page dispatch", () => {
       const response = await runWithRequestContext(createRequestContext(), () =>
         dispatchAppPage(options),
       );
-      expect(response.headers.get("x-vinext-vary-params")).toBe('["id","lang"]');
+      expect(response.headers.get("x-vinext-vary-params")).toBe(
+        encodeURIComponent('["id","lang"]'),
+      );
       await response.arrayBuffer();
       const cached = await runWithRequestContext(createRequestContext(), () =>
         dispatchAppPage(options),
       );
-      expect(cached.headers.get("x-vinext-vary-params")).toBe('["id","lang"]');
+      expect(cached.headers.get("x-vinext-vary-params")).toBe(encodeURIComponent('["id","lang"]'));
+    });
+
+    it("sends the params the shell read when a segment's name isn't Latin-1", async () => {
+      const { options } = createStaticShellOptions({
+        async buildPageElement() {
+          const params = makeThenableParams({ カテゴリ: "本" });
+          return React.createElement("main", null, params.カテゴリ);
+        },
+        cleanPathname: "/shop/本",
+        route: createRoute({ pattern: "/shop/:カテゴリ", routeSegments: ["shop", "[カテゴリ]"] }),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(response.status).toBe(200);
+      expect(
+        JSON.parse(decodeURIComponent(response.headers.get("x-vinext-vary-params") ?? "")),
+      ).toEqual(["カテゴリ"]);
     });
 
     it("leaves what follows io() a hole", async () => {
@@ -1689,6 +1714,16 @@ describe("app page dispatch", () => {
       );
       expect(second.headers.get("x-middleware")).toBe("second");
       expect(second.status).toBe(203);
+
+      // Whether the shell is the whole page stays the renderer's.
+      options.middlewareContext = {
+        headers: new Headers({ "x-vinext-static-shell": "partial" }),
+        status: null,
+      };
+      const third = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(third.headers.get("x-vinext-static-shell")).toBe("complete");
     });
 
     it("keys a rewritten page's shell by its cache pathname and keeps mounted slots", async () => {

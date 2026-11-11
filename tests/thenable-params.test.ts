@@ -5,6 +5,7 @@ import {
   runWithPprFallbackShellState,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import type { VaryParam } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -488,8 +489,8 @@ describe("makeThenableParams", () => {
 });
 
 describe("vary params", () => {
-  function recordVaryParams(routePattern: string, read: () => unknown): Promise<string[]> {
-    const varyParams = new Set<string>();
+  function recordVaryParams(routePattern: string, read: () => unknown): Promise<VaryParam[]> {
+    const varyParams = new Set<VaryParam>();
     const state = createPprFallbackShellState({ fallbackParamNames: [], routePattern, varyParams });
     return Promise.resolve(runWithPprFallbackShellState(state, read)).then(() => [...varyParams]);
   }
@@ -523,7 +524,7 @@ describe("vary params", () => {
     ).resolves.toEqual(["section", "slug"]);
   });
 
-  it("records search params as `?`", async () => {
+  it("records search params as `0`, which no param name can be", async () => {
     await expect(
       recordVaryParams("/search", async () => {
         const searchParams = await makeThenableParams({ q: "1" }, undefined, {
@@ -531,6 +532,6 @@ describe("vary params", () => {
         });
         return Reflect.get(searchParams, "missing");
       }),
-    ).resolves.toEqual(["?"]);
+    ).resolves.toEqual([0]);
   });
 });
