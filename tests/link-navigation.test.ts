@@ -3733,7 +3733,7 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("prefetches root-param routes through a concrete route tree before the page segment", async () => {
+  it("prefetches a root-param route's static shell under its concrete URL", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
@@ -3755,46 +3755,27 @@ describe("Link prefetch scheduling", () => {
     });
 
     try {
-      let releaseRouteTree: ((response: Response) => void) | undefined;
-      const routeTreeResponse = new Promise<Response>((resolve) => {
-        releaseRouteTree = resolve;
-      });
-      result.fetch
-        .mockImplementationOnce(() => routeTreeResponse)
-        .mockImplementation(() =>
-          Promise.resolve(createFlightResponse("concrete root-param page")),
-        );
+      result.fetch.mockImplementation(() =>
+        Promise.resolve(createFlightResponse("concrete root-param shell")),
+      );
 
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
 
-      const routeTreeInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
-      const routeTreeHeaders = routeTreeInit?.headers as Headers | undefined;
-      expect(routeTreeHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
-      expect(routeTreeHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
-
-      releaseRouteTree?.(createFlightResponse(""));
-      await waitForFetchCalls(result.fetch, 2);
-
       expectCanonicalRscFetchCall(
-        result.fetch.mock.calls[1],
+        result.fetch.mock.calls[0],
         "/root-param/aaa",
         expect.objectContaining({ credentials: "include", priority: "low" }),
       );
-      const pageInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
-      const pageHeaders = pageInit?.headers as Headers | undefined;
-      expect(pageHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
-      expect(pageHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/__PAGE__");
-      const pageRequestUrl = result.fetch.mock.calls[1]?.[0];
-      expect(typeof pageRequestUrl).toBe("string");
-      expect(pageRequestUrl as string).not.toContain("%5Bvalue%5D");
-
-      const { getPrefetchCache } =
-        await import("../packages/vinext/src/shims/app-router-navigation.js");
-      const navigationEntry = Array.from(getPrefetchCache().values()).find(
-        (entry) => entry.prefetchKind === "navigation",
+      const shellInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const shellHeaders = shellInit?.headers as Headers | undefined;
+      expect(shellHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
       );
-      expect(navigationEntry?.cacheForNavigation).toBe(true);
+      expect(shellHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).not.toBe("/_tree");
+      const shellRequestUrl = result.fetch.mock.calls[0]?.[0];
+      expect(typeof shellRequestUrl).toBe("string");
+      expect(shellRequestUrl as string).not.toContain("%5Bvalue%5D");
     } finally {
       await flushPrefetchTasks();
       result.restoreNodeEnv();

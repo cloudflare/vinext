@@ -373,3 +373,60 @@ for (const path of ["/en/about", "/en/blog/known", "/fr/about", "/fr/blog/new"])
     expect(consoleErrors).toEqual([]);
   });
 }
+
+// Like Next.js, which prerenders a shell per root param value, a Link to a
+// page under a root param prefetches the page's static shell, rendered with
+// its root params: the prefetch never renders the page's holes. An unknown
+// root param value gets its own shell too. These run here, after the specs
+// above, as the navigation renders a greeting the counters see.
+for (const locale of ["en", "fr"]) {
+  test(`prefetches the static shell of /${locale}/about under its root param`, async ({ page }) => {
+    const target = `/${locale}/about`;
+    const shellPrefetch = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === target &&
+        response.request().headers()["x-vinext-rsc-render-mode"] === "prefetch-static-shell",
+    );
+    await page.goto("/en/links");
+    const response = await shellPrefetch;
+    expect(response.status()).toBe(200);
+    const body = await response.text();
+    expect(body).toContain(`"lang":"${locale}"`);
+    expect(body).toContain('"greeting-loading"');
+    expect(body).not.toContain("hello ");
+  });
+}
+
+test("shows a root-param page's prefetched static shell while the page renders", async ({
+  page,
+  consoleErrors,
+}) => {
+  const shellPrefetch = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/en/about" &&
+      response.request().headers()["x-vinext-rsc-render-mode"] === "prefetch-static-shell",
+  );
+  await page.goto("/en/links");
+  await shellPrefetch;
+
+  // Hold the navigation's own request, so only the prefetch can show.
+  let releaseNavigation!: () => void;
+  const navigationHeld = new Promise<void>((resolve) => {
+    releaseNavigation = resolve;
+  });
+  await page.route("**/*", async (route) => {
+    const headers = route.request().headers();
+    if (headers.rsc === "1" && headers["next-router-prefetch"] === undefined) {
+      await navigationHeld;
+    }
+    await route.continue();
+  });
+
+  await page.click("#link-en-about");
+  await expect(page).toHaveURL("/en/about");
+  await expect(page.locator("#title")).toHaveText("About", { timeout: 2_000 });
+  await expect(page.locator("#greeting-loading")).toBeVisible();
+  releaseNavigation();
+  await expect(page.locator("#greeting")).toHaveText("hello guest");
+  expect(consoleErrors).toEqual([]);
+});
