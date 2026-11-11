@@ -220,7 +220,7 @@ const responseStore = createWorkersResponseStore(responseStoreOptions);
 const shardedResponseStore = createWorkersResponseStore({ ...responseStoreOptions, shards: 4 });
 const batchedResponseStore = createWorkersResponseStore({
   ...responseStoreOptions,
-  purgeBatchWindow: 1,
+  purgeBatchWindow: 3,
 });
 
 function storeForRequest(request: Request): WorkersResponseStore {

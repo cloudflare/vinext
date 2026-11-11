@@ -191,7 +191,7 @@ bucket's location.
 
 Edge purges and invalidations share the account's Free-tier
 [purge rate limits](https://developers.cloudflare.com/workers/cache/purge/#rate-limits).
-An app that revalidates often can queue them and send each window's together:
+An app that revalidates often can queue them and send each window's updates together:
 
 ```ts
 vinext({ cache: responseStoreAdapter({ purgeBatchWindow: 60 }) });

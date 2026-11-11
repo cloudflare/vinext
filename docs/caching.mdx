@@ -123,7 +123,7 @@ Each cache key remains strongly coordinated by one SQLite Durable Object. Tag/pa
 
 Every `revalidateTag()` and `revalidatePath()` purges or invalidates the edge copies of the responses and data it affects, and so do the data cache refills that follow it. Workers Cache always applies Cloudflare's Free-tier [purge rate limits](https://developers.cloudflare.com/workers/cache/purge/#rate-limits) to these: 5 requests a minute, with a burst of 25 and up to 100 tags per request, shared by every Worker in the account. An app that revalidates often can run out, and a refused purge leaves the edge serving the old response.
 
-If your app can accept a delay before revalidations reach the edge, queue the edge updates and send each window's together:
+If your app can accept a delay before revalidations reach the edge, queue the edge updates and send each window's updates together:
 
 ```ts
 vinext({ cache: responseStoreAdapter({ purgeBatchWindow: 60 }) });

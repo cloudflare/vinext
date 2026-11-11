@@ -529,7 +529,7 @@ test("purgeBatchWindow sends a window's edge purges and invalidations together",
   // The metadata DO sends them once the window ends.
   await vi.waitFor(async () => assert.notDeepEqual(await edgeCallTags(), []), {
     interval: 100,
-    timeout: 5000,
+    timeout: 10_000,
   });
   assert.deepEqual(await edgeCallTags(), [
     { operation: "purge", tags: await edgeTags("/batched-b", "/batched-c", "/batched-d") },
@@ -578,7 +578,7 @@ test("purgeBatchWindow retries a refused batch", async () => {
   assert.deepEqual(replaced.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
   await vi.waitFor(async () => assert.equal((await edgeCallTags()).length, 1), {
     interval: 100,
-    timeout: 5000,
+    timeout: 10_000,
   });
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
 
