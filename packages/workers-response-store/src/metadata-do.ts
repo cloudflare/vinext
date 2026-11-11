@@ -56,6 +56,15 @@ export type RefreshedRevision = {
   tagExpiration?: number;
 };
 
+/** A backlog's flush runs send only edge work queued before its first run started. */
+type EdgeFlushBacklog = {
+  queuedThrough: number;
+  /** The earliest flush that work queued during the backlog scheduled. */
+  flushAt?: number;
+};
+
+type TombstoneFlush = { state: "none" | "queued" | "backlog"; flushAt?: number };
+
 export type TombstoneDrainResult = {
   cursor?: string;
   /** The alarm sends the purged entries' edge purges at the requested flush time. */
@@ -211,7 +220,9 @@ const MAX_SQL_PARAMETERS = 100;
 const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
 const ORPHAN_CLEANUP_LIMIT = 100;
 const ORPHAN_CLEANUP_RETRY_MS = 60 * 1000;
+// A multiple of the 100 tags a Workers Cache purge takes, so a flush's requests are full.
 const PENDING_TOMBSTONE_FLUSH_LIMIT = 400;
+const EDGE_FLUSH_BACKLOG_KEY = "edgeFlushBacklog";
 const MAX_R2_CAS_ATTEMPTS = 3;
 
 type CacheMetadataEnv = {
@@ -788,15 +799,18 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   async alarm(): Promise<void> {
     try {
       const remaining = await this.flushPendingTombstones();
-      if (remaining === "backlog") {
+      if (remaining.state === "backlog") {
         await this.ctx.storage.setAlarm(Date.now());
         this.cleanupAlarmKnown = true;
         return;
       }
-      if (remaining === "queued") {
-        // Work queued while this ran scheduled its own flush, or its caller is sending it now.
-        // This alarm only backs that up, so the work isn't sent twice, nor ahead of its batch.
-        await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
+      if (remaining.state === "queued") {
+        // Work queued while this ran scheduled its own flush, which a backlog's reruns replaced
+        // and this restores, or its caller is sending it now. This alarm only backs that up, so
+        // the work isn't sent twice, nor ahead of its batch.
+        await this.scheduleCleanupAlarm(
+          Math.min(remaining.flushAt ?? Infinity, Date.now() + ORPHAN_CLEANUP_RETRY_MS),
+        );
         return;
       }
       await this.sweepExpiredPendingObjects();
@@ -813,13 +827,15 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   }
 
   async retryPendingTombstones(): Promise<boolean> {
-    return (await this.flushPendingTombstones()) !== "none";
+    return (await this.flushPendingTombstones()).state !== "none";
   }
 
   /** Whether R2 or edge work is left once this run's batch is flushed, and why. */
-  private async flushPendingTombstones(): Promise<"none" | "queued" | "backlog"> {
-    // Edge work queued while the R2 work runs waits for the flush it scheduled.
-    const queuedThrough = this.tombstoneSequence();
+  private async flushPendingTombstones(): Promise<TombstoneFlush> {
+    const backlog = await this.ctx.storage.get<EdgeFlushBacklog>(EDGE_FLUSH_BACKLOG_KEY);
+    // Edge work queued while this runs, or the backlog it continues, waits for the flush it
+    // scheduled.
+    const queuedThrough = backlog?.queuedThrough ?? this.tombstoneSequence();
     const drained = await this.drainPendingTombstones(PENDING_TOMBSTONE_FLUSH_LIMIT);
     if (drained.failures.length) {
       throw new AggregateError(
@@ -827,11 +843,22 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         "R2 tombstone cleanup failed",
       );
     }
-    const edgeEntries = this.listPendingEdgePurges(
-      PENDING_TOMBSTONE_FLUSH_LIMIT,
-      undefined,
-      queuedThrough,
+    // Purges and invalidations are separate requests, so each kind gets a full flush's worth.
+    const edgeBatches = [0, 1].map((edgeInvalidate) =>
+      this.ctx.storage.sql
+        .exec<PendingTombstoneRow>(
+          `SELECT * FROM pending_r2_tombstones
+          WHERE r2_complete = 1 AND edge_purge_complete = 0 AND edge_invalidate = ?
+            AND tombstone_sequence <= ?
+          ORDER BY key_hash LIMIT ?`,
+          edgeInvalidate,
+          queuedThrough,
+          PENDING_TOMBSTONE_FLUSH_LIMIT,
+        )
+        .toArray()
+        .map(pendingEntryFromRow),
     );
+    const edgeEntries = edgeBatches.flat();
     if (edgeEntries.length) {
       if (!(await this.getR2TombstoneEdgePurger().purgeR2TombstoneEdges(edgeEntries))) {
         throw new Error("Workers Response Store cache purge is unavailable");
@@ -840,15 +867,28 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     }
     if (
       drained.pending.length === PENDING_TOMBSTONE_FLUSH_LIMIT ||
-      edgeEntries.length === PENDING_TOMBSTONE_FLUSH_LIMIT
+      edgeBatches.some((batch) => batch.length === PENDING_TOMBSTONE_FLUSH_LIMIT)
     ) {
-      return "backlog";
+      // The backlog's rerun replaces any flush that work queued during this run scheduled.
+      const scheduled = (await this.ctx.storage.getAlarm()) ?? Infinity;
+      const flushAt = Math.min(backlog?.flushAt ?? Infinity, scheduled);
+      await this.ctx.storage.put<EdgeFlushBacklog>(EDGE_FLUSH_BACKLOG_KEY, {
+        queuedThrough,
+        ...(flushAt === Infinity ? {} : { flushAt }),
+      });
+      return { state: "backlog" };
     }
-    return this.ctx.storage.sql
-      .exec<{ pending: number }>("SELECT EXISTS(SELECT 1 FROM pending_r2_tombstones) AS pending")
-      .one().pending === 1
-      ? "queued"
-      : "none";
+    if (backlog) await this.ctx.storage.delete(EDGE_FLUSH_BACKLOG_KEY);
+    const queued =
+      this.ctx.storage.sql
+        .exec<{
+          pending: number;
+        }>("SELECT EXISTS(SELECT 1 FROM pending_r2_tombstones) AS pending")
+        .one().pending === 1;
+    return {
+      state: queued ? "queued" : "none",
+      ...(backlog?.flushAt === undefined ? {} : { flushAt: backlog.flushAt }),
+    };
   }
 
   async claimRevalidation(
@@ -1839,27 +1879,14 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     };
   }
 
-  listPendingEdgePurges(
-    limit: number,
-    tombstoneSequence?: number,
-    queuedThrough?: number,
-  ): PurgedEntry[] {
-    const filters = ["r2_complete = 1", "edge_purge_complete = 0"];
-    const parameters: number[] = [];
-    if (tombstoneSequence !== undefined) {
-      filters.push("tombstone_sequence = ?");
-      parameters.push(tombstoneSequence);
-    }
-    if (queuedThrough !== undefined) {
-      filters.push("tombstone_sequence <= ?");
-      parameters.push(queuedThrough);
-    }
+  listPendingEdgePurges(limit: number, tombstoneSequence?: number): PurgedEntry[] {
+    const sequenceFilter = tombstoneSequence === undefined ? "" : " AND tombstone_sequence = ?";
     return this.ctx.storage.sql
       .exec<PendingTombstoneRow>(
         `SELECT * FROM pending_r2_tombstones
-        WHERE ${filters.join(" AND ")}
+        WHERE r2_complete = 1 AND edge_purge_complete = 0${sequenceFilter}
         ORDER BY key_hash LIMIT ?`,
-        ...parameters,
+        ...(tombstoneSequence === undefined ? [] : [tombstoneSequence]),
         limit,
       )
       .toArray()

@@ -584,7 +584,64 @@ test("a running flush leaves edge work queued since it started for that work's o
     { operation: "invalidate", tags: await edgeTags("/batched-running") },
   ]);
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
-  await storage.exec("DELETE FROM pending_r2_tombstones");
+});
+
+async function queueEdgeRows(count: number, prefix: string, edgeInvalidate = 0) {
+  const stub = await metadataStub();
+  await stub.inspect();
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  await storage.exec(`
+    WITH RECURSIVE numbers(value) AS (
+      VALUES(1)
+      UNION ALL
+      SELECT value + 1 FROM numbers WHERE value < ${count}
+    )
+    INSERT INTO pending_r2_tombstones
+      (key_hash, cache_key, object_key, revision, r2_complete, edge_invalidate, tombstone_sequence)
+    SELECT printf('${prefix}-%03d', value), printf('/${prefix}/%d', value), '', 1, 1,
+      ${edgeInvalidate}, 0
+    FROM numbers
+  `);
+  return stub;
+}
+
+async function edgeCallSizes() {
+  return (await edgeCallTags()).map(({ operation, tags }) => `${operation} ${tags.length}`);
+}
+
+test("a flush sends each kind of edge update in full requests", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await queueEdgeRows(300, "full-purge");
+  const stub = await queueEdgeRows(150, "full-invalidate", 1);
+  assert.equal(await stub.retryPendingTombstones(), false);
+  assert.deepEqual((await edgeCallSizes()).sort(), [
+    "invalidate 100",
+    "invalidate 50",
+    "purge 100",
+    "purge 100",
+    "purge 100",
+  ]);
+});
+
+test("a backlog's later flush runs leave edge work queued during it for its own flush", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  await put("/backlog-later", "first", { tags: ["backlog-later"] });
+  const stub = await queueEdgeRows(450, "backlog");
+  assert.equal(await stub.retryPendingTombstones(), true);
+  assert.deepEqual(await edgeCallSizes(), ["purge 100", "purge 100", "purge 100", "purge 100"]);
+
+  await stub.queueEdgePurge(await cacheKeyHash("/backlog-later"), 10, Date.now() + 60_000);
+  assert.equal(await stub.retryPendingTombstones(), true);
+  assert.deepEqual((await edgeCallSizes()).slice(4), ["purge 50"]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+
+  // Once the backlog is sent, a flush sends the work queued during it.
+  assert.equal(await stub.retryPendingTombstones(), false);
+  assert.deepEqual((await edgeCallTags()).slice(5), [
+    { operation: "purge", tags: await edgeTags("/backlog-later") },
+  ]);
 });
 
 test("a purge queued while an invalidation's R2 rewrite runs stays a purge", async () => {

@@ -129,7 +129,7 @@ If your app can accept a delay before revalidations reach the edge, queue the ed
 vinext({ cache: responseStoreAdapter({ purgeBatchWindow: 60 }) });
 ```
 
-`purgeBatchWindow` is a number of seconds. The Response Store applies each revalidation to its own copy at once, but queues the edge updates in its metadata Durable Object. When the window ends, it sends them together, up to 100 tags per request, and retries a refused batch about once a minute until it goes through. So a revalidation reaches the edge up to the window later, or longer while the rate limit is reached. Each metadata shard sends its own batch.
+`purgeBatchWindow` is a number of seconds. The Response Store applies each revalidation to its own copy at once, but queues the edge updates in its metadata Durable Object. When the window ends, it sends them together in as few requests as it can: purges and invalidations are separate requests of up to 100 tags each. It retries a refused batch about once a minute until it goes through. So a revalidation reaches the edge up to the window later, or longer while the rate limit is reached. Each metadata shard sends its own batch.
 
 Revalidate through `revalidateTag()` and `revalidatePath()` rather than calling the Response Store's `invalidate()` or `purge()` yourself: they use the tags vinext stores entries under, and also apply to the rest of the current request. The option is disabled by default.
 
