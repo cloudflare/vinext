@@ -33,6 +33,7 @@ import {
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import {
   resolveSsrSearchParams,
+  createClientPageSearchParamsHang,
   resolveClientPageSearchParamsGate,
   startCandidateSearchParamsGate,
 } from "./app-ssr-search-params-gate.js";
@@ -534,6 +535,17 @@ export async function handleSsr(
       options?.pprShellResume?.browserSearch,
       searchParamsGate?.gate,
     );
+    const clientPageSearchParamsGate =
+      String(process.env.__NEXT_CACHE_COMPONENTS) === "true"
+        ? resolveClientPageSearchParamsGate(gate, options?.isStaticGeneration === true)
+        : undefined;
+    // A fallback shell and force-static never hand a client page the gate.
+    const clientPageSearchParamsHang =
+      clientPageSearchParamsGate &&
+      options?.pprFallbackShellSignal === undefined &&
+      options?.isForceStatic !== true
+        ? createClientPageSearchParamsHang(options?.signal)
+        : null;
     const ssrNavigationContext = {
       ...requiredNavigationContext,
       searchParams,
@@ -547,12 +559,11 @@ export async function handleSsr(
       getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {
         isForceStatic: options?.isForceStatic,
         isPprFallbackShell: options?.pprFallbackShellSignal !== undefined,
-        searchParamsGate:
-          String(process.env.__NEXT_CACHE_COMPONENTS) === "true"
-            ? resolveClientPageSearchParamsGate(gate, options?.isStaticGeneration === true)
-            : undefined,
+        searchParamsGate: clientPageSearchParamsGate,
+        onSearchParamsHang: clientPageSearchParamsHang?.onHang,
       }),
     };
+    const renderSignal = clientPageSearchParamsHang?.signal ?? options?.signal;
 
     // A render waits for its route's client references, so a cold render
     // shows the same document as a warm one, except for those whose modules
@@ -577,6 +588,7 @@ export async function handleSsr(
 
     const cleanup = (): void => {
       stopWatchingDynamic?.();
+      clientPageSearchParamsHang?.dispose();
       setNavigationContext(null);
       clearServerInsertedHTML();
     };
@@ -612,6 +624,9 @@ export async function handleSsr(
 
         if (searchParamsGate) {
           ssrStream = searchParamsGate.settleWhenConsumed(ssrStream);
+        }
+        if (clientPageSearchParamsHang) {
+          ssrStream = clientPageSearchParamsHang.trackFlightConsumed(ssrStream);
         }
 
         let flightRoot: PromiseLike<AppWireElements> | null = null;
@@ -803,7 +818,7 @@ export async function handleSsr(
               }
             : undefined,
           maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
-          signal: options?.signal,
+          signal: renderSignal,
           onError: handleRenderError,
         };
         function handleRenderError(error: unknown): string | undefined {
@@ -918,7 +933,7 @@ export async function handleSsr(
                 resume(ssrRoot, pprShellResume.postponed as PostponedState, {
                   nonce: options?.scriptNonce,
                   onError: handleRenderError,
-                  signal: options?.signal,
+                  signal: renderSignal,
                 }),
             );
             renderComplete = resumedHtmlStream.allReady;

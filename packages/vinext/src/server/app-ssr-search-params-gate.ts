@@ -3,6 +3,7 @@ import {
   markDynamicUsage,
   onRenderDynamicLatched,
 } from "vinext/shims/internal/headers-state";
+import { BailoutToCSRError } from "vinext/shims/navigation-errors";
 import { createSearchParamsGate, type SearchParamsGate } from "vinext/shims/search-params-gate";
 
 type CandidateSearchParamsGate = {
@@ -104,4 +105,77 @@ export function resolveSsrSearchParams(
     return { searchParams: new URLSearchParams(), gate: createBailoutSearchParamsGate() };
   }
   return { searchParams: new URLSearchParams(resumedSearch), gate: candidateGate };
+}
+
+type ClientPageSearchParamsHang = {
+  /** The render's signal, which also aborts once a hung render settles. */
+  signal: AbortSignal;
+  /** A client page's `searchParams` bailed out and hang. */
+  onHang: () => void;
+  /** Wrap the Flight stream SSR reads, to learn when it has read it all. */
+  trackFlightConsumed: (flightStream: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+  dispose: () => void;
+};
+
+/**
+ * Like Next.js's prerender, a static render hands a client page `searchParams`
+ * that never settle (`makeHangingPromise`), so the page can't catch the
+ * bail-out and render something else into the stored HTML. Next.js then
+ * aborts the render, and React renders every boundary still pending in the
+ * browser (`createRenderInBrowserAbortSignal`). This aborts the render the
+ * same way once SSR has read the whole Flight response, as nothing on the
+ * server can settle the page any more.
+ */
+export function createClientPageSearchParamsHang(
+  signal: AbortSignal | undefined,
+): ClientPageSearchParamsHang {
+  const controller = new AbortController();
+  let hung = false;
+  let consumed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const abortIfSettled = (): void => {
+    if (!hung || !consumed || timer !== undefined) return;
+    // On the next task, so the render first finishes the work the payload's
+    // last chunks unblocked.
+    timer = setTimeout(() => controller.abort(new BailoutToCSRError("searchParams")), 0);
+  };
+  const markConsumed = (): void => {
+    consumed = true;
+    abortIfSettled();
+  };
+  return {
+    signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+    onHang() {
+      hung = true;
+      abortIfSettled();
+    },
+    trackFlightConsumed(flightStream) {
+      const reader = flightStream.getReader();
+      return new ReadableStream<Uint8Array>({
+        async pull(streamController) {
+          let result: ReadableStreamReadResult<Uint8Array>;
+          try {
+            result = await reader.read();
+          } catch (error) {
+            markConsumed();
+            streamController.error(error);
+            return;
+          }
+          if (result.done) {
+            streamController.close();
+            markConsumed();
+            return;
+          }
+          streamController.enqueue(result.value);
+        },
+        cancel(reason) {
+          markConsumed();
+          return reader.cancel(reason);
+        },
+      });
+    },
+    dispose() {
+      clearTimeout(timer);
+    },
+  };
 }

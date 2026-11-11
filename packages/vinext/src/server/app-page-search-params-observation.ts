@@ -9,7 +9,6 @@ import {
   type ThenableParams,
   type ThenableParamsObserver,
 } from "vinext/shims/thenable-params";
-import { BailoutToCSRError } from "vinext/shims/navigation-errors";
 import type { SearchParamsGate } from "vinext/shims/search-params-gate";
 import type { AppPageSearchParams } from "./app-page-head.js";
 import { searchParamsToRecord } from "../utils/query.js";
@@ -22,6 +21,8 @@ type ClientPageSsrSearchParamsOptions = {
    * `searchParams` wait on with Cache Components.
    */
   searchParamsGate?: SearchParamsGate;
+  /** Runs when the gate bails out a client page's `searchParams`, which hang. */
+  onSearchParamsHang?: () => void;
 };
 
 function markAppPageSearchParamsAccess(): void {
@@ -113,7 +114,7 @@ function makeClientPageSsrSearchParamsThenableFromRecord(
   if (!options.searchParamsGate) return makeObservedAppPageSearchParamsThenable(pageSearchParams);
   return makeThenableParams(
     pageSearchParams,
-    createGatedClientPageSearchParamsObserver(options.searchParamsGate),
+    createGatedClientPageSearchParamsObserver(options.searchParamsGate, options.onSearchParamsHang),
     { isSearchParams: true },
   );
 }
@@ -124,20 +125,27 @@ function makeClientPageSsrSearchParamsThenableFromRecord(
  * render is static is stored with the page's Suspense boundary rendering in
  * the browser (app-render.tsx). So awaiting them waits for the render's
  * `useSearchParams()` gate: once the render is dynamic they resolve to the
- * query, and the read counts as usual; once it settles static, they reject
- * with the bail-out, so React renders the nearest Suspense boundary in the
- * browser. Reading a key synchronously still reads the query at once and
- * marks the render dynamic.
+ * query, and the read counts as usual; once it settles static, they never
+ * settle, so the page can't catch the bail-out, and the render is aborted
+ * (`onHang`), which renders the nearest Suspense boundary in the browser.
+ * Reading a key synchronously still reads the query at once and marks the
+ * render dynamic.
  */
-function createGatedClientPageSearchParamsObserver(gate: SearchParamsGate): ThenableParamsObserver {
+function createGatedClientPageSearchParamsObserver(
+  gate: SearchParamsGate,
+  onHang: (() => void) | undefined,
+): ThenableParamsObserver {
   // Created on the first continuation, so a page that never awaits them
-  // leaves no rejected promise behind.
+  // registers no hang.
   let gated: Promise<unknown> | null = null;
   return {
     ...createAppPageSearchParamsObserver(),
     deferContinuation(continueWith) {
       gated ??= gate.decided.then(() => {
-        if (gate.decision === "bailout") throw new BailoutToCSRError("searchParams");
+        if (gate.decision === "bailout") {
+          onHang?.();
+          return new Promise<never>(() => {});
+        }
         return continueWith();
       });
       return gated;
