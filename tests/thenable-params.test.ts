@@ -476,7 +476,7 @@ describe("vary params", () => {
     ).resolves.toEqual(["section", "slug"]);
   });
 
-  it("records search params as `?`", async () => {
+  it("records search params as `0`, which no param name can be", async () => {
     await expect(
       recordVaryParams("/search", async () => {
         const searchParams = await makeThenableParams({ q: "1" }, undefined, {
@@ -484,6 +484,6 @@ describe("vary params", () => {
         });
         return Reflect.get(searchParams, "missing");
       }),
-    ).resolves.toEqual(["?"]);
+    ).resolves.toEqual([0]);
   });
 });

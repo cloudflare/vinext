@@ -750,6 +750,7 @@ function prefetchUrl(
         if (
           autoPrefetch.staticShell === true &&
           rewrittenPrefetchHref === null &&
+          process.env.__NEXT_VARY_PARAMS !== "false" &&
           seedStaticShellPrefetchFromVaryingShell(
             rscUrl,
             interceptionContext,

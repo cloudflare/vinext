@@ -3202,6 +3202,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_PREFETCH_INLINING"] = JSON.stringify(
           nextConfig.prefetchInlining ? "true" : "false",
         );
+        // Like Next.js's, gates a prefetched shell's reuse for other params.
+        defines["process.env.__NEXT_VARY_PARAMS"] = JSON.stringify(
+          nextConfig.varyParams ? "true" : "false",
+        );
         // Emit a raw boolean (not the "true"/"false" string form used by the
         // sibling defines above): the consumer guards with
         // `if (process.env.__NEXT_GESTURE_TRANSITION)`, so the literal `false`

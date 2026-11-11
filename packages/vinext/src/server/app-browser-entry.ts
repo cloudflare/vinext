@@ -2518,6 +2518,7 @@ function bootstrapHydration(
             if (navigationKind === "traverse") {
               restoredBfcacheIds = null;
             }
+            shellMetadata.reset();
             currentHref = cachedFetchDecision.redirect.href;
             currentHistoryMode = cachedFetchDecision.redirect.historyUpdateMode;
             currentPrevNextUrl = cachedFetchDecision.redirect.previousNextUrl;
@@ -2855,6 +2856,7 @@ function bootstrapHydration(
           if (navigationKind === "traverse") {
             restoredBfcacheIds = null;
           }
+          shellMetadata.reset();
           currentHref = liveFetchDecision.redirect.href;
           currentHistoryMode = liveFetchDecision.redirect.historyUpdateMode;
           currentPrevNextUrl = liveFetchDecision.redirect.previousNextUrl;

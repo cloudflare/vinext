@@ -1571,6 +1571,20 @@ describe("keepOptimisticStreamingMetadata", () => {
     expect(shellMetadataOf((await kept)[metadataId])).toBe(shellMetadata);
   });
 
+  it("drops the shell a redirect left, even when it decodes after the redirect", async () => {
+    const payload: AppElements = { [metadataId]: createElement("title", null, "Target") };
+    const keeper = createShellMetadataKeeper("4");
+    keeper.setShell({ [metadataId]: createElement("title", null, "Optimistic") });
+    let resolveShell!: (elements: AppElements) => void;
+    keeper.trackShell(new Promise<AppElements>((resolve) => (resolveShell = resolve)));
+
+    keeper.reset();
+    resolveShell({ [metadataId]: createElement("title", null, "Source") });
+    await Promise.resolve();
+
+    expect(keeper.keep(payload)).toBe(payload);
+  });
+
   it("hands the page's payload over as is without a shell", () => {
     const payload = Promise.resolve<AppElements>({});
 
