@@ -67,6 +67,7 @@ import {
   closeAfterResponse,
   createRequestContext,
   getRequestContext,
+  requiresResponseCloseTracking,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
@@ -1807,6 +1808,17 @@ describe("app page dispatch", () => {
         await vi.waitFor(() => expect(afterStarted).toBe(true));
         release();
         await closed;
+      });
+
+      it("leaves the response untracked when the page registers no after() work", async () => {
+        const { options } = createStaticShellOptions({ route: runtimeRoute() });
+        const requestContext = createRequestContext();
+
+        const response = await runWithRequestContext(requestContext, () =>
+          dispatchAppPage(options),
+        );
+        expect(response.headers.get("x-vinext-static-shell")).toBe("complete");
+        expect(requiresResponseCloseTracking(requestContext)).toBe(false);
       });
 
       it.each(["page", "layout", "config layout"] as const)(
