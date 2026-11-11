@@ -806,11 +806,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       }
       if (remaining.state === "queued") {
         // Work queued while this ran scheduled its own flush, which a backlog's reruns replaced
-        // and this restores, or its caller is sending it now. This alarm only backs that up, so
-        // the work isn't sent twice, nor ahead of its batch.
-        await this.scheduleCleanupAlarm(
-          Math.min(remaining.flushAt ?? Infinity, Date.now() + ORPHAN_CLEANUP_RETRY_MS),
-        );
+        // and this restores, or its caller is sending it now. A flush it scheduled stays, so the
+        // work isn't sent ahead of its batch; otherwise this backs up its caller.
+        const scheduled =
+          (await this.ctx.storage.getAlarm()) ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS;
+        await this.scheduleCleanupAlarm(Math.min(remaining.flushAt ?? Infinity, scheduled));
         return;
       }
       await this.sweepExpiredPendingObjects();

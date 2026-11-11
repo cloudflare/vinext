@@ -98,6 +98,15 @@ beforeEach(async () => {
                   if (failAlarm) return Promise.reject(new Error("Alarm unavailable"));
                   return super.scheduleCleanupAlarm(scheduledTime);
                 }
+                getAlarmForTest() {
+                  return this.ctx.storage.getAlarm();
+                }
+                deleteAlarmForTest() {
+                  return this.ctx.storage.deleteAlarm();
+                }
+                runAlarmForTest() {
+                  return this.alarm();
+                }
               }
               let exposeInvalidate = false;
               let edgeCalls = [];
@@ -584,6 +593,29 @@ test("a running flush leaves edge work queued since it started for that work's o
     { operation: "invalidate", tags: await edgeTags("/batched-running") },
   ]);
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+});
+
+test("a flush keeps the later flush that work queued while it ran scheduled", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/longer-running", "first", { tags: ["longer-running"] });
+  await put("/longer-later", "first", { tags: ["longer-later"] });
+  await batchedMutation("invalidate", { tags: ["longer-running"] });
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  const stub = await metadataStub();
+  await stub.deleteAlarmForTest();
+  await storage.exec("UPDATE pending_r2_tombstones SET r2_complete = 0");
+  await worker.fetch(
+    "https://user.test/admin/edge-purge?mode=success&invalidate&metadata-r2-delay-ms=500",
+  );
+  const flushed = stub.runAlarmForTest();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  // A window longer than the alarm's one-minute retry.
+  const flushAt = Date.now() + 120_000;
+  await stub.queueEdgePurge(await cacheKeyHash("/longer-later"), 10, flushAt);
+  await flushed;
+  assert.equal(await stub.getAlarmForTest(), flushAt);
 });
 
 async function queueEdgeRows(count: number, prefix: string, edgeInvalidate = 0) {
