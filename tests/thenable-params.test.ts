@@ -5,6 +5,7 @@ import {
   runWithPprFallbackShellState,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import type { VaryParam } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -441,8 +442,8 @@ describe("makeThenableParams", () => {
 });
 
 describe("vary params", () => {
-  function recordVaryParams(routePattern: string, read: () => unknown): Promise<string[]> {
-    const varyParams = new Set<string>();
+  function recordVaryParams(routePattern: string, read: () => unknown): Promise<VaryParam[]> {
+    const varyParams = new Set<VaryParam>();
     const state = createPprFallbackShellState({ fallbackParamNames: [], routePattern, varyParams });
     return Promise.resolve(runWithPprFallbackShellState(state, read)).then(() => [...varyParams]);
   }

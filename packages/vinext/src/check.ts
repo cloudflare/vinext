@@ -394,7 +394,8 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "experimental.varyParams": {
     status: "partial",
-    detail: "config recognized; vinext does not implement root-param-aware cache keying",
+    detail:
+      "a prefetched static shell is reused for other URLs of its route with the same values for the params it read, tracked per shell rather than per segment",
   },
   "experimental.optimisticRouting": {
     status: "partial",

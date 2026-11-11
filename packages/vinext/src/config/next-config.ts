@@ -2273,7 +2273,8 @@ export async function resolveNextConfig(
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
   //   cacheComponents, prefetchInlining, varyParams, optimisticRouting, cachedNavigations
-  // vinext does not yet implement varyParams or optimisticRouting, and supports
+  // vinext implements varyParams per shell rather than per segment (and on by
+  // default), does not yet implement optimisticRouting, and supports
   // cachedNavigations only partially (it advertises staleTimes.static on
   // unclaimed cache hits but has no static-stage client cache), so we warn when
   // appShells is enabled and explain which co-flags are missing.
@@ -2286,7 +2287,7 @@ export async function resolveNextConfig(
     if (!prefetchInlining) {
       missingCoFlags.push("experimental.prefetchInlining");
     }
-    if (experimental?.varyParams !== true) {
+    if (experimental?.varyParams === false) {
       missingCoFlags.push("experimental.varyParams");
     }
     if (experimental?.optimisticRouting !== true) {
