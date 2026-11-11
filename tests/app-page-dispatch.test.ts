@@ -67,6 +67,7 @@ import {
   parseCacheabilityManifest,
 } from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
+  closeAfterResponse,
   createRequestContext,
   getRequestContext,
   runWithRequestContext,
@@ -1807,6 +1808,36 @@ describe("app page dispatch", () => {
         expect(seen).toEqual([{ params: { lang: "en" }, query: "q=1" }]);
         expect(response.headers.get("x-vinext-static-shell")).toBe("complete");
         expect(isrSetFallbackShell).not.toHaveBeenCalled();
+      });
+
+      it("returns before the page's after() work, which starts when the response closes", async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let afterStarted = false;
+        const { options } = createStaticShellOptions({
+          async buildPageElement() {
+            after(async () => {
+              afterStarted = true;
+              await gate;
+            });
+            return React.createElement("main", null, "page");
+          },
+          route: runtimeRoute(),
+        });
+        const requestContext = createRequestContext();
+
+        const response = await runWithRequestContext(requestContext, () =>
+          dispatchAppPage(options),
+        );
+        expect(response.headers.get("x-vinext-static-shell")).toBe("complete");
+        expect(afterStarted).toBe(false);
+
+        const closed = closeAfterResponse(requestContext);
+        await vi.waitFor(() => expect(afterStarted).toBe(true));
+        release();
+        await closed;
       });
 
       it.each(["page", "layout", "config layout"] as const)(
