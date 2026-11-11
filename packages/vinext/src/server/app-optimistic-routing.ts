@@ -508,7 +508,9 @@ export function keepOptimisticStreamingMetadata(
  * Keeps the shell a navigation committed, optimistic or static, so its streamed
  * metadata stays up while the page's own streams. A static shell decodes on its
  * own: it's read once the page's payload decodes, and never awaited. A redirect
- * resets it: the shell was for the URL the navigation left.
+ * drops it: the shell was for the URL the navigation left. The page's metadata
+ * still streams in its own boundary then, with no fallback, so the commit
+ * doesn't wait for it.
  */
 export function createShellMetadataKeeper(navigationKey: string): {
   keep(payload: Promise<AppElements> | AppElements): Promise<AppElements> | AppElements;
@@ -517,15 +519,27 @@ export function createShellMetadataKeeper(navigationKey: string): {
   trackShell(payload: Promise<AppElements>): void;
 } {
   let shellElements: AppElements | null = null;
-  let isShellDecoding = false;
+  let hasCommittedShell = false;
   let generation = 0;
-  const keepShellMetadata = (elements: AppElements): AppElements =>
-    shellElements === null
+  const keepShellMetadata = (elements: AppElements): AppElements => {
+    if (shellElements !== null) {
+      return keepOptimisticStreamingMetadata(elements, shellElements, navigationKey);
+    }
+    const id = findStreamingMetadataBody(elements);
+    return id === null
       ? elements
-      : keepOptimisticStreamingMetadata(elements, shellElements, navigationKey);
+      : {
+          ...elements,
+          [id]: createElement(
+            Suspense,
+            { fallback: null, key: navigationKey },
+            elements[id] as ReactNode,
+          ),
+        };
+  };
   return {
     keep(payload) {
-      if (shellElements === null && !isShellDecoding) return payload;
+      if (!hasCommittedShell) return payload;
       return payload instanceof Promise
         ? payload.then(keepShellMetadata)
         : keepShellMetadata(payload);
@@ -533,13 +547,13 @@ export function createShellMetadataKeeper(navigationKey: string): {
     reset() {
       generation += 1;
       shellElements = null;
-      isShellDecoding = false;
     },
     setShell(elements) {
+      hasCommittedShell = true;
       shellElements = elements;
     },
     trackShell(payload) {
-      isShellDecoding = true;
+      hasCommittedShell = true;
       const trackedGeneration = generation;
       void payload.then(
         (elements) => {
