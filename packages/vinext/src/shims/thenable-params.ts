@@ -26,6 +26,12 @@ export type ThenableParamsObserver = Readonly<{
    * before React counts any pending work, as Next.js does.
    */
   observeThenRead?: () => void;
+  /**
+   * Runs a continuation's work on the promise it returns instead: the params
+   * resolve once `continueWith` runs, which observes them. Called on every
+   * continuation, so it returns the same promise each time.
+   */
+  deferContinuation?: (continueWith: () => Promise<unknown>) => Promise<unknown>;
 }>;
 
 /** Whether the thenable holds search params, whose reads vary on `?`. */
@@ -260,6 +266,13 @@ function createThenableParams<T extends Record<string, unknown>>(
           // suspension.
           const hangingParams = getFallbackShellPromise();
           if (hangingParams) return Reflect.apply(value, hangingParams, args);
+          if (observer?.deferContinuation) {
+            const deferred = observer.deferContinuation(() => {
+              observeAllParamKeys(observer, plain);
+              return target;
+            });
+            return Reflect.apply(value, deferred, args);
+          }
           try {
             observeAllParamKeys(observer, plain);
           } catch (error) {
