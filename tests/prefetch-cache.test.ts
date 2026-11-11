@@ -3511,7 +3511,12 @@ describe("static-shell prefetch", () => {
       dynamicStaleTime: "ignore",
       staticShell: true,
     });
-    expect(resolveAutoAppRoutePrefetch("/loading?q=1").staticShell).toBeUndefined();
+    // Like Next.js's static prefetch, the shell never renders search params,
+    // so an href with a query string gets it too.
+    expect(resolveAutoAppRoutePrefetch("/loading?q=1")).toMatchObject({
+      cacheForNavigation: false,
+      staticShell: true,
+    });
     vi.stubEnv("__NEXT_CACHE_COMPONENTS", "false");
     expect(resolveAutoAppRoutePrefetch("/loading")).toMatchObject({ cacheForNavigation: false });
     expect(resolveAutoAppRoutePrefetch("/loading").staticShell).toBeUndefined();
@@ -3548,7 +3553,10 @@ describe("static-shell prefetch", () => {
       cacheForNavigation: false,
       staticShell: true,
     });
-    expect(resolveAutoAppRoutePrefetch("/test?q=1").staticShell).toBeUndefined();
+    expect(resolveAutoAppRoutePrefetch("/test?q=1")).toMatchObject({
+      cacheForNavigation: false,
+      staticShell: true,
+    });
     expect(resolveAutoAppRoutePrefetch("/runtime?q=1", "/feed").staticShell).toBeUndefined();
   });
 
@@ -3664,14 +3672,14 @@ describe("static-shell prefetch", () => {
   });
 
   describe("vary params", () => {
-    function setUpShopRoute(): void {
+    function setUpShopRoute({ isRuntime = true }: { isRuntime?: boolean } = {}): void {
       vi.stubEnv("NODE_ENV", "production");
       vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
       (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
         {
           canPrefetchLoadingShell: false,
           // A runtime prefetch reads search params, so it's asked for with them.
-          instant: "runtime",
+          ...(isRuntime ? { instant: "runtime" } : {}),
           isDynamic: true,
           patternParts: ["shop", ":category", ":item"],
         },
@@ -3802,6 +3810,127 @@ describe("static-shell prefetch", () => {
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 
+    // Like Next.js, whose static prefetches never vary on search params
+    // whatever `varyParams` is.
+    it("reuses a shell for another query string with experimental.varyParams: false", async () => {
+      setUpShopRoute();
+      vi.stubEnv("__VINEXT_VARY_PARAMS", "false");
+      const fetch = mockShellFetch();
+
+      await prefetch("/shop/electronics/phone", fetch, 1);
+      await prefetch("/shop/electronics/phone?q=1", fetch, 1);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await prefetch("/shop/electronics/tablet", fetch, 2);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("waits on another query string's pending shell instead of fetching its own", async () => {
+      setUpShopRoute({ isRuntime: false });
+      const fetch = mockShellFetch();
+      const respond = fetch.getMockImplementation()!;
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fetch.mockImplementation(async (input, init) => {
+        await held;
+        return respond(input, init);
+      });
+
+      appRouterInstance.prefetch("/shop/electronics/phone?q=a");
+      appRouterInstance.prefetch("/shop/electronics/phone?q=b");
+      await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+      await settlePrefetchSetup();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      release();
+      await prefetch("/shop/electronics/phone?q=b", fetch, 1);
+      expect(findEntry("/shop/electronics/phone?q=a")?.outcome).toBe("cache-seeded");
+      expect(findEntry("/shop/electronics/phone?q=b")?.snapshot?.renderedPathAndSearch).toBe(
+        "/shop/electronics/phone?q=b",
+      );
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("drops a wait on another query string's pending shell that a refresh cancelled", async () => {
+      setUpShopRoute({ isRuntime: false });
+      const fetch = mockShellFetch();
+      const respond = fetch.getMockImplementation()!;
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fetch.mockImplementation(async (input, init) => {
+        await held;
+        return respond(input, init);
+      });
+
+      const onInvalidate = vi.fn();
+      appRouterInstance.prefetch("/shop/electronics/phone?q=a");
+      appRouterInstance.prefetch("/shop/electronics/phone?q=b", { onInvalidate });
+      await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+      await settlePrefetchSetup();
+      // router.refresh() invalidates the cache while the shell is held, which
+      // notifies the waiting prefetch as it would its own.
+      invalidatePrefetchCache({ pingVisibleLinks: false });
+      expect(onInvalidate).toHaveBeenCalledTimes(1);
+      release();
+      await settlePrefetchSetup();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(findEntry("/shop/electronics/phone?q=b")).toBeUndefined();
+      expect(onInvalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it("drops a wait on another query string's pending shell that a Server Action refresh evicted", async () => {
+      setUpShopRoute({ isRuntime: false });
+      const fetch = mockShellFetch();
+      const respond = fetch.getMockImplementation()!;
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fetch.mockImplementation(async (input, init) => {
+        await held;
+        return respond(input, init);
+      });
+
+      const onInvalidate = vi.fn();
+      appRouterInstance.prefetch("/shop/electronics/phone?q=a");
+      appRouterInstance.prefetch("/shop/electronics/phone?q=b", { onInvalidate });
+      await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+      await settlePrefetchSetup();
+      // A Server Action's refresh() evicts unsettled prefetches without
+      // cancelling prefetch setups.
+      const { invalidateDynamicPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
+      invalidateDynamicPrefetchCache();
+      expect(onInvalidate).toHaveBeenCalledTimes(1);
+      release();
+      await settlePrefetchSetup();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(findEntry("/shop/electronics/phone?q=b")).toBeUndefined();
+    });
+
+    it("doesn't wait on another query string's pending runtime prefetch", async () => {
+      setUpShopRoute();
+      const fetch = mockShellFetch();
+      const respond = fetch.getMockImplementation()!;
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fetch.mockImplementation(async (input, init) => {
+        await held;
+        return respond(input, init);
+      });
+
+      // A runtime prefetch renders the request's search params.
+      appRouterInstance.prefetch("/shop/electronics/phone?q=a");
+      appRouterInstance.prefetch("/shop/electronics/phone?q=b");
+      await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      release();
+    });
+
     it("hands a superseded pending prefetch's invalidation subscribers to the reused shell", async () => {
       setUpShopRoute();
       const fetch = mockShellFetch();
@@ -3821,7 +3950,7 @@ describe("static-shell prefetch", () => {
           rscUrl,
           null,
           null,
-          createVaryingStaticShellResolver("/shop/electronics/tablet"),
+          createVaryingStaticShellResolver("/shop/electronics/tablet", true),
         ),
       ).toBe(true);
       expect(findEntry("/shop/electronics/tablet")?.outcome).toBe("cache-seeded");

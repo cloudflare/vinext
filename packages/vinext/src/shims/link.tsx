@@ -482,6 +482,8 @@ function prefetchUrl(
           createAppPrefetchRequestHeaders,
           discardLearningOnlyPrefetchCacheEntry,
           fetchRouteTreeGatedPrefetch,
+          findPendingStaticShellPrefetchForSearch,
+          waitForPendingStaticShellPrefetch,
           hasFreshLearningOnlyPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
@@ -747,18 +749,35 @@ function prefetchUrl(
         }
         // Another URL's shell serves this one when they agree on the params it
         // read. A client rewrite's target isn't the URL the shell keys on.
-        if (
-          autoPrefetch.staticShell === true &&
-          rewrittenPrefetchHref === null &&
-          process.env.__VINEXT_VARY_PARAMS !== "false" &&
+        const canReuseOtherShell =
+          autoPrefetch.staticShell === true && rewrittenPrefetchHref === null;
+        const seedFromOtherShell = () =>
           seedStaticShellPrefetchFromVaryingShell(
             rscUrl,
             interceptionContext,
             mountedSlotsHeader,
-            createVaryingStaticShellResolver(fullHref),
-          )
-        ) {
-          return;
+            createVaryingStaticShellResolver(
+              fullHref,
+              process.env.__VINEXT_VARY_PARAMS !== "false",
+            ),
+          );
+        if (canReuseOtherShell && seedFromOtherShell()) return;
+        const pendingSearchShell =
+          canReuseOtherShell && autoPrefetch.runtimePrefetch !== true
+            ? findPendingStaticShellPrefetchForSearch(
+                rscUrl,
+                interceptionContext,
+                mountedSlotsHeader,
+              )
+            : null;
+        if (pendingSearchShell !== null) {
+          const ownerLeaveCount = owner?.leaveCount;
+          if (!(await waitForPendingStaticShellPrefetch(pendingSearchShell, fullHref))) return;
+          // The Link left the viewport or unmounted while it waited.
+          if (owner && owner.leaveCount !== ownerLeaveCount) return;
+          if (navigationEpoch !== linkPrefetchNavigationEpoch || seedFromOtherShell()) return;
+          // Another prefetch of the URL started while this one waited.
+          if (getPrefetchCache().has(cacheKey)) return;
         }
         prefetched.add(cacheKey);
         // Next's `prefetchInlining` Segment Cache path fetches a route tree

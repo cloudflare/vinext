@@ -39,7 +39,10 @@ import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app-page-head.js";
 import type { AppPagePprShellResume } from "../packages/vinext/src/server/app-page-stream.js";
-import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
+import {
+  appIsrStaticShellRscKey,
+  type ISRCacheEntry,
+} from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import {
   formatAppPprShellState,
@@ -1863,8 +1866,54 @@ describe("app page dispatch", () => {
       });
     });
 
+    // Like Next.js's static prefetch, the shell never renders search params,
+    // so every query string of the page shares it.
+    it("serves an href with a query string the page's shared shell", async () => {
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => {
+        const searchParams = makeThenableParams({}, undefined, { isSearchParams: true });
+        // Like Next.js's prerender, the shell leaves the read to a hole.
+        try {
+          Reflect.get(searchParams, "q");
+        } catch {}
+        return React.createElement("main", null, "page");
+      });
+      const { options, stored } = createStaticShellOptions({
+        buildPageElement,
+        request: new Request("https://example.test/posts?q=1"),
+        searchParams: new URLSearchParams("q=1"),
+      });
+      options.renderedPathAndSearch = "/posts?q=1";
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(response.headers.get("x-vinext-static-shell")).toBe("partial");
+      // Each request gets its own URL, and the shell its reads of params alone.
+      expect(response.headers.get("x-vinext-rendered-path-and-search")).toBe(
+        encodeURIComponent("/posts?q=1"),
+      );
+      expect(decodeURIComponent(response.headers.get("x-vinext-vary-params") ?? "")).toBe("[]");
+      expect([...stored.keys()]).toEqual([appIsrStaticShellRscKey("/posts")]);
+      expect(Object.keys(stored.values().next().value?.headers ?? {})).not.toContain(
+        "x-vinext-rendered-path-and-search",
+      );
+
+      const bare = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          renderedPathAndSearch: "/posts",
+          request: new Request("https://example.test/posts"),
+          searchParams: new URLSearchParams(),
+        }),
+      );
+      expect(bare.headers.get("x-vinext-static-shell")).toBe("partial");
+      expect(bare.headers.get("x-vinext-rendered-path-and-search")).toBe(
+        encodeURIComponent("/posts"),
+      );
+      expect(buildPageElement).toHaveBeenCalledTimes(1);
+    });
+
     it.each([
-      ["a search string", { searchParams: new URLSearchParams("q=1") }],
       ["an interception", { interceptionContext: "/feed" }],
       ["a development server", { isProduction: false }],
     ] satisfies [string, CreateDispatchOptionsOverrides][])(

@@ -2462,7 +2462,6 @@ function bootstrapHydration(
           prefetchProbeDecision.kind === "probe" &&
           navigationKind === "navigate" &&
           additionalPrefetchRscUrls.length === 0 &&
-          process.env.__VINEXT_VARY_PARAMS !== "false" &&
           peekStaticShellPrefetchForNavigation(
             rscUrl,
             requestInterceptionContext,
@@ -2472,7 +2471,10 @@ function bootstrapHydration(
             rscUrl,
             requestInterceptionContext,
             mountedSlotsHeader,
-            createVaryingStaticShellResolver(currentHref),
+            createVaryingStaticShellResolver(
+              currentHref,
+              process.env.__VINEXT_VARY_PARAMS !== "false",
+            ),
           )
         ) {
           hasPrefetchCandidate = hasPrefetchCacheEntry();

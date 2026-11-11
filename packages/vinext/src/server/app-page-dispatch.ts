@@ -105,6 +105,7 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
+  SEARCH_PARAMS_VARY_PARAM,
   VINEXT_VARY_PARAMS_HEADER,
   type AppRscRenderMode,
   type VaryParam,
@@ -1054,7 +1055,13 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
             headers.set(
               VINEXT_VARY_PARAMS_HEADER,
               encodeURIComponent(
-                JSON.stringify([...varyParams].sort((a, b) => String(a).localeCompare(String(b)))),
+                JSON.stringify(
+                  [...varyParams]
+                    // Like Next.js's, a static shell never varies on search
+                    // params: it renders none. A runtime prefetch does.
+                    .filter((name) => isRuntimePrefetch || name !== SEARCH_PARAMS_VARY_PARAM)
+                    .sort((a, b) => String(a).localeCompare(String(b))),
+                ),
               ),
             );
             return new Response(body, {
