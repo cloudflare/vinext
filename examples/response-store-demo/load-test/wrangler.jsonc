@@ -1,0 +1,36 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "vinext-response-store-load-test",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "vinext/server/fetch-handler",
+  "workers_dev": true,
+  "preview_urls": true,
+  "account_id": "d48e2eb599d9aa075d5e682deaecc518",
+  "assets": {
+    "directory": "dist/client",
+    "not_found_handling": "none",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.01,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": true
+    }
+  },
+  "cache": { "enabled": false },
+  "placement": { "region": "aws:eu-west-2" },
+  "services": [
+    {
+      "binding": "RESPONSE_STORE",
+      "service": "vinext-response-store-load-test-cache",
+      "entrypoint": "ResponseStoreService"
+    }
+  ],
+  "version_metadata": { "binding": "CF_VERSION_METADATA" }
+}
