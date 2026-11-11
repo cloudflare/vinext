@@ -14,6 +14,7 @@ import {
   resolveOptimisticNavigationParamsForHref,
 } from "../../server/app-optimistic-routing.js";
 import { stripRscCacheBustingSearchParam } from "../../server/app-rsc-cache-busting.js";
+import { SEARCH_PARAMS_VARY_PARAM } from "../../server/app-rsc-render-mode.js";
 import { stripBasePath } from "../../utils/base-path.js";
 import { isUnknownRecord } from "../../utils/record.js";
 import type { CachedRscResponse } from "../app-router-navigation.js";
@@ -78,7 +79,8 @@ function parseParamsHeader(paramsHeader: string | null): Params | null {
 /**
  * Create a resolver of the shell another URL's prefetch got, for `targetHref`.
  * It's the target's shell when both URLs match the same route and agree on
- * every param the shell's render read (`?` compares their search strings).
+ * every param the shell's render read (`SEARCH_PARAMS_VARY_PARAM` compares
+ * their search strings).
  * The shell must be the source URL's own render, not a rewrite's, with the
  * params the client resolves for it, so the target's params can replace them.
  */
@@ -108,7 +110,7 @@ export function createVaryingStaticShellResolver(
     if (sourceParams === null || !isSameParams(sourceParams, resolvedSource.params)) return null;
 
     for (const name of source.varyParams) {
-      if (name === "?") {
+      if (name === SEARCH_PARAMS_VARY_PARAM) {
         if (resolvedSource.search !== target.search) return null;
         continue;
       }

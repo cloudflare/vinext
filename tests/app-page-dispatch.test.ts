@@ -1588,12 +1588,35 @@ describe("app page dispatch", () => {
       const response = await runWithRequestContext(createRequestContext(), () =>
         dispatchAppPage(options),
       );
-      expect(response.headers.get("x-vinext-vary-params")).toBe('["id","lang"]');
+      expect(response.headers.get("x-vinext-vary-params")).toBe(
+        encodeURIComponent('["id","lang"]'),
+      );
       await response.arrayBuffer();
       const cached = await runWithRequestContext(createRequestContext(), () =>
         dispatchAppPage(options),
       );
-      expect(cached.headers.get("x-vinext-vary-params")).toBe('["id","lang"]');
+      expect(cached.headers.get("x-vinext-vary-params")).toBe(
+        encodeURIComponent('["id","lang"]'),
+      );
+    });
+
+    it("sends the params the shell read when a segment's name isn't Latin-1", async () => {
+      const { options } = createStaticShellOptions({
+        async buildPageElement() {
+          const params = makeThenableParams({ カテゴリ: "本" });
+          return React.createElement("main", null, params.カテゴリ);
+        },
+        cleanPathname: "/shop/本",
+        route: createRoute({ pattern: "/shop/:カテゴリ", routeSegments: ["shop", "[カテゴリ]"] }),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(response.status).toBe(200);
+      expect(
+        JSON.parse(decodeURIComponent(response.headers.get("x-vinext-vary-params") ?? "")),
+      ).toEqual(["カテゴリ"]);
     });
 
     it("leaves what follows io() a hole", async () => {
