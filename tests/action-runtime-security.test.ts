@@ -368,7 +368,11 @@ export default function Page() {
     const response = await handler(actionRequest("/", actionIds.goTo, ["/admin/secret"]));
     const body = await response.text();
 
-    expect(response.status).toBe(303);
+    // Client-handled (fetch) action redirects answer with 200, not 303 —
+    // the `x-action-redirect` header carries the target, matching real
+    // Next.js (vercel/next.js#96310). A 303 here is reserved for
+    // progressive-enhancement (no-JS) form submissions.
+    expect(response.status).toBe(200);
     expect(response.headers.get("x-action-redirect")).toBe("/admin/secret");
     expect(body).not.toContain("ADMIN_SECRET_MARKER_42");
     expect(body).toBe("");
