@@ -507,15 +507,18 @@ export function keepOptimisticStreamingMetadata(
 /**
  * Keeps the shell a navigation committed, optimistic or static, so its streamed
  * metadata stays up while the page's own streams. A static shell decodes on its
- * own: it's read once the page's payload decodes, and never awaited.
+ * own: it's read once the page's payload decodes, and never awaited. A redirect
+ * resets it: the shell was for the URL the navigation left.
  */
 export function createShellMetadataKeeper(navigationKey: string): {
   keep(payload: Promise<AppElements> | AppElements): Promise<AppElements> | AppElements;
+  reset(): void;
   setShell(elements: AppElements): void;
   trackShell(payload: Promise<AppElements>): void;
 } {
   let shellElements: AppElements | null = null;
   let isShellDecoding = false;
+  let generation = 0;
   const keepShellMetadata = (elements: AppElements): AppElements =>
     shellElements === null
       ? elements
@@ -527,14 +530,20 @@ export function createShellMetadataKeeper(navigationKey: string): {
         ? payload.then(keepShellMetadata)
         : keepShellMetadata(payload);
     },
+    reset() {
+      generation += 1;
+      shellElements = null;
+      isShellDecoding = false;
+    },
     setShell(elements) {
       shellElements = elements;
     },
     trackShell(payload) {
       isShellDecoding = true;
+      const trackedGeneration = generation;
       void payload.then(
         (elements) => {
-          shellElements = elements;
+          if (trackedGeneration === generation) shellElements = elements;
         },
         () => {},
       );
