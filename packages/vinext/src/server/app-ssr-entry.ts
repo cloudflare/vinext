@@ -35,6 +35,7 @@ import { createClientPageSsrSearchParamsSource } from "./app-page-search-params-
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isOpenRedirectShaped, repeatedSlashRedirectResponse } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { isSrvxAbsoluteFormTarget } from "./srvx-request-target.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { withAppRouterTree } from "vinext/shims/app-router-tree-context";
 import {
@@ -582,6 +583,17 @@ export async function handleSsr(
               nonce: options?.scriptNonce,
             } as PreinitModuleOptions);
           }
+          // Evaluating these starts hydration, which needs the whole shell, so
+          // only React's bootstrap script at the end of the shell may run them.
+          for (const moduleUrl of pagesClientAssets.appBootstrapPreloadModules ?? []) {
+            // React forwards fetchPriority; its types leave it out.
+            preloadModule(moduleUrl, {
+              as: "script",
+              crossOrigin: assetCrossOrigin,
+              fetchPriority: "low",
+              nonce: options?.scriptNonce,
+            } as PreloadModuleOptions);
+          }
           // The browser entry imports the RouteManifest chunk as it boots.
           // Browsers fetch a dynamic import() at high priority, ahead of the
           // document's own content; the import reuses this low-priority
@@ -1053,6 +1065,9 @@ export async function handleSsr(
 
 export default {
   async fetch(request: Request): Promise<Response> {
+    // Nitro's Node server takes request.url's origin from an absolute-form
+    // request target, which `vinext start` 404s before routing.
+    if (isSrvxAbsoluteFormTarget(request)) return notFoundResponse();
     const url = new URL(request.url);
     // Redirect repeated slashes / backslashes like Next.js and block encoded
     // protocol-relative shapes (/%5Cevil.com/). See

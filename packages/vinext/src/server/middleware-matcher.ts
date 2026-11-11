@@ -13,7 +13,9 @@ import {
 export type MatcherConfig = string | Array<string | MiddlewareMatcherObject>;
 
 export type MiddlewareLocaleMatchContext =
-  | { kind: "defaulted"; defaultLocale: string }
+  // `restoreRootTrailingSlash` spells the defaulted root `/en/`, as Next.js's
+  // router server does under `trailingSlash` (`shouldRestoreLocaleRootTrailingSlash`).
+  | { kind: "defaulted"; defaultLocale: string; restoreRootTrailingSlash?: boolean }
   | { kind: "internal" | "literal" }
   // A raw `_next/data` URL Next.js does not normalize before matching (a stale
   // buildId). It is matched against Next.js's compiled matcher shape instead.
@@ -159,7 +161,9 @@ function matchObjectMatcher(
 
   const matchPathname =
     localeContext?.kind === "defaulted"
-      ? `/${localeContext.defaultLocale}${pathname === "/" ? "" : pathname}`
+      ? `/${localeContext.defaultLocale}${
+          pathname !== "/" ? pathname : localeContext.restoreRootTrailingSlash ? "/" : ""
+        }`
       : pathname;
   return matchRequestPattern(matchPathname, matcher.source);
 }

@@ -1662,7 +1662,7 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       expect(config).not.toMatch(/,\n\s*\n    },/);
       if (mode === "service-binding") {
         expect(config).toContain(
-          '  worker: {\n    name: "test-project-response-store",\n    compatibilityDate: "2026-09-23",\n    compatibilityFlags: ["nodejs_compat"],\n  },',
+          '  worker: {\n    name: "test-project-response-store",\n    compatibilityDate: "2026-09-23",\n  },',
         );
         expect(config).toContain(
           "export const responseStoreServiceBinding = responseStore.serviceBindingWorker;\n\nexport default",
@@ -2094,7 +2094,7 @@ describe("init — generated project snapshots", () => {
   it("snapshots a fresh Cloudflare App Router init", async () => {
     setupProject(tmpDir, { router: "app" });
 
-    await runInit(tmpDir, { platform: "cloudflare", _today: "2026-06-23" });
+    await runInit(tmpDir, { platform: "cloudflare", _today: "2026-09-23" });
 
     expect(snapshotProject(tmpDir)).toMatchSnapshot();
   });
@@ -2123,7 +2123,7 @@ export default defineConfig({
 `,
     );
 
-    await runInit(tmpDir, { platform: "cloudflare", _today: "2026-06-23" });
+    await runInit(tmpDir, { platform: "cloudflare", _today: "2026-09-23" });
 
     expect(snapshotProject(tmpDir)).toMatchSnapshot();
   });
@@ -3035,7 +3035,33 @@ describe("init — dependency installation", () => {
       "react-dom": "latest",
     });
     expect(output).toContain(
-      "Added dependencies to dependencies:\n      - react\n      - react-dom",
+      "✓ Upgraded react ^19.0.0 → latest\n    ✓ Upgraded react-dom ^19.0.0 → latest",
+    );
+  });
+
+  it("reports the peerDependencies spec of a React package it upgrades", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: {
+        dependencies: { next: "^15.0.0" },
+        peerDependencies: { react: "^19.0.0", "react-dom": "^19.0.0" },
+      },
+    });
+    setupFakeReact(tmpDir, "19.2.3");
+
+    const { output } = await runInit(tmpDir, {
+      // npm saves the upgraded packages to dependencies.
+      _exec: (cmd) => {
+        if (!cmd.includes('"react@latest"')) return;
+        const pkg = readPkg(tmpDir) as { dependencies: Record<string, string> };
+        pkg.dependencies.react = "^19.3.1";
+        pkg.dependencies["react-dom"] = "^19.3.1";
+        writeFile(tmpDir, "package.json", JSON.stringify(pkg, null, 2));
+      },
+    });
+
+    expect(output).toContain(
+      "✓ Upgraded react ^19.0.0 → ^19.3.1\n    ✓ Upgraded react-dom ^19.0.0 → ^19.3.1",
     );
   });
 

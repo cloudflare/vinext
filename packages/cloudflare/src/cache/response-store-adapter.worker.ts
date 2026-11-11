@@ -277,7 +277,7 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
           { cache: "shared", regeneratesStoredEntry: true, renderWholeDocument: true },
           capture,
         );
-        if (!isCacheable(response)) {
+        if (!isCacheable(response, request)) {
           await response.body?.cancel().catch(() => {});
           void capture.rscData?.catch(() => {});
           throw new Error("Vinext response-stage regeneration was not cacheable");
@@ -550,7 +550,7 @@ function isStoredErrorStatus(status: number): boolean {
   return status === 401 || status === 403 || status === 404;
 }
 
-function isCacheable(response: Response): boolean {
+function isCacheable(response: Response, request: Request): boolean {
   const policy =
     response.headers.get("Cloudflare-CDN-Cache-Control") ??
     response.headers.get("CDN-Cache-Control") ??
@@ -559,6 +559,9 @@ function isCacheable(response: Response): boolean {
     response.status >= 200 &&
     // A 304 answers one request's precondition; it is not the page.
     response.status !== 304 &&
+    // A 206 for a Range request holds only the part that request selected.
+    // Next.js still stores a static route handler's 206, which no Range selects.
+    !(response.status === 206 && request.headers.has("Range")) &&
     (response.status < 400 || isStoredErrorStatus(response.status)) &&
     policy !== null &&
     !isNonCacheableCacheControl(policy)
@@ -815,7 +818,7 @@ const handler = {
         ctx.waitUntil(
           capture.admittedResponse
             .then(async (admitted) => {
-              if (!isCacheable(admitted)) {
+              if (!isCacheable(admitted, stageRequest)) {
                 await admitted.body?.cancel().catch(() => {});
                 void capture.rscData?.catch(() => {});
                 return;
@@ -856,7 +859,7 @@ const handler = {
             )
           : publicResponse(notModified, "MISS", props, true);
       }
-      if (!isCacheable(rendered)) {
+      if (!isCacheable(rendered, stageRequest)) {
         void capture.rscData?.catch(() => {});
         return publicResponse(foreground(rendered), "BYPASS", props);
       }

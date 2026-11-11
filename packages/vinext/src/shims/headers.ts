@@ -31,6 +31,7 @@ import {
   createRenderDynamicLatch,
   getHeadersShimState as _getState,
   headersShimAls as _als,
+  isInsideAnyCacheScope,
   markDynamicUsage,
   markRenderRequestApiUsage,
   throwIfInsideCacheScope,
@@ -63,6 +64,12 @@ export type HeadersContext = {
   headers: Headers;
   cookies: Map<string, string>;
   accessError?: Error;
+  /**
+   * The route whose `generateStaticParams` runs. There is no HTTP request, so
+   * `connection()` and `draftMode()` reject with `accessError` too, and
+   * revalidation throws, also from a cached function the generator calls.
+   */
+  staticParamsRoute?: string;
   draftModeEnabled?: boolean;
   forceStatic?: boolean;
   mutableCookies?: RequestCookies;
@@ -183,6 +190,23 @@ export async function runWithDetachedDynamicUsage<T>(fn: () => T | Promise<T>): 
     renderRequestApiUsage: new Set(),
   };
   return await _als.run(childState, fn);
+}
+
+/**
+ * Run a `dynamicParams` check's `generateStaticParams` apart from the request,
+ * as Next.js runs it in a work store of its own. Unlike a layout probe, it
+ * also memoizes its own fetches, so the render that follows fetches anew, and
+ * reads cached data even during an on-demand revalidation.
+ */
+export async function runStaticParamsCheckDetached<T>(fn: () => Promise<T>): Promise<T> {
+  return await runWithDetachedDynamicUsage(() => {
+    if (!isInsideUnifiedScope()) return fn();
+    return runWithUnifiedStateMutation((context) => {
+      context.currentFetchDedupeEntries = new Map();
+      context.nextFetchId = 1;
+      context.isOnDemandRevalidate = false;
+    }, fn);
+  });
 }
 
 export async function runWithConnectionProbe<T>(
@@ -960,6 +984,11 @@ export function getDraftModeCookieHeader(): string | null {
   return header;
 }
 
+/** Put back a draft-mode `Set-Cookie` header a dispatch took for a response it won't send. */
+export function restoreDraftModeCookieHeader(header: string): void {
+  _getState().draftModeCookieHeader = header;
+}
+
 function validateDraftModeSecret(secret: string): string {
   if (secret.length === 0) {
     throw new Error("[vinext] draft mode secret must be a non-empty string.");
@@ -1073,6 +1102,10 @@ export async function draftMode(): Promise<DraftModeResult> {
   const context = state.headersContext;
   if (!context) {
     throw createDraftModeScopeError("draftMode()");
+  }
+  // A cache scope reads disabled draft mode, even in generateStaticParams.
+  if (context.staticParamsRoute !== undefined && context.accessError && !isInsideAnyCacheScope()) {
+    throw context.accessError;
   }
   // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
   // getter and merely calling `draftMode()` does not require bailing out

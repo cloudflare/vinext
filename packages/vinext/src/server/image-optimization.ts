@@ -15,8 +15,13 @@
  * spoofing. SVG content is blocked by default (following Next.js behavior).
  * When `dangerouslyAllowSVG` is enabled in next.config.js, SVGs are served
  * as-is (no transformation) with security headers applied.
+ *
+ * Like Next.js, formats it does not optimize (SVG, ICO, ICNS, BMP, JPEG XL,
+ * HEIC) and animated images are served as-is too.
  */
 
+import { isAnimatedImage } from "./image-animation.js";
+import { ImageSourceReader, ImageSourceTooLargeError } from "./image-source-reader.js";
 import { hasLocalMatch, type LocalPattern } from "./image-local-patterns.js";
 import { assetPrefixPathname, ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -91,16 +96,17 @@ export type ImageConfig = {
    * via the image shim instead.
    */
   dangerouslyAllowLocalIP?: boolean;
-  /**
-   * Minimum `Cache-Control` max-age, in seconds, for optimized images served
-   * from a local source (`images.minimumCacheTTL`). Default: 14400 (4 hours),
-   * as in Next.js.
-   */
-  minimumCacheTTL?: number;
   /** Content-Disposition header value. Default: "inline". */
   contentDispositionType?: "inline" | "attachment";
   /** Content-Security-Policy header value. Default: "script-src 'none'; frame-src 'none'; sandbox;" */
   contentSecurityPolicy?: string;
+  /** Least max-age, in seconds, of an image served as-is. Default: 14400. */
+  minimumCacheTTL?: number;
+  /**
+   * Most bytes of a GIF, PNG or WebP source read for optimization before
+   * answering 413. Default: 50000000.
+   */
+  maximumResponseBody?: number;
 };
 
 /**
@@ -397,11 +403,14 @@ export function negotiateImageFormat(acceptHeader: string | null): string {
  */
 export const IMAGE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
+/** Next.js's default `images.minimumCacheTTL`, in seconds. */
+const DEFAULT_MINIMUM_CACHE_TTL = 14400;
+
 /**
- * Next.js's Cache-Control for an image whose source can change at its URL
- * (anything but a hashed build asset), at the default `images.minimumCacheTTL`.
+ * Next.js's default `images.maximumResponseBody`: the most it reads of a
+ * source before answering 413.
  */
-export const MUTABLE_IMAGE_SOURCE_CACHE_CONTROL = "public, max-age=14400, must-revalidate";
+const DEFAULT_MAXIMUM_RESPONSE_BODY = 50_000_000;
 
 /**
  * Content-Security-Policy for image optimization responses.
@@ -424,9 +433,115 @@ const SAFE_IMAGE_CONTENT_TYPES = new Set([
   "image/avif",
   "image/x-icon",
   "image/vnd.microsoft.icon",
+  "image/x-icns",
   "image/bmp",
   "image/tiff",
+  "image/jxl",
+  "image/heic",
 ]);
+
+/**
+ * Formats Next.js serves as-is instead of optimizing (`BYPASS_TYPES` in
+ * packages/next/src/server/image-optimizer.ts), with ICO's registered name.
+ */
+const BYPASS_IMAGE_CONTENT_TYPES = new Set([
+  "image/svg+xml",
+  "image/x-icon",
+  "image/vnd.microsoft.icon",
+  "image/x-icns",
+  "image/bmp",
+  "image/jxl",
+  "image/heic",
+]);
+
+/** Formats Next.js serves as-is when animated (`ANIMATABLE_TYPES`). */
+const ANIMATABLE_IMAGE_CONTENT_TYPES = new Set(["image/webp", "image/png", "image/gif"]);
+
+/** Next.js's 400 body for a source whose type it does not serve, such as SVG. */
+export const IMAGE_TYPE_NOT_ALLOWED_MESSAGE =
+  '"url" parameter is valid but image type is not allowed';
+
+function imageTypeNotAllowedResponse(): Response {
+  return new Response(IMAGE_TYPE_NOT_ALLOWED_MESSAGE, { status: 400 });
+}
+
+function imageMediaType(contentType: string | null): string {
+  return contentType?.split(";")[0].trim().toLowerCase() ?? "";
+}
+
+/**
+ * Next.js's image signatures (`detectContentType` in
+ * packages/next/src/server/image-optimizer.ts); a null byte matches any value.
+ */
+const IMAGE_SIGNATURES: ReadonlyArray<readonly [string, ReadonlyArray<number | null>]> = [
+  ["image/jpeg", [0xff, 0xd8, 0xff]],
+  ["image/png", [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
+  ["image/gif", [0x47, 0x49, 0x46, 0x38]],
+  ["image/webp", [0x52, 0x49, 0x46, 0x46, null, null, null, null, 0x57, 0x45, 0x42, 0x50]],
+  ["image/svg+xml", [0x3c, 0x3f, 0x78, 0x6d, 0x6c]],
+  ["image/svg+xml", [0x3c, 0x73, 0x76, 0x67]],
+  ["image/avif", [null, null, null, null, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]],
+  ["image/x-icon", [0x00, 0x00, 0x01, 0x00]],
+  ["image/x-icns", [0x69, 0x63, 0x6e, 0x73]],
+  ["image/tiff", [0x49, 0x49, 0x2a, 0x00]],
+  ["image/bmp", [0x42, 0x4d]],
+  ["image/jxl", [0xff, 0x0a]],
+  ["image/jxl", [0x00, 0x00, 0x00, 0x0c, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a]],
+  ["image/heic", [null, null, null, null, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]],
+];
+const IMAGE_SIGNATURE_LENGTH = 12;
+
+/** The image type Next.js detects from a source's first bytes, or null. */
+export function sniffImageContentType(bytes: Uint8Array): string | null {
+  for (const [type, signature] of IMAGE_SIGNATURES) {
+    if (signature.every((byte, i) => byte === null || bytes[i] === byte)) return type;
+  }
+  return null;
+}
+
+/**
+ * Label a source that arrives without an image Content-Type by its first
+ * bytes, as Next.js types every source. Workers static assets have no type for
+ * some formats Next.js serves, such as ICNS.
+ */
+async function withSniffedImageContentType(source: Response): Promise<Response> {
+  if (
+    !source.ok ||
+    !source.body ||
+    imageMediaType(source.headers.get("Content-Type")).startsWith("image/")
+  ) {
+    return source;
+  }
+  const reader = source.body.getReader();
+  // Replay the chunks read, copying only the signature's bytes.
+  const head: Uint8Array[] = [];
+  const signature = new Uint8Array(IMAGE_SIGNATURE_LENGTH);
+  let length = 0;
+  while (length < IMAGE_SIGNATURE_LENGTH) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    head.push(value);
+    signature.set(value.subarray(0, IMAGE_SIGNATURE_LENGTH - length), length);
+    length += Math.min(value.byteLength, IMAGE_SIGNATURE_LENGTH - length);
+  }
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of head) controller.enqueue(chunk);
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  const headers = new Headers(source.headers);
+  const type = sniffImageContentType(signature.subarray(0, length));
+  if (type !== null) headers.set("Content-Type", type);
+  return new Response(body, { status: source.status, statusText: source.statusText, headers });
+}
 
 /**
  * Check if a Content-Type header value is a safe image type.
@@ -436,9 +551,8 @@ export function isSafeImageContentType(
   contentType: string | null,
   dangerouslyAllowSVG = false,
 ): boolean {
-  if (!contentType) return false;
   // Extract the media type, ignoring parameters (e.g., charset)
-  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+  const mediaType = imageMediaType(contentType);
   if (SAFE_IMAGE_CONTENT_TYPES.has(mediaType)) return true;
   if (dangerouslyAllowSVG && mediaType === "image/svg+xml") return true;
   return false;
@@ -480,17 +594,90 @@ function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
 export const IMAGE_RESPONSE_CACHE_STATE = "MISS";
 
 /** Headers shared by every successful image response, transformed or not. */
-function setImageResponseHeaders(headers: Headers, config?: ImageConfig): void {
-  headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+function setImageResponseHeaders(
+  headers: Headers,
+  cacheControl: string,
+  config?: ImageConfig,
+): void {
+  headers.set("Cache-Control", cacheControl);
   headers.set("Vary", "Accept");
   setImageSecurityHeaders(headers, config);
   setCacheStateHeaders(headers, IMAGE_RESPONSE_CACHE_STATE);
 }
 
-function createPassthroughImageResponse(source: Response, config?: ImageConfig): Response {
+/** The `s-maxage` or `max-age` of a Cache-Control value, like Next.js' getMaxAge. */
+function cacheControlMaxAge(cacheControl: string | null): number {
+  const directives = new Map<string, string | undefined>();
+  for (const directive of cacheControl?.split(",") ?? []) {
+    const [key, value] = directive.trim().split("=", 2);
+    directives.set(key.toLowerCase(), value?.toLowerCase());
+  }
+  let age = directives.get("s-maxage") || directives.get("max-age") || "";
+  if (age.startsWith('"') && age.endsWith('"')) age = age.slice(1, -1);
+  const seconds = Number.parseInt(age, 10);
+  return Number.isNaN(seconds) ? 0 : seconds;
+}
+
+const IMAGE_BUILD_ASSET = Symbol.for("vinext.imageBuildAsset");
+
+/**
+ * Mark a source the host fetched from its `_next/static` build output, which
+ * is served immutably like Next.js' `isStatic` sources. A public file is never
+ * marked, whatever its path.
+ */
+export function markImageBuildAsset(response: Response): Response {
+  Reflect.set(response, IMAGE_BUILD_ASSET, true);
+  return response;
+}
+
+function isImageBuildAsset(response: Response): boolean {
+  return Reflect.get(response, IMAGE_BUILD_ASSET) === true;
+}
+
+/**
+ * Next.js's Cache-Control for a source it serves as-is: a build asset stays
+ * immutable, and any other source is revalidated after the larger of
+ * `images.minimumCacheTTL` and the source's own max-age. Next.js ignores the
+ * source's max-age when it falls back after a failed transform, so that
+ * fallback passes null.
+ */
+export function sourceImageCacheControl(
+  isBuildAsset: boolean,
+  upstreamCacheControl: string | null,
+  config?: ImageConfig,
+): string {
+  if (isBuildAsset) return IMAGE_CACHE_CONTROL;
+  const maxAge = Math.max(
+    config?.minimumCacheTTL ?? DEFAULT_MINIMUM_CACHE_TTL,
+    cacheControlMaxAge(upstreamCacheControl),
+  );
+  return `public, max-age=${maxAge}, must-revalidate`;
+}
+
+function createPassthroughImageResponse(
+  source: Response,
+  body: BodyInit | null,
+  cacheControl: string,
+  config?: ImageConfig,
+  readLength: number | null = null,
+): Response {
   const headers = new Headers(source.headers);
-  setImageResponseHeaders(headers, config);
-  return new Response(source.body, { status: 200, headers });
+  setImageResponseHeaders(headers, cacheControl, config);
+  // A source read whole is sent at the length read, whatever it declared.
+  if (readLength !== null) headers.set("Content-Length", String(readLength));
+  return new Response(body, { status: 200, headers });
+}
+
+/** Whether a source's Content-Length is more than `limit` bytes. */
+function declaresMoreThan(source: Response, limit: number): boolean {
+  return Number(source.headers.get("Content-Length") ?? Number.NaN) > limit;
+}
+
+/** Next.js's 413 for a source larger than `images.maximumResponseBody`. */
+function sourceTooLargeResponse(): Response {
+  return new Response('"url" parameter is valid but internal response is invalid', {
+    status: 413,
+  });
 }
 
 /**
@@ -532,7 +719,9 @@ export async function handleImageOptimization(
   const { imageUrl, width, quality } = params;
 
   // Fetch source image
-  const source = await handlers.fetchAsset(imageUrl, request);
+  const fetchedSource = await handlers.fetchAsset(imageUrl, request);
+  const isBuildAsset = isImageBuildAsset(fetchedSource);
+  const source = await withSniffedImageContentType(fetchedSource);
   if (!source.ok || !source.body) {
     return invalidImageSourceResponse();
   }
@@ -545,27 +734,75 @@ export async function handleImageOptimization(
   // when dangerouslyAllowSVG is explicitly enabled in next.config.js.
   const sourceContentType = source.headers.get("Content-Type");
   if (!isSafeImageContentType(sourceContentType, imageConfig?.dangerouslyAllowSVG)) {
-    return new Response("The requested resource is not an allowed image type", { status: 400 });
+    return imageTypeNotAllowedResponse();
   }
 
-  // SVG passthrough: SVG is a vector format, so transformation (resize, format
-  // conversion) provides no benefit. Serve as-is with security headers.
-  // This matches Next.js behavior where SVG is a "bypass type".
-  const sourceMediaType = sourceContentType?.split(";")[0].trim().toLowerCase();
-  if (sourceMediaType === "image/svg+xml") {
-    return createPassthroughImageResponse(source, imageConfig);
+  // Like Next.js, serve a format it does not optimize as-is, SVG included
+  // once dangerouslyAllowSVG admitted it above.
+  const sourceMediaType = imageMediaType(sourceContentType);
+  const sourceCacheControl = sourceImageCacheControl(
+    isBuildAsset,
+    source.headers.get("Cache-Control"),
+    imageConfig,
+  );
+  if (BYPASS_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
+    const response = createPassthroughImageResponse(
+      source,
+      source.body,
+      sourceCacheControl,
+      imageConfig,
+    );
+    // Next.js labels an ICO by its detected type, `image/x-icon`, where
+    // Workers static assets use the registered `image/vnd.microsoft.icon`.
+    if (sourceMediaType === "image/vnd.microsoft.icon") {
+      response.headers.set("Content-Type", "image/x-icon");
+    }
+    return response;
   }
 
   // Transform if handler provided, otherwise serve original
+  const limit = imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY;
+  let reader: ImageSourceReader | null = null;
   if (handlers.transformImage) {
     try {
-      const transformed = await handlers.transformImage(source.body, {
+      let body: ReadableStream<Uint8Array> = source.body;
+      // Next.js serves an animated image as-is rather than flattening it to
+      // one frame, and answers 413 past the most it reads of a source.
+      if (ANIMATABLE_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
+        if (declaresMoreThan(source, limit)) {
+          source.body.cancel().catch(() => {});
+          return sourceTooLargeResponse();
+        }
+        // Detect animation as the source streams in, then replay the bytes
+        // read, or fetch the source again when too many were read to hold.
+        reader = new ImageSourceReader(source.body, limit);
+        const animated = await isAnimatedImage(reader);
+        let sourceBody = reader.body();
+        if (!sourceBody) {
+          reader.cancel();
+          const refetched = await handlers.fetchAsset(imageUrl, request);
+          if (!refetched.ok || !refetched.body) return invalidImageSourceResponse();
+          reader = new ImageSourceReader(refetched.body, limit);
+          sourceBody = reader.body()!;
+        }
+        if (animated) {
+          return createPassthroughImageResponse(
+            source,
+            sourceBody,
+            sourceCacheControl,
+            imageConfig,
+            reader.completeLength,
+          );
+        }
+        body = sourceBody;
+      }
+      const transformed = await handlers.transformImage(body, {
         width,
         format,
         quality,
       });
       const headers = new Headers(transformed.headers);
-      setImageResponseHeaders(headers, imageConfig);
+      setImageResponseHeaders(headers, IMAGE_CACHE_CONTROL, imageConfig);
 
       // Verify the transformed response also has a safe Content-Type.
       // A malicious or buggy transform handler could return HTML.
@@ -575,26 +812,55 @@ export async function handleImageOptimization(
 
       return new Response(transformed.body, { status: 200, headers });
     } catch (e) {
+      if (e instanceof ImageSourceTooLargeError || reader?.tooLarge) {
+        return sourceTooLargeResponse();
+      }
       console.error("[vinext] Image optimization error:", e);
     }
   }
 
-  // Fallback: serve original image with cache headers
+  // Fallback: serve original image with cache headers. Without an optimizer
+  // the source is served as-is; after a failed transform Next.js keeps it
+  // for the minimum TTL only.
+  const fallbackCacheControl = handlers.transformImage
+    ? sourceImageCacheControl(isBuildAsset, null, imageConfig)
+    : sourceCacheControl;
+  // A source read whole replays; any other has been read, so a locked body
+  // throws and the source is fetched again.
+  const readLength = reader?.completeLength ?? null;
   try {
-    return createPassthroughImageResponse(source, imageConfig);
+    return createPassthroughImageResponse(
+      source,
+      (readLength !== null && reader?.body()) || source.body,
+      fallbackCacheControl,
+      imageConfig,
+      readLength,
+    );
   } catch (e) {
     console.error("[vinext] Image fallback error, refetching source image:", e);
-    const refetchedSource = await handlers.fetchAsset(imageUrl, request);
+    reader?.cancel();
+    const refetchedSource = await withSniffedImageContentType(
+      await handlers.fetchAsset(imageUrl, request),
+    );
     if (!refetchedSource.ok || !refetchedSource.body) {
       return invalidImageSourceResponse();
     }
 
     const refetchedContentType = refetchedSource.headers.get("Content-Type");
     if (!isSafeImageContentType(refetchedContentType, imageConfig?.dangerouslyAllowSVG)) {
-      return new Response("The requested resource is not an allowed image type", { status: 400 });
+      return imageTypeNotAllowedResponse();
     }
 
-    return createPassthroughImageResponse(refetchedSource, imageConfig);
+    // A source that was bound for the optimizer stays within the limit.
+    let body: ReadableStream<Uint8Array> = refetchedSource.body;
+    if (reader) {
+      if (declaresMoreThan(refetchedSource, limit)) {
+        body.cancel().catch(() => {});
+        return sourceTooLargeResponse();
+      }
+      body = new ImageSourceReader(body, limit).body()!;
+    }
+    return createPassthroughImageResponse(refetchedSource, body, fallbackCacheControl, imageConfig);
   }
 }
 

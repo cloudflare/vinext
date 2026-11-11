@@ -386,12 +386,19 @@ export type NextConfig = {
     dangerouslyAllowSVG?: boolean;
     /** Allow image optimization for hostnames that resolve to private IP addresses. This is a security risk (SSRF) — only enable for private networks when you understand the risk. */
     dangerouslyAllowLocalIP?: boolean;
-    /** Minimum Cache-Control max-age in seconds for optimized images. Defaults to 14400 (4 hours). */
-    minimumCacheTTL?: number;
     /** Content-Disposition header for image responses. Defaults to "inline". */
     contentDispositionType?: "inline" | "attachment";
     /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
     contentSecurityPolicy?: string;
+    /** Least max-age, in seconds, of an image the endpoint serves as-is. Defaults to 14400. */
+    minimumCacheTTL?: number;
+    /**
+     * Most bytes the endpoint reads of a GIF, PNG or WebP source bound for an
+     * image optimizer (while detecting animation and while streaming to the
+     * optimizer) before answering 413. Other sources stream unbounded.
+     * Defaults to 50000000.
+     */
+    maximumResponseBody?: number;
   };
   /**
    * Enable React Strict Mode. When `true`, the client root is wrapped in

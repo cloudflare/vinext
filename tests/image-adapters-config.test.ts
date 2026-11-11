@@ -173,7 +173,8 @@ describe("image optimizer registry", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("source-bytes");
-    expect(response.headers.get("Cache-Control")).toContain("immutable");
+    // Next.js's image policy at the default `images.minimumCacheTTL`.
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
   });
 });
 
@@ -335,6 +336,29 @@ describe("registration is wired into the router/runtime entries", () => {
       expect(JSON.parse(imageConfig ?? "{}").localPatterns).toEqual([
         { pathname: "/photos/**", search: "" },
       ]);
+    }
+  });
+
+  it("App Router entries inline the image endpoint's cache TTL and source size limit", () => {
+    const config = { imageConfig: { minimumCacheTTL: 60, maximumResponseBody: 1024 } };
+    for (const code of [
+      generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, config),
+      generateAppRequestRscEntry(
+        "/tmp/test/app",
+        minimalAppRoutes,
+        null,
+        [],
+        null,
+        "",
+        false,
+        config,
+      ),
+    ]) {
+      const imageConfig = code.match(/^export const __imageConfig = (.+);$/m)?.[1];
+      expect(JSON.parse(imageConfig ?? "{}")).toMatchObject({
+        minimumCacheTTL: 60,
+        maximumResponseBody: 1024,
+      });
     }
   });
 

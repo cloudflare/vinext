@@ -23,19 +23,29 @@ import { notifyAppRouterTransitionStart } from "../client/instrumentation-client
 import {
   __basePath,
   activateNavigationSnapshot,
-  appRouterInstance,
   commitClientNavigationState,
+  createClientNavigationRenderSnapshot,
+  getClientNavigationRenderContext,
+  getBfcacheIdMapContext,
+  getNavigationContext,
+  decodeRedirectError,
+  isRedirectError,
+  replaceClientParamsWithoutNotify,
+  setClientParams,
+  setPendingPathname,
+  setNavigationContext,
+  useRouter,
+  type ClientNavigationRenderSnapshot,
+} from "vinext/shims/navigation";
+import {
+  appRouterInstance,
   consumePrefetchResponse,
   consumePrefetchResponseForNavigation,
   createCachedRscResponseSnapshot,
-  createClientNavigationRenderSnapshot,
   deletePrefetchResponseSnapshot,
   disableNavigationResponsePrefetchCacheReuse,
   DYNAMIC_NAVIGATION_CACHE_TTL,
   PREFETCH_CACHE_TTL,
-  getClientNavigationRenderContext,
-  getBfcacheIdMapContext,
-  getNavigationContext,
   getMountedSlotsHeader,
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
@@ -45,26 +55,18 @@ import {
   parseRenderedPathAndSearchHeader,
   preloadHybridClientRouteOwner,
   seedPrefetchResponseSnapshot,
-  decodeRedirectError,
-  isRedirectError,
   pushHistoryStateWithoutNotify,
-  replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
   resolveLoadedHybridClientRewriteHref,
   resolvePrefetchCacheEntryMountedSlotsHeader,
   restoreRscResponse,
   saveScrollPosition,
-  setClientParams,
-  setPendingPathname,
   setMountedSlotsHeader,
-  setNavigationContext,
   trackAppRouterNavigationInFlight,
-  useRouter,
   type CachedRscResponse,
-  type ClientNavigationRenderSnapshot,
   type InvalidatePrefetchCacheOptions,
   type PrefetchCacheEntry,
-} from "vinext/shims/navigation";
+} from "vinext/shims/app-router-navigation";
 import {
   createNavigationRuntimeRouteManifestLoader,
   getNavigationRuntime,
@@ -116,6 +118,7 @@ import {
   createSupplementalRefreshCoordinator,
   mergeRefreshedParallelSlot,
   requireCompleteSupplementalRefresh,
+  resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
@@ -182,13 +185,7 @@ import {
   isBfcacheIdentityRetained,
   setAppElementsRenderedSearch,
 } from "vinext/shims/slot";
-import type {
-  BrowserRouteManifest,
-  BrowserRouteManifestInterception,
-} from "../routing/browser-route-manifest.js";
-import { matchRoutePattern } from "../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../routing/utils.js";
-import { addBasePathToPathname, stripBasePath } from "../utils/base-path.js";
+import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import {
   createDevOnCaughtError,
   createOnUncaughtError,
@@ -633,67 +630,6 @@ function clearDynamicClientNavigationCaches(): void {
   historyController.invalidateRestorableClientState();
 }
 
-type PersistedRefreshInterception = {
-  interception: BrowserRouteManifestInterception;
-  interceptionContext: string;
-  targetPathname: string;
-};
-
-function getMatchedUrlPathname(matchedUrl: string): string {
-  return new URL(matchedUrl, "https://vinext.local").pathname;
-}
-
-function resolvePersistedRefreshInterceptions(
-  state: AppRouterState,
-  routeManifest: BrowserRouteManifest | null,
-  refreshUrl: URL,
-  requestInterceptionContext: string | null,
-): PersistedRefreshInterception[] {
-  if (routeManifest === null) return [];
-
-  const refreshPathname = stripBasePath(refreshUrl.pathname, __basePath);
-  const refreshPathParts = splitPathnameForRouteMatch(refreshPathname);
-  const resolved: PersistedRefreshInterception[] = [];
-
-  for (const binding of state.slotBindings) {
-    if (binding.state !== "active" || !binding.activeRouteId) continue;
-    if (!binding.interceptionId || !binding.interceptionSourceMatchedUrl) continue;
-    const activeRoute = AppElementsWire.parseElementKey(binding.activeRouteId);
-    if (activeRoute?.kind !== "route") continue;
-    const match = routeManifest.segmentGraph.interceptions.get(binding.interceptionId);
-    if (!match) continue;
-
-    const retainedInterception =
-      state.interception?.slotId === binding.slotId &&
-      matchRoutePattern(
-        splitPathnameForRouteMatch(getMatchedUrlPathname(state.interception.targetMatchedUrl)),
-        match.targetPatternParts,
-      ) !== null
-        ? state.interception
-        : null;
-    const targetPathname = retainedInterception?.targetMatchedUrl ?? activeRoute.path;
-    const targetParts = splitPathnameForRouteMatch(getMatchedUrlPathname(targetPathname));
-    const isPrimaryRefreshInterception =
-      requestInterceptionContext !== null &&
-      state.interception?.slotId === binding.slotId &&
-      matchRoutePattern(refreshPathParts, match.targetPatternParts) !== null &&
-      matchRoutePattern(targetParts, match.targetPatternParts) !== null;
-    if (isPrimaryRefreshInterception) continue;
-
-    const targetUrl = new URL(targetPathname, refreshUrl);
-    targetUrl.pathname = addBasePathToPathname(targetUrl.pathname, __basePath);
-    targetUrl.search = refreshUrl.search;
-    resolved.push({
-      interception: match,
-      interceptionContext:
-        retainedInterception?.sourceMatchedUrl ?? binding.interceptionSourceMatchedUrl,
-      targetPathname: `${targetUrl.pathname}${targetUrl.search}`,
-    });
-  }
-
-  return resolved;
-}
-
 async function fetchPersistedInterceptedSlotRefresh(options: {
   interceptionId: string;
   interceptionContext: string;
@@ -763,20 +699,6 @@ function isSettledPrefetchCacheEntry(
   );
 }
 
-function parsePrefetchCacheKey(cacheKey: string): {
-  interceptionContext: string | null;
-  rscUrl: string;
-} {
-  const separatorIndex = cacheKey.indexOf("\0");
-  if (separatorIndex === -1) {
-    return { interceptionContext: null, rscUrl: cacheKey };
-  }
-  return {
-    interceptionContext: cacheKey.slice(separatorIndex + 1),
-    rscUrl: cacheKey.slice(0, separatorIndex),
-  };
-}
-
 async function learnOptimisticRouteTemplateFromPrefetch(options: {
   cacheKey: string;
   entry: PrefetchCacheEntry & { snapshot: CachedRscResponse };
@@ -784,7 +706,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   mountedSlotsHeader: string | null;
   routeManifest: BrowserRouteManifest;
 }): Promise<LearnedOptimisticRouteTemplate | null> {
-  const source = parsePrefetchCacheKey(options.cacheKey);
+  const source = AppElementsWire.decodeCacheKey(options.cacheKey);
   if (source.interceptionContext !== options.interceptionContext) return null;
   if (resolvePrefetchCacheEntryMountedSlotsHeader(options.entry) !== options.mountedSlotsHeader) {
     return null;
@@ -1006,12 +928,13 @@ async function commitSameUrlNavigatePayload(
       actionInitiation.routerState.previousNextUrl,
       __basePath,
     );
-    const persistedInterceptions = resolvePersistedRefreshInterceptions(
-      actionInitiation.routerState,
-      getBrowserRouteManifest(),
+    const persistedInterceptions = resolvePersistedRefreshInterceptions({
+      basePath: __basePath,
       refreshUrl,
       requestInterceptionContext,
-    );
+      routeManifest: getBrowserRouteManifest(),
+      state: actionInitiation.routerState,
+    });
     const sourcePageRefreshes = resolvePersistedSourcePageRefreshes({
       basePath: __basePath,
       refreshUrl,
@@ -2164,7 +2087,11 @@ function bootstrapHydration(
       ? createVinextHydrateRootOptions({
           formState,
           onCaughtError: invalidateOnCaughtError(
-            createDevOnCaughtError(devErrorOverlay.devOnCaughtError, onUncaughtError),
+            createDevOnCaughtError(
+              devErrorOverlay.devOnCaughtError,
+              onUncaughtError,
+              devErrorOverlay.reportRootErrorBoundaryCatch,
+            ),
           ),
           onUncaughtError,
         })
@@ -2365,12 +2292,13 @@ function bootstrapHydration(
           (navigationKind === "traverse" && !reuseCurrentBfcacheIds);
         const persistedRefreshInterceptions =
           navigationKind === "refresh"
-            ? resolvePersistedRefreshInterceptions(
-                navigationInitiationState,
-                getBrowserRouteManifest(),
-                url,
+            ? resolvePersistedRefreshInterceptions({
+                basePath: __basePath,
+                refreshUrl: url,
                 requestInterceptionContext,
-              )
+                routeManifest: getBrowserRouteManifest(),
+                state: navigationInitiationState,
+              })
             : [];
         const persistedSourcePageRefreshes = shouldSupplementVisibleBranches
           ? resolvePersistedSourcePageRefreshes({
@@ -2698,12 +2626,6 @@ function bootstrapHydration(
           }
         }
 
-        // The optimistic shell is intentionally not gated by
-        // `shouldBypassNavigationCache`. A same-page search change can still
-        // render an optimistic shell from cached route templates before the
-        // real fetch commits, but that shell is a detached commit (see below)
-        // that is always superseded by the authoritative fetch — the same as
-        // cross-route navigations — so it never persists stale page content.
         if (!navResponse && fallbackReuseDecision.kind === "attemptOptimisticRouteShell") {
           await learnOptimisticRouteTemplatesFromPrefetchCache({
             interceptionContext: requestInterceptionContext,
@@ -3236,8 +3158,7 @@ function bootstrapHydration(
 
   // Note: This popstate handler runs for App Router (RSC navigation available).
   // It coordinates scroll restoration with the pending RSC navigation.
-  // Pages Router scroll restoration is handled in shims/navigation.ts:1289 with
-  // microtask-based deferral for compatibility with non-RSC navigation.
+  // Pages Router scroll restoration is handled in shims/router.ts.
   // See: https://github.com/vercel/next.js/discussions/41934#discussioncomment-4602607
   const handlePopstate = createPopstateRestoreHandler({
     getActiveNavigationId: browserNavigationController.getActiveNavigationId.bind(

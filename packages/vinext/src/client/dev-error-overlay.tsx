@@ -153,12 +153,25 @@ function tryInstallReactRefreshErrorRecovery(): boolean {
   return true;
 }
 
-// An error the browser's render threw again is reported already, once for
-// each React report of the same error.
+// Whether a root-level error boundary caught an error the browser's render
+// threw. See selectUnreportedInitialDevServerErrors.
+let rootErrorBoundaryCaught = false;
+
+export function reportRootErrorBoundaryCatch(): void {
+  rootErrorBoundaryCaught = true;
+}
+
+// Once a root-level boundary catches, the browser's render threw again and
+// React reported it, so none of the HTML render's errors are replayed: in
+// Next.js the replay sits inside that boundary and never commits. Otherwise an
+// error the browser's render threw again is reported already, once for each
+// React report of the same error.
 export function selectUnreportedInitialDevServerErrors(
   payloads: readonly InitialDevServerErrorPayload[],
   reported: readonly ReportedError[],
+  rootBoundaryCaught = false,
 ): InitialDevServerErrorPayload[] {
+  if (rootBoundaryCaught) return [];
   const rethrownErrors = reported.filter(
     (error) =>
       error.source === "caught" || error.source === "uncaught" || error.source === "window-error",
@@ -187,6 +200,7 @@ export function reportInitialDevServerErrors(): void {
   for (const payload of selectUnreportedInitialDevServerErrors(
     errors,
     getOverlaySnapshot().errors,
+    rootErrorBoundaryCaught,
   )) {
     const error = new Error(payload.message);
     if (payload.name) {

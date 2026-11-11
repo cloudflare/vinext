@@ -36,7 +36,11 @@ import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "vinext/shims
 import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
-import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
+import {
+  normalizeStaticPathname,
+  normalizeStaticPathsEntry,
+  type StaticPathsEntry,
+} from "../routing/route-pattern.js";
 import { extractLocaleFromUrl } from "../server/pages-i18n.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
@@ -68,9 +72,11 @@ import {
 } from "./prerender-server-pool.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import {
+  assertNormalizedPagePath,
   getAppRouteOutputPath,
   getOutputPath,
   getRscOutputPath,
+  PagePathMismatchError,
 } from "../utils/prerender-output-paths.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
@@ -1077,6 +1083,7 @@ export async function prerenderPages({
         // the whole prerender.
         const paths: Array<StaticPathsEntry> = pathsResult?.paths ?? [];
         let entryError: string | null = null;
+        let entryFatal = false;
         const seenPaths = new Set<string>();
         for (const item of paths) {
           let locale = config.i18n?.defaultLocale;
@@ -1088,33 +1095,58 @@ export async function prerenderPages({
           } else if (item && typeof item === "object" && item.locale !== undefined) {
             locale = item.locale;
           }
-          const normalized = normalizeStaticPathsEntry(pathEntry, route.pattern);
-          if ("error" in normalized) {
-            entryError = normalized.error;
-            break;
-          }
-          if (locale !== undefined && !config.i18n?.locales.includes(locale)) {
-            entryError = `Invalid locale returned from getStaticPaths for ${route.pattern}: ${locale}`;
-            break;
-          }
-          const { params } = normalized;
           try {
+            // A string path is already encoded, so `%2E%2E` is a `..` segment
+            // too. Next.js fails the build on one even when it matches no route.
+            // Like its escapePathDelimiters, a decoded `/` stays in its segment.
+            if (typeof pathEntry === "string") {
+              assertNormalizedPagePath(
+                normalizeStaticPathname(pathEntry)
+                  .split("/")
+                  .map((segment) => {
+                    try {
+                      return decodeURIComponent(segment).replaceAll("/", "%2F");
+                    } catch {
+                      return segment;
+                    }
+                  })
+                  .join("/"),
+              );
+            }
+            const normalized = normalizeStaticPathsEntry(pathEntry, route.pattern);
+            if ("error" in normalized) throw new Error(normalized.error);
+            if (locale !== undefined && !config.i18n?.locales.includes(locale)) {
+              throw new Error(
+                `Invalid locale returned from getStaticPaths for ${route.pattern}: ${locale}`,
+              );
+            }
+            const { params } = normalized;
             const urlPath = localizePagesPath(
               buildUrlFromParams(route.pattern, params),
               locale,
               config.i18n,
             );
+            // A `.` or `..` param resolves this page to another path, and `..`
+            // can climb out of the output directory. Next.js's normalizePagePath
+            // fails the build on it.
+            assertNormalizedPagePath(urlPath);
             if (!seenPaths.has(urlPath)) {
               seenPaths.add(urlPath);
               pagesToRender.push({ route, urlPath, params, revalidate, hasStaticProps, locale });
             }
           } catch (e) {
             entryError = (e as Error).message;
+            entryFatal = e instanceof PagePathMismatchError;
             break;
           }
         }
         if (entryError) {
-          results.push({ route: route.pattern, status: "error", error: entryError });
+          results.push({
+            route: route.pattern,
+            status: "error",
+            error: entryError,
+            ...(entryFatal ? { fatal: true as const } : {}),
+          });
           continue;
         }
       } else {
@@ -1190,6 +1222,13 @@ export async function prerenderPages({
           const notFound = isStaticPropsResponse && response.status === 404;
           const redirect =
             isStaticPropsResponse && [301, 302, 303, 307, 308].includes(response.status);
+          // A custom `/500` answers with status 500, like Next.js, but is still
+          // a rendered page. A marked render error means `/500` itself failed.
+          const renderedOk =
+            response.ok ||
+            (route.pattern === "/500" &&
+              response.status === 500 &&
+              response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) !== "1");
           let redirectProps: object | undefined;
           if (redirect) {
             const props: unknown = await response.json();
@@ -1227,7 +1266,7 @@ export async function prerenderPages({
             fs.writeFileSync(htmlFullPath, html, "utf-8");
             outputFiles.push(htmlOutputPath);
           } else {
-            if (!response.ok && !notFound) {
+            if (!renderedOk && !notFound) {
               throw new Error(`renderPage returned ${response.status} for ${urlPath}`);
             }
             const html = await response.text();
@@ -1253,8 +1292,8 @@ export async function prerenderPages({
             router: "pages",
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
             ...(locale ? { locale } : {}),
-            ...(response.ok ? { responseStatus: response.status } : {}),
-            ...(response.ok && contentType ? { headers: { "content-type": contentType } } : {}),
+            ...(renderedOk ? { responseStatus: response.status } : {}),
+            ...(renderedOk && contentType ? { headers: { "content-type": contentType } } : {}),
             ...(notFound ? { notFound: true, responseStatus: 404 } : {}),
             ...(redirect
               ? {

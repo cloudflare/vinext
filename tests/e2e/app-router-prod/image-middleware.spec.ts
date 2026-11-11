@@ -131,7 +131,9 @@ test.describe("image optimization endpoint behind middleware", () => {
     for (const source of ["/logo/logo.svg", "/logo/logo.svg?.png", "/logo/logo.svg#.png"]) {
       const svg = await request.get(imagePath("/_next/image", source));
       expect(svg.status(), source).toBe(400);
-      expect(await svg.text(), source).toBe("The requested resource is not an allowed image type");
+      expect(await svg.text(), source).toBe(
+        '"url" parameter is valid but image type is not allowed',
+      );
     }
   });
 });

@@ -1,5 +1,6 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
+import type { RouteHandlerRuntime } from "./config-headers.js";
 import { isStaticFileSignal } from "./static-file-signal.js";
 import {
   applyCdnResponseHeaders,
@@ -14,7 +15,11 @@ import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
-import { hasPostConfigLinkHeaders } from "./app-response-header-provenance.js";
+import {
+  copyLinkHeaderProvenance,
+  hasPostConfigLinkHeaders,
+} from "./app-response-header-provenance.js";
+import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
 import { captureRouteCacheabilityResponsePolicy } from "vinext/shims/cacheability-classification";
 
 type FinalizeAppRscResponseOptions = {
@@ -45,10 +50,14 @@ type FinalizeAppRscResponseOptions = {
   middlewareHeaders?: Headers | null;
   /** Whether config matching should update the active cacheability classification. */
   recordCacheability?: boolean;
+  /** The runtime of the Route Handler that produced the response, if one did. */
+  routeHandlerRuntime?: RouteHandlerRuntime;
 };
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const configHeadersAlreadyApplied = new WeakSet<Response>();
+const applicationResponses = new WeakSet<Response>();
+const routeHandlerResponses = new WeakMap<Response, RouteHandlerRuntime>();
 
 function normalizeExplicitNonCacheablePolicy(headers: Headers): void {
   if (!hasExplicitNonCacheableResponsePolicy(headers)) return;
@@ -80,6 +89,54 @@ export function isStreamedActionRedirectResponse(response: Response): boolean {
   return streamedActionRedirects.has(response);
 }
 
+/**
+ * Mark a response that a page, Route Handler, Server Action or Pages route
+ * produced. Next.js stages next.config headers before application code runs,
+ * so the redirects these return carry them. Redirects that routing answers
+ * itself (next.config redirects, trailing slash, middleware) go out without.
+ */
+export function markAppRscApplicationResponse(response: Response): Response {
+  applicationResponses.add(response);
+  return response;
+}
+
+/** Mark a response a Route Handler produced, so its own headers meet config as in Next.js. */
+export function markAppRscRouteHandlerResponse(
+  response: Response,
+  runtime: RouteHandlerRuntime,
+): Response {
+  routeHandlerResponses.set(response, runtime);
+  return markAppRscApplicationResponse(response);
+}
+
+/** Response.redirect() creates immutable headers; copy them only when needed. */
+function withMutableHeaders(response: Response): Response {
+  // A write that leaves the headers as they were tells the two apart.
+  const probe = "x-vinext-mutable-headers-probe";
+  const probeValue = response.headers.get(probe);
+  try {
+    if (probeValue === null) response.headers.delete(probe);
+    else response.headers.set(probe, probeValue);
+    return response;
+  } catch {
+    const headers = new Headers(response.headers);
+    copyLinkHeaderProvenance(response.headers, headers);
+    return preserveFullyBufferedBodyMetadata(
+      response,
+      new Response(response.body, {
+        headers,
+        status: response.status,
+        statusText: response.statusText,
+      }),
+    );
+  }
+}
+
+/** Whether a response's final target pipeline has already applied config headers. */
+export function isAppRscResponseConfigHeadersApplied(response: Response): boolean {
+  return configHeadersAlreadyApplied.has(response);
+}
+
 /** Apply only the matching next.config headers for an App Router request. */
 export async function applyAppRscConfigHeaders(
   headers: Headers,
@@ -108,6 +165,7 @@ export async function applyAppRscConfigHeaders(
     appendToPostConfigLink: hasPostConfigLinkHeaders(headers),
     middlewareHeaders: options.middlewareHeaders,
     recordCacheability: options.recordCacheability,
+    routeHandlerRuntime: options.routeHandlerRuntime,
     // Next.js next.config headers override its renderer-owned Cache-Control,
     // including for force-dynamic App Pages. Other response headers retain
     // the existing merge precedence.
@@ -124,19 +182,21 @@ export async function applyAppRscConfigHeaders(
  * handling, so that every response path (page, route handler, server action,
  * metadata, not-found) gets headers applied consistently.
  *
- * Skips 3xx redirect responses. Response.redirect() creates immutable
- * headers that throw on mutation, and Next.js does not apply config headers
- * to redirects regardless.
+ * Skips 3xx responses that routing answered itself, as Next.js does not
+ * apply config headers to those. A 3xx that application code returned is
+ * finalized like any other response.
  */
 export async function finalizeAppRscResponse(
   response: Response,
   request: Request,
   options: FinalizeAppRscResponseOptions,
 ): Promise<Response> {
-  // 3xx responses: Response.redirect() headers are immutable (throws on write),
-  // and Next.js deliberately excludes config headers from redirect responses.
+  const routeHandlerRuntime = routeHandlerResponses.get(response);
   if (response.status >= 300 && response.status < 400) {
-    return response;
+    if (!applicationResponses.has(response) || configHeadersAlreadyApplied.has(response)) {
+      return response;
+    }
+    response = withMutableHeaders(response);
   }
 
   if (!isStaticFileSignal(response)) {
@@ -154,7 +214,7 @@ export async function finalizeAppRscResponse(
   // unspecified response is never accidentally edge-cached), while the default
   // origin-managed adapter leaves it absent (unchanged behavior). This runs only
   // when Cache-Control is absent, so it never clobbers a policy a renderer
-  // already applied. Redirects are already skipped above.
+  // already applied. Routing redirects are already skipped above.
   if (!response.headers.has("Cache-Control")) {
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
     // This is the adapter's fail-closed provisional policy, not an
@@ -171,7 +231,7 @@ export async function finalizeAppRscResponse(
     normalizeExplicitNonCacheablePolicy(response.headers);
     return response;
   }
-  await applyAppRscConfigHeaders(response.headers, request, options);
+  await applyAppRscConfigHeaders(response.headers, request, { ...options, routeHandlerRuntime });
   normalizeExplicitNonCacheablePolicy(response.headers);
 
   // Static-file 405 responses are synthesized before config headers run.

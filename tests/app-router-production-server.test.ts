@@ -22,10 +22,13 @@ import {
   APP_FIXTURE_DIR,
   createIsolatedFixture,
   EXTERNAL_REWRITE_HEADER_CASES,
+  EXTERNAL_REWRITE_PATHS,
   expectRepeatedSlashRedirects,
   fetchRsc,
   requestExternalRewriteHeaders,
+  requestExternalRewriteWithConnectionTokens,
   rscRequestPath,
+  startGzipUpstream,
   testCacheDir,
 } from "./helpers.js";
 
@@ -98,10 +101,17 @@ function getInlineStyleText(html: string): string {
 
 async function rawHttpRequest(
   url: URL,
-  options: { method?: string; path?: string; headers?: Record<string, string> } = {},
+  options: {
+    method?: string;
+    path?: string;
+    headers?: Record<string, string>;
+    agent?: false;
+    body?: string;
+  } = {},
 ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+  const { body, ...requestOptions } = options;
   return new Promise((resolve, reject) => {
-    const request = http.request(url, options, (response) => {
+    const request = http.request(url, requestOptions, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer) => chunks.push(chunk));
       response.on("end", () => {
@@ -113,7 +123,7 @@ async function rawHttpRequest(
       });
     });
     request.on("error", reject);
-    request.end();
+    request.end(body);
   });
 }
 
@@ -542,6 +552,19 @@ describe("App Router Production server (startProdServer)", () => {
         cacheControl: "public, max-age=60",
         upstreamHeader: "1",
         ...expected,
+      });
+    },
+  );
+
+  // Next.js forwards the fields a client names in Connection, so the client
+  // can neither drop middleware's request headers nor fail the proxy.
+  it.each(EXTERNAL_REWRITE_PATHS)(
+    "keeps request headers the client names in Connection for %s",
+    async (requestPath) => {
+      expect(await requestExternalRewriteWithConnectionTokens(baseUrl, requestPath)).toEqual({
+        status: 200,
+        middlewareRequestHeader: "1",
+        clientNominatedHeader: "1",
       });
     },
   );
@@ -1770,6 +1793,74 @@ describe("App Router Production server (startProdServer)", () => {
     });
   });
 
+  it.each([
+    {
+      name: "an App page continued with NextResponse.next()",
+      pathname: "/about?mw-mirror-request-headers",
+      status: 200,
+      marker: "About",
+    },
+    {
+      name: "an App page as RSC",
+      pathname: "/about?_rsc&mw-mirror-request-headers",
+      rsc: true,
+      status: 200,
+      marker: "About",
+    },
+    {
+      name: "an App route handler reached by NextResponse.rewrite()",
+      pathname: "/about?mw-mirror-request-headers=/api/hello",
+      status: 200,
+      marker: "Hello from App Router API",
+    },
+    {
+      name: "a Pages page reached by NextResponse.rewrite()",
+      pathname: "/about?mw-mirror-request-headers=/old-school",
+      status: 200,
+      marker: "Old School Pages Directory",
+    },
+    {
+      name: "a middleware redirect",
+      pathname: "/about?mw-mirror-request-headers=redirect",
+      status: 307,
+      location: "/about",
+    },
+    {
+      name: "a middleware response",
+      pathname: "/about?mw-mirror-request-headers=response",
+      status: 403,
+      marker: "blocked by middleware",
+    },
+  ])(
+    "keeps middleware's copied request framing headers off $name",
+    async ({ pathname, rsc, status, marker, location }) => {
+      // Next.js drops these from middleware's response headers
+      // (`ipcForbiddenHeaders` plus `content-length` in resolve-routes.ts),
+      // so a request body's length can't frame the response.
+      const body = "xxxxx";
+      const res = await rawHttpRequest(new URL(pathname, baseUrl), {
+        method: "GET",
+        agent: false,
+        headers: {
+          "content-length": String(body.length),
+          "content-encoding": "br",
+          "keep-alive": "timeout=1",
+          ...(rsc ? { rsc: "1" } : {}),
+        },
+        body,
+      });
+
+      expect(res.status).toBe(status);
+      if (rsc) expect(res.headers["content-type"]).toContain("text/x-component");
+      expect(res.headers.location).toBe(location);
+      expect(res.headers["x-mw-mirrored"]).toBe("1");
+      expect(res.headers["content-encoding"]).toBeUndefined();
+      expect(res.headers["keep-alive"]).not.toBe("timeout=1");
+      expect(res.headers["content-length"]).not.toBe(String(body.length));
+      expect(res.body.toString()).toContain(marker ?? "");
+    },
+  );
+
   it("serves Pages Router edge API ImageResponse routes in hybrid production", async () => {
     // Ported from Next.js: test/e2e/og-api/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts
@@ -1839,8 +1930,9 @@ describe("App Router Production server (startProdServer)", () => {
     expect(body).toContain("guest");
   });
 
-  // The layout reads cookies behind Suspense 300 ms into the render, after
-  // these documents' headers have been sent.
+  // Like Next.js, the miss renders the root not-found inside the root layout
+  // only, so the segment's layout, which reads cookies behind Suspense, never
+  // runs.
   it("never caches a generated-param miss's not-found document", async () => {
     const session = `user-${randomUUID()}`;
     const res = await fetch(`${baseUrl}/late-cookie-layout/handbook/${randomUUID()}`, {
@@ -1850,7 +1942,9 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
-    expect(await res.text()).toContain(session);
+    const html = await res.text();
+    expect(html).toContain("404 - Page Not Found");
+    expect(html).not.toContain(session);
   });
 
   it("never caches the error document of a page that throws", async () => {
@@ -2011,6 +2105,41 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json).toHaveProperty("message");
+  });
+
+  // Node's fetch() decodes a gzip body but keeps the upstream Content-Length
+  // and Content-Encoding. Next.js's sendResponse drops both (and
+  // Transfer-Encoding) from a route handler's Response and frames the body
+  // itself, so a returned fetch Response reaches the client decoded.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-response.ts
+  it("sends a route handler's returned gzip fetch Response decoded, including fetch cache hits", async () => {
+    const upstream = await startGzipUpstream();
+    try {
+      const key = randomUUID();
+      for (const [cache, expectedUpstreamHits] of [
+        ["no-store", 1],
+        ["force-cache", 1],
+        // The fetch cache entry replays without another upstream request.
+        ["force-cache", 0],
+      ] as const) {
+        const upstreamPath = `/payload?key=${key}-${cache}`;
+        const upstreamHitsBefore = upstream.hits(upstreamPath);
+        const res = await fetch(
+          `${baseUrl}/api/forwarded-fetch?port=${upstream.port}&cache=${cache}&key=${key}-${cache}`,
+          { headers: { "Accept-Encoding": "identity" } },
+        );
+
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-encoding")).toBeNull();
+        expect(res.headers.get("content-length") ?? String(upstream.body.length)).toBe(
+          String(upstream.body.length),
+        );
+        await expect(res.text()).resolves.toBe(upstream.body);
+        expect(upstream.hits(upstreamPath) - upstreamHitsBefore).toBe(expectedUpstreamHits);
+      }
+    } finally {
+      await upstream.close();
+    }
   });
 
   it("does not treat a route handler's reflected static-file header as a framework signal", async () => {
@@ -2256,6 +2385,12 @@ describe("App Router Production server (startProdServer)", () => {
       const location = redirectRes.headers.get("location");
       expect(location).toBeTruthy();
       expect(new URL(location!, redirectBaseUrl).pathname).toBe("/result");
+      // As in Next.js, the redirect carries the route's config headers while
+      // an unmatched route keeps its never-cache policy.
+      expect(redirectRes.headers.get("x-config-header")).toBe("1");
+      expect(redirectRes.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
 
       // RSC navigations encode the redirect in the flight body (200), not a
       // 307 status line — mirrors the dev-server RSC test and pins the built
@@ -2463,6 +2598,90 @@ describe("App Router Production server (startProdServer)", () => {
     const location = res.headers.get("location");
     expect(location).toBeTruthy();
     expect(location).toContain("/about");
+  });
+
+  // Next.js stages next.config headers on the response before a page, Route
+  // Handler, Server Action or Pages API route runs, so the redirects they
+  // return carry them. Only redirects routing answers itself (redirects()
+  // rules, trailing slash) go out without.
+  it("applies config headers to redirects that application code returns (production)", async () => {
+    const html = await (await fetch(`${baseUrl}/nextjs-compat/action-progressive`)).text();
+    const actionField = html.match(/name="(\$ACTION_ID_[^"]+)"/)?.[1];
+    if (!actionField) throw new Error("action-progressive did not render its action");
+    const form = new FormData();
+    form.append(actionField, "");
+    form.append("name", "vinext");
+
+    const get = (pathname: string) => fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+    const cases: Array<[string, () => Promise<Response>, number, string | null]> = [
+      ["redirect() in a page", () => get("/redirect-test"), 307, "1"],
+      ["permanentRedirect() in a page", () => get("/permanent-redirect-test"), 308, "1"],
+      [
+        "Route Handler NextResponse.redirect()",
+        () => get("/nextjs-compat/api/redirect-response"),
+        307,
+        "1",
+      ],
+      ["Route Handler Response.redirect()", () => get("/response-redirect-test"), 302, "1"],
+      [
+        "Server Action form redirect",
+        () =>
+          fetch(`${baseUrl}/nextjs-compat/action-progressive`, {
+            method: "POST",
+            headers: { Origin: baseUrl },
+            body: form,
+            redirect: "manual",
+          }),
+        303,
+        "1",
+      ],
+      ["Pages API redirect", () => get("/api/pages-redirect"), 302, "1"],
+      ["redirects() rule", () => get("/old-about"), 308, null],
+    ];
+    for (const [label, request, status, header] of cases) {
+      const res = await request();
+      await res.body?.cancel();
+      expect({
+        label,
+        status: res.status,
+        header: res.headers.get("x-redirect-config-header"),
+      }).toEqual({ label, status, header });
+    }
+  });
+
+  it("resolves config header collisions with Route Handler headers like Next.js (production)", async () => {
+    const node = {
+      collision: "config",
+      challenge: "Bearer realm=config, Basic realm=handler",
+      cacheState: "config",
+      varyStart: "X-Config, X-Handler",
+    };
+    const cases = [
+      { pathname: "/api/config-header-collision", status: 200, ...node },
+      { pathname: "/api/config-header-collision?status=302", status: 302, ...node },
+      { pathname: "/api/config-header-collision?status=304", status: 304, ...node },
+      {
+        pathname: "/api/config-header-collision/edge",
+        status: 200,
+        collision: "config, handler",
+        challenge: "Bearer realm=config, Basic realm=handler",
+        cacheState: "config, handler",
+        varyStart: "X-Config, X-Handler",
+      },
+    ];
+    for (const { pathname, ...expected } of cases) {
+      const res = await fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+      await res.body?.cancel();
+      expect({
+        pathname,
+        status: res.status,
+        collision: res.headers.get("x-config-collision"),
+        challenge: res.headers.get("www-authenticate"),
+        cacheState: res.headers.get("x-nextjs-cache"),
+        // vinext's own RSC Vary fields follow.
+        varyStart: res.headers.get("vary")?.split(", ").slice(0, 2).join(", "),
+      }).toEqual({ pathname, ...expected });
+    }
   });
 
   it("answers a config redirect with its statusCode (production)", async () => {

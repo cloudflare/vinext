@@ -2169,6 +2169,19 @@ describe("normalizePathTrailingSlash", () => {
       );
     });
 
+    // Only the last segment counts, ignoring one terminal slash, and its dot
+    // must be followed by another character.
+    it.each([
+      ["/a...", "/a..."],
+      ["/a.", "/a./"],
+      ["/a./", "/a./"],
+      ["/.x/", "/.x"],
+      ["/a.b//", "/a.b//"],
+      ["/a.b/c", "/a.b/c/"],
+    ])("treats %s as filename-looking or not", (path, expected) => {
+      expect(normalizePathTrailingSlash(path, true)).toBe(expected);
+    });
+
     it("returns absolute URLs unchanged", () => {
       // Only paths that start with `/` are touched; absolute URLs with a
       // scheme are skipped entirely (matches Next.js behaviour).

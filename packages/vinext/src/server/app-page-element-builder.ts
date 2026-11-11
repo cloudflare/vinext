@@ -263,6 +263,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   isForceStatic?: boolean;
   /** The render can never be stored (see buildAppPageElements). */
   isUncacheableRender?: boolean;
+  /** A loading shell without a loading boundary is the route tree (see buildAppPageElements). */
+  routeTreeOnlyPrefetchShell?: boolean;
   /** Layouts the navigating client holds (see buildAppPageElements). */
   mountedLayouts?: ReadonlySet<string> | null;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
@@ -361,6 +363,7 @@ export async function buildPageElements<
     observePageSearchParamsAccess = false,
     isForceStatic = false,
     isUncacheableRender = false,
+    routeTreeOnlyPrefetchShell = false,
     mountedLayouts = null,
     serveStreamingMetadata,
     placeStreamedMetadataInHead = false,
@@ -1017,6 +1020,7 @@ export async function buildPageElements<
         globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
       isRscRequest,
       isUncacheableRender,
+      routeTreeOnlyPrefetchShell,
       interceptionId: opts?.interceptionId ?? null,
       mountedLayouts,
       mountedSlotIds,
