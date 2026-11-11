@@ -623,7 +623,9 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       isDraftMode,
       isForceDynamic,
     );
-    if (decision.kind !== "probe-shells") return;
+    // An RSC request its shell didn't seed produces the shell as a document
+    // request does.
+    if (decision.kind !== "probe-shells" && decision.kind !== "seed-rsc-request") return;
     const concreteShell = createAppPprRequestConcreteShell(options.route, options.params);
     if (concreteShell) {
       scheduleShellProduction(options, concreteShell, currentRevalidateSeconds, true);
