@@ -566,13 +566,19 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
     if (generated?.isGenerated) {
       // A stale shell's record left the request undecided, as one recording
       // that the request's params weren't generated, so it regenerates.
-      await produceMissingFallbackShells(
-        options,
-        decision.fallbackShells,
-        currentRevalidateSeconds,
-        memo,
-        true,
-      );
+      // Filling the shells is background work: failing to find them never
+      // fails the path's own render, as in a regeneration.
+      try {
+        await produceMissingFallbackShells(
+          options,
+          decision.fallbackShells,
+          currentRevalidateSeconds,
+          memo,
+          true,
+        );
+      } catch (shellError) {
+        console.error("[vinext] ISR fallback shell discovery error:", shellError);
+      }
       return null;
     }
     // Another request may have stored the path's own shell meanwhile.
