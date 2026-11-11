@@ -141,8 +141,13 @@ async function produceMissingFallbackShells<TRoute extends AppPageDispatchRoute>
       key,
       async () => {
         const cached = await (options.isrGetFallbackShell ?? options.isrGet)(key);
-        if (cached !== null && cached.isExpired !== true) return;
-        options.isrDebug?.("RENDER (missing fallback shell)", fallbackPathname);
+        // A stale shell regenerates here too: a request that serves it while
+        // this runs finds the key pending, so its own regeneration is dropped.
+        if (cached !== null && cached.isExpired !== true && !cached.isStale) return;
+        options.isrDebug?.(
+          cached ? "RENDER (stale fallback shell)" : "RENDER (missing fallback shell)",
+          fallbackPathname,
+        );
         await coalesceFallbackShellProduction(key, () =>
           produceAppPprFallbackShell(options, fallbackShell, key, currentRevalidateSeconds),
         );
