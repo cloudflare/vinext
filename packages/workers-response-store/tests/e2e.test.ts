@@ -107,6 +107,9 @@ beforeEach(async () => {
                 runAlarmForTest() {
                   return this.alarm();
                 }
+                setAlarmForTest(scheduledTime) {
+                  return this.ctx.storage.setAlarm(scheduledTime);
+                }
               }
               let exposeInvalidate = false;
               let edgeCalls = [];
@@ -674,6 +677,34 @@ test("a backlog's later flush runs leave edge work queued during it for its own 
   assert.deepEqual((await edgeCallTags()).slice(5), [
     { operation: "purge", tags: await edgeTags("/backlog-later") },
   ]);
+});
+
+test("work queued between a backlog's flush runs keeps its own flush", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  await put("/backlog-gap", "first", { tags: ["backlog-gap"] });
+  const stub = await queueEdgeRows(450, "backlog-gap");
+  assert.equal(await stub.retryPendingTombstones(), true);
+  // The backlog's rerun is due before the work's window ends, and is cleared once it starts.
+  await stub.setAlarmForTest(Date.now() + 60_000);
+  const flushAt = Date.now() + 120_000;
+  await stub.queueEdgePurge(await cacheKeyHash("/backlog-gap"), 10, flushAt);
+  await stub.deleteAlarmForTest();
+  await stub.runAlarmForTest();
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+  assert.equal(await stub.getAlarmForTest(), flushAt);
+});
+
+test("a failed backlog flush run keeps the flush work queued during the backlog recorded", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  await put("/backlog-failed", "first", { tags: ["backlog-failed"] });
+  const stub = await queueEdgeRows(450, "backlog-failed");
+  assert.equal(await stub.retryPendingTombstones(), true);
+  const flushAt = Date.now() + 30_000;
+  await stub.queueEdgePurge(await cacheKeyHash("/backlog-failed"), 10, flushAt);
+  await stub.deleteAlarmForTest();
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+  await stub.runAlarmForTest();
+  assert.equal(await stub.getAlarmForTest(), flushAt);
 });
 
 test("a purge queued while an invalidation's R2 rewrite runs stays a purge", async () => {

@@ -577,6 +577,16 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
    */
   private async scheduleEdgeFlush(edgeFlushAt?: number): Promise<boolean> {
     try {
+      if (edgeFlushAt !== undefined) {
+        // A backlog's reruns replace the alarm, so its last run restores this flush.
+        const backlog = await this.ctx.storage.get<EdgeFlushBacklog>(EDGE_FLUSH_BACKLOG_KEY);
+        if (backlog && (backlog.flushAt ?? Infinity) > edgeFlushAt) {
+          await this.ctx.storage.put<EdgeFlushBacklog>(EDGE_FLUSH_BACKLOG_KEY, {
+            ...backlog,
+            flushAt: edgeFlushAt,
+          });
+        }
+      }
       await this.scheduleCleanupAlarm(edgeFlushAt ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS);
       return edgeFlushAt !== undefined;
     } catch (error) {
@@ -808,9 +818,13 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         // Work queued while this ran scheduled its own flush, which a backlog's reruns replaced
         // and this restores, or its caller is sending it now. A flush it scheduled stays, so the
         // work isn't sent ahead of its batch; otherwise this backs up its caller.
-        const scheduled =
-          (await this.ctx.storage.getAlarm()) ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS;
-        await this.scheduleCleanupAlarm(Math.min(remaining.flushAt ?? Infinity, scheduled));
+        const flushAt = Math.min(
+          remaining.flushAt ?? Infinity,
+          (await this.ctx.storage.getAlarm()) ?? Infinity,
+        );
+        await this.scheduleCleanupAlarm(
+          flushAt === Infinity ? Date.now() + ORPHAN_CLEANUP_RETRY_MS : flushAt,
+        );
         return;
       }
       await this.sweepExpiredPendingObjects();
@@ -821,8 +835,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           error: error instanceof Error ? error.message : String(error),
         }),
       );
-      // Work queued since this started keeps an earlier flush it scheduled.
-      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
+      // Work queued since this started keeps an earlier flush it scheduled, and work queued during
+      // a backlog the flush it recorded.
+      const backlog = await this.ctx.storage.get<EdgeFlushBacklog>(EDGE_FLUSH_BACKLOG_KEY);
+      await this.scheduleCleanupAlarm(
+        Math.min(backlog?.flushAt ?? Infinity, Date.now() + ORPHAN_CLEANUP_RETRY_MS),
+      );
     }
   }
 
