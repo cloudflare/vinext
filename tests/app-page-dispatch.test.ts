@@ -7578,11 +7578,14 @@ describe("app page dispatch", () => {
   });
 
   it.each([
-    { stored: false, produced: 1 },
-    { stored: true, produced: 0 },
+    { stored: false, stale: false, produced: 1 },
+    { stored: true, stale: false, produced: 0 },
+    // A request serving the stale shell meanwhile finds this key pending, so
+    // its own regeneration is dropped.
+    { stored: true, stale: true, produced: 1 },
   ])(
-    "produces a generated path's shell in the background unless it's stored (stored: $stored)",
-    async ({ stored, produced }) => {
+    "produces a generated path's shell in the background unless it's stored fresh (stored: $stored, stale: $stale)",
+    async ({ stored, stale, produced }) => {
       const backgroundRenders: (() => Promise<void>)[] = [];
       const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
         async () => {},
@@ -7600,7 +7603,7 @@ describe("app page dispatch", () => {
         dispatchAppPage({
           ...options,
           isrGetFallbackShell: stored
-            ? createPprBlogFallbackShellGetter(false)
+            ? createPprBlogFallbackShellGetter(stale)
             : vi.fn(async () => null),
           isrSetFallbackShell,
           scheduleFallbackShellRegeneration(key, renderFn) {
