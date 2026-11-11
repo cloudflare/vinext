@@ -35,6 +35,7 @@ import {
   getRequestContext,
   isInsideUnifiedScope,
   queueAfterCallback,
+  requiresResponseCloseTracking,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import {
@@ -701,7 +702,9 @@ async function runAppPageRevalidationContext<TResult>(
   try {
     return await revalidation;
   } finally {
-    if (outerContext) {
+    // Only work the render registered waits for the response, so a buffered
+    // body without any keeps its Content-Length.
+    if (outerContext && requiresResponseCloseTracking(requestContext)) {
       queueAfterCallback(outerContext, () => closeAfterResponse(requestContext));
     } else {
       await closeAfterResponse(requestContext);
