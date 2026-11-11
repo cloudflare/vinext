@@ -72,9 +72,9 @@ Scope notes for valid bugs:
 Write a short reply for the reporter and for anyone who finds the issue later. Open with the outcome in one sentence. Use the reporter's terms (their routes, config and commands), not Vinext internals, and leave out triage mechanics (probe dirs, fixture names, test commands, verdict names). When the reply mentions a Vinext issue or PR, reference it as `#N`.
 
 - **Valid bug:** the exact conditions that trigger it (dev or prod, Node or Workers, router, config) and the root cause in a sentence or two (or the suspected area if it isn't confirmed). Don't promise a timeline.
-- **Parity / not a bug:** what Next.js does, with the probe evidence, and how to get the behavior they wanted if Next supports it.
+- **Parity / not a bug:** what Next.js does (the response or output they would see there), and how to get the behavior they wanted if Next supports it.
 - **Documented limitation:** reference the Vinext docs page.
-- **Upstream:** how Vinext is exposed, and the upstream issue.
+- **Upstream:** how Vinext is exposed, and the upstream issue (or where to report it if there isn't one yet).
 - **App-owned or misconfiguration:** which of their settings causes it and what to change.
 - **Already fixed:** the release to upgrade to, or the merged PR if it hasn't shipped yet.
 - **Duplicate:** the canonical issue.
