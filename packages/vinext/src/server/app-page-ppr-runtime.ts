@@ -271,11 +271,17 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       return null;
     }
     if (generated?.isGenerated) {
-      await produceMissingFallbackShells(
-        options,
-        decision.fallbackShells,
-        currentRevalidateSeconds,
-      );
+      // Filling the shells is background work: failing to find them never
+      // fails the path's own render, as in a regeneration.
+      try {
+        await produceMissingFallbackShells(
+          options,
+          decision.fallbackShells,
+          currentRevalidateSeconds,
+        );
+      } catch (shellError) {
+        console.error("[vinext] ISR fallback shell discovery error:", shellError);
+      }
       return null;
     }
     const fallbackShell = await resolveEligibleFallbackShell(
