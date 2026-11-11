@@ -7355,6 +7355,52 @@ describe("app page dispatch", () => {
     await vi.waitFor(() => expect([...jobs.keys()]).toContain("shell:/en/blog/hello"));
   });
 
+  it.each([{ late: false }, { late: true }])(
+    "produces a path's own shell after an RSC request renders it dynamically (late: $late)",
+    async ({ late }) => {
+      const jobs = new Map<string, () => Promise<void>>();
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement("fresh"),
+        cleanPathname: "/en/blog/hello",
+        isProduction: true,
+        isRscRequest: true,
+        isrGet: vi.fn(async () => null),
+        params: { locale: "en", slug: "hello" },
+        renderToReadableStream() {
+          const encoder = new TextEncoder();
+          if (!late) markDynamicUsage();
+          let sent = false;
+          // A late render reads cookies in a boundary that resolves after
+          // the payload's first chunk.
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!sent) {
+                sent = true;
+                controller.enqueue(encoder.encode("shell"));
+                return;
+              }
+              if (late) markDynamicUsage();
+              controller.enqueue(encoder.encode("hole"));
+              controller.close();
+            },
+          });
+        },
+        request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          scheduleFallbackShellRegeneration(key, job) {
+            if (!jobs.has(key)) jobs.set(key, job);
+          },
+        }),
+      );
+      await response.text();
+      await vi.waitFor(() => expect([...jobs.keys()]).toContain("shell:/en/blog/hello"));
+    },
+  );
+
   it("renders an on-demand revalidation blocking instead of resuming its fallback shell", async () => {
     const buildPageElement = createParamTextPageElement();
     const isrGet = createPprBlogFallbackShellGetter(false);
