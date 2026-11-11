@@ -367,6 +367,16 @@ const nextConfig: NextConfig = {
         },
         // Used by Vitest: app-router.test.ts
         { source: "/after-rewrite-about", destination: "/about" },
+        // Used by E2E: app-router/isr.spec.ts — a rewrite onto a dynamic
+        // metadata route is served and keyed like its decoded destination.
+        {
+          source: "/metadata-rewrite-card/:slug",
+          destination: "/metadata-rewrite-key/:slug/opengraph-image",
+        },
+        {
+          source: "/metadata-rewrite-icon/:slug/:id",
+          destination: "/metadata-rewrite-key/:slug/icon/:id",
+        },
         // Used by E2E: app-router-prod/multipart-late-routing.spec.ts
         { source: "/after-files-upload", destination: "/api/methods" },
         // Used by E2E: app-router-prod/server-action-late-routing.spec.ts
@@ -408,6 +418,16 @@ const nextConfig: NextConfig = {
         externalHeadersRewrite("fallback"),
         // Used by E2E: app-router-prod/multipart-late-routing.spec.ts
         { source: "/fallback-upload", destination: "/api/methods" },
+        // Used by E2E: nextjs-compat/segment-cache-dynamic-params.spec.ts. A
+        // dynamicParams = false miss resumes routing with these rewrites.
+        {
+          source: "/nextjs-compat/dynamic-params-fallback/:slug",
+          destination: "/nextjs-compat/dynamic-params-fallback-target/:slug",
+        },
+        {
+          source: "/nextjs-compat/dynamic-params-fallback/:slug/data",
+          destination: "/nextjs-compat/dynamic-params-fallback-target/:slug",
+        },
         // Used by E2E: app-router-prod/server-action-late-routing.spec.ts
         { source: "/fallback-revalidate", destination: "/nextjs-compat/action-revalidate" },
         // Used by E2E: app-router-encoded-basepath-i18n (see beforeFiles).
@@ -460,6 +480,11 @@ const nextConfig: NextConfig = {
 
   async headers() {
     return [
+      // Used by Playwright: app-router-prod/image-source-cache-control.spec.ts
+      {
+        source: "/image-source-cache-policy.png",
+        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
+      },
       // Used by Vitest: app-router-production-server.test.ts
       {
         source: "/action-cache-control/config-policy",
@@ -495,6 +520,32 @@ const nextConfig: NextConfig = {
           { key: "X-Mw-Image-Endpoint", value: "config" },
         ],
       },
+      // Used by Vitest: app-router-production-server.test.ts — collisions with
+      // Route Handler headers resolve like Next.js on each runtime.
+      {
+        source: "/api/config-header-collision/:path*",
+        headers: [
+          { key: "X-Config-Collision", value: "config" },
+          { key: "WWW-Authenticate", value: "Bearer realm=config" },
+          { key: "Vary", value: "X-Config" },
+          { key: "X-Nextjs-Cache", value: "config" },
+        ],
+      },
+      // Used by Vitest: app-router-production-server.test.ts — redirects that
+      // application code returns carry config headers like Next.js; the
+      // redirects() rule on /old-about does not.
+      ...[
+        "/redirect-test",
+        "/permanent-redirect-test",
+        "/nextjs-compat/api/redirect-response",
+        "/response-redirect-test",
+        "/nextjs-compat/action-progressive",
+        "/api/pages-redirect",
+        "/old-about",
+      ].map((source) => ({
+        source,
+        headers: [{ key: "X-Redirect-Config-Header", value: "1" }],
+      })),
       // Used by Vitest: app-router.test.ts
       {
         source: "/api/(.*)",

@@ -681,7 +681,7 @@ describe("resolveInitOptions", () => {
     expect(prompts.some((prompt) => prompt.includes("Cloudflare deploy"))).toBe(true);
   });
 
-  it("does not ask about pre-warming when Data cache is selected for CDN cache", async () => {
+  it("asks about pre-warming when Data cache is selected for CDN cache", async () => {
     const prompts: string[] = [];
     const answers = ["yes", "3", "", ""];
 
@@ -710,6 +710,7 @@ describe("resolveInitOptions", () => {
       "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only)\n  CDN cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
       "  Pre-render all static routes after build? (not served by Cloudflare deploy unless using Static Assets) [y/N]: ",
+      "  Enable cache pre-warm during deploy? [y/N]: ",
     ]);
   });
 
@@ -727,20 +728,23 @@ describe("resolveInitOptions", () => {
     ).rejects.toThrow("--cdn-cache=data-cache requires --data-cache=kv");
   });
 
-  it("rejects warm CDN cache when Data cache is selected for CDN cache", async () => {
-    await expect(
-      resolveInitOptions(
-        [
-          "--platform=cloudflare",
-          "--cdn-cache=data-cache",
-          "--data-cache=kv",
-          "--image-optimization=none",
-          "--warm-cache",
-        ],
-        { env: {}, isInteractive: false },
-      ),
-    ).rejects.toThrow("--warm-cache requires --cdn-cache=response-store or workers-cache");
-  });
+  it.each(["data-cache", "static-assets"] as const)(
+    "accepts cache warming with --cdn-cache=%s",
+    async (cdnCache) => {
+      await expect(
+        resolveInitOptions(
+          [
+            "--platform=cloudflare",
+            `--cdn-cache=${cdnCache}`,
+            `--data-cache=${cdnCache === "data-cache" ? "kv" : "none"}`,
+            "--image-optimization=none",
+            "--warm-cache",
+          ],
+          { env: { CODEX_THREAD_ID: "test" } },
+        ),
+      ).resolves.toMatchObject({ cloudflare: { cdnCache, warmCdnCache: true } });
+    },
+  );
 
   it("rejects cache warming when caching is disabled", async () => {
     await expect(
@@ -748,6 +752,6 @@ describe("resolveInitOptions", () => {
         ["--platform=cloudflare", "--cdn-cache=none", "--image-optimization=none", "--warm-cache"],
         { env: { CODEX_THREAD_ID: "test" } },
       ),
-    ).rejects.toThrow("--warm-cache requires --cdn-cache=response-store or workers-cache");
+    ).rejects.toThrow("--warm-cache requires a cache");
   });
 });

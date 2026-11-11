@@ -45,6 +45,11 @@ import {
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
+import {
+  resolveAppPageInterceptSegmentConfig,
+  type AppPageInterceptSegmentConfigOptions,
+  type AppPageInterceptSegmentConfigRoute,
+} from "./app-page-intercept-segment-config.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -64,9 +69,8 @@ import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
-  createServerActionNotFoundResponse,
-  getServerActionNotFoundMessage,
   isServerActionNotFoundError,
+  respondServerActionNotFound,
 } from "./server-action-not-found.js";
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
 import { hasDigest } from "./app-rsc-errors.js";
@@ -1219,9 +1223,7 @@ function createActionNotFoundResponse(
   },
 ): Response {
   options.getAndClearPendingCookies();
-  console.warn(getServerActionNotFoundMessage(actionId));
-  options.clearRequestContext();
-  return createServerActionNotFoundResponse();
+  return respondServerActionNotFound(actionId, options.clearRequestContext);
 }
 
 export function isProgressiveServerActionRequest(
@@ -1939,6 +1941,7 @@ export async function handleServerActionRscRequest<
     let element: TElement;
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
     let renderedPathAndSearch: string | null = null;
+    let actionRerenderIsEdgeRuntime = options.isEdgeRuntime;
     const actionRerenderIsRscRequest = true;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
@@ -1967,9 +1970,18 @@ export async function handleServerActionRscRequest<
       );
       // Hydrate the re-render target before reading its page module.
       await options.ensureRouteLoaded?.(actionRerenderTarget.route);
-      const actionRerenderDynamicConfig = options.resolveRouteDynamicConfig?.(
-        actionRerenderTarget.route,
-      );
+      // An intercepted re-render renders the interception, which takes its
+      // config from its own loader tree, as on an intercepted navigation.
+      const actionInterceptConfig = actionRerenderTarget.interceptOpts
+        ? resolveAppPageInterceptSegmentConfig(
+            actionRerenderTarget.route as AppPageInterceptSegmentConfigRoute,
+            actionRerenderTarget.interceptOpts as unknown as AppPageInterceptSegmentConfigOptions,
+          )
+        : null;
+      if (actionInterceptConfig) actionRerenderIsEdgeRuntime = actionInterceptConfig.isEdgeRuntime;
+      const actionRerenderDynamicConfig = actionInterceptConfig
+        ? actionInterceptConfig.dynamicConfig
+        : options.resolveRouteDynamicConfig?.(actionRerenderTarget.route);
       const actionRerenderSearchParams = prepareActionPageRerenderContext({
         draftModeCookie: actionDraftCookie,
         draftModeSecret: options.draftModeSecret,
@@ -1988,10 +2000,14 @@ export async function handleServerActionRscRequest<
         ? `${options.cleanPathname}?${renderedSearch}`
         : options.cleanPathname;
       setCurrentFetchCacheMode(
-        options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
+        actionInterceptConfig
+          ? actionInterceptConfig.fetchCacheMode
+          : (options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null),
       );
       setCurrentFetchRevalidate(
-        options.resolveRouteRevalidateSeconds?.(actionRerenderTarget.route) ?? null,
+        actionInterceptConfig
+          ? actionInterceptConfig.revalidateSeconds
+          : (options.resolveRouteRevalidateSeconds?.(actionRerenderTarget.route) ?? null),
       );
       setCurrentForceDynamicFetchDefault(actionRerenderDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(
@@ -2043,7 +2059,7 @@ export async function handleServerActionRscRequest<
       "Content-Type": VINEXT_RSC_CONTENT_TYPE,
       Vary: VINEXT_RSC_VARY_HEADER,
     });
-    applyEdgeRuntimeHeader(actionHeaders, options.isEdgeRuntime);
+    applyEdgeRuntimeHeader(actionHeaders, actionRerenderIsEdgeRuntime);
     mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
     applyRscCompatibilityIdHeader(actionHeaders);
     setActionRevalidatedHeader(actionHeaders, actionRevalidationKind);

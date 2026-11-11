@@ -12,6 +12,7 @@ import Head, {
   resetSSRHead,
   getSSRHeadHTML,
   escapeAttr,
+  defaultHead,
   reduceHeadChildren,
   setDocumentInitialHead,
   _applyHeadPropsToElement,
@@ -264,6 +265,21 @@ describe("Head SSR collection", () => {
 });
 
 describe("Head reduction", () => {
+  it("keeps the default viewport when a user key only reuses its name", () => {
+    // Next.js's reduceComponents() adds defaultHead() with raw keys, which
+    // never join the user-key set, so only a viewport meta replaces it.
+    const reduced = reduceHeadChildren(
+      [React.createElement("link", { rel: "icon", href: "/icon.png", key: "viewport" })],
+      defaultHead(),
+    );
+
+    expect(reduced.map((child) => [child.type, (child.props as { name?: string }).name])).toEqual([
+      ["meta", undefined],
+      ["meta", "viewport"],
+      ["link", undefined],
+    ]);
+  });
+
   it("dedupes keyed tags and keeps the last matching element", () => {
     const reduced = reduceHeadChildren([
       React.createElement("meta", {
@@ -907,6 +923,29 @@ describe("Head client sync (defaults + order, issue #1569 / #1677)", () => {
       const metas = head.children.filter((el) => el.tagName === "meta");
       expect(metas.filter((el) => el.getAttribute("charset") === "utf-8")).toHaveLength(1);
       expect(metas.filter((el) => el.getAttribute("name") === "viewport")).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("replaces the default viewport with an unkeyed page viewport", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      seedServerHead(head, createElement);
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement("meta", {
+          name: "viewport",
+          content: "width=device-width,initial-scale=1",
+        }),
+      );
+
+      _syncClientHead();
+
+      const viewports = head.children.filter((el) => el.getAttribute("name") === "viewport");
+      expect(viewports.map((el) => el.getAttribute("content"))).toEqual([
+        "width=device-width,initial-scale=1",
+      ]);
     } finally {
       restore();
     }

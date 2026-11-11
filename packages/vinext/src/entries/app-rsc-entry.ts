@@ -229,6 +229,8 @@ type AppRouterConfig = {
    * @see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
    */
   globalNotFoundPath?: string | null;
+  /** Absolute path to `app/not-found.{tsx,ts,js,jsx}` when present. */
+  appNotFoundPath?: string | null;
   /**
    * When true, the project has a `pages/` directory alongside the App Router.
    * The generated RSC entry exposes `/__vinext/prerender/pages-static-paths`
@@ -327,8 +329,7 @@ function buildAppDecodedPathnamePatterns(
 
 type ForcesDynamic = (filePath: string | null | undefined) => boolean;
 
-function createForcesDynamicReader(): ForcesDynamic {
-  const readSource = createSegmentSourceReader();
+function createForcesDynamicReader(readSource = createSegmentSourceReader()): ForcesDynamic {
   return (filePath) => {
     const source = readSource(filePath);
     return source !== null && extractExportConstString(source, "dynamic") === "force-dynamic";
@@ -343,7 +344,16 @@ function directRequestForcesDynamic(route: AppRoute, forcesDynamic: ForcesDynami
 }
 
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
-  const forcesDynamic = createForcesDynamicReader();
+  const readSource = createSegmentSourceReader();
+  const forcesDynamic = createForcesDynamicReader(readSource);
+  // The request stage never loads a Route Handler module. Next.js reads its
+  // runtime statically too, and config headers meet an edge handler's headers
+  // differently.
+  const routeHandlerMetadata = (filePath: string) => {
+    const source = readSource(filePath);
+    const runtime = source === null ? null : extractExportConstString(source, "runtime");
+    return runtime ? { runtime } : true;
+  };
 
   return routes.map((route) => ({
     canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
@@ -368,7 +378,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     params: route.params,
     rootParamNames: route.rootParamNames ?? [],
     page: route.pagePath ? true : null,
-    routeHandler: route.routePath ? true : null,
+    routeHandler: route.routePath ? routeHandlerMetadata(route.routePath) : null,
     routeSegments: route.routeSegments,
     layouts: [],
     layoutTreePositions: [],
@@ -567,6 +577,8 @@ export const __imageConfig = ${JSON.stringify({
     dangerouslyAllowLocalIP: config?.imageConfig?.dangerouslyAllowLocalIP,
     contentDispositionType: config?.imageConfig?.contentDispositionType,
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
+    minimumCacheTTL: config?.imageConfig?.minimumCacheTTL,
+    maximumResponseBody: config?.imageConfig?.maximumResponseBody,
   })};
 export const __clientBuildFiles = __pagesClientAssets.clientBuildFiles ?? [];
 // The matcher reads recorded prerenders, and this stage can run without the
@@ -657,7 +669,7 @@ const __requestHandler = createAppRscRequestHandler({
   },
   ${
     middlewarePath
-      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, validateExternalRewriteRequest }) {
+      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, restoreLocaleRootTrailingSlash, validateExternalRewriteRequest }) {
     return __applyAppMiddleware({
       basePath: __basePath,
       cleanPathname,
@@ -671,6 +683,7 @@ const __requestHandler = createAppRscRequestHandler({
       middlewareRequest,
       module: middlewareModule,
       request,
+      restoreLocaleRootTrailingSlash,
       skipTrailingSlashRedirect: ${JSON.stringify(config?.skipTrailingSlashRedirect ?? false)},
       trailingSlash: __trailingSlash,
       validateExternalRewriteRequest,
@@ -683,9 +696,9 @@ const __requestHandler = createAppRscRequestHandler({
   renderNotFound: async () => null,
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, sharedAcrossHosts, url }) {
+      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url }) {
     return __renderPagesFallback(
-      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, sharedAcrossHosts, url },
+      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url },
       {
         async loadPagesEntry() {
           if (!dispatchPagesResponseStage) {
@@ -794,6 +807,8 @@ export function generateRscEntry(
     dangerouslyAllowLocalIP: config?.imageConfig?.dangerouslyAllowLocalIP,
     contentDispositionType: config?.imageConfig?.contentDispositionType,
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
+    minimumCacheTTL: config?.imageConfig?.minimumCacheTTL,
+    maximumResponseBody: config?.imageConfig?.maximumResponseBody,
   };
   const manifestCode = buildAppRscManifestCode({
     deferEagerImports: Boolean(instrumentationPath),
@@ -802,6 +817,7 @@ export function generateRscEntry(
     globalErrorPath,
     globalNotFoundPath:
       config?.globalNotFound === true ? (config.globalNotFoundPath ?? null) : null,
+    appNotFoundPath: config?.appNotFoundPath ?? null,
   });
   const {
     imports,
@@ -814,6 +830,8 @@ export function generateRscEntry(
     rootForbiddenVar,
     rootUnauthorizedVar,
     rootLayoutVars,
+    hasAppRootLayout,
+    appNotFoundVar,
     globalErrorVar,
     globalNotFoundImportSpecifier,
   } = manifestCode;
@@ -1010,6 +1028,7 @@ ${
 }
 import {
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
+  validateAppPageRouteDynamicParams as __validateAppPageRouteDynamicParams,
 } from ${JSON.stringify(appPageRequestPath)};
 import {
   collectAppPageStaticGenerationRuntimes as __collectAppPageStaticGenerationRuntimes,
@@ -1159,6 +1178,25 @@ function __resolveRouteSegmentConfig(route, segmentConfigBranches) {
   });
 }
 
+function __resolveRouteGenerateStaticParams(route) {
+  return __resolveAppPageGenerateStaticParamsSources({
+    layouts: route.layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page: route.page,
+    parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
+      layout: slot.layout,
+      configLayouts: slot.configLayouts,
+      configLayoutTreePositions: slot.configLayoutTreePositions,
+      page: slot.page ?? slot.default,
+      paramNames: slot.slotParamNames,
+      patternParts: slot.slotPatternParts,
+      routeSegments: slot.routeSegments,
+    })),
+    routePatternParts: route.patternParts,
+    routeSegments: route.routeSegments,
+  });
+}
+
 // The parts of a route's static generation classification that come from its
 // module tree rather than its effective segment config.
 function __resolveRouteStaticGeneration(route, segmentConfigBranches) {
@@ -1286,6 +1324,8 @@ function __createFallbackRenderer() {
   globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
   loadGlobalNotFoundModule: __loadGlobalNotFoundModule,
   globalNotFoundEnabled: ${config?.globalNotFound === true},
+  hasAppRootLayout: ${hasAppRootLayout},
+  appNotFoundModule: ${appNotFoundVar ?? "null"},
   metadataRoutes,
   ssrLoader() {
     return import.meta.viteRsc.loadModule("ssr", "index");
@@ -1448,6 +1488,21 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,
+  async isDynamicParamsMiss(route, params) {
+    if (!route.isDynamic) return false;
+    const __segmentConfig = __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route));
+    if (__segmentConfig.dynamicParamsConfig !== false) return false;
+    return (await __validateAppPageRouteDynamicParams({
+      dynamicConfig: __segmentConfig.dynamicConfig,
+      dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
+      fetchCache: __segmentConfig.fetchCache ?? null,
+      generateStaticParams: __resolveRouteGenerateStaticParams(route),
+      isDynamicRoute: route.isDynamic,
+      isProduction: process.env.NODE_ENV === "production",
+      params,
+      routeSegments: route.routeSegments,
+    })) !== null;
+  },
   prefetchInlining: ${JSON.stringify(prefetchInlining)},
   clearRequestContext() {
     __clearRequestContext();
@@ -1487,6 +1542,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     pprFallbackCacheShells,
     pprFallbackShell,
     renderedConcreteUrlPaths,
+    resumeRoutingAfterMiss,
     skipStaticParamsValidation,
     staticParamsValidationParams,
     rootParams,
@@ -1502,22 +1558,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     const __segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
     const __segmentConfig = __resolveRouteSegmentConfig(route, __segmentConfigBranches);
     const __staticGeneration = __resolveRouteStaticGeneration(route, __segmentConfigBranches);
-    const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
-      layouts: route.layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      page: route.page,
-      parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
-        layout: slot.layout,
-        configLayouts: slot.configLayouts,
-        configLayoutTreePositions: slot.configLayoutTreePositions,
-        page: slot.page ?? slot.default,
-        paramNames: slot.slotParamNames,
-        patternParts: slot.slotPatternParts,
-        routeSegments: slot.routeSegments,
-      })),
-      routePatternParts: route.patternParts,
-      routeSegments: route.routeSegments,
-    });
+    const __generateStaticParams = __resolveRouteGenerateStaticParams(route);
     return __dispatchAppPage({
       basePath: __basePath,
       bypassInterceptionContextCache,
@@ -1536,6 +1577,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
           isForceStatic: buildOptions?.isForceStatic === true,
           isUncacheableRender: buildOptions?.isUncacheableRender === true,
+          routeTreeOnlyPrefetchShell: buildOptions?.routeTreeOnlyPrefetchShell === true,
           mountedLayouts: buildOptions?.mountedLayouts ?? null,
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
           placeStreamedMetadataInHead: buildOptions?.placeStreamedMetadataInHead === true,
@@ -1613,6 +1655,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       pprFallbackShell,
       pprRuntime: ${cacheComponents ? "__appPagePprRuntime" : "undefined"},
       renderedConcreteUrlPaths,
+      resumeRoutingAfterMiss,
       skipStaticParamsValidation,
       staticParamsValidationParams,
       rootParams,
@@ -1643,10 +1686,10 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           interceptionContext,
           interceptionId,
         );
-        return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
-          isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
+        return __fallbackRenderer.renderHttpAccessFallback(opts.routeMiss ? null : route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
+          isEdgeRuntime: !opts.routeMiss && __isEdgeRuntime(__segmentConfig.runtime),
           routePathname: cleanPathname,
-          sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
+          sourcePageSegments: !opts.routeMiss && __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
             : null,
         });
@@ -1691,7 +1734,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     cleanPathname,
     middlewareContext,
     params,
+    renderNotFound,
     request,
+    resumeRoutingAfterMiss,
     route,
     searchParams,
   }) {
@@ -1717,12 +1762,14 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       middlewareContext,
       middlewareRequestHeaders: middlewareContext.requestHeaders,
       params,
+      renderNotFound,
       request,
       route: {
         pattern: route.pattern,
         routeHandler: route.routeHandler,
         routeSegments: route.routeSegments,
       },
+      resumeRoutingAfterMiss,
       scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
       searchParams,
     });
@@ -2086,7 +2133,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   },
   ${
     middlewarePath
-      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, validateExternalRewriteRequest }) {
+      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, restoreLocaleRootTrailingSlash, validateExternalRewriteRequest }) {
     return __applyAppMiddleware({
       basePath: __basePath,
       cleanPathname,
@@ -2100,6 +2147,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       middlewareRequest,
       module: middlewareModule,
       request,
+      restoreLocaleRootTrailingSlash,
       skipTrailingSlashRedirect: ${JSON.stringify(config?.skipTrailingSlashRedirect ?? false)},
       trailingSlash: __trailingSlash,
       validateExternalRewriteRequest,
@@ -2114,9 +2162,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   },
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, sharedAcrossHosts, url }) {
+      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url }) {
     return __renderPagesFallback(
-      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, sharedAcrossHosts, url },
+      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url },
       {
         async loadPagesEntry() {
           const __pagesEntry = await __ensureHybridPagesApplication();

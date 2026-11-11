@@ -9,10 +9,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import {
   APP_FIXTURE_DIR,
   EXTERNAL_REWRITE_HEADER_CASES,
+  EXTERNAL_REWRITE_PATHS,
   expectRepeatedSlashRedirects,
   fetchHtml,
   fetchRsc,
   requestExternalRewriteHeaders,
+  requestExternalRewriteWithConnectionTokens,
   startFixtureServer,
 } from "./helpers.js";
 import { createExternalStoreFixture } from "./use-sync-external-store-fixture.js";
@@ -1196,6 +1198,19 @@ describe("App Router integration", () => {
     },
   );
 
+  // Next.js forwards the fields a client names in Connection, so the client
+  // can neither drop middleware's request headers nor fail the proxy.
+  it.each(EXTERNAL_REWRITE_PATHS)(
+    "keeps request headers the client names in Connection for %s",
+    async (requestPath) => {
+      expect(await requestExternalRewriteWithConnectionTokens(baseUrl, requestPath)).toEqual({
+        status: 200,
+        middlewareRequestHeader: "1",
+        clientNominatedHeader: "1",
+      });
+    },
+  );
+
   // Next.js stages next.config headers before middleware: a config Set-Cookie
   // precedes the response's own cookies, and middleware's cookie replaces it.
   it.each([
@@ -2307,6 +2322,10 @@ describe("App Router integration", () => {
     expect(ssrGlob).toContain("instrumentation-client.ts");
     expect(clientGlob).toContain("instrumentation.ts");
     expect(clientGlob).toContain("instrumentation-client.ts");
+    // Pages Router modules render in ssr and hydrate in client, never in rsc.
+    expect(ssrEntries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+    expect(clientEntries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+    expect(rscEntries).not.toContain("pages/**/*.{tsx,ts,jsx,js}");
   });
 
   it("pre-includes framework dependencies in optimizeDeps.include to avoid late discovery", () => {

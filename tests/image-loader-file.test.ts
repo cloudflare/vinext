@@ -34,7 +34,8 @@ describe("images.loaderFile resolve.alias wiring", () => {
   }
 
   beforeAll(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-image-loader-file-"));
+    // Resolved, as the plugin resolves its root (macOS tmpdir is a /private symlink).
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-image-loader-file-")));
     fs.symlinkSync(
       path.resolve(import.meta.dirname, "../node_modules"),
       path.join(root, "node_modules"),

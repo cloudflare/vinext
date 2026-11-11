@@ -36,6 +36,14 @@ export function middleware(request: NextRequest) {
     res.cookies.set("mw", "1");
     return res;
   }
+  // Matched only with ?mw. Middleware cookies precede the edge API route's own
+  // NextResponse cookies, with no internal x-middleware-set-cookie copy.
+  // Coverage: tests/pages-router.test.ts
+  if (url.pathname === "/api/edge-next-response-cookie") {
+    const res = NextResponse.next();
+    res.cookies.set("mw-edge", "1", { httpOnly: true, path: "/" });
+    return res;
+  }
   if (url.pathname === "/api/edge-request-signal") {
     if (!url.searchParams.has("override")) return NextResponse.next();
     const headers = new Headers(request.headers);
@@ -116,11 +124,17 @@ export function middleware(request: NextRequest) {
   if (url.pathname.startsWith("/external-headers/")) {
     const upstreamPort = request.headers.get("x-test-upstream-port");
     const middlewarePath = url.pathname.slice("/external-headers/middleware".length);
+    const search = url.searchParams;
+    // Middleware's request header override for the upstream.
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.set("x-mw-request-header", "1");
+    const init = search.has("middleware-request-header")
+      ? { request: { headers: requestHeaders } }
+      : undefined;
     const response =
       url.pathname.startsWith("/external-headers/middleware/") && /^\d+$/.test(upstreamPort ?? "")
-        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`)
-        : NextResponse.next();
-    const search = url.searchParams;
+        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`, init)
+        : NextResponse.next(init);
     if (search.has("middleware-cookie")) {
       response.cookies.set("middleware-cookie", "1", { path: "/" });
     }
@@ -437,6 +451,10 @@ export const config = {
     "/api/append-header",
     "/edge-api-rewrite/:path*",
     "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
+    {
+      source: "/api/edge-next-response-cookie",
+      has: [{ type: "query", key: "mw" }],
+    },
     {
       source: "/mw-object-gated",
       has: [{ type: "header", key: "x-mw-allow", value: "1" }],

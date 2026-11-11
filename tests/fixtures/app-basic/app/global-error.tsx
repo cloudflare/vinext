@@ -28,6 +28,14 @@ export default function GlobalError({
     const thrown: unknown = undefined;
     throw thrown;
   }
+  // Dev overlay fixture: global-error.tsx throws while the browser renders it
+  // for the page's own error, which the overlay must still show.
+  if (
+    pathname === "/dev-overlay-root-rethrow/global-error-throws" &&
+    typeof window !== "undefined"
+  ) {
+    throw new Error("global error threw in the browser");
+  }
   return (
     <html>
       <body>

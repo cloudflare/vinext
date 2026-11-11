@@ -63,6 +63,8 @@ describe("isolateServerReferenceLoads", () => {
     );
     expect(creator.waitUntil).toHaveBeenCalledOnce();
     expect(joiner.waitUntil).not.toHaveBeenCalled();
+    // React records the module's load state on the promise it is given.
+    expect(joined).toBe(load);
     release();
     await Promise.all([load, joined]);
   });
