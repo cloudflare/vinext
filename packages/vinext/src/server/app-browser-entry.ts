@@ -2462,7 +2462,7 @@ function bootstrapHydration(
           prefetchProbeDecision.kind === "probe" &&
           navigationKind === "navigate" &&
           additionalPrefetchRscUrls.length === 0 &&
-          process.env.__NEXT_VARY_PARAMS !== "false" &&
+          process.env.__VINEXT_VARY_PARAMS !== "false" &&
           peekStaticShellPrefetchForNavigation(
             rscUrl,
             requestInterceptionContext,
