@@ -107,6 +107,7 @@ import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   VINEXT_VARY_PARAMS_HEADER,
   type AppRscRenderMode,
+  type VaryParam,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import {
@@ -474,7 +475,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     fallbackParamNames: readonly string[];
     isRuntimePrefetch?: boolean;
     routePattern: string;
-    varyParams?: Set<string>;
+    varyParams?: Set<VaryParam>;
   };
   pprRuntime?: AppPagePprRuntime<TRoute>;
   /**
@@ -946,7 +947,7 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
   if (!options.withRequest) throw new Error("[vinext] A static shell needs its own request.");
   const route = options.route;
   const pathname = options.cleanPathname;
-  const varyParams = new Set<string>();
+  const varyParams = new Set<VaryParam>();
   const pprFallbackShell = {
     fallbackParamNames: [],
     ...(isRuntimePrefetch ? { isRuntimePrefetch: true } : {}),
@@ -1016,7 +1017,14 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
             const body = response.body ? await response.arrayBuffer() : null;
             isPartial = pprRuntime.getState()?.hasDynamicBoundary === true;
             const headers = new Headers(response.headers);
-            headers.set(VINEXT_VARY_PARAMS_HEADER, JSON.stringify([...varyParams].sort()));
+            // Encoded like X-Vinext-Params: a header value can't hold every
+            // segment name's characters.
+            headers.set(
+              VINEXT_VARY_PARAMS_HEADER,
+              encodeURIComponent(
+                JSON.stringify([...varyParams].sort((a, b) => String(a).localeCompare(String(b)))),
+              ),
+            );
             return new Response(body, {
               headers,
               status: response.status,
