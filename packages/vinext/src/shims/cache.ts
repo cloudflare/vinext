@@ -94,6 +94,19 @@ function scheduleRevalidation(promise: Promise<void>): undefined {
 // Public API — what app code imports from 'next/cache'
 // ---------------------------------------------------------------------------
 
+// Next.js rejects revalidation inside `generateStaticParams`, also from a
+// cached function the generator calls.
+function throwIfGeneratingStaticParams(expression: string): void {
+  if (!isInsideUnifiedScope()) return;
+  const route = getRequestContext().headersContext?.staticParamsRoute;
+  if (route === undefined) return;
+  throw new Error(
+    `Route ${route} used "${expression}" inside \`generateStaticParams\` which is unsupported. ` +
+      "To ensure revalidation is performed consistently it must always happen outside of renders and cached functions. " +
+      "See more info here: https://nextjs.org/docs/app/building-your-application/rendering/static-and-dynamic#dynamic-rendering",
+  );
+}
+
 /**
  * Revalidate cached data associated with a specific cache tag.
  *
@@ -108,6 +121,7 @@ function scheduleRevalidation(promise: Promise<void>): undefined {
  * @param profile - cacheLife profile name (e.g. 'max', 'hours') or inline { expire: number }
  */
 export function revalidateTag(tag: string, profile?: string | { expire?: number }): undefined {
+  throwIfGeneratingStaticParams(`revalidateTag ${tag}`);
   if (isStagedCacheabilityProbeActive()) {
     _markDynamic();
     return undefined;
@@ -178,6 +192,7 @@ async function invalidateDataCacheTag(
  * layout/page hierarchy tags, so only no-type invalidation applies there.
  */
 export function revalidatePath(path: string, type?: "page" | "layout"): undefined {
+  throwIfGeneratingStaticParams(`revalidatePath ${path}`);
   if (isStagedCacheabilityProbeActive()) {
     _markDynamic();
     return undefined;
@@ -509,8 +524,9 @@ export function unstable_cacheTag(...tags: string[]): void {
 // prevents results created before private-in-unstable-cache validation from
 // bypassing the new synchronous boundary check after an application upgrade.
 // Version 3 drops results that read a Route Handler's request before those
-// reads were rejected inside unstable_cache().
-const UNSTABLE_CACHE_KEY_PREFIX = "unstable_cache:v3";
+// reads were rejected inside unstable_cache(). Version 4 drops results that
+// read root params before those reads were rejected inside unstable_cache().
+const UNSTABLE_CACHE_KEY_PREFIX = "unstable_cache:v4";
 
 /**
  * AsyncLocalStorage to track whether we're inside an unstable_cache() callback.
@@ -629,6 +645,17 @@ function scheduleUnstableCacheBackgroundRevalidation(
   waitUntilUnstableCacheRevalidation(trackedRevalidation);
 }
 
+function runUnstableCacheCallback<Args extends unknown[], Result>(
+  fn: (...args: Args) => Promise<Result>,
+  args: Args,
+): Promise<Result> {
+  return _unstableCacheAls.run(true, () =>
+    _unstableCacheCallbackAls.run({ useCacheContext: _useCacheContextAls.getStore() }, () =>
+      fn(...args),
+    ),
+  );
+}
+
 async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   fn: (...args: Args) => Promise<Result>,
   args: Args,
@@ -644,11 +671,7 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   // Unlike Next.js, a result for arguments changed in the meantime isn't
   // stored under the key built from the old ones.
   const argsUnchanged = serializeArgsOrNull(args) === keyedArgs;
-  const result = await _unstableCacheAls.run(true, () =>
-    _unstableCacheCallbackAls.run({ useCacheContext: _useCacheContextAls.getStore() }, () =>
-      fn(...args),
-    ),
-  );
+  const result = await runUnstableCacheCallback(fn, args);
   if (!argsUnchanged) return result;
 
   const cacheValue: CachedFetchValue = {
@@ -792,7 +815,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     // so that headers()/cookies()/connection() can detect they're in a
     // cache scope and throw an appropriate error.
     if (isDraftMode) {
-      return await _unstableCacheAls.run(true, () => fn(...args));
+      return await runUnstableCacheCallback(fn, args);
     }
     // Like Next.js, a miss in a render, Server Action or route handler returns
     // without waiting for the write, which the request keeps alive. A stale

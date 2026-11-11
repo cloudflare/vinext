@@ -27,6 +27,7 @@ import {
 import {
   buildAppRouteCacheValue,
   buildRouteHandlerCachedResponse,
+  stripRouteHandlerFramingHeaders,
 } from "./app-route-handler-response.js";
 import {
   _consumeRequestScopedCacheLife,
@@ -68,7 +69,7 @@ import {
 import { completeAppRouteHandlerResponse } from "./app-route-handler-execution.js";
 import { buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
-import { decodeMatchedParams } from "../routing/utils.js";
+import { decodeMatchedParams, normalizePathnameForRouteMatch } from "../routing/utils.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type MetadataRouteFunction = (props: Record<string, unknown>) => unknown;
@@ -100,6 +101,11 @@ type MetadataRouteRequestOptions = {
   isrRouteKey?: (pathname: string) => string;
   isrSet?: MetadataRouteCacheSetter;
   makeThenableParams: MetadataRouteMakeThenableParams;
+  /**
+   * The pathname params are read from. A direct request passes its raw path
+   * here and its decoded path as `cleanPathname`; a rewrite passes its
+   * destination, still percent-encoded, as both.
+   */
   routePathname?: string;
   scheduleBackgroundRegeneration?: MetadataRouteBackgroundRegenerator;
 };
@@ -246,6 +252,26 @@ function getMetadataRouteFunctions(route: MetadataRuntimeRoute): MetadataRouteFu
   return functions;
 }
 
+/**
+ * Next.js compiles a metadata route into a Route Handler, and under a dynamic
+ * segment its build stores it only when the route's own module generates its
+ * params or is `force-static`/`error` (collectAppRouteSegments reads no parent
+ * layout). Its metadata loader adds generateStaticParams for
+ * generateImageMetadata. Probed on next@16.2.7: a parent layout's
+ * generateStaticParams, `revalidate` or `dynamicParams` leave the route
+ * dynamic. Generated sitemaps are only served below a static prefix.
+ */
+function isMetadataRouteStaticGenEnabled(route: MetadataRuntimeRoute): boolean {
+  if (!route.isDynamic || !route.patternParts) return true;
+  const functions = getMetadataRouteFunctions(route);
+  return (
+    route.module?.dynamic === "force-static" ||
+    route.module?.dynamic === "error" ||
+    functions.generateStaticParams !== null ||
+    functions.generateImageMetadata !== null
+  );
+}
+
 function isUseCacheFunction(value: MetadataRouteFunction | null): boolean {
   return value !== null && Reflect.get(value, USE_CACHE_FUNCTION_SYMBOL) === true;
 }
@@ -361,6 +387,7 @@ async function captureRenderedMetadataRoute(
     !getActiveDraftModeState() &&
     !hasDraftModeCookieHeader() &&
     route.module?.dynamic !== "force-dynamic" &&
+    isMetadataRouteStaticGenEnabled(route) &&
     frameworkRevalidate > 0 &&
     !response.headers.has("set-cookie");
   const cacheControl = cacheable
@@ -466,7 +493,8 @@ function getOuterMetadataCacheKey(
     getActiveDraftModeState() ||
     hasDraftModeCookieHeader() ||
     route.module?.dynamic === "force-dynamic" ||
-    route.module?.revalidate === 0
+    route.module?.revalidate === 0 ||
+    !isMetadataRouteStaticGenEnabled(route)
   ) {
     return null;
   }
@@ -489,7 +517,7 @@ async function renderMetadataRouteMiss(
     const rendered = await render();
     if (!rendered) return null;
     await writeMetadataRouteMiss(options, route, rendered, cachedEntry);
-    return rendered.response;
+    return stripRouteHandlerFramingHeaders(rendered.response);
   };
   const routeKey = _isOnDemandRevalidate() ? getOuterMetadataCacheKey(options, route) : null;
   if (routeKey === null || !options.isrSet) return renderAndStore();
@@ -603,19 +631,6 @@ function matchMetadataRoute(
   }
 
   return cleanPathname === route.servedUrl ? { params: null, imageId: null } : null;
-}
-
-function metadataRouteParamNames(patternParts: readonly string[]): string[] {
-  return patternParts.flatMap((part) => {
-    if (!part.startsWith(":")) return [];
-    return [part.slice(1, part.endsWith("+") || part.endsWith("*") ? -1 : undefined)];
-  });
-}
-
-function metadataRouteOptionalCatchAllParamNames(patternParts: readonly string[]): string[] {
-  return patternParts.flatMap((part) =>
-    part.startsWith(":") && part.endsWith("*") ? [part.slice(1, -1)] : [],
-  );
 }
 
 function metadataRouteRawParams(
@@ -919,8 +934,20 @@ async function writeMetadataRouteMiss(
 }
 
 export async function handleMetadataRouteRequest(
-  options: MetadataRouteRequestOptions,
+  requestOptions: MetadataRouteRequestOptions,
 ): Promise<Response | null> {
+  // Serve a rewrite like a direct request to its destination: match, key and
+  // tag the decoded pathname, and read params from the encoded one, so an
+  // entry only holds the params its key spells. Next.js keys the resolved
+  // pathname: a rewrite shares the destination's entry, and a double-encoded
+  // spelling of it keeps its own.
+  const options =
+    requestOptions.routePathname === requestOptions.cleanPathname
+      ? {
+          ...requestOptions,
+          cleanPathname: normalizePathnameForRouteMatch(requestOptions.cleanPathname),
+        }
+      : requestOptions;
   // `cleanPathname` is invariant across the loop, so its split is computed
   // lazily and memoized: only dynamic (`patternParts`) routes need it, and the
   // common case of zero dynamic metadata routes never splits at all.
@@ -1010,16 +1037,20 @@ export async function handleMetadataRouteRequest(
     if (route.isDynamic && isImageMetadataRoute(route) && functions.dynamicParams === false) {
       const validationParams = { ...rawParams };
       canonicalizeAppPageParams(validationParams);
-      const { validateAppPageDynamicParams } = await import("./app-page-request.js");
+      const {
+        routePatternOptionalCatchAllParamNames,
+        routePatternParamNames,
+        validateAppPageDynamicParams,
+      } = await import("./app-page-request.js");
       const dynamicParamsResponse = await validateAppPageDynamicParams({
         enforceStaticParamsOnly: true,
         generateStaticParams: functions.generateStaticParams,
         isDynamicRoute: Boolean(route.patternParts),
-        optionalCatchAllParamNames: metadataRouteOptionalCatchAllParamNames(
+        optionalCatchAllParamNames: routePatternOptionalCatchAllParamNames(
           route.patternParts ?? [],
         ),
         params: validationParams,
-        requiredParamNames: metadataRouteParamNames(route.patternParts ?? []),
+        requiredParamNames: routePatternParamNames(route.patternParts ?? []),
       });
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }

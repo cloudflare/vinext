@@ -2102,6 +2102,56 @@ describe("app page boundary render helpers", () => {
     }
   });
 
+  it("marks the global-error boundary that wraps an RSC error boundary payload", async () => {
+    const common = createCommonOptions();
+    let payload: unknown;
+
+    await renderAppPageErrorBoundary<TestModule>({
+      ...common,
+      error: new Error("secret"),
+      globalErrorModule,
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream(element: unknown) {
+        payload = element;
+        return createStreamFromMarkup("");
+      },
+      route: {
+        error: routeErrorModule,
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      sanitizeErrorForClient(error: Error) {
+        return error;
+      },
+    });
+
+    const boundaryProps: Record<string, unknown>[] = [];
+    const visit = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(visit);
+      if (!React.isValidElement(node)) return;
+      const props = node.props as Record<string, unknown>;
+      if ("fallback" in props) boundaryProps.push(props);
+      visit(props.children);
+    };
+    const record = payload as Record<string, unknown>;
+    visit(record[record.__route as string]);
+
+    expect(
+      boundaryProps
+        .filter((props) => props.isGlobalErrorBoundary === true)
+        .map((props) => props.fallback),
+    ).toEqual([GlobalErrorBoundary]);
+    expect(
+      boundaryProps
+        .filter((props) => props.wrapsGlobalErrorBoundary === true)
+        .map((props) => (props.fallback as { name?: string }).name),
+    ).toEqual(["DefaultGlobalError"]);
+  });
+
   it("renders error boundary RSC responses as flat payloads", async () => {
     const common = createCommonOptions();
 

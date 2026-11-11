@@ -1286,6 +1286,92 @@ describe("middleware rewrite carrying x-middleware-next", () => {
   });
 });
 
+describe("middleware message headers", () => {
+  // Next.js drops `ipcForbiddenHeaders` and `content-length` from every
+  // middleware response before using its headers, so middleware that copies
+  // the request's headers onto its response can't set what frames the reply:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  const messageHeaders = {
+    "Content-Length": "5",
+    "Content-Encoding": "gzip",
+    "Transfer-Encoding": "chunked",
+    Connection: "close",
+    "Keep-Alive": "timeout=5",
+    Keepalive: "true",
+    "Accept-Encoding": "br",
+    Expect: "100-continue",
+  };
+  const headers = { ...messageHeaders, "x-pathname": "/search" };
+
+  function expectNoMessageHeaders(target: Headers | undefined) {
+    expect(target?.get("x-pathname")).toBe("/search");
+    for (const name of Object.keys(messageHeaders)) {
+      expect(target?.has(name)).toBe(false);
+    }
+  }
+
+  async function run(
+    handler: (request: Request) => Response | Promise<Response>,
+    isDataRequest?: boolean,
+  ) {
+    return executeMiddleware({
+      isProxy: false,
+      isDataRequest,
+      module: { default: handler },
+      request: new Request("http://localhost:3000/search"),
+    });
+  }
+
+  it("does not stage them from NextResponse.next()", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await run(() => NextResponse.next({ headers }));
+
+    expect(result.continue).toBe(true);
+    expectNoMessageHeaders(result.responseHeaders);
+  });
+
+  it("does not stage them from NextResponse.rewrite()", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await run((request) =>
+      NextResponse.rewrite(new URL("/rewritten", request.url), { headers }),
+    );
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("/rewritten");
+    expectNoMessageHeaders(result.responseHeaders);
+  });
+
+  it("drops them from a redirect", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await run((request) =>
+      NextResponse.redirect(new URL("/elsewhere", request.url), { headers }),
+    );
+
+    expect(result.redirectUrl).toBe("/elsewhere");
+    expectNoMessageHeaders(result.responseHeaders);
+    expectNoMessageHeaders(result.response?.headers);
+  });
+
+  it("drops them from a data request's soft redirect", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await run(
+      (request) => NextResponse.redirect(new URL("/elsewhere", request.url), { headers }),
+      true,
+    );
+
+    expect(result.response?.headers.get("x-nextjs-redirect")).toBe("/elsewhere");
+    expectNoMessageHeaders(result.response?.headers);
+  });
+
+  it("drops them from middleware's own response", async () => {
+    const result = await run(() => new Response("blocked", { status: 403, headers }));
+
+    expect(result.continue).toBe(false);
+    expectNoMessageHeaders(result.response?.headers);
+    await expect(result.response?.text()).resolves.toBe("blocked");
+  });
+});
+
 describe("middleware origin", () => {
   const i18nConfig = {
     defaultLocale: "en",

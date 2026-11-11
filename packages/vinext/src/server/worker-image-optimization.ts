@@ -10,6 +10,7 @@ import {
   handleConfiguredImageOptimization,
   invalidImageSourceResponse,
   isImageSourceBodyStatus,
+  markImageBuildAsset,
   type ImageConfig,
   type ImageOptimizationSignal,
 } from "./image-optimization.js";
@@ -90,11 +91,19 @@ export async function fetchWorkerImageSource(
     return invalidImageSourceResponse();
   }
 
-  const buildAssetPath =
-    resolveNextStaticFile(decodedPathname, options) ??
-    resolveClientBuildFile(sourceUrl.pathname, options.basePath, options.clientBuildFiles);
-  if (buildAssetPath !== null) {
-    return options.assets.fetch(new Request(new URL(buildAssetPath, request.url)));
+  const nextStaticFile = resolveNextStaticFile(decodedPathname, options);
+  if (nextStaticFile !== null) {
+    return markImageBuildAsset(
+      await options.assets.fetch(new Request(new URL(nextStaticFile, request.url))),
+    );
+  }
+  const clientBuildFile = resolveClientBuildFile(
+    sourceUrl.pathname,
+    options.basePath,
+    options.clientBuildFiles,
+  );
+  if (clientBuildFile !== null) {
+    return options.assets.fetch(new Request(new URL(clientBuildFile, request.url)));
   }
 
   // Without the caller's headers, but with the connection's Cloudflare
@@ -108,9 +117,26 @@ export async function fetchWorkerImageSource(
 }
 
 /**
+ * Give a public-file source the Cache-Control middleware or `headers()` staged
+ * for it, which a direct request receives in place of the asset default and
+ * Next.js' internal source fetch reads.
+ */
+export function withStagedCacheControl(asset: Response, cacheControl: string | null): Response {
+  if (cacheControl === null) return asset;
+  const headers = new Headers(asset.headers);
+  headers.set("Cache-Control", cacheControl);
+  return new Response(asset.body, {
+    status: asset.status,
+    statusText: asset.statusText,
+    headers,
+  });
+}
+
+/**
  * Return the public file a framework static-file signal selects, provided the
  * pipeline answered with a body-bearing 2xx outcome. The file is fetched with middleware's
- * request header overrides, as resolveStaticAssetSignal fetches it.
+ * request header overrides, as resolveStaticAssetSignal fetches it, and keeps
+ * the Cache-Control the pipeline staged.
  */
 export function fetchSignalledPublicFile(
   response: Response,
@@ -119,6 +145,7 @@ export function fetchSignalledPublicFile(
 ): Promise<Response> | null {
   const signal = isImageSourceBodyStatus(response.status) ? readStaticFileSignal(response) : null;
   const requestHeaders = readStaticFileSignalRequestHeaders(response);
+  const stagedCacheControl = response.headers.get("Cache-Control");
   cancelResponseBody(response);
   if (signal === null) return null;
   let assetPath = signal;
@@ -129,7 +156,7 @@ export function fetchSignalledPublicFile(
   }
   return Promise.resolve(
     assets.fetch(createStaticAssetRequest(assetPath, sourceRequest, requestHeaders)),
-  );
+  ).then((asset) => withStagedCacheControl(asset, stagedCacheControl));
 }
 
 /**

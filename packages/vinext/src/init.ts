@@ -20,6 +20,7 @@
 import fs from "node:fs";
 import path, { toSlash } from "pathslash";
 import { spawn, spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import {
   detectProject,
   ensureESModule,
@@ -40,7 +41,7 @@ import {
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
 import { getPluginReactUpgradeDeps } from "./utils/plugin-react-version.js";
-import { getReactUpgradeDeps } from "./utils/react-version.js";
+import { findPackageVersion, getReactUpgradeDeps } from "./utils/react-version.js";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
 
@@ -539,6 +540,32 @@ function addDependencyEntries(root: string, deps: string[], { dev }: { dev: bool
   return added;
 }
 
+/** The spec in the manifest sections `isDepInstalled` reads. */
+function readDeclaredDependency(root: string, name: string): string | undefined {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+    };
+    return pkg.dependencies?.[name] ?? pkg.devDependencies?.[name] ?? pkg.peerDependencies?.[name];
+  } catch {
+    return undefined;
+  }
+}
+
+/** The declared spec, or the installed version of a package hoisted from elsewhere. */
+function readCurrentDependencyVersion(root: string, name: string): string | undefined {
+  const declared = readDeclaredDependency(root, name);
+  if (declared !== undefined) return declared;
+  try {
+    const resolved = createRequire(path.join(root, "package.json")).resolve(name);
+    return findPackageVersion(resolved, name) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Check if react/react-dom need upgrading for react-server-dom-webpack compatibility.
  *
@@ -977,6 +1004,14 @@ export async function init(options: InitOptions): Promise<InitResult> {
   let dependencyInstallNeedsApproval = false;
   const dependencyEntriesAdded: string[] = [];
   const devDependencyEntriesAdded: string[] = [];
+  // Versions before the upgrades below, so the summary can show what changed.
+  const upgradedFrom = new Map<string, string | undefined>();
+  const recordUpgrades = (deps: string[]) => {
+    for (const dep of deps) {
+      const { name } = parseDependencySpecifier(dep);
+      upgradedFrom.set(name, readCurrentDependencyVersion(root, name));
+    }
+  };
 
   // For App Router: react-server-dom-webpack requires react/react-dom versions
   // to match exactly (e.g. rsdw@19.3.1 needs react@^19.3.1). If the installed
@@ -994,6 +1029,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
         ]
       : getReactUpgradeDeps(root, { fromManifest: true });
     if (reactUpgrade.length > 0) {
+      recordUpgrades(reactUpgrade);
       console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Upgrading dependencies:"))}`);
       console.log(
         formatList(
@@ -1020,6 +1056,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   // vinext installs, or npm stops with ERESOLVE.
   const pluginReactUpgrade = getPluginReactUpgradeDeps(root);
   if (pluginReactUpgrade.length > 0) {
+    recordUpgrades(pluginReactUpgrade);
     console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Upgrading devDependencies:"))}`);
     console.log(
       formatList(
@@ -1101,13 +1138,23 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   console.log(`  ${terminalStyle.green(terminalStyle.bold("vinext init complete!"))}\n`);
 
-  if (dependencyEntriesAdded.length > 0) {
+  // Upgrades are listed with their versions below rather than as added entries.
+  const addedDependencies = dependencyEntriesAdded.filter((name) => !upgradedFrom.has(name));
+  const addedDevDependencies = devDependencyEntriesAdded.filter((name) => !upgradedFrom.has(name));
+  if (addedDependencies.length > 0) {
     console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to dependencies:`);
-    console.log(formatList(dependencyEntriesAdded, "      "));
+    console.log(formatList(addedDependencies, "      "));
   }
-  if (devDependencyEntriesAdded.length > 0) {
+  if (addedDevDependencies.length > 0) {
     console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to devDependencies:`);
-    console.log(formatList(devDependencyEntriesAdded, "      "));
+    console.log(formatList(addedDevDependencies, "      "));
+  }
+  for (const [name, from] of upgradedFrom) {
+    const to = readDeclaredDependency(root, name);
+    if (to === undefined || to === from) continue;
+    console.log(
+      `    ${terminalStyle.green("\u2713")} Upgraded ${name} ${from ?? "(not installed)"} \u2192 ${to}`,
+    );
   }
   if (dependencyInstallNeedsApproval) {
     console.log(
