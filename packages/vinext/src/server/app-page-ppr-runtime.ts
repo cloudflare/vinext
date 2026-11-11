@@ -128,27 +128,19 @@ async function resolveEligibleFallbackShell<TRoute extends AppPageDispatchRoute>
 
 /**
  * Produce, in the background, the shells of a generated path that aren't
- * stored. The build prerenders these with the path, so a deploy that warms its
- * cache instead fills them when it renders the path.
+ * stored, and regenerate stale ones. The build prerenders these with the path,
+ * so a deploy that warms its cache instead fills them when it renders the path.
  */
 async function produceMissingFallbackShells<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   fallbackShells: readonly AppPagePprFallbackCacheShell[],
   currentRevalidateSeconds: number | null,
   memo?: GeneratedStaticParamsMemo,
-  regeneratesStale = false,
 ): Promise<void> {
   // The build prerenders every shell itself.
   if (process.env.VINEXT_PRERENDER === "1") return;
   for (const fallbackShell of fallbackShells) {
-    scheduleShellProduction(
-      options,
-      fallbackShell,
-      currentRevalidateSeconds,
-      false,
-      regeneratesStale,
-      memo,
-    );
+    scheduleShellProduction(options, fallbackShell, currentRevalidateSeconds, false, memo);
   }
 }
 
@@ -158,7 +150,6 @@ function scheduleShellProduction<TRoute extends AppPageDispatchRoute>(
   shell: AppPagePprFallbackCacheShell,
   currentRevalidateSeconds: number | null,
   isConcrete: boolean,
-  isStaleRegeneration = false,
   // generateStaticParams results the request already has.
   memo?: GeneratedStaticParamsMemo,
 ): void {
@@ -168,17 +159,14 @@ function scheduleShellProduction<TRoute extends AppPageDispatchRoute>(
     key,
     async () => {
       const cached = await (options.isrGetFallbackShell ?? options.isrGet)(key);
-      if (
-        cached !== null &&
-        cached.isExpired !== true &&
-        !(isStaleRegeneration && cached.isStale)
-      ) {
-        return;
-      }
+      // A stale shell regenerates here whatever scheduled this: a request that
+      // serves it while this runs finds the key pending, so its own
+      // regeneration is dropped.
+      if (cached !== null && cached.isExpired !== true && !cached.isStale) return;
       const { produceAppPprFallbackShell } = await import("./app-ppr-fallback-shell-production.js");
       const { coalesceFallbackShellProduction } = await import("./isr-cache.js");
       options.isrDebug?.(
-        isConcrete ? "RENDER (missing shell)" : "RENDER (missing fallback shell)",
+        `RENDER (${cached ? "stale" : "missing"} ${isConcrete ? "shell" : "fallback shell"})`,
         pathname,
       );
       await coalesceFallbackShellProduction(key, () =>
@@ -206,7 +194,7 @@ async function seedRscRequestFromOwnShell<TRoute extends AppPageDispatchRoute>(
   if (value?.kind !== "APP_PAGE") return;
   // A shell that read no cached data has none to seed, but still regenerates.
   if (read.cached.isStale) {
-    scheduleShellProduction(options, concreteShell, currentRevalidateSeconds, true, true);
+    scheduleShellProduction(options, concreteShell, currentRevalidateSeconds, true);
   }
   const { parseAppPprShellState } = await import("./app-ppr-fallback-shell.js");
   const resumeDataCache = parseResumeDataCache(
@@ -426,7 +414,7 @@ async function serveStoredFallbackShell<TRoute extends AppPageDispatchRoute>(
     if (isAppPageParamsGenerated(params, generated, routeParamNamesOf(options.route))) {
       // The request doesn't serve the shell, so a stale one regenerates here.
       if (read.cached!.isStale) {
-        scheduleShellProduction(options, fallbackShell, currentRevalidateSeconds, false, true);
+        scheduleShellProduction(options, fallbackShell, currentRevalidateSeconds, false);
       }
       try {
         await produceMissingFallbackShells(options, fallbackShells, currentRevalidateSeconds);
@@ -574,7 +562,6 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
           decision.fallbackShells,
           currentRevalidateSeconds,
           memo,
-          true,
         );
       } catch (shellError) {
         console.error("[vinext] ISR fallback shell discovery error:", shellError);
