@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createElement, isValidElement, Suspense } from "react";
+import { createElement, isValidElement, Suspense, type ReactElement } from "react";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
@@ -1572,7 +1572,7 @@ describe("keepOptimisticStreamingMetadata", () => {
   });
 
   it("drops the shell a redirect left, even when it decodes after the redirect", async () => {
-    const payload: AppElements = { [metadataId]: createElement("title", null, "Target") };
+    const targetMetadata = createElement("title", null, "Target");
     const keeper = createShellMetadataKeeper("4");
     keeper.setShell({ [metadataId]: createElement("title", null, "Optimistic") });
     let resolveShell!: (elements: AppElements) => void;
@@ -1582,7 +1582,14 @@ describe("keepOptimisticStreamingMetadata", () => {
     resolveShell({ [metadataId]: createElement("title", null, "Source") });
     await Promise.resolve();
 
-    expect(keeper.keep(payload)).toBe(payload);
+    // The shell revealed its metadata, so the target's still streams in its
+    // own boundary, with nothing as its fallback, rather than hold the commit.
+    const kept = (await keeper.keep({ [metadataId]: targetMetadata }))[metadataId];
+    expect(isValidElement<{ children: unknown; fallback: unknown }>(kept)).toBe(true);
+    const boundary = kept as ReactElement<{ children: unknown; fallback: unknown }>;
+    expect(boundary.props.fallback).toBeNull();
+    expect(boundary.props.children).toBe(targetMetadata);
+    expect(boundary.key).toBe("4");
   });
 
   it("hands the page's payload over as is without a shell", () => {

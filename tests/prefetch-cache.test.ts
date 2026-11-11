@@ -3773,7 +3773,7 @@ describe("static-shell prefetch", () => {
 
     it("doesn't reuse a shell for other params with experimental.varyParams: false", async () => {
       setUpShopRoute();
-      vi.stubEnv("__NEXT_VARY_PARAMS", "false");
+      vi.stubEnv("__VINEXT_VARY_PARAMS", "false");
       const fetch = mockShellFetch();
 
       await prefetch("/shop/electronics/phone", fetch, 1);
