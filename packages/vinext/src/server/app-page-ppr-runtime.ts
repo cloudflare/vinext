@@ -415,11 +415,11 @@ async function serveStoredFallbackShell<TRoute extends AppPageDispatchRoute>(
     const generated = parseAppPprShellState(value.postponed)?.generated ?? null;
     if (generated === null) return UNDECIDED;
     if (isAppPageParamsGenerated(params, generated, routeParamNamesOf(options.route))) {
-      // The request doesn't serve the shell, so a stale one regenerates here.
-      if (read.cached!.isStale) {
-        scheduleShellProduction(options, fallbackShell, currentRevalidateSeconds, false);
-      }
       try {
+        // The request doesn't serve the shell, so a stale one regenerates here.
+        if (read.cached!.isStale) {
+          scheduleShellProduction(options, fallbackShell, currentRevalidateSeconds, false);
+        }
         await produceMissingFallbackShells(options, fallbackShells, currentRevalidateSeconds);
       } catch (shellError) {
         console.error("[vinext] ISR fallback shell discovery error:", shellError);
