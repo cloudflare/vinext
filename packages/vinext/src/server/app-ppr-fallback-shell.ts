@@ -62,11 +62,21 @@ export function replaceAppPprShellFallbackParamKeys(
     requestValue: string | string[] | undefined;
   }>,
 ): unknown {
+  // A segment key is a JSON string, which can sit inside another JSON string,
+  // so its opening quote and any quote or backslash in a param name are
+  // spelled both ways. The nested spelling is replaced first: the plain one
+  // is a substring of it for an ordinary name.
+  const jsonToken = (text: string) => JSON.stringify(text).slice(0, -1);
+  const nestedToken = (text: string) => JSON.stringify(jsonToken(text)).slice(1, -1);
   const tokens = replacements
-    .map(({ name, shellValue, requestValue }) => ({
-      from: `"${name}|${formatSegmentKeyParamValue(shellValue)}|`,
-      to: `"${name}|${formatSegmentKeyParamValue(requestValue)}|`,
-    }))
+    .flatMap(({ name, shellValue, requestValue }) => {
+      const from = `${name}|${formatSegmentKeyParamValue(shellValue)}|`;
+      const to = `${name}|${formatSegmentKeyParamValue(requestValue)}|`;
+      return [
+        { from: nestedToken(from), to: nestedToken(to) },
+        { from: jsonToken(from), to: jsonToken(to) },
+      ];
+    })
     .filter(({ from, to }) => from !== to);
   if (tokens.length === 0) return postponed;
   const replace = (value: unknown): unknown => {
