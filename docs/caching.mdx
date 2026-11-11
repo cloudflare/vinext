@@ -489,7 +489,7 @@ With `cacheComponents`, a production `<Link>` prefetch of a page gets the page's
 
 As with Next.js's `varyParams`, a shell records which params its render read, and whether it read the query string. A prefetch of another URL of the same route reuses a shell that has holes, without a request, when the URL has the same values for those params, and so does a navigation to a URL with no prefetch of its own. A shell with no holes is the whole page, so it's reused only for the same path with another query string, when its render didn't read the query string, and that navigation needs no request at all. For example, a page that reads only `category` shares one shell between `/shop/shoes/a` and `/shop/shoes/b`. vinext tracks the params for the whole shell, where Next.js tracks them per segment. Set `experimental.varyParams: false` to prefetch each URL's own shell; Next.js 16.2 defaults it to `false`, while vinext, like Next.js canary, defaults it to `true`.
 
-A page under a `loading.tsx` boundary, an href with a query string, an intercepted route and the dev server keep the loading-shell prefetch.
+An href with a query string, an intercepted route and the dev server keep the loading-shell prefetch. A page under a `loading.tsx` boundary gets its static shell like any other page: the shell stops at the boundary only where the page itself suspends outside a `<Suspense>`.
 
 ## Partial prerendering
 
