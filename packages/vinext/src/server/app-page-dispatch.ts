@@ -32,6 +32,9 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   closeAfterResponse,
   createRequestContext,
+  getRequestContext,
+  isInsideUnifiedScope,
+  queueAfterCallback,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import {
@@ -661,6 +664,11 @@ async function runAppPageRevalidationContext<TResult>(
     dynamicConfig?: string;
     /** The render's request data; a static generation has none. */
     headersContext?: HeadersContext;
+    /**
+     * Start the render's `after()` work when the request's response closes,
+     * as the request's own work starts, instead of before returning.
+     */
+    closesAfterWithRequest?: boolean;
     params: AppPageParams;
     /** Refresh stale fetches before rendering, as a prerender does. */
     refreshStaleFetchesInForeground?: boolean;
@@ -681,6 +689,8 @@ async function runAppPageRevalidationContext<TResult>(
       routeKind: "page",
       routePattern: options.routePattern,
     });
+  const outerContext =
+    options.closesAfterWithRequest === true && isInsideUnifiedScope() ? getRequestContext() : null;
   const requestContext = createRequestContext({
     headersContext,
     currentFetchCacheMode: options.currentFetchCacheMode ?? null,
@@ -709,7 +719,11 @@ async function runAppPageRevalidationContext<TResult>(
   try {
     return await revalidation;
   } finally {
-    await closeAfterResponse(requestContext);
+    if (outerContext) {
+      queueAfterCallback(outerContext, () => closeAfterResponse(requestContext));
+    } else {
+      await closeAfterResponse(requestContext);
+    }
   }
 }
 
@@ -1030,7 +1044,9 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
       draftModeSecret: options.draftModeSecret,
       dynamicConfig: options.dynamicConfig,
       displayPathname: options.displayPathname,
-      // A runtime prefetch renders with the request's cookies and headers.
+      // A runtime prefetch renders with the request's cookies and headers, and
+      // its `after()` work runs once the request's response closes.
+      closesAfterWithRequest: isRuntimePrefetch,
       headersContext: isRuntimePrefetch ? (getHeadersContext() ?? undefined) : undefined,
       params: options.params,
       refreshStaleFetchesInForeground: true,
