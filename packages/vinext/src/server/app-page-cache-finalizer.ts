@@ -132,6 +132,8 @@ type ScheduleAppPageRscCacheWriteOptions = {
   interceptionId?: string | null;
   mountedSlotsHeader?: string | null;
   omitPendingDynamicCacheState?: boolean;
+  /** Called when the render turns out dynamic as its payload streams. */
+  onDynamicRender?: () => void;
   renderMode?: AppRscRenderMode;
   /**
    * The render's status, from its document's shell, and the page's document
@@ -576,6 +578,7 @@ export function scheduleAppPageRscCacheWrite(
 
       if (options.consumeDynamicUsage()) {
         options.isrDebug?.("RSC cache write skipped (dynamic usage during render)", rscKey);
+        options.onDynamicRender?.();
         return;
       }
 

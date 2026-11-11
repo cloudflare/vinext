@@ -1165,6 +1165,7 @@ async function renderAppPageLifecycleImpl(
       interceptionId: options.interceptionId,
       mountedSlotsHeader: options.mountedSlotsHeader,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
+      onDynamicRender: options.onDynamicRender,
       renderMode: options.renderMode,
       resolveRscRenderStatus,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
