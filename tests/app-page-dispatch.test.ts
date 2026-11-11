@@ -7334,47 +7334,57 @@ describe("app page dispatch", () => {
     consoleError.mockRestore();
   });
 
-  it("produces a generated path's missing shell when it regenerates", async () => {
-    let scheduledRender: (() => Promise<void>) | null = null;
-    const scheduleFallbackShellRegeneration = vi.fn();
-    const { options } = createPprBlogDispatchOptions({
-      buildPageElement: createParamTextPageElement("fresh"),
-      cleanPathname: "/en/blog/hello",
-      isrGet: vi.fn(async () =>
-        buildISRCacheEntry(buildCachedAppPageValue("<html><body>stale</body></html>"), true),
-      ),
-      loadSsrHandler: async () => ({
-        async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
-          if (captureOptions?.capturedRscDataRef) {
-            captureOptions.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("fresh-flight").buffer,
-            );
-          }
-          void captureOptions?.sideStream?.cancel().catch(() => {});
-          return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+  it.each([{ isRscRequest: false }, { isRscRequest: true }])(
+    "produces a generated path's missing shell when it regenerates (isRscRequest: $isRscRequest)",
+    async ({ isRscRequest }) => {
+      let scheduledRender: (() => Promise<void>) | null = null;
+      const scheduleFallbackShellRegeneration = vi.fn();
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement("fresh"),
+        cleanPathname: "/en/blog/hello",
+        isRscRequest,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(
+            buildCachedAppPageValue(
+              "<html><body>stale</body></html>",
+              new TextEncoder().encode("stale-flight").buffer,
+            ),
+            true,
+          ),
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef) {
+              captureOptions.capturedRscDataRef.value = Promise.resolve(
+                new TextEncoder().encode("fresh-flight").buffer,
+              );
+            }
+            void captureOptions?.sideStream?.cancel().catch(() => {});
+            return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+          },
+        }),
+        params: { locale: "en", slug: "hello" },
+        request: new Request("https://example.test/en/blog/hello"),
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
         },
-      }),
-      params: { locale: "en", slug: "hello" },
-      request: new Request("https://example.test/en/blog/hello"),
-      scheduleBackgroundRegeneration(_key, renderFn) {
-        scheduledRender = renderFn;
-      },
-    });
+      });
 
-    const response = await runWithRequestContext(createRequestContext(), () =>
-      dispatchAppPage({ ...options, scheduleFallbackShellRegeneration }),
-    );
-    await response.text();
-    expect(scheduleFallbackShellRegeneration).not.toHaveBeenCalled();
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, scheduleFallbackShellRegeneration }),
+      );
+      await response.text();
+      expect(scheduleFallbackShellRegeneration).not.toHaveBeenCalled();
 
-    if (!scheduledRender) throw new Error("expected the stale page to regenerate");
-    await runWithRequestContext(createRequestContext(), () => scheduledRender!());
-    expect(scheduleFallbackShellRegeneration).toHaveBeenCalledWith(
-      "shell:/en/blog/[slug]",
-      expect.any(Function),
-      expect.anything(),
-    );
-  });
+      if (!scheduledRender) throw new Error("expected the stale page to regenerate");
+      await runWithRequestContext(createRequestContext(), () => scheduledRender!());
+      expect(scheduleFallbackShellRegeneration).toHaveBeenCalledWith(
+        "shell:/en/blog/[slug]",
+        expect.any(Function),
+        expect.anything(),
+      );
+    },
+  );
 
   it("regenerates a page even when finding its shells fails", async () => {
     let scheduledRender: (() => Promise<void>) | null = null;
