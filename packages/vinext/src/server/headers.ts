@@ -32,7 +32,7 @@ export const NEXTJS_CACHE_HEADER = "x-nextjs-cache";
 /** Next.js cache-tag metadata carried by prerendered App Router responses. */
 export const NEXT_CACHE_TAGS_HEADER = "x-next-cache-tags";
 
-/** Timing metrics: `handlerStart,compileMs,renderMs`. */
+/** Timing metrics: `handlerStart,compileMs,renderMs` (handlerStart is wall-clock ms). */
 export const VINEXT_TIMING_HEADER = "x-vinext-timing";
 
 /** Matched route returned from an independently hosted response stage. */
@@ -110,6 +110,13 @@ export const VINEXT_RSC_COMPLETION_METADATA_HEADER = "X-Vinext-Rsc-Completion-Me
  */
 export const VINEXT_SPECIAL_ERROR_STATUS_HEADER = "x-vinext-special-error-status";
 
+/**
+ * Marks an App page response that rendered a routing-level not-found (a
+ * `dynamicParams = false` miss). The request stage strips it and sends the
+ * unmatched route's never-cache 404 policy.
+ */
+export const VINEXT_ROUTE_MISS_HEADER = "x-vinext-route-miss";
+
 /** URL-encoded rendered path and search after middleware/config rewrites. */
 export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-And-Search";
 
@@ -134,8 +141,11 @@ export const VINEXT_PRERENDER_SPECIAL_ERROR_HEADER = "x-vinext-prerender-special
 /** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 
-/** Disabled-by-default client hint describing already-held App Router payload entries. */
-export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
+/**
+ * Hashed identities of the layouts a client navigation already holds, so a
+ * render that's never stored can leave them out. Not part of the RSC cache key.
+ */
+export const VINEXT_MOUNTED_LAYOUTS_HEADER = "X-Vinext-Mounted-Layouts";
 
 /**
  * Side-channel signal that an RSC response (HTTP 200) encodes a `redirect()`
@@ -261,6 +271,7 @@ export const FLIGHT_HEADERS: readonly string[] = [
   "next-hmr-refresh",
   "next-router-segment-prefetch",
   "x-vinext-rsc-state-fingerprint",
+  "x-vinext-mounted-layouts",
 ];
 
 // ---------------------------------------------------------------------------

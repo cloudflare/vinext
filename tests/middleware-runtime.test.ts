@@ -3,6 +3,7 @@ import {
   executeMiddleware,
   runGeneratedMiddleware,
 } from "../packages/vinext/src/server/middleware-runtime.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 
 describe("middleware pathname matching", () => {
@@ -1236,5 +1237,186 @@ describe("middleware matching for raw data requests", () => {
     await expect(
       observedPathname("/_next/data/build-id/admin.json", "/admin", { isDataRequest: false }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("middleware rewrite carrying x-middleware-next", () => {
+  // next-intl's App Router playground proxy builds a rewrite from the headers
+  // of the `NextResponse.next()` its i18n middleware returned, so the response
+  // carries both `x-middleware-next` and `x-middleware-rewrite`. Next.js drops
+  // `x-middleware-next` and applies the rewrite:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  // https://github.com/amannn/next-intl/blob/main/examples/example-app-router-playground/src/proxy.ts
+  it("applies the rewrite instead of continuing to the original path", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        default(request: Request) {
+          const next = NextResponse.next({ headers: { "x-from-next": "1" } });
+          return NextResponse.rewrite(new URL("/de/about/v2", request.url), {
+            headers: next.headers,
+          });
+        },
+      },
+      request: new Request("http://localhost:3000/de/about"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("/de/about/v2");
+    expect(result.responseHeaders?.get("x-from-next")).toBe("1");
+    expect(result.responseHeaders?.has("x-middleware-next")).toBe(false);
+  });
+
+  it("still lets a redirect win over x-middleware-next", async () => {
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        default: () =>
+          new Response(null, {
+            status: 307,
+            headers: { Location: "/elsewhere", "x-middleware-next": "1" },
+          }),
+      },
+      request: new Request("http://localhost:3000/start"),
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).toBe("/elsewhere");
+  });
+});
+
+describe("middleware message headers", () => {
+  // Next.js drops `ipcForbiddenHeaders` and `content-length` from every
+  // middleware response before using its headers, so middleware that copies
+  // the request's headers onto its response can't set what frames the reply:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  const messageHeaders = {
+    "Content-Length": "5",
+    "Content-Encoding": "gzip",
+    "Transfer-Encoding": "chunked",
+    Connection: "close",
+    "Keep-Alive": "timeout=5",
+    Keepalive: "true",
+    "Accept-Encoding": "br",
+    Expect: "100-continue",
+  };
+  const headers = { ...messageHeaders, "x-pathname": "/search" };
+
+  function expectNoMessageHeaders(target: Headers | undefined) {
+    expect(target?.get("x-pathname")).toBe("/search");
+    for (const name of Object.keys(messageHeaders)) {
+      expect(target?.has(name)).toBe(false);
+    }
+  }
+
+  async function run(
+    handler: (request: Request) => Response | Promise<Response>,
+    isDataRequest?: boolean,
+  ) {
+    return executeMiddleware({
+      isProxy: false,
+      isDataRequest,
+      module: { default: handler },
+      request: new Request("http://localhost:3000/search"),
+    });
+  }
+
+  it("does not stage them from NextResponse.next()", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await run(() => NextResponse.next({ headers }));
+
+    expect(result.continue).toBe(true);
+    expectNoMessageHeaders(result.responseHeaders);
+  });
+
+  it("does not stage them from NextResponse.rewrite()", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await run((request) =>
+      NextResponse.rewrite(new URL("/rewritten", request.url), { headers }),
+    );
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("/rewritten");
+    expectNoMessageHeaders(result.responseHeaders);
+  });
+
+  it("drops them from a redirect", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await run((request) =>
+      NextResponse.redirect(new URL("/elsewhere", request.url), { headers }),
+    );
+
+    expect(result.redirectUrl).toBe("/elsewhere");
+    expectNoMessageHeaders(result.responseHeaders);
+    expectNoMessageHeaders(result.response?.headers);
+  });
+
+  it("drops them from a data request's soft redirect", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await run(
+      (request) => NextResponse.redirect(new URL("/elsewhere", request.url), { headers }),
+      true,
+    );
+
+    expect(result.response?.headers.get("x-nextjs-redirect")).toBe("/elsewhere");
+    expectNoMessageHeaders(result.response?.headers);
+  });
+
+  it("drops them from middleware's own response", async () => {
+    const result = await run(() => new Response("blocked", { status: 403, headers }));
+
+    expect(result.continue).toBe(false);
+    expectNoMessageHeaders(result.response?.headers);
+    await expect(result.response?.text()).resolves.toBe("blocked");
+  });
+});
+
+describe("middleware origin", () => {
+  const i18nConfig = {
+    defaultLocale: "en",
+    domains: [{ defaultLocale: "fr", domain: "example.fr" }],
+    locales: ["en", "fr"],
+  };
+
+  async function observe(request: Request, middlewareOrigin?: string) {
+    let seen: { domain?: string; url: string } | undefined;
+    const run = () =>
+      executeMiddleware({
+        i18nConfig,
+        isProxy: false,
+        module: {
+          default(req: NextRequest) {
+            seen = { domain: req.nextUrl.domainLocale?.domain, url: req.url };
+          },
+        },
+        request,
+      });
+    if (middlewareOrigin) {
+      await runWithExecutionContext({ middlewareOrigin, waitUntil() {} }, run);
+    } else {
+      await run();
+    }
+    return seen;
+  }
+
+  it("runs on a server-owned origin with the requested host's domain locale", async () => {
+    const request = new Request("http://example.fr/about", { headers: { host: "example.fr" } });
+    expect(await observe(request, "http://localhost:3000")).toEqual({
+      domain: "example.fr",
+      url: "http://localhost:3000/about",
+    });
+  });
+
+  it("keeps the request URL's host for the domain locale without a server origin", async () => {
+    // A trusted X-Forwarded-Host keeps the request origin, while Host can
+    // still name the upstream.
+    const request = new Request("http://example.fr/about", {
+      headers: { host: "origin.internal" },
+    });
+    expect(await observe(request)).toEqual({
+      domain: "example.fr",
+      url: "http://example.fr/about",
+    });
   });
 });

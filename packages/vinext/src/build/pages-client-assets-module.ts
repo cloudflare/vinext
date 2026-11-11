@@ -8,9 +8,10 @@ import { VINEXT_CLIENT_ENTRY_MANIFEST } from "../utils/client-entry-manifest.js"
 export const PAGES_CLIENT_ASSETS_MODULE = "vinext-client-assets.js";
 
 export function buildPagesClientAssetsModule(assets: PagesClientAssets): string {
-  const prepared = assets.ssrManifest
-    ? { ...assets, sharedChunks: getSharedChunkFiles(assets.ssrManifest) }
-    : assets;
+  const prepared =
+    assets.ssrManifest && !assets.sharedChunks
+      ? { ...assets, sharedChunks: getSharedChunkFiles(assets.ssrManifest) }
+      : assets;
   return `export default ${JSON.stringify(prepared)};\n`;
 }
 

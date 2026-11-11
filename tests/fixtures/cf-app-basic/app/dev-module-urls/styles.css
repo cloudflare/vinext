@@ -1,0 +1,9 @@
+.dev-module-urls-title {
+  color: rgb(243, 128, 32);
+}
+
+.dev-module-urls-badge {
+  width: 16px;
+  height: 16px;
+  background-image: url(./badge.svg);
+}

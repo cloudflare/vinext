@@ -20,7 +20,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "../helpers.js";
+import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer, fetchRsc } from "../helpers.js";
 
 const ACTION_PATH = "/nextjs-compat/action-node-mw";
 // Stable module-path action id for `echoAction` (mirrors the ids used in
@@ -50,7 +50,7 @@ describe("Next.js compat: server action under node-runtime middleware", () => {
   });
 
   it("dispatches the action POST after the node middleware consumed the body", async () => {
-    const res = await fetch(`${baseUrl}${ACTION_PATH}.rsc`, {
+    const res = await fetchRsc(baseUrl, ACTION_PATH, {
       method: "POST",
       headers: {
         "Content-Type": "text/plain",

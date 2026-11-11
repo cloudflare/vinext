@@ -99,6 +99,22 @@ test("honors encoded middleware rewrites behind basePath and i18n", async () => 
   expect(response.body).toContain("Protected admin content");
 });
 
+// Next.js' resolve-routes matches routes and files only for a pathname under
+// basePath, so a middleware rewrite to an unprefixed URL resolves nothing.
+test("resolves nothing for middleware rewrites outside basePath", async () => {
+  const page = await getRawPath("/docs/middleware-rewrite-unprefixed/page");
+  expect(page.status).toBe(404);
+  expect(page.body).not.toContain("About");
+
+  const file = await getRawPath("/docs/middleware-rewrite-unprefixed/file");
+  expect(file.status).toBe(404);
+  expect(file.headers["content-type"] ?? "").not.toContain("image/png");
+
+  const control = await getRawPath("/docs/middleware-rewrite-unprefixed/control");
+  expect(control.status).toBe(200);
+  expect(control.body).toContain("About");
+});
+
 test("keeps config source literals distinct behind basePath and i18n", async () => {
   const literalRewrite = await getRawPath("/docs/rewrite-about");
   expect(literalRewrite.status).toBe(200);

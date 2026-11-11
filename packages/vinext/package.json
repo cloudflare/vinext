@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "1.1.0",
+  "version": "1.4.5",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "homepage": "https://vinext.dev/",
   "license": "MIT",
@@ -245,6 +245,7 @@
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "am-i-vibing": "catalog:",
+    "iconv-lite": "catalog:",
     "ignore": "catalog:",
     "image-size": "catalog:",
     "pathslash": "catalog:",
@@ -257,9 +258,9 @@
     "@mdx-js/rollup": "^3.0.0",
     "@vitejs/plugin-react": "^5.1.4 || ^6.0.0",
     "@vitejs/plugin-rsc": "^0.5.37",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "react-server-dom-webpack": "^19.2.6",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-server-dom-webpack": "^19.3.1",
     "vite": "^8.0.0"
   },
   "peerDependenciesMeta": {

@@ -223,6 +223,18 @@ describe("Pages i18n domain routing (production)", () => {
     expect(res.body).toContain('href="http://example.fr/about" id="switch-locale"');
   });
 
+  it("resolves the middleware domain locale from the Host header", async () => {
+    // Middleware's URL carries the server's own origin on Node, so the domain
+    // locale must come from the host the client asked for.
+    for (const [host, domain] of [
+      ["example.fr", "example.fr"],
+      ["example.com", "example.com"],
+    ]) {
+      const res = await requestNodeServerWithHost(prodPort, "/about", host);
+      expect(res.headers["x-mw-domain-locale"]).toBe(domain);
+    }
+  });
+
   it("uses the matched domain default locale for request context", async () => {
     const res = await requestNodeServerWithHost(prodPort, "/about", "example.fr");
 

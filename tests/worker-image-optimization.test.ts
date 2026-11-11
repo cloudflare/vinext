@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import { handleImageOptimization } from "../packages/vinext/src/server/image-optimization.js";
 import { createStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
 import {
   fetchSignalledPublicFile,
@@ -27,7 +28,6 @@ function sourceOptions(overrides: Partial<WorkerImageSourceOptions> = {}) {
     basePath: "",
     assetPathPrefix: "",
     clientBuildFiles: new Set(),
-    sourceBasePath: "",
     fetchPublicFile,
     ...overrides,
   };
@@ -55,7 +55,6 @@ describe("fetchWorkerImageSource", () => {
     const { options, assets, fetchPublicFile } = sourceOptions({
       basePath: "/docs",
       assetPathPrefix: "/cdn",
-      sourceBasePath: "/docs",
     });
 
     await fetchWorkerImageSource("/cdn/_next/static/media/a.png", callerRequest(), options);
@@ -66,10 +65,65 @@ describe("fetchWorkerImageSource", () => {
     );
   });
 
-  it("runs any other source through the pipeline as a GET without the caller's headers", async () => {
-    const { options, assets, fetchPublicFile } = sourceOptions({ sourceBasePath: "/docs" });
+  it("fetches build output by the name it checked, encoded once", async () => {
+    // The binding decodes each segment once. A segment that decodes to `%2E%2E`
+    // must stay a literal name rather than resolve as `..`.
+    for (const [source, pathname] of [
+      ["/_next/static/%252E%252E/%252E%252E/a.png", "/_next/static/%252E%252E/%252E%252E/a.png"],
+      ["/_next/static/%252e%252E/.%252E/a.png", "/_next/static/%252e%252E/.%252E/a.png"],
+      ["/_next/static/media/logo%402x%20a.png", "/_next/static/media/logo%402x%20a.png"],
+      ["/_next/static/media/logo@2x.png", "/_next/static/media/logo%402x.png"],
+      ["/_next/static/media/100%25.png", "/_next/static/media/100%25.png"],
+    ]) {
+      const { options, assets, fetchPublicFile } = sourceOptions();
 
-    const response = await fetchWorkerImageSource("/a.png?v=1", callerRequest(), options);
+      await fetchWorkerImageSource(source, callerRequest(), options);
+
+      expect(fetchPublicFile, source).not.toHaveBeenCalled();
+      expect(new URL(assets.fetch.mock.calls[0][0].url).pathname, source).toBe(pathname);
+    }
+  });
+
+  it("fetches build output a decoded slash names", async () => {
+    const { options, assets } = sourceOptions();
+
+    await fetchWorkerImageSource("/_next/static/media%2Fa.png", callerRequest(), options);
+
+    expect(new URL(assets.fetch.mock.calls[0][0].url).pathname).toBe("/_next/static/media/a.png");
+  });
+
+  it("does not fetch build output for a decoded dot or empty segment", async () => {
+    // Next.js matches the decoded pathname literally, without resolving it.
+    for (const source of [
+      "/_next/static/a%2F..%2F..%2Fa.png",
+      "/_next/static/media%2F..%2Fmedia%2Fa.png",
+      "/_next/static/media%2F.%2Fa.png",
+      "/_next/static/media%2F%2Fa.png",
+      "/_next/static//media/a.png",
+    ]) {
+      const { options, assets, fetchPublicFile } = sourceOptions();
+
+      await fetchWorkerImageSource(source, callerRequest(), options);
+
+      expect(assets.fetch, source).not.toHaveBeenCalled();
+      expect(new URL(fetchPublicFile.mock.calls[0][0].url).pathname, source).toBe(source);
+    }
+  });
+
+  it("keeps an encoded dot segment under a path assetPrefix a literal name", async () => {
+    const { options, assets } = sourceOptions({ basePath: "/docs", assetPathPrefix: "/cdn" });
+
+    await fetchWorkerImageSource("/cdn/_next/static/%252E%252E/a.png", callerRequest(), options);
+
+    expect(new URL(assets.fetch.mock.calls[0][0].url).pathname).toBe(
+      "/cdn/_next/static/%252E%252E/a.png",
+    );
+  });
+
+  it("runs any other source through the pipeline as a GET without the caller's headers", async () => {
+    const { options, assets, fetchPublicFile } = sourceOptions({ basePath: "/docs" });
+
+    const response = await fetchWorkerImageSource("/docs/a.png?v=1", callerRequest(), options);
 
     expect(await response.text()).toBe("public");
     expect(assets.fetch).not.toHaveBeenCalled();
@@ -102,6 +156,54 @@ describe("fetchWorkerImageSource", () => {
       expect(await response.text()).toBe("The requested resource isn't a valid image.");
     }
     expect(cancel).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Worker image source Cache-Control", () => {
+  // Next.js serves only its `_next/static` output immutably (`isStatic` in
+  // packages/next/src/server/image-optimizer.ts); a public file keeps the
+  // larger of minimumCacheTTL and the max-age a direct request receives.
+  const icon = (cacheControl?: string) =>
+    new Response("icon", {
+      headers: {
+        "Content-Type": "image/x-icon",
+        ...(cacheControl ? { "Cache-Control": cacheControl } : {}),
+      },
+    });
+  const serve = (source: string, options: WorkerImageSourceOptions) =>
+    handleImageOptimization(
+      new Request(`https://example.com/_next/image?url=${encodeURIComponent(source)}&w=64&q=75`),
+      { fetchAsset: (url, request) => fetchWorkerImageSource(url, request, options) },
+    );
+
+  it("keeps build output immutable", async () => {
+    const { options } = sourceOptions({ assets: { fetch: async () => icon() } });
+    const response = await serve("/_next/static/media/a.ico", options);
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+  });
+
+  it("revalidates a public file under a _next/static folder", async () => {
+    const { options } = sourceOptions({ fetchPublicFile: async () => icon() });
+    const response = await serve("/avatars/_next/static/a.ico", options);
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
+  });
+
+  it("keeps the max-age staged for a signalled public file", async () => {
+    const assets = { fetch: async () => icon("public, max-age=0, must-revalidate") };
+    const { options } = sourceOptions({
+      assets,
+      fetchPublicFile: async (sourceRequest) =>
+        fetchSignalledPublicFile(
+          createStaticFileSignal("/a.ico", {
+            headers: new Headers({ "Cache-Control": "public, max-age=86400" }),
+            status: null,
+          }),
+          sourceRequest,
+          assets,
+        ),
+    });
+    const response = await serve("/a.ico", options);
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=86400, must-revalidate");
   });
 });
 

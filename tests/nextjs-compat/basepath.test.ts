@@ -351,8 +351,8 @@ describe("basePath: rewrite/redirect/header gating", () => {
       hadBasePath: true,
     });
     expect(result).toEqual({
-      destination: "/somewhere-else",
-      permanent: false,
+      destination: "/docs/somewhere-else",
+      statusCode: 307,
       destinationQuery: [],
     });
   });
@@ -373,7 +373,7 @@ describe("basePath: rewrite/redirect/header gating", () => {
     });
     expect(result).toEqual({
       destination: "/another-destination",
-      permanent: false,
+      statusCode: 307,
       destinationQuery: [],
     });
   });
@@ -474,7 +474,7 @@ describe("basePath: rewrite/redirect/header gating", () => {
     const redirects = [{ source: "/x", destination: "/y", permanent: false }];
     expect(matchRedirect("/x", redirects, emptyCtx())).toEqual({
       destination: "/y",
-      permanent: false,
+      statusCode: 307,
       destinationQuery: [],
     });
     const headers = [{ source: "/x", headers: [{ key: "a", value: "b" }] }];

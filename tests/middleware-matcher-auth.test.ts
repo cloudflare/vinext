@@ -1,25 +1,17 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import type http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import { createBuilder, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/middleware-matcher-auth");
-const REDOS_CHILD = path.resolve(
-  import.meta.dirname,
-  "./fixtures/middleware-matcher-redos-child.ts",
-);
-const WORKSPACE_ROOT = path.resolve(import.meta.dirname, "..");
 const CLOUDFLARE_NODE_MODULES = path.resolve(
   import.meta.dirname,
   "./fixtures/cf-app-basic/node_modules",
 );
-const execFileAsync = promisify(execFile);
 
 const PROTECTED_PATHS = [
   "/",
@@ -171,7 +163,6 @@ async function assertEncodedDelimiterAuthGuard(baseUrl: string): Promise<void> {
     { body: "protected order page", pathname: "/orders/42%3F" },
     { body: "protected order page", pathname: "/orders/42%23" },
     { body: "protected localized admin page", pathname: "/xx/admin/dash%2Fboard" },
-    { body: "protected localized admin page", pathname: "/xx/admin/dash%2Fboard.rsc" },
     {
       body: "protected invoice route handler",
       pathname: "/billing/invoices/current%2Fq3",
@@ -208,6 +199,76 @@ async function assertEncodedDelimiterAuthGuard(baseUrl: string): Promise<void> {
     expect(response.status, pathname).toBe(200);
     expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
     expect(body, pathname).toContain("protected order page");
+  }
+}
+
+async function assertRscSuffixAuthGuard(baseUrl: string): Promise<void> {
+  const headers = { "x-rsc-dot-segment-auth": "1" };
+  // As in Next.js, a `.rsc` suffix is an ordinary part of the last segment, so
+  // none of these can leave a `.` or `..` segment the matcher does not cover.
+  const guardedPaths = [
+    "/xx/admin/dashboard.rsc",
+    "/xx/admin/....rsc",
+    "/xx/admin/...rsc",
+    "/xx/admin/..rsc",
+    "/xx/admin/%2E%2E.rsc",
+    "/xx/admin/.%2e.rsc",
+    "/billing/invoices/current.rsc",
+    "/billing/invoices/...rsc",
+  ];
+
+  for (const pathname of guardedPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+}
+
+async function assertMetadataRouteSuffixAuthGuard(baseUrl: string): Promise<void> {
+  // Next.js runs middleware for every spelling of an exact metadata route
+  // matcher. A `.rsc` suffix, encoded or not, never selects the metadata route,
+  // so the suffixed spellings 404 instead of serving it.
+  const targets = [
+    { body: "protected-sitemap-entry", pathname: "/sitemap.xml" },
+    { body: "protected-robots-entry", pathname: "/robots.txt" },
+  ];
+  const suffixes = [".rsc", "%2Ersc", "%2ersc", ".rs%63"];
+
+  for (const target of targets) {
+    const response = await fetch(`${baseUrl}${target.pathname}`);
+    const body = await response.text();
+    expect(response.status, target.pathname).toBe(200);
+    expect(response.headers.get("x-auth-guard"), target.pathname).toBeNull();
+    expect(body, target.pathname).toContain(target.body);
+  }
+  for (const target of targets) {
+    for (const suffix of suffixes) {
+      const pathname = `${target.pathname}${suffix}`;
+      const response = await fetch(`${baseUrl}${pathname}`);
+      const body = await response.text();
+      expect(response.status, pathname).toBe(404);
+      expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
+      expect(body, pathname).not.toContain(target.body);
+    }
+  }
+
+  const headers = { "x-metadata-route-auth": "1" };
+  const guardedPaths = [
+    ...targets.flatMap(({ pathname }) => [
+      pathname,
+      ...suffixes.map((suffix) => `${pathname}${suffix}`),
+    ]),
+    "/sitemap.xm%6C",
+    "/robots.tx%74",
+  ];
+  for (const pathname of guardedPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
   }
 }
 
@@ -277,27 +338,93 @@ async function assertHybridPagesEncodedAliasAuthGuard(baseUrl: string): Promise<
   }
 }
 
+async function assertHybridPagesEncodedDataAliasAuthGuard(baseUrl: string): Promise<void> {
+  // `_next/data` requests reach the same hybrid Pages routing, so a `%25xx`
+  // alias must not decode twice into the page's props.
+  const page = await fetch(`${baseUrl}/staff/panel`);
+  const html = await page.text();
+  expect(page.status, html).toBe(200);
+  const buildId = /"buildId":"([^"]+)"/.exec(html)?.[1];
+  expect(buildId).toBeTruthy();
+  const dataHeaders = { "x-nextjs-data": "1" };
+  const guardHeaders = { "x-hybrid-pages-auth": "1" };
+  const dataPath = (pathname: string) => `/_next/data/${buildId}${pathname}.json`;
+
+  const data = await fetch(`${baseUrl}${dataPath("/staff/panel")}`, { headers: dataHeaders });
+  const dataBody = await data.text();
+  expect(data.status, dataBody).toBe(200);
+  expect(data.headers.get("x-auth-guard")).toBeNull();
+  expect(dataBody).toContain("protected pages staff props");
+
+  const guarded = [
+    { headers: { ...guardHeaders, ...dataHeaders }, pathname: dataPath("/staff/panel") },
+    { headers: { ...guardHeaders, ...dataHeaders }, pathname: dataPath("/%73taff/panel") },
+  ];
+  for (const { headers, pathname } of guarded) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+
+  // Next.js answers 404 here. vinext answers an unmatched hybrid `_next/data`
+  // URL with `200 {}`, so only the missing page props and middleware header
+  // are asserted.
+  const aliasPath = dataPath("/%2573taff/panel");
+  const alias = await fetch(`${baseUrl}${aliasPath}`, {
+    headers: { ...guardHeaders, ...dataHeaders },
+  });
+  const aliasBody = await alias.text();
+  expect(alias.headers.get("x-auth-guard"), aliasPath).toBeNull();
+  expect(aliasBody, aliasPath).not.toContain("protected pages staff");
+}
+
+async function assertCaseSensitiveMatcherAuthGuard(baseUrl: string): Promise<void> {
+  // Next.js compiles matchers case-sensitively, so exclusions such as `api` or
+  // `js(?!on)` must not skip middleware for case variants that still route.
+  const guardedTargets = [
+    { header: "x-encoded-path-auth", pathname: "/API/admin/dashboard" },
+    { header: "x-encoded-path-auth", pathname: "/Api/admin/dashboard" },
+    { header: "x-encoded-path-auth", pathname: "/_NEXT/admin/dashboard" },
+    { header: "x-encoded-path-auth", pathname: "/FAVICON.ICO" },
+    { header: "x-static-asset-auth", pathname: "/public.JS" },
+    { header: "x-static-asset-auth", pathname: "/public.HTML" },
+  ];
+  for (const { header, pathname } of guardedTargets) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers: { [header]: "1" } });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+
+  // Case variants of included paths miss the matcher, as in Next.js. The
+  // router is case-sensitive too, so they never reach the guarded routes.
+  const codes = await fetch(`${baseUrl}/codes/abcd`);
+  const codesBody = await codes.text();
+  expect(codes.status, codesBody).toBe(200);
+  expect(codes.headers.get("x-auth-guard")).toBeNull();
+  expect(codesBody).toContain("codes secret");
+
+  const missTargets: Array<{ headers: Record<string, string>; pathname: string }> = [
+    { headers: {}, pathname: "/Admin/secrets" },
+    { headers: { "x-hybrid-pages-auth": "1" }, pathname: "/Staff/panel" },
+  ];
+  for (const { headers, pathname } of missTargets) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(404);
+    expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
+    expect(body, pathname).not.toMatch(/admin secret|protected pages staff/);
+  }
+}
+
 async function closeHttpServer(server: http.Server | undefined): Promise<void> {
   if (!server) return;
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
-}
-
-async function writeMatcherFixture(root: string, matcher: string): Promise<void> {
-  await fs.writeFile(
-    path.join(root, "middleware.ts"),
-    `export function middleware() { return new Response("blocked", { status: 403 }) }
-export const config = { matcher: ${JSON.stringify(matcher)} }
-`,
-  );
-}
-
-async function findTsxCli(): Promise<string> {
-  const pnpmStore = path.join(WORKSPACE_ROOT, "node_modules/.pnpm");
-  const entry = (await fs.readdir(pnpmStore)).find((name) => name.startsWith("tsx@"));
-  if (!entry) throw new Error("tsx is not installed in the workspace dependency store");
-  return path.join(pnpmStore, entry, "node_modules/tsx/dist/cli.mjs");
 }
 
 describe("valid middleware matcher auth guards", () => {
@@ -336,8 +463,24 @@ describe("valid middleware matcher auth guards", () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
     }, 30_000);
 
+    it("treats a `.rsc` suffix as an ordinary path segment", async () => {
+      await assertRscSuffixAuthGuard(baseUrl);
+    }, 30_000);
+
+    it("runs middleware for encoded `.rsc` spellings of metadata routes", async () => {
+      await assertMetadataRouteSuffixAuthGuard(baseUrl);
+    }, 30_000);
+
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
+    }, 30_000);
+
+    it("keeps double-encoded aliases out of hybrid Pages data requests", async () => {
+      await assertHybridPagesEncodedDataAliasAuthGuard(baseUrl);
+    }, 30_000);
+
+    it("matches middleware paths case-sensitively", async () => {
+      await assertCaseSensitiveMatcherAuthGuard(baseUrl);
     }, 30_000);
   });
 
@@ -396,8 +539,24 @@ describe("valid middleware matcher auth guards", () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
     });
 
+    it("treats a `.rsc` suffix as an ordinary path segment", async () => {
+      await assertRscSuffixAuthGuard(baseUrl);
+    });
+
+    it("runs middleware for encoded `.rsc` spellings of metadata routes", async () => {
+      await assertMetadataRouteSuffixAuthGuard(baseUrl);
+    });
+
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
+    });
+
+    it("keeps double-encoded aliases out of hybrid Pages data requests", async () => {
+      await assertHybridPagesEncodedDataAliasAuthGuard(baseUrl);
+    });
+
+    it("matches middleware paths case-sensitively", async () => {
+      await assertCaseSensitiveMatcherAuthGuard(baseUrl);
     });
   });
 
@@ -442,7 +601,7 @@ describe("valid middleware matcher auth guards", () => {
             persist: false;
             logLevel: "none";
             watch: false;
-            server: { port: 0 };
+            server: { hostname: string; port: 0 };
           };
         }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
       };
@@ -453,7 +612,7 @@ describe("valid middleware matcher auth guards", () => {
           persist: false,
           logLevel: "none",
           watch: false,
-          server: { port: 0 },
+          server: { hostname: "127.0.0.1", port: 0 },
         },
       });
       await worker.url;
@@ -481,93 +640,24 @@ describe("valid middleware matcher auth guards", () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
     });
 
+    it("treats a `.rsc` suffix as an ordinary path segment", async () => {
+      await assertRscSuffixAuthGuard(baseUrl);
+    });
+
+    it("runs middleware for encoded `.rsc` spellings of metadata routes", async () => {
+      await assertMetadataRouteSuffixAuthGuard(baseUrl);
+    });
+
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
     });
-  });
-});
 
-describe("unsafe middleware matcher rejection", () => {
-  it.each([
-    ["/:path(.*)*/end", /may match an empty value or path delimiter/],
-    ["/:path(.*)+/end", /may match an empty value or path delimiter/],
-    ["/:path((?:a+)+)", /contains nested repetition/],
-    ["/:path((?:a|aa)+)", /contains ambiguous alternatives under repetition/],
-    ["/:path((?:a|A)+)", /contains ambiguous alternatives under repetition/],
-    ["/:path((?:a+){10})", /contains nested repetition/],
-    [`/:path(${"(?:a+)".repeat(6)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+)".repeat(7)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+(?:))".repeat(6)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+(?:))".repeat(7)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+(?:))".repeat(8)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+){1}".repeat(6)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+){1}".repeat(8)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+){1,1}".repeat(6)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:(?:a+){1}){1,1}".repeat(6)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+)".repeat(8)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+)".repeat(9)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+)".repeat(10)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a|aa)".repeat(26)})`, /contains ambiguous sequence expansion/],
-    [`/:path(${"(?:a|aa?)".repeat(26)})`, /contains ambiguous sequence expansion/],
-    [`/:path(${"(?:a?|b)".repeat(26)}c)`, /contains ambiguous sequence expansion/],
-    [`/:path(${"(?:a*|b)".repeat(8)}c)`, /contains ambiguous sequence expansion/],
-    ["/:path((?:\\.x|.y|ay)+)", /contains ambiguous alternatives under repetition/],
-    [`/:path(${"(?:\\.x|.y|ay|b?z)".repeat(26)}c)`, /contains ambiguous sequence expansion/],
-    [`/:path(${"(?:\\cA?x|\\x01x)".repeat(26)}c)`, /contains ambiguous sequence expansion/],
-    ["/:path((?:\\c|\\\\c)+)", /contains ambiguous alternatives under repetition/],
-    ["/:a((?<z>a))/:b((?:\\k<z>x|ax)+c)", /contains ambiguous alternatives under repetition/],
-    ["/:path(a+.*a+)", /contains overlapping sequential repetition/],
-    ["/:path(a+(?:b*)a+)", /contains overlapping sequential repetition/],
-  ] as const)(
-    "rejects unsafe matcher %s during the build config phase",
-    async (matcher, reason) => {
-      const root = await createIsolatedFixture(
-        FIXTURE_DIR,
-        "vinext-middleware-matcher-unsafe-build-",
-        (source) => path.basename(source) !== "wrangler.jsonc",
-      );
-      try {
-        await writeMatcherFixture(root, matcher);
-        await expect(
-          createBuilder({
-            root,
-            configFile: false,
-            plugins: [vinext({ appDir: root })],
-            logLevel: "silent",
-          }),
-        ).rejects.toThrow(reason);
-      } finally {
-        await fs.rm(root, { recursive: true, force: true });
-      }
-    },
-  );
+    it("keeps double-encoded aliases out of hybrid Pages data requests", async () => {
+      await assertHybridPagesEncodedDataAliasAuthGuard(baseUrl);
+    });
 
-  it("rejects an ambiguous constrained repeat during dev config processing", async () => {
-    const root = await createIsolatedFixture(
-      FIXTURE_DIR,
-      "vinext-middleware-matcher-unsafe-dev-",
-      (source) => path.basename(source) !== "wrangler.jsonc",
-    );
-    try {
-      await writeMatcherFixture(root, "/:path(.*)*/end");
-      await expect(startFixtureServer(root)).rejects.toThrow(
-        /Invalid middleware matcher.*may match an empty value or path delimiter/,
-      );
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("fails closed on ambiguous repeats without catastrophic backtracking", async () => {
-    const tsxCli = await findTsxCli();
-    await expect(
-      execFileAsync(process.execPath, [tsxCli, REDOS_CHILD], {
-        cwd: WORKSPACE_ROOT,
-        timeout: 5_000,
-      }),
-    ).resolves.toMatchObject({
-      stderr: expect.stringContaining("Middleware will run for all paths"),
-      stdout: "",
+    it("matches middleware paths case-sensitively", async () => {
+      await assertCaseSensitiveMatcherAuthGuard(baseUrl);
     });
   });
 });

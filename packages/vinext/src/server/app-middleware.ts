@@ -4,7 +4,10 @@ import { applyMiddlewareRequestHeaders, setHeadersContext } from "vinext/shims/h
 import { setNavigationContext } from "vinext/shims/navigation-context-accessors";
 import { FLIGHT_HEADERS, VINEXT_MW_CTX_HEADER } from "./headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import {
+  mergeMiddlewareResponseHeaders,
+  withExternalRewriteResponseHeaders,
+} from "./middleware-response-headers.js";
 import {
   executeMiddleware,
   type MiddlewareModule,
@@ -38,6 +41,8 @@ export type ApplyAppMiddlewareOptions = {
   middlewareRequest?: Request;
   module: MiddlewareModule;
   request: Request;
+  /** Forwarded to `executeMiddleware`. */
+  restoreLocaleRootTrailingSlash?: boolean;
   validateExternalRewriteRequest?: () => Promise<Response | null>;
   /**
    * Forwarded to `executeMiddleware` so the NextRequest exposes a NextURL with
@@ -59,10 +64,18 @@ export type ApplyAppMiddlewareResult =
       /** True when this pathname can match middleware for some request context. */
       pathnameEligible?: boolean;
       rewritten: boolean;
+      /** False when a same-origin rewrite target was outside the basePath. */
+      rewriteHadBasePath?: boolean;
       search: string | null;
     }
   | {
       kind: "response";
+      /**
+       * True when `response` proxies a middleware external rewrite. It carries
+       * middleware's headers, and the caller still stages next.config headers
+       * beneath them.
+       */
+      externalRewrite?: boolean;
       /** Present on real middleware results; optional for older generated callers. */
       matched?: boolean;
       /** True when this pathname can match middleware for some request context. */
@@ -71,6 +84,7 @@ export type ApplyAppMiddlewareResult =
     };
 
 type ForwardedMiddlewareContext = {
+  b?: unknown;
   h?: unknown;
   q?: unknown;
   r?: unknown;
@@ -214,22 +228,20 @@ export async function proxyExternalMiddlewareRewrite(
   const headers = new Headers(proxyResponse.headers);
   processMiddlewareHeaders(headers);
 
-  if (!context.headers) {
-    return new Response(proxyResponse.body, {
+  // Like Next.js, the upstream's headers replace middleware's.
+  const stagedHeaders = new Headers();
+  const middlewareHeaders = new Headers(context.headers ?? undefined);
+  processMiddlewareHeaders(middlewareHeaders);
+  mergeMiddlewareResponseHeaders(stagedHeaders, middlewareHeaders);
+  return withExternalRewriteResponseHeaders(
+    new Response(proxyResponse.body, {
       status: proxyResponse.status,
       statusText: proxyResponse.statusText,
       headers,
-    });
-  }
-
-  const middlewareHeaders = new Headers(context.headers);
-  processMiddlewareHeaders(middlewareHeaders);
-  mergeMiddlewareResponseHeaders(headers, middlewareHeaders);
-  return new Response(proxyResponse.body, {
-    status: proxyResponse.status,
-    statusText: proxyResponse.statusText,
-    headers,
-  });
+    }),
+    stagedHeaders,
+    middlewareHeaders.getSetCookie(),
+  );
 }
 
 function validationResponseWithMiddlewareHeaders(
@@ -254,7 +266,7 @@ function validationResponseWithMiddlewareHeaders(
 function applyForwardedMiddlewareContext(
   request: Request,
   context: AppMiddlewareContext,
-): { applied: boolean; rewriteUrl?: string } {
+): { applied: boolean; rewriteHadBasePath?: boolean; rewriteUrl?: string } {
   if (process.env.NODE_ENV === "production") {
     return { applied: false };
   }
@@ -282,7 +294,11 @@ function applyForwardedMiddlewareContext(
       context.status = data.s;
     }
     if (typeof data.r === "string" && data.r.length > 0) {
-      return { applied: true, rewriteUrl: data.r };
+      return {
+        applied: true,
+        rewriteHadBasePath: typeof data.b === "boolean" ? data.b : undefined,
+        rewriteUrl: data.r,
+      };
     }
     return { applied: true };
   } catch (e) {
@@ -299,6 +315,7 @@ export async function applyAppMiddleware(
   let pathnameEligible = forwarded.applied;
   let cleanPathname = options.cleanPathname;
   let rewritten = false;
+  let rewriteHadBasePath: boolean | undefined;
   let search: string | null = null;
 
   if (forwarded.rewriteUrl) {
@@ -318,6 +335,7 @@ export async function applyAppMiddleware(
         const externalRequest = options.externalRewriteRequest ?? options.request;
         return {
           kind: "response",
+          externalRewrite: true,
           matched,
           pathnameEligible,
           response: await proxyExternalMiddlewareRewrite(
@@ -330,6 +348,7 @@ export async function applyAppMiddleware(
       const rewriteParsed = new URL(forwarded.rewriteUrl, options.request.url);
       cleanPathname = rewriteParsed.pathname;
       rewritten = true;
+      rewriteHadBasePath = forwarded.rewriteHadBasePath;
       search = rewriteParsed.search;
     } catch (e) {
       console.error("[vinext] Failed to apply forwarded middleware rewrite:", e);
@@ -364,6 +383,7 @@ export async function applyAppMiddleware(
         },
         requestBodyAlreadyIsolated: true,
         request: middlewareRequest,
+        restoreLocaleRootTrailingSlash: options.restoreLocaleRootTrailingSlash,
         skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
         trailingSlash: options.trailingSlash,
       });
@@ -420,6 +440,7 @@ export async function applyAppMiddleware(
         const externalRequest = options.externalRewriteRequest ?? options.request;
         return {
           kind: "response",
+          externalRewrite: true,
           matched,
           pathnameEligible,
           response: await proxyExternalMiddlewareRewrite(
@@ -432,6 +453,7 @@ export async function applyAppMiddleware(
       const rewriteParsed = new URL(result.rewriteUrl, middlewareRequest.url);
       cleanPathname = rewriteParsed.pathname;
       rewritten = true;
+      rewriteHadBasePath = result.rewriteHadBasePath;
       search = rewriteParsed.search;
     }
   }
@@ -454,6 +476,7 @@ export async function applyAppMiddleware(
     matched,
     pathnameEligible,
     rewritten,
+    rewriteHadBasePath,
     search,
   };
 }

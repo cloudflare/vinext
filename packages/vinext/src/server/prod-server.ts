@@ -17,7 +17,7 @@
  * - dist/server/index.js — RSC entry (default export: handler(Request) → Response)
  * - dist/server/ssr/index.js — SSR entry (imported by RSC entry at runtime)
  */
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable, pipeline } from "node:stream";
@@ -27,7 +27,12 @@ import fsp from "node:fs/promises";
 import path from "pathslash";
 import zlib from "node:zlib";
 import { resolveClientBuildFile } from "./client-build-files.js";
-import { StaticFileCache, contentTypeForPath, etagFromFilenameHash } from "./static-file-cache.js";
+import {
+  StaticFileCache,
+  contentTypeForPath,
+  etagFromFilenameHash,
+  staticFileCacheControl,
+} from "./static-file-cache.js";
 import { signalFromNodeResponse } from "./node-response-signal.js";
 import {
   isImageOptimizationPath,
@@ -36,15 +41,17 @@ import {
   INVALID_IMAGE_SOURCE_MESSAGE,
   parseImageParams,
   isImageSourceBodyStatus,
+  IMAGE_TYPE_NOT_ALLOWED_MESSAGE,
   isSafeImageContentType,
+  sourceImageCacheControl,
   readImageOptimizationSignal,
-  resolveImageSourceUrl,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
   type ImageConfig,
   type ImageOptimizationSignal,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
+import { closeServerOnTerminationSignals, trackBackgroundWork } from "./prod-server-shutdown.js";
 import { registerPrerenderCloudflareLoader } from "../build/prerender-cloudflare-loader.js";
 import {
   canonicalizeRequestPathname,
@@ -55,9 +62,9 @@ import {
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import {
+  isServableFilesystemRoute,
   runPagesRequest,
   wrapMiddlewareWithBasePath,
-  type FilesystemRoutePhase,
   type PagesPipelineDeps,
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
@@ -99,13 +106,13 @@ import {
   readTrustedPrerenderRouteParamsFromHeaders,
   serializePrerenderRouteParamsHeader,
 } from "./prerender-route-params.js";
-import { seedMemoryCacheFromPrerender as seedMemoryCacheFromPrerenderFallback } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
 import {
   trustProxy,
   trustedHosts,
   resolveRequestProtocol,
   resolveRequestHost as resolveHost,
+  resolveTrustedForwardedHost,
 } from "./proxy-trust.js";
 import {
   negotiateEncoding,
@@ -126,6 +133,7 @@ import type { NextI18nConfig } from "../config/next-config.js";
 import { readTrustedRevalidationHostname } from "./revalidation-host.js";
 import { readStaticFileSignal } from "./static-file-signal.js";
 import { traceFrameworkRequest } from "./request-tracing.js";
+import { shouldRestoreLocaleRootTrailingSlash } from "./pages-i18n.js";
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -438,6 +446,9 @@ const OMIT_STATIC_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
 ]);
 
+// Signal headers an App Router image endpoint 400 keeps but its image replaces.
+const IMAGE_ERROR_SIGNAL_HEADERS = ["content-type", "content-encoding"] as const;
+
 function omitHeadersCaseInsensitive(
   headersRecord: Record<string, string | string[]>,
   targets: ReadonlySet<string>,
@@ -458,6 +469,22 @@ function readHeaderCaseInsensitive(
   if (key === undefined) return undefined;
   const value = headersRecord[key];
   return Array.isArray(value) ? value.join(", ") : value;
+}
+
+/** Spell a header's name as `name`, so spreading the record replaces that key. */
+function withHeaderName(
+  headersRecord: Record<string, string | string[]>,
+  name: string,
+): Record<string, string | string[]> {
+  const lowerName = name.toLowerCase();
+  const key = Object.keys(headersRecord).find(
+    (entry) => entry !== name && entry.toLowerCase() === lowerName,
+  );
+  if (key === undefined) return headersRecord;
+  const { [key]: value, ...rest } = headersRecord;
+  const existing = rest[name];
+  rest[name] = existing === undefined ? value : [existing, value].flat();
+  return rest;
 }
 
 /** Remove one field name from a Vary header, dropping the header if it empties. */
@@ -520,6 +547,8 @@ function installClientBuildManifestGlobals(
   const metadata = computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix });
   setPagesClientAssets({
     appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
+    appBootstrapPreloadModules: metadata.appBootstrapPreloadModules,
+    appRouteManifestModule: metadata.appRouteManifestModule,
     lazyChunks: metadata.lazyChunks,
     dynamicPreloads: metadata.dynamicPreloads,
     crossOrigin,
@@ -591,6 +620,29 @@ function isVinextStreamedApiResponse(response: Response): boolean {
   return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedApiResponse === true;
 }
 
+// The build fetches pages from the prerender server over pooled keep-alive
+// sockets. If a render blocks the event loop past keepAliveTimeout, the server
+// can close an idle socket just as the client reuses it, and the request fails
+// with ECONNRESET. Only the client expires idle sockets on this server. #4118
+function disablePrerenderKeepAliveTimeout(server: Server, purpose: ProdServerOptions["purpose"]) {
+  if (purpose === "prerender") server.keepAliveTimeout = 0;
+}
+
+// Resolves with the bound port, or rejects with the listen error (e.g.
+// EADDRINUSE). Without an "error" listener the failure escapes to the
+// socket-error backstop, which logs and absorbs it on a running server, so
+// startup never settles and `vinext start` exits 0 instead of failing.
+function listen(server: Server, port: number, host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, () => {
+      server.off("error", reject);
+      const addr = server.address();
+      resolve(typeof addr === "object" && addr ? addr.port : port);
+    });
+  });
+}
+
 function logProdServerStarted(host: string, port: number, purpose: ProdServerOptions["purpose"]) {
   const url = `http://${host}:${port}`;
   if (purpose === "prerender") {
@@ -627,7 +679,7 @@ function sendCompressed(
   req: IncomingMessage,
   res: ServerResponse,
   body: string | Buffer,
-  contentType: string,
+  contentType: string | undefined,
   statusCode: number,
   extraHeaders: Record<string, string | string[]> = {},
   compress: boolean = true,
@@ -664,7 +716,7 @@ function sendCompressed(
       mergeVaryHeader(
         {
           ...headersWithoutBodyHeaders,
-          "Content-Type": contentType,
+          ...(contentType !== undefined && { "Content-Type": contentType }),
           "Content-Encoding": encoding,
         },
         "Accept-Encoding",
@@ -678,7 +730,7 @@ function sendCompressed(
   } else {
     const identityHeaders = {
       ...headersWithoutBodyHeaders,
-      "Content-Type": contentType,
+      ...(contentType !== undefined && { "Content-Type": contentType }),
       "Content-Length": String(buf.length),
     };
     writeHead(
@@ -709,14 +761,27 @@ function staticCacheLookupPath(pathname: string): string | null {
   return lookupPath;
 }
 
-/** Pathnames the Pages Router serves from routes rather than the client directory. */
-function isPagesFilesystemExcludedPath(pathname: string, phase: FilesystemRoutePhase): boolean {
-  return (
-    pathname === "/" ||
-    pathname === "/api" ||
-    pathname.startsWith("/api/") ||
-    (phase === "direct" && pathname.startsWith(`/${ASSET_PREFIX_URL_DIR}/`))
-  );
+/**
+ * Give a Node image passthrough Next.js's image Cache-Control instead of the
+ * public-file default: a build asset keeps its immutable default, and a public
+ * file, whatever its path, is revalidated after `images.minimumCacheTTL`, or
+ * after the max-age a direct request for it gets (from middleware or
+ * `headers()`, else the public-file default) when that is longer.
+ */
+function withImageSourceCacheControl(
+  headers: Record<string, string>,
+  publicFileCacheControl: string | null | undefined,
+  config: ImageConfig | undefined,
+): Record<string, string> {
+  if (publicFileCacheControl === undefined) return headers;
+  return {
+    ...headers,
+    "Cache-Control": sourceImageCacheControl(
+      false,
+      publicFileCacheControl ?? staticFileCacheControl(false),
+      config,
+    ),
+  };
 }
 
 /**
@@ -730,7 +795,7 @@ function isPagesFilesystemExcludedPath(pathname: string, phase: FilesystemRouteP
  * Without a cache, falls back to async filesystem probing (still non-blocking,
  * unlike the old sync existsSync/statSync approach).
  *
- * `extraHeaders` go on every response for the file. `representationHeaders` go
+ * `stagedHeaders` go on every response for the file. `representationHeaders` go
  * only on responses that carry the file's bytes (200 and 206), never on a 304,
  * 412, 416 or 405.
  */
@@ -741,11 +806,15 @@ async function tryServeStatic(
   pathname: string,
   compress: boolean,
   cache?: StaticFileCache,
-  extraHeaders?: Record<string, string | string[]>,
+  stagedHeaders?: Record<string, string | string[]>,
   statusCode?: number,
   representationHeaders?: Record<string, string>,
 ): Promise<boolean> {
   if (pathname === "/") return false;
+  // A Cache-Control from middleware or config headers replaces the file's
+  // default, as Next.js's `send` only sets one when none is present. Staged
+  // names arrive lowercased, so match the default's casing for the spreads.
+  const extraHeaders = stagedHeaders && withHeaderName(stagedHeaders, "Cache-Control");
   const responseStatus = statusCode ?? 200;
   const omitBody = isNoBodyResponseStatus(responseStatus);
   // Match Next.js's `send` behavior: HEAD evaluates Range like GET, then omits
@@ -958,11 +1027,10 @@ async function tryServeStatic(
   // so a single `includes` covers both the root-level `/<ASSET_PREFIX_URL_DIR>/...`
   // case and any `/<prefix>/<ASSET_PREFIX_URL_DIR>/...` assetPrefix layout.
   const isHashed = pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`);
-  const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
+  const cacheControl = staticFileCacheControl(isHashed);
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
-  // behaviour and survives deploys). Use resolved.path (not pathname) so that
-  // ext and the hash extraction both come from the same file — they can diverge
-  // after HTML fallback (e.g. /_next/static/widget-abc123 → widget-abc123.html).
+  // behaviour and survives deploys). Use resolved.path (not the encoded
+  // pathname) so that ext and the hash extraction both come from the file.
   // Fall back to mtime for non-hashed files.
   const etag =
     (isHashed && etagFromFilenameHash(resolved.path, ext)) ||
@@ -1201,23 +1269,10 @@ type ResolvedFile = {
   mtimeMs: number;
 };
 
-/**
- * Resolve the actual file to serve, trying extension-less HTML fallbacks.
- * Returns the resolved path + size + mtime, or null if not found.
- */
+/** Returns the file's path + size + mtime, or null if it is not a regular file. */
 async function resolveStaticFile(staticFile: string): Promise<ResolvedFile | null> {
   const stat = await statIfFile(staticFile);
-  if (stat) return { path: staticFile, size: stat.size, mtimeMs: stat.mtimeMs };
-
-  const htmlFallback = staticFile + ".html";
-  const htmlStat = await statIfFile(htmlFallback);
-  if (htmlStat) return { path: htmlFallback, size: htmlStat.size, mtimeMs: htmlStat.mtimeMs };
-
-  const indexFallback = path.join(staticFile, "index.html");
-  const indexStat = await statIfFile(indexFallback);
-  if (indexStat) return { path: indexFallback, size: indexStat.size, mtimeMs: indexStat.mtimeMs };
-
-  return null;
+  return stat ? { path: staticFile, size: stat.size, mtimeMs: stat.mtimeMs } : null;
 }
 
 async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
@@ -1227,6 +1282,16 @@ async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: nu
   } catch {
     return null;
   }
+}
+
+/**
+ * Node's parser keeps a `#fragment` sent on the request line in `req.url`.
+ * Next.js rebuilds request URLs from pathname + search, so neither routing,
+ * middleware nor handlers observe one; drop it before anything reads the URL.
+ */
+function stripNodeRequestUrlFragment(req: IncomingMessage): void {
+  const hashIndex = req.url?.indexOf("#") ?? -1;
+  if (hashIndex !== -1) req.url = req.url?.slice(0, hashIndex);
 }
 
 // `resolveHost`, `trustedHosts`, and `trustProxy` are now imported from
@@ -1424,6 +1489,15 @@ export async function startProdServer(options: ProdServerOptions = {}) {
   // the build process.
   installSocketErrorBackstop({ runningServer: options.purpose !== "prerender" });
 
+  // Like `vinext start` and `next start`, default to production so React and
+  // the other packages the server bundles import load their production
+  // builds. Custom entries, including the generated standalone server.js,
+  // call this directly. Build-time servers run inside the build, which has
+  // already chosen NODE_ENV.
+  if (options.purpose !== "prerender" && !process.env.NODE_ENV) {
+    Reflect.set(process.env, "NODE_ENV", "production");
+  }
+
   const {
     port = process.env.PORT ? parseInt(process.env.PORT) : 3000,
     host = "0.0.0.0",
@@ -1465,29 +1539,31 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     process.exit(1);
   }
 
-  if (isAppRouter) {
-    return startAppRouterServer({
-      port,
-      host,
-      clientDir,
-      serverDir,
-      rscEntryPath,
-      compress,
-      purpose,
-      silent,
-    });
-  }
-
-  return startPagesRouterServer({
-    port,
-    host,
-    clientDir,
-    serverDir,
-    serverEntryPath,
-    compress,
-    purpose,
-    silent,
-  });
+  const started = isAppRouter
+    ? await startAppRouterServer({
+        port,
+        host,
+        clientDir,
+        serverDir,
+        rscEntryPath,
+        compress,
+        purpose,
+      })
+    : await startPagesRouterServer({
+        port,
+        host,
+        clientDir,
+        serverDir,
+        serverEntryPath,
+        compress,
+        purpose,
+      });
+  // Build-time servers run inside the build process, which owns its signals.
+  // Register before announcing readiness, so a supervisor that signals as
+  // soon as it sees the server up still gets a graceful shutdown.
+  if (purpose !== "prerender") closeServerOnTerminationSignals(started.server);
+  if (!silent) logProdServerStarted(host, started.port, purpose);
+  return started;
 }
 
 // ─── App Router Production Server ─────────────────────────────────────────────
@@ -1500,7 +1576,6 @@ type AppRouterServerOptions = {
   rscEntryPath: string;
   compress: boolean;
   purpose?: ProdServerOptions["purpose"];
-  silent?: boolean;
 };
 
 type WorkerAppRouterEntry = {
@@ -1508,17 +1583,25 @@ type WorkerAppRouterEntry = {
   fetch(request: Request, env?: unknown, ctx?: ExecutionContextLike): Promise<Response> | Response;
 };
 
-function createNodeExecutionContext(trustedRevalidateOrigin?: string): ExecutionContextLike {
+function createNodeExecutionContext(
+  trustedRevalidateOrigin?: string,
+  {
+    middlewareOrigin,
+    requestSignal,
+  }: { middlewareOrigin?: string; requestSignal?: AbortSignal } = {},
+): ExecutionContextLike {
   return {
     hostRuntime: "node",
+    skipsPagesApiHandlerWaitUntil: true,
+    requestSignal,
     waitUntil(promise: Promise<unknown>) {
-      // Node doesn't provide a Workers lifecycle, but we still attach a
-      // rejection handler so background waitUntil work doesn't surface as an
-      // unhandled rejection when a Worker-style entry is used with vinext start.
-      void Promise.resolve(promise).catch(() => {});
+      // Node has no Workers lifecycle. The work runs on its own; tracking it
+      // lets a graceful shutdown wait for it, as `next start` does.
+      trackBackgroundWork(promise);
     },
     passThroughOnException() {},
     trustedRevalidateOrigin,
+    middlewareOrigin,
   };
 }
 
@@ -1548,9 +1631,37 @@ function resolveTrustedNodeRevalidateOrigin(
   configuredHost: string,
   configuredPort: number,
 ): string {
+  return `http://${resolveNodeServerHost(req, configuredHost, configuredPort)}`;
+}
+
+/**
+ * The origin middleware runs against. The Host header is client-controlled,
+ * so, like Next.js, which builds the middleware URL from its own hostname and
+ * port, it never counts as the server's origin. Otherwise a client could send
+ * the host of an external middleware rewrite target and turn that rewrite into
+ * an internal one, skipping middleware's checks for the target path. A trusted
+ * `X-Forwarded-Host` is operator-approved, so it keeps the request origin, and
+ * rewrites to that host stay internal.
+ */
+function resolveNodeMiddlewareOrigin(
+  req: IncomingMessage,
+  requestUrl: string,
+  configuredHost: string,
+  configuredPort: number,
+): string {
+  const url = new URL(requestUrl);
+  if (resolveTrustedForwardedHost(req) !== undefined) return url.origin;
+  return `${url.protocol}//${resolveNodeServerHost(req, configuredHost, configuredPort)}`;
+}
+
+/** The `host:port` this server is reachable at locally. */
+function resolveNodeServerHost(
+  req: IncomingMessage,
+  configuredHost: string,
+  configuredPort: number,
+): string {
   const port = req.socket.localPort ?? configuredPort;
-  const host = normalizeInternalFetchHost(configuredHost);
-  return `http://${host}:${port}`;
+  return `${normalizeInternalFetchHost(configuredHost)}:${port}`;
 }
 
 function normalizeInternalFetchHost(host: string): string {
@@ -1588,6 +1699,14 @@ function resolveAppRouterHandler(
 }
 
 type AppRouterPrerenderSeeder = (serverDir: string) => Promise<number>;
+
+// Loaded on demand: seed-cache imports React, which picks its development or
+// production build when first loaded, so it must not load before
+// startProdServer has chosen NODE_ENV.
+async function seedMemoryCacheFromPrerenderFallback(serverDir: string): Promise<number> {
+  const { seedMemoryCacheFromPrerender } = await import("./seed-cache.js");
+  return seedMemoryCacheFromPrerender(serverDir);
+}
 type AppRouterPrerenderSeederExport = (serverDir: string) => unknown;
 
 function isAppRouterPrerenderSeederExport(value: unknown): value is AppRouterPrerenderSeederExport {
@@ -1728,7 +1847,10 @@ function installPagesClientAssets(options: {
   setPagesClientAssets({
     clientEntry: metadata.clientEntryFile,
     appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
+    appBootstrapPreloadModules: metadata.appBootstrapPreloadModules,
+    appRouteManifestModule: metadata.appRouteManifestModule,
     ssrManifest: Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined,
+    sharedChunks: metadata.sharedChunks,
     cssGraph: metadata.cssGraph,
     lazyChunks: metadata.lazyChunks,
     dynamicPreloads: metadata.dynamicPreloads,
@@ -1764,7 +1886,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     rscEntryPath,
     compress: compressOption,
     purpose,
-    silent,
   } = options;
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
@@ -1875,27 +1996,38 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // Image optimization passthrough (Node.js prod server has no Images binding;
   // serves the original file with cache headers and security headers). Runs
   // only after the RSC handler admitted the endpoint through middleware and
-  // rewrites, whose response headers Next.js also sends with the image.
+  // rewrites. Next.js also sends config and middleware headers with the image.
   const serveImageOptimization = async (
     req: IncomingMessage,
     res: ServerResponse,
     request: Request,
     signal: ImageOptimizationSignal,
-    sourceBasePath: string,
   ): Promise<void> => {
-    const stagedHeaders = omitHeadersCaseInsensitive(
-      mergeResponseHeaders({}, new Response(null, { headers: signal.middlewareHeaders })),
-      OMIT_STATIC_RESPONSE_HEADERS,
+    const signalHeaders = mergeResponseHeaders(
+      {},
+      new Response(null, { headers: signal.middlewareHeaders }),
     );
+    const stagedHeaders = omitHeadersCaseInsensitive(signalHeaders, OMIT_STATIC_RESPONSE_HEADERS);
     for (const [name, value] of Object.entries(stagedHeaders)) {
       res.setHeader(name, value);
     }
+    // Next.js sets config and middleware headers before the image handler, so
+    // only an image replaces their Content-Type and Content-Encoding.
+    const sendBadRequest = (body: string) => {
+      for (const name of IMAGE_ERROR_SIGNAL_HEADERS) {
+        const value = signalHeaders[name];
+        if (value !== undefined) res.setHeader(name, value);
+      }
+      res.writeHead(400);
+      res.end(body);
+    };
     // The query middleware and rewrites selected, which the handler validated.
     const parsedUrl = new URL(`/${signal.search}`, "http://localhost");
-    const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities);
+    const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities, {
+      localPatterns: imageConfig?.localPatterns,
+    });
     if (!params) {
-      res.writeHead(400);
-      res.end("Bad Request");
+      sendBadRequest("Bad Request");
       return;
     }
     // Block SVG and other unsafe content types by checking the file extension
@@ -1903,8 +2035,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // could carry an image extension. SVG is only allowed when
     // dangerouslyAllowSVG is enabled in next.config.js.
     const sendUnsafeContentType = () => {
-      res.writeHead(400);
-      res.end("The requested resource is not an allowed image type");
+      sendBadRequest(IMAGE_TYPE_NOT_ALLOWED_MESSAGE);
     };
     const isSafeSourcePath = (sourcePath: string) =>
       isSafeImageContentType(contentTypeForPath(sourcePath), imageConfig?.dangerouslyAllowSVG);
@@ -1916,7 +2047,12 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       "Content-Disposition":
         imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
     };
-    const serveSource = (sourcePath: string): Promise<boolean> =>
+    // A public file passes the Cache-Control its pipeline staged, or null; a
+    // build asset passes undefined.
+    const serveSource = (
+      sourcePath: string,
+      publicFileCacheControl?: string | null,
+    ): Promise<boolean> =>
       tryServeStatic(
         req,
         res,
@@ -1924,19 +2060,14 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         sourcePath,
         false,
         staticCache,
-        imageSecurityHeaders,
+        withImageSourceCacheControl(imageSecurityHeaders, publicFileCacheControl, imageConfig),
         undefined,
         IMAGE_REPRESENTATION_HEADERS,
       );
 
     // Serve the source only as an anonymous direct request would receive it.
     // Build assets bypass middleware there too.
-    const sourceUrl = resolveImageSourceUrl(
-      params.imageUrl,
-      sourceBasePath,
-      appAssetPathPrefix,
-      request.url,
-    );
+    const sourceUrl = new URL(params.imageUrl, request.url);
     let sourcePathname: string | null = null;
     try {
       sourcePathname = normalizePath(normalizePathnameForRouteMatchStrict(sourceUrl.pathname));
@@ -1959,7 +2090,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     if (sourcePathname !== null) {
       const sourceResponse = await rscHandler(
         new Request(sourceUrl, { signal: request.signal }),
-        createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port)),
+        createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port), {
+          middlewareOrigin: resolveNodeMiddlewareOrigin(req, request.url, host, port),
+        }),
       );
       const sourceSignal = isImageSourceBodyStatus(sourceResponse.status)
         ? readStaticFileSignal(sourceResponse)
@@ -1978,11 +2111,10 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           sendUnsafeContentType();
           return;
         }
-        if (await serveSource(sourcePath)) return;
+        if (await serveSource(sourcePath, sourceResponse.headers.get("Cache-Control"))) return;
       }
     }
-    res.writeHead(400);
-    res.end(INVALID_IMAGE_SOURCE_MESSAGE);
+    sendBadRequest(INVALID_IMAGE_SOURCE_MESSAGE);
   };
 
   // Files the client build emits outside `_next/static`, for example a
@@ -2084,26 +2216,24 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       }
     }
 
-    // vinext's next/image emits the image endpoint without the basePath, where
-    // Next.js prefixes it. Admit that form as the basePath endpoint and resolve
-    // its unprefixed sources under the basePath.
-    const imageEndpointBasePath =
-      appRouterBasePath && isImageOptimizationPath(pathname) ? appRouterBasePath : "";
-
     try {
       // Static-asset checks above use the normalized pathname, but the RSC
       // handler must receive the original URL so its request boundary decodes
       // each segment exactly once. Passing `pathname` here would make encoded
       // percent signs eligible for a second decode inside normalizeRscRequest.
+      const signal = signalFromNodeResponse(res);
       const request = nodeToWebRequest(
         req,
-        imageEndpointBasePath + rawUrl,
+        rawUrl,
         prerenderSecret,
         appRouterI18nConfig,
         appRouterAuthorizeOnDemandRevalidate,
-        signalFromNodeResponse(res),
+        signal,
       );
-      const ctx = createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port));
+      const ctx = createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port), {
+        middlewareOrigin: resolveNodeMiddlewareOrigin(req, request.url, host, port),
+        requestSignal: signal,
+      });
       const recorded: { marker?: PrerenderSpecialErrorMarker } = {};
       if (purpose === "prerender") {
         ctx.recordPrerenderSpecialError = (marker) => {
@@ -2119,7 +2249,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const imageSignal = readImageOptimizationSignal(response);
       if (imageSignal) {
         cancelResponseBody(response);
-        await serveImageOptimization(req, res, request, imageSignal, imageEndpointBasePath);
+        await serveImageOptimization(req, res, request, imageSignal);
         return;
       }
 
@@ -2182,6 +2312,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   };
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    stripNodeRequestUrlFragment(req);
     try {
       await ensureInstrumentation();
     } catch (error) {
@@ -2204,9 +2335,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       },
       getStatus: () => res.statusCode,
       headers,
-      // Read the raw path: `new URL("//", base)` throws, and `//host/x` would
-      // parse as a different origin.
-      isRsc: target.split("?", 1)[0].endsWith(".rsc") || headers.get("RSC") === "1",
+      isRsc: headers.get("RSC") === "1",
       method: req.method ?? "GET",
       target,
     });
@@ -2215,18 +2344,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const server = createServer((req, res) => {
     void runWithServerEntryRequire(rscEntryRequire, () => handleRequest(req, res));
   });
+  disablePrerenderKeepAliveTimeout(server, purpose);
 
-  await new Promise<void>((resolve) => {
-    server.listen(port, host, () => {
-      const addr = server.address();
-      const actualPort = typeof addr === "object" && addr ? addr.port : port;
-      if (!silent) logProdServerStarted(host, actualPort, purpose);
-      resolve();
-    });
-  });
-
-  const addr = server.address();
-  const actualPort = typeof addr === "object" && addr ? addr.port : port;
+  const actualPort = await listen(server, port, host);
   return { server, port: actualPort };
 }
 
@@ -2240,7 +2360,6 @@ type PagesRouterServerOptions = {
   serverEntryPath: string;
   compress: boolean;
   purpose?: ProdServerOptions["purpose"];
-  silent?: boolean;
 };
 
 type PagesServerEntryPageRoute = {
@@ -2278,21 +2397,12 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  * - vinextConfig — embedded next.config.js settings
  */
 async function startPagesRouterServer(options: PagesRouterServerOptions) {
-  const { port, host, purpose, silent } = options;
+  const { port, host, purpose } = options;
   const handler = await createPagesRouterRequestHandler(options);
   const server = createServer(handler);
+  disablePrerenderKeepAliveTimeout(server, purpose);
 
-  await new Promise<void>((resolve) => {
-    server.listen(port, host, () => {
-      const addr = server.address();
-      const actualPort = typeof addr === "object" && addr ? addr.port : port;
-      if (!silent) logProdServerStarted(host, actualPort, purpose);
-      resolve();
-    });
-  });
-
-  const addr = server.address();
-  const actualPort = typeof addr === "object" && addr ? addr.port : port;
+  const actualPort = await listen(server, port, host);
   return { server, port: actualPort };
 }
 
@@ -2359,6 +2469,15 @@ async function createPagesRouterRequestHandler(
       : () => undefined;
   const hasMiddleware = serverEntry.hasMiddleware === true;
   const pageRoutes = readPagesServerEntryPageRoutes(serverEntry.pageRoutes);
+  // The public/ files recorded at build time. The client directory also holds
+  // build metadata, so only these and build assets are served from it.
+  const publicFiles: ReadonlySet<string> =
+    serverEntry.publicFiles instanceof Set ? serverEntry.publicFiles : new Set();
+  // Files the client build emits outside `_next/static`, for example a
+  // Module Federation host's `remoteEntry.js`. Workers Static Assets serves
+  // them before the Worker runs, and so does this server, before routing.
+  const clientBuildFiles: ReadonlySet<string> =
+    serverEntry.clientBuildFiles instanceof Set ? serverEntry.clientBuildFiles : new Set();
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
@@ -2397,8 +2516,11 @@ async function createPagesRouterRequestHandler(
         dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
         dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
         qualities: vinextConfig.images.qualities,
+        localPatterns: vinextConfig.images.localPatterns,
         contentDispositionType: vinextConfig.images.contentDispositionType,
         contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+        minimumCacheTTL: vinextConfig.images.minimumCacheTTL,
+        maximumResponseBody: vinextConfig.images.maximumResponseBody,
       }
     : undefined;
 
@@ -2417,6 +2539,7 @@ async function createPagesRouterRequestHandler(
   const staticCache = await StaticFileCache.create(clientDir);
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    stripNodeRequestUrlFragment(req);
     try {
       await ensureInstrumentation();
     } catch (error) {
@@ -2537,6 +2660,15 @@ async function createPagesRouterRequestHandler(
         return;
       }
     }
+    if (req.method === "GET" || req.method === "HEAD") {
+      const clientBuildFile = resolveClientBuildFile(rawPagesPathname, basePath, clientBuildFiles);
+      if (
+        clientBuildFile &&
+        (await tryServeStatic(req, res, clientDir, clientBuildFile, compress, staticCache))
+      ) {
+        return;
+      }
+    }
 
     try {
       // ── 2. Strip basePath ─────────────────────────────────────────
@@ -2545,6 +2677,10 @@ async function createPagesRouterRequestHandler(
       // only applies default rules to requests inside basePath, and only
       // applies `basePath: false` rules to requests outside it.
       const hadBasePath = !basePath || hasBasePath(requestPathname, basePath);
+      const restoreLocaleRootTrailingSlash = shouldRestoreLocaleRootTrailingSlash(requestPathname, {
+        trailingSlash,
+        skipProxyUrlNormalize,
+      });
       let configMatchPathname = stripBasePath(requestPathname, basePath);
       {
         const strippedPathname = stripBasePath(pathname, basePath);
@@ -2646,10 +2782,20 @@ async function createPagesRouterRequestHandler(
         isDataReq && skipProxyUrlNormalize
           ? new Request(new URL(originalRenderUrl, webRequest.url), webRequest)
           : undefined;
+      const middlewareCtx = createNodeExecutionContext(undefined, {
+        middlewareOrigin: resolveNodeMiddlewareOrigin(req, webRequest.url, host, port),
+      });
+      const runNodeMiddleware: PagesPipelineDeps["runMiddleware"] =
+        typeof runMiddleware === "function"
+          ? (request, _ctx, opts) => runMiddleware(request, middlewareCtx, opts)
+          : null;
 
       // The public file the pipeline serves for an anonymous GET of an image
       // source, or null when middleware, a redirect, or a route answers it.
-      const resolvePublicImageSource = async (sourceUrl: URL): Promise<string | null> => {
+      /** The public file a source resolves to, with the Cache-Control staged for it. */
+      const resolvePublicImageSource = async (
+        sourceUrl: URL,
+      ): Promise<{ path: string; cacheControl: string | null } | null> => {
         const rawSourcePathname = sourceUrl.pathname;
         if (
           getRepeatedSlashRedirect(rawSourcePathname) ||
@@ -2661,7 +2807,7 @@ async function createPagesRouterRequestHandler(
         const sourceHadBasePath = !basePath || hasBasePath(sourceRequestPathname, basePath);
         const strippedSourcePathname = stripBasePath(sourceRequestPathname, basePath);
         if (isNextDataPathname(strippedSourcePathname)) return null;
-        let sourcePath: string | null = null;
+        let source: { path: string; cacheControl: string | null } | null = null;
         const result = await runPagesRequest(
           new Request(new URL(strippedSourcePathname + sourceUrl.search, sourceUrl), {
             signal: webRequest.signal,
@@ -2676,16 +2822,34 @@ async function createPagesRouterRequestHandler(
             recordCacheability: false,
             rawSearch: sourceUrl.search,
             configMatchPathname: strippedSourcePathname,
-            runMiddleware:
-              typeof runMiddleware === "function"
-                ? wrapMiddlewareWithBasePath(runMiddleware, basePath, sourceHadBasePath)
-                : null,
+            restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
+              sourceRequestPathname,
+              { trailingSlash, skipProxyUrlNormalize },
+            ),
+            runMiddleware: runNodeMiddleware
+              ? wrapMiddlewareWithBasePath(runNodeMiddleware, basePath, sourceHadBasePath)
+              : null,
             renderPage: null,
             handleApi: null,
-            serveFilesystemRoute: async (candidate, _stagedHeaders, phase) => {
+            serveFilesystemRoute: async (
+              candidate,
+              stagedHeaders,
+              phase,
+              _resolvedUrl,
+              sourceRequest,
+              candidateHasBasePath,
+            ) => {
               if (
                 isImageOptimizationPath(candidate) ||
-                isPagesFilesystemExcludedPath(candidate, phase)
+                !isServableFilesystemRoute(
+                  candidate,
+                  phase,
+                  sourceRequest.method,
+                  publicFiles,
+                  basePath,
+                  pagesAssetPathPrefix,
+                  candidateHasBasePath,
+                )
               ) {
                 return false;
               }
@@ -2693,7 +2857,10 @@ async function createPagesRouterRequestHandler(
               if (lookupPath === null || lookupPath === "/" || !staticCache.lookup(lookupPath)) {
                 return false;
               }
-              sourcePath = candidate;
+              source = {
+                path: candidate,
+                cacheControl: readHeaderCaseInsensitive(stagedHeaders, "cache-control") ?? null,
+              };
               // An empty response lets the pipeline apply middleware's status.
               return new Response(null);
             },
@@ -2701,7 +2868,7 @@ async function createPagesRouterRequestHandler(
         );
         if (result.type !== "response") return null;
         cancelResponseBody(result.response);
-        return isImageSourceBodyStatus(result.response.status) ? sourcePath : null;
+        return isImageSourceBodyStatus(result.response.status) ? source : null;
       };
 
       // ── Delegate steps 3–11 to the shared Pages Router pipeline ──
@@ -2720,7 +2887,7 @@ async function createPagesRouterRequestHandler(
         hasMiddleware,
         middlewareRequest,
         dataNotFoundResponse,
-        ctx: undefined, // Node has no ExecutionContext
+        ctx: undefined, // Node has no platform ExecutionContext; each handler below creates its own
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
         authorizeOnDemandRevalidate:
@@ -2728,15 +2895,15 @@ async function createPagesRouterRequestHandler(
             ? authorizeOnDemandRevalidate
             : undefined,
         configMatchPathname,
+        restoreLocaleRootTrailingSlash,
         matchPageRoute: matchPageRoute ?? null,
         matchApiRoute: matchApiRoute ?? null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that
         // request.nextUrl.basePath reflects whether the URL actually had the
         // basePath prefix (see wrapMiddlewareWithBasePath).
-        runMiddleware:
-          typeof runMiddleware === "function"
-            ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
-            : null,
+        runMiddleware: runNodeMiddleware
+          ? wrapMiddlewareWithBasePath(runNodeMiddleware, basePath, hadBasePath)
+          : null,
         renderPage:
           typeof renderPage === "function"
             ? (
@@ -2749,7 +2916,9 @@ async function createPagesRouterRequestHandler(
                   request,
                   resolvedUrl,
                   ssrManifest,
-                  undefined,
+                  // Background ISR work goes to its waitUntil, which a
+                  // graceful shutdown waits for.
+                  createNodeExecutionContext(),
                   stagedHeaders,
                   {
                     ...options,
@@ -2762,15 +2931,22 @@ async function createPagesRouterRequestHandler(
             : null,
         handleApi:
           typeof handleApi === "function"
-            ? (request: Request, apiUrl: string) =>
-                handleApi(
+            ? (request: Request, apiUrl: string, _ctx: unknown, stagedHeaders: Headers) => {
+                // Next.js writes the routing response headers to `res` before the
+                // API route runs, so the handler can read and replace them.
+                // A staged Content-Length describes no API body.
+                stagedHeaders.delete("Content-Length");
+                return handleApi(
                   request,
                   apiUrl,
                   createNodeExecutionContext(),
                   resolveTrustedNodeRevalidateOrigin(req, host, port),
                   "node",
-                )
+                  stagedHeaders,
+                );
+              }
             : null,
+        handleApiAppliesStagedHeaders: true,
         // ── 5b. Serve public-directory static files (post-middleware) ──
         // Public files (favicon.ico, robots.txt, anything under public/) are served
         // after middleware so middleware can intercept or redirect them, and before
@@ -2778,10 +2954,18 @@ async function createPagesRouterRequestHandler(
         // (/_next/static/*) were already served above. Middleware response headers
         // (including next.config headers staged by the pipeline) are passed through so
         // Set-Cookie / security headers from middleware are included in the response.
-        serveFilesystemRoute: async (requestPathname, stagedHeaders, phase, resolvedUrl) => {
+        serveFilesystemRoute: async (
+          requestPathname,
+          stagedHeaders,
+          phase,
+          resolvedUrl,
+          filesystemRequest,
+          resolvedPathnameHasBasePath,
+        ) => {
           // Next.js resolves middleware and beforeFiles rewrites before
-          // dispatching the built-in image endpoint.
-          if (isImageOptimizationPath(requestPathname)) {
+          // dispatching the built-in image endpoint, which it serves only
+          // under the basePath, including when a rewrite targets it there.
+          if (resolvedPathnameHasBasePath && isImageOptimizationPath(requestPathname)) {
             for (const [name, value] of Object.entries(stagedHeaders)) {
               res.setHeader(name, value);
             }
@@ -2790,6 +2974,7 @@ async function createPagesRouterRequestHandler(
               parsedUrl,
               allowedImageWidths,
               pagesImageConfig?.qualities,
+              { localPatterns: pagesImageConfig?.localPatterns },
             );
             if (!params) {
               res.writeHead(400);
@@ -2800,7 +2985,7 @@ async function createPagesRouterRequestHandler(
             // text, whose query or hash could carry an image extension.
             const sendUnsafeContentType = () => {
               res.writeHead(400);
-              res.end("The requested resource is not an allowed image type");
+              res.end(IMAGE_TYPE_NOT_ALLOWED_MESSAGE);
             };
             const isSafeSourcePath = (sourcePath: string) =>
               isSafeImageContentType(
@@ -2814,7 +2999,12 @@ async function createPagesRouterRequestHandler(
               "Content-Disposition":
                 pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
             };
-            const serveSource = (sourcePath: string): Promise<boolean> =>
+            // A public file passes the Cache-Control its pipeline staged, or
+            // null; a build asset passes undefined.
+            const serveSource = (
+              sourcePath: string,
+              publicFileCacheControl?: string | null,
+            ): Promise<boolean> =>
               tryServeStatic(
                 req,
                 res,
@@ -2822,21 +3012,18 @@ async function createPagesRouterRequestHandler(
                 sourcePath,
                 false,
                 staticCache,
-                imageSecurityHeaders,
+                withImageSourceCacheControl(
+                  imageSecurityHeaders,
+                  publicFileCacheControl,
+                  pagesImageConfig,
+                ),
                 undefined,
                 IMAGE_REPRESENTATION_HEADERS,
               );
 
             // Serve the source only as an anonymous direct request would
-            // receive it. Build assets bypass middleware there too. An endpoint
-            // outside the basePath is next/image's unprefixed form, whose
-            // sources resolve under the basePath.
-            const sourceUrl = resolveImageSourceUrl(
-              params.imageUrl,
-              hadBasePath ? "" : basePath,
-              pagesAssetPathPrefix,
-              webRequest.url,
-            );
+            // receive it. Build assets bypass middleware there too.
+            const sourceUrl = new URL(params.imageUrl, webRequest.url);
             let sourcePathname: string | null = null;
             try {
               sourcePathname = normalizePath(
@@ -2851,29 +3038,42 @@ async function createPagesRouterRequestHandler(
             }
             const assetLookupPath =
               sourcePathname !== null
-                ? resolveAppRouterAssetPath(sourcePathname, pagesAssetPathPrefix, assetPrefix)
+                ? (resolveAppRouterAssetPath(sourcePathname, pagesAssetPathPrefix, assetPrefix) ??
+                  resolveClientBuildFile(sourceUrl.pathname, basePath, clientBuildFiles))
                 : null;
             if (assetLookupPath && (await serveSource(assetLookupPath))) return true;
 
             // Any other source goes through the pipeline as a GET without the
             // caller's headers, like Next.js' fetchInternalImage, so middleware
             // admits it. Only a public file that pipeline selects is served.
-            const sourcePath =
+            const source =
               sourcePathname !== null ? await resolvePublicImageSource(sourceUrl) : null;
             if (webRequest.signal.aborted) return true;
-            if (sourcePath !== null) {
+            if (source !== null) {
               // Middleware can rewrite the source to a file of another type.
-              if (!isSafeSourcePath(staticCacheLookupPath(sourcePath) ?? sourcePath)) {
+              if (!isSafeSourcePath(staticCacheLookupPath(source.path) ?? source.path)) {
                 sendUnsafeContentType();
                 return true;
               }
-              if (await serveSource(sourcePath)) return true;
+              if (await serveSource(source.path, source.cacheControl)) return true;
             }
             res.writeHead(400);
             res.end(INVALID_IMAGE_SOURCE_MESSAGE);
             return true;
           }
-          if (isPagesFilesystemExcludedPath(requestPathname, phase)) return false;
+          if (
+            !isServableFilesystemRoute(
+              requestPathname,
+              phase,
+              filesystemRequest.method,
+              publicFiles,
+              basePath,
+              pagesAssetPathPrefix,
+              resolvedPathnameHasBasePath,
+            )
+          ) {
+            return false;
+          }
           return tryServeStatic(
             req,
             res,
@@ -2923,7 +3123,10 @@ async function createPagesRouterRequestHandler(
         const responseBody = await bufferResponseBodyUntilAborted(response, webRequest.signal);
         if (!responseBody) return;
         // render → text/html, api → application/octet-stream (set by the pipeline).
-        const ct = response.headers.get("content-type") ?? result.defaultContentType;
+        // An empty body (`res.end()`, `res.send(null)`) gets none, like Next.js.
+        const ct =
+          response.headers.get("content-type") ??
+          (responseBody.length > 0 ? result.defaultContentType : undefined);
         const responseHeaders: Record<string, string | string[]> = {};
         response.headers.forEach((v, k) => {
           if (k === "set-cookie") return;

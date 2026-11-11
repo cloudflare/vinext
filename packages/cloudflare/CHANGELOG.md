@@ -1,5 +1,155 @@
 # @vinext/cloudflare
 
+## 1.3.4
+
+### Bug Fixes
+
+This release changes the `@vinext/cloudflare previews deploy` command to use a `--preview-name` flag instead of a positional arg for preview names, to align with an upstream breaking change that the cf CLI did.
+
+#### Cloudflare
+
+- pass the Preview name with --preview-name like cf (#4572)
+- never store a Range request's 206 in the Response Store (#4622)
+- read the log cf writes to stderr during version deploys (#4609)
+
+#### Misc
+
+- **Init:** stop adding nodejs_compat now that compat dates enable it (#4580)
+
+### Contributors
+
+- @james-elicx
+
+## 1.3.3
+
+### Bug Fixes
+
+- **Cloudflare:** reject --config for cloudflare.config.ts deploys and show Wrangler-only flags only for Wrangler projects (#4521)
+
+### Contributors
+
+- @james-elicx
+
+## 1.3.2
+
+### Bug Fixes
+
+- **App Router:** send an intercepted response's params to useParams() (#4489)
+- **Cloudflare:** skip /cdn-cgi and static asset paths in traffic-aware warming (#4480)
+
+### Contributors
+
+- @james-elicx
+
+## 1.3.1
+
+### Bug Fixes
+
+#### Cache
+
+- key Response Store route handlers and metadata routes by path like Next.js (#4445)
+- support custom cacheLife profiles from next.config (#4398)
+- return unstable_cache and "use cache" misses without waiting for the write (#4465)
+
+### Contributors
+
+- @james-elicx
+
+## 1.3.0
+
+Read the [Vinext 1.4 release post](https://vinext.dev/blog/vinext-1-4) for the highlights.
+
+### Features
+
+#### Cloudflare
+
+- share one Response Store App Router entry across hosts (#3897)
+- store both parts of a page whenever Workers Cache renders one (#4333)
+- store both parts of a page whenever Response Store stores or regenerates one (#4332)
+- store the page's document when an RSC request misses its Response Store entry (#4331)
+- add --vite-config to deploy (#4215)
+
+### Bug Fixes
+
+#### Cloudflare
+
+- share one Workers Cache entry across hosts (#3924)
+- share one Response Store static Pages entry across hosts (#3898)
+- don't purge the edge copy of a page's other part on Response Store (#4342)
+
+#### Misc
+
+- **Cache:** date "use cache" entries from when their generation started, like Next.js (#4348)
+- **Response Store:** refreshes overtaken by invalidate(), purge() or revalidatePath() land like Next.js, without the R2 head (#4323)
+- **Response Store:** drop concurrent refreshes of a revision another write already replaced (#4307)
+
+### Contributors
+
+- @Gourav224
+- @james-elicx
+
+## 1.2.1
+
+### Bug Fixes
+
+- **Cloudflare:** stop non-replayable Response Store data refreshes from spending edge purges (#4259)
+- default NODE_ENV to production for vinext-cloudflare deploy and vinext typegen (#4267)
+- **Cloudflare:** serve KV entries of a tag revalidated with a cacheLife profile stale until it expires (#4258)
+
+### Contributors
+
+- @james-elicx
+
+## 1.2.0
+
+Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the highlights.
+
+### Features
+
+- **Cloudflare:** support Worker Previews via vinext-cloudflare previews deploy (#3900)
+
+### Bug Fixes
+
+- **Cloudflare:** return redirects from cache-facing fetches (#3242)
+- **Cache:** batch CDN tag purges per request and log purge failures (#4074)
+
+### Contributors
+
+- @james-elicx
+- @JamesbbBriz
+- @ktKongTong
+
+## 1.1.1
+
+Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the highlights.
+
+### Bug Fixes
+
+#### Cloudflare
+
+- don't share an in-flight static assets cache index fetch across requests (#3965)
+- never warm through an http-only Worker route (#3931)
+- make --warm-cache-include-fallbacks a no-op (#3906)
+- answer a stored page's conditional request as Next.js does (#3832)
+- never store a conditional request's 304 in the Response Store (#3827)
+- keep Workers Cache off Worker-wide in every generated config (#3820)
+
+#### Misc
+
+- **Cache:** treat x-api-key as a credential for shared response caches (#3879)
+- **PPR:** key fallback shells apart from the pages of their literal paths (#3891)
+- **Cache:** key oversized cache identities by a SHA-256 digest (#3876)
+
+### Performance
+
+- **Cloudflare:** share the pending static assets cache index fetch across requests (#3972)
+- **Cloudflare:** skip getStaticPaths when Workers Cache revalidates a stored Pages entry (#3960)
+- **Pages Router:** skip getStaticPaths when Response Store regenerates a stored entry (#3959)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.1.0
 
 ### Features

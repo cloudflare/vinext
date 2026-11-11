@@ -2,20 +2,25 @@ import { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
-import type { ClassificationReason } from "../build/layout-classification-types.js";
-import { _captureRequestScopedCacheLifeAccessors } from "vinext/shims/cache-request-state";
-import type { RootParams } from "vinext/shims/root-params";
+import {
+  _captureRequestScopedCacheLifeAccessors,
+  _isOnDemandRevalidate,
+} from "vinext/shims/cache-request-state";
+import { setRootParams, type RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
+  getActiveDraftModeState,
   getAndClearPendingCookies,
   getDraftModeCookieHeader,
   getHeadersContext,
   isDraftModeRequest,
   peekDynamicUsage,
   peekRenderRequestApiUsage,
-  runWithIsolatedDynamicUsage,
+  runWithConnectionProbe,
+  runStaticParamsCheckDetached,
+  runWithDetachedDynamicUsage,
   setHeadersContext,
 } from "vinext/shims/headers";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
@@ -36,31 +41,41 @@ import {
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
 } from "vinext/shims/fetch-cache";
-import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
+import type { AppOutgoingElements } from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { WarmPprFallbackShellCachesOptions } from "./app-ppr-fallback-shell-render.js";
 import {
+  resolveAppPageLayoutHttpAccessBoundary,
+  resolveAppPageRootHttpAccessBoundaryTreePosition,
   resolveAppPageParentHttpAccessBoundary,
-  resolveAppPageParentHttpAccessBoundaryModule,
 } from "./app-page-boundary.js";
+import { getDefaultHttpAccessFallbackModule } from "./default-http-access-fallback-modules.js";
+import { isAppClientReference } from "./app-render-dependency.js";
 import {
   resolveAppPageSpecialErrorStoredHeaders,
   buildAppPageSpecialErrorResponse,
+  resolveAppPageCaughtNotFoundBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   type AppPageFontPreload,
   type AppPageSpecialError,
-  type LayoutClassificationOptions,
 } from "./app-page-execution.js";
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
 import { isAppPageStaticEligible } from "./app-segment-config.js";
-import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import {
+  resolveAppPageInterceptSegmentConfig,
+  type AppPageInterceptSegmentConfig,
+} from "./app-page-intercept-segment-config.js";
+import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
+import type { AppPageFallbackRouteHead, AppPagePreparedRouteHead } from "./app-page-head.js";
+import {
+  type AppPageInterceptState,
   buildAppPageElement,
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
-  validateAppPageDynamicParams,
+  resolveAppPageInterceptState,
+  validateAppPageRouteDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
 import { applyIneligibleRouteCachePolicy, renderAppPageLifecycle } from "./app-page-render.js";
@@ -85,18 +100,23 @@ import {
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
-import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
-import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
+import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
+  VINEXT_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "./headers.js";
+import { parseMountedLayoutsHeader } from "./app-mounted-layouts.js";
+import { markRouteMissResponse } from "./route-miss-response.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
-import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
 import {
-  createAppLayoutParamAccessTracker,
-  isAppLayoutObservationUnsafeForStaticReuse,
-  type AppLayoutParamAccessTracker,
-} from "./app-layout-param-observation.js";
+  coalesceOnDemandResponse,
+  type AppPageCacheSetter,
+  type ISRCacheEntry,
+} from "./isr-cache.js";
 import {
   beginRouteCacheability,
   isRouteCacheabilityIdentityProbe,
@@ -148,8 +168,16 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   interceptLoadings?: readonly unknown[] | null;
   interceptLoadingTreePositions?: readonly number[] | null;
   interceptNotFoundBranchSegments?: readonly string[] | null;
+  interceptNotFounds?: readonly unknown[] | null;
+  interceptNotFoundTreePositions?: readonly number[] | null;
   notFound?: unknown;
   notFoundTreePosition?: number | null;
+  interceptForbiddens?: readonly unknown[] | null;
+  interceptForbiddenTreePositions?: readonly number[] | null;
+  interceptUnauthorizeds?: readonly unknown[] | null;
+  interceptUnauthorizedTreePositions?: readonly number[] | null;
+  interceptErrors?: readonly unknown[] | null;
+  interceptErrorTreePositions?: readonly number[] | null;
   matchedParams: AppPageParams;
   sourceMatchedParams?: AppPageParams;
   page: TPage;
@@ -173,6 +201,14 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptNotFoundBranchSegments?: readonly string[] | null;
   interceptNotFound?: unknown;
   interceptNotFoundTreePosition?: number | null;
+  interceptForbiddens?: readonly unknown[] | null;
+  interceptForbiddenTreePositions?: readonly number[] | null;
+  interceptUnauthorizeds?: readonly unknown[] | null;
+  interceptUnauthorizedTreePositions?: readonly number[] | null;
+  interceptErrors?: readonly unknown[] | null;
+  interceptErrorTreePositions?: readonly number[] | null;
+  interceptNotFounds?: readonly unknown[] | null;
+  interceptNotFoundTreePositions?: readonly number[] | null;
   interceptPage: TPage;
   interceptParams: AppPageParams;
   interceptSlotId?: string | null;
@@ -190,27 +226,22 @@ type AppPageModule = {
 };
 
 type AppPageDispatchSlot = {
+  configLayouts?: readonly (AppPageModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
   default?: AppPageModule | null;
+  layout?: AppPageModule | null;
+  layoutIndex?: number;
   loading?: AppPageModule | null;
   loadings?: readonly (AppPageModule | null | undefined)[] | null;
+  name?: string;
+  ownerTreePosition?: number | null;
   page?: AppPageModule | null;
+  routeSegments?: readonly string[] | null;
   slotPatternParts?: readonly string[] | null;
   slotParamNames?: readonly string[] | null;
 };
 
-type LayoutSegmentConfigClassification = Readonly<{
-  kind: "dynamic" | "static";
-  reason: ClassificationReason;
-}>;
-
-type EffectiveLayoutClassifications = Readonly<{
-  buildTimeClassifications: ReadonlyMap<number, "static" | "dynamic"> | null;
-  buildTimeReasons: ReadonlyMap<number, ClassificationReason> | null | undefined;
-}>;
-
 export type AppPageDispatchRoute = {
-  __buildTimeClassifications?: LayoutClassificationOptions["buildTimeClassifications"];
-  __buildTimeReasons?: LayoutClassificationOptions["buildTimeReasons"];
   error?: AppPageModule | null;
   errors?: readonly (AppPageModule | null | undefined)[];
   forbidden?: AppPageModule | null;
@@ -227,6 +258,12 @@ export type AppPageDispatchRoute = {
   params: readonly string[];
   pattern: string;
   routeSegments: readonly string[];
+  segmentForbiddens?: readonly (AppPageModule | null | undefined)[];
+  segmentForbiddenTreePositions?: readonly number[];
+  segmentNotFounds?: readonly (AppPageModule | null | undefined)[];
+  segmentNotFoundTreePositions?: readonly number[];
+  segmentUnauthorizeds?: readonly (AppPageModule | null | undefined)[];
+  segmentUnauthorizedTreePositions?: readonly number[];
   slots?: Readonly<Record<string, AppPageDispatchSlot>>;
   unauthorized?: AppPageModule | null;
   unauthorizedTreePosition?: number | null;
@@ -313,16 +350,20 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     params: AppPageParams,
     opts: AppPageDispatchInterceptOptions | undefined,
     searchParams: URLSearchParams,
-    layoutParamAccess?: AppLayoutParamAccessTracker,
     options?: {
       isForceStatic?: boolean;
+      isUncacheableRender?: boolean;
+      routeTreeOnlyPrefetchShell?: boolean;
+      /** Layouts the navigating client holds, which the render may leave out. */
+      mountedLayouts?: ReadonlySet<string> | null;
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
       serveStreamingMetadata?: boolean;
       placeStreamedMetadataInHead?: boolean;
+      /** Receives the route's head once the render starts resolving it. */
+      onHeadPrepared?: (head: AppPagePreparedRouteHead) => void;
     },
   ) => Promise<AppPageElement>;
-  clientReuseManifest?: ClientReuseManifestParseResult;
   cleanPathname: string;
   displayPathname?: string;
   clearRequestContext: () => void;
@@ -331,7 +372,6 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     routePath: string,
     overrides?: AppRenderErrorContextOverrides,
   ) => AppPageBoundaryOnError;
-  debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
   draftModeSecret: string;
   dynamicConfig?: string;
   dynamicStaleTimeSeconds?: number;
@@ -344,6 +384,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   ensureRouteLoaded?: (route: TRoute) => unknown;
   fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
+  /** This request's intercept, which dispatch resolves once before rendering. */
+  interceptState?: AppPageInterceptState<TRoute, unknown>;
   formState?: ReactFormState | null;
   actionError?: unknown;
   actionFailed?: boolean;
@@ -360,7 +402,6 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   hasGenerateStaticParams: boolean;
   /** Whether any segment of the route exports `generateStaticParams`. */
   hasAnyGenerateStaticParams: boolean;
-  hasCustomGlobalError?: boolean;
   hasPageDefaultExport: boolean;
   hasPageModule: boolean;
   handlerStart: number;
@@ -407,10 +448,15 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
    * has a transient gap. Falls through to a fresh render instead.
    */
   renderedConcreteUrlPaths?: ReadonlySet<string>;
+  /**
+   * Called on a dynamicParams = false miss. When it returns true, routing
+   * resumes with the fallback rewrites, so the miss renders no 404.
+   */
+  resumeRoutingAfterMiss?: () => boolean;
   skipStaticParamsValidation?: boolean;
   staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
-  probeLayoutAt: (layoutIndex: number, layoutParamAccess?: AppLayoutParamAccessTracker) => unknown;
+  probeLayoutAt: (layoutIndex: number) => unknown;
   expireSeconds?: number;
   renderErrorBoundaryPage: (
     error: unknown,
@@ -421,11 +467,19 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     opts: {
       boundaryComponent?: unknown;
       boundaryModule?: AppPageModule | null;
+      /** Boundary whose metadata the head uses, when not `boundaryModule`. */
+      headBoundaryModule?: AppPageModule | null;
+      /** Layouts whose metadata the head uses, when more than `layouts`. */
+      headLayouts?: readonly AppPageModule[];
       intercept?: AppPageDispatchInterceptOptions | null;
       /** The document may be stored, so it must not carry the request's query. */
       isCacheCandidate?: boolean;
       layouts?: readonly AppPageModule[];
       matchedParams: AppPageParams;
+      /** The route's render threw the signal, so the document keeps the route's head. */
+      routeHead?: AppPageFallbackRouteHead;
+      /** Render the root not-found as if no route matched, as Next.js routing does. */
+      routeMiss?: boolean;
     },
     middlewareContext: AppPageMiddlewareContext | null,
   ) => Promise<Response | null>;
@@ -471,87 +525,6 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
    */
   renderWholeDocument?: boolean;
 };
-
-/**
- * Request-time counterpart to the build-time `classifyLayoutSegmentConfig`
- * (`build/report.ts`). Both classify a layout by its `dynamic`/`revalidate`
- * segment config and agree on the shared cases (the build-time version
- * normalizes `revalidate = false` to `Infinity` upstream, so both treat it as
- * static); keep them aligned when either changes.
- *
- * The meaningful difference is scope, not logic: this request-time pass reads
- * the resolved module value, so it classifies layouts that were never captured
- * at build time (e.g. dev mode). Its result is merged on top of the build-time
- * classification map in `createEffectiveLayoutClassifications`, so such layouts
- * are classified here where they previously were not.
- */
-function classifyLayoutSegmentConfigFromModule(
-  layout: AppPageModule | null | undefined,
-): LayoutSegmentConfigClassification | null {
-  if (!layout) return null;
-
-  switch (layout.dynamic) {
-    case "force-dynamic":
-      return {
-        kind: "dynamic",
-        reason: { layer: "segment-config", key: "dynamic", value: "force-dynamic" },
-      };
-    case "force-static":
-    case "error":
-      return {
-        kind: "static",
-        reason: { layer: "segment-config", key: "dynamic", value: layout.dynamic },
-      };
-  }
-
-  if (layout.revalidate === false || layout.revalidate === Infinity) {
-    return {
-      kind: "static",
-      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
-    };
-  }
-  if (layout.revalidate === 0) {
-    return {
-      kind: "dynamic",
-      reason: { layer: "segment-config", key: "revalidate", value: 0 },
-    };
-  }
-
-  return null;
-}
-
-function createEffectiveLayoutClassifications(
-  route: AppPageDispatchRoute,
-  includeReasons: boolean,
-): EffectiveLayoutClassifications {
-  const classifications = new Map(route.__buildTimeClassifications ?? []);
-  const reasons = includeReasons ? new Map(route.__buildTimeReasons ?? []) : null;
-
-  for (let index = 0; index < route.layouts.length; index++) {
-    const classification = classifyLayoutSegmentConfigFromModule(route.layouts[index]);
-    if (classification === null) continue;
-
-    // Precedence: when a layout's module segment config classifies, it is
-    // authoritative and overrides the build-time map for that layout — even if
-    // a Layer 1/2 build-time classifier marked it differently for a
-    // non-segment-config reason. Downstream consumers should treat this merged
-    // result, not `__buildTimeClassifications`, as the source of truth.
-    classifications.set(index, classification.kind);
-    reasons?.set(index, classification.reason);
-  }
-
-  return {
-    buildTimeClassifications: classifications.size > 0 ? classifications : null,
-    buildTimeReasons: reasons && reasons.size > 0 ? reasons : null,
-  };
-}
-
-function getEffectiveLayoutClassifications(
-  route: AppPageDispatchRoute,
-  debugClassification: DispatchAppPageOptions<AppPageDispatchRoute>["debugClassification"],
-): EffectiveLayoutClassifications {
-  return createEffectiveLayoutClassifications(route, debugClassification !== undefined);
-}
 
 export function shouldReadAppPageCache(options: {
   isProgressiveActionRender: boolean;
@@ -604,6 +577,7 @@ async function runAppPageRevalidationContext<
     draftModeSecret: string;
     dynamicConfig?: string;
     params: AppPageParams;
+    rootParams?: RootParams;
     routePattern: string;
     routeSegments: readonly string[];
     setNavigationContext: DispatchAppPageOptions<AppPageDispatchRoute>["setNavigationContext"];
@@ -624,6 +598,7 @@ async function runAppPageRevalidationContext<
     currentFetchRevalidate: options.currentFetchRevalidate ?? null,
     currentForceDynamicFetchDefault: options.dynamicConfig === "force-dynamic",
     executionContext: getRequestExecutionContext(),
+    rootParams: options.rootParams ?? null,
     unstableCacheRevalidation: "foreground",
   });
 
@@ -663,6 +638,14 @@ function toInterceptOptions(
     interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
     interceptNotFound: intercept.notFound,
     interceptNotFoundTreePosition: intercept.notFoundTreePosition,
+    interceptForbiddens: intercept.interceptForbiddens,
+    interceptForbiddenTreePositions: intercept.interceptForbiddenTreePositions,
+    interceptUnauthorizeds: intercept.interceptUnauthorizeds,
+    interceptUnauthorizedTreePositions: intercept.interceptUnauthorizedTreePositions,
+    interceptErrors: intercept.interceptErrors,
+    interceptErrorTreePositions: intercept.interceptErrorTreePositions,
+    interceptNotFounds: intercept.interceptNotFounds,
+    interceptNotFoundTreePositions: intercept.interceptNotFoundTreePositions,
     interceptPage: intercept.page,
     interceptParams: intercept.matchedParams,
     interceptSlotId: intercept.slotId ?? null,
@@ -699,7 +682,8 @@ function hasNoManifestAdmissionState(routePattern: string): boolean {
 export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
-  const dispatch = () => runWithFetchDedupe(() => dispatchAppPageInner(options));
+  const dispatch = () =>
+    runWithFetchDedupe(async () => dispatchAppPageInner(await withResolvedIntercept(options)));
   let response: Response;
   if (!options.pprFallbackShell || !options.pprRuntime) {
     response = await dispatch();
@@ -708,6 +692,45 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   }
 
   return options.isRscRequest ? response : traceResponseStart(response);
+}
+
+/**
+ * Resolves the request's intercept once, for the render and its cache reads.
+ *
+ * Next.js renders an interception as its own route even when its source is the
+ * matched route (`app/shots/[id]` beside `app/shots/@modal/(.)[id]`, from
+ * `/shots/1` to `/shots/2`). vinext renders that through the matched route's
+ * own page render, so the interception's segment config replaces the route's
+ * before that render reads it.
+ */
+async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+): Promise<DispatchAppPageOptions<TRoute>> {
+  const interceptState = await resolveAppPageInterceptState({
+    cleanPathname: options.cleanPathname,
+    currentRoute: options.route,
+    findIntercept: options.findIntercept,
+    getSourceRoute: options.getSourceRoute,
+    interceptState: options.interceptState,
+    isRscRequest: options.isRscRequest,
+  });
+  if (interceptState.kind !== "current-route") return { ...options, interceptState };
+  const config = resolveAppPageInterceptSegmentConfig(
+    options.route,
+    toInterceptOptions(options.interceptionContext, interceptState.intercept),
+  );
+  return {
+    ...options,
+    interceptState,
+    dynamicConfig: config.dynamicConfig,
+    dynamicStaleTimeSeconds: config.dynamicStaleTimeSeconds,
+    fetchCache: config.fetchCacheMode,
+    hasAnyGenerateStaticParams: config.hasAnyGenerateStaticParams,
+    hasGenerateStaticParams: config.hasGenerateStaticParams,
+    isEdgeRuntime: config.isEdgeRuntime,
+    isStaticGenerationEdgeRuntime: config.isStaticGenerationEdgeRuntime,
+    revalidateSeconds: config.revalidateSeconds,
+  };
 }
 
 async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
@@ -783,7 +806,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const placeGeneratedMetadataInBody =
     (!isPrerender || options.pprFallbackShell !== undefined) && serveStreamingMetadata;
   const isPrefetchDynamicShell = options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
-  const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
+  // Middleware can enable or disable draft mode for this request.
+  const isDraftMode =
+    getActiveDraftModeState() ?? isDraftModeRequest(options.request, options.draftModeSecret);
   const requestHeadersContext = getHeadersContext();
   const shouldUseEmptySearchParams = isForceStatic || isPrefetchDynamicShell;
   const hasRequestSearchParams =
@@ -791,8 +816,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const pageSearchParams = shouldUseEmptySearchParams
     ? new URLSearchParams()
     : options.searchParams;
-  const layoutParamAccess = createAppLayoutParamAccessTracker();
-  const activeLoadingTreePositions = getActiveLoadingTreePositions(route);
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -808,6 +831,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isDynamicError,
         isForceDynamic,
         isForceStatic,
+        isPrerender,
         isProduction: options.isProduction,
         isProgressiveActionRender: options.isProgressiveActionRender === true,
         isRscRequest: options.isRscRequest,
@@ -873,8 +897,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // fallback shells follow cacheComponents' model instead.
   const isNeverStoredPath =
     options.pprRuntime === undefined && hasNoManifestAdmissionState(route.pattern);
-  const shouldReadCache =
-    !isRouteCacheabilityProbe() && isCacheEligibleRender && !isNeverStoredPath;
+  const isStoredRender = !isRouteCacheabilityProbe() && isCacheEligibleRender && !isNeverStoredPath;
+  // Like Next.js's ResponseCache, an authorized on-demand revalidation never
+  // serves the stored entry: it renders in the foreground and stores that.
+  const isOnDemandRevalidate = _isOnDemandRevalidate();
+  const shouldReadCache = isStoredRender && !isOnDemandRevalidate;
   // A render that may be stored, and so must not let the request's query reach
   // its output unless it turns out dynamic. The Workers Cache deploy probe
   // renders this way too, so its manifest matches the runtime. A
@@ -885,6 +912,28 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isStaticEligible &&
     options.pprFallbackShell === undefined &&
     !isNeverStoredPath;
+  // A render without PPR sends only the route tree for a loading-shell prefetch
+  // without a loading boundary. With Cache Components, Next.js renders layouts
+  // for every production prefetch (isRoutePPREnabled), so only dev does.
+  const routeTreeOnlyPrefetchShell =
+    options.pprFallbackShell === undefined &&
+    (options.pprRuntime === undefined || !options.isProduction);
+  // A render that can never be stored and, in production, is never sent with
+  // static cache headers. Only it may skip the layouts a navigation's client
+  // holds.
+  const isUncacheableRender =
+    !(isCacheEligibleRender && isStaticEligible) && routeTreeOnlyPrefetchShell;
+  // A navigation names the layouts it holds, so a render that's never stored
+  // can leave them out, as Next.js renders only below where a navigation
+  // diverges. A stored payload stays whole for every client that reads it.
+  const mountedLayouts =
+    isUncacheableRender &&
+    options.isRscRequest &&
+    (options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION) === APP_RSC_RENDER_MODE_NAVIGATION &&
+    options.interceptionContext === null &&
+    options.isProgressiveActionRender !== true
+      ? parseMountedLayoutsHeader(options.request.headers.get(VINEXT_MOUNTED_LAYOUTS_HEADER))
+      : null;
   if (shouldReadCache && isStaticEligible) {
     traceOperation = resolveAppPageTraceOperation({
       hasRequestSearchParams,
@@ -910,6 +959,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         getSourceRoute(sourceRouteIndex) {
           return options.getSourceRoute(sourceRouteIndex);
         },
+        interceptState: options.interceptState,
         isRscRequest: options.isRscRequest,
         toInterceptOpts(intercept) {
           return toInterceptOptions(options.interceptionContext, intercept);
@@ -961,18 +1011,39 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isForceStatic,
         revalidateSeconds: currentRevalidateSeconds,
       }),
-      renderFreshPageForCache: async () => {
+      // As in Next.js, a path generated at build time answers its RSC requests
+      // from the cache, and its regeneration renders the document.
+      isDynamicRscRequest:
+        options.pprRuntime !== undefined &&
+        options.isRscRequest &&
+        options.request.headers.get(NEXT_ROUTER_PREFETCH_HEADER) !== "1" &&
+        options.renderedConcreteUrlPaths?.has(options.cleanPathname) !== true,
+      renderFreshPageForCache: async ({ renderDocument }) => {
         const revalidationTarget = await resolveCacheRenderTarget();
+        // An interception regenerates as its own route, under its own config.
+        const revalidationInterceptConfig = revalidationTarget.interceptOpts
+          ? resolveAppPageInterceptSegmentConfig(
+              revalidationTarget.route,
+              revalidationTarget.interceptOpts,
+            )
+          : null;
 
-        const revalidationDynamicConfig =
-          options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
-          (revalidationTarget.route === route ? dynamicConfig : undefined);
-        const revalidationConfigRevalidateSeconds =
-          options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
-          (revalidationTarget.route === route ? currentRevalidateSeconds : null);
-        // A stale intercepted entry regenerates its source route, so the entry
-        // takes that route's revalidate, not the matched route's read seed. A
-        // static route without one keeps `revalidate = false`.
+        const revalidationDynamicConfig = revalidationInterceptConfig
+          ? revalidationInterceptConfig.dynamicConfig
+          : (options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
+            (revalidationTarget.route === route ? dynamicConfig : undefined));
+        // An interception of the matched route already seeded this request's
+        // revalidate from its own config, so its regeneration reuses that seed.
+        const revalidationConfigRevalidateSeconds = revalidationInterceptConfig
+          ? revalidationTarget.route === route
+            ? currentRevalidateSeconds
+            : revalidationInterceptConfig.revalidateSeconds
+          : (options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
+            (revalidationTarget.route === route ? currentRevalidateSeconds : null));
+        // A stale entry intercepted from another route regenerates as that
+        // interception, so the entry takes the interception's revalidate, not
+        // the matched route's read seed. A static interception without one
+        // keeps `revalidate = false`.
         const revalidationRouteRevalidateSeconds =
           revalidationTarget.route === route
             ? undefined
@@ -981,20 +1052,29 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               revalidationDynamicConfig === "error" ||
               (options.isProduction &&
                 options.pprRuntime === undefined &&
-                options.resolveRouteStaticEligible(revalidationTarget.route))
+                (revalidationInterceptConfig?.isStaticEligible ??
+                  options.resolveRouteStaticEligible(revalidationTarget.route)))
                 ? Infinity
                 : null));
+        const revalidationRouteHead: RouteHeadRef = {
+          observeSearchParams: revalidationDynamicConfig !== "force-static",
+          searchParams: new URLSearchParams(),
+          streamMetadata: false,
+          value: null,
+        };
         return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
             displayPathname: options.displayPathname,
-            currentFetchCacheMode:
-              options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
-              (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
+            currentFetchCacheMode: revalidationInterceptConfig
+              ? revalidationInterceptConfig.fetchCacheMode
+              : (options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
+                (revalidationTarget.route === route ? (options.fetchCache ?? null) : null)),
             currentFetchRevalidate: revalidationConfigRevalidateSeconds,
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: revalidationDynamicConfig,
             params: revalidationTarget.navigationParams,
+            rootParams: options.rootParams,
             routePattern: revalidationTarget.route.pattern,
             routeSegments: revalidationTarget.route.routeSegments,
             setNavigationContext: options.setNavigationContext,
@@ -1006,16 +1086,20 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               revalidationTarget.params,
               revalidationTarget.interceptOpts,
               new URLSearchParams(),
-              undefined,
               {
                 isForceStatic: revalidationDynamicConfig === "force-static",
                 observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+                // A stale loading shell regenerates in the shape it was stored.
+                routeTreeOnlyPrefetchShell,
                 // As in Next.js, a regeneration streams metadata as the
                 // request that triggered it does, into the <head> of a
                 // document it renders whole.
                 serveStreamingMetadata: placeGeneratedMetadataInBody,
                 placeStreamedMetadataInHead: true,
+                onHeadPrepared(head) {
+                  revalidationRouteHead.value = head;
+                },
               },
             );
             const baseRevalidatedOnError = options.createRscOnErrorHandler(
@@ -1055,7 +1139,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 return baseRevalidatedOnSsrError(error, undefined, undefined);
               },
               reactMaxHeadersLength: options.reactMaxHeadersLength,
-              async renderShellSpecialError(error) {
+              // A regeneration of an RSC variant's entry alone needs no
+              // document for its shell's special error.
+              resolveCaughtNotFoundBoundaries: renderDocument
+                ? (error) =>
+                    resolveAppPageCaughtNotFoundBoundaries(
+                      error,
+                      rscErrorTracker.getCapturedSpecialErrors(error),
+                    )
+                : undefined,
+              async renderShellSpecialError(error, caughtDocument) {
                 const specialError = resolveAppPageShellSpecialError(
                   error,
                   rscErrorTracker.getCapturedSpecialErrors(error),
@@ -1064,12 +1157,26 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 // when the triggering request blocks on metadata, as an
                 // html-limited bot does, and is then stored like the page's.
                 if (!specialError) return null;
-                // An RSC request regenerates only its RSC entry, so needs no
-                // document. generateMetadata()'s would leave its status beside
-                // a document that the request's user agent didn't decide, so
-                // the previous entry is kept.
-                if (options.isRscRequest) {
-                  if (specialError.fromMetadata === true) return null;
+                // An RSC request's generateMetadata() special error would leave
+                // its status beside a document that the request's user agent
+                // didn't decide, so the previous entry is kept.
+                if (options.isRscRequest && specialError.fromMetadata === true) return null;
+                if (renderDocument && caughtDocument) {
+                  return {
+                    headers: resolveAppPageSpecialErrorStoredHeaders(
+                      specialError,
+                      options.basePath,
+                    ),
+                    html: caughtDocument.html,
+                    linkHeader: caughtDocument.linkHeader,
+                    status: specialError.statusCode,
+                  };
+                }
+                // A regeneration of an RSC variant's entry alone needs no
+                // document. The special error's own document renders as the
+                // triggering request does, so an RSC request stores its RSC
+                // entry alone and leaves the document to an HTML request.
+                if (!renderDocument || options.isRscRequest) {
                   return {
                     headers: resolveAppPageSpecialErrorStoredHeaders(
                       specialError,
@@ -1087,6 +1194,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   false,
                   revalidationTarget.interceptOpts,
                   true,
+                  undefined,
+                  revalidationRouteHead,
                 );
                 // As on a miss, only the special error's own document is stored.
                 if (document.status !== specialError.statusCode) return null;
@@ -1138,25 +1247,48 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  // Next.js' production force-dynamic routes are absent from the prerender
-  // manifest, so they never enter its generated-path fallback gate. Dev still
-  // resolves and exact-matches generateStaticParams for the same route.
-  if (options.skipStaticParamsValidation !== true && !(options.isProduction && isForceDynamic)) {
-    const dynamicParamsResponse = await validateAppPageDynamicParams({
-      enforceStaticParamsOnly: options.dynamicParamsConfig === false,
-      generateStaticParams: options.generateStaticParams,
-      isDynamicRoute: route.isDynamic,
-      params: options.staticParamsValidationParams ?? options.params,
-    });
+  // Next.js renders an unlisted param on demand in draft mode.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  if (options.skipStaticParamsValidation !== true && !isDraftMode) {
+    const dynamicParamsResponse = await runStaticParamsCheckDetached(() =>
+      validateAppPageRouteDynamicParams({
+        dynamicConfig,
+        dynamicParamsConfig: options.dynamicParamsConfig,
+        fetchCache: options.fetchCache,
+        routeSegments: route.routeSegments,
+        generateStaticParams: options.generateStaticParams,
+        isDynamicRoute: route.isDynamic,
+        isProduction: options.isProduction,
+        params: options.staticParamsValidationParams ?? options.params,
+      }),
+    );
     if (dynamicParamsResponse) {
-      // A generated-param miss belongs to a matched App route, so render the
-      // route's not-found boundary just like a page-level notFound() signal.
-      // The plain response remains a defensive fallback if boundary rendering
-      // is unavailable, but the normal path must include Next.js's canonical
-      // not-found markup (and custom not-found.tsx when present).
+      // Next.js rejects a generated-param miss while routing, so it renders
+      // the root not-found as if no route matched. None of this route's
+      // layouts or generateMetadata may run with the rejected params. The
+      // plain response remains a defensive fallback if boundary rendering is
+      // unavailable.
+      // Undo this route's config too: its fetch defaults, and the static
+      // headers context and search params of force-static / dynamic = "error".
+      const navigationContext = options.getNavigationContext();
+      if (navigationContext) {
+        options.setNavigationContext({
+          ...navigationContext,
+          params: {},
+          searchParams: options.searchParams,
+        });
+      }
+      setRootParams(null);
+      setHeadersContext(requestHeadersContext);
+      setCurrentFetchSoftTags([]);
+      setCurrentFetchCacheMode(null);
+      setCurrentFetchRevalidate(null);
+      setCurrentForceDynamicFetchDefault(false);
+      // Routing discards this response, so it marks nothing for the request.
+      if (options.resumeRoutingAfterMiss?.()) return new Response(null, { status: 404 });
       const renderedNotFound = await options.renderHttpAccessFallbackPage(
         404,
-        { matchedParams: options.params },
+        { matchedParams: {}, routeMiss: true },
         options.middlewareContext,
       );
       const cachePolicy = {
@@ -1165,6 +1297,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isDynamicError,
         isForceDynamic,
         isForceStatic,
+        isPrerender,
         isProduction: options.isProduction,
         isProgressiveActionRender: options.isProgressiveActionRender === true,
         isRscRequest: options.isRscRequest,
@@ -1175,10 +1308,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         scriptNonce: options.scriptNonce,
       };
       if (renderedNotFound) {
-        return applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy);
+        return markRouteMissResponse(
+          applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy),
+        );
       }
       options.clearRequestContext();
-      return applyIneligibleRouteCachePolicy(dynamicParamsResponse, cachePolicy);
+      return markRouteMissResponse(
+        applyIneligibleRouteCachePolicy(dynamicParamsResponse, cachePolicy),
+      );
     }
   }
 
@@ -1195,40 +1332,45 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return fallbackShellResponse;
   }
 
-  let interceptDynamicConfig: string | null | undefined;
-  let interceptDynamicConfigResolved = false;
-  // Whether the source route that the intercepted response renders is
-  // force-dynamic or revalidate = 0, from the config activated for its render.
-  let isInterceptSourceKnownDynamic = false;
+  let interceptConfig: AppPageInterceptSegmentConfig | null = null;
+  // Whether the intercepted response's render is force-dynamic or
+  // revalidate = 0, from the config activated for it.
+  let isInterceptKnownDynamic = false;
+  // Whether it is force-static or dynamic = "error", so its render can't read
+  // the request.
+  let isInterceptRequestIndependent = false;
+  // The head the page's render prepared, for its special-error fallback.
+  const renderedRouteHead: RouteHeadRef = {
+    observeSearchParams: !isForceStatic,
+    searchParams: pageSearchParams,
+    streamMetadata: placeGeneratedMetadataInBody && options.renderWholeDocument !== true,
+    value: null,
+  };
+  const onHeadPrepared = (head: AppPagePreparedRouteHead) => {
+    renderedRouteHead.value = head;
+  };
   const interceptResult = await resolveAppPageIntercept<
     TRoute,
     unknown,
     AppPageDispatchInterceptOptions,
     AppPageElement
   >({
-    async buildPageElement(
-      interceptRoute,
-      interceptParams,
-      interceptOpts,
-      interceptSearchParams,
-      interceptLayoutParamAccess,
-    ) {
+    async buildPageElement(interceptRoute, interceptParams, interceptOpts, interceptSearchParams) {
       // Deliberately no save/restore around buildPageElement: when this
       // callback runs, resolveAppPageIntercept returns the intercept response
       // directly and the dispatch never falls through to the original route.
       // The intercept route's fetch defaults must also stay active past this
       // call — its server components fetch lazily during the
       // renderToReadableStream in renderInterceptResponse below.
-      const sourceDynamicConfig = interceptDynamicConfigResolved
-        ? interceptDynamicConfig
-        : options.resolveRouteDynamicConfig?.(interceptRoute);
-      if (sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error") {
+      interceptConfig ??= resolveAppPageInterceptSegmentConfig(interceptRoute, interceptOpts!);
+      const interceptDynamicConfig = interceptConfig.dynamicConfig;
+      if (interceptDynamicConfig === "force-static" || interceptDynamicConfig === "error") {
         const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
         setHeadersContext(
           createStaticGenerationHeadersContext({
             draftModeEnabled: isDraftMode,
             draftModeSecret: options.draftModeSecret,
-            dynamicConfig: sourceDynamicConfig,
+            dynamicConfig: interceptDynamicConfig,
             routeKind: "page",
             routePattern: interceptRoute.pattern,
           }),
@@ -1236,25 +1378,27 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       } else {
         setHeadersContext(requestHeadersContext);
       }
-      const sourceRevalidateSeconds =
-        options.resolveRouteRevalidateSeconds?.(interceptRoute) ?? null;
-      isInterceptSourceKnownDynamic =
-        sourceDynamicConfig === "force-dynamic" || sourceRevalidateSeconds === 0;
-      setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
-      setCurrentFetchRevalidate(sourceRevalidateSeconds);
-      setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
+      isInterceptKnownDynamic =
+        interceptDynamicConfig === "force-dynamic" || interceptConfig.revalidateSeconds === 0;
+      isInterceptRequestIndependent =
+        interceptDynamicConfig === "force-static" || interceptDynamicConfig === "error";
+      setCurrentFetchCacheMode(interceptConfig.fetchCacheMode);
+      setCurrentFetchRevalidate(interceptConfig.revalidateSeconds);
+      setCurrentForceDynamicFetchDefault(interceptDynamicConfig === "force-dynamic");
       return options.buildPageElement(
         interceptRoute,
         interceptParams,
         interceptOpts,
         interceptSearchParams,
-        interceptLayoutParamAccess,
         {
-          isForceStatic: sourceDynamicConfig === "force-static",
-          observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
-          observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
+          isForceStatic: interceptDynamicConfig === "force-static",
+          observeMetadataSearchParamsAccess: interceptDynamicConfig !== "force-static",
+          observePageSearchParamsAccess: interceptDynamicConfig !== "force-static",
+          isUncacheableRender,
+          routeTreeOnlyPrefetchShell,
           serveStreamingMetadata: placeGeneratedMetadataInBody,
           placeStreamedMetadataInHead: options.renderWholeDocument === true,
+          onHeadPrepared,
         },
       );
     },
@@ -1269,12 +1413,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     getSourceRoute(sourceRouteIndex) {
       return options.getSourceRoute(sourceRouteIndex);
     },
+    interceptState: options.interceptState,
     isRscRequest: options.isRscRequest,
-    layoutParamAccess,
     resolveNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts) {
       return resolveAppPageNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts);
     },
-    renderInterceptResponse(sourceRoute, interceptElement) {
+    renderInterceptResponse(sourceRoute, interceptElement, navigationParams) {
       const interceptOnError = options.createRscOnErrorHandler(
         options.cleanPathname,
         sourceRoute.pattern,
@@ -1288,14 +1432,30 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
-      // This response renders the source route, so it takes the source's
-      // cacheability and dynamic config, not the matched target's. A source
-      // that can't be static, a render known dynamic before it starts, or a
-      // draft-mode request is never cacheable, like the source's own render.
-      // Middleware's policy still wins, merged after, as in the RSC builder.
-      const isSourceStaticEligible =
-        options.pprRuntime !== undefined || options.resolveRouteStaticEligible(sourceRoute);
-      if (!isSourceStaticEligible || isDraftMode || isInterceptSourceKnownDynamic) {
+      // The client reads useParams() from this header, as for any page, so
+      // the intercepted target's params reach it, not just the source's.
+      if (Object.keys(navigationParams).length > 0) {
+        interceptHeaders.set(
+          VINEXT_PARAMS_HEADER,
+          encodeURIComponent(JSON.stringify(navigationParams)),
+        );
+      }
+      // This response renders the interception, so it takes the interception's
+      // cacheability and dynamic config, not the matched target's. One that
+      // can't be static, a render known dynamic before it starts, or a
+      // draft-mode request is never cacheable, like a page's own render. In
+      // production, so is any other interception that can read the request:
+      // this response is never stored and can still reach a dynamic API as it
+      // streams. Middleware's policy still wins, merged after, as in the RSC
+      // builder.
+      const isInterceptStaticEligible =
+        options.pprRuntime !== undefined || interceptConfig?.isStaticEligible === true;
+      if (
+        !isInterceptStaticEligible ||
+        isDraftMode ||
+        isInterceptKnownDynamic ||
+        (options.isProduction && !isInterceptRequestIndependent)
+      ) {
         interceptHeaders.set("Cache-Control", resolveUncacheableCacheControl(options.isProduction));
       }
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
@@ -1306,11 +1466,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         headers: interceptHeaders,
       });
     },
-    async resolveSearchParams(sourceRoute, searchParams) {
+    async resolveSearchParams(sourceRoute, searchParams, interceptOpts) {
       await options.ensureRouteLoaded?.(sourceRoute);
-      interceptDynamicConfig = options.resolveRouteDynamicConfig?.(sourceRoute);
-      interceptDynamicConfigResolved = true;
-      return interceptDynamicConfig === "force-static" ? new URLSearchParams() : searchParams;
+      interceptConfig = resolveAppPageInterceptSegmentConfig(sourceRoute, interceptOpts);
+      return interceptConfig.dynamicConfig === "force-static"
+        ? new URLSearchParams()
+        : searchParams;
     },
     searchParams: options.searchParams,
     setNavigationContext: options.setNavigationContext,
@@ -1325,6 +1486,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const buildCurrentPageElement = () =>
     buildAppPageElement({
       buildPageElement() {
+        // Each render owns its head. A PPR fallback shell's warm-up render
+        // runs first and is discarded, so the final render's fallback must
+        // never reuse the warm-up's head promises.
+        renderedRouteHead.value = null;
         if (options.actionFailed) {
           throw options.actionError;
         }
@@ -1333,13 +1498,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           options.params,
           interceptResult.interceptOpts,
           pageSearchParams,
-          layoutParamAccess,
           {
             isForceStatic,
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
+            isUncacheableRender,
+            routeTreeOnlyPrefetchShell,
+            // An intercepted render keeps every layout its interception wraps.
+            mountedLayouts: interceptResult.interceptOpts ? null : mountedLayouts,
             serveStreamingMetadata: placeGeneratedMetadataInBody,
             placeStreamedMetadataInHead: options.renderWholeDocument === true,
+            onHeadPrepared,
           },
         );
       },
@@ -1352,6 +1521,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           specialError,
           serveStreamingMetadata,
           interceptResult.interceptOpts,
+          false,
+          undefined,
+          renderedRouteHead,
         );
       },
       resolveSpecialError: resolveAppPageSpecialError,
@@ -1378,18 +1550,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     options.cleanPathname,
     interceptResult.interceptOpts,
   );
-  const layoutClassifications = getEffectiveLayoutClassifications(
-    route,
-    options.debugClassification,
-  );
   const activeFallbackShellState = options.pprRuntime?.getState() ?? null;
   const pprFallbackShellSignal = activeFallbackShellState?.abortController.signal;
   const pprFallbackShellReactSignal = activeFallbackShellState?.reactAbortController.signal;
   const isSpeculativePrerender =
     isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
+  // Next.js's ResponseCache awaits an on-demand revalidation's writes before
+  // it answers, so `await res.revalidate()` resolves once the entry is stored.
+  const onDemandCacheWrites: Promise<void>[] | null = isOnDemandRevalidate ? [] : null;
 
-  return renderAppPageLifecycle({
+  const lifecycleOptions: Parameters<typeof renderAppPageLifecycle>[0] = {
     basePath: options.basePath,
     bypassInterceptionContextCache: options.bypassInterceptionContextCache,
     clientTraceMetadata: options.clientTraceMetadata,
@@ -1413,7 +1584,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       });
       return { element: pageBuildResult.element };
     },
-    clientReuseManifest: options.clientReuseManifest,
     getDraftModeCookieHeader,
     getFontLinks: options.getFontLinks,
     getFontPreloads: options.getFontPreloads,
@@ -1456,11 +1626,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     interceptionContext: options.interceptionContext,
     interceptionId,
     expireSeconds: options.expireSeconds,
-    // A loading convention at tree position N wraps descendants, but not a
-    // layout co-located at N. Probing any deeper async layout before creating
-    // the RSC stream would serialize on work that its ancestor Suspense
-    // boundary is specifically meant to stream behind.
-    layoutCount: getAppPageLayoutProbeCount(route, activeLoadingTreePositions),
     loadSsrHandler: options.loadSsrHandler,
     middlewareContext: options.middlewareContext,
     navigationParams,
@@ -1473,35 +1638,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           options.pprRuntime!.beginFinalRender(activeFallbackShellState);
         }
       : undefined,
-    layoutParamAccess,
     rootParams: options.rootParams,
     peekRenderObservationState() {
       return {
         dynamicFetches: peekDynamicFetchObservations(),
         requestApis: peekRenderRequestApiUsage(),
       };
-    },
-    probeLayoutAt(layoutIndex) {
-      return options.probeLayoutAt(layoutIndex, layoutParamAccess);
-    },
-    classification: {
-      getLayoutId(index) {
-        const treePosition = route.layoutTreePositions?.[index] ?? 0;
-        return AppElementsWire.encodeLayoutId(
-          createAppPageTreePath([...route.routeSegments], treePosition),
-        );
-      },
-      buildTimeClassifications: layoutClassifications.buildTimeClassifications,
-      buildTimeReasons: layoutClassifications.buildTimeReasons,
-      debugClassification: options.debugClassification,
-      isLayoutObservationDynamic(layoutId) {
-        return isAppLayoutObservationUnsafeForStaticReuse(
-          layoutParamAccess.getLayoutObservation(layoutId),
-        );
-      },
-      async runWithIsolatedDynamicScope(fn) {
-        return runWithIsolatedDynamicUsage(fn);
-      },
     },
     dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
     revalidateSeconds: currentRevalidateSeconds,
@@ -1510,9 +1652,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     renderErrorBoundaryResponse(renderError, errorOrigin) {
       return options.renderErrorBoundaryPage(renderError, errorOrigin);
     },
-    renderLayoutSpecialError(specialError, layoutIndex) {
-      return renderLayoutSpecialError(options, specialError, layoutIndex, serveStreamingMetadata);
-    },
     renderPageSpecialError(specialError, renderOptions) {
       return renderPageSpecialError(
         options,
@@ -1520,65 +1659,271 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         serveStreamingMetadata,
         interceptResult.interceptOpts,
         renderOptions?.isCacheCandidate === true,
+        renderOptions?.caughtDocument,
+        renderedRouteHead,
       );
     },
     renderToReadableStream: options.renderToReadableStream,
-    hasCustomGlobalError: options.hasCustomGlobalError,
     prerenderToReadableStream: options.prerenderToReadableStream,
     routePattern: route.pattern,
-    runWithSuppressedHookWarning(probe) {
-      return options.runWithSuppressedHookWarning(probe);
-    },
     scriptNonce: options.scriptNonce,
     waitUntil(cachePromise) {
+      onDemandCacheWrites?.push(cachePromise);
       getRequestExecutionContext()?.waitUntil(cachePromise);
     },
-  });
+  };
+  const renderResponse = async () => {
+    const response = await renderAppPageLifecycle(lifecycleOptions);
+    // Each write reads its own branch of the render's streams, so it completes
+    // while the response's branch stays unread.
+    if (onDemandCacheWrites) await Promise.all(onDemandCacheWrites);
+    return response;
+  };
+  // Concurrent on-demand revalidations of one stored entry share a single
+  // render, as Next.js batches ResponseCache work by its key and
+  // isOnDemandRevalidate. A mounted-slots RSC variant is never stored.
+  if (
+    isOnDemandRevalidate &&
+    isStoredRender &&
+    isStaticEligible &&
+    !(options.isRscRequest && options.mountedSlotsHeader)
+  ) {
+    const cacheKey = options.isRscRequest
+      ? options.isrRscKey(
+          options.cleanPathname,
+          null,
+          options.renderMode,
+          options.interceptionContext,
+          interceptionId,
+        )
+      : options.isrHtmlKey(options.cleanPathname);
+    return coalesceOnDemandResponse(
+      `${options.request.method}:${cacheKey}`,
+      options.request.method,
+      renderResponse,
+    );
+  }
+  return renderResponse();
 }
 
-async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
+/** One render's head, once it prepares one, and how that render resolves it. */
+type RouteHeadRef = Omit<AppPageFallbackRouteHead, "prepared"> & {
+  value: AppPagePreparedRouteHead | null;
+};
+
+/**
+ * A signal the route's own render threw keeps the route's head, reusing the
+ * one that render prepared. A progressive server action's signal doesn't:
+ * Next.js answers it with a not-found tree in place of the page
+ * (`createNotFoundLoaderTree`), so the page's metadata never applies.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx
+ */
+function resolveFallbackRouteHead<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
-  specialError: AppPageSpecialError,
-  layoutIndex: number,
-  serveStreamingMetadata: boolean,
-): Promise<Response> {
-  return buildAppPageSpecialErrorResponse({
-    basePath: options.basePath,
-    buildRscRedirectFlightStream: (rscOptions) =>
-      buildRscRedirectFlightStream({
-        renderToReadableStream: options.renderToReadableStream,
-        digest: rscOptions.digest,
-      }),
-    clearRequestContext: options.clearRequestContext,
-    getAndClearPendingCookies,
-    serveStreamingMetadata,
-    isEdgeRuntime: options.isEdgeRuntime,
-    isRscRequest: options.isRscRequest,
-    middlewareContext: options.middlewareContext,
-    renderFallbackPage(statusCode) {
-      const parentBoundaryModule = resolveAppPageParentHttpAccessBoundaryModule({
-        layoutIndex,
-        rootForbiddenModule: options.rootForbiddenModule,
-        rootNotFoundModule: options.rootNotFoundModule,
-        rootUnauthorizedModule: options.rootUnauthorizedModule,
-        routeForbiddenModules: options.route.forbiddens,
-        routeNotFoundModules: options.route.notFounds,
-        routeUnauthorizedModules: options.route.unauthorizeds,
-        statusCode,
-      });
-      const fallbackOptions: Parameters<typeof options.renderHttpAccessFallbackPage>[1] = {
-        layouts: options.route.layouts.slice(0, layoutIndex),
-        matchedParams: options.params,
-      };
-      if (parentBoundaryModule) {
-        fallbackOptions.boundaryComponent = parentBoundaryModule.default;
-        fallbackOptions.boundaryModule = parentBoundaryModule;
+  renderedRouteHead: RouteHeadRef | null,
+): AppPageFallbackRouteHead | null {
+  if (options.actionFailed || !renderedRouteHead) return null;
+  const { value, ...render } = renderedRouteHead;
+  return { ...render, prepared: value };
+}
+
+/**
+ * The outermost layout above every loading boundary whose subtree throws the
+ * HTTP access fallback with `statusCode`. The document's shell rejected with
+ * one that a component nothing tags threw: one a layout renders, the page
+ * renders or a template. This runs only on that error path, as a layout's own
+ * component tags what it throws.
+ */
+async function findAppPageLayoutSubtreeSpecialErrorIndex<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  statusCode: number,
+  limit: number,
+): Promise<number | null> {
+  const layoutCount = Math.min(
+    limit,
+    getAppPageLayoutProbeCount(options.route, getActiveLoadingTreePositions(options.route)),
+  );
+  if (layoutCount === 0) return null;
+  // The render's own dynamic usage already decides how the fallback is stored.
+  return await runWithDetachedDynamicUsage(() =>
+    options.runWithSuppressedHookWarning(async () => {
+      for (let layoutIndex = 0; layoutIndex < layoutCount; layoutIndex++) {
+        const outcome = await runWithConnectionProbe(async () => {
+          try {
+            await options.probeLayoutAt(layoutIndex);
+            return false;
+          } catch (error) {
+            const specialError = resolveAppPageSpecialError(error);
+            return (
+              specialError?.kind === "http-access-fallback" &&
+              specialError.statusCode === statusCode
+            );
+          }
+        });
+        if (outcome.completed && outcome.result) return layoutIndex;
       }
-      return options.renderHttpAccessFallbackPage(statusCode, fallbackOptions, null);
-    },
-    request: options.request,
-    specialError,
+      return null;
+    }),
+  );
+}
+
+/**
+ * The fallback for a special error a layout threw, or a parallel slot that
+ * layout renders: the boundary above the layout catches it. With
+ * `insideLayout`, the layout re-renders around its own segment's boundary
+ * instead. Without a segment boundary, Next.js' built-in not-found,
+ * forbidden or unauthorized page renders inside the root layout, or without
+ * it when the root layout, or a slot beside it outside `insideLayout`, threw.
+ */
+function renderLayoutBoundaryFallback<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  statusCode: number,
+  layoutIndex: number,
+  fallbackOptions: {
+    headLayouts: readonly AppPageModule[];
+    insideLayout?: boolean;
+    intercept?: AppPageDispatchInterceptOptions | null;
+    isCacheCandidate?: boolean;
+    routeHead: AppPageFallbackRouteHead | null;
+  },
+): Promise<Response | null> {
+  const { route } = options;
+  const layoutTreePositions = route.layoutTreePositions ?? [];
+  const boundaryModules =
+    statusCode === 403
+      ? route.segmentForbiddens
+      : statusCode === 401
+        ? route.segmentUnauthorizeds
+        : route.segmentNotFounds;
+  const boundaryTreePositions =
+    statusCode === 403
+      ? route.segmentForbiddenTreePositions
+      : statusCode === 401
+        ? route.segmentUnauthorizedTreePositions
+        : route.segmentNotFoundTreePositions;
+  const insideLayout = fallbackOptions.insideLayout === true;
+  const ownLayoutTreePosition = layoutTreePositions[layoutIndex];
+  // Inside the layout, its own segment's boundary catches too.
+  const layoutTreePosition =
+    ownLayoutTreePosition === undefined || !insideLayout
+      ? ownLayoutTreePosition
+      : ownLayoutTreePosition + 1;
+  const renderedLayoutCount = insideLayout ? layoutIndex + 1 : layoutIndex;
+  const boundary =
+    layoutTreePosition === undefined
+      ? null
+      : resolveAppPageLayoutHttpAccessBoundary({
+          boundaryModules: boundaryModules ?? [],
+          boundaryTreePositions: boundaryTreePositions ?? [],
+          layoutTreePosition,
+        });
+  // Without a segment boundary, Next.js renders its built-in not-found,
+  // forbidden or unauthorized page.
+  const boundaryModule = boundary?.module ?? getDefaultHttpAccessFallbackModule(statusCode);
+  if (!boundaryModule) return Promise.resolve(null);
+  // The boundary replaces its segment's children, so layouts below its
+  // segment do not render around it. It never renders above the root layout.
+  const boundaryTreePosition = Math.max(
+    boundary?.treePosition ?? 0,
+    resolveAppPageRootHttpAccessBoundaryTreePosition(
+      route.routeSegments,
+      layoutTreePositions,
+      layoutTreePosition,
+    ),
+  );
+  // Next.js takes the head from the route's deepest boundary file, which
+  // can sit below the one that catches the error.
+  const headBoundary = resolveAppPageLayoutHttpAccessBoundary({
+    boundaryModules: boundaryModules ?? [],
+    boundaryTreePositions: boundaryTreePositions ?? [],
+    layoutTreePosition: Number.POSITIVE_INFINITY,
   });
+  return options.renderHttpAccessFallbackPage(
+    statusCode,
+    {
+      boundaryComponent: boundaryModule.default,
+      boundaryModule,
+      headBoundaryModule: headBoundary?.module ?? boundaryModule,
+      headLayouts: fallbackOptions.headLayouts,
+      ...(fallbackOptions.intercept ? { intercept: fallbackOptions.intercept } : {}),
+      ...(fallbackOptions.isCacheCandidate ? { isCacheCandidate: true } : {}),
+      layouts: route.layouts.filter(
+        (_, index) =>
+          index < renderedLayoutCount && (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
+      ),
+      matchedParams: options.params,
+      ...(fallbackOptions.routeHead ? { routeHead: fallbackOptions.routeHead } : {}),
+    },
+    null,
+  );
+}
+
+/**
+ * The fallback for a page's `notFound()` / `forbidden()` / `unauthorized()`.
+ * Next.js wraps each segment's children in its boundaries, with or without a
+ * layout, so the route's deepest boundary catches the signal and replaces
+ * every layout below its segment. Without one, the built-in not-found,
+ * forbidden or unauthorized page renders inside the root layout. Returns
+ * `null` for routes without segment data.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+function renderPageSegmentBoundaryFallback<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  statusCode: number,
+  intercept: AppPageDispatchInterceptOptions | null | undefined,
+  isCacheCandidate: boolean,
+  routeHead: AppPageFallbackRouteHead | null,
+): Promise<Response | null> | null {
+  const { route } = options;
+  const boundaryModules =
+    statusCode === 403
+      ? route.segmentForbiddens
+      : statusCode === 401
+        ? route.segmentUnauthorizeds
+        : route.segmentNotFounds;
+  const boundaryTreePositions =
+    statusCode === 403
+      ? route.segmentForbiddenTreePositions
+      : statusCode === 401
+        ? route.segmentUnauthorizedTreePositions
+        : route.segmentNotFoundTreePositions;
+  if (!boundaryTreePositions) return null;
+  const boundary = resolveAppPageLayoutHttpAccessBoundary({
+    boundaryModules: boundaryModules ?? [],
+    boundaryTreePositions,
+    layoutTreePosition: Number.POSITIVE_INFINITY,
+  });
+  const boundaryModule = boundary?.module ?? getDefaultHttpAccessFallbackModule(statusCode);
+  if (!boundaryModule) return Promise.resolve(null);
+  const layoutTreePositions = route.layoutTreePositions ?? [];
+  // The root segment's boundary renders inside the root layout, including a
+  // first-layer route group's layout, as Turbopack copies it into the group.
+  // No boundary renders above the root layout.
+  const boundaryTreePosition = Math.max(
+    boundary?.treePosition ?? 0,
+    resolveAppPageRootHttpAccessBoundaryTreePosition(
+      route.routeSegments,
+      layoutTreePositions,
+      Number.POSITIVE_INFINITY,
+    ),
+  );
+  return options.renderHttpAccessFallbackPage(
+    statusCode,
+    {
+      boundaryComponent: boundaryModule.default,
+      boundaryModule,
+      // Every layout on the route still contributes metadata.
+      headLayouts: route.layouts,
+      intercept,
+      ...(isCacheCandidate ? { isCacheCandidate } : {}),
+      layouts: route.layouts.filter(
+        (_, index) => (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
+      ),
+      matchedParams: options.params,
+      ...(routeHead ? { routeHead } : {}),
+    },
+    null,
+  );
 }
 
 async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
@@ -1587,7 +1932,10 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
   serveStreamingMetadata: boolean,
   intercept: AppPageDispatchInterceptOptions | null | undefined,
   isCacheCandidate = false,
+  caughtDocument?: Response,
+  renderedRouteHead: RouteHeadRef | null = null,
 ): Promise<Response> {
+  const routeHead = resolveFallbackRouteHead(options, renderedRouteHead);
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
     buildRscRedirectFlightStream: (rscOptions) =>
@@ -1601,7 +1949,66 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
     isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
-    renderFallbackPage(statusCode) {
+    async renderFallbackPage(statusCode) {
+      // Parallel slot not-found boundaries caught it in the page's own document.
+      if (caughtDocument) return caughtDocument;
+      if (specialError.kind === "http-access-fallback") {
+        // A layout's signal is caught above that layout, so the layouts above
+        // it contribute the head. One a component the layout renders threw
+        // carries no tag, so it's found among the layouts above the tagged
+        // ones, which it would be caught outside of.
+        let layoutIndex = specialError.layoutIndex ?? null;
+        if (specialError.unattributed === true) {
+          layoutIndex =
+            (await findAppPageLayoutSubtreeSpecialErrorIndex(
+              options,
+              statusCode,
+              layoutIndex ??
+                (specialError.slotLayoutIndex === undefined
+                  ? options.route.layouts.length
+                  : specialError.slotLayoutIndex + 1),
+            )) ?? layoutIndex;
+        }
+        if (layoutIndex !== null) {
+          return renderLayoutBoundaryFallback(options, statusCode, layoutIndex, {
+            headLayouts: options.route.layouts.slice(0, layoutIndex),
+            intercept,
+            isCacheCandidate,
+            routeHead,
+          });
+        }
+      }
+      // A slot's signal is caught above the layout that renders it.
+      if (
+        specialError.kind === "http-access-fallback" &&
+        specialError.slotLayoutIndex !== undefined
+      ) {
+        return renderLayoutBoundaryFallback(options, statusCode, specialError.slotLayoutIndex, {
+          // Every layout on the route still contributes metadata.
+          headLayouts: options.route.layouts,
+          // Next.js re-renders a root layout that has a named slot around the
+          // root segment's not-found, keeping the document's <html> and <body>
+          // (`isRootLayoutWithChildrenSlotAndAtLeastOneMoreSlot`). A server
+          // root layout gets that fallback for not-found only, so forbidden and
+          // unauthorized bubble above it; a client one gets all three.
+          insideLayout:
+            specialError.slotLayoutIndex === 0 &&
+            (statusCode === 404 || isAppClientReference(options.route.layouts[0]?.default)),
+          intercept,
+          isCacheCandidate,
+          routeHead,
+        });
+      }
+      const pageBoundaryFallback = renderPageSegmentBoundaryFallback(
+        options,
+        statusCode,
+        intercept,
+        isCacheCandidate,
+        routeHead,
+      );
+      if (pageBoundaryFallback) return pageBoundaryFallback;
+      // Routes without segment data resolve the boundary from the files
+      // beside each layout.
       // `forbidden()` / `unauthorized()` / `notFound()` should be caught by the
       // nearest ancestor boundary. When the page (the deepest segment) calls
       // one of these and an intermediate layout has no matching boundary file,
@@ -1638,6 +2045,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
         intercept,
         ...(isCacheCandidate ? { isCacheCandidate } : {}),
         matchedParams: options.params,
+        ...(routeHead ? { routeHead } : {}),
       };
       if (useLayoutAlignedBoundary && boundaryLayoutIndex !== null) {
         fallbackOptions.layouts = options.route.layouts.slice(0, boundaryLayoutIndex + 1);

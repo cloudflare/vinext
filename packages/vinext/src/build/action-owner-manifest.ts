@@ -17,6 +17,9 @@ type ActionOwnerRoute = Pick<
   | "pagePath"
   | "parallelSlots"
   | "pattern"
+  | "segmentForbiddenPaths"
+  | "segmentNotFoundPaths"
+  | "segmentUnauthorizedPaths"
   | "siblingIntercepts"
   | "templates"
   | "unauthorizedPath"
@@ -54,6 +57,9 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
     ...(route.forbiddenPaths ?? []),
     route.unauthorizedPath,
     ...(route.unauthorizedPaths ?? []),
+    ...(route.segmentNotFoundPaths ?? []),
+    ...(route.segmentForbiddenPaths ?? []),
+    ...(route.segmentUnauthorizedPaths ?? []),
     ...route.parallelSlots.flatMap((slot) => [
       slot.pagePath,
       slot.defaultPath,
@@ -62,12 +68,20 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
       slot.loadingPath,
       ...(slot.loadingPaths ?? []),
       slot.errorPath,
+      ...(slot.errorPaths ?? []),
       slot.notFoundPath,
+      ...(slot.notFoundPaths ?? []),
       ...slot.interceptingRoutes.flatMap((intercept) => [
         intercept.pagePath,
         ...intercept.layoutPaths,
         ...(intercept.loadingPaths ?? []),
         intercept.notFoundPath,
+        intercept.forbiddenPath,
+        intercept.unauthorizedPath,
+        ...(intercept.notFoundPaths ?? []),
+        ...(intercept.forbiddenPaths ?? []),
+        ...(intercept.unauthorizedPaths ?? []),
+        ...(intercept.errorPaths ?? []),
       ]),
     ]),
     ...route.siblingIntercepts.flatMap((intercept) => [
@@ -75,6 +89,12 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
       ...intercept.layoutPaths,
       ...(intercept.loadingPaths ?? []),
       intercept.notFoundPath,
+      intercept.forbiddenPath,
+      intercept.unauthorizedPath,
+      ...(intercept.notFoundPaths ?? []),
+      ...(intercept.forbiddenPaths ?? []),
+      ...(intercept.unauthorizedPaths ?? []),
+      ...(intercept.errorPaths ?? []),
     ]),
   ].filter((value): value is string => typeof value === "string");
 }

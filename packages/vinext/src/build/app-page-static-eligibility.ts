@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "pathslash";
 import type { AppRoute } from "../routing/app-router.js";
 import {
   collectAppPageStaticGenerationRuntimes,
@@ -15,22 +16,12 @@ import {
 } from "./report.js";
 
 /**
- * Whether Next.js classifies an App page route as static or SSG, read from its
- * layout, page and parallel-slot sources with the helpers dispatch applies to
- * the loaded modules. Only such a route has listed paths.
- *
- * An MDX source read without the MDX parser has unknown exports, so its route
- * is "unreadable". Its paths are still listed: the built runtime reads the real
- * exports and never stores a route that isn't static, while an unlisted path's
- * render failure would be dropped instead of failing. But no probe renders an
- * unreadable route's fallback, so it never certifies one.
+ * Read the segment config exports of App layout and page sources. A source MDX
+ * without the MDX parser leaves the reader "unreadable".
  */
-export function classifyAppPageRouteStaticEligibility(
-  route: AppRoute,
-  readMdxEsm: ((source: string) => string) | null,
-): "eligible" | "ineligible" | "unreadable" {
+function createSegmentConfigReader(readMdxEsm: ((source: string) => string) | null) {
   let unreadable = false;
-  const readSegmentConfig = (filePath: string | null | undefined) => {
+  const read = (filePath: string | null | undefined) => {
     if (!filePath) return null;
     let code = fs.readFileSync(filePath, "utf8");
     if (filePath.toLowerCase().endsWith(".mdx")) {
@@ -55,6 +46,25 @@ export function classifyAppPageRouteStaticEligibility(
       ...(runtime === null ? {} : { runtime }),
     };
   };
+  return { isUnreadable: () => unreadable, read };
+}
+
+/**
+ * Whether Next.js classifies an App page route as static or SSG, read from its
+ * layout, page and parallel-slot sources with the helpers dispatch applies to
+ * the loaded modules. Only such a route has listed paths.
+ *
+ * An MDX source read without the MDX parser has unknown exports, so its route
+ * is "unreadable". Its paths are still listed: the built runtime reads the real
+ * exports and never stores a route that isn't static, while an unlisted path's
+ * render failure would be dropped instead of failing. But no probe renders an
+ * unreadable route's fallback, so it never certifies one.
+ */
+export function classifyAppPageRouteStaticEligibility(
+  route: AppRoute,
+  readMdxEsm: ((source: string) => string) | null,
+): "eligible" | "ineligible" | "unreadable" {
+  const { isUnreadable, read: readSegmentConfig } = createSegmentConfigReader(readMdxEsm);
   const layouts = route.layouts.map(readSegmentConfig);
   const page = readSegmentConfig(route.pagePath);
   const parallelBranches = route.parallelSlots.map((slot) => ({
@@ -67,7 +77,7 @@ export function classifyAppPageRouteStaticEligibility(
     page: readSegmentConfig(slot.pagePath ?? slot.defaultPath),
     routeSegments: slot.routeSegments,
   }));
-  if (unreadable) return "unreadable";
+  if (isUnreadable()) return "unreadable";
   const segmentConfig = resolveAppPageSegmentConfig({
     layouts,
     layoutTreePositions: route.layoutTreePositions,
@@ -101,4 +111,73 @@ export function classifyAppPageRouteStaticEligibility(
     revalidateSeconds: segmentConfig.revalidateSeconds,
   });
   return eligible ? "eligible" : "ineligible";
+}
+
+/**
+ * Whether the route's segment config rules out static generation, so Next.js
+ * renders it on every request. An "unreadable" route or a source that can't be
+ * read counts as not dynamic.
+ */
+export function isAppPageRouteRenderedDynamically(
+  route: AppRoute,
+  readMdxEsm: ((source: string) => string) | null,
+): boolean {
+  try {
+    return classifyAppPageRouteStaticEligibility(route, readMdxEsm) === "ineligible";
+  } catch {
+    return false;
+  }
+}
+
+type AppRouteIntercept = AppRoute["siblingIntercepts"][number];
+
+const INTERCEPTION_MARKER_RE = /^(?:\(\.\.\.\)|\(\.\.\)\(\.\.\)|\(\.\.\)|\(\.\))/;
+
+/**
+ * Whether Next.js renders an intercepted page on every request. Next.js builds
+ * the intercepting page as its own route (`/feed/(.)photos/[id]`): the
+ * layouts of every folder from `app/` down to the intercepting page, then the
+ * page. `layoutPaths` are the candidate layouts; those outside the page's
+ * folder chain are ignored. An unreadable source counts as not dynamic.
+ */
+export function isAppInterceptRenderedDynamically(
+  intercept: AppRouteIntercept,
+  layoutPaths: readonly string[],
+  readMdxEsm: ((source: string) => string) | null,
+): boolean {
+  if (!intercept.sourcePageSegments) return false;
+  // The marker isn't part of the segment: `(.)[slug]` is the dynamic `[slug]`.
+  const routeSegments = intercept.sourcePageSegments.map((segment) =>
+    segment.replace(INTERCEPTION_MARKER_RE, ""),
+  );
+  try {
+    const pageDir = path.dirname(intercept.pagePath);
+    const layoutsByPosition = new Map<number, string>();
+    for (const layoutPath of layoutPaths) {
+      const relative = path.relative(path.dirname(layoutPath), pageDir);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
+      const depthBelowLayout = relative.split("/").filter(Boolean).length;
+      layoutsByPosition.set(routeSegments.length - depthBelowLayout, layoutPath);
+    }
+    const layoutTreePositions = [...layoutsByPosition.keys()].sort((a, b) => a - b);
+    const { isUnreadable, read } = createSegmentConfigReader(readMdxEsm);
+    const layouts = layoutTreePositions.map((position) => read(layoutsByPosition.get(position)));
+    const page = read(intercept.pagePath);
+    if (isUnreadable()) return false;
+    const tree = { layouts, layoutTreePositions, page, routeSegments };
+    const segmentConfig = resolveAppPageSegmentConfig(tree);
+    return !isAppPageStaticEligible({
+      dynamicConfig: segmentConfig.dynamicConfig,
+      hasGenerateStaticParams: hasAppPageGenerateStaticParamsAtLastDynamicSegment(tree),
+      isDynamicRoute: routeSegments.some(
+        (segment) => segment.startsWith("[") && segment.endsWith("]"),
+      ),
+      isStaticGenerationEdgeRuntime: isEdgeRuntime(
+        resolveAppPageStaticGenerationRuntime(collectAppPageStaticGenerationRuntimes(tree)),
+      ),
+      revalidateSeconds: segmentConfig.revalidateSeconds,
+    });
+  } catch {
+    return false;
+  }
 }

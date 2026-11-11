@@ -8,8 +8,8 @@
 import { detectPackageManager, findDir, findViteConfigPath } from "./utils/project.js";
 import { normalizePageExtensions } from "./routing/file-matcher.js";
 import { POSTCSS_CONFIG_FILES } from "./plugins/postcss.js";
-import { unwrapExpression } from "./plugins/ast-utils.js";
-import { parseAst, type ESTree } from "vite";
+import { parseProgram, unwrapExpression } from "./plugins/ast-utils.js";
+import type { ESTree } from "vite";
 import fs from "node:fs";
 import ignore, { type Ignore } from "ignore";
 import path from "pathslash";
@@ -217,7 +217,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   images: {
     status: "partial",
     detail:
-      "remotePatterns, deviceSizes/imageSizes, qualities and SVG/CSP options honoured; resizing needs an optimizer via vinext({ images: { optimizer } }), images are served as-is otherwise; loader/loaderFile are ignored",
+      "remotePatterns, deviceSizes/imageSizes, qualities, localPatterns (production only) and SVG/CSP options honoured; resizing needs an optimizer via vinext({ images: { optimizer } }), images are served as-is otherwise; loader/loaderFile are ignored",
   },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
   output: {
@@ -263,13 +263,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "unsupported",
     detail: "ignored; configure cache adapters with vinext({ cache }) in vite.config",
   },
-  cacheLife: {
-    status: "unsupported",
-    detail: "custom cacheLife profiles are ignored; only the built-in profiles are available",
-  },
+  cacheLife: { status: "supported" },
   "experimental.cacheLife": {
-    status: "unsupported",
-    detail: "custom cacheLife profiles are ignored; only the built-in profiles are available",
+    status: "supported",
+    detail: "legacy alias of cacheLife",
   },
   skipTrailingSlashRedirect: { status: "supported" },
   "experimental.skipTrailingSlashRedirect": {
@@ -346,6 +343,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   cacheComponents: {
     status: "partial",
     detail: "experimental support; behavior is incomplete",
+  },
+  "experimental.cacheComponents": {
+    status: "partial",
+    detail: "legacy alias of cacheComponents; experimental support, behavior is incomplete",
   },
   "experimental.ppr": {
     status: "unsupported",
@@ -465,9 +466,9 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail: "renders client-side; by default events are only collected when deployed on Vercel",
   },
   "next-intl": {
-    status: "partial",
+    status: "supported",
     detail:
-      'auto-detected from (src/)i18n/request.{ts,tsx,js,jsx}, so createNextIntlPlugin isn\'t needed; client components can fail with "No intl context found" (cloudflare/vinext#177)',
+      "createNextIntlPlugin is only optional with the request config at (src/)i18n/request.*; its experimental extract option doesn't work (it needs a webpack/Turbopack loader)",
   },
   "@clerk/nextjs": {
     status: "supported",
@@ -926,7 +927,7 @@ function propertyKeyName(prop: ESTree.ObjectExpression["properties"][number]): s
  * object — top-level keys plus, for each object-valued property, its child keys
  * (used for dot-notation options like `experimental.ppr`).
  *
- * Uses Vite's `parseAst` (the bundled oxc parser) instead of scanning text, so
+ * Uses Vite's bundled oxc parser instead of scanning text, so
  * comments, string values, and other non-key mentions of an option name are
  * never mistaken for a real config option. Returns empty sets if the file cannot
  * be parsed — the check is advisory, so a parse failure simply reports nothing.
@@ -940,7 +941,7 @@ function collectConfigKeys(source: string): ConfigKeys {
   try {
     // Parse as TS (a superset of JS) so `.ts` configs with type annotations,
     // `as`, and `satisfies` parse the same as `.js`/`.mjs`.
-    program = parseAst(source, { lang: "ts" });
+    program = parseProgram(source, { lang: "ts" });
   } catch {
     return { top, nested };
   }
@@ -1183,7 +1184,7 @@ function isNextConfigWithCjsGlobals(rel: string, content: string): boolean {
   if (/^next\.config\.(?:ts|mts|cjs)$/.test(rel)) return true;
   if (rel !== "next.config.js") return false;
   try {
-    return !parseAst(content).body.some(
+    return !parseProgram(content).body.some(
       (node) => node.type === "ImportDeclaration" || node.type.startsWith("Export"),
     );
   } catch {
@@ -1199,7 +1200,7 @@ function isNextConfigWithCjsGlobals(rel: string, content: string): boolean {
 function exportsPostcssPluginsOnlyObject(content: string): boolean {
   let program: ESTree.Program;
   try {
-    program = parseAst(content, { lang: "ts" });
+    program = parseProgram(content, { lang: "ts" });
   } catch {
     return false;
   }

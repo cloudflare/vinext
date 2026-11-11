@@ -137,16 +137,21 @@ files to `.cjs`) when an unambiguous default Vite config requires the ESM migrat
 `"type": "commonjs"` is never changed. Direct `vite dev` and `vite build` do not perform these
 wrapper compatibility steps.
 
-`@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--warm-cache`, `--traffic-aware-warm-cache`.
+`@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>` (Wrangler config projects only), `--vite-config <path>`, `--skip-build`, `--dry-run`, `--warm-cache`, `--traffic-aware-warm-cache`.
 
 `vinext init` prompts for a deployment target, defaulting to Cloudflare. Agents must ask the
 user which target they want, then pass `--platform=cloudflare` or `--platform=node`.
+For Cloudflare, agents and CI must also pass `--cdn-cache`, `--data-cache`, and
+`--image-optimization`; see
+[Run init without prompts](https://vinext.dev/docs/deploying/cloudflare#run-init-without-prompts).
 
 Other options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
 Cloudflare init uses `cf` and `cloudflare.config.ts` by default. Both `vinext init`
 and `create-vinext-app` accept `--legacy-wrangler-cloudflare-init` to retain the
 legacy Wrangler setup. Existing Wrangler configs are not automatically migrated.
+If a root Wrangler config belongs to another Worker, `vinext init --ignore-wrangler-config`
+sets up `cloudflare.config.ts` and leaves that file untouched.
 `vinext init --name <name>` sets the Worker name in the generated config instead of
 deriving it from `package.json`. An existing config keeps its own Worker name, and init
 prints a warning.
@@ -232,6 +237,8 @@ The migration is non-destructive -- your existing Next.js setup continues to wor
 
 vinext targets Vite 8, which defaults to Rolldown, Oxc, Lightning CSS, and a newer browser baseline. If you bring custom Vite config or plugins from an older setup, prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` over older `esbuild` and `build.rollupOptions` knobs, and override `build.target` if you still need older browsers. If a dependency breaks because of stricter CommonJS default import handling, fix the import or use `legacy.inconsistentCjsInterop: true` as a temporary escape hatch. See the [Vite 8 migration guide](https://vite.dev/guide/migration).
 
+Production client JS, Web Worker and CSS files use hash-only file names (by default `_next/static/chunks/[hash].js`, `_next/static/workers/<module-id>-[hash].js` and `_next/static/css/[hash].css`) so component and source file names don't appear in public asset URLs. Web Worker file names are fixed. To use different client JS and CSS names, set `entryFileNames`, `chunkFileNames` or `assetFileNames` in `build.rolldownOptions.output` (or `environments.client.build.rolldownOptions.output`), keeping them under the client assets directory: `_next/static/` by default, or `<prefix>/_next/static/` with a path-based `assetPrefix` such as `/cdn` (e.g. `chunkFileNames: "cdn/_next/static/chunks/[name]-[hash].js"`).
+
 ```bash
 npm run dev:vinext    # Start the vinext dev server (port 3001)
 npm run build:vinext  # Build production output with vinext
@@ -276,7 +283,7 @@ No. vinext is an alternative implementation of the Next.js API surface built on 
 No. vinext ships fallback declarations for the supported `next` and `next/*` APIs, so applications can run and type-check without the `next` package. If both packages are installed, vinext keeps using Next.js's authoritative types and adds only its own extensions. Compatibility features that consume Next.js internals, such as `styled-jsx`, may still require a matching Next.js installation when used.
 
 **How is this different from OpenNext?**
-[OpenNext](https://opennext.js.org/) adapts the _output_ of a standard `next build` to run on various platforms. Because it builds on Next.js's own output, it inherits broad API coverage and has been well-tested for much longer. vinext takes a different approach: it reimplements the Next.js APIs on Vite from scratch, which means faster builds and smaller bundles, but less coverage of the long tail of Next.js features. If you need a mature, well-tested way to run Next.js outside Vercel, OpenNext is the safer choice. If you want a lighter Vite-based toolchain and do not need every Next.js API, vinext may be a good fit.
+[OpenNext](https://opennext.js.org/) adapts the _output_ of a standard `next build` to run on various platforms. Because it builds on Next.js's own output, it inherits broad API coverage and has been well-tested for much longer. vinext takes a different approach: it reimplements the Next.js APIs on Vite from scratch, which means faster builds and smaller bundles, but less coverage of the long tail of Next.js features. If you need a mature, well-tested way to run Next.js outside Vercel, OpenNext is the safer choice. If you want a lighter Vite-based toolchain and do not need every Next.js API, vinext may be a good fit. To move an OpenNext app on Cloudflare Workers to vinext, see [Migrate from OpenNext](docs/getting-started/migrating-from-opennext.mdx).
 
 **Can I use this in production?**
 You can, with caution. vinext has known compatibility gaps and has not yet been battle-tested across the full range of production Next.js workloads. Evaluate the features and deployment target your application relies on before adopting it.
@@ -352,13 +359,16 @@ pnpm run deploy:vinext
 
 For `create-vinext-app` projects, use `build` and `deploy` instead of `build:vinext` and `deploy:vinext`. Redeploy the Response Store only when its package or config changes; normal application deployments do not deploy auxiliary Workers.
 
+To deploy from a connected Git repository, replace the default Wrangler commands in Workers Builds; see [Deploy with Workers Builds](https://vinext.dev/docs/deploying/cloudflare#deploy-with-workers-builds).
+
 The init command also auto-detects and fixes common migration issues:
 
 - Adds `"type": "module"` to package.json if missing
 - Resolves tsconfig.json path aliases automatically with Vite's native resolver
 - Detects MDX usage and configures `@mdx-js/rollup`
 - Renames CJS config files (postcss.config.js, etc.) to `.cjs` when needed
-- Detects native Node.js modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas) and auto-stubs them for Workers. If you encounter others that need stubbing, PRs are welcome.
+
+vinext does not stub native Node.js modules such as `sharp`, `@resvg/resvg-js` or `@napi-rs/canvas`. Workers cannot load Node-API addons, so importing one into Worker code fails the build or the request. If a dependency imports one on a code path that never runs on Workers, alias it to a module of your own with `resolve.alias` in `vite.config.ts`. Configs generated by earlier versions of `vinext init` may contain `resolve.alias` entries pointing at `empty-stub.js`, a file init never created; delete them.
 
 Both App Router and Pages Router work on Workers with full client-side hydration.
 
@@ -654,38 +664,39 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 
 ### Server features
 
-| Feature                                    |     | Notes                                                                                       |
-| ------------------------------------------ | --- | ------------------------------------------------------------------------------------------- |
-| SSR (Pages Router)                         | ✅  | Streaming, `_app`/`_document`, `__NEXT_DATA__`, hydration                                   |
-| SSR (App Router)                           | ✅  | RSC pipeline, nested layouts, streaming, nav context for client components                  |
-| `getStaticProps`                           | ✅  | Props, redirect, notFound, revalidate                                                       |
-| `getStaticPaths`                           | ✅  | `fallback: false`, `true`, `"blocking"`                                                     |
-| `getServerSideProps`                       | ✅  | Full context including locale                                                               |
-| ISR                                        | ✅  | Stale-while-revalidate, pluggable `CacheHandler`, background regeneration                   |
-| Server Actions (`"use server"`)            | ✅  | Action execution, FormData, re-render after mutation, `redirect()` in actions               |
-| React Server Components                    | ✅  | Via `@vitejs/plugin-rsc`. `"use client"` boundaries work correctly                          |
-| Streaming SSR                              | ✅  | Both routers                                                                                |
-| Metadata API                               | ✅  | `metadata`, `generateMetadata`, `viewport`, `generateViewport`, title templates             |
-| `generateStaticParams`                     | ✅  | With `dynamicParams` enforcement                                                            |
-| Metadata file routes                       | ✅  | sitemap.xml, robots.txt, manifest, favicon, OG images (static + dynamic)                    |
-| Static export (`output: 'export'`)         | ✅  | Generates static HTML/JSON for all routes                                                   |
-| Standalone output (`output: 'standalone'`) | ✅  | Generates `dist/standalone` with `server.js`, build artifacts, and runtime deps             |
-| `connection()`                             | ✅  | Forces dynamic rendering                                                                    |
-| `"use cache"` directive                    | ✅  | File-level and function-level. `cacheLife()` profiles, `cacheTag()`, stale-while-revalidate |
-| `instrumentation.ts`                       | ✅  | `register()`, `onRequestError()`, and [framework tracing](docs/tracing.mdx)                 |
-| Route segment config                       | 🟡  | `revalidate`, `dynamic`, `dynamicParams`, `runtime` (not placement). No `preferredRegion`   |
+| Feature                                    |     | Notes                                                                                                                                                                      |
+| ------------------------------------------ | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SSR (Pages Router)                         | ✅  | Streaming, `_app`/`_document`, `__NEXT_DATA__`, hydration                                                                                                                  |
+| SSR (App Router)                           | ✅  | RSC pipeline, nested layouts, streaming, nav context for client components                                                                                                 |
+| `getStaticProps`                           | ✅  | Props, redirect, notFound, revalidate                                                                                                                                      |
+| `getStaticPaths`                           | ✅  | `fallback: false`, `true`, `"blocking"`                                                                                                                                    |
+| `getServerSideProps`                       | ✅  | Full context including locale                                                                                                                                              |
+| ISR                                        | ✅  | Stale-while-revalidate, pluggable `CacheHandler`, background regeneration                                                                                                  |
+| Server Actions (`"use server"`)            | ✅  | Action execution, FormData, re-render after mutation, `redirect()` in actions                                                                                              |
+| React Server Components                    | ✅  | Via `@vitejs/plugin-rsc`. `"use client"` boundaries work correctly                                                                                                         |
+| Streaming SSR                              | ✅  | Both routers                                                                                                                                                               |
+| Metadata API                               | ✅  | `metadata`, `generateMetadata`, `viewport`, `generateViewport`, title templates                                                                                            |
+| `generateStaticParams`                     | ✅  | With `dynamicParams` enforcement                                                                                                                                           |
+| Metadata file routes                       | ✅  | sitemap.xml, robots.txt, manifest, favicon, OG images (static + dynamic)                                                                                                   |
+| Static export (`output: 'export'`)         | ✅  | Generates static HTML/JSON for all routes                                                                                                                                  |
+| Standalone output (`output: 'standalone'`) | ✅  | Generates `dist/standalone` with `server.js`, build artifacts, and runtime deps                                                                                            |
+| `connection()`                             | ✅  | Forces dynamic rendering                                                                                                                                                   |
+| `"use cache"` directive                    | ✅  | File-level and function-level. `cacheLife()` with built-in and next.config `cacheLife` (or legacy `experimental.cacheLife`) profiles, `cacheTag()`, stale-while-revalidate |
+| `instrumentation.ts`                       | ✅  | `register()`, `onRequestError()`, and [framework tracing](docs/tracing.mdx)                                                                                                |
+| Route segment config                       | 🟡  | `revalidate`, `dynamic`, `dynamicParams`, `runtime` (not placement). No `preferredRegion`                                                                                  |
 
 ### Configuration
 
-| Feature                                          |     | Notes                                                                                                                                                                                                                  |
-| ------------------------------------------------ | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `next.config.js` / `.ts` / `.mjs`                | ✅  | Function configs, phase argument                                                                                                                                                                                       |
-| `rewrites` / `redirects` / `headers`             | ✅  | All phases, param interpolation                                                                                                                                                                                        |
-| Environment variables (`.env*`, `NEXT_PUBLIC_*`) | ✅  | Auto-loads Next.js-style dotenv files; only public vars are inlined                                                                                                                                                    |
-| `images` config                                  | 🟡  | Parsed but not used for optimization                                                                                                                                                                                   |
-| `experimental.optimizePackageImports`            | ✅  | Rewrites barrel imports to direct sub-module imports in RSC/SSR environments. A default set (lucide-react, date-fns, radix-ui, antd, MUI, and others) are always optimized. Add package names here to extend the list. |
-| `vinext({ nextConfig })`                         | ✅  | Inline Next-style config from `vite.config.*`. Supports object-form and function-form config. When provided, this overrides root `next.config.*`.                                                                      |
-| `vinext({ react: { compiler: true } })`          | ✅  | React Compiler auto memoization. Needs `@vitejs/plugin-react` 6.1+ and the optional `oxc-transform-react` package.                                                                                                     |
+| Feature                                          |     | Notes                                                                                                                                                                                                                                                    |
+| ------------------------------------------------ | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `next.config.js` / `.ts` / `.mjs`                | ✅  | Function configs, phase argument                                                                                                                                                                                                                         |
+| `rewrites` / `redirects` / `headers`             | ✅  | All phases, param interpolation. A source Next.js rejects fails config loading, as it fails the Next.js build: missing, not starting with `/`, over the 4,096-character built-regex limit, or rejected by path-to-regexp, such as a header glob `/api/*` |
+| Environment variables (`.env*`, `NEXT_PUBLIC_*`) | ✅  | Auto-loads Next.js-style dotenv files; only public vars are inlined                                                                                                                                                                                      |
+| `images` config                                  | 🟡  | Parsed but not used for optimization; the production image endpoint enforces `localPatterns` (dev serves any local source)                                                                                                                               |
+| `experimental.optimizePackageImports`            | ✅  | Rewrites barrel imports to direct sub-module imports in RSC/SSR environments. A default set (lucide-react, date-fns, radix-ui, antd, MUI, and others) are always optimized. Add package names here to extend the list.                                   |
+| `vinext({ nextConfig })`                         | ✅  | Inline Next-style config from `vite.config.*`. Supports object-form and function-form config. When provided, this overrides root `next.config.*`.                                                                                                        |
+| `vinext({ react: { compiler: true } })`          | ✅  | React Compiler auto memoization. Needs `@vitejs/plugin-react` 6.1+ and the optional `oxc-transform-react` package.                                                                                                                                       |
+| `vinext({ disableNextLikeChunking: true })`      | ✅  | Loads each client component from its own chunk, instead of one chunk per route group (Next.js-like; App Router production builds). Grouping also turns off on its own when the client build has other chunk groups.                                      |
 
 ### React Compiler
 
@@ -1048,7 +1059,7 @@ Or add it to your `package.json` as a file dependency:
 }
 ```
 
-vinext has peer dependencies on `react ^19.2.6`, `react-dom ^19.2.6`, `react-server-dom-webpack ^19.2.6`, and `vite ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
+vinext has peer dependencies on `react ^19.3.1`, `react-dom ^19.3.1`, `react-server-dom-webpack ^19.3.1`, and `vite ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
 
 ## Contributing
 

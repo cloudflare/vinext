@@ -20,3 +20,5 @@ vinext additions beyond the upstream suite:
 - `app/server-action/`, `app/server-action-worker.ts`, and `app/server-action.ts` check that a
   worker importing a `"use server"` module receives Server Function references (as Next.js
   compiles it) instead of the module body.
+- `app/use-cache/`, `app/use-cache-worker.ts`, and `app/use-cache.ts` check the same for a worker
+  importing a `"use cache"` module.

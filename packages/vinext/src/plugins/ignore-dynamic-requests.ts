@@ -1,13 +1,14 @@
 import path from "pathslash";
 import { fileURLToPath } from "node:url";
 import MagicString from "magic-string";
-import { parseAst, type ESTree, type Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
 import {
   collectBindingNames,
   DYNAMIC_IMPORT_PRESCAN,
   forEachAstChild,
   isIdentifierNamed,
   mayContainDynamicImport,
+  parseProgram,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   stringLiteralValue,
@@ -785,9 +786,9 @@ function transformVeryDynamicRequests(code: string, id: string) {
   if (!mayContainVeryDynamicRequest(code)) return null;
 
   const lang = scriptParserLanguage(id) ?? "js";
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code, { lang });
+    ast = parseProgram(code, { lang });
   } catch {
     return null;
   }

@@ -10,7 +10,7 @@ export type AppRouterScrollIntent = Readonly<{
   parallelSlotOwned: boolean;
 }>;
 
-// A scroll intent is staged by `navigateClientSide` (next/navigation) before an
+// A scroll intent is staged by `navigateClientSide` (app-router-navigation.ts) before an
 // RSC navigation and consumed by the committed `AppRouterScrollTarget`. Both run
 // in the browser, but next/navigation and this module can be loaded through
 // separate Vite module instances (see the Symbol.for navigation state in

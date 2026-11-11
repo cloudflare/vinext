@@ -63,7 +63,10 @@ test.describe("Pages Router conditional data export on Cloudflare Workers", () =
 
     const sources = await crawlPublicJavaScript(request, html);
     // Guard against a crawl that silently stops before the page's own chunk.
-    expect([...sources.keys()].some((url) => url.includes("conditional-data-export"))).toBe(true);
+    // Client file names are hash-only, so identify the page by its UI text.
+    expect([...sources.values()].some((source) => source.includes("Conditional data export"))).toBe(
+      true,
+    );
     for (const [url, source] of sources) {
       expect(source, url).not.toContain(SIGNING_KEY);
       expect(source, url).not.toContain("getServerSideProps");
@@ -94,7 +97,9 @@ test.describe("Pages Router data export importing server-only on Cloudflare Work
     expect(html).not.toContain(TOKEN);
 
     const sources = await crawlPublicJavaScript(request, html);
-    expect([...sources.keys()].some((url) => url.includes("server-only-data-export"))).toBe(true);
+    expect([...sources.values()].some((source) => source.includes("Server-only data export"))).toBe(
+      true,
+    );
     for (const [url, source] of sources) {
       expect(source, url).not.toContain(TOKEN);
     }

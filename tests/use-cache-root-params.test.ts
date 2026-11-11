@@ -1,11 +1,13 @@
 import { createElement } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 vi.mock("@vitejs/plugin-rsc/react/rsc", () => {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
-  async function materialize(value: unknown): Promise<unknown> {
+  async function materialize(input: unknown): Promise<unknown> {
+    // Like React Flight, resolve a thenable before serializing what it holds.
+    const value = await input;
     if (Array.isArray(value)) return Promise.all(value.map(materialize));
     if (!value || typeof value !== "object") return value;
 

@@ -14,6 +14,7 @@ import {
   resolveNextConfig,
   type ResolvedNextConfig,
 } from "../packages/vinext/src/config/next-config.js";
+import { parseCacheLifeProfiles } from "../packages/vinext/src/utils/cache-life-profiles.js";
 import {
   PHASE_PRODUCTION_BUILD,
   PHASE_DEVELOPMENT_SERVER,
@@ -251,6 +252,32 @@ describe("deprecated config warnings", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("moves the legacy experimental.cacheComponents over the top-level key", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      resolveNextConfig({ experimental: { cacheComponents: true } as never }),
+    ).resolves.toMatchObject({ cacheComponents: true });
+    await expect(
+      resolveNextConfig({
+        cacheComponents: true,
+        experimental: { cacheComponents: false } as never,
+      }),
+    ).resolves.toMatchObject({ cacheComponents: false });
+    for (const legacy of [undefined, null]) {
+      await expect(
+        resolveNextConfig({
+          cacheComponents: true,
+          experimental: { cacheComponents: legacy } as never,
+        }),
+      ).resolves.toMatchObject({ cacheComponents: true });
+    }
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "`experimental.cacheComponents` has been moved to `cacheComponents`. Please update your next.config.js file accordingly.",
+    ]);
   });
 
   it("resolves both URL-normalization option names", async () => {
@@ -1204,6 +1231,104 @@ describe("resolveNextConfig image patterns", () => {
     expect(JSON.parse(JSON.stringify(config.images?.remotePatterns))).toEqual(
       config.images?.remotePatterns,
     );
+  });
+
+  // Mirrors Next.js server/config.ts: statically imported images stay allowed
+  // whatever `images.localPatterns` lists, and an unset list is left for the
+  // image endpoint's default.
+  it("appends the static-import pattern to configured local patterns", async () => {
+    const config = await resolveNextConfig(
+      { images: { localPatterns: [{ pathname: "/photos/**", search: "" }] } },
+      "/tmp/project",
+    );
+    expect(config.images?.localPatterns).toEqual([
+      { pathname: "/photos/**", search: "" },
+      { pathname: "/_next/static/media/**", search: "" },
+    ]);
+
+    const listed = await resolveNextConfig(
+      { images: { localPatterns: [{ pathname: "/_next/static/media/**", search: "" }] } },
+      "/tmp/project",
+    );
+    expect(listed.images?.localPatterns).toEqual([
+      { pathname: "/_next/static/media/**", search: "" },
+    ]);
+
+    const empty = await resolveNextConfig({ images: { localPatterns: [] } }, "/tmp/project");
+    expect(empty.images?.localPatterns).toEqual([
+      { pathname: "/_next/static/media/**", search: "" },
+    ]);
+  });
+
+  it("reads local pattern fields from any object Next.js's schema accepts", async () => {
+    // Next.js's zod schema reads fields by property access, so class
+    // instances and inherited fields count.
+    class Pattern {
+      pathname = "/photos/**";
+      search = "";
+    }
+    const inherited = Object.create({ pathname: "/inherited/**" }) as object;
+    const config = await resolveNextConfig(
+      { images: { localPatterns: [new Pattern(), inherited] as never } },
+      "/tmp/project",
+    );
+    expect(config.images?.localPatterns).toEqual([
+      { pathname: "/photos/**", search: "" },
+      { pathname: "/inherited/**" },
+      { pathname: "/_next/static/media/**", search: "" },
+    ]);
+  });
+
+  it("leaves unset local patterns unset", async () => {
+    const config = await resolveNextConfig({ images: { qualities: [75] } }, "/tmp/project");
+    expect(config.images?.localPatterns).toBeUndefined();
+  });
+
+  it("rejects local patterns that are not an array", async () => {
+    await expect(
+      resolveNextConfig(
+        { images: { localPatterns: { pathname: "/photos/**" } as never } },
+        "/tmp/project",
+      ),
+    ).rejects.toThrow("Specified images.localPatterns should be an Array received object.");
+    for (const [value, type] of [
+      [null, "null"],
+      [false, "boolean"],
+      ["", "string"],
+    ] as const) {
+      await expect(
+        resolveNextConfig({ images: { localPatterns: value as never } }, "/tmp/project"),
+      ).rejects.toThrow(`Specified images.localPatterns should be an Array received ${type}.`);
+    }
+  });
+
+  it("rejects malformed local pattern entries instead of allowing every source", async () => {
+    // A sparse hole serializes to `null` in the runtime config.
+    const sparse: unknown[] = [];
+    sparse.length = 1;
+    for (const localPatterns of [
+      [null],
+      ["/photos/**"],
+      [{ pathname: 1 }],
+      [{ pathname: "/a", host: "x" }],
+      [new URL("https://example.com/photos/**")],
+      [new Date()],
+      [new Map()],
+      [Promise.resolve()],
+      [Object.assign(() => {}, { pathname: "/a" })],
+      sparse,
+    ]) {
+      await expect(
+        resolveNextConfig({ images: { localPatterns: localPatterns as never } }, "/tmp/project"),
+        JSON.stringify(localPatterns),
+      ).rejects.toThrow("Specified images.localPatterns[0] should be an object");
+    }
+    await expect(
+      resolveNextConfig(
+        { images: { localPatterns: Array.from({ length: 26 }, () => ({ pathname: "/a" })) } },
+        "/tmp/project",
+      ),
+    ).rejects.toThrow("at most 25 entries");
   });
 });
 
@@ -2311,6 +2436,33 @@ describe("resolveNextConfig gestureTransition", () => {
   });
 });
 
+describe("resolveNextConfig cachedNavigations", () => {
+  it("defaults experimental.cachedNavigations to false", async () => {
+    const resolved = await resolveNextConfig({ cacheComponents: true });
+    expect(resolved.cachedNavigations).toBe(false);
+  });
+
+  it("reads experimental.cachedNavigations alongside cacheComponents", async () => {
+    const resolved = await resolveNextConfig({
+      cacheComponents: true,
+      experimental: { cachedNavigations: true },
+    });
+    expect(resolved.cachedNavigations).toBe(true);
+  });
+
+  it("keeps cachedNavigations off without cacheComponents", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const resolved = await resolveNextConfig({
+        experimental: { cachedNavigations: true },
+      });
+      expect(resolved.cachedNavigations).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe("resolveNextConfig appNavFailHandling", () => {
   it("defaults experimental.appNavFailHandling to false", async () => {
     const resolved = await resolveNextConfig({});
@@ -2688,6 +2840,7 @@ describe("detectNextIntlConfig", () => {
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -2697,6 +2850,7 @@ describe("detectNextIntlConfig", () => {
       images: undefined,
       i18n: null,
       mdx: null,
+      nextIntlCatalogLoader: null,
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
@@ -2732,6 +2886,7 @@ describe("detectNextIntlConfig", () => {
       instrumentationServerValueInjections: {},
       clientTraceMetadata: undefined,
       staleTimes: { dynamic: 0, static: 300 },
+      cacheLife: parseCacheLifeProfiles(undefined),
       useLightningcss: false,
       lightningCssFeatures: { include: 0, exclude: 0 },
       ...overrides,
@@ -2902,6 +3057,130 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     const config = await resolveNextConfig(rawConfig, tmpDir);
     // Should use the explicit webpack alias, not auto-detected
     expect(config.aliases["next-intl/config"]).toBe(canonical(tmpDir, "custom/intl.ts"));
+  });
+});
+
+// https://github.com/cloudflare/vinext/issues/4303
+describe("resolveNextConfig next-intl catalog loader", () => {
+  const root = path.resolve(import.meta.dirname, "fixtures", "cf-next-intl-example");
+
+  async function importCreateNextIntlPlugin() {
+    const pluginPath = createRequire(path.join(root, "package.json")).resolve("next-intl/plugin");
+    return (await import(pathToFileURL(pluginPath).href)).default;
+  }
+
+  it("keeps the catalog loader rule createNextIntlPlugin adds for experimental.messages", async () => {
+    const createNextIntlPlugin = await importCreateNextIntlPlugin();
+    const messages = { path: "./messages", format: "json", precompile: true };
+    const config = await resolveNextConfig(
+      createNextIntlPlugin({ experimental: { messages } })({}),
+      root,
+    );
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include: [path.join(root, "messages")],
+      test: /\.json$/,
+      options: { messages },
+    });
+  });
+
+  // next-intl 4.12+ accepts several `messages.path` entries and passes them to
+  // webpack as an `include` array (getNextConfig.js in next-intl 4.14.9).
+  it("keeps every catalog directory of an array include", async () => {
+    const messages = { path: ["./messages", "./shared/messages"], format: "po" };
+    const include = [path.join(root, "messages"), path.join(root, "shared/messages")];
+    const config = await resolveNextConfig(
+      {
+        webpack: (webpackConfig: any) => {
+          webpackConfig.module.rules.push({
+            test: /\.po$/,
+            include,
+            use: [{ loader: "next-intl/extractor/catalogLoader", options: { messages } }],
+            type: "javascript/auto",
+          });
+          return webpackConfig;
+        },
+      },
+      root,
+    );
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include,
+      test: /\.po$/,
+      options: { messages },
+    });
+  });
+
+  // With `TURBOPACK` set, next-intl adds no webpack hook, only a Turbopack rule.
+  it("keeps the catalog loader rule when next-intl only configures Turbopack", async () => {
+    const createNextIntlPlugin = await importCreateNextIntlPlugin();
+    const messages = { path: "./messages", format: "json", precompile: true };
+    const previous = process.env.TURBOPACK;
+    process.env.TURBOPACK = "1";
+    let nextConfig;
+    try {
+      nextConfig = createNextIntlPlugin({ experimental: { messages } })({});
+    } finally {
+      if (previous === undefined) delete process.env.TURBOPACK;
+      else process.env.TURBOPACK = previous;
+    }
+    expect(nextConfig.webpack).toBeUndefined();
+    const config = await resolveNextConfig(nextConfig, root);
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include: [canonical(root, "messages")],
+      test: /\.json$/,
+      options: { messages },
+    });
+  });
+
+  // next-intl 4.12+ lists several catalog paths in the Turbopack condition.
+  it("keeps every catalog directory of a Turbopack rule", async () => {
+    const messages = { path: ["./messages", "./shared/messages"], format: "po" };
+    const config = await resolveNextConfig(
+      {
+        turbopack: {
+          rules: {
+            "*.po": {
+              loaders: [{ loader: "next-intl/extractor/catalogLoader", options: { messages } }],
+              condition: { path: "{./messages,./shared/messages}/**/*" },
+              as: "*.js",
+            },
+          },
+        },
+      },
+      root,
+    );
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include: [canonical(root, "messages"), canonical(root, "shared/messages")],
+      test: /\.po$/,
+      options: { messages },
+    });
+  });
+
+  it("warns when the precompile alias has no catalog loader", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config = await resolveNextConfig(
+        {
+          turbopack: {
+            resolveAlias: {
+              "use-intl/format-message": "./node_modules/use-intl/dist/format-only.js",
+            },
+          },
+        },
+        root,
+      );
+      expect(config.nextIntlCatalogLoader).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("`experimental.messages.precompile` is enabled"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("has no catalog loader without experimental.messages", async () => {
+    const createNextIntlPlugin = await importCreateNextIntlPlugin();
+    const config = await resolveNextConfig(createNextIntlPlugin()({}), root);
+    expect(config.nextIntlCatalogLoader).toBeNull();
   });
 });
 
@@ -3108,6 +3387,61 @@ describe("resolveNextConfig external rewrite warning", () => {
       (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
     );
     expect(externalWarning).toBeUndefined();
+  });
+});
+
+// Ported from Next.js' checkCustomRoutes in packages/next/src/lib/load-custom-routes.ts.
+describe("resolveNextConfig basePath: false rewrite validation", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const outsideBasePathError = (source: string) =>
+    `The route ${source} rewrites urls outside of the basePath. Please use a destination that starts with \`http://\` or \`https://\` https://nextjs.org/docs/messages/invalid-external-rewrite`;
+
+  it("rejects basePath: false rewrites to internal destinations in every phase", async () => {
+    await expect(
+      resolveNextConfig({
+        basePath: "/docs",
+        rewrites: async () => ({
+          beforeFiles: [{ source: "/before", destination: "/open.txt", basePath: false }],
+          afterFiles: [{ source: "/after", destination: "/docs/page", basePath: false }],
+          fallback: [{ source: "/fallback", destination: "//cdn.example.com", basePath: false }],
+        }),
+      }),
+    ).rejects.toThrow(
+      [
+        outsideBasePathError("/before"),
+        outsideBasePathError("/after"),
+        outsideBasePathError("/fallback"),
+        "Invalid rewrites found",
+      ].join("\n"),
+    );
+  });
+
+  it("rejects an internal basePath: false rewrite without a configured basePath", async () => {
+    await expect(
+      resolveNextConfig({
+        rewrites: async () => [{ source: "/old", destination: "/new", basePath: false }],
+      }),
+    ).rejects.toThrow(`${outsideBasePathError("/old")}\nInvalid rewrite found`);
+  });
+
+  it("accepts basePath: false rewrites to http(s) destinations", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const config = await resolveNextConfig({
+      basePath: "/docs",
+      rewrites: async () => [
+        { source: "/http", destination: "http://example.com/a", basePath: false },
+        { source: "/https", destination: "https://example.com/b", basePath: false },
+        { source: "/internal", destination: "/new" },
+      ],
+    });
+    expect(config.rewrites.afterFiles.map((rewrite) => rewrite.source)).toEqual([
+      "/http",
+      "/https",
+      "/internal",
+    ]);
   });
 });
 
@@ -3380,7 +3714,7 @@ describe("resolveNextConfig staleTimes (#1490)", () => {
   it("falls back to defaults when staleTimes contains negative values", async () => {
     // Negative values are rejected at resolution time so we don't pass them
     // downstream to `resolvePrefetchCacheTtl`, where they'd be re-validated.
-    // Matches the `seconds < 0` guard in `shims/navigation.ts`.
+    // Matches the `seconds < 0` guard in `shims/app-router-navigation.ts`.
     const resolved = await resolveNextConfig({
       experimental: { staleTimes: { dynamic: -5, static: -1 } },
     });

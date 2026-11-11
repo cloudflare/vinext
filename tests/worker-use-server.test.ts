@@ -33,7 +33,7 @@ async function createUseServerPlugin(): Promise<Plugin> {
     rscPluginPath,
   });
   const plugin = plugins.find((candidate) => candidate.name === "vinext:worker-use-server")!;
-  await hookHandler(plugin.configResolved).call(undefined as never, {} as never);
+  await hookHandler(plugin.configResolved).call(undefined as never, { plugins: [] } as never);
   return plugin;
 }
 
@@ -54,6 +54,7 @@ describe("worker Server Function references", () => {
     const result = await transform.call(
       {
         addWatchFile,
+        environment: { mode: "build" },
         error: (message: string) => {
           throw new Error(message);
         },

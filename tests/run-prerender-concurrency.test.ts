@@ -269,4 +269,29 @@ describe("runPrerender concurrency", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("writes static export pages into a custom client output directory", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-client-out-"));
+    const serverDir = path.join(root, "dist", "server");
+    fs.mkdirSync(path.join(root, "app"));
+    fs.mkdirSync(serverDir, { recursive: true });
+    fs.writeFileSync(path.join(serverDir, "BUILD_ID"), "client-out-build\n");
+    fs.writeFileSync(path.join(serverDir, "index.js"), "export {};\n");
+    fs.writeFileSync(path.join(root, "next.config.mjs"), 'export default { output: "export" };\n');
+    prerenderAppMock.mockResolvedValueOnce({ routes: [] });
+
+    try {
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+
+      await runPrerender({ root, routeRootConfig: { clientOutDir: "build/client" } });
+
+      expect(prerenderAppMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outDir: toSlash(path.join(root, "build", "client")),
+        }),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

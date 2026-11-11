@@ -189,6 +189,34 @@ test.describe("Loading boundaries (loading.tsx)", () => {
     );
   });
 
+  test("a sibling intercepting layout's Suspense fallback streams while its sync page suspends", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/sibling-intercept-layout-suspense`);
+    await waitForAppRouterHydration(page);
+
+    // Like Next.js, the navigation commits with the intercepting layout and
+    // its own Suspense fallback while the page's use() is pending, without
+    // loading.tsx. The page resolves 3s after the request.
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page.locator("#sibling-intercept-layout-suspense-spinner")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(page).toHaveURL(/\/sibling-intercept-layout-suspense\/photo\/1$/);
+    await expect(
+      page.locator(
+        "#sibling-intercept-layout-suspense-layout #sibling-intercept-layout-suspense-modal",
+      ),
+    ).toBeVisible();
+    await expect(page.locator("#sibling-intercept-layout-suspense-intercepted")).toHaveCount(0);
+
+    await expect(page.locator("#sibling-intercept-layout-suspense-intercepted")).toHaveText(
+      "Intercepted: Photo 1",
+      { timeout: 10_000 },
+    );
+    await expect(page.locator("#sibling-intercept-layout-suspense-spinner")).toHaveCount(0);
+  });
+
   test("slow nested layout and page include both loading fallbacks in initial HTML", async ({
     request,
   }) => {

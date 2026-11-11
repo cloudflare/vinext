@@ -75,7 +75,7 @@ describe("performOnDemandRevalidate", () => {
     const fetchMock = stubFetch();
     const headers = new Headers({ host: "app.local:3000" });
 
-    await performOnDemandRevalidate(headers, "//127.0.0.1:9999/leak");
+    await performOnDemandRevalidate(headers, "//127.0.0.1:9999/leak", {}, "http://app.local:3000");
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const url = firstFetchUrl(fetchMock);
@@ -91,7 +91,7 @@ describe("performOnDemandRevalidate", () => {
     const fetchMock = stubFetch();
     const headers = new Headers({ host: "app.local:3000" });
 
-    await performOnDemandRevalidate(headers, "/\\127.0.0.1:9999/leak");
+    await performOnDemandRevalidate(headers, "/\\127.0.0.1:9999/leak", {}, "http://app.local:3000");
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const url = firstFetchUrl(fetchMock);
@@ -108,6 +108,17 @@ describe("performOnDemandRevalidate", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     const url = firstFetchUrl(fetchMock);
     expect(url.href).toBe("http://app.local:3000/fixed-page");
+  });
+
+  it("refuses to address the credential from Host without a dispatcher or trusted origin", async () => {
+    const fetchMock = stubFetch();
+    const headers = new Headers({ host: "127.0.0.1:9999" });
+
+    await expect(performOnDemandRevalidate(headers, "/fixed-page")).rejects.toThrow(
+      "no in-process dispatcher or server-owned origin",
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -127,7 +138,12 @@ describe("performOnDemandRevalidate", () => {
     const revalidateTag = vi.spyOn(adapter, "revalidateTag");
     setCdnCacheAdapter(adapter);
 
-    await performOnDemandRevalidate(new Headers({ host: "app.local:3000" }), requestedPath);
+    await performOnDemandRevalidate(
+      new Headers({ host: "app.local:3000" }),
+      requestedPath,
+      {},
+      "http://app.local:3000",
+    );
 
     expect(revalidateTag).toHaveBeenCalledExactlyOnceWith(encodeCacheTag(regeneratedTag));
   });
@@ -155,7 +171,9 @@ describe("performOnDemandRevalidate", () => {
       "x-revalidate-token": "allowed",
     });
 
-    await performOnDemandRevalidate(headers, "/fixed-page", {}, undefined, ["x-revalidate-token"]);
+    await performOnDemandRevalidate(headers, "/fixed-page", {}, "http://app.local:3000", [
+      "x-revalidate-token",
+    ]);
 
     expect(firstFetchHeaders(fetchMock)["x-revalidate-token"]).toBe("allowed");
     expect(firstFetchHeaders(fetchMock).cookie).toBeUndefined();
@@ -165,7 +183,7 @@ describe("performOnDemandRevalidate", () => {
     const fetchMock = stubFetch();
     const headers = new Headers({ host: "app.local:3000", cookie: "session=local" });
 
-    await performOnDemandRevalidate(headers, "/fixed-page", {}, undefined, [], true);
+    await performOnDemandRevalidate(headers, "/fixed-page", {}, "http://app.local:3000", [], true);
 
     expect(firstFetchHeaders(fetchMock).cookie).toBe("session=local");
   });
@@ -232,9 +250,9 @@ describe("performOnDemandRevalidate", () => {
     setCdnCacheAdapter(adapter);
     const headers = new Headers({ host: "app.local:3000" });
 
-    await expect(performOnDemandRevalidate(headers, "/fixed-page")).rejects.toThrow(
-      "Failed to revalidate /fixed-page: 307",
-    );
+    await expect(
+      performOnDemandRevalidate(headers, "/fixed-page", {}, "http://app.local:3000"),
+    ).rejects.toThrow("Failed to revalidate /fixed-page: 307");
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchUrlAt(fetchMock, 0).href).toBe("http://app.local:3000/fixed-page");
@@ -255,7 +273,7 @@ describe("performOnDemandRevalidate", () => {
     vi.stubGlobal("fetch", fetchMock);
     const headers = new Headers({ host: "app.local:3000" });
 
-    await performOnDemandRevalidate(headers, "/fixed-page");
+    await performOnDemandRevalidate(headers, "/fixed-page", {}, "http://app.local:3000");
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchUrlAt(fetchMock, 0).href).toBe("http://app.local:3000/fixed-page");

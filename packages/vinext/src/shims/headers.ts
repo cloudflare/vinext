@@ -19,11 +19,11 @@ import { serializeSetCookie, validateCookieName } from "./internal/cookie-serial
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
   ensureRenderDynamicLatch,
+  getRequestContext,
   isInsideUnifiedScope,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
-import type { CacheLifeConfig, CacheLifeSink } from "./cache-request-state.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
 import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
@@ -31,6 +31,7 @@ import {
   createRenderDynamicLatch,
   getHeadersShimState as _getState,
   headersShimAls as _als,
+  isInsideAnyCacheScope,
   markDynamicUsage,
   markRenderRequestApiUsage,
   throwIfInsideCacheScope,
@@ -63,6 +64,12 @@ export type HeadersContext = {
   headers: Headers;
   cookies: Map<string, string>;
   accessError?: Error;
+  /**
+   * The route whose `generateStaticParams` runs. There is no HTTP request, so
+   * `connection()` and `draftMode()` reject with `accessError` too, and
+   * revalidation throws, also from a cached function the generator calls.
+   */
+  staticParamsRoute?: string;
   draftModeEnabled?: boolean;
   forceStatic?: boolean;
   mutableCookies?: RequestCookies;
@@ -156,96 +163,24 @@ function mergeMiddlewareSetCookies(ctx: HeadersContext, rawHeader: string | null
 }
 
 /**
- * Measure dynamic usage in a child async scope without clearing the parent.
- * Concurrent work that already belongs to the request (such as deferred
- * metadata) keeps writing to the parent state and therefore remains visible
- * to the final cache policy.
+ * Run a layout probe without letting its dynamic API usage, fetch tags or
+ * cacheLife reach the request. Next.js has no probe: only the render decides
+ * whether a page is dynamic and how long it is cached.
  */
-export async function runWithIsolatedDynamicUsage<T>(
-  fn: () => T | Promise<T>,
-): Promise<{ result: T; dynamicDetected: boolean }> {
-  const runInChildState = async (childState: VinextHeadersShimState) => {
-    const result = await fn();
-    return { result, dynamicDetected: childState.dynamicUsageDetected };
-  };
-
+export async function runWithDetachedDynamicUsage<T>(fn: () => T | Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {
-    let childState: VinextHeadersShimState | null = null;
-    return await runWithUnifiedStateMutation(
-      (context) => {
-        context.dynamicUsageDetected = false;
-        childState = context;
-      },
-      () => {
-        if (!childState) {
-          throw new Error("Dynamic usage scope was not initialized");
-        }
-        return runInChildState(childState);
-      },
-    );
-  }
-
-  const parentState = _getState();
-  const childState: VinextHeadersShimState = {
-    ...parentState,
-    // Share the parent's latch, creating it first on a stale fallback state.
-    renderDynamicLatch: ensureRenderDynamicLatch(parentState),
-    dynamicUsageDetected: false,
-  };
-  return await _als.run(childState, () => runInChildState(childState));
-}
-
-/**
- * Run a pre-render probe without letting its dynamic API usage classify the
- * request. Next.js has no probe: only the render decides whether a page is
- * dynamic, and the render runs the probed layouts and page again. Returns the
- * probe's own usage and cacheLife for a caller whose probe response replaces
- * the render.
- */
-export async function runWithDetachedDynamicUsage<T>(
-  fn: () => T | Promise<T>,
-): Promise<{ result: T; dynamicDetected: boolean; cacheLife: CacheLifeConfig | null }> {
-  const runInChildState = async (
-    childState: VinextHeadersShimState,
-    cacheLifeSink: CacheLifeSink | null,
-  ) => {
-    const result = await fn();
-    return {
-      result,
-      cacheLife: cacheLifeSink?.cacheLife ?? null,
-      // Nested isolated scopes latch without setting this scope's flag.
-      dynamicDetected: childState.dynamicUsageDetected || childState.renderDynamicLatch.dynamic,
-    };
-  };
-
-  if (isInsideUnifiedScope()) {
-    let childState: VinextHeadersShimState | null = null;
-    // Layout probes run in further isolated scopes that reset the slot.
-    const cacheLifeSink: CacheLifeSink = { cacheLife: null };
-    return await runWithUnifiedStateMutation(
-      (context) => {
-        context.cacheLifeSink = cacheLifeSink;
-        context.dynamicUsageDetected = false;
-        context.renderDynamicLatch = createRenderDynamicLatch();
-        context.renderRequestApiUsage = new Set();
-        // cacheForRequest() values would hand the probe's result to the render
-        // without the dynamic API calls that produced it.
-        context.requestCache = new WeakMap();
-        // The render records its own fetches, tags and cacheLife.
-        context.cacheableFetchUrls = new Set();
-        context.currentRequestTags = [];
-        context.dynamicFetchUrls = new Set();
-        context.requestScopedCacheLife = null;
-        context.unstableCacheObservations = new Map();
-        childState = context;
-      },
-      () => {
-        if (!childState) {
-          throw new Error("Dynamic usage scope was not initialized");
-        }
-        return runInChildState(childState, cacheLifeSink);
-      },
-    );
+    return await runWithUnifiedStateMutation((context) => {
+      context.dynamicUsageDetected = false;
+      context.renderDynamicLatch = createRenderDynamicLatch();
+      context.renderRequestApiUsage = new Set();
+      // cacheForRequest() values would hand the probe's result to the render
+      // without the dynamic API calls that produced it.
+      context.requestCache = new WeakMap();
+      // The render records its own fetches, tags and cacheLife.
+      context.currentRequestTags = [];
+      context.dynamicFetchUrls = new Set();
+      context.requestScopedCacheLife = null;
+    }, fn);
   }
 
   const childState: VinextHeadersShimState = {
@@ -254,9 +189,24 @@ export async function runWithDetachedDynamicUsage<T>(
     renderDynamicLatch: createRenderDynamicLatch(),
     renderRequestApiUsage: new Set(),
   };
-  // Outside the unified scope the probe's claims stay on the request's cache
-  // state, so no cacheLife is returned for the probe.
-  return await _als.run(childState, () => runInChildState(childState, null));
+  return await _als.run(childState, fn);
+}
+
+/**
+ * Run a `dynamicParams` check's `generateStaticParams` apart from the request,
+ * as Next.js runs it in a work store of its own. Unlike a layout probe, it
+ * also memoizes its own fetches, so the render that follows fetches anew, and
+ * reads cached data even during an on-demand revalidation.
+ */
+export async function runStaticParamsCheckDetached<T>(fn: () => Promise<T>): Promise<T> {
+  return await runWithDetachedDynamicUsage(() => {
+    if (!isInsideUnifiedScope()) return fn();
+    return runWithUnifiedStateMutation((context) => {
+      context.currentFetchDedupeEntries = new Map();
+      context.nextFetchId = 1;
+      context.isOnDemandRevalidate = false;
+    }, fn);
+  });
 }
 
 export async function runWithConnectionProbe<T>(
@@ -512,6 +462,12 @@ export function setHeadersContext(ctx: HeadersContext | null): void {
     state.draftModeCookieHeader = null;
     state.phase = "render";
   } else {
+    // Clearing the context does not end the request: its render can still
+    // be running and its after() callbacks are yet to run, and both must
+    // keep the request's draft-mode cache bypass.
+    if (state.headersContext && isInsideUnifiedScope()) {
+      getRequestContext().draftModeAtHeadersClear = getActiveDraftModeState() === true;
+    }
     state.headersContext = null;
     state.phase = "render";
   }
@@ -627,7 +583,7 @@ class ReadonlyHeadersError extends Error {
     );
   }
 
-  static callable(): never {
+  static callable(this: void): never {
     throw new ReadonlyHeadersError();
   }
 }
@@ -642,7 +598,7 @@ class ReadonlyRequestCookiesError extends Error {
     );
   }
 
-  static callable(): never {
+  static callable(this: void): never {
     throw new ReadonlyRequestCookiesError();
   }
 }
@@ -775,10 +731,12 @@ function _wrapMutableCookies(cookies: RequestCookies): RequestCookies {
 }
 
 function _sealCookies(cookies: RequestCookies): RequestCookies {
+  // Like Next.js's RequestCookiesAdapter.seal, the mutating methods throw when
+  // called, not when read.
   return new Proxy(cookies, {
     get(target, prop) {
-      if (prop === "set" || prop === "delete") {
-        throw new ReadonlyRequestCookiesError();
+      if (prop === "set" || prop === "delete" || prop === "clear") {
+        return ReadonlyRequestCookiesError.callable;
       }
 
       const value = Reflect.get(target, prop, target);
@@ -1026,6 +984,11 @@ export function getDraftModeCookieHeader(): string | null {
   return header;
 }
 
+/** Put back a draft-mode `Set-Cookie` header a dispatch took for a response it won't send. */
+export function restoreDraftModeCookieHeader(header: string): void {
+  _getState().draftModeCookieHeader = header;
+}
+
 function validateDraftModeSecret(secret: string): string {
   if (secret.length === 0) {
     throw new Error("[vinext] draft mode secret must be a non-empty string.");
@@ -1081,10 +1044,14 @@ export function getActiveDraftModeState(): boolean | null {
 /**
  * Read the active request's draft-mode state without recording request API usage.
  * Internal cache implementations use this to bypass persistent reads and writes,
- * matching Next.js's request-level `workStore.isDraftMode` guard.
+ * matching Next.js's request-level `workStore.isDraftMode` guard. Once the
+ * headers context is cleared, the request keeps the state it had then.
  */
 export function isDraftModeEnabled(): boolean {
-  return getActiveDraftModeState() ?? false;
+  return (
+    getActiveDraftModeState() ??
+    (isInsideUnifiedScope() && getRequestContext().draftModeAtHeadersClear === true)
+  );
 }
 
 type DraftModeResult = {
@@ -1136,6 +1103,10 @@ export async function draftMode(): Promise<DraftModeResult> {
   if (!context) {
     throw createDraftModeScopeError("draftMode()");
   }
+  // A cache scope reads disabled draft mode, even in generateStaticParams.
+  if (context.staticParamsRoute !== undefined && context.accessError && !isInsideAnyCacheScope()) {
+    throw context.accessError;
+  }
   // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
   // getter and merely calling `draftMode()` does not require bailing out
   // of static prerendering. Only `enable()`/`disable()` mutate state and
@@ -1176,8 +1147,11 @@ export async function draftMode(): Promise<DraftModeResult> {
 // RequestCookies implementation
 // ---------------------------------------------------------------------------
 
-const APPLY_RESPONSE_COOKIE = Symbol("vinext.apply-response-cookie");
-const SYNCHRONIZE_REQUEST_COOKIES = Symbol("vinext.synchronize-request-cookies");
+// Registered symbols: the request context (and its RequestCookies) is shared
+// through globalThis, so another headers module instance — e.g. Vite's
+// prebundled `next/headers` in dev — must be able to call these methods.
+const APPLY_RESPONSE_COOKIE = Symbol.for("vinext.apply-response-cookie");
+const SYNCHRONIZE_REQUEST_COOKIES = Symbol.for("vinext.synchronize-request-cookies");
 
 class RequestCookies {
   private _cookies: Map<string, string>;
@@ -1192,7 +1166,8 @@ class RequestCookies {
       : null;
   }
 
-  get(name: string): ResponseCookie | undefined {
+  get(nameOrOptions: string | { name: string }): ResponseCookie | undefined {
+    const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
     if (this._responseCookies) return this._responseCookies.get(name);
     const value = this._cookies.get(name);
     if (value === undefined) return undefined;

@@ -1,7 +1,7 @@
 /**
  * Shared URL utilities for same-origin detection.
  *
- * Used by link.tsx, navigation.ts, and router.ts to normalize
+ * Used by link.tsx, app-router-navigation.ts, and router.ts to normalize
  * same-origin absolute URLs to local paths for client-side navigation.
  */
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -34,6 +34,16 @@ export function getWindowOrigin(): string | null {
 }
 
 /**
+ * A same-origin pathname can start with "//" (e.g. `https://app.com//evil.com`),
+ * and as a local path that is a protocol-relative reference to another host.
+ * Collapse the leading slashes: Next.js does the same for these URLs, on the
+ * client (`resolveHref`) or with its server's repeated-slash 308.
+ */
+export function collapseLeadingSlashes(pathname: string): string {
+  return pathname.replace(/^\/{2,}/, "/");
+}
+
+/**
  * If `url` is an absolute same-origin URL, return the local path
  * (pathname + search + hash). Returns null for truly external URLs
  * or on the server (where origin is unknown).
@@ -44,7 +54,7 @@ export function toSameOriginPath(url: string): string | null {
   try {
     const parsed = url.startsWith("//") ? new URL(url, origin) : new URL(url);
     if (parsed.origin === origin) {
-      return parsed.pathname + parsed.search + parsed.hash;
+      return collapseLeadingSlashes(parsed.pathname) + parsed.search + parsed.hash;
     }
   } catch {
     // not a valid absolute URL — ignore
@@ -66,7 +76,7 @@ export function toSameOriginAppPath(url: string, basePath: string): string | nul
     if (!hasBasePath(parsed.pathname, basePath)) {
       return null;
     }
-    const pathname = stripBasePath(parsed.pathname, basePath);
+    const pathname = collapseLeadingSlashes(stripBasePath(parsed.pathname, basePath));
     return pathname + parsed.search + parsed.hash;
   } catch {
     return localPath;
@@ -135,7 +145,7 @@ export function normalizePathTrailingSlash(path: string, trailingSlash: boolean)
   const { pathname, query, hash } = parsePath(path);
 
   if (trailingSlash) {
-    if (/\.[^/]+\/?$/.test(pathname)) {
+    if (hasFileLikeLastSegment(pathname)) {
       // Looks like a filename — strip trailing slash even with trailingSlash: true.
       return `${removeRouteTrailingSlash(pathname)}${query}${hash}`;
     }
@@ -146,6 +156,14 @@ export function normalizePathTrailingSlash(path: string, trailingSlash: boolean)
   }
 
   return `${removeRouteTrailingSlash(pathname)}${query}${hash}`;
+}
+
+// The last segment, ignoring one terminal slash, has a dot followed by more
+// characters. Scanned without a regex, which backtracks on runs of dots.
+function hasFileLikeLastSegment(pathname: string): boolean {
+  const end = pathname.endsWith("/") ? pathname.length - 1 : pathname.length;
+  const dot = pathname.indexOf(".", pathname.lastIndexOf("/", end - 1) + 1);
+  return dot !== -1 && dot < end - 1;
 }
 
 /**

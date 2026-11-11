@@ -20,11 +20,7 @@ import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-con
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 import type { DispatchAppWorkerResponseStage } from "./app-worker-stages.js";
-import {
-  getImageOptimizer,
-  isImageOptimizationPath,
-  readImageOptimizationSignal,
-} from "./image-optimization.js";
+import { readImageOptimizationSignal } from "./image-optimization.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import { assetPrefixPathname } from "../utils/asset-prefix.js";
@@ -75,7 +71,7 @@ export function handleRequestStage(
 ): Promise<Response> {
   const originalRequest = request;
   const handleStage = async () => {
-    await __ensureInstrumentation();
+    await __ensureInstrumentation(ctx);
     const url = new URL(request.url);
     return traceFrameworkRequest({
       callback: () =>
@@ -84,7 +80,7 @@ export function handleRequestStage(
         ),
       getStatus: (response) => response?.status,
       headers: request.headers,
-      isRsc: url.pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1",
+      isRsc: request.headers.get(RSC_HEADER) === "1",
       method: request.method,
       target: url.pathname + url.search,
     });
@@ -133,7 +129,7 @@ async function handleRequest(
     // dispatcher so independently hosted stages are proven ready as a unit.
     // Failed capability checks stay inside the framework-owned namespace.
     if (readinessResponse.status !== 204) return readinessResponse;
-    await __ensureHybridPagesApplication();
+    await __ensureHybridPagesApplication(ctx);
   }
 
   let probeMode: VinextCacheabilityProbeMode | null = null;
@@ -146,7 +142,7 @@ async function handleRequest(
       probeRoute = readWorkerCacheabilityProbeRoute(request);
       const probeUrl = new URL(request.url);
       probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
-      request = new Request(probeUrl, request);
+      request = cloneRequestWithUrl(request, probeUrl.href);
     }
   }
 
@@ -156,19 +152,6 @@ async function handleRequest(
   }
 
   const url = new URL(request.url);
-  // The image endpoint runs through middleware and rewrites like any request;
-  // the handler then signals that the Worker may serve the image itself.
-  const servesImages = Boolean(assets) && getImageOptimizer() !== null;
-  // vinext's next/image emits the endpoint without the basePath; admit that
-  // form as the basePath endpoint, as app-router-entry does.
-  const imageEndpointBasePath =
-    servesImages && __basePath && isImageOptimizationPath(url.pathname) ? __basePath : "";
-  if (imageEndpointBasePath) {
-    request = cloneRequestWithUrl(
-      request,
-      new URL(imageEndpointBasePath + url.pathname + url.search, url).href,
-    );
-  }
   const protocolRelativeGuard = guardProtocolRelativeUrl(url.pathname, url.search);
   if (protocolRelativeGuard) return protocolRelativeGuard;
   try {
@@ -230,7 +213,11 @@ async function handleRequest(
     );
   const result = await runWithExecutionContext(ctx, handle);
   let response = result;
-  const imageSignal = servesImages ? readImageOptimizationSignal(response) : null;
+  // The image endpoint runs through middleware and rewrites like any request;
+  // the handler then signals that the Worker may serve the image itself.
+  // Without an optimizer the Worker serves the source unoptimized, as the
+  // Pages Router Worker and the Node server do.
+  const imageSignal = assets ? readImageOptimizationSignal(response) : null;
   if (imageSignal && assets) {
     const { fetchSignalledPublicFile, serveWorkerImageOptimization } =
       await import("./worker-image-optimization.js");
@@ -244,7 +231,6 @@ async function handleRequest(
         basePath: __basePath,
         assetPathPrefix,
         clientBuildFiles,
-        sourceBasePath: imageEndpointBasePath,
         // The source runs outside this request's cacheability probe.
         fetchPublicFile: async (sourceRequest) =>
           fetchSignalledPublicFile(

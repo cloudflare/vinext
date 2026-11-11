@@ -25,6 +25,17 @@ test.describe("image optimization source behind middleware", () => {
     }
   });
 
+  // Next.js looks a `_next/static` source up under `.next/static` by its once
+  // decoded name, so a segment that decodes to `%2E%2E` names no file there.
+  test("does not resolve an encoded dot segment out of _next/static", async ({ request }) => {
+    const image = await request.get(
+      imagePath("/_next/static/%252E%252E/%252E%252E/vinext-image.png?members-only"),
+    );
+    expect(image.status()).toBe(400);
+    expect(await image.text()).toBe(INVALID_IMAGE);
+    expect(image.headers()["content-type"] ?? "").not.toContain("image/");
+  });
+
   test("does not follow a redirect middleware answers the source with", async ({ request }) => {
     const image = await request.get(imagePath("/vinext-image.png?redirect"));
     expect(image.status()).toBe(400);

@@ -11,6 +11,7 @@ import {
   type PagesApiRouteMatch,
 } from "../packages/vinext/src/server/pages-api-route.js";
 import { isVinextStreamedApiResponse } from "../packages/vinext/src/server/pages-node-compat.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type {
   FrameworkTracingBackendSpan,
@@ -398,35 +399,64 @@ describe("pages api route", () => {
     }
   });
 
-  it("res.revalidate() ignores Host header spoofing in Fetch request adapters", async () => {
-    const originalFetch = globalThis.fetch;
-    let capturedUrl: URL | undefined;
-    globalThis.fetch = async (input: string | URL | Request) => {
-      capturedUrl =
-        typeof input === "string"
-          ? new URL(input)
-          : input instanceof URL
-            ? input
-            : new URL(input.url);
-      return new Response(null, { status: 200 });
-    };
+  it("res.revalidate() never sends the credential to a Fetch request's Host origin", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    let revalidateError: unknown;
 
     try {
       const response = await handlePagesApiRoute({
         match: createMatch(async (_req, res) => {
-          await res.revalidate("/fixed-page");
-          res.json({ revalidated: true });
+          try {
+            await res.revalidate("/fixed-page");
+          } catch (error) {
+            revalidateError = error;
+          }
+          res.end();
         }),
-        request: new Request("http://app.local:3000/api/revalidate", {
-          headers: { host: "127.0.0.1:9999" },
-        }),
+        // srvx and other Node fetch hosts derive request.url from Host.
+        request: new Request("http://attacker.example/api/revalidate"),
         url: "/api/revalidate",
       });
 
       expect(response.status).toBe(200);
-      expect(capturedUrl?.href).toBe("http://app.local:3000/fixed-page");
+      expect(String(revalidateError)).toContain("no in-process dispatcher or server-owned origin");
+      expect(fetchMock).not.toHaveBeenCalled();
     } finally {
-      globalThis.fetch = originalFetch;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("res.revalidate() addresses an in-process dispatch with the Fetch request origin", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const dispatchPagesRevalidate = vi.fn(
+      async (_request: Request) => new Response(null, { status: 200 }),
+    );
+
+    try {
+      const response = await runWithExecutionContext(
+        { waitUntil() {}, dispatchPagesRevalidate },
+        () =>
+          handlePagesApiRoute({
+            match: createMatch(async (_req, res) => {
+              await res.revalidate("/fixed-page");
+              res.json({ revalidated: true });
+            }),
+            request: new Request("http://app.local:3000/api/revalidate", {
+              headers: { host: "127.0.0.1:9999" },
+            }),
+            url: "/api/revalidate",
+          }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(dispatchPagesRevalidate.mock.calls[0]?.[0].url).toBe(
+        "http://app.local:3000/fixed-page",
+      );
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 
@@ -604,6 +634,41 @@ describe("pages api route", () => {
       expect(response.headers.get("content-encoding")).toBeNull();
       expect(response.headers.get("content-length")).toBeNull();
       await expect(response.text()).resolves.toBe(body);
+    } finally {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("drops x-middleware-set-cookie from a proxied Worker edge API response", async () => {
+    const upstream = http.createServer((_req, res) => {
+      res.setHeader("set-cookie", "session=abc; Path=/; HttpOnly");
+      res.setHeader("x-middleware-set-cookie", "session=abc; Path=/; HttpOnly");
+      res.writeHead(201, "Created");
+      res.end("proxied");
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const address = upstream.address() as AddressInfo;
+      const response = await handlePagesApiRoute({
+        edgeRuntime: "worker",
+        match: createMatch(
+          () => fetch(`http://127.0.0.1:${address.port}`),
+          {},
+          { runtime: "edge" },
+        ),
+        request: new Request("https://example.com/api/proxy"),
+        url: "/api/proxy",
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.statusText).toBe("Created");
+      expect(response.headers.getSetCookie()).toEqual(["session=abc; Path=/; HttpOnly"]);
+      expect(response.headers.get("x-middleware-set-cookie")).toBeNull();
+      await expect(response.text()).resolves.toBe("proxied");
     } finally {
       upstream.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
@@ -1220,6 +1285,42 @@ describe("pages api route", () => {
     finishReporting();
     await waitUntilPromises[0];
     expect(lifecycleSettled).toBe(true);
+  });
+
+  it("registers a handler that outlives its response unless the context opts out", async () => {
+    async function respondThenFinish(ctx: {
+      hostRuntime: "node";
+      skipsPagesApiHandlerWaitUntil?: boolean;
+    }) {
+      let finishHandler!: () => void;
+      const handlerFinished = new Promise<void>((resolve) => {
+        finishHandler = resolve;
+      });
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const response = await handlePagesApiRoute({
+        ctx: {
+          ...ctx,
+          waitUntil(promise) {
+            waitUntilPromises.push(promise);
+          },
+        },
+        match: createMatch(async (_req, res) => {
+          res.end("done");
+          await handlerFinished;
+        }),
+        request: new Request("https://example.com/api/cleanup"),
+        url: "/api/cleanup",
+      });
+      expect(await response.text()).toBe("done");
+      finishHandler();
+      return waitUntilPromises;
+    }
+
+    // Nitro's Node presets run on Node but await waitUntil when they close.
+    expect(await respondThenFinish({ hostRuntime: "node" })).toHaveLength(1);
+    expect(
+      await respondThenFinish({ hostRuntime: "node", skipsPagesApiHandlerWaitUntil: true }),
+    ).toHaveLength(0);
   });
 
   it("passes cancellation errors to a parked write callback", async () => {

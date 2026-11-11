@@ -33,6 +33,7 @@ import {
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import {
   getDataCacheHandler,
+  MemoryCacheHandler,
   setDataCacheHandler,
 } from "../packages/vinext/src/shims/cache-handler.js";
 import {
@@ -49,6 +50,7 @@ import {
 import { withEnvVar } from "./env-test-helpers.js";
 import {
   createRscOnErrorHandler as createRealRscOnErrorHandler,
+  PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE,
   sanitizeErrorForClient,
 } from "../packages/vinext/src/server/app-rsc-errors.js";
 
@@ -154,6 +156,9 @@ function createOptions(
     cleanPathname: "/action-source",
     clearRequestContext() {},
     contentType: "multipart/form-data; boundary=vinext",
+    createServerManifest() {
+      return {};
+    },
     async decodeAction() {
       return null;
     },
@@ -176,11 +181,17 @@ function createOptions(
     request: createMultipartRequest(),
     routePattern: "/action-source",
     setHeadersAccessPhase,
+    validateActionReferences() {
+      return true;
+    },
     ...overrides,
   };
   const decodeAction = options.decodeAction;
-  options.decodeAction = async (body) =>
-    registerTestServerReference(await decodeAction(body), getDirectTestActionId(body));
+  options.decodeAction = async (body, serverManifest) =>
+    registerTestServerReference(
+      await decodeAction(body, serverManifest),
+      getDirectTestActionId(body),
+    );
   return options;
 }
 
@@ -295,6 +306,9 @@ function createRscOptions(
     createRscOnErrorHandler(_request, pathname, pattern) {
       return () => `${pathname}:${pattern}`;
     },
+    createServerManifest() {
+      return {};
+    },
     createTemporaryReferenceSet() {
       return { marker: "refs" };
     },
@@ -375,6 +389,9 @@ function createRscOptions(
     setNavigationContext() {},
     toInterceptOpts(intercept) {
       return { slot: intercept.slotKey };
+    },
+    validateActionReferences() {
+      return true;
     },
     ...overrides,
     cleanPathname,
@@ -610,14 +627,10 @@ describe("app server action execution helpers", () => {
     }
   });
 
-  it("validates nested bound server references before decoding modules", async () => {
+  it("rejects an empty progressive action id before decoding", async () => {
     const body = new FormData();
-    body.set("$ACTION_REF_1", "");
-    body.set("$ACTION_1:0", JSON.stringify({ id: "selected-action", bound: "$@1" }));
-    body.set("$ACTION_1:1", JSON.stringify(["$ha"]));
-    body.set("$ACTION_1:10", JSON.stringify({ id: "nested-action", bound: null }));
+    body.set("$ACTION_ID_", "");
     const decodeAction = vi.fn();
-    const validateActionReferences = vi.fn(() => false);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
@@ -627,16 +640,53 @@ describe("app server action execution helpers", () => {
             decodeAction,
             forwardAction: async () => null,
             readFormDataWithLimit: async () => body,
-            validateActionReferences,
+            validateActionReferences: (actionIds) => !actionIds.includes(""),
           }),
         ),
       );
 
       expect(response.status).toBe(404);
-      expect(validateActionReferences).toHaveBeenCalledWith(["selected-action", "nested-action"]);
       expect(decodeAction).not.toHaveBeenCalled();
     } finally {
       warning.mockRestore();
+    }
+  });
+
+  it("resolves bound server references through the route-scoped manifest", async () => {
+    const body = new FormData();
+    body.set("$ACTION_REF_1", "");
+    body.set("$ACTION_1:0", JSON.stringify({ id: "selected-action", bound: "$@1" }));
+    const action = vi.fn();
+    const validateActionReferences = vi.fn((actionIds: readonly string[]) =>
+      actionIds.every((actionId) => actionId === "selected-action"),
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            createServerManifest: () =>
+              new Proxy({}, { get: (_target, id) => ({ id, name: "", chunks: [] }) }),
+            // React resolves the action and each bound `$h` reference with
+            // `serverManifest[id]`.
+            async decodeAction(_body, serverManifest) {
+              Reflect.get(serverManifest, "selected-action");
+              Reflect.get(serverManifest, "nested-action");
+              return action;
+            },
+            forwardAction: async () => null,
+            readFormDataWithLimit: async () => body,
+            validateActionReferences,
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(500);
+      expect(validateActionReferences).toHaveBeenCalledWith(["nested-action"]);
+      expect(action).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
     }
   });
 
@@ -1050,26 +1100,32 @@ describe("app server action execution helpers", () => {
     const request = createMultipartBodyRequest(formData);
     const formState = ["action-result", "key-path", "reference-id", 1] as never;
     let actionRan = false;
+    let actionManifest: object | undefined;
 
     const result = await handleProgressiveServerActionRequest(
       createOptions({
         contentType: request.headers.get("content-type") ?? "",
-        async decodeAction() {
+        async decodeAction(_body, serverManifest) {
+          actionManifest = serverManifest;
           return () => {
             actionRan = true;
             return { count: 1 };
           };
         },
-        async decodeFormState(actionResult, body) {
+        async decodeFormState(actionResult, body, serverManifest) {
           expect(actionResult).toEqual({ count: 1 });
           expect(body.get("$ACTION_ID_test")).toBe("");
           expect(body.get("field")).toBe("value");
+          // Form state decodes the bound references again, through the same scope.
+          expect(serverManifest).toBe(actionManifest);
+          expect(() => Reflect.get(serverManifest, "foreign-action")).toThrow();
           return formState;
         },
         readFormDataWithLimit(readRequest) {
           return readRequest.formData();
         },
         request,
+        validateActionReferences: (actionIds) => !actionIds.includes("foreign-action"),
       }),
     );
 
@@ -1306,10 +1362,9 @@ describe("app server action execution helpers", () => {
     }
   });
 
-  // Route handlers (route.ts) accept raw multipart POSTs that legitimately
-  // decode to no action; those must still fall through to the route-handler
-  // dispatch rather than 404. The page-vs-route distinction comes from the
-  // caller (`hasPageRoute`).
+  // Multipart POSTs without a page match that decode to no action fall
+  // through to the caller's normal dispatch rather than 404. The page
+  // distinction comes from the caller (`hasPageRoute`).
   it("falls through for multipart posts that decode to no action on a non-page route", async () => {
     const response = await handleProgressiveServerActionRequest(
       createOptions({
@@ -1348,7 +1403,7 @@ describe("app server action execution helpers", () => {
         createTemporaryReferenceSet() {
           return temporaryReferences;
         },
-        decodeReply(body, options) {
+        decodeReply(body, _serverManifest, options) {
           expect(body).toBe("encoded-flight-body");
           expect(options.temporaryReferences).toBe(temporaryReferences);
           return Promise.resolve(["first", "second"]);
@@ -1478,7 +1533,7 @@ describe("app server action execution helpers", () => {
       expect(response?.status).toBe(500);
       const { digest, reason } = (await rejection) as { digest: unknown; reason: unknown };
       expect(reason).toBeInstanceOf(Error);
-      expect((reason as Error).message).toContain("omitted in production builds");
+      expect((reason as Error).message).toBe(PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE);
       expect(digest).toEqual(expect.any(String));
       expect(digest).toBe((reason as { digest?: unknown }).digest);
       expect(reportRequestError).toHaveBeenCalledTimes(1);
@@ -1491,6 +1546,29 @@ describe("app server action execution helpers", () => {
         }),
       );
       expect(errorSpy).toHaveBeenCalledWith("[vinext] Server action error:", error);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("logs a production fetch action that throws a string under VINEXT_QUIET, as it isn't reported", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await withEnvVar("VINEXT_QUIET", "1", () =>
+        withEnvVar("NODE_ENV", "production", () =>
+          handleServerActionRscRequest(
+            createRscOptions({
+              loadServerAction() {
+                return Promise.resolve(() => {
+                  throw "string failure";
+                });
+              },
+            }),
+          ),
+        ),
+      );
+
+      expect(errorSpy).toHaveBeenCalledWith("[vinext] Server action error:", "string failure");
     } finally {
       errorSpy.mockRestore();
     }
@@ -2737,6 +2815,74 @@ describe("app server action execution helpers", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
+  // ("should not use stale caches in server actions that have revalidated").
+  // Next.js runs an action in its page's request store, whose implicit tags
+  // let a cache read inside the action observe the action's own revalidatePath().
+  it.each([
+    { kind: "fetch", pathname: "/dashboard" },
+    { kind: "progressive", pathname: "/action-source" },
+  ])(
+    "reads caches inside a $kind action with its page's implicit tags",
+    async ({ kind, pathname }) => {
+      const previousHandler = getDataCacheHandler();
+      const memoryHandler = new MemoryCacheHandler();
+      const getSoftTags: string[][] = [];
+      setDataCacheHandler({
+        get(key, ctx) {
+          getSoftTags.push([...((ctx as { softTags?: string[] } | undefined)?.softTags ?? [])]);
+          return memoryHandler.get(key, ctx);
+        },
+        set: memoryHandler.set.bind(memoryHandler),
+        revalidateTag: memoryHandler.revalidateTag.bind(memoryHandler),
+      });
+      let calls = 0;
+      const readCached = registerCachedFunction(
+        async () => ++calls,
+        `test:action-implicit-tags-${kind}`,
+      );
+      const values: unknown[] = [];
+      const action = async () => {
+        values.push(await readCached());
+        revalidatePath(pathname);
+        values.push(await readCached());
+        return "done";
+      };
+
+      try {
+        await runWithRequestContext(createRequestContext(), () => readCached());
+        getSoftTags.length = 0;
+        await runWithRequestContext(createRequestContext(), () =>
+          kind === "fetch"
+            ? handleServerActionRscRequest(
+                createRscOptions({
+                  loadServerAction() {
+                    return Promise.resolve(action);
+                  },
+                }),
+              )
+            : handleProgressiveServerActionRequest(
+                createOptions({
+                  currentRoute: { pattern: pathname, routeSegments: [pathname.slice(1)] },
+                  async decodeAction() {
+                    return action;
+                  },
+                  readFormDataWithLimit() {
+                    const formData = new FormData();
+                    formData.set("$ACTION_ID_test", "");
+                    return Promise.resolve(formData);
+                  },
+                }),
+              ),
+        );
+        expect(getSoftTags[0]).toContain(`_N_T_${pathname}`);
+        expect(values).toEqual([1, 2]);
+      } finally {
+        setDataCacheHandler(previousHandler);
+      }
+    },
+  );
+
   it("emits dynamic-only x-action-revalidated when a fetch action refreshes", async () => {
     const response = await handleServerActionRscRequest(
       createRscOptions({
@@ -3056,6 +3202,59 @@ describe("app server action execution helpers", () => {
     expect(response?.status).toBe(404);
     expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
     expect(hidden).not.toHaveBeenCalled();
+  });
+
+  // React resolves each argument reference with `serverManifest[id]` and throws
+  // when the entry is missing; this decoder stands in for that lookup.
+  function createArgumentReferenceOptions(referenceIds: readonly string[], ownedIds: string[]) {
+    const action = vi.fn(() => "saved");
+    const validateActionReferences = vi.fn((actionIds: readonly string[]) =>
+      actionIds.every((actionId) => ownedIds.includes(actionId)),
+    );
+    const options = createRscOptions({
+      createServerManifest: () =>
+        new Proxy({}, { get: (_target, id) => ({ id, name: "", chunks: [] }) }),
+      decodeReply(_body, serverManifest) {
+        return referenceIds.map((referenceId) => {
+          const entry: unknown = Reflect.get(serverManifest, referenceId);
+          if (!entry) throw new Error(`Could not find the module "${referenceId}"`);
+          return () => entry;
+        });
+      },
+      loadServerAction: () => Promise.resolve(action),
+      validateActionReferences,
+    });
+    return { action, options, validateActionReferences };
+  }
+
+  it("decodes argument references to Server Actions of the current route", async () => {
+    const { action, options, validateActionReferences } = createArgumentReferenceOptions(
+      ["a#owned"],
+      ["a#owned"],
+    );
+
+    const response = await handleServerActionRscRequest(options);
+
+    expect(response?.status).toBe(200);
+    expect(validateActionReferences).toHaveBeenCalledWith(["a#owned"]);
+    expect(action).toHaveBeenCalledWith(expect.any(Function));
+  });
+
+  it("does not resolve argument references to Server Actions of another route", async () => {
+    const { action, options } = createArgumentReferenceOptions(
+      ["a#owned", "b#foreign"],
+      ["a#owned"],
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = await handleServerActionRscRequest(options);
+
+      expect(response?.status).toBe(500);
+      expect(action).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
   });
 
   // Reproduces the prod-build error path where the @vitejs/plugin-rsc server
@@ -3650,6 +3849,147 @@ describe("app server action execution helpers", () => {
     revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
+
+  it("takes an intercepted re-render's fetch defaults from the interception, not its source route", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
+    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
+    // app/feed/page.tsx is force-static; app/feed/@modal/(.)photos/[id] isn't.
+    const sourceRoute: TestRoute = {
+      id: "feed",
+      page: {},
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+    };
+
+    const buildPageElement = vi.fn(() => "intercepted-page");
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        cleanPathname: "/photos/42",
+        currentRouteMatch: { params: {}, route: sourceRoute },
+        currentRoutePathname: "/photos/42",
+        findIntercept() {
+          return {
+            matchedParams: { id: "42" },
+            page: { default: "modal-photo", fetchCache: "force-no-store", revalidate: 30 },
+            slotKey: "modal",
+            sourceRouteIndex: 0,
+          };
+        },
+        getSourceRoute() {
+          return sourceRoute;
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/photos/42"));
+            return "revalidated";
+          });
+        },
+        resolveRouteDynamicConfig: () => "force-static",
+        resolveRouteFetchCacheMode: () => "force-cache",
+        resolveRouteRevalidateSeconds: () => 3600,
+        toInterceptOpts(intercept) {
+          const interceptOpts = {
+            interceptBranchSegments: ["photos", "[id]"],
+            interceptPage: intercept.page,
+            interceptSlotKey: intercept.slotKey,
+            slot: intercept.slotKey,
+          };
+          return interceptOpts;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(modeSpy).toHaveBeenLastCalledWith("force-no-store");
+    expect(revalidateSpy).toHaveBeenLastCalledWith(30);
+    expect(forceDynamicSpy).toHaveBeenLastCalledWith(false);
+    // The source's force-static would have emptied the query.
+    expect(buildPageElement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isForceStatic: false,
+        searchParams: new URLSearchParams("tab=activity"),
+      }),
+    );
+
+    modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
+    forceDynamicSpy.mockRestore();
+  });
+
+  it("takes a same-route intercepted re-render's fetch defaults from the interception", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
+    // app/shots/[id]/page.tsx is force-static; app/shots/@modal/(.)[id] isn't.
+    const shotRoute: TestRoute = {
+      id: "shots/[id]",
+      page: {},
+      params: ["id"],
+      pattern: "/shots/:id",
+      routeSegments: ["shots", "[id]"],
+    };
+
+    const buildPageElement = vi.fn(() => "intercepted-page");
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        cleanPathname: "/shots/2",
+        currentRouteMatch: { params: { id: "2" }, route: shotRoute },
+        // The direct page's runtime, which the interception doesn't choose.
+        isEdgeRuntime: true,
+        currentRoutePathname: "/shots/2",
+        findIntercept() {
+          return {
+            matchedParams: { id: "2" },
+            page: { default: "modal-shot", fetchCache: "force-no-store", revalidate: 30 },
+            slotKey: "modal",
+            sourceRouteIndex: 0,
+          };
+        },
+        getSourceRoute() {
+          return shotRoute;
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/shots/2"));
+            return "revalidated";
+          });
+        },
+        resolveRouteDynamicConfig: () => "force-static",
+        resolveRouteFetchCacheMode: () => "force-cache",
+        resolveRouteRevalidateSeconds: () => 3600,
+        toInterceptOpts(intercept) {
+          const interceptOpts = {
+            interceptBranchSegments: ["[id]"],
+            interceptPage: intercept.page,
+            interceptSlotKey: intercept.slotKey,
+            slot: intercept.slotKey,
+          };
+          return interceptOpts;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-edge-runtime")).toBeNull();
+    expect(modeSpy).toHaveBeenLastCalledWith("force-no-store");
+    expect(revalidateSpy).toHaveBeenLastCalledWith(30);
+    expect(buildPageElement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isForceStatic: false,
+        searchParams: new URLSearchParams("tab=activity"),
+      }),
+    );
+
+    modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
+  });
 });
 
 // The client-side counterpart of `createServerActionNotFoundResponse`: when the
@@ -3758,6 +4098,63 @@ describe("server reference module loading", () => {
     );
 
     expect(observed).toBe("no-request");
+  });
+
+  // The imports are memoized for the isolate, and workerd drops a canceled
+  // request's pending I/O, so the caller stays alive until they settle.
+  it.each([
+    ["decodes a progressive action", "progressive"],
+    ["loads a fetch action", "fetch"],
+  ] as const)("keeps the request that %s alive until its references load", async (_name, kind) => {
+    let entered: () => void = () => {};
+    const loading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release: () => void = () => {};
+    const loaded = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = async () => {
+      entered();
+      await loaded;
+    };
+    const waitUntil = vi.fn();
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    const request = kind === "progressive" ? createMultipartRequest() : createFetchActionRequest();
+
+    const handled = runWithRequestContext(
+      createRequestContext({
+        executionContext: { waitUntil },
+        headersContext: headersContextFromRequest(request),
+      }),
+      () =>
+        kind === "progressive"
+          ? handleProgressiveServerActionRequest(
+              createOptions({
+                request,
+                async decodeAction() {
+                  await load();
+                  return async () => {};
+                },
+                readFormDataWithLimit: () => Promise.resolve(formData),
+              }),
+            )
+          : handleServerActionRscRequest(
+              createRscOptions({
+                request,
+                async loadServerAction() {
+                  await load();
+                  return async () => "ok";
+                },
+              }),
+            ),
+    );
+
+    await loading;
+    expect(waitUntil).toHaveBeenCalledOnce();
+    release();
+    await handled;
   });
 
   it("decodes progressive action references outside the caller's request", async () => {

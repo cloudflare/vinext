@@ -6,8 +6,12 @@
  *   dev-server reads after render and injects into the HTML <head>.
  * - On the client: reduces all mounted <Head> instances into one deduped
  *   document.head projection and applies it with DOM manipulation.
+ *
+ * In the App Router, <Head> renders nothing and leaves the document head to
+ * the Metadata API, as in Next.js.
  */
 import React, { useEffect, useRef, Children, isValidElement } from "react";
+import { useIsAppRouterTree } from "./app-router-tree-context.js";
 
 type HeadProps = {
   children?: React.ReactNode;
@@ -103,11 +107,7 @@ export function getSSRHeadHTML(): string {
   // (not next/head), they don't appear in this collector — so emitting
   // `defaultHead + user + initialProps` here matches Next.js's serialised
   // output up to that boundary.
-  return reduceHeadChildren([
-    ...defaultHead(),
-    ..._getSSRHeadChildren(),
-    ..._getDocumentInitialHead(),
-  ])
+  return reduceHeadChildren([..._getSSRHeadChildren(), ..._getDocumentInitialHead()], defaultHead())
     .map((child) => headChildToHTML(child.type as string, child.props as Record<string, unknown>))
     .filter(Boolean)
     .join("");
@@ -251,7 +251,15 @@ function createUniqueHeadFilter(): (child: React.ReactElement) => boolean {
   };
 }
 
-export function reduceHeadChildren(headChildren: React.ReactNode[]): React.ReactElement[] {
+export function reduceHeadChildren(
+  headChildren: React.ReactNode[],
+  defaults: React.ReactElement[] = [],
+): React.ReactElement[] {
+  // Like Next.js's reduceComponents(), the defaults join after the children
+  // are flattened, so they keep their raw `charset` / `viewport` keys.
+  // Children.toArray would turn those into user keys (`.$viewport`), which
+  // skip the meta[name] dedupe and let the default sit next to an unkeyed
+  // user viewport.
   return headChildren
     .reduce<React.ReactNode[]>(
       (flattenedChildren, child) => flattenedChildren.concat(Children.toArray(child)),
@@ -259,6 +267,7 @@ export function reduceHeadChildren(headChildren: React.ReactNode[]): React.React
     )
     .reduce(collectHeadElements, [])
     .reverse()
+    .concat(defaults.slice().reverse())
     .filter(createUniqueHeadFilter())
     .reverse();
 }
@@ -273,8 +282,15 @@ const SAFE_ATTR_NAME_RE = /^[a-zA-Z][a-zA-Z0-9\-:.]*$/;
 
 export function isSafeAttrName(name: string): boolean {
   if (!SAFE_ATTR_NAME_RE.test(name)) return false;
-  // Block inline event handlers (onclick, onerror, etc.)
-  if (name.length > 2 && name[0] === "o" && name[1] === "n" && name[2] >= "A" && name[2] <= "z")
+  // Block inline event handlers (onclick, onerror, etc.). HTML attribute names
+  // are case-insensitive, so `ONERROR` or `Onload` become working handlers once
+  // parsed. Match React's server renderer, which drops every name longer than
+  // two characters that starts with "on" in any case.
+  if (
+    name.length > 2 &&
+    (name[0] === "o" || name[0] === "O") &&
+    (name[1] === "n" || name[1] === "N")
+  )
     return false;
   return true;
 }
@@ -500,8 +516,8 @@ export function _removeClientHeadInstance(instanceId: symbol): void {
  * tags — matching the SSR path in getSSRHeadHTML() and Next.js's
  * reduceComponents(), which always concatenates defaultHead() on both server
  * and client. Without it the first <Head> mount after hydration would drop the
- * server-rendered defaults. Users can still override via key="charset" /
- * key="viewport" through the dedupe pipeline.
+ * server-rendered defaults. A user <meta charSet> or <meta name="viewport">
+ * still replaces the matching default through the dedupe pipeline.
  *
  * @internal — exported for unit tests; called from the Head client effect.
  */
@@ -515,7 +531,7 @@ export function _syncClientHead(): void {
   const charsetEl = headEl.querySelector("meta[charset]");
   if (charsetEl) oldTags.add(charsetEl);
 
-  const desiredHead = reduceHeadChildren([...defaultHead(), ..._clientHeadChildren.values()]);
+  const desiredHead = reduceHeadChildren([..._clientHeadChildren.values()], defaultHead());
   const title = desiredHead.find((child) => child.type === "title");
   const titleChildren = (title?.props as { children?: React.ReactNode } | undefined)?.children;
   const titleText =
@@ -589,7 +605,7 @@ export function _syncClientHead(): void {
 
 // --- Component ---
 
-function Head({ children }: HeadProps): React.ReactElement {
+function PagesRouterHead({ children }: HeadProps): React.ReactElement {
   const headInstanceIdRef = useRef<symbol | null>(null);
   if (headInstanceIdRef.current === null) {
     headInstanceIdRef.current = Symbol("vinext-head");
@@ -624,6 +640,18 @@ function Head({ children }: HeadProps): React.ReactElement {
   });
 
   return React.createElement(React.Fragment);
+}
+
+/**
+ * Next.js ignores next/head in the App Router. Server components import a
+ * no-op Head, and client components get a HeadManagerContext without
+ * `mountedInstances`, so their tags never reach the document. Skip both the
+ * SSR collection and the client head sync there, so a client component
+ * shared with the Pages Router cannot override the Metadata API's tags.
+ */
+function Head(props: HeadProps): React.ReactElement {
+  if (useIsAppRouterTree()) return React.createElement(React.Fragment);
+  return React.createElement(PagesRouterHead, props);
 }
 
 export default Head;

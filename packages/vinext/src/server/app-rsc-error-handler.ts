@@ -26,12 +26,16 @@ export type AppRenderErrorContextOverrides = {
   routeType?: "render" | "action";
 };
 
+// The errors each request's handlers already logged.
+const loggedErrorsByRequest = new WeakMap<Request, WeakSet<object>>();
+
 /**
  * Build a per-request RSC error handler that extracts request metadata from
  * the incoming Web `Request`, wires it into a `createRscOnErrorHandler` call,
  * and binds the configured `reportRequestError` reporter.
  *
- * Pure factory: takes all deps explicitly — no closure over module-level state.
+ * Takes all deps explicitly. The only module-level state is the set of errors
+ * each request already logged, keyed weakly by its `Request`.
  */
 export function createAppRscOnErrorHandler(
   reportRequestError: ReportRequestError,
@@ -52,16 +56,22 @@ export function createAppRscOnErrorHandler(
     routeType: overrides?.routeType ?? ("render" as const),
     renderSource:
       overrides?.renderSource ??
-      (request.headers.get(RSC_HEADER) === "1" || new URL(request.url).pathname.endsWith(".rsc")
+      (request.headers.get(RSC_HEADER) === "1"
         ? ("react-server-components-payload" as const)
         : ("react-server-components" as const)),
     revalidateReason: isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER))
       ? ("on-demand" as const)
       : overrides?.revalidateReason,
   };
+  let loggedErrors = loggedErrorsByRequest.get(request);
+  if (!loggedErrors) {
+    loggedErrors = new WeakSet();
+    loggedErrorsByRequest.set(request, loggedErrors);
+  }
   return createRscOnErrorHandler({
     attachDigest: errorContext.renderSource !== "server-rendering",
     errorContext,
+    loggedErrors,
     reportRequestError(error, info, context) {
       void reportRequestError(error, info, context);
     },

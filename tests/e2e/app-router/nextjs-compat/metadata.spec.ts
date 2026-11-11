@@ -104,15 +104,87 @@ test.describe("Next.js compat: metadata (browser)", () => {
   });
 
   // Next.js: 'should support title template'
-  // Source: metadata.test.ts#L34-L38
-  test("title template applies correctly", async ({ page }) => {
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L36-L40
+  test("title template skips the page beside its layout", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/metadata-title-template`);
-    await expect(page).toHaveTitle("Page | Layout");
+    await expect(page).toHaveTitle("Page");
   });
 
   test("title template applies to child page", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/metadata-title-template/child`);
     await expect(page).toHaveTitle("Extra Page | Layout");
+  });
+
+  // Next.js: 'should support stashed title in one layer of page and layout'
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L42-L46
+  test("stashed title in one layer of page and layout", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/metadata-title-template/extra`);
+    await expect(page).toHaveTitle("Extra Page | Layout");
+  });
+
+  // Next.js: 'should support stashed title in two layers of page and layout'
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L55-L61
+  test("stashed title in two layers of page and layout", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/metadata-title-template/extra/inner`);
+    await expect(page).toHaveTitle("Inner Page | Extra Layout");
+    await page.goto(`${BASE}/nextjs-compat/metadata-title-template/extra/inner/deep`);
+    await expect(page).toHaveTitle("extra layout default | Layout");
+  });
+
+  test("a plain-string layout title clears the template", async ({ page }) => {
+    // Next.js 16.2.7 titles this "Leaf Page".
+    await page.goto(`${BASE}/nextjs-compat/metadata-title-template/plain/leaf`);
+    await expect(page).toHaveTitle("Leaf Page");
+  });
+
+  test("an intercepting layout beside its page keeps the template for it", async ({ page }) => {
+    // Next.js 16.2.7 titles these "Photo | Layout" and "Framed": only a
+    // layout above the intercepting page clears the template.
+    await page.goto(`${BASE}/nextjs-compat/metadata-title-template/intercept`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page.locator("#title-template-intercept-photo")).toBeVisible();
+    await expect(page).toHaveTitle("Photo | Layout");
+
+    await page.goto(`${BASE}/nextjs-compat/metadata-title-template/intercept`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Framed 1" }).click();
+    await expect(page.locator("#title-template-intercept-framed")).toBeVisible();
+    await expect(page).toHaveTitle("Framed");
+  });
+
+  test("openGraph and twitter titles take their own templates", async ({ page }) => {
+    // Each pair is og:title and twitter:title as Next.js 16.2.7 renders them.
+    const socialTitles = async (path: string) => {
+      await page.goto(`${BASE}/nextjs-compat/metadata-title-template/social${path}`);
+      return [
+        await page.locator('meta[property="og:title"]').getAttribute("content"),
+        await page.locator('meta[name="twitter:title"]').getAttribute("content"),
+      ];
+    };
+    // The layout's templates skip the page beside it.
+    expect(await socialTitles("")).toEqual(["Beside", "Beside"]);
+    expect(await socialTitles("/child")).toEqual(["Child | OG", "Child | TW"]);
+    // `parent` holds each title as `{ absolute, template }`.
+    const parentTitle = async (name: string) =>
+      JSON.parse((await page.locator(`meta[name="${name}"]`).getAttribute("content")) ?? "null");
+    expect(await parentTitle("parent-og-title")).toEqual({
+      absolute: "OG Default",
+      template: "%s | OG",
+    });
+    expect(await parentTitle("parent-twitter-title")).toEqual({
+      absolute: "TW Default",
+      template: "%s | TW",
+    });
+    expect(await socialTitles("/inherit")).toEqual(["OG Default", "TW Default"]);
+    // A template beside the page gives way to the one above it.
+    expect(await socialTitles("/extra")).toEqual(["Extra | OG", "TW Default"]);
+    // A plain-string title, or a value without a title, clears the template.
+    expect(await socialTitles("/plain/leaf")).toEqual(["Leaf", "Leaf"]);
+    // A missing twitter title comes from the resolved openGraph title.
+    expect(await socialTitles("/og-only")).toEqual(["OG Only | OG", "OG Only | OG"]);
+    // A layout beside the page that clears them still hands it the templates.
+    expect(await socialTitles("/cleared")).toEqual(["Cleared | OG", "Cleared | TW"]);
   });
 
   // Next.js: 'should support opengraph tags'

@@ -1,4 +1,18 @@
-export function formatDeployHelp(): string {
+import type { DeploymentTool } from "./deploy.js";
+
+export function formatDeployHelp(deploymentTool: DeploymentTool): string {
+  // cloudflare.config.ts projects reject these Wrangler-only flags.
+  const isWrangler = deploymentTool === "wrangler";
+  const wranglerOptions = isWrangler
+    ? `    --name <name>            Custom Worker name
+    --config <path>          Wrangler config path (default: wrangler.jsonc/json/toml)
+`
+    : "";
+  const wranglerExamples = isWrangler
+    ? `    vinext-cloudflare deploy --config dist/server/wrangler.json        Deploy using a generated Wrangler config
+    vinext-cloudflare deploy --name my-app                             Deploy with a custom Worker name
+`
+    : "";
   return `
   vinext-cloudflare deploy - Deploy to Cloudflare Workers
 
@@ -13,8 +27,7 @@ export function formatDeployHelp(): string {
   Options:
     --preview                Deploy to preview environment (same as --env preview)
     --env <name>             Cloudflare mode for typed config; Wrangler environment otherwise
-    --name <name>            Custom Worker name for Wrangler config projects
-    --config <path>          Wrangler config path (default: wrangler.jsonc/json/toml)
+${wranglerOptions}    --vite-config <path>     Vite config file to build with (default: vite.config.*)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying
     --verbose                Print raw output from internal Cloudflare CLI commands
@@ -86,15 +99,16 @@ export function formatDeployHelp(): string {
   be reused outside the data center reached by the warmup request after cache
   propagation, but the deploy does not wait for every edge location to fill.
 
+  --preview is an alias for --env preview. It selects a mode/environment,
+  not a Preview deployment. Use previews deploy to deploy a Worker Preview.
+
   Examples:
     npx @vinext/cloudflare deploy                                      Build and deploy to production
     vpx @vinext/cloudflare deploy                                      Build and deploy with Vite+
     vp exec vinext-cloudflare deploy                                   Run the locally installed Vite+ bin
-    vinext-cloudflare deploy --preview                                 Deploy to a preview URL
+    vinext-cloudflare deploy --preview                                 Deploy using mode/environment preview
     vinext-cloudflare deploy --env staging                             Deploy using Cloudflare mode/environment staging
-    vinext-cloudflare deploy --config dist/server/wrangler.json        Deploy using a generated Wrangler config
-    vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
-    vinext-cloudflare deploy --name my-app                             Deploy with a custom Worker name
+${wranglerExamples}    vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
     vinext-cloudflare deploy --no-promote                              Upload a version without changing deployment traffic
     vinext-cloudflare deploy --warm-cache                               Warm build-discovered paths during version deploy
     vinext-cloudflare deploy --warm-cache --warm-cache-target https://example.com
@@ -110,6 +124,34 @@ export function formatDeployHelp(): string {
 `;
 }
 
-export function printDeployHelp(): void {
-  console.log(formatDeployHelp());
+export function printDeployHelp(deploymentTool: DeploymentTool): void {
+  console.log(formatDeployHelp(deploymentTool));
+}
+
+export function formatPreviewsDeployHelp(): string {
+  return `
+  vinext-cloudflare previews deploy - Deploy a Cloudflare Worker Preview
+
+  Usage: vinext-cloudflare previews deploy [options]
+
+  Builds the app with isPreview=true, then deploys its Preview Build Output
+  using cf previews deploy. Requires cloudflare.config.ts and the cf CLI.
+
+  Options:
+    --preview-name <name>  Preview name (default: the current CI or Git branch)
+    --mode <mode>          Vite mode to build and deploy in (default: production)
+    --skip-build           Deploy existing Preview Build Output without rebuilding
+    --vite-config <path>   Vite config file to build with (default: vite.config.*)
+    -h, --help             Show this help
+
+  Examples:
+    vinext-cloudflare previews deploy
+    vinext-cloudflare previews deploy --preview-name pr-123
+    vinext-cloudflare previews deploy --preview-name pr-123 --mode staging
+    vinext-cloudflare previews deploy --preview-name pr-123 --skip-build
+`;
+}
+
+export function printPreviewsDeployHelp(): void {
+  console.log(formatPreviewsDeployHelp());
 }

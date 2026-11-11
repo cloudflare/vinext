@@ -1,5 +1,5 @@
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
-import type { RouteManifest } from "../routing/app-route-graph.js";
+import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import { mergeElements } from "vinext/shims/slot";
 import { resolveAppPageRouteStateKey } from "./app-page-segment-state.js";
 import {
@@ -255,8 +255,9 @@ function reduceApprovedVisibleCommitState(
           : bfcacheCompatiblePreserveElementIds;
       // Next stores a server template's rendered seed on the persistent layout
       // router. The template's child-segment state key may change to remount
-      // client state without replacing that seed. Compare only params bound by
-      // the template's own route prefix; refresh/HMR or a changed owner param
+      // client state without replacing that seed, so only the element is kept:
+      // its identity follows the destination. Compare only params bound by the
+      // template's own route prefix; refresh/HMR or a changed owner param
       // still installs fresh server output.
       const preserveTemplateIds =
         action.reuseCurrentBfcacheIds &&
@@ -273,14 +274,11 @@ function reduceApprovedVisibleCommitState(
                 ),
             )
           : [];
-      const mergedPreserveElementIds =
-        preserveTemplateIds.length === 0
-          ? preserveElementIds
-          : [...new Set([...preserveElementIds, ...preserveTemplateIds])];
       const mergedElements = mergeElements(state.elements, action.elements, {
         clearAbsentSlots: action.type === "traverse" || !action.reuseCurrentBfcacheIds,
         preserveAbsentSlots: action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,
-        preserveElementIds: mergedPreserveElementIds,
+        preserveElementIds,
+        preserveElementSeedIds: preserveTemplateIds,
         preservePreviousSlotIds: effectivePreservePreviousSlotIds,
       });
       return commitVisibleRouterState(
@@ -296,7 +294,6 @@ function reduceApprovedVisibleCommitState(
           elements: mergedElements,
           interception: action.interception,
           interceptionContext: action.interceptionContext,
-          layoutFlags: mergeLayoutFlags(state.layoutFlags, action.layoutFlags, preserveElementIds),
           layoutIds: action.layoutIds,
           navigationSnapshot: action.navigationSnapshot,
           previousNextUrl: action.previousNextUrl,
@@ -326,7 +323,7 @@ function resolvePendingNavigationCommitDecision(options: {
   activeNavigationId: number;
   currentState: AppRouterState;
   pending: PendingNavigationCommit;
-  routeManifest?: RouteManifest | null;
+  routeManifest?: BrowserRouteManifest | null;
   startedNavigationId: number;
   targetHref: string;
 }): CommitDecision {
@@ -364,20 +361,6 @@ function createVisibleCommitDecision(
     preservePreviousSlotIds: [...preservePreviousSlotIds],
     trace,
   };
-}
-
-function mergeLayoutFlags(
-  previousFlags: AppRouterState["layoutFlags"],
-  nextFlags: AppRouterState["layoutFlags"],
-  preserveElementIds: readonly string[],
-): AppRouterState["layoutFlags"] {
-  const merged: Record<string, "s" | "d"> = { ...nextFlags };
-  for (const id of preserveElementIds) {
-    if (Object.hasOwn(merged, id)) continue;
-    const value = previousFlags[id];
-    if (value) merged[id] = value;
-  }
-  return merged;
 }
 
 function createApprovedVisibleCommit(options: {
@@ -454,7 +437,7 @@ function addCommitTransactionTrace(
 export function approveHmrVisibleCommit(options: {
   currentState: AppRouterState;
   pending: PendingNavigationCommit;
-  routeManifest?: RouteManifest | null;
+  routeManifest?: BrowserRouteManifest | null;
   targetHref: string;
 }): CommitApproval {
   const { currentState, pending } = options;
@@ -488,7 +471,7 @@ export function approvePendingNavigationCommit(options: {
   activeNavigationId: number;
   currentState: AppRouterState;
   pending: PendingNavigationCommit;
-  routeManifest?: RouteManifest | null;
+  routeManifest?: BrowserRouteManifest | null;
   startedNavigationId: number;
   targetHref: string;
 }): CommitApproval {
@@ -539,7 +522,7 @@ export async function resolveAndClassifyNavigationCommit(options: {
   payloadOrigin: AppNavigationPayloadOrigin;
   previousNextUrl?: string | null;
   renderId: number;
-  routeManifest?: RouteManifest | null;
+  routeManifest?: BrowserRouteManifest | null;
   startedNavigationId: number;
   targetHref: string;
   type: "navigate" | "replace" | "traverse";

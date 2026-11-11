@@ -45,10 +45,12 @@ const renameBundledDepsOutput = (chunk: { name: string }) =>
 
 const bundledDependencies = [
   "am-i-vibing",
+  "iconv-lite",
   "ignore",
   "image-size",
   "process-ancestry",
   "pathslash",
+  "safer-buffer",
   "ua-parser-js",
 ];
 

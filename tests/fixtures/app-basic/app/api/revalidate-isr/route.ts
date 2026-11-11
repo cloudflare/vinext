@@ -16,7 +16,6 @@ const RESETTABLE_ISR_PATHS = new Set([
   "/route-handler-cache-identity/dynamic/alpha",
   "/route-handler-cache-identity/rewrite",
   "/api/route-cache-identity/trailing",
-  "/api/route-cache-identity/trailing/",
   "/api/host-tenant",
 ]);
 

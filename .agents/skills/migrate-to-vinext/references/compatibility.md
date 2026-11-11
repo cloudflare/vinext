@@ -112,4 +112,4 @@ These features are intentionally excluded:
 - `next/jest` (use Vitest)
 - `create-next-app` scaffolding
 - Bug-for-bug parity with undocumented Next.js behavior
-- Native Node modules in Workers (sharp, resvg, satori — auto-stubbed in production)
+- Native Node modules in Workers (sharp, @resvg/resvg-js, @napi-rs/canvas — Workers cannot load Node-API addons)

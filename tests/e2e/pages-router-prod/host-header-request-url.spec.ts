@@ -1,27 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
-
-function getWithHost(
-  baseURL: string,
-  path: string,
-  host: string,
-): Promise<{ body: string; headers: IncomingHttpHeaders; status: number }> {
-  const { hostname, port } = new URL(baseURL);
-  return new Promise((resolve, reject) => {
-    const req = httpRequest({ headers: { host }, host: hostname, path, port }, (res) => {
-      let body = "";
-      res.setEncoding("utf8");
-      res.on("data", (chunk) => (body += chunk));
-      res.on("end", () => resolve({ body, headers: res.headers, status: res.statusCode ?? 0 }));
-    });
-    req.on("error", reject);
-    req.end();
-  });
-}
+import { getWithHost, startRewriteUpstream } from "../helpers";
 
 // Next.js builds the middleware URL from its own hostname, so the Host header
-// never changes the pathname middleware matches. vinext keeps Host for the
-// origin only.
+// never changes the pathname middleware matches.
 test("a Host header cannot move the request path away from Pages middleware", async ({
   baseURL,
 }) => {
@@ -49,4 +30,35 @@ test("a Host header cannot move the request path away from Pages middleware", as
     expect(rewritten.headers["x-mw-pathname"]).toBe("/before-rewrite");
     expect(rewritten.body).toContain("About");
   }
+});
+
+// Next.js decides whether a middleware rewrite is external against its own
+// hostname and port, so a Host header naming the rewrite target's host cannot
+// make it internal and render the local page middleware protects.
+test("a Host header cannot turn an external middleware rewrite into an internal one", async ({
+  baseURL,
+}) => {
+  const origin = baseURL ?? "http://localhost:4175";
+  const upstream = await startRewriteUpstream();
+  try {
+    const attack = await getWithHost(origin, "/data-external-rewrite", upstream.host, {
+      "x-middleware-test-rewrite-target": `http://${upstream.host}/middleware-protected-data`,
+    });
+    expect(attack.body).not.toContain("only visible after middleware");
+    expect({ status: attack.status, body: attack.body }).toEqual({
+      status: 200,
+      body: "external upstream",
+    });
+    expect(upstream.hits).toEqual(["/middleware-protected-data"]);
+  } finally {
+    await upstream.close();
+  }
+
+  // Middleware's `new URL(path, request.url)` rewrites and redirects stay
+  // same-origin for any public Host.
+  const rewritten = await getWithHost(origin, "/rewritten", "public.example");
+  expect(rewritten.status).toBe(200);
+  const redirected = await getWithHost(origin, "/old-page", "public.example");
+  expect(redirected.status).toBe(307);
+  expect(redirected.headers.location).toBe("/about");
 });

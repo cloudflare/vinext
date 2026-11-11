@@ -96,7 +96,11 @@ export function getDomainLocaleUrl(
   if (!targetDomain) return undefined;
 
   const currentDomain = detectDomainLocale(domainItems, currentHostname ?? undefined);
-  const localizedPath = addLocalePrefix(url, locale, targetDomain.defaultLocale);
+  // The path is joined directly to the configured host below, so it must not
+  // continue the authority: `example.fr` + `@evil.com` would change the host.
+  // `?` and `#` already end the authority.
+  const path = /^[/?#]/.test(url) ? url : `/${url}`;
+  const localizedPath = addLocalePrefix(path, locale, targetDomain.defaultLocale);
 
   if (
     currentDomain &&

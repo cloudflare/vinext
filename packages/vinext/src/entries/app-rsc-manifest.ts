@@ -6,6 +6,7 @@ import {
   convertSegmentsToRouteParts,
   type AppRoute,
 } from "../routing/app-router.js";
+import { findSlotPageTreePosition } from "../routing/app-route-graph.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 
@@ -20,6 +21,10 @@ type AppRscManifestCode = {
   rootForbiddenVar: string | null;
   rootUnauthorizedVar: string | null;
   rootLayoutVars: string[];
+  /** Whether `app/layout` exists, rather than only route-group root layouts. */
+  hasAppRootLayout: boolean;
+  /** `app/not-found` when the app has no `app/layout`. */
+  appNotFoundVar: string | null;
   globalErrorVar: string | null;
   /**
    * Path expression for the `app/global-not-found.{tsx,ts,js,jsx}` module
@@ -57,6 +62,8 @@ type BuildAppRscManifestCodeOptions = {
    * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx
    */
   globalNotFoundPath?: string | null;
+  /** Optional `app/not-found.tsx` path, which renders without `app/layout`. */
+  appNotFoundPath?: string | null;
 };
 
 function findRootBoundaryRoute(routes: readonly AppRoute[]): AppRoute | undefined {
@@ -66,9 +73,30 @@ function findRootBoundaryRoute(routes: readonly AppRoute[]): AppRoute | undefine
   );
 }
 
+// Tree position 0 is the app directory itself.
+function hasAppDirectoryLayout(route: AppRoute): boolean {
+  return route.layouts.length > 0 && route.layoutTreePositions[0] === 0;
+}
+
+/**
+ * `app/not-found` in an app without `app/layout`. Next.js' /_not-found page
+ * renders it in a default layout there, rather than any route group's root
+ * layout.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+ */
+export function appDirectoryNotFoundPath(
+  routes: readonly AppRoute[],
+  appNotFoundPath: string | null | undefined,
+): string | null {
+  return routes.some(hasAppDirectoryLayout) ? null : (appNotFoundPath ?? null);
+}
+
+// With app/layout, Next.js' /_not-found page holds only the app directory's
+// own layout and boundaries, even when / sits in a route group with its own.
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
 function rootRouteLayoutPaths(route: AppRoute | undefined): readonly string[] {
   if (!route) return [];
-  if (route.pattern === "/") return route.layouts;
+  if (route.pattern === "/" && !hasAppDirectoryLayout(route)) return route.layouts;
 
   const rootPosition = route.layoutTreePositions[0];
   return route.layouts.filter((_, index) => route.layoutTreePositions[index] === rootPosition);
@@ -80,10 +108,40 @@ function rootRouteBoundaryPath(
   fallbackPath: string | null | undefined,
 ): string | null {
   if (!route) return null;
+  // Boundary arrays are aligned with layouts, so the first entry is app/'s.
+  if (hasAppDirectoryLayout(route)) return boundaryPaths?.[0] ?? null;
   if (route.pattern === "/") return fallbackPath ?? null;
   // Boundary arrays are ordered from the root layout outward by the route
   // scanner, so the first entry is the root boundary for non-root routes.
   return boundaryPaths?.[0] ?? fallbackPath ?? null;
+}
+
+/**
+ * The root not-found, forbidden and unauthorized boundaries, which a route
+ * without its own boundary falls back to. Without `app/layout`, a route group's
+ * boundaries render only with its own routes, which list them.
+ */
+export function rootBoundaryFiles(routes: readonly AppRoute[]): string[] {
+  if (!routes.some(hasAppDirectoryLayout)) return [];
+  const rootRoute = findRootBoundaryRoute(routes);
+  return [
+    rootRouteBoundaryPath(rootRoute, rootRoute?.notFoundPaths, rootRoute?.notFoundPath),
+    rootRouteBoundaryPath(rootRoute, rootRoute?.forbiddenPaths, rootRoute?.forbiddenPath),
+    rootRouteBoundaryPath(rootRoute, rootRoute?.unauthorizedPaths, rootRoute?.unauthorizedPath),
+  ].filter((file): file is string => file !== null);
+}
+
+/**
+ * The files a render without a matched route shows (a route-miss 404, or a
+ * forbidden or unauthorized boundary): the root layouts and root boundaries.
+ * Without `app/layout`, that render is only the 404 of `app/not-found`.
+ */
+export function rootBoundaryRouteFiles(
+  routes: readonly AppRoute[],
+  appNotFoundPath: string | null | undefined,
+): string[] {
+  if (!routes.some(hasAppDirectoryLayout)) return appNotFoundPath ? [appNotFoundPath] : [];
+  return [...rootRouteLayoutPaths(findRootBoundaryRoute(routes)), ...rootBoundaryFiles(routes)];
 }
 
 type ImportAllocator = {
@@ -193,6 +251,13 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
         if (up) imports.getLazyLoaderVar(up);
       }
     }
+    for (const boundaryPath of [
+      ...(route.segmentNotFoundPaths ?? []),
+      ...(route.segmentForbiddenPaths ?? []),
+      ...(route.segmentUnauthorizedPaths ?? []),
+    ]) {
+      imports.getLazyLoaderVar(boundaryPath);
+    }
     for (const slot of route.parallelSlots) {
       if (slot.pagePath) imports.getLazyLoaderVar(slot.pagePath);
       if (slot.defaultPath) imports.getLazyLoaderVar(slot.defaultPath);
@@ -205,10 +270,28 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
         imports.getLazyLoaderVar(loadingPath);
       }
       if (slot.errorPath) imports.getLazyLoaderVar(slot.errorPath);
+      for (const errorPath of slot.errorPaths ?? []) {
+        imports.getLazyLoaderVar(errorPath);
+      }
       if (slot.notFoundPath) imports.getLazyLoaderVar(slot.notFoundPath);
+      for (const notFoundPath of slot.notFoundPaths ?? []) {
+        imports.getLazyLoaderVar(notFoundPath);
+      }
       for (const ir of slot.interceptingRoutes) {
         imports.getLazyLoaderVar(ir.pagePath);
         if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath);
+        for (const forbiddenPath of ir.forbiddenPaths ?? []) {
+          imports.getLazyLoaderVar(forbiddenPath);
+        }
+        for (const unauthorizedPath of ir.unauthorizedPaths ?? []) {
+          imports.getLazyLoaderVar(unauthorizedPath);
+        }
+        for (const errorPath of ir.errorPaths ?? []) {
+          imports.getLazyLoaderVar(errorPath);
+        }
+        for (const notFoundPath of ir.notFoundPaths ?? []) {
+          imports.getLazyLoaderVar(notFoundPath);
+        }
         for (const layoutPath of ir.layoutPaths) {
           imports.getLazyLoaderVar(layoutPath);
         }
@@ -223,6 +306,18 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       // their layout chains into the entry's top-level evaluation.
       imports.getLazyLoaderVar(ir.pagePath);
       if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath);
+      for (const forbiddenPath of ir.forbiddenPaths ?? []) {
+        imports.getLazyLoaderVar(forbiddenPath);
+      }
+      for (const unauthorizedPath of ir.unauthorizedPaths ?? []) {
+        imports.getLazyLoaderVar(unauthorizedPath);
+      }
+      for (const errorPath of ir.errorPaths ?? []) {
+        imports.getLazyLoaderVar(errorPath);
+      }
+      for (const notFoundPath of ir.notFoundPaths ?? []) {
+        imports.getLazyLoaderVar(notFoundPath);
+      }
       for (const layoutPath of ir.layoutPaths) {
         imports.getLazyLoaderVar(layoutPath);
       }
@@ -245,7 +340,7 @@ function lazyLoaderArray(
 }
 
 function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
-  return routes.map((route, routeIdx) => {
+  return routes.map((route) => {
     // Pre-compute static-sibling segment names for the matched route's
     // dynamic URL levels. The client router uses this to decide if a cached
     // dynamic-route prefetch can be reused when navigating to a static
@@ -282,11 +377,23 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
       __loadInterceptLoadings: ${lazyLoaderArray(ir.loadingPaths ?? [], imports)},
       interceptLoadingTreePositions: ${JSON.stringify(ir.loadingTreePositions ?? [])},
       interceptNotFoundBranchSegments: ${JSON.stringify(ir.notFoundBranchSegments ?? ir.branchSegments ?? [])},
+      interceptNotFounds: ${moduleArray(ir.notFoundPaths?.length ?? 0)},
+      __loadInterceptNotFounds: ${lazyLoaderArray(ir.notFoundPaths ?? [], imports)},
+      interceptNotFoundTreePositions: ${JSON.stringify(ir.notFoundTreePositions ?? [])},
       page: null,
       __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
       notFound: null,
       __loadNotFound: ${ir.notFoundPath ? imports.getLazyLoaderVar(ir.notFoundPath) : "null"},
       notFoundTreePosition: ${ir.notFoundTreePosition ?? "null"},
+      interceptForbiddens: ${moduleArray(ir.forbiddenPaths?.length ?? 0)},
+      __loadInterceptForbiddens: ${lazyLoaderArray(ir.forbiddenPaths ?? [], imports)},
+      interceptForbiddenTreePositions: ${JSON.stringify(ir.forbiddenTreePositions ?? [])},
+      interceptUnauthorizeds: ${moduleArray(ir.unauthorizedPaths?.length ?? 0)},
+      __loadInterceptUnauthorizeds: ${lazyLoaderArray(ir.unauthorizedPaths ?? [], imports)},
+      interceptUnauthorizedTreePositions: ${JSON.stringify(ir.unauthorizedTreePositions ?? [])},
+      interceptErrors: ${moduleArray(ir.errorPaths?.length ?? 0)},
+      __loadInterceptErrors: ${lazyLoaderArray(ir.errorPaths ?? [], imports)},
+      interceptErrorTreePositions: ${JSON.stringify(ir.errorTreePositions ?? [])},
       params: ${JSON.stringify(ir.params)},
     }`,
     );
@@ -305,11 +412,23 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           __loadInterceptLoadings: ${lazyLoaderArray(ir.loadingPaths ?? [], imports)},
           interceptLoadingTreePositions: ${JSON.stringify(ir.loadingTreePositions ?? [])},
           interceptNotFoundBranchSegments: ${JSON.stringify(ir.notFoundBranchSegments ?? ir.branchSegments ?? [])},
+          interceptNotFounds: ${moduleArray(ir.notFoundPaths?.length ?? 0)},
+          __loadInterceptNotFounds: ${lazyLoaderArray(ir.notFoundPaths ?? [], imports)},
+          interceptNotFoundTreePositions: ${JSON.stringify(ir.notFoundTreePositions ?? [])},
           page: null,
           __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
           notFound: null,
           __loadNotFound: ${ir.notFoundPath ? imports.getLazyLoaderVar(ir.notFoundPath) : "null"},
           notFoundTreePosition: ${ir.notFoundTreePosition ?? "null"},
+          interceptForbiddens: ${moduleArray(ir.forbiddenPaths?.length ?? 0)},
+          __loadInterceptForbiddens: ${lazyLoaderArray(ir.forbiddenPaths ?? [], imports)},
+          interceptForbiddenTreePositions: ${JSON.stringify(ir.forbiddenTreePositions ?? [])},
+          interceptUnauthorizeds: ${moduleArray(ir.unauthorizedPaths?.length ?? 0)},
+          __loadInterceptUnauthorizeds: ${lazyLoaderArray(ir.unauthorizedPaths ?? [], imports)},
+          interceptUnauthorizedTreePositions: ${JSON.stringify(ir.unauthorizedTreePositions ?? [])},
+          interceptErrors: ${moduleArray(ir.errorPaths?.length ?? 0)},
+          __loadInterceptErrors: ${lazyLoaderArray(ir.errorPaths ?? [], imports)},
+          interceptErrorTreePositions: ${JSON.stringify(ir.errorTreePositions ?? [])},
           params: ${JSON.stringify(ir.params)},
         }`,
       );
@@ -326,6 +445,7 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         configLayouts: ${moduleArray(slot.configLayoutPaths?.length ?? 0)},
         __loadConfigLayouts: ${lazyLoaderArray(slot.configLayoutPaths ?? [], imports)},
         configLayoutTreePositions: ${JSON.stringify(slot.configLayoutTreePositions ?? [])},
+        pageTreePosition: ${findSlotPageTreePosition(slot) ?? "null"},
         loading: null,
         __loadLoading: ${slot.loadingPath ? imports.getLazyLoaderVar(slot.loadingPath) : "null"},
         loadings: ${moduleArray(slot.loadingPaths?.length ?? 0)},
@@ -333,9 +453,15 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         loadingTreePositions: ${JSON.stringify(slot.loadingTreePositions ?? [])},
         error: null,
         __loadError: ${slot.errorPath ? imports.getLazyLoaderVar(slot.errorPath) : "null"},
+        errors: ${moduleArray(slot.errorPaths?.length ?? 0)},
+        __loadErrors: ${lazyLoaderArray(slot.errorPaths ?? [], imports)},
+        errorTreePositions: ${JSON.stringify(slot.errorTreePositions ?? [])},
         notFound: null,
         __loadNotFound: ${slot.notFoundPath ? imports.getLazyLoaderVar(slot.notFoundPath) : "null"},
         notFoundTreePosition: ${slot.notFoundTreePosition ?? "null"},
+        notFounds: ${moduleArray(slot.notFoundPaths?.length ?? 0)},
+        __loadNotFounds: ${lazyLoaderArray(slot.notFoundPaths ?? [], imports)},
+        notFoundTreePositions: ${JSON.stringify(slot.notFoundTreePositions ?? [])},
         layoutIndex: ${slot.layoutIndex},
         routeSegments: ${JSON.stringify(slot.routeSegments)},
         slotPatternParts: ${slot.slotPatternParts ? JSON.stringify(slot.slotPatternParts) : "null"},
@@ -346,6 +472,9 @@ ${interceptEntries.join(",\n")}
       }`;
     });
     const layoutErrorPaths = route.layoutErrorPaths ?? [];
+    const segmentNotFoundPaths = route.segmentNotFoundPaths ?? [];
+    const segmentForbiddenPaths = route.segmentForbiddenPaths ?? [];
+    const segmentUnauthorizedPaths = route.segmentUnauthorizedPaths ?? [];
     const errorPaths = route.errorPaths ?? [];
     const layoutErrorLoaders = lazyLoaderArray(layoutErrorPaths, imports);
     const errorLoaders = lazyLoaderArray(errorPaths, imports);
@@ -356,8 +485,6 @@ ${interceptEntries.join(",\n")}
       ? imports.getLazyLoaderVar(route.routePath)
       : "null";
     return `  {
-    __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
-    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
     canUseCanonicalLoadingShell: ${appRouteHasMainTreeLoadingBoundary(route)},
     ids: ${JSON.stringify(route.ids ?? null)},
     pattern: ${JSON.stringify(route.pattern)},
@@ -412,6 +539,15 @@ ${siblingInterceptEntries.join(",\n")}
     unauthorizedTreePosition: ${route.unauthorizedTreePosition ?? "null"},
     unauthorizeds: ${moduleArray(unauthorizedPaths.length)},
     __loadUnauthorizeds: ${unauthorizedLoaders},
+    segmentNotFounds: ${moduleArray(segmentNotFoundPaths.length)},
+    __loadSegmentNotFounds: ${lazyLoaderArray(segmentNotFoundPaths, imports)},
+    segmentNotFoundTreePositions: ${JSON.stringify(route.segmentNotFoundTreePositions ?? [])},
+    segmentForbiddens: ${moduleArray(segmentForbiddenPaths.length)},
+    __loadSegmentForbiddens: ${lazyLoaderArray(segmentForbiddenPaths, imports)},
+    segmentForbiddenTreePositions: ${JSON.stringify(route.segmentForbiddenTreePositions ?? [])},
+    segmentUnauthorizeds: ${moduleArray(segmentUnauthorizedPaths.length)},
+    __loadSegmentUnauthorizeds: ${lazyLoaderArray(segmentUnauthorizedPaths, imports)},
+    segmentUnauthorizedTreePositions: ${JSON.stringify(route.segmentUnauthorizedTreePositions ?? [])},
   }`;
   });
 }
@@ -580,6 +716,9 @@ export function buildAppRscManifestCode(
   const rootLayoutVars = rootRouteLayoutPaths(rootRoute).map((layoutPath) =>
     imports.getImportVar(layoutPath),
   );
+  const hasAppRootLayout = options.routes.some(hasAppDirectoryLayout);
+  const appNotFoundPath = appDirectoryNotFoundPath(options.routes, options.appNotFoundPath);
+  const appNotFoundVar = appNotFoundPath ? imports.getImportVar(appNotFoundPath) : null;
   const globalErrorVar = options.globalErrorPath
     ? imports.getImportVar(options.globalErrorPath)
     : null;
@@ -612,6 +751,8 @@ export function buildAppRscManifestCode(
     rootForbiddenVar,
     rootUnauthorizedVar,
     rootLayoutVars,
+    hasAppRootLayout,
+    appNotFoundVar,
     globalErrorVar,
     globalNotFoundImportSpecifier,
   };

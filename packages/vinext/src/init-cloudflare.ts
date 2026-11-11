@@ -18,7 +18,6 @@ export type CloudflareProjectInfo = {
   hasMDX: boolean;
   /** The effective Next.js config sets `output: "export"`. */
   isStaticExport?: boolean;
-  nativeModulesToStub: string[];
 };
 
 const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
@@ -49,6 +48,8 @@ const CACHE_METADATA_BINDING = "CACHE_METADATA";
 const CACHE_METADATA_CLASS = "CacheMetadata";
 const CACHE_METADATA_EXPORT = { type: "durable-object", storage: "sqlite" } as const;
 const CTX_EXPORTS_DEFAULT_DATE = "2025-11-17";
+// Workers enables nodejs_compat by default from this compatibility date.
+const NODEJS_COMPAT_DEFAULT_DATE = "2026-08-04";
 
 export type CloudflarePlatformSetupContext = {
   root: string;
@@ -74,16 +75,21 @@ export function validateCloudflarePlatformSetup(
 ): void {
   // Programmatic callers skip parseNameArg, so validate the name here too.
   if (cloudflare.name !== undefined) validateWorkerName(cloudflare.name);
+  // The legacy setup updates the root Wrangler config, so it cannot ignore it.
+  if (cloudflare.legacyWrangler && cloudflare.ignoreWranglerConfig) {
+    throw new Error(
+      "--ignore-wrangler-config cannot be combined with --legacy-wrangler-cloudflare-init.",
+    );
+  }
   if (!cloudflare.legacyWrangler) {
-    const existingWrangler = [
-      "wrangler.toml",
-      "wrangler.json",
-      "wrangler.jsonc",
-      RESPONSE_STORE_WRANGLER_CONFIG,
-    ].find((name) => fs.existsSync(path.join(context.root, name)));
+    const existingWrangler = cloudflare.ignoreWranglerConfig
+      ? undefined
+      : ["wrangler.toml", "wrangler.json", "wrangler.jsonc", RESPONSE_STORE_WRANGLER_CONFIG].find(
+          (name) => fs.existsSync(path.join(context.root, name)),
+        );
     if (existingWrangler) {
       throw new Error(
-        `Cloudflare init cannot replace an existing Wrangler config (${existingWrangler}). Migrate its bindings to cloudflare.config.ts first, or use --legacy-wrangler-cloudflare-init to keep the Wrangler setup.`,
+        `Cloudflare init cannot replace an existing Wrangler config (${existingWrangler}). Migrate its bindings to cloudflare.config.ts first, use --ignore-wrangler-config if it belongs to another Worker, or use --legacy-wrangler-cloudflare-init to keep the Wrangler setup.`,
       );
     }
     const typedConfigPath = path.join(context.root, "cloudflare.config.ts");
@@ -124,7 +130,6 @@ export function validateCloudflarePlatformSetup(
         fs.readFileSync(context.existingViteConfigPath, "utf-8"),
         {
           isAppRouter: context.isAppRouter,
-          nativeModulesToStub: detectProject(context.root).nativeModulesToStub,
           cache: cloudflare,
         },
       );
@@ -141,7 +146,6 @@ export function validateCloudflarePlatformSetup(
     );
   }
 
-  const projectInfo = detectProject(context.root);
   const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
     .map((fileName) => path.join(context.root, fileName))
     .find((candidate) => fs.existsSync(candidate));
@@ -179,7 +183,6 @@ export function validateCloudflarePlatformSetup(
       fs.readFileSync(context.existingViteConfigPath, "utf-8"),
       {
         isAppRouter: context.isAppRouter,
-        nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
         assetsBinding,
         assetsDirectory,
@@ -232,7 +235,6 @@ export function setupCloudflarePlatform(
       currentConfig,
       {
         isAppRouter: context.isAppRouter,
-        nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
         assetsBinding,
         assetsDirectory,
@@ -267,7 +269,6 @@ export function setupCloudflarePlatform(
           context.hasCssModules,
         )
       : generatePagesRouterViteConfig(
-          projectInfo,
           cloudflare,
           imagesBinding,
           versionMetadataBinding,
@@ -322,7 +323,11 @@ export function setupCloudflarePlatform(
       );
     }
   }
-  const nextSteps: string[] = [];
+  // Warn only when this run chose the entry: an existing `main` is the app's own.
+  const wroteWorkerEntry = !wranglerCode || !findTopLevelJsonProperty(wranglerCode, "main");
+  const nextSteps: string[] = wroteWorkerEntry
+    ? workerEntryWarning(context.root, context.isStaticExport)
+    : [];
   if (
     cloudflare.cdnCache === "response-store" &&
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding"
@@ -381,7 +386,6 @@ function setupCfPlatform(
     const current = fs.readFileSync(context.existingViteConfigPath, "utf-8");
     let updated = updateViteConfigForCloudflare(context.existingViteConfigPath, current, {
       isAppRouter: context.isAppRouter,
-      nativeModulesToStub: projectInfo.nativeModulesToStub,
       cache: cloudflare,
     });
     if (context.hasCssModules) {
@@ -406,7 +410,6 @@ function setupCfPlatform(
           context.hasCssModules,
         )
       : generatePagesRouterViteConfig(
-          projectInfo,
           cloudflare,
           "IMAGES",
           DEFAULT_VERSION_METADATA_BINDING,
@@ -419,6 +422,7 @@ function setupCfPlatform(
 
   const configPath = path.join(context.root, "cloudflare.config.ts");
   const generatedPlatformFiles: string[] = [];
+  const nextSteps: string[] = [];
   if (!fs.existsSync(configPath)) {
     fs.writeFileSync(
       configPath,
@@ -429,8 +433,8 @@ function setupCfPlatform(
       ),
     );
     generatedPlatformFiles.push("cloudflare.config.ts");
+    nextSteps.push(...workerEntryWarning(context.root, context.isStaticExport));
   }
-  const nextSteps: string[] = [];
   if (serviceBinding) {
     nextSteps.push(
       "After `vinext build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
@@ -487,7 +491,6 @@ function generateTypedCloudflareConfig(
   worker: {
     name: ${JSON.stringify(responseStoreName)},
     compatibilityDate: ${JSON.stringify(today)},
-    compatibilityFlags: ["nodejs_compat"],
   },
   bucket: ${JSON.stringify(bucket)},
 });
@@ -533,7 +536,6 @@ ${shared}export default defineConfig({
     ${cacheSpread ? `...${cacheSpread},\n    ` : ""}name: ${JSON.stringify(info.projectName)},
     entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
     compatibilityDate: ${JSON.stringify(today)},
-    compatibilityFlags: ["nodejs_compat"],
     assets: {
       ${assetLines.join(",\n      ")},
     },
@@ -555,6 +557,24 @@ function resolveWorkerEntry(root: string): string {
   if (fs.existsSync(path.join(root, "worker", "index.ts"))) return "./worker/index.ts";
   if (fs.existsSync(path.join(root, "worker", "index.js"))) return "./worker/index.js";
   return "vinext/server/fetch-handler";
+}
+
+/**
+ * A `worker/index.*` that never reaches vinext's handler (say, a migrated Vite
+ * SPA's API Worker) answers every page route itself, so each one 404s (#4460).
+ */
+function workerEntryWarning(root: string, isStaticExport: boolean | undefined): string[] {
+  // A static export serves its pages asset-first, so the Worker never sees them.
+  if (isStaticExport) return [];
+  const entry = resolveWorkerEntry(root);
+  if (entry === "vinext/server/fetch-handler") return [];
+  const source = fs.readFileSync(path.join(root, entry), "utf-8");
+  if (source.includes("vinext/server/fetch-handler")) return [];
+  return [
+    `Warning: ${entry.slice(2)} does not import vinext/server/fetch-handler. As the Worker entry`,
+    "   it must hand requests to vinext, or every page 404s. Otherwise point the Worker entry",
+    "   (entrypoint in cloudflare.config.ts, or main in wrangler.jsonc) at vinext/server/fetch-handler.",
+  ];
 }
 
 /**
@@ -587,7 +607,6 @@ export function generateWranglerConfig(
     $schema: "node_modules/wrangler/config-schema.json",
     name: info.projectName,
     compatibility_date: today,
-    compatibility_flags: ["nodejs_compat"],
     main: workerEntry,
     assets: {
       directory: "dist/client",
@@ -1200,7 +1219,10 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
     typeof appConfig.compatibility_date === "string"
       ? appConfig.compatibility_date
       : new Date().toISOString().split("T")[0];
-  const compatibilityFlags = ["nodejs_compat"];
+  const compatibilityFlags: string[] = [];
+  if (compatibilityDate < NODEJS_COMPAT_DEFAULT_DATE) {
+    compatibilityFlags.push("nodejs_compat");
+  }
   if (compatibilityDate < CTX_EXPORTS_DEFAULT_DATE) {
     compatibilityFlags.push("enable_ctx_exports");
   }
@@ -1210,7 +1232,7 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
       name: serviceName,
       main: RESPONSE_STORE_MAIN,
       compatibility_date: compatibilityDate,
-      compatibility_flags: compatibilityFlags,
+      ...(compatibilityFlags.length > 0 ? { compatibility_flags: compatibilityFlags } : {}),
       workers_dev: false,
       preview_urls: false,
       cache: { enabled: false },
@@ -1601,9 +1623,7 @@ export function generateAppRouterViteConfig(
       : []),
   ];
 
-  if (hasCssModules || (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0)) {
-    imports.push(`import path from "node:path";`);
-  }
+  if (hasCssModules) imports.push(`import path from "node:path";`);
 
   const plugins: string[] = [];
   if (hasCssModules) plugins.push('    patchCssModules({ exportMode: "default" }),');
@@ -1631,34 +1651,18 @@ export function generateAppRouterViteConfig(
       },
     }),`);
 
-  // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // by the vinext plugin's native Vite support).
-  let resolveBlock = "";
-  const aliases: string[] = [];
-
-  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
-    for (const mod of info.nativeModulesToStub) {
-      aliases.push(`      "${mod}": path.resolve(__dirname, "empty-stub.js"),`);
-    }
-  }
-
-  if (aliases.length > 0) {
-    resolveBlock = `\n  resolve: {\n    alias: {\n${aliases.join("\n")}\n    },\n  },`;
-  }
-
   return `${imports.join("\n")}
 
 export default defineConfig({
   plugins: [
 ${plugins.join("\n")}
-  ],${resolveBlock}${hasCssModules ? cssModulesConfigSource() : ""}
+  ],${hasCssModules ? cssModulesConfigSource() : ""}
 });
 `;
 }
 
 /** Generate vite.config.ts for Pages Router */
 export function generatePagesRouterViteConfig(
-  info?: CloudflareProjectInfo,
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   imagesBinding = "IMAGES",
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
@@ -1684,24 +1688,7 @@ export function generatePagesRouterViteConfig(
       : []),
   ];
 
-  if (hasCssModules || (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0)) {
-    imports.push(`import path from "node:path";`);
-  }
-
-  // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // by the vinext plugin's native Vite support).
-  let resolveBlock = "";
-  const aliases: string[] = [];
-
-  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
-    for (const mod of info.nativeModulesToStub) {
-      aliases.push(`      "${mod}": path.resolve(__dirname, "empty-stub.js"),`);
-    }
-  }
-
-  if (aliases.length > 0) {
-    resolveBlock = `\n  resolve: {\n    alias: {\n${aliases.join("\n")}\n    },\n  },`;
-  }
+  if (hasCssModules) imports.push(`import path from "node:path";`);
 
   return `${imports.join("\n")}
 
@@ -1718,7 +1705,7 @@ ${hasCssModules ? '    patchCssModules({ exportMode: "default" }),\n' : ""}    $
     assetsDirectory,
   ).replace(/\n/g, "\n    ")},
     cloudflare(${legacyStaticAssets ? '{ viteEnvironment: { name: "ssr" } }' : serviceBinding ? "{ auxiliaryWorkers: [{ config: responseStoreServiceBinding }] }" : ""}),
-  ],${resolveBlock}${hasCssModules ? cssModulesConfigSource() : ""}
+  ],${hasCssModules ? cssModulesConfigSource() : ""}
 });
 `;
 }
@@ -2828,67 +2815,11 @@ export function updateViteConfigForCssModules(
   };
 }
 
-function ensureNativeAliases(
-  output: MagicString,
-  config: AstObject,
-  modules: string[],
-  pathBinding: string,
-  code: string,
-): void {
-  if (modules.length === 0) return;
-  const resolve = findProperty(config, "resolve");
-  if (resolve && resolve.value.type !== "ObjectExpression") {
-    throw new Error(
-      "The Vite config's resolve option must be an object for vinext init to update it.",
-    );
-  }
-  const resolveObject = resolve?.value as AstObject | undefined;
-  const alias = resolveObject ? findProperty(resolveObject, "alias") : undefined;
-  if (alias && alias.value.type !== "ObjectExpression") {
-    throw new Error(
-      "The Vite config's resolve.alias option must be an object for vinext init to update it.",
-    );
-  }
-  const aliasLines = modules.map(
-    (moduleName) =>
-      `      ${JSON.stringify(moduleName)}: ${pathBinding}.resolve(__dirname, "empty-stub.js"),`,
-  );
-  if (!resolveObject) {
-    insertObjectProperty(
-      output,
-      config,
-      `  resolve: {\n    alias: {\n${aliasLines.join("\n")}\n    },\n  },`,
-      code,
-    );
-    return;
-  }
-  if (!alias) {
-    insertObjectProperty(
-      output,
-      resolveObject,
-      `    alias: {\n${aliasLines.join("\n")}\n    },`,
-      code,
-    );
-    return;
-  }
-  const aliasObject = alias.value as AstObject;
-  const existingAliases = new Set(
-    aliasObject.properties.flatMap((property) =>
-      property.type === "Property" && propertyName(property) ? [propertyName(property)!] : [],
-    ),
-  );
-  const missingLines = aliasLines.filter((_, index) => !existingAliases.has(modules[index]));
-  if (missingLines.length > 0) {
-    insertObjectProperty(output, aliasObject, missingLines.join("\n"), code);
-  }
-}
-
 export function updateViteConfigForCloudflare(
   filePath: string,
   code: string,
   options: {
     isAppRouter: boolean;
-    nativeModulesToStub: string[];
     cache?: CloudflareInitOptions;
     assetsBinding?: string;
     assetsDirectory?: string;
@@ -3245,26 +3176,6 @@ export function updateViteConfigForCloudflare(
         );
       }
     }
-  }
-
-  if (options.nativeModulesToStub.length > 0) {
-    const existingPathBinding = commonJs
-      ? findRequiredBinding(program, "node:path", "default")
-      : program.body
-          .filter(
-            (statement): statement is ESTree.ImportDeclaration =>
-              statement.type === "ImportDeclaration",
-          )
-          .find((statement) => statement.source.value === "node:path")
-          ?.specifiers.find(
-            (specifier): specifier is ESTree.ImportDefaultSpecifier =>
-              specifier.type === "ImportDefaultSpecifier",
-          )?.local.name;
-    const pathLocal = existingPathBinding ?? allocateBinding(bindings, "path");
-    const pathBinding = commonJs
-      ? ensureDefaultRequire(program, output, "node:path", pathLocal)
-      : ensureDefaultImport(program, output, "node:path", pathLocal);
-    ensureNativeAliases(output, config, options.nativeModulesToStub, pathBinding, code);
   }
 
   return formatInlineConfig(filePath, output.toString(), code);

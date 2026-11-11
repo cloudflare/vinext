@@ -1,4 +1,5 @@
 import type {
+  CdnAppPageDocument,
   CdnCacheAdapter,
   CdnCacheableHeaderInput,
   CdnResponseHeaders,
@@ -6,6 +7,7 @@ import type {
 
 import createCloudflareCdnCacheAdapter from "./cdn-adapter.runtime.js";
 import {
+  captureResponseStoreAppPageDocument,
   captureResponseStoreRscData,
   deferResponseStoreAdmission,
   deferResponseStoreNotModified,
@@ -45,6 +47,9 @@ class ResponseStoreCdnCacheAdapter implements CdnCacheAdapter {
   }
   captureAppPageRscData(rscData: Promise<ArrayBuffer>): void {
     captureResponseStoreRscData(rscData);
+  }
+  captureAppPageDocument(): ((document: CdnAppPageDocument | null) => void) | undefined {
+    return captureResponseStoreAppPageDocument();
   }
   deferNotModifiedResponse(): boolean {
     return deferResponseStoreNotModified();

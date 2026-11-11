@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import Module from "node:module";
 import { execFileSync, type ChildProcess, type spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -26,7 +27,9 @@ import {
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
+  withCloudflarePreviewBuild,
 } from "../packages/cloudflare/src/deploy.js";
+import { parsePreviewsDeployArgs } from "../packages/cloudflare/src/previews-deploy.js";
 import {
   detectPackageManager,
   detectPackageManagerName,
@@ -65,7 +68,11 @@ import {
   buildPagesClientAssetsModule,
   writePagesClientAssetsModuleIfMissing,
 } from "../packages/vinext/src/build/pages-client-assets-module.js";
-import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-request-pipeline.js";
+import {
+  fetchWorkerFilesystemRoute,
+  isServableFilesystemRoute,
+} from "../packages/vinext/src/server/pages-request-pipeline.js";
+import { publicFileRouteKey } from "../packages/vinext/src/utils/public-file-path.js";
 import {
   createStaticAssetRequest,
   finalizeMissingStaticAssetResponse,
@@ -244,6 +251,16 @@ describe("deploy environment validation", () => {
     await expect(deploy({ root: tmpDir, name: "cli-worker", dryRun: true })).rejects.toThrow(
       "Set `name` in cloudflare.config.ts instead.",
     );
+  });
+
+  it("rejects a Wrangler config path for typed Cloudflare config projects", async () => {
+    await expect(
+      deploy({
+        root: path.resolve("examples/static-assets-cache"),
+        config: "wrangler.jsonc",
+        dryRun: true,
+      }),
+    ).rejects.toThrow("--config is not supported for cloudflare.config.ts projects.");
   });
 
   it("rejects invalid environment names before project side effects", async () => {
@@ -602,6 +619,81 @@ describe("cf Build Output deployment", () => {
       args: ["deploy", "--prebuilt", "--mode", "staging"],
       mode: "staging",
     });
+    expect(buildCfDeployArgs({ preview: true })).toEqual({
+      args: ["deploy", "--prebuilt", "--mode", "preview"],
+      mode: "preview",
+    });
+  });
+
+  it.each([undefined, "pr-123"])("builds Preview deploy args (name: %s)", (name) => {
+    expect(buildCfDeployArgs({ env: "preview", target: { type: "preview", name } })).toEqual({
+      args: [
+        "previews",
+        "deploy",
+        ...(name ? ["--preview-name", name] : []),
+        "--prebuilt",
+        "--mode",
+        "preview",
+      ],
+      mode: "preview",
+    });
+  });
+
+  it.each([true, false])("parses CF's Preview output (named URL: %s)", async (hasNamedUrl) => {
+    writeCfPackageForTest(tmpDir);
+    const output = JSON.stringify(
+      {
+        type: "preview",
+        deployment_urls: ["https://deployment.example.workers.dev"],
+        preview_urls: hasNamedUrl ? ["https://main.example.workers.dev"] : [],
+      },
+      null,
+      2,
+    );
+    const invocations: Parameters<typeof spawn>[] = [];
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      invocations.push(args);
+      return createMockChildProcess(`${output}\n`);
+    }) as typeof spawn;
+
+    await expect(
+      runCfDeploy(tmpDir, { env: "preview", target: { type: "preview", name: "main" } }, execute),
+    ).resolves.toBe(
+      hasNamedUrl ? "https://main.example.workers.dev" : "https://deployment.example.workers.dev",
+    );
+    expect(invocations).toEqual([
+      [
+        process.execPath,
+        [
+          resolveCfBin(tmpDir),
+          "previews",
+          "deploy",
+          "--preview-name",
+          "main",
+          "--prebuilt",
+          "--mode",
+          "preview",
+        ],
+        { cwd: tmpDir, stdio: ["inherit", "pipe", "pipe"], shell: false },
+      ],
+    ]);
+  });
+
+  it("reports a failed Preview deployment", async () => {
+    writeCfPackageForTest(tmpDir);
+    const execute = (() => createMockChildProcess("", 1)) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, { target: { type: "preview" } }, execute)).rejects.toThrow(
+      "cf previews deploy failed with exit code 1",
+    );
+  });
+
+  it("rejects Preview deployments for Wrangler projects", async () => {
+    writeFile(tmpDir, "wrangler.jsonc", "{}");
+
+    await expect(deploy({ root: tmpDir, target: { type: "preview" } })).rejects.toThrow(
+      "require a cloudflare.config.ts project",
+    );
   });
 
   it("runs cf with shell disabled and returns its workers.dev URL", async () => {
@@ -740,6 +832,80 @@ describe("parseWorkerDeploymentUrl", () => {
 
 // ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
 
+describe("parsePreviewsDeployArgs", () => {
+  it("accepts an optional Preview name, mode, skip-build, and help", () => {
+    expect(parsePreviewsDeployArgs([])).toEqual({
+      name: undefined,
+      mode: undefined,
+      skipBuild: false,
+      help: false,
+    });
+    expect(
+      parsePreviewsDeployArgs(["--preview-name", "pr-123", "--mode", "staging", "--skip-build"]),
+    ).toEqual({
+      name: "pr-123",
+      mode: "staging",
+      skipBuild: true,
+      help: false,
+    });
+    expect(parsePreviewsDeployArgs(["--help"]).help).toBe(true);
+    expect(parsePreviewsDeployArgs(["-h"]).help).toBe(true);
+  });
+
+  it.each([
+    "--env",
+    "--prebuilt",
+    "--worker",
+    "--name",
+    "--dry-run",
+    "--preview",
+    "--warm-cache",
+    "--traffic-aware-warm-cache",
+    "--no-promote",
+  ])("rejects unsupported option %s", (option) => {
+    expect(() => parsePreviewsDeployArgs([option])).toThrow();
+  });
+
+  it("rejects a positional Preview name", () => {
+    expect(() => parsePreviewsDeployArgs(["pr-123"])).toThrow(
+      "Unexpected argument: pr-123. Pass the Preview name with --preview-name <name>.",
+    );
+  });
+
+  it("rejects invalid Preview names", () => {
+    expect(() => parsePreviewsDeployArgs(["--preview-name", " "])).toThrow("must not be empty");
+    expect(() => parsePreviewsDeployArgs(["--preview-name", "pr\0name"])).toThrow("null bytes");
+  });
+
+  it.each([["--mode="], ["--mode", " "]])("rejects an empty mode: %j", (...args) => {
+    expect(() => parsePreviewsDeployArgs(args)).toThrow("--mode requires a non-empty value.");
+  });
+});
+
+describe("withCloudflarePreviewBuild", () => {
+  it.each([undefined, "false"])(
+    "restores the previous flag %s after success and failure",
+    async (previous) => {
+      vi.stubEnv("CLOUDFLARE_PREVIEW_BUILD", previous);
+      try {
+        await withCloudflarePreviewBuild(async () => {
+          expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe("true");
+        });
+        expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe(previous);
+        await expect(
+          withCloudflarePreviewBuild(async () => {
+            expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe("true");
+            throw new Error("Preview build failed");
+          }),
+        ).rejects.toThrow("Preview build failed");
+        expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe(previous);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+});
+
 describe("parseDeployArgs", () => {
   it("forwards the parsed Wrangler config through the deploy CLI", () => {
     const cliSource = fs.readFileSync(
@@ -874,8 +1040,20 @@ describe("parseDeployArgs", () => {
     expect(parsed.verbose).toBe(true);
   });
 
+  it("offers the Wrangler-only --name and --config flags only for Wrangler config projects", () => {
+    const wranglerHelp = formatDeployHelp("wrangler");
+    expect(wranglerHelp).toContain("--name <name>");
+    expect(wranglerHelp).toContain("--config <path>");
+    expect(wranglerHelp).toContain("deploy --name my-app");
+
+    const cfHelp = formatDeployHelp("cf");
+    expect(cfHelp).toContain("--vite-config <path>");
+    expect(cfHelp).not.toMatch(/\s--name\b/);
+    expect(cfHelp).not.toMatch(/\s--config\b/);
+  });
+
   it("documents verbose Wrangler output and no-progress probe timeouts", () => {
-    const help = formatDeployHelp();
+    const help = formatDeployHelp("cf");
     expect(help).toContain("--verbose");
     expect(help).toContain("Abort when cacheability probing makes no progress");
     expect(help).toContain("--traffic-aware-warm-cache");
@@ -1047,7 +1225,7 @@ describe("parseDeployArgs", () => {
         expect(warn).toHaveBeenCalledWith(
           "[vinext] --warm-cache-include-fallbacks is deprecated and has no effect.",
         );
-        expect(formatDeployHelp()).not.toContain("include-fallbacks");
+        expect(formatDeployHelp("cf")).not.toContain("include-fallbacks");
       } finally {
         warn.mockRestore();
       }
@@ -1074,7 +1252,7 @@ describe("parseDeployArgs", () => {
   it("parses the general no-promote flag and keeps the warmup-specific alias", () => {
     expect(parseDeployArgs(["--no-promote"]).warmCdnPromote).toBe(false);
     expect(parseDeployArgs(["--warm-cache-no-promote"]).warmCdnPromote).toBe(false);
-    expect(formatDeployHelp()).toContain("--no-promote");
+    expect(formatDeployHelp("cf")).toContain("--no-promote");
   });
 
   it("allows the CDN warmup promotion delay to be set to zero", () => {
@@ -1234,6 +1412,28 @@ describe("detectProject", () => {
     expect(detectProject(tmpDir).hasWrangler).toBe(false);
   });
 
+  it("ignores a Wrangler the project only reaches through NODE_PATH", () => {
+    // pnpm's bin shims put node_modules/.pnpm/node_modules on NODE_PATH. Node
+    // reads NODE_PATH once at startup; re-run its path setup so this test
+    // controls it.
+    const hoisted = path.join(tmpDir, "hoisted");
+    const project = path.join(tmpDir, "project");
+    writeWranglerPackageForTest(hoisted);
+    mkdir(project, "app");
+    const originalNodePath = process.env.NODE_PATH;
+    const setNodePath = (value: string | undefined) => {
+      if (value === undefined) delete process.env.NODE_PATH;
+      else process.env.NODE_PATH = value;
+      (Module as unknown as { _initPaths(): void })._initPaths();
+    };
+    try {
+      setNodePath(path.join(hoisted, "node_modules"));
+      expect(detectProject(project).hasWrangler).toBe(false);
+    } finally {
+      setNodePath(originalNodePath);
+    }
+  });
+
   it("detects cloudflare.config.ts", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "cloudflare.config.ts", "export default {};");
@@ -1316,6 +1516,18 @@ describe("detectProject", () => {
     writeFile(tmpDir, "next.config.ts", "export default { cacheComponents: true };");
     expect(detectProject(tmpDir).hasISR).toBe(true);
   });
+
+  it.each([
+    ["export default { experimental: { cacheComponents: true } };", true],
+    ["export default { cacheComponents: true, experimental: { cacheComponents: false } };", false],
+  ])(
+    "lets a legacy experimental.cacheComponents override the top-level key: %s",
+    (config, expected) => {
+      mkdir(tmpDir, "app");
+      writeFile(tmpDir, "next.config.ts", config);
+      expect(detectProject(tmpDir).hasISR).toBe(expected);
+    },
+  );
 });
 
 describe("route cacheability probe manifest deployment", () => {
@@ -1354,7 +1566,7 @@ describe("generateWranglerConfig", () => {
     const parsed = JSON.parse(config);
 
     expect(parsed.name).toBe(info.projectName);
-    expect(parsed.compatibility_flags).toContain("nodejs_compat");
+    expect(parsed.compatibility_flags).toBeUndefined();
     expect(parsed.main).toBe("vinext/server/fetch-handler");
     expect(parsed.assets).toEqual({
       directory: "dist/client",
@@ -1611,6 +1823,12 @@ describe("formatImageOptimizationHint", () => {
     expect(message).toContain("cloudflare.config.ts");
     expect(message).not.toContain("Wrangler");
   });
+
+  it("does not suggest init for a --vite-config file", () => {
+    const message = formatImageOptimizationHint(false, "/project/vite.web.config.ts");
+    expect(message).toContain("imagesOptimizer() in\n  /project/vite.web.config.ts");
+    expect(message).not.toContain("vinext init");
+  });
 });
 
 describe("scanPublicFileRoutes", () => {
@@ -1633,6 +1851,16 @@ describe("scanPublicFileRoutes", () => {
     expect(scanPublicFileRoutes(tmpDir, false)).toEqual([]);
     // Vite's resolved config represents `publicDir: false` as an empty string.
     expect(scanPublicFileRoutes(tmpDir, "")).toEqual([]);
+  });
+
+  it("lists the files under every symlink to a directory without following a loop", () => {
+    writeFile(tmpDir, "shared/logo.svg", "<svg />");
+    mkdir(tmpDir, "public");
+    fs.symlinkSync(path.join(tmpDir, "shared"), path.join(tmpDir, "public/a"), "junction");
+    fs.symlinkSync(path.join(tmpDir, "shared"), path.join(tmpDir, "public/b"), "junction");
+    fs.symlinkSync(path.join(tmpDir, "public"), path.join(tmpDir, "public/loop"), "junction");
+
+    expect(scanPublicFileRoutes(tmpDir)).toEqual(["/a/logo.svg", "/b/logo.svg"]);
   });
 
   // Ported from Next.js: test/e2e/dynamic-routing/shared.ts
@@ -2181,6 +2409,13 @@ describe("readPagesRouterEntrySource", () => {
     expect(Object.fromEntries(assetRequest.headers)).toEqual(Object.fromEntries(source.headers));
   });
 
+  it("keeps a ? or # in a public file's name in the asset path", () => {
+    const source = new Request("https://example.com/a%23b.txt?x=1");
+
+    expect(createStaticAssetRequest("/a#b.txt", source).url).toBe("https://example.com/a%23b.txt");
+    expect(createStaticAssetRequest("/a?b.txt", source).url).toBe("https://example.com/a%3Fb.txt");
+  });
+
   it("retargets Worker assets with middleware's request header overrides", () => {
     const source = new Request("https://example.com/video.mp4", {
       method: "HEAD",
@@ -2293,6 +2528,35 @@ describe("readPagesRouterEntrySource", () => {
   });
 });
 
+describe("isServableFilesystemRoute", () => {
+  it("serves only public files directly and build assets through rewrites", () => {
+    const publicFiles = new Set(["/visible.txt", "/api/schema.json"]);
+    expect(isServableFilesystemRoute("/visible.txt", "direct", "GET", publicFiles)).toBe(true);
+    expect(isServableFilesystemRoute("/api/schema.json", "direct", "GET", publicFiles)).toBe(true);
+    expect(
+      isServableFilesystemRoute("/vinext-client-entry-manifest.json", "direct", "GET", publicFiles),
+    ).toBe(false);
+    expect(isServableFilesystemRoute("/_next/static/a.js", "direct", "GET", publicFiles)).toBe(
+      false,
+    );
+    expect(isServableFilesystemRoute("/_next/static/a.js", "afterFiles", "GET", publicFiles)).toBe(
+      true,
+    );
+  });
+
+  // The pathname is authorized as the file a server serves when it decodes it
+  // once, not only as the URL resolves it.
+  it("rejects encoded separators that name a different file once decoded", () => {
+    expect(
+      isServableFilesystemRoute("/_next%5Cstatic%5Cprivate.json", "afterFiles", "GET", new Set()),
+    ).toBe(false);
+
+    const publicFiles = new Set([publicFileRouteKey("/a%2Fb.txt")]);
+    expect(isServableFilesystemRoute("/a%2Fb.txt", "direct", "GET", publicFiles)).toBe(false);
+    expect(isServableFilesystemRoute("/a%252Fb.txt", "direct", "GET", publicFiles)).toBe(true);
+  });
+});
+
 describe("fetchWorkerFilesystemRoute", () => {
   // Like Next.js router-utils/filesystem.ts, rewrites resolve only public files
   // and the build asset tree, not arbitrary files in the deployment binding.
@@ -2364,6 +2628,54 @@ describe("fetchWorkerFilesystemRoute", () => {
       expect(new URL(fetchAsset.mock.calls[0][0].url).search).toBe("");
     },
   );
+
+  // Like Next.js' filesystem getItem, nothing resolves outside the basePath,
+  // whether the request's own pathname or a rewrite destination.
+  it.each(["direct", "beforeFiles", "afterFiles", "fallback"] as const)(
+    "resolves nothing outside the basePath during %s",
+    async (phase) => {
+      const fetchAsset = vi.fn(async () => new Response("asset"));
+      for (const pathname of ["/file.txt", "/_next/static/app.js"]) {
+        expect(
+          await fetchWorkerFilesystemRoute(
+            new Request("https://example.com/docs/source"),
+            pathname,
+            phase,
+            fetchAsset,
+            new Set(["/file.txt"]),
+            "/docs",
+            "",
+            false,
+          ),
+        ).toBe(false);
+      }
+      expect(fetchAsset).not.toHaveBeenCalled();
+    },
+  );
+
+  // Next.js' built-in assetPrefix rewrite maps `${assetPrefix}/_next/*` into
+  // the basePath, so a path assetPrefix outside it still reaches build assets.
+  it("still resolves build assets under an assetPrefix outside the basePath", async () => {
+    const fetchAsset = vi.fn(async () => new Response("asset"));
+    const lookup = (pathname: string) =>
+      fetchWorkerFilesystemRoute(
+        new Request("https://example.com/cdn/source", { method: "POST" }),
+        pathname,
+        "direct",
+        fetchAsset,
+        new Set(["/cdn/file.txt"]),
+        "/docs",
+        "/cdn",
+        false,
+      );
+
+    const result = await lookup("/cdn/_next/static/app.js");
+    expect(result).not.toBe(false);
+    expect((result as Response).status).toBe(405);
+    expect(await lookup("/cdn/file.txt")).toBe(false);
+    expect(await lookup("/_next/static/app.js")).toBe(false);
+    expect(fetchAsset).toHaveBeenCalledOnce();
+  });
 
   it("falls through on asset misses and preserves HEAD", async () => {
     const fetchAsset = vi.fn(async (request: Request) => {
@@ -2520,9 +2832,10 @@ describe("fetchWorkerFilesystemRoute", () => {
     },
   );
 
-  it("serves a public file a rewrite brings in from outside basePath", async () => {
+  it("serves a public file a rewrite brings into basePath from outside it", async () => {
     const fetchAsset = vi.fn(async () => new Response("public"));
 
+    // The destination's basePath decides, not the request's.
     const result = await fetchWorkerFilesystemRoute(
       new Request("https://example.com/source"),
       "/file.txt",
@@ -2531,7 +2844,7 @@ describe("fetchWorkerFilesystemRoute", () => {
       new Set(["/file.txt"]),
       "/docs",
       "",
-      false,
+      true,
     );
 
     expect(result).toBeInstanceOf(Response);
@@ -2957,6 +3270,16 @@ describe("formatMissingCloudflarePluginError", () => {
     expect(msg).toContain("/project/vite.config.mts");
   });
 
+  it("does not suggest init when it would not update the config file", () => {
+    const msg = formatMissingCloudflarePluginError({
+      isAppRouter: false,
+      configFile: "/project/vite.web.config.ts",
+      initUpdatesConfig: false,
+    });
+    expect(msg).toContain("Add it to /project/vite.web.config.ts.");
+    expect(msg).not.toContain("vinext init");
+  });
+
   it("uses generic 'your Vite config' when configFile is undefined", () => {
     const msg = formatMissingCloudflarePluginError({ isAppRouter: false });
     expect(msg).toContain("your Vite config");
@@ -3227,37 +3550,6 @@ describe("detectProject — new detection features", () => {
     expect(info.hasCodeHike).toBe(false);
   });
 
-  it("detects native modules to stub", () => {
-    mkdir(tmpDir, "app");
-    writeFile(
-      tmpDir,
-      "package.json",
-      JSON.stringify({ dependencies: { "@resvg/resvg-js": "^2.0.0", satori: "^0.10.0" } }),
-    );
-    const info = detectProject(tmpDir);
-    expect(info.nativeModulesToStub).toContain("@resvg/resvg-js");
-    expect(info.nativeModulesToStub).toContain("satori");
-  });
-
-  it("detects native modules listed only in devDependencies", () => {
-    mkdir(tmpDir, "app");
-    writeFile(
-      tmpDir,
-      "package.json",
-      JSON.stringify({ devDependencies: { sharp: "^0.33.0", lightningcss: "^1.0.0" } }),
-    );
-    const info = detectProject(tmpDir);
-    expect(info.nativeModulesToStub).toContain("sharp");
-    expect(info.nativeModulesToStub).toContain("lightningcss");
-  });
-
-  it("nativeModulesToStub is empty when no native deps", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { react: "^19.0.0" } }));
-    const info = detectProject(tmpDir);
-    expect(info.nativeModulesToStub).toEqual([]);
-  });
-
   it("detects ISR and MDX from a single app/ tree walk", () => {
     // ISR (`export const revalidate`) and a `.mdx` file live in the same tree;
     // detection shares one recursive walk and reports both.
@@ -3315,17 +3607,21 @@ describe("generateAppRouterViteConfig — with project info", () => {
     expect(config).not.toContain('"#"');
   });
 
-  it("includes native module stubs in resolve.alias", () => {
+  // vinext does not stub native modules, so init writes no alias pointing at
+  // a file that does not exist (#4196).
+  it("does not alias native modules", () => {
     mkdir(tmpDir, "app");
     writeFile(
       tmpDir,
       "package.json",
-      JSON.stringify({ dependencies: { "@resvg/resvg-js": "^2.0.0" } }),
+      JSON.stringify({
+        dependencies: { "@resvg/resvg-js": "^2.0.0", satori: "^0.13.2", sharp: "^0.34.0" },
+      }),
     );
     const info = detectProject(tmpDir);
     const config = generateAppRouterViteConfig(info);
-    expect(config).toContain("@resvg/resvg-js");
-    expect(config).toContain("empty-stub.js");
+    expect(config).not.toContain("resolve:");
+    expect(config).not.toContain("empty-stub");
   });
 
   it("still works without info (backward compatible)", () => {
@@ -3338,22 +3634,8 @@ describe("generateAppRouterViteConfig — with project info", () => {
   });
 });
 
-describe("generatePagesRouterViteConfig — with project info", () => {
-  it("does not include tsconfig aliases in generated config (handled by plugin at runtime)", () => {
-    mkdir(tmpDir, "pages");
-    writeFile(
-      tmpDir,
-      "tsconfig.json",
-      JSON.stringify({
-        compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } },
-      }),
-    );
-    const info = detectProject(tmpDir);
-    const config = generatePagesRouterViteConfig(info);
-    expect(config).not.toContain('"@"');
-  });
-
-  it("still works without info (backward compatible)", () => {
+describe("generatePagesRouterViteConfig", () => {
+  it("generates the default config", () => {
     const config = generatePagesRouterViteConfig();
     expect(config).toContain("vinext({");
     expect(config).toContain("cloudflare()");

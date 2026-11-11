@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import type { TPRRouteResult } from "../packages/cloudflare/src/tpr.js";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
@@ -78,6 +78,7 @@ vi.mock("node:child_process", async (importOriginal) => {
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     }),
+    spawnSync: vi.fn(actual.spawnSync),
     spawn: vi.fn(() => {
       const child = new EventEmitter() as ChildProcess;
       const childStdout = new PassThrough();
@@ -185,6 +186,66 @@ function writeCfBuildOutputScaffolding(): void {
   writeFile("node_modules/cf/bin/cf", "#!/usr/bin/env node\n");
 }
 
+function writePreviewBuildProject(failure?: "config" | "build"): void {
+  writeProject(undefined);
+  writeCfBuildOutputScaffolding();
+  const cloudflarePluginUrl = pathToFileURL(
+    path.resolve("apps/web/node_modules/@cloudflare/vite-plugin/dist/index.mjs"),
+  ).href;
+  writeFile(
+    "node_modules/@cloudflare/vite-plugin/index.js",
+    `export { cloudflare } from ${JSON.stringify(cloudflarePluginUrl)};\n`,
+  );
+  writeFile("worker.js", 'export default { fetch() { return new Response("Preview"); } };\n');
+  const recordContext = `
+function recordContext(phase, context) {
+  fs.appendFileSync(${JSON.stringify(path.join(tmpDir, "contexts.jsonl"))}, JSON.stringify({ phase, ...context }) + "\\n");
+}`;
+  writeFile(
+    "cloudflare.config.ts",
+    `import fs from "node:fs";
+${recordContext}
+export default (context) => {
+  recordContext("cloudflare", context);
+  return {
+    worker: {
+      name: "preview-context-test",
+      entrypoint: "./worker.js",
+      compatibilityDate: "2026-01-01",
+    },
+  };
+};
+`,
+  );
+  writeFile(
+    "vite.config.ts",
+    `import fs from "node:fs";
+import { cloudflare } from "@cloudflare/vite-plugin";
+${recordContext}
+export default ({ mode }) => {
+  recordContext("vite", { mode, isPreview: process.env.CLOUDFLARE_PREVIEW_BUILD === "true" });
+  ${failure === "config" ? 'throw new Error("Preview config failed");' : ""}
+  let lifecycle;
+  return {
+    plugins: [cloudflare(), {
+      name: "test-build-lifecycle",
+      configResolved(config) { lifecycle = config.__vinextBuildLifecycle; },
+      buildStart() {
+        recordContext("build", {
+          mode,
+          isPreview: process.env.CLOUDFLARE_PREVIEW_BUILD === "true",
+          cloudflareEnv: process.env.CLOUDFLARE_ENV,
+        });
+        ${failure === "build" ? 'throw new Error("Preview build failed");' : ""}
+      },
+      closeBundle() { lifecycle?.onComplete(); },
+    }],
+  };
+};
+`,
+  );
+}
+
 function writeApiOnlyProject(): void {
   writeFile("package.json", JSON.stringify({ name: "warm-skip-build-app", type: "module" }));
   writeFile(
@@ -238,10 +299,12 @@ describe("deploy prerender config wiring", () => {
     resolveTPRRoutesMock.mockClear();
     vi.mocked(execFileSync).mockClear();
     vi.mocked(spawn).mockClear();
+    vi.mocked(spawnSync).mockClear();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -279,6 +342,143 @@ describe("deploy prerender config wiring", () => {
     await expect(deploy({ root: tmpDir, dryRun: true })).resolves.toBeUndefined();
     expect(spawn).not.toHaveBeenCalled();
   });
+
+  it("rejects production-only options for a Preview", async () => {
+    writeProject(undefined, "{ cdn: workersCacheCdnAdapter() }");
+    writeCfBuildOutputScaffolding();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deploy({
+        root: tmpDir,
+        skipBuild: true,
+        target: { type: "preview", name: "pr-123" },
+        preview: true,
+        warmCdnCache: true,
+        experimentalTPR: true,
+        warmCdnCertify: true,
+        warmCdnTarget: "not-an-origin",
+        warmCdnPromote: false,
+      }),
+    ).rejects.toThrow(
+      "Worker Preview deployments do not support: preview, warmCdnCache, warmCdnTarget, warmCdnCertify, warmCdnPromote, experimentalTPR.",
+    );
+    expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("deploys prebuilt Preview output without loading config or prerendering", async () => {
+    writeProject("true", "{ cdn: workersCacheCdnAdapter() }");
+    // Loading this config would fail, so the prebuilt path must not evaluate it.
+    fs.appendFileSync(
+      path.join(tmpDir, "vite.config.ts"),
+      'throw new Error("config was loaded");\n',
+    );
+    writeCfBuildOutputScaffolding();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, target: { type: "preview", name: "pr-123" } });
+
+    expect(runPrerenderMock).not.toHaveBeenCalled();
+    expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
+    expect(discoverPrerenderPathManifestMock).not.toHaveBeenCalled();
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual([
+      expect.stringContaining(path.join("cf", "bin", "cf")),
+      "previews",
+      "deploy",
+      "--preview-name",
+      "pr-123",
+      "--prebuilt",
+      "--mode",
+      "production",
+    ]);
+  });
+
+  it("does not recommend production warming for a Preview", async () => {
+    writeProject("true");
+    writeCfBuildOutputScaffolding();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+      // The warning precedes the build, which this minimal fixture cannot complete.
+      await deploy({ root: tmpDir, target: { type: "preview" } }).catch(() => {});
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Preview deployments render these routes on request."),
+      );
+      expect(warn.mock.calls.flat().join("\n")).not.toContain("--warm-cache");
+      expect(runPrerenderMock).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    [undefined, "production"],
+    ["staging", "staging"],
+  ])(
+    "propagates Preview context through config loading and Build Output (env: %s)",
+    async (env, mode) => {
+      writePreviewBuildProject();
+      vi.stubEnv("CLOUDFLARE_PREVIEW_BUILD", "false");
+      vi.stubEnv("CLOUDFLARE_ENV", "other");
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({ root: tmpDir, env, target: { type: "preview", name: "pr-123" } });
+
+      const contexts = fs
+        .readFileSync(path.join(tmpDir, "contexts.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(contexts.filter(({ phase }) => phase === "vite").length).toBeGreaterThanOrEqual(2);
+      expect(contexts).toEqual(
+        expect.arrayContaining([
+          { phase: "cloudflare", mode, isPreview: true },
+          { phase: "build", mode, isPreview: true, cloudflareEnv: "other" },
+        ]),
+      );
+      expect(contexts.every((context) => context.mode === mode && context.isPreview === true)).toBe(
+        true,
+      );
+      expect(
+        JSON.parse(fs.readFileSync(path.join(tmpDir, ".cloudflare/output/v0/config.json"), "utf8")),
+      ).toMatchObject({ buildContext: { mode, isPreview: true } });
+      expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe("false");
+      expect(process.env.CLOUDFLARE_ENV).toBe("other");
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual([
+        expect.any(String),
+        "previews",
+        "deploy",
+        "--preview-name",
+        "pr-123",
+        "--prebuilt",
+        "--mode",
+        mode,
+      ]);
+    },
+  );
+
+  it.each(["config", "build"] as const)(
+    "restores Preview context after a %s failure",
+    async (failure) => {
+      writePreviewBuildProject(failure);
+      vi.stubEnv("CLOUDFLARE_PREVIEW_BUILD", undefined);
+      vi.stubEnv("CLOUDFLARE_ENV", undefined);
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await expect(deploy({ root: tmpDir, target: { type: "preview" } })).rejects.toThrow(
+        `Preview ${failure} failed`,
+      );
+      expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBeUndefined();
+      expect(process.env.CLOUDFLARE_ENV).toBeUndefined();
+      expect(spawn).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["true", '{ routes: "*" }'])(
     "ignores runtime prerender config during Cloudflare deploy: %s",
@@ -354,6 +554,31 @@ export function createBuilder(config) {
 
     await expect(deploy({ root: tmpDir, skipBuild: true, prerenderAll: true })).rejects.toThrow(
       "vite config loaded",
+    );
+  });
+
+  it("loads disk config and its callbacks with NODE_ENV=production when it is unset", async () => {
+    vi.stubEnv("NODE_ENV", undefined);
+    writeProject("true");
+    writeFile(
+      "next.config.mjs",
+      [
+        "const loadNodeEnv = String(process.env.NODE_ENV);",
+        "export default {",
+        '  output: "export",',
+        "  generateBuildId: () => `${loadNodeEnv}:${process.env.NODE_ENV}`,",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextConfig: expect.objectContaining({ buildId: "production:production" }),
+      }),
     );
   });
 
@@ -591,6 +816,39 @@ export function createBuilder(config) {
     );
     log.mockRestore();
   });
+
+  it.each(["wrangler", "cf"])(
+    "filters TPR traffic against the deployed %s assets directory and basePath",
+    async (deploymentTool) => {
+      writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+      if (deploymentTool === "cf") writeCfBuildOutputScaffolding();
+      const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+      fs.writeFileSync(
+        viteConfigPath,
+        fs
+          .readFileSync(viteConfigPath, "utf8")
+          .replace(
+            "vinext({ cache:",
+            'vinext({ clientOutDir: "build/client", nextConfig: { basePath: "/docs" }, cache:',
+          ),
+      );
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({ root: tmpDir, skipBuild: true, experimentalTPR: true });
+
+      expect(resolveTPRRoutesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          assetsDir: path.join(
+            tmpDir,
+            deploymentTool === "cf"
+              ? ".cloudflare/output/v0/workers/default/assets"
+              : "build/client",
+          ),
+          basePath: "/docs",
+        }),
+      );
+    },
+  );
 
   it("uses a normal deploy when a TPR warmup cannot be staged safely", async () => {
     writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
@@ -885,27 +1143,38 @@ export function createBuilder(config) {
       ".cloudflare/output/v0/workers/response-store/worker.config.json",
       JSON.stringify({ name: "response-store" }),
     );
-    const originalExecute = vi.mocked(execFileSync).getMockImplementation()!;
-    vi.mocked(execFileSync).mockImplementation(((_file, args) => {
+    const originalExecute = vi.mocked(spawnSync).getMockImplementation()!;
+    // cf writes its log to stderr and only JSON results to stdout.
+    vi.mocked(spawnSync).mockImplementation(((_file, args) => {
       const cfArgs = args as string[];
       if (cfArgs.includes("versions") && cfArgs.includes("create")) {
-        return JSON.stringify({
-          id: "22222222-2222-4222-8222-222222222222",
-          preview_url: "https://preview.example.workers.dev",
-        });
+        return {
+          status: 0,
+          stdout: "",
+          stderr:
+            "│  Worker Version ID: 22222222-2222-4222-8222-222222222222\n│  Version Preview URL: https://preview.example.workers.dev\n",
+        };
       }
       if (cfArgs.includes("list")) {
-        return JSON.stringify({
-          deployments: [
-            {
-              id: "active-deployment",
-              versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
-            },
-          ],
-        });
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            deployments: [
+              {
+                id: "active-deployment",
+                versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+              },
+            ],
+          }),
+          stderr: "",
+        };
       }
-      return "Deployed test-worker\n  https://app.example.workers.dev\n";
-    }) as typeof execFileSync);
+      return {
+        status: 0,
+        stdout: "",
+        stderr: "Deployed test-worker\n  https://app.example.workers.dev\n",
+      };
+    }) as typeof spawnSync);
     try {
       const { deploy } = await import("../packages/cloudflare/src/deploy.js");
       await deploy({ root: tmpDir, skipBuild: true, ...options });
@@ -923,11 +1192,13 @@ export function createBuilder(config) {
       }
       expect(
         vi
-          .mocked(execFileSync)
-          .mock.calls.some(([, args]) => (args as string[]).includes("response-store")),
+          .mocked(spawnSync)
+          .mock.calls.some(([, args]) =>
+            (args as string[] | undefined)?.includes("response-store"),
+          ),
       ).toBe(false);
     } finally {
-      vi.mocked(execFileSync).mockImplementation(originalExecute);
+      vi.mocked(spawnSync).mockImplementation(originalExecute);
     }
   });
 

@@ -51,7 +51,6 @@ type FakeWindow = {
   }>;
   __VINEXT_PAGES_LINK_PREFETCH_ROUTES__?: Array<{
     canPrefetchLoadingShell: boolean;
-    documentOnly?: boolean;
     patternParts: string[];
     isDynamic: boolean;
   }>;
@@ -249,14 +248,9 @@ describe("Pages Router records app routes as detected on prefetch", () => {
 
   it("hard-navigates pure-Pages document-only routes", async () => {
     const fakeWindow = installFakeBrowserGlobals([]);
-    fakeWindow.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = [
-      {
-        canPrefetchLoadingShell: false,
-        documentOnly: true,
-        patternParts: ["api", ":slug"],
-        isDynamic: true,
-      },
-    ];
+    // The client gets no Pages API route list: every Pages URL under /api is
+    // an API route or a 404, so it always loads as a document.
+    fakeWindow.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = [];
 
     const routerModule = await import("../packages/vinext/src/shims/router.js");
 

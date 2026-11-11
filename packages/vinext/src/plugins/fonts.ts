@@ -24,8 +24,8 @@
  *   correct.
  */
 
-import type { Plugin } from "vite";
-import { parseAst } from "vite";
+import type { ESTree, Plugin } from "vite";
+import { parseProgram } from "./ast-utils.js";
 import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { escapeRegExp } from "../utils/regex.js";
@@ -113,10 +113,12 @@ const CACHED_FONT_DIR_TOKEN = "__VINEXT_FONT_CACHE_DIR__";
  * Cached stylesheet whose `url()` references use `CACHED_FONT_DIR_TOKEN`.
  * The suffix ties the cache to that format: a `style.css` written by an
  * earlier vinext holds the writing checkout's absolute paths, which would
- * 404 once embedded, so it is never read and the font is fetched again.
- * Change the suffix whenever the cached CSS format changes.
+ * 404 once embedded, and a `style-q7f3kd.css` names extensionless Google
+ * font URLs `.ttf` whatever their format, so neither is read and the font
+ * is fetched again. Change the suffix whenever the cached CSS format
+ * changes.
  */
-const CACHED_FONT_CSS_FILE = "style-q7f3kd.css";
+const CACHED_FONT_CSS_FILE = "style-h8r2vn.css";
 
 function formatGoogleFontsErrorBody(body: string): string {
   const trimmed = body.trim();
@@ -186,7 +188,7 @@ type GoogleFontNamedSpecifier = {
 
 /**
  * Safely parse a static JS object literal string into a plain object.
- * Uses Vite's parseAst (Rollup/acorn) so no code is ever evaluated.
+ * Uses Vite's bundled oxc parser so no code is ever evaluated.
  * Returns null if the expression contains anything dynamic (function calls,
  * template literals, identifiers, computed properties, etc.).
  *
@@ -194,10 +196,10 @@ type GoogleFontNamedSpecifier = {
  * arrays of the above, and nested object literals.
  */
 export function parseStaticObjectLiteral(objectStr: string): Record<string, unknown> | null {
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
     // Wrap in parens so the parser treats `{…}` as an expression, not a block
-    ast = parseAst(`(${objectStr})`);
+    ast = parseProgram(`(${objectStr})`);
   } catch {
     return null;
   }
@@ -517,21 +519,13 @@ async function downloadGoogleFont(
     throw new Error(`Google Fonts returned an empty stylesheet: ${cssUrl}`);
   }
 
-  // Extract all font file URLs
-  const urlRe = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/g;
+  // Extract all font file URLs. The extension comes from the shared Next.js
+  // port, which also resolves extensionless `/l/font?kit=...` URLs.
   const urls = new Map<string, string>(); // original URL -> local filename
-  let urlMatch;
-  while ((urlMatch = urlRe.exec(css)) !== null) {
-    const fontUrl = urlMatch[1];
-    if (!urls.has(fontUrl)) {
-      const ext = fontUrl.includes(".woff2")
-        ? ".woff2"
-        : fontUrl.includes(".woff")
-          ? ".woff"
-          : ".ttf";
-      const fileHash = createHash("md5").update(fontUrl).digest("hex").slice(0, 8);
-      urls.set(fontUrl, `${family.toLowerCase().replace(/\s+/g, "-")}-${fileHash}${ext}`);
-    }
+  for (const { googleFontFileUrl: fontUrl, ext } of findFontFilesInCss(css)) {
+    if (!fontUrl.startsWith("https://fonts.gstatic.com/")) continue;
+    const fileHash = createHash("md5").update(fontUrl).digest("hex").slice(0, 8);
+    urls.set(fontUrl, `${family.toLowerCase().replace(/\s+/g, "-")}-${fileHash}.${ext}`);
   }
 
   // Download font files
@@ -769,7 +763,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           const ext = path.extname(filePath).toLowerCase();
           // CONTENT_TYPES is the same map prod-server uses, so fonts get
           // identical MIME types in dev and prod. fetchAndCacheFont only
-          // ever writes .woff2/.woff/.ttf, all of which are covered.
+          // ever writes .woff2/.woff/.ttf/.otf/.eot, all of which are covered.
           res.setHeader("Content-Type", CONTENT_TYPES[ext] ?? "application/octet-stream");
           res.setHeader("Cache-Control", "no-cache");
           res.setHeader("Access-Control-Allow-Origin", "*");

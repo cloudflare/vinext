@@ -7,14 +7,18 @@ import {
   type AppPageBoundaryRoute,
 } from "./app-page-boundary-render.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
-import { DEFAULT_GLOBAL_NOT_FOUND_MODULE } from "./default-global-not-found-module.js";
-import { DEFAULT_NOT_FOUND_MODULE } from "./default-not-found-module.js";
+import {
+  DEFAULT_GLOBAL_NOT_FOUND_MODULE,
+  withDefaultLayout,
+} from "./default-global-not-found-module.js";
+import { DEFAULT_NOT_FOUND_MODULE } from "./default-http-access-fallback-modules.js";
+import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { AppElements } from "./app-elements.js";
-import type { ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
+import type { AppPageFallbackRouteHead, ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
 import type { AppPageInterceptOptions } from "./app-page-element-builder.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
@@ -60,6 +64,10 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
   globalErrorModule?: TModule | null;
   /** Whether experimental.globalNotFound is enabled for route-miss 404s. */
   globalNotFoundEnabled?: boolean;
+  /** Whether the app has a root `app/layout`, rather than only route-group root layouts. */
+  hasAppRootLayout?: boolean;
+  /** `app/not-found` in an app without `app/layout`, which renders in a default layout. */
+  appNotFoundModule?: TModule | null;
   /**
    * Loader for the user's `app/global-not-found.tsx` module. When provided,
    * route-miss 404s render this module as a standalone document (skipping the
@@ -137,11 +145,17 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
     opts: {
       boundaryComponent?: AppPageComponent | null;
       boundaryModule?: TModule | null;
+      /** Boundary whose metadata the head uses, when not `boundaryModule`. */
+      headBoundaryModule?: TModule | null;
+      /** Layouts whose metadata the head uses, when more than `layouts`. */
+      headLayouts?: readonly (TModule | null | undefined)[] | null;
       intercept?: AppPageInterceptOptions<TModule> | null;
       /** The document may be stored, so it must not carry the request's query. */
       isCacheCandidate?: boolean;
       layouts?: readonly (TModule | null | undefined)[] | null;
       matchedParams?: AppPageParams;
+      /** The route's render threw the signal, so the document keeps the route's head. */
+      routeHead?: AppPageFallbackRouteHead | null;
     },
     scriptNonce: string | undefined,
     middlewareContext: AppPageMiddlewareContext,
@@ -174,6 +188,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
     getNavigationContext,
     globalErrorModule,
     globalNotFoundEnabled = false,
+    appNotFoundModule = null,
+    hasAppRootLayout = true,
     loadGlobalNotFoundModule,
     makeThenableParams,
     metadataRoutes,
@@ -187,6 +203,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
 
   const { rootForbiddenModule, rootLayouts, rootNotFoundModule, rootUnauthorizedModule } =
     rootBoundaries;
+  const standaloneAppNotFoundModule = appNotFoundModule && withDefaultLayout(appNotFoundModule);
 
   // When the app does not define `app/global-error.tsx`, fall back to vinext's
   // built-in default global error component so that uncaught render errors
@@ -203,7 +220,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   // markup (status + "This page could not be found." message). Matches the
   // default not-found UI shipped with Next.js's app loader.
   // See packages/vinext/src/shims/default-not-found.tsx and
-  // packages/vinext/src/server/default-not-found-module.ts.
+  // packages/vinext/src/server/default-http-access-fallback-modules.ts.
   const effectiveRootNotFoundModule: TModule | null =
     rootNotFoundModule ?? (DEFAULT_NOT_FOUND_MODULE as unknown as TModule);
 
@@ -222,8 +239,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   function resolveGlobalNotFoundModule(): Promise<TModule | null | undefined> | null {
     if (!loadGlobalNotFoundModule) return null;
     if (globalNotFoundModulePromise === null) {
-      globalNotFoundModulePromise = runOutsideRequestScopes(() =>
-        Promise.resolve().then(loadGlobalNotFoundModule),
+      globalNotFoundModulePromise = shareIsolatePromise(
+        runOutsideRequestScopes(() => Promise.resolve().then(loadGlobalNotFoundModule)),
       );
     }
     return globalNotFoundModulePromise;
@@ -258,6 +275,15 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
       const useGlobalNotFound =
         statusCode === 404 && globalNotFoundEnabled && !route && !opts?.boundaryComponent;
+      // Without app/layout, Next.js' /_not-found page renders app/not-found,
+      // or the built-in not-found, in its default layout rather than a route
+      // group's root layout. Every 404 without a matched
+      // route renders that page, so a route-group root layout and its
+      // not-found never wrap it.
+      // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+      const useStandaloneNotFound =
+        useGlobalNotFound ||
+        (statusCode === 404 && !route && !hasAppRootLayout && !opts?.boundaryComponent);
 
       if (useGlobalNotFound && loadGlobalNotFoundModule) {
         const globalNotFoundModule = await resolveGlobalNotFoundModule();
@@ -305,8 +331,9 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         }
       }
 
-      const routeMissRootNotFoundModule = useGlobalNotFound
-        ? (DEFAULT_GLOBAL_NOT_FOUND_MODULE as unknown as TModule)
+      const routeMissRootNotFoundModule = useStandaloneNotFound
+        ? ((useGlobalNotFound ? null : standaloneAppNotFoundModule) ??
+          (DEFAULT_GLOBAL_NOT_FOUND_MODULE as unknown as TModule))
         : effectiveRootNotFoundModule;
 
       return renderAppPageHttpAccessFallback({
@@ -326,11 +353,13 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
+        headBoundaryModule: opts?.headBoundaryModule ?? null,
+        headLayoutModules: useStandaloneNotFound ? [] : (opts?.headLayouts ?? null),
         intercept: opts?.intercept ?? null,
         isCacheCandidate: opts?.isCacheCandidate,
         isEdgeRuntime: callContext?.isEdgeRuntime,
         isRscRequest,
-        layoutModules: useGlobalNotFound ? [] : (opts?.layouts ?? null),
+        layoutModules: useStandaloneNotFound ? [] : (opts?.layouts ?? null),
         loadSsrHandler: ssrLoader,
         makeThenableParams,
         matchedParams: opts?.matchedParams ?? route?.params ?? {},
@@ -340,10 +369,15 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         requestUrl: request.url,
         resolveChildSegments,
         rootForbiddenModule,
-        rootLayouts: useGlobalNotFound ? [] : rootLayouts,
+        rootLayouts: useStandaloneNotFound ? [] : rootLayouts,
+        // Next.js' default layout is /_not-found's root layout, at the app
+        // root, so navigating to a route group's root layout loads a new
+        // document.
+        rootLayoutTreePath: useStandaloneNotFound && !hasAppRootLayout ? "/" : null,
         rootNotFoundModule: routeMissRootNotFoundModule,
         rootUnauthorizedModule,
-        route: useGlobalNotFound ? null : route,
+        route: useStandaloneNotFound ? null : route,
+        routeHead: opts?.routeHead ?? null,
         routePathname: callContext?.routePathname,
         renderToReadableStream: rscRenderer,
         scriptNonce,
