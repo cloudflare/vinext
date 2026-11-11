@@ -1011,8 +1011,11 @@ export async function handleSsr(
         const isPprShellPrelude =
           pprFallbackShellSignal !== undefined &&
           (pprPostponed !== null || options?.isPprFallbackShellPartial?.() === true);
-        // A resumed shell's prelude already holds the head.
+        // A resumed shell's prelude already holds the head. It can't hold the
+        // request's trace metadata, so like Next.js's resume, that streams
+        // with the first inserted HTML instead.
         let didInjectHeadHTML = pprShellResume !== undefined;
+        let didInjectResumeTraceMeta = pprShellResume === undefined;
         let headHidQuery = false;
         let didSendRenderedSearch = false;
         // A render that turns dynamic after the head hid its query won't be
@@ -1034,7 +1037,14 @@ export async function handleSsr(
             options?.initialDevServerError ?? ssrOnlyShellError,
             options?.scriptNonce,
           );
-          if (didInjectHeadHTML) return insertedHTML + errorMetaHTML + getRenderedSearchHTML();
+          if (didInjectHeadHTML) {
+            let resumeTraceMetaHTML = "";
+            if (!didInjectResumeTraceMeta) {
+              didInjectResumeTraceMeta = true;
+              resumeTraceMetaHTML = getTraceMetaHTML();
+            }
+            return insertedHTML + errorMetaHTML + resumeTraceMetaHTML + getRenderedSearchHTML();
+          }
 
           didInjectHeadHTML = true;
           // A stored document must not carry the request's query, so the

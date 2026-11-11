@@ -2,6 +2,7 @@ import type { NextConfig } from "vinext";
 
 const nextConfig: NextConfig = {
   cacheComponents: true,
+  experimental: { clientTraceMetadata: ["traceparent"] },
   // A rewrite that adds a query the browser's URL doesn't have.
   async rewrites() {
     return [
