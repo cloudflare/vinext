@@ -86,9 +86,11 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
+  SEARCH_PARAMS_VARY_PARAM,
   VINEXT_STATIC_SHELL_HEADER,
   VINEXT_VARY_PARAMS_HEADER,
   type AppRscRenderMode,
+  type VaryParam,
 } from "../server/app-rsc-render-mode.js";
 import type { AppRouterInstance } from "./internal/app-router-context.js";
 import {
@@ -239,10 +241,11 @@ export type CachedRscResponse = {
   staticShell?: "partial" | "complete" | "runtime";
   url: string;
   /**
-   * The route params a static shell's render read, `?` for search params, so
-   * another URL of the route with the same values for them can reuse it.
+   * The route params a static shell's render read, `SEARCH_PARAMS_VARY_PARAM`
+   * for search params, so another URL of the route with the same values for
+   * them can reuse it.
    */
-  varyParams?: readonly string[];
+  varyParams?: readonly VaryParam[];
 };
 
 export type PrefetchOptions = {
@@ -1418,11 +1421,12 @@ export function createCachedRscResponseSnapshot(
   };
 }
 
-function parseVaryParamsHeader(value: string | null): readonly string[] | undefined {
+function parseVaryParamsHeader(value: string | null): readonly VaryParam[] | undefined {
   if (value === null) return undefined;
   try {
-    const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) && parsed.every((name) => typeof name === "string")
+    const parsed: unknown = JSON.parse(decodeURIComponent(value));
+    return Array.isArray(parsed) &&
+      parsed.every((name) => typeof name === "string" || name === SEARCH_PARAMS_VARY_PARAM)
       ? parsed
       : undefined;
   } catch {
@@ -2875,6 +2879,7 @@ const _appRouter: AppRouterInstance = {
         kind === "auto" &&
         policy.staticShell === true &&
         rewrittenPrefetchHref === null &&
+        process.env.__VINEXT_VARY_PARAMS !== "false" &&
         seedStaticShellPrefetchFromVaryingShell(
           rscUrl,
           interceptionContext,

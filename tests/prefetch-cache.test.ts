@@ -3686,7 +3686,7 @@ describe("static-shell prefetch", () => {
       shell: {
         renderedPathAndSearch?: string;
         staticShell?: "complete";
-        varyParams: readonly string[];
+        varyParams: readonly (string | 0)[];
       } | null = null,
     ) {
       const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
@@ -3700,7 +3700,9 @@ describe("static-shell prefetch", () => {
             shell?.renderedPathAndSearch ??
               `${url.pathname}${url.search}`.replace(/[?&]_rsc=[^&]*/, ""),
           ),
-          "X-Vinext-Vary-Params": JSON.stringify(shell?.varyParams ?? ["category"]),
+          "X-Vinext-Vary-Params": encodeURIComponent(
+            JSON.stringify(shell?.varyParams ?? ["category"]),
+          ),
         });
         return new Response(`0:${category}`, { headers });
       });
@@ -3769,6 +3771,16 @@ describe("static-shell prefetch", () => {
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 
+    it("doesn't reuse a shell for other params with experimental.varyParams: false", async () => {
+      setUpShopRoute();
+      vi.stubEnv("__VINEXT_VARY_PARAMS", "false");
+      const fetch = mockShellFetch();
+
+      await prefetch("/shop/electronics/phone", fetch, 1);
+      await prefetch("/shop/electronics/tablet", fetch, 2);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
     it("hands a superseded pending prefetch's invalidation subscribers to the reused shell", async () => {
       setUpShopRoute();
       const fetch = mockShellFetch();
@@ -3799,12 +3811,21 @@ describe("static-shell prefetch", () => {
 
     it("compares search strings only when the shell read them", async () => {
       setUpShopRoute();
-      const fetch = mockShellFetch({ varyParams: ["?"] });
+      const fetch = mockShellFetch({ varyParams: [0] });
 
       await prefetch("/shop/electronics/phone?q=1", fetch, 1);
       await prefetch("/shop/clothing/shirt?q=1", fetch, 1);
       expect(fetch).toHaveBeenCalledTimes(1);
       await prefetch("/shop/clothing/shirt?q=2", fetch, 2);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("reads a param named `?` as a param, not as search params", async () => {
+      setUpShopRoute();
+      const fetch = mockShellFetch({ varyParams: ["?"] });
+
+      await prefetch("/shop/electronics/phone?q=1", fetch, 1);
+      await prefetch("/shop/clothing/shirt?q=1", fetch, 2);
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 
@@ -3824,7 +3845,7 @@ describe("static-shell prefetch", () => {
       setUpShopRoute();
       const fetch = mockShellFetch({
         renderedPathAndSearch: "/shop/electronics/phone?q=2",
-        varyParams: ["?"],
+        varyParams: [0],
       });
 
       await prefetch("/shop/electronics/phone?q=1", fetch, 1);

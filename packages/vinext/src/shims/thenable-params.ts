@@ -1,3 +1,4 @@
+import { SEARCH_PARAMS_VARY_PARAM } from "../server/app-rsc-render-mode.js";
 import {
   createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
@@ -165,19 +166,21 @@ function createThenableParams<T extends Record<string, unknown>>(
 ): ThenableParams<T> {
   const plain = { ...obj };
   // A shell that records its vary params records each read: search params as
-  // `?`, as Next.js's `createVaryingSearchParams` does.
+  // `SEARCH_PARAMS_VARY_PARAM`, as Next.js's `createVaryingSearchParams` does.
   const varyShell = varyShellState?.varyParams ? varyShellState : null;
   // A well-known key reads the promise, unless the resolved values hold it.
   const recordVaryRead = (key: string) => {
     if (varyShell === null || (isWellKnownProperty(key) && !hasParamProperty(plain, key))) return;
-    recordPprFallbackShellVaryParams(varyShell, [options?.isSearchParams ? "?" : key]);
+    recordPprFallbackShellVaryParams(varyShell, [
+      options?.isSearchParams ? SEARCH_PARAMS_VARY_PARAM : key,
+    ]);
   };
   const recordVaryEnumeration = () => {
     if (varyShell === null) return;
     recordPprFallbackShellVaryParams(
       varyShell,
       options?.isSearchParams
-        ? ["?"]
+        ? [SEARCH_PARAMS_VARY_PARAM]
         : [...Object.keys(plain), ...getOptionalCatchAllParamNames(varyShell.routePattern)],
     );
   };
