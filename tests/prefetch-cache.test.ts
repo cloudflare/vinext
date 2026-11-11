@@ -3738,6 +3738,16 @@ describe("static-shell prefetch", () => {
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 
+    it("doesn't reuse a shell for other params with experimental.varyParams: false", async () => {
+      setUpShopRoute();
+      vi.stubEnv("__NEXT_VARY_PARAMS", "false");
+      const fetch = mockShellFetch();
+
+      await prefetch("/shop/electronics/phone", fetch, 1);
+      await prefetch("/shop/electronics/tablet", fetch, 2);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
     it("compares search strings only when the shell read them", async () => {
       setUpShopRoute();
       const fetch = mockShellFetch({ varyParams: [0] });

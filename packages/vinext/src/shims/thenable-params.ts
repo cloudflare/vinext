@@ -171,7 +171,9 @@ function createThenableParams<T extends Record<string, unknown>>(
   // A well-known key reads the promise, unless the resolved values hold it.
   const recordVaryRead = (key: string) => {
     if (varyShell === null || (isWellKnownProperty(key) && !hasParamProperty(plain, key))) return;
-    recordPprFallbackShellVaryParams(varyShell, [options?.isSearchParams ? SEARCH_PARAMS_VARY_PARAM : key]);
+    recordPprFallbackShellVaryParams(varyShell, [
+      options?.isSearchParams ? SEARCH_PARAMS_VARY_PARAM : key,
+    ]);
   };
   const recordVaryEnumeration = () => {
     if (varyShell === null) return;

@@ -1595,9 +1595,7 @@ describe("app page dispatch", () => {
       const cached = await runWithRequestContext(createRequestContext(), () =>
         dispatchAppPage(options),
       );
-      expect(cached.headers.get("x-vinext-vary-params")).toBe(
-        encodeURIComponent('["id","lang"]'),
-      );
+      expect(cached.headers.get("x-vinext-vary-params")).toBe(encodeURIComponent('["id","lang"]'));
     });
 
     it("sends the params the shell read when a segment's name isn't Latin-1", async () => {

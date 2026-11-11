@@ -1017,7 +1017,9 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
             // segment name's characters.
             headers.set(
               VINEXT_VARY_PARAMS_HEADER,
-              encodeURIComponent(JSON.stringify([...varyParams].sort())),
+              encodeURIComponent(
+                JSON.stringify([...varyParams].sort((a, b) => String(a).localeCompare(String(b)))),
+              ),
             );
             return new Response(body, {
               headers,
