@@ -197,7 +197,7 @@ type ResponseStoreMutationResult = {
 };
 ```
 
-`edgePurgeAccepted` reports whether Workers Cache accepted the edge update: a purge for `put()` and `purge()`, or an invalidation for `refresh()` and `invalidate()` (which purges entries without a revalidator). Local Miniflare does not implement `ctx.cache.invalidate()` yet, so `refresh()` and `invalidate()` purge there instead.
+`edgePurgeAccepted` reports whether Workers Cache accepted the edge update: a purge for `put()` and `purge()`, or an invalidation for `refresh()` and `invalidate()` (which purges entries without a revalidator). Local Miniflare does not implement `ctx.cache.invalidate()` yet, so `refresh()` and `invalidate()` purge there instead. With [`purgeBatchWindow`](#batched-edge-purges), it reports that the update was queued for the window's batch, except for `refresh()` and `purgeEverything`, which still send theirs.
 
 ### Cache keys
 
@@ -270,6 +270,21 @@ const responseStore = createWorkersResponseStore<Env>({
 ```
 
 Use the same `locationHint` option with `createWorkersResponseStoreClient()` in service-binding mode. The hint is best-effort and only affects the first creation of each metadata Durable Object. Existing objects never move when this option changes, so roll out a changed hint as a cache-cold deployment and choose it alongside the R2 bucket's location.
+
+### Batched edge purges
+
+Workers Cache purges and invalidations always use the Free-tier [purge rate limits](https://developers.cloudflare.com/workers/cache/purge/#rate-limits): 5 requests a minute, with a burst of 25 and up to 100 tags per request, shared by every Worker in the account. An application that invalidates often can exhaust them. A refused `put()` purge leaves the replaced response at the edge until its edge `max-age` ends; `invalidate()` and `purge()` retry a refused update about once a minute.
+
+To spend fewer requests, collect edge updates for a window of seconds:
+
+```ts
+const responseStore = createWorkersResponseStore<Env>({
+  purgeBatchWindow: 60,
+  regenerate,
+});
+```
+
+`purgeBatchWindow` must be a positive integer, and works in both deployment modes. With it, `put()`, `invalidate()`, and `purge()` update R2 and the metadata as before, but queue their edge purges and invalidations in the metadata Durable Object instead of sending them. When the window opened by the first of them ends, or an earlier metadata alarm runs, it sends everything queued, up to 100 tags per request. A refused batch is retried about once a minute, so it is eventually sent. Edge responses can therefore stay fresh for up to the window (plus any retries) after the call that changed them; the Response Store itself serves the change at once to any read that reaches it. Each metadata shard sends its own batch. `refresh()` and `purge({ purgeEverything: true })` still send their edge update at once.
 
 ## Storage and operational behavior
 

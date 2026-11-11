@@ -218,8 +218,15 @@ const responseStoreOptions = {
 
 const responseStore = createWorkersResponseStore(responseStoreOptions);
 const shardedResponseStore = createWorkersResponseStore({ ...responseStoreOptions, shards: 4 });
+const batchedResponseStore = createWorkersResponseStore({
+  ...responseStoreOptions,
+  purgeBatchWindow: 1,
+});
 
 function storeForRequest(request: Request): WorkersResponseStore {
+  if (request.headers.get("X-Response-Store-Purge-Batch-Window") === "1") {
+    return batchedResponseStore;
+  }
   return request.headers.get("X-Response-Store-Shards") === "4"
     ? shardedResponseStore
     : responseStore;

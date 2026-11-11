@@ -196,6 +196,7 @@ export type WorkersResponseStoreEnv = {
 export type WorkersResponseStoreProps = {
   versionId?: string;
   locationHint?: ResponseStoreLocationHint;
+  purgeBatchWindow?: number;
   revalidator?: RevalidationService;
   shards?: number;
 };
@@ -235,6 +236,7 @@ export type ResponseStoreServiceInvocation = {
   versionId: string;
   revalidator: RevalidationService;
   locationHint?: ResponseStoreLocationHint;
+  purgeBatchWindow?: number;
   shards?: number;
 };
 
@@ -362,6 +364,18 @@ const entryReads = new IsolateNegativeCache<string>(
   ISOLATE_MISS_CACHE_CAPACITY,
   ISOLATE_MISS_CACHE_TTL_MS,
 );
+
+export function validateResponseStorePurgeBatchWindow(
+  purgeBatchWindow: number | undefined,
+): number | undefined {
+  if (
+    purgeBatchWindow !== undefined &&
+    (!Number.isSafeInteger(purgeBatchWindow) || purgeBatchWindow <= 0)
+  ) {
+    throw new TypeError("Workers Response Store purgeBatchWindow must be a positive integer");
+  }
+  return purgeBatchWindow;
+}
 
 export function validateResponseStoreShards(shards: number | undefined): number | undefined {
   if (shards !== undefined && (!Number.isSafeInteger(shards) || shards <= 1)) {
@@ -533,6 +547,41 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   WorkersResponseStoreProps
 > {
   private readonly shardCount = validateResponseStoreShards(this.ctx.props?.shards) ?? 1;
+  private readonly purgeBatchWindowMs = (() => {
+    const seconds = validateResponseStorePurgeBatchWindow(this.ctx.props?.purgeBatchWindow);
+    return seconds === undefined ? undefined : seconds * 1000;
+  })();
+
+  /** With `purgeBatchWindow`, when the metadata DO sends edge work queued now. */
+  private edgeFlushAt(): number | undefined {
+    return this.purgeBatchWindowMs === undefined ? undefined : Date.now() + this.purgeBatchWindowMs;
+  }
+
+  /**
+   * Purge the edge copy a put replaced. With `purgeBatchWindow`, queue the purge for the
+   * metadata DO to send with the rest of the window's edge work instead; a failed queue sends it
+   * now.
+   */
+  private async purgeReplacedEdgeCopy(
+    metadata: CacheMetadataStub,
+    entry: StoredEntry,
+  ): Promise<boolean> {
+    const edgeFlushAt = this.edgeFlushAt();
+    if (edgeFlushAt !== undefined) {
+      try {
+        await metadata.queueEdgePurge(entry.keyHash, entry.activeRevision, edgeFlushAt);
+        return true;
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            message: "Workers Response Store edge purge could not be queued",
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
+    return this.updateEdgeCacheByTags([purgeTagForEntry(entry)]);
+  }
 
   private getVersionId(): string {
     const versionId = this.ctx.props?.versionId ?? this.env.CF_VERSION_METADATA?.id;
@@ -1129,8 +1178,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           expectedR2Etag !== undefined ? expectedR2Etag : write.r2ObjectAbsent ? null : undefined,
         );
       } catch (error) {
+        const edgeFlushAt = this.edgeFlushAt();
         const reconciliation = await metadata
-          .invalidatePublishedRevision(publication.entry.keyHash, publication.entry.activeRevision)
+          .invalidatePublishedRevision(
+            publication.entry.keyHash,
+            publication.entry.activeRevision,
+            edgeFlushAt,
+          )
           .catch((reconciliationError) => ({
             failures: [
               reconciliationError instanceof Error
@@ -1141,7 +1195,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             purged: [],
           }));
         const reconciliationFailures = reconciliation.failures.map((failure) => new Error(failure));
-        if (reconciliation.purged.length) {
+        // With `purgeBatchWindow`, the metadata DO purges the edge with the window's batch.
+        if (reconciliation.purged.length && edgeFlushAt === undefined) {
           try {
             if (await this.updateEdgeCacheByTags(reconciliation.purged.map(purgeTagForEntry))) {
               await metadata.markTombstonesEdgePurged(reconciliation.purged);
@@ -1496,7 +1551,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             backingStoreUpdated: true,
             edgePurgeAccepted:
               options.purgeExisting && result.edgePurgeRequired
-                ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
+                ? await this.purgeReplacedEdgeCopy(metadata, result.entry)
                 : true,
           };
         }
@@ -1542,7 +1597,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         backingStoreUpdated: true,
         edgePurgeAccepted:
           options.purgeExisting && result.edgePurgeRequired
-            ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
+            ? await this.purgeReplacedEdgeCopy(metadata, result.entry)
             : true,
       };
     } finally {
@@ -1659,14 +1714,18 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         ? undefined
         : invalidatedAt + Math.ceil(options.expire * 1000);
     const selectors = { tags: options.tags, pathPrefixes: options.pathPrefixes };
+    const edgeFlushAt = this.edgeFlushAt();
     const { failures, reservations } = await this.drainReservations(
       await Promise.allSettled(
         this.getMetadataShards().map((metadata) =>
-          metadata.invalidateMatching(selectors, invalidatedAt, expiresAt),
+          metadata.invalidateMatching(selectors, invalidatedAt, expiresAt, edgeFlushAt),
         ),
       ),
     );
-    const edgePurgeAccepted = await this.updatePendingEdges(reservations, failures);
+    // With `purgeBatchWindow`, each metadata DO sends the edge work it queued with the window's
+    // batch.
+    const edgePurgeAccepted =
+      edgeFlushAt !== undefined || (await this.updatePendingEdges(reservations, failures));
 
     if (failures.length) {
       throw new AggregateError(failures, "One or more metadata shards failed to invalidate");
@@ -1741,9 +1800,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     const invalidatedAt = Date.now();
+    // A purge of everything is one edge request, so it isn't queued.
+    const edgeFlushAt = options.purgeEverything ? undefined : this.edgeFlushAt();
     const { failures, reservations } = await this.drainReservations(
       await Promise.allSettled(
-        this.getMetadataShards().map((metadata) => metadata.purgeMatching(options, invalidatedAt)),
+        this.getMetadataShards().map((metadata) =>
+          metadata.purgeMatching(options, invalidatedAt, edgeFlushAt),
+        ),
       ),
     );
     let edgePurgeAccepted = true;
@@ -1765,7 +1828,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         edgePurgeAccepted = false;
         failures.push(error);
       }
-    } else {
+    } else if (edgeFlushAt === undefined) {
       edgePurgeAccepted =
         (await this.updatePendingEdges(reservations, failures)) && !options.purgeEverything;
     }

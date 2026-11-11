@@ -110,7 +110,12 @@ export type CacheMetadataStub = DurableObjectStub & {
     reservationObjectKey?: string,
     replaces?: RefreshedRevision,
   ): Promise<PublicationResult>;
-  invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
+  invalidatePublishedRevision(
+    keyHash: string,
+    revision: number,
+    edgeFlushAt?: number,
+  ): Promise<TombstoneDrainResult>;
+  queueEdgePurge(keyHash: string, revision: number, edgeFlushAt: number): Promise<void>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
   getTagExpiration(tags: string[]): Promise<number>;
   findRefreshCandidates(options: ResponseStoreRefreshOptions): Promise<StoredEntry[]>;
@@ -121,11 +126,13 @@ export type CacheMetadataStub = DurableObjectStub & {
   purgeMatching(
     options: ResponseStorePurgeOptions,
     invalidatedAt?: number,
+    edgeFlushAt?: number,
   ): Promise<PurgeReservation>;
   invalidateMatching(
     options: Pick<ResponseStoreInvalidateOptions, "tags" | "pathPrefixes">,
     invalidatedAt: number,
     expiresAt?: number,
+    edgeFlushAt?: number,
   ): Promise<PurgeReservation>;
   drainPendingTombstones(
     limit: number,
@@ -200,6 +207,7 @@ const MAX_SQL_PARAMETERS = 100;
 const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
 const ORPHAN_CLEANUP_LIMIT = 100;
 const ORPHAN_CLEANUP_RETRY_MS = 60 * 1000;
+const PENDING_TOMBSTONE_FLUSH_LIMIT = 400;
 const MAX_R2_CAS_ATTEMPTS = 3;
 
 type CacheMetadataEnv = {
@@ -761,9 +769,16 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   async alarm(): Promise<void> {
     try {
-      if (await this.retryPendingTombstones()) {
+      const remaining = await this.flushPendingTombstones();
+      if (remaining === "backlog") {
         await this.ctx.storage.setAlarm(Date.now());
         this.cleanupAlarmKnown = true;
+        return;
+      }
+      if (remaining === "queued") {
+        // Work queued while this ran scheduled its own flush, or its caller is sending it now.
+        // This alarm only backs that up, so the work isn't sent twice, nor ahead of its batch.
+        await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
         return;
       }
       await this.sweepExpiredPendingObjects();
@@ -780,25 +795,36 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   }
 
   async retryPendingTombstones(): Promise<boolean> {
-    const drained = await this.drainPendingTombstones(400);
+    return (await this.flushPendingTombstones()) !== "none";
+  }
+
+  /** Whether R2 or edge work is left once this run's batch is flushed, and why. */
+  private async flushPendingTombstones(): Promise<"none" | "queued" | "backlog"> {
+    const drained = await this.drainPendingTombstones(PENDING_TOMBSTONE_FLUSH_LIMIT);
     if (drained.failures.length) {
       throw new AggregateError(
         drained.failures.map((failure) => new Error(failure)),
         "R2 tombstone cleanup failed",
       );
     }
-    const edgeEntries = this.listPendingEdgePurges(400);
+    const edgeEntries = this.listPendingEdgePurges(PENDING_TOMBSTONE_FLUSH_LIMIT);
     if (edgeEntries.length) {
       if (!(await this.getR2TombstoneEdgePurger().purgeR2TombstoneEdges(edgeEntries))) {
         throw new Error("Workers Response Store cache purge is unavailable");
       }
       this.markTombstonesEdgePurged(edgeEntries);
     }
-    return (
-      this.ctx.storage.sql
-        .exec<{ pending: number }>("SELECT EXISTS(SELECT 1 FROM pending_r2_tombstones) AS pending")
-        .one().pending === 1
-    );
+    if (
+      drained.pending.length === PENDING_TOMBSTONE_FLUSH_LIMIT ||
+      edgeEntries.length === PENDING_TOMBSTONE_FLUSH_LIMIT
+    ) {
+      return "backlog";
+    }
+    return this.ctx.storage.sql
+      .exec<{ pending: number }>("SELECT EXISTS(SELECT 1 FROM pending_r2_tombstones) AS pending")
+      .one().pending === 1
+      ? "queued"
+      : "none";
   }
 
   async claimRevalidation(
@@ -1226,6 +1252,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   async invalidatePublishedRevision(
     keyHash: string,
     revision: number,
+    edgeFlushAt?: number,
   ): Promise<TombstoneDrainResult> {
     const queued = this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
@@ -1266,10 +1293,43 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     });
 
     if (!queued) return { failures: [], pending: [], purged: [] };
-    await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
-      this.logCleanupFailure(error),
+    await this.scheduleCleanupAlarm(edgeFlushAt ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch(
+      (error) => this.logCleanupFailure(error),
     );
     return this.drainPendingTombstones(1, keyHash);
+  }
+
+  /**
+   * Queue a purge of the key's edge copy, which a put replacing the entry needs, for the alarm
+   * to send at `edgeFlushAt` with the rest of the queued edge work. Called once the
+   * replacement is in R2, so the edge can only refill with it. Work already queued for the
+   * key purges instead of invalidating, and gets this revision, so a flush that listed it
+   * before can't mark this purge sent.
+   */
+  async queueEdgePurge(keyHash: string, revision: number, edgeFlushAt: number): Promise<void> {
+    this.ctx.storage.transactionSync(() =>
+      this.ctx.storage.sql.exec(
+        `INSERT INTO pending_r2_tombstones
+        (key_hash, cache_key, object_key, revision, r2_complete, tombstone_sequence)
+        SELECT key_hash, cache_key, COALESCE(object_key, ''), ?, 1, ?
+        FROM entries WHERE key_hash = ?
+      ON CONFLICT(key_hash) DO UPDATE SET
+        revision = CASE
+          WHEN pending_r2_tombstones.r2_complete = 1 THEN excluded.revision
+          ELSE pending_r2_tombstones.revision
+        END,
+        tombstone_sequence = CASE
+          WHEN pending_r2_tombstones.r2_complete = 1 THEN excluded.tombstone_sequence
+          ELSE pending_r2_tombstones.tombstone_sequence
+        END,
+        edge_invalidate = 0,
+        edge_purge_complete = 0`,
+        revision,
+        this.tombstoneSequence(true),
+        keyHash,
+      ),
+    );
+    await this.scheduleCleanupAlarm(edgeFlushAt);
   }
 
   getEntry(keyHash: string): StoredEntry | null {
@@ -1417,6 +1477,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   async purgeMatching(
     options: ResponseStorePurgeOptions,
     invalidatedAt = Date.now(),
+    edgeFlushAt?: number,
   ): Promise<PurgeReservation> {
     const reservation = this.ctx.storage.transactionSync(() => {
       const matches = this.findMatchingEntryRows(options, "purge");
@@ -1488,8 +1549,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       };
     });
     if (reservation.pendingTombstones > 0) {
-      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
-        this.logCleanupFailure(error),
+      // Without a flush time, the caller sends the edge work, and the alarm only retries it.
+      await this.scheduleCleanupAlarm(edgeFlushAt ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch(
+        (error) => this.logCleanupFailure(error),
       );
     }
     return reservation;
@@ -1505,6 +1567,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     options: Pick<ResponseStoreInvalidateOptions, "tags" | "pathPrefixes">,
     invalidatedAt: number,
     expiresAt?: number,
+    edgeFlushAt?: number,
   ): Promise<PurgeReservation> {
     const reservation = this.ctx.storage.transactionSync(() => {
       const rows = this.findMatchingEntryRows(options, "invalidate");
@@ -1602,8 +1665,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       };
     });
     if (reservation.pendingTombstones > 0) {
-      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
-        this.logCleanupFailure(error),
+      // Without a flush time, the caller sends the edge work, and the alarm only retries it.
+      await this.scheduleCleanupAlarm(edgeFlushAt ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch(
+        (error) => this.logCleanupFailure(error),
       );
     }
     return reservation;

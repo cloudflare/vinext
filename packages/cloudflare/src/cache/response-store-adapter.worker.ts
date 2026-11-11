@@ -249,10 +249,15 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
   if (shards !== undefined && typeof shards !== "number") {
     throw new TypeError("Workers Response Store shards must be a number");
   }
+  const purgeBatchWindow = configuration?.purgeBatchWindow;
+  if (purgeBatchWindow !== undefined && typeof purgeBatchWindow !== "number") {
+    throw new TypeError("Workers Response Store purgeBatchWindow must be a number");
+  }
   return {
     ...(locationHint === undefined
       ? {}
       : { locationHint: locationHint as ResponseStoreLocationHint }),
+    ...(purgeBatchWindow === undefined ? {} : { purgeBatchWindow }),
     ...(shards === undefined ? {} : { shards }),
     async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
       if (input.id === ROUTE_REVALIDATOR_ID) {

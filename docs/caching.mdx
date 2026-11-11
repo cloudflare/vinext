@@ -119,6 +119,20 @@ vinext({ cache: responseStoreAdapter({ shards: 16 }) });
 
 Each cache key remains strongly coordinated by one SQLite Durable Object. Tag/path refreshes and purges fan out across all shards. The option is disabled by default, and changing the count starts a new cache layout for the deployed Worker version.
 
+### Batched edge purges
+
+Every `revalidateTag()` and `revalidatePath()` purges or invalidates the edge copies of the responses and data it affects, and so do the data cache refills that follow it. Workers Cache always applies Cloudflare's Free-tier [purge rate limits](https://developers.cloudflare.com/workers/cache/purge/#rate-limits) to these: 5 requests a minute, with a burst of 25 and up to 100 tags per request, shared by every Worker in the account. An app that revalidates often can run out, and a refused purge leaves the edge serving the old response.
+
+If your app can accept a delay before revalidations reach the edge, queue the edge updates and send each window's together:
+
+```ts
+vinext({ cache: responseStoreAdapter({ purgeBatchWindow: 60 }) });
+```
+
+`purgeBatchWindow` is a number of seconds. The Response Store applies each revalidation to its own copy at once, but queues the edge updates in its metadata Durable Object. When the window ends, it sends them together, up to 100 tags per request, and retries a refused batch about once a minute until it goes through. So a revalidation reaches the edge up to the window later, or longer while the rate limit is reached. Each metadata shard sends its own batch.
+
+Revalidate through `revalidateTag()` and `revalidatePath()` rather than calling the Response Store's `invalidate()` or `purge()` yourself: they use the tags vinext stores entries under, and also apply to the rest of the current request. The option is disabled by default.
+
 Next.js keeps an App Router page's HTML and RSC payload in one cache entry. Response Store stores them under separate keys, so whenever it stores or regenerates one of the two, it stores the other from the same render. Replacing the other one doesn't purge its edge copy, which would spend the [shared purge budget](#workers-cache-and-kv) on every regeneration. Until that copy's own cache policy ends, the edge can serve it from an earlier render beside the new one. Concurrent misses can also leave the two from different renders.
 
 ### Service-binding mode

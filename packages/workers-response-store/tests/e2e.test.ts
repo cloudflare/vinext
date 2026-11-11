@@ -37,6 +37,7 @@ type PutOptions = {
   largeHeaderBytes?: number;
   lastModified?: string;
   noRevalidator?: boolean;
+  purgeBatchWindow?: boolean;
   purgeExisting?: boolean;
   replacesRevision?: string | null;
   replacesTagExpiration?: { tags: string[]; expiration: number };
@@ -181,6 +182,7 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   }
   if (options.noRevalidator) headers.set("X-No-Revalidator", "1");
   if (options.purgeExisting) headers.set("X-Purge-Existing", "1");
+  if (options.purgeBatchWindow) headers.set("X-Response-Store-Purge-Batch-Window", "1");
   if (options.coalesce) headers.set("X-Coalesce", "1");
   if (options.replacesRevision) headers.set("X-Replaces-Revision", options.replacesRevision);
   if (options.replacesTagExpiration) {
@@ -435,6 +437,95 @@ test("purgeExisting skips replacing a tombstone once its edge purge completed", 
   });
   assert.deepEqual(replacement.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
   assert.equal((await edgeCalls()).length, 2);
+});
+
+async function batchedMutation(operation: "invalidate" | "purge", options: object) {
+  const response = await worker.fetch(`https://user.test/admin/${operation}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Response-Store-Purge-Batch-Window": "1",
+    },
+    body: JSON.stringify(options),
+  });
+  return response.json();
+}
+
+async function edgeCallTags() {
+  const calls = (await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as {
+    operation: string;
+    options: { tags: string[] };
+  }[];
+  return calls.map(({ operation, options }) => ({ operation, tags: [...options.tags].sort() }));
+}
+
+async function edgeTags(...paths: string[]) {
+  return (
+    await Promise.all(paths.map(async (path) => `runtime-cache-${await cacheKeyHash(path)}`))
+  ).sort();
+}
+
+test("purgeBatchWindow sends a window's edge purges and invalidations together", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  for (const path of ["/batched-a", "/batched-b", "/batched-c", "/batched-d"]) {
+    await put(path, "first", { tags: [path.slice(1)] });
+  }
+
+  // Each reports its edge update queued, and sends none yet.
+  const queued = { backingStoreUpdated: true, edgePurgeAccepted: true };
+  assert.deepEqual(
+    await batchedMutation("invalidate", { tags: ["batched-a", "batched-b"] }),
+    queued,
+  );
+  assert.deepEqual(await batchedMutation("purge", { tags: ["batched-c"] }), queued);
+  const replaced = await put("/batched-d", "second", {
+    purgeBatchWindow: true,
+    purgeExisting: true,
+    tags: ["batched-d"],
+  });
+  assert.deepEqual(replaced.json, queued);
+  // A refill of an entry whose invalidation is queued joins it, as a purge.
+  const refill = await put("/batched-b", "second", {
+    purgeBatchWindow: true,
+    purgeExisting: true,
+    tags: ["batched-b"],
+  });
+  assert.deepEqual(refill.json, queued);
+  assert.deepEqual(await edgeCallTags(), []);
+  assert.equal(await (await read("/batched-d")).text(), "second");
+
+  // The metadata DO sends them once the window ends.
+  await vi.waitFor(async () => assert.notDeepEqual(await edgeCallTags(), []), {
+    interval: 100,
+    timeout: 5000,
+  });
+  assert.deepEqual(await edgeCallTags(), [
+    { operation: "purge", tags: await edgeTags("/batched-b", "/batched-c", "/batched-d") },
+    { operation: "invalidate", tags: await edgeTags("/batched-a") },
+  ]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+});
+
+test("purgeBatchWindow retries a refused batch", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+  await put("/batched-retry", "first");
+  const replaced = await put("/batched-retry", "second", {
+    purgeBatchWindow: true,
+    purgeExisting: true,
+  });
+  assert.deepEqual(replaced.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  await vi.waitFor(async () => assert.equal((await edgeCallTags()).length, 1), {
+    interval: 100,
+    timeout: 5000,
+  });
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  assert.equal(await (await metadataStub()).retryPendingTombstones(), false);
+  assert.deepEqual(await edgeCallTags(), [
+    { operation: "purge", tags: await edgeTags("/batched-retry") },
+  ]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
 });
 
 test("purgeExisting skips replacing an entry without a revalidator once its edge copy expired", async () => {
