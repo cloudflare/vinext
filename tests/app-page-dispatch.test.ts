@@ -3,7 +3,11 @@ import type { AddressInfo } from "node:net";
 import React from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
-import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
+import {
+  dispatchAppPage,
+  runAppPageStaticGenerationWork,
+} from "../packages/vinext/src/server/app-page-dispatch.js";
+import { buildAppStaticParamsTags } from "../packages/vinext/src/server/implicit-tags.js";
 import {
   tagAppPageLayoutError,
   tagAppPageSlotError,
@@ -2029,6 +2033,31 @@ describe("app page dispatch", () => {
     // Next.js runs generateStaticParams apart from the request, so the 404
     // computes its own value.
     expect(readRequestData).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs a shell's generators in the work store the routing check gives them", async () => {
+    const { options } = createDispatchOptions({
+      dynamicConfig: "force-dynamic",
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+
+    const store = await runAppPageStaticGenerationWork(options, async () => {
+      const context = getRequestContext();
+      return {
+        forceDynamicFetchDefault: context.currentForceDynamicFetchDefault,
+        revalidate: context.currentFetchRevalidate,
+        softTags: context.currentFetchSoftTags,
+      };
+    });
+
+    // The route's static params tags, not the request path's, and none of
+    // the route's revalidate or force-dynamic defaults, as
+    // validateAppPageRouteDynamicParams runs them.
+    expect(store).toEqual({
+      forceDynamicFetchDefault: false,
+      revalidate: null,
+      softTags: buildAppStaticParamsTags(options.route.routeSegments),
+    });
   });
 
   it("keeps a rejected param's generator fetches out of its 404's request memoization", async () => {
