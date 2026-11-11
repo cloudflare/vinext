@@ -87,6 +87,20 @@ test("resumes a fallback shell instead of rendering it again", async ({ baseURL 
   expect((after.greeting ?? 0) - (before.greeting ?? 0)).toBe(2);
 });
 
+test("sends a resumed fallback shell the request's trace metadata", async ({ baseURL }) => {
+  // The stored shell is static, so it holds no trace metadata. Like Next.js's
+  // resume, each request streams its own.
+  await readStreamedDocument(new URL("/en/blog/first", baseURL), []);
+  const traceparents = new Set<string>();
+  for (const slug of ["traced-a", "traced-b"]) {
+    const { html } = await readStreamedDocument(new URL(`/en/blog/${slug}`, baseURL), []);
+    const tags = [...html.matchAll(/<meta name="traceparent" content="([^"]+)"/g)];
+    expect(tags).toHaveLength(1);
+    traceparents.add(tags[0][1]);
+  }
+  expect(traceparents.size).toBe(2);
+});
+
 test("hydrates a resumed fallback shell", async ({ baseURL, context, page, consoleErrors }) => {
   await readStreamedDocument(new URL("/en/blog/warm", baseURL), []);
   await context.addCookies([{ name: "name", value: "ada", url: baseURL! }]);
