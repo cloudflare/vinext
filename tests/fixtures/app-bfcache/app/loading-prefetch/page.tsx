@@ -13,6 +13,9 @@ export default function LoadingPrefetchLinks() {
       <Link id="link-top" href="/loading-prefetch/top">
         top
       </Link>
+      <Link id="link-soon-stale" href="/loading-prefetch/soon-stale">
+        soon-stale
+      </Link>
     </main>
   );
 }
