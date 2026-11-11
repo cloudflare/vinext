@@ -817,13 +817,24 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       if (remaining.state === "queued") {
         // Work queued while this ran scheduled its own flush, which a backlog's reruns replaced
         // and this restores, or its caller is sending it now. A flush it scheduled stays, so the
-        // work isn't sent ahead of its batch; otherwise this backs up its caller.
+        // work isn't sent ahead of its batch; otherwise this backs up its caller. R2 work left
+        // over, which reads see, is retried within the minute either way.
         const flushAt = Math.min(
           remaining.flushAt ?? Infinity,
           (await this.ctx.storage.getAlarm()) ?? Infinity,
         );
+        const r2Pending =
+          this.ctx.storage.sql
+            .exec<{
+              pending: number;
+            }>(
+              "SELECT EXISTS(SELECT 1 FROM pending_r2_tombstones WHERE r2_complete = 0) AS pending",
+            )
+            .one().pending === 1;
         await this.scheduleCleanupAlarm(
-          flushAt === Infinity ? Date.now() + ORPHAN_CLEANUP_RETRY_MS : flushAt,
+          flushAt === Infinity || r2Pending
+            ? Math.min(flushAt, Date.now() + ORPHAN_CLEANUP_RETRY_MS)
+            : flushAt,
         );
         return;
       }
@@ -1885,13 +1896,21 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       }
       this.finishCompletedTombstones(purged);
     });
+    const failures = settled.flatMap((result) =>
+      result.status === "rejected"
+        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+        : [],
+    );
+    // A failed rewrite is retried within the minute, even when its edge work waits for a later
+    // batch.
+    if (failures.length) {
+      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
+        this.logCleanupFailure(error),
+      );
+    }
     return {
       ...(rows.length ? { cursor: rows.at(-1)!.key_hash } : {}),
-      failures: settled.flatMap((result) =>
-        result.status === "rejected"
-          ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
-          : [],
-      ),
+      failures,
       pending,
       purged,
     };

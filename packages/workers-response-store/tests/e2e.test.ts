@@ -75,6 +75,7 @@ beforeEach(async () => {
               export { ResponseStoreRevalidator } from "./worker.js";
               let purgeMode;
               let metadataR2DelayMs = 0;
+              let failMetadataR2Write = false;
               let failAlarm = false;
               export class CacheMetadata extends BaseMetadata {
                 constructor(ctx, env) {
@@ -83,6 +84,9 @@ beforeEach(async () => {
                     CACHE_BODIES: new Proxy(env.CACHE_BODIES, {
                       get(bucket, key) {
                         const value = Reflect.get(bucket, key);
+                        if (key === "put" && failMetadataR2Write) {
+                          return () => Promise.reject(new Error("R2 rewrite failed"));
+                        }
                         if (["get", "head", "put"].includes(key) && metadataR2DelayMs) {
                           return async (...args) => {
                             await new Promise((resolve) => setTimeout(resolve, metadataR2DelayMs));
@@ -159,6 +163,7 @@ beforeEach(async () => {
                     exposeInvalidate = new URL(request.url).searchParams.has("invalidate");
                     failR2Write = new URL(request.url).searchParams.has("fail-r2");
                     failAlarm = new URL(request.url).searchParams.has("fail-alarm");
+                    failMetadataR2Write = new URL(request.url).searchParams.has("fail-metadata-r2");
                     metadataR2DelayMs = Number(
                       new URL(request.url).searchParams.get("metadata-r2-delay-ms") ?? 0,
                     );
@@ -619,6 +624,55 @@ test("a flush keeps the later flush that work queued while it ran scheduled", as
   await stub.queueEdgePurge(await cacheKeyHash("/longer-later"), 10, flushAt);
   await flushed;
   assert.equal(await stub.getAlarmForTest(), flushAt);
+});
+
+test("a batched invalidation whose R2 rewrite fails is retried within the minute", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/batched-r2-retry", "first", { tags: ["batched-r2-retry"] });
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate&fail-metadata-r2");
+  const stub = await metadataStub();
+  await stub.deleteAlarmForTest();
+  const reservation = await stub.invalidateMatching(
+    { tags: ["batched-r2-retry"] },
+    Date.now(),
+    undefined,
+    Date.now() + 120_000,
+  );
+  assert.equal(reservation.edgeFlushScheduled, true);
+  const drained = await stub.drainPendingTombstones(
+    400,
+    undefined,
+    undefined,
+    reservation.tombstoneSequence,
+  );
+  assert.equal(drained.failures.length, 1);
+  assert.ok((await stub.getAlarmForTest()) <= Date.now() + 60_000);
+});
+
+test("a flush that leaves R2 work queued retries it within the minute", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/r2-left-running", "first", { tags: ["r2-left-running"] });
+  await batchedMutation("invalidate", { tags: ["r2-left-running"] });
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  const stub = await metadataStub();
+  await stub.deleteAlarmForTest();
+  await storage.exec("UPDATE pending_r2_tombstones SET r2_complete = 0");
+  await worker.fetch(
+    "https://user.test/admin/edge-purge?mode=success&invalidate&metadata-r2-delay-ms=500",
+  );
+  const flushed = stub.runAlarmForTest();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  // An invalidation whose R2 rewrite failed while the flush ran, with a longer window.
+  await storage.exec(`
+    INSERT INTO pending_r2_tombstones
+      (key_hash, cache_key, object_key, revision, r2_complete, edge_invalidate, tombstone_sequence)
+    VALUES ('r2-left-later', '/r2-left-later', '', 1, 0, 1, 1000)
+  `);
+  await stub.setAlarmForTest(Date.now() + 120_000);
+  await flushed;
+  assert.ok((await stub.getAlarmForTest()) <= Date.now() + 60_000);
 });
 
 async function queueEdgeRows(count: number, prefix: string, edgeInvalidate = 0) {
