@@ -110,6 +110,15 @@ export async function isrGetFallbackShell(key: string): Promise<ISRCacheEntry | 
 }
 
 /**
+ * Whether {@link isrGet} reads the data cache, where {@link isrGetFallbackShell}
+ * reads first. A path's own shell is stored under its page key, as Next.js
+ * stores a path's prerender, so then the page read finds it too.
+ */
+export function isrGetReadsFallbackShells(): boolean {
+  return getExplicitCdnCacheAdapter() === null;
+}
+
+/**
  * A packaged shell can't see `revalidatePath()` or `revalidateTag()`, so it is
  * served stale: reading it stores a replacement in the data cache, where they
  * act, and an invalidation that drops that replacement serves the packaged

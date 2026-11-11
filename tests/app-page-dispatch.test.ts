@@ -546,6 +546,8 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     isProduction: overrides.isProduction ?? false,
     isRscRequest: overrides.isRscRequest ?? false,
     isrGet,
+    // Like the default CDN adapter, `isrGet` reads where shells are stored.
+    isrGetReadsFallbackShells: true,
     isrFallbackShellHtmlKey(pathname: string) {
       return `shell:${pathname}`;
     },
@@ -649,6 +651,33 @@ function createPprBlogDispatchOptions(overrides: CreateDispatchOptionsOverrides 
     revalidateSeconds: 60,
     route: createPprBlogRoute(),
     ...overrides,
+  });
+}
+
+/** A path's own shell, whose prelude its requests send before their holes. */
+function buildOwnShellEntry(body: string, isStale: boolean): ISRCacheEntry {
+  return buildISRCacheEntry(
+    {
+      ...buildCachedAppPageValue(
+        markAppPprDynamicFallbackShellHtml(`<!DOCTYPE html><html><head></head><body>${body}`),
+      ),
+      postponed: formatAppPprShellState({
+        prelude: true,
+        postponed: {},
+        resumeDataCache: null,
+        generated: null,
+      }),
+    },
+    isStale,
+  );
+}
+
+function createResumeRecordingSsrHandler(resumes: unknown[]): DispatchOptions["loadSsrHandler"] {
+  return async () => ({
+    async handleSsr(_rsc, _navigation, _fonts, ssrOptions) {
+      resumes.push(ssrOptions?.pprShellResume);
+      return createStream(["</body></html>"]);
+    },
   });
 }
 
@@ -7203,10 +7232,10 @@ describe("app page dispatch", () => {
 
     const response = await dispatchAppPage(options);
 
-    // The path's own shell is read first, and each shell is read once.
+    // The page read is the read of the path's own shell, stored under its
+    // key, and each shell is read once.
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
       "html:/en/blog/new-post",
-      "shell:/en/blog/new-post",
       "shell:/en/blog/[slug]",
     ]);
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
@@ -7543,12 +7572,14 @@ describe("app page dispatch", () => {
 
     // Like Next.js, a fallback shell found missing renders blocking without
     // being read again.
-    expect(isrGet.mock.calls.map(([key]) => key).filter((key) => key.startsWith("shell:"))).toEqual(
-      [
-        "shell:/en/blog/new-post",
-        ...pprBlogFallbackShells.map(({ pathname }) => `shell:${pathname}`),
-      ],
-    );
+    expect(
+      isrGet.mock.calls
+        .map(([key]) => key)
+        .filter((key) => key.startsWith("shell:") || key === "html:/en/blog/new-post"),
+    ).toEqual([
+      "html:/en/blog/new-post",
+      ...pprBlogFallbackShells.map(({ pathname }) => `shell:${pathname}`),
+    ]);
     expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toEqual(["shell:/en/blog/[slug]"]);
   });
 
@@ -7721,25 +7752,120 @@ describe("app page dispatch", () => {
   });
 
   it("serves a path's own shell before its fallback shell", async () => {
-    const buildPageElement = createParamTextPageElement();
+    const resumes: unknown[] = [];
     const isrGet = vi.fn(async (key: string) =>
-      key === "shell:/en/blog/new-post"
-        ? buildISRCacheEntry(
-            buildCachedAppPageValue("<html><head></head><body>Own shell</body></html>"),
-            false,
-          )
-        : null,
+      key === "html:/en/blog/new-post" ? buildOwnShellEntry("Own shell", false) : null,
     );
-    const { options } = createPprBlogDispatchOptions({ buildPageElement, isrGet });
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      isrGet,
+      loadSsrHandler: createResumeRecordingSsrHandler(resumes),
+    });
 
-    const response = await dispatchAppPage(options);
+    await (
+      await runWithRequestContext(createRequestContext(), () => dispatchAppPage(options))
+    ).text();
 
-    expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
+    // The page read is the read of the shell, stored under the page's key,
+    // and the request resumes it instead of serving it as its page.
+    expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/new-post"]);
+    expect((resumes[0] as AppPagePprShellResume).prelude).toContain("Own shell");
+  });
+
+  it("reads a path's own shell apart from its page when the page read doesn't read shells", async () => {
+    const resumes: unknown[] = [];
+    const isrGet = vi.fn(async (_key: string) => null);
+    const isrGetFallbackShell = vi.fn(async (key: string) =>
+      key === "html:/en/blog/new-post" ? buildOwnShellEntry("Own shell", false) : null,
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      isrGet,
+      loadSsrHandler: createResumeRecordingSsrHandler(resumes),
+    });
+
+    await (
+      await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, isrGetFallbackShell, isrGetReadsFallbackShells: false }),
+      )
+    ).text();
+
+    // An edge's page read, as Workers Cache's, can't find the data cache's shell.
+    expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/new-post"]);
+    expect(isrGetFallbackShell.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/new-post"]);
+    expect((resumes[0] as AppPagePprShellResume).prelude).toContain("Own shell");
+  });
+
+  it("regenerates a stale own shell as a shell, not as its page", async () => {
+    const pageRegenerations: string[] = [];
+    const shellRegenerations: string[] = [];
+    const resumes: unknown[] = [];
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      isrGet: vi.fn(async (key: string) =>
+        key === "html:/en/blog/new-post" ? buildOwnShellEntry("Stale shell", true) : null,
+      ),
+      loadSsrHandler: createResumeRecordingSsrHandler(resumes),
+      scheduleBackgroundRegeneration(key) {
+        pageRegenerations.push(key);
+      },
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({
+        ...options,
+        scheduleFallbackShellRegeneration(key) {
+          shellRegenerations.push(key);
+        },
+      }),
+    );
+    await response.text();
+
+    expect(response.headers.get("x-vinext-cache")).not.toBe("STALE");
+    expect((resumes[0] as AppPagePprShellResume).prelude).toContain("Stale shell");
+    expect(pageRegenerations).toEqual([]);
+    expect(shellRegenerations).toEqual(["html:/en/blog/new-post"]);
+  });
+
+  it("leaves a page stored under its path's shell key to the page", async () => {
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      async () => {},
+    );
+    const scheduledKeys: string[] = [];
+    // A page stored without proof that it left the query unread, so a
+    // request with one renders.
+    const page = buildISRCacheEntry(
+      buildCachedAppPageValue("<html><head></head><body>Stored page</body></html>"),
+      false,
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      isrGet: vi.fn(async (key: string) => (key === "html:/en/blog/new-post" ? page : null)),
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          markDynamicUsage();
+          return createStream(["<html><head></head><body>fresh</body></html>"]);
+        },
+      }),
+      request: new Request("https://example.test/en/blog/new-post?q=1"),
+      searchParams: new URLSearchParams("q=1"),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({
+        ...options,
+        isrSetFallbackShell,
+        scheduleFallbackShellRegeneration(key) {
+          scheduledKeys.push(key);
+        },
+      }),
+    );
+
+    await expect(response.text()).resolves.toContain("fresh");
+    expect(scheduledKeys).not.toContain("html:/en/blog/new-post");
+    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).not.toContain(
       "html:/en/blog/new-post",
-      "shell:/en/blog/new-post",
-    ]);
-    await expect(response.text()).resolves.toContain("Own shell");
-    expect(buildPageElement).not.toHaveBeenCalled();
+    );
   });
 
   it("regenerates a stale shell from a fresh render instead of resuming it", async () => {
@@ -7752,7 +7878,7 @@ describe("app page dispatch", () => {
       buildPageElement: createParamTextPageElement(),
       cleanPathname: "/en/blog/hello",
       isrGet: vi.fn(async (key: string) =>
-        key === "shell:/en/blog/hello"
+        key === "html:/en/blog/hello"
           ? buildISRCacheEntry(
               {
                 ...buildCachedAppPageValue(
@@ -7862,7 +7988,7 @@ describe("app page dispatch", () => {
         buildPageElement: createParamTextPageElement(),
         cleanPathname: "/en/blog/hello",
         isrGet: vi.fn(async (key: string) =>
-          key === "shell:/en/blog/hello"
+          key === "html:/en/blog/hello"
             ? buildISRCacheEntry({
                 ...buildCachedAppPageValue(
                   markAppPprDynamicFallbackShellHtml(
@@ -7907,7 +8033,7 @@ describe("app page dispatch", () => {
       cleanPathname: "/en/blog/hello",
       isRscRequest: true,
       isrGet: vi.fn(async (key: string) =>
-        key === "shell:/en/blog/hello"
+        key === "html:/en/blog/hello"
           ? buildISRCacheEntry(
               {
                 ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<!DOCTYPE html>")),
@@ -7936,7 +8062,7 @@ describe("app page dispatch", () => {
     );
     await response.text();
 
-    expect(scheduledKeys).toEqual(["shell:/en/blog/hello"]);
+    expect(scheduledKeys).toEqual(["html:/en/blog/hello"]);
   });
 
   it("renders an RSC request with its own shell's resume data cache, and regenerates a stale shell", async () => {
@@ -7950,7 +8076,7 @@ describe("app page dispatch", () => {
       cleanPathname: "/en/blog/hello",
       isRscRequest: true,
       isrGet: vi.fn(async (key: string) =>
-        key === "shell:/en/blog/hello"
+        key === "html:/en/blog/hello"
           ? buildISRCacheEntry(
               {
                 ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<!DOCTYPE html>")),
@@ -7985,17 +8111,17 @@ describe("app page dispatch", () => {
     // Like Next.js, the payload reads the values the shell's HTML was built with.
     expect(seeds).toEqual([{ body: "c2hlbGw=", tags: [] }]);
     expect(response.headers.get("x-nextjs-postponed")).toBeNull();
-    expect(scheduledKeys).toEqual(["shell:/en/blog/hello"]);
+    expect(scheduledKeys).toEqual(["html:/en/blog/hello"]);
   });
 
   it.each([
-    { dynamic: true, scheduled: ["shell:/en/blog/[slug]", "shell:/en/blog/hello"] },
+    { dynamic: true, scheduled: ["shell:/en/blog/[slug]", "html:/en/blog/hello"] },
     { dynamic: false, scheduled: ["shell:/en/blog/[slug]"] },
     // Middleware's Cache-Control replaces the page's, but not its dynamism.
     {
       dynamic: true,
       middlewareCacheControl: "public, max-age=60",
-      scheduled: ["shell:/en/blog/[slug]", "shell:/en/blog/hello"],
+      scheduled: ["shell:/en/blog/[slug]", "html:/en/blog/hello"],
     },
     {
       dynamic: false,
@@ -8083,7 +8209,7 @@ describe("app page dispatch", () => {
       }),
     );
     await response.text();
-    await vi.waitFor(() => expect([...jobs.keys()]).toContain("shell:/en/blog/hello"));
+    await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
   });
 
   it.each([{ late: false }, { late: true }])(
@@ -8128,7 +8254,7 @@ describe("app page dispatch", () => {
         }),
       );
       await response.text();
-      await vi.waitFor(() => expect([...jobs.keys()]).toContain("shell:/en/blog/hello"));
+      await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
     },
   );
 
@@ -8173,11 +8299,11 @@ describe("app page dispatch", () => {
       }),
     );
     await response.text();
-    await vi.waitFor(() => expect([...jobs.keys()]).toContain("shell:/en/blog/hello"));
-    await jobs.get("shell:/en/blog/hello")!();
+    await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+    await jobs.get("html:/en/blog/hello")!();
 
-    expect(isrGet.mock.calls.filter(([key]) => key === "shell:/en/blog/hello")).toHaveLength(1);
-    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toContain("shell:/en/blog/hello");
+    expect(isrGet.mock.calls.filter(([key]) => key === "html:/en/blog/hello")).toHaveLength(1);
+    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toContain("html:/en/blog/hello");
   });
 
   it.each([
@@ -8190,7 +8316,7 @@ describe("app page dispatch", () => {
       // An empty shell, as a page that reads the request outside any boundary
       // leaves, which no request resumes.
       const isrGet = vi.fn<DispatchOptions["isrGet"]>(async (key: string) =>
-        key === "shell:/en/blog/hello"
+        key === "html:/en/blog/hello"
           ? buildISRCacheEntry({
               ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")),
               postponed: formatAppPprShellState({
@@ -8234,8 +8360,8 @@ describe("app page dispatch", () => {
       );
       await response.text();
 
-      expect(scheduledKeys).not.toContain("shell:/en/blog/hello");
-      expect(isrGet.mock.calls.filter(([key]) => key === "shell:/en/blog/hello")).toHaveLength(1);
+      expect(scheduledKeys).not.toContain("html:/en/blog/hello");
+      expect(isrGet.mock.calls.filter(([key]) => key === "html:/en/blog/hello")).toHaveLength(1);
     },
   );
 
@@ -8252,7 +8378,7 @@ describe("app page dispatch", () => {
         buildPageElement: createParamTextPageElement("fresh"),
         cleanPathname: "/en/blog/hello",
         isRscRequest,
-        isrGet: vi.fn(async (key: string) => (key === "shell:/en/blog/hello" ? unusable : null)),
+        isrGet: vi.fn(async (key: string) => (key === "html:/en/blog/hello" ? unusable : null)),
         loadSsrHandler: async () => ({
           async handleSsr() {
             markDynamicUsage();
@@ -8280,7 +8406,7 @@ describe("app page dispatch", () => {
       );
       await response.text();
 
-      expect(scheduledKeys).toContain("shell:/en/blog/hello");
+      expect(scheduledKeys).toContain("html:/en/blog/hello");
     },
   );
 
@@ -8393,14 +8519,14 @@ describe("app page dispatch", () => {
     });
 
     const response = await runWithRequestContext(createRequestContext(), () =>
-      dispatchAppPage({ ...options, isrGetFallbackShell }),
+      dispatchAppPage({ ...options, isrGetFallbackShell, isrGetReadsFallbackShells: false }),
     );
 
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("concrete");
     // Neither shell is stored, so generateStaticParams is asked and no shell produced.
     expect(isrGetFallbackShell.mock.calls.map(([key]) => key)).toEqual([
-      "shell:/en/blog/new-post",
+      "html:/en/blog/new-post",
       "shell:/en/blog/[slug]",
     ]);
     expect(consoleError).toHaveBeenCalledWith(
@@ -8728,7 +8854,6 @@ describe("app page dispatch", () => {
     // query to its holes.
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
       "html:/en/blog/new-post",
-      "shell:/en/blog/new-post",
       "shell:/en/blog/[slug]",
     ]);
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
@@ -8794,7 +8919,6 @@ describe("app page dispatch", () => {
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
       "html:/en/blog/new-post",
-      "shell:/en/blog/new-post",
       "shell:/en/blog/[slug]",
     ]);
     expect(response.headers.get("x-vinext-cache")).toBe("STALE");

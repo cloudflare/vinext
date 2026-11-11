@@ -372,8 +372,9 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
 };
 
 /**
- * The request's read of its path's own shell, which producing the shell after
- * its render reuses instead of reading the shell again.
+ * The request's read of its path's own shell, which serving the shell and
+ * producing it after the render reuse instead of reading the shell again. The
+ * page read fills it when it reads the shell too.
  */
 export type AppPagePprOwnShellRead = { cached?: ISRCacheEntry | null };
 
@@ -479,6 +480,12 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   isrFallbackShellHtmlKey: (pathname: string) => string;
   /** Read a fallback shell from the data cache. Defaults to `isrGet`. */
   isrGetFallbackShell?: AppPageCacheGetter;
+  /**
+   * Whether `isrGet` reads where `isrGetFallbackShell` does, so a document
+   * request's page read is its read of the path's own shell, stored under the
+   * page's key.
+   */
+  isrGetReadsFallbackShells?: boolean;
   /** Store a fallback shell a request rendered. Without it, shells are only read. */
   isrSetFallbackShell?: AppPageCacheSetter;
   isrHtmlKey: (pathname: string) => string;
@@ -1356,6 +1363,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     options.isProgressiveActionRender !== true
       ? parseMountedLayoutsHeader(options.request.headers.get(VINEXT_MOUNTED_LAYOUTS_HEADER))
       : null;
+  const pprOwnShellRead: AppPagePprOwnShellRead = {};
   if (shouldReadCache && isStaticEligible) {
     traceOperation = resolveAppPageTraceOperation({
       hasRequestSearchParams,
@@ -1422,6 +1430,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      // A path's own shell is stored under its page key, as Next.js stores a
+      // path's prerender, so the page read finds it too when it reads the
+      // data cache.
+      onDocumentEntryRead:
+        options.pprRuntime !== undefined && options.isrGetReadsFallbackShells === true
+          ? (cached) => {
+              pprOwnShellRead.cached = cached;
+            }
+          : undefined,
       async resolveParams() {
         return (await resolveCacheRenderTarget()).navigationParams;
       },
@@ -1750,7 +1767,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  const pprOwnShellRead: AppPagePprOwnShellRead = {};
   const fallbackShellResult = options.pprRuntime
     ? await options.pprRuntime.tryServe(
         options,

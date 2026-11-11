@@ -25,6 +25,7 @@ import { normalizePregeneratedPathname } from "./pregenerated-concrete-paths.js"
 import { encodePrerenderRouteParams } from "./prerender-route-params.js";
 import {
   createAppPprRequestConcreteShell,
+  isAppPprDynamicFallbackShellHtml,
   type AppPagePprFallbackCacheShell,
 } from "./app-ppr-fallback-shell.js";
 import type { AppPageRouteParamNames, GeneratedStaticParamsMemo } from "./app-page-request.js";
@@ -158,6 +159,31 @@ function isFreshShell(cached: ISRCacheEntry | null): boolean {
   return cached !== null && cached.isExpired !== true && !cached.isStale;
 }
 
+/**
+ * Where a shell is stored. Like Next.js, which stores a path's prerender, its
+ * shell included, under the path, a path's own shell shares its page's key. A
+ * fallback shell has its own.
+ */
+function shellKeyOf<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  shell: AppPagePprFallbackCacheShell,
+  isConcrete: boolean,
+): string {
+  return isConcrete
+    ? options.isrHtmlKey(options.cleanPathname)
+    : options.isrFallbackShellHtmlKey(normalizePregeneratedPathname(shell.pathname));
+}
+
+/** A page stored under the key its path's own shell shares, which no shell replaces. */
+function isStoredPage(cached: ISRCacheEntry | null): boolean {
+  const value = cached?.value.value;
+  return (
+    cached?.isExpired !== true &&
+    value?.kind === "APP_PAGE" &&
+    !isAppPprDynamicFallbackShellHtml(value.html)
+  );
+}
+
 /** Produce a shell in the background unless it's stored, or regenerate a stale one. */
 function scheduleShellProduction<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
@@ -174,7 +200,7 @@ function scheduleShellProduction<TRoute extends AppPageDispatchRoute>(
   const known = read?.ok ? read : undefined;
   if (known && isFreshShell(known.cached)) return;
   const pathname = normalizePregeneratedPathname(shell.pathname);
-  const key = options.isrFallbackShellHtmlKey(pathname);
+  const key = shellKeyOf(options, shell, isConcrete);
   (options.scheduleFallbackShellRegeneration ?? options.scheduleBackgroundRegeneration)(
     key,
     async () => {
@@ -184,7 +210,7 @@ function scheduleShellProduction<TRoute extends AppPageDispatchRoute>(
       // A stale shell regenerates here whatever scheduled this: a request that
       // serves it while this runs finds the key pending, so its own
       // regeneration is dropped.
-      if (isFreshShell(cached)) return;
+      if (isFreshShell(cached) || (isConcrete && isStoredPage(cached))) return;
       const { produceAppPprFallbackShell } = await import("./app-ppr-fallback-shell-production.js");
       const { coalesceFallbackShellProduction } = await import("./isr-cache.js");
       options.isrDebug?.(
@@ -211,11 +237,12 @@ async function seedRscRequestFromOwnShell<TRoute extends AppPageDispatchRoute>(
 ): Promise<void> {
   const concreteShell = createAppPprRequestConcreteShell(options.route, options.params);
   if (!concreteShell) return;
-  const read = await readShell(options, concreteShell);
+  const read = await readShell(options, concreteShell, true);
   if (read.ok) ownShellRead.cached = read.cached;
   if (!read.ok || read.cached === null || read.cached.isExpired === true) return;
   const value = read.cached.value.value;
-  if (value?.kind !== "APP_PAGE") return;
+  // A page stored under the shell's key has no values to seed.
+  if (value?.kind !== "APP_PAGE" || !isAppPprDynamicFallbackShellHtml(value.html)) return;
   // A shell that read no cached data has none to seed, but still regenerates.
   if (read.cached.isStale) {
     scheduleShellProduction(
@@ -242,13 +269,14 @@ type ShellRead = { ok: true; cached: ISRCacheEntry | null } | { ok: false };
 async function readShell<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   shell: AppPagePprFallbackCacheShell,
+  isConcrete = false,
 ): Promise<ShellRead> {
   const pathname = normalizePregeneratedPathname(shell.pathname);
   try {
     return {
       ok: true,
       cached: await (options.isrGetFallbackShell ?? options.isrGet)(
-        options.isrFallbackShellHtmlKey(pathname),
+        shellKeyOf(options, shell, isConcrete),
       ),
     };
   } catch (isrReadError) {
@@ -278,7 +306,7 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
   const { coalesceFallbackShellProduction } = await import("./isr-cache.js");
   // The build keys a shell by its decoded pathname, like a concrete page.
   const fallbackPathname = normalizePregeneratedPathname(fallbackShell.pathname);
-  const key = options.isrFallbackShellHtmlKey(fallbackPathname);
+  const key = shellKeyOf(options, fallbackShell, isConcrete);
   const produce = () =>
     produceAppPprFallbackShell(
       options,
@@ -304,12 +332,14 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
       searchParams: options.searchParams,
     });
 
-  const shellRead = read ?? (await readShell(options, fallbackShell));
+  const shellRead = read ?? (await readShell(options, fallbackShell, isConcrete));
   if (!shellRead.ok) return null;
   let cached = shellRead.cached;
   // A request without its path's shell renders the page, and the shell is
-  // produced after it.
-  if (isConcrete && (cached === null || cached.isExpired === true)) return SHELL_MISSING;
+  // produced after it. A page stored under the shell's key isn't a shell.
+  if (isConcrete && (cached === null || cached.isExpired === true || isStoredPage(cached))) {
+    return SHELL_MISSING;
+  }
   // Like Next.js, a request without a servable shell renders it first, blocking.
   if (cached === null || cached.isExpired === true) {
     options.isrDebug?.(
@@ -507,9 +537,7 @@ function storeUngeneratedFallbackShells<TRoute extends AppPageDispatchRoute>(
 ): void {
   if (process.env.VINEXT_PRERENDER === "1") return;
   for (const fallbackShell of fallbackShells) {
-    const key = options.isrFallbackShellHtmlKey(
-      normalizePregeneratedPathname(fallbackShell.pathname),
-    );
+    const key = shellKeyOf(options, fallbackShell, false);
     (options.scheduleFallbackShellRegeneration ?? options.scheduleBackgroundRegeneration)(
       key,
       async () => {
@@ -563,8 +591,14 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
     // path rendered once before. Its shell keeps every param.
     const concreteShell = createAppPprRequestConcreteShell(options.route, options.params);
     if (concreteShell) {
-      const read = await readShell(options, concreteShell);
-      if (read.ok) ownShellRead.cached = read.cached;
+      // The page read may have read the shell already.
+      let read: ShellRead;
+      if (ownShellRead.cached === undefined) {
+        read = await readShell(options, concreteShell, true);
+        if (read.ok) ownShellRead.cached = read.cached;
+      } else {
+        read = { ok: true, cached: ownShellRead.cached };
+      }
       const served = await serveFallbackShell(
         options,
         concreteShell,
@@ -667,8 +701,9 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
     // An RSC request its shell didn't seed produces the shell as a document
     // request does.
     if (decision.kind !== "probe-shells" && decision.kind !== "seed-rsc-request") return;
-    // A stored shell the request read is left alone. The request regenerates
-    // a stale one it could use, so only an unusable one regenerates here.
+    // A stored shell the request read is left alone, as is a page stored
+    // under its key. The request regenerates a stale shell it could use, so
+    // only an unusable one regenerates here.
     const { cached } = ownShellRead;
     if (
       cached !== undefined &&
