@@ -1,3 +1,4 @@
+import type { VaryParam } from "../server/app-rsc-render-mode.js";
 import {
   makeHangingPromise,
   suppressHangingPromiseAbortRejections,
@@ -28,18 +29,18 @@ export type PprFallbackShellState = {
   phase: "warmup" | "final";
   routePattern: string;
   /**
-   * The params the render reads, `?` for search params, when it records them
+   * The params the render reads, `SEARCH_PARAMS_VARY_PARAM` for search params, when it records them
    * for the client to reuse its payload for other URLs, as Next.js's
    * `varyParams` does. Null when it doesn't.
    */
-  varyParams: Set<string> | null;
+  varyParams: Set<VaryParam> | null;
 };
 
 type CreatePprFallbackShellStateOptions = {
   fallbackParamNames: readonly string[];
   isRuntimePrefetch?: boolean;
   routePattern: string;
-  varyParams?: Set<string>;
+  varyParams?: Set<VaryParam>;
 };
 
 type PprFallbackShellCacheTask = {
@@ -184,12 +185,12 @@ export function createPprFallbackShellState(
 }
 
 /**
- * Records a read of route params into the render's vary params: `?` for
- * search params, else the param names.
+ * Records a read of route params into the render's vary params:
+ * `SEARCH_PARAMS_VARY_PARAM` for search params, else the param names.
  */
 export function recordPprFallbackShellVaryParams(
   state: PprFallbackShellState | null,
-  names: Iterable<string>,
+  names: Iterable<VaryParam>,
 ): void {
   const varyParams = state?.varyParams;
   if (!varyParams) return;

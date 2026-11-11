@@ -492,6 +492,11 @@ export type NextConfig = {
      * values are clamped to Number.MAX_SAFE_INTEGER.
      */
     prefetchInlining?: boolean | { maxBundleSize?: number; maxSize?: number };
+    /**
+     * Reuses a prefetched static shell for another URL of the route with the
+     * same values for the params its render read. On unless set to `false`.
+     */
+    varyParams?: boolean;
     /** Header names forwarded by Pages Router `res.revalidate()` internal requests. */
     allowedRevalidateHeaderKeys?: string[];
     [key: string]: unknown;
@@ -596,6 +601,8 @@ export type ResolvedNextConfig = {
    * and partial object config into concrete thresholds.
    */
   prefetchInlining: PrefetchInliningConfig;
+  /** `experimental.varyParams`: on unless set to `false`. */
+  varyParams: boolean;
   redirects: NextRedirect[];
   rewrites: {
     beforeFiles: NextRewrite[];
@@ -2027,6 +2034,7 @@ export async function resolveNextConfig(
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
+      varyParams: true,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
@@ -2265,7 +2273,8 @@ export async function resolveNextConfig(
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
   //   cacheComponents, prefetchInlining, varyParams, optimisticRouting, cachedNavigations
-  // vinext does not yet implement varyParams or optimisticRouting, and supports
+  // vinext implements varyParams per shell rather than per segment (and on by
+  // default), does not yet implement optimisticRouting, and supports
   // cachedNavigations only partially (it advertises staleTimes.static on
   // unclaimed cache hits but has no static-stage client cache), so we warn when
   // appShells is enabled and explain which co-flags are missing.
@@ -2278,7 +2287,7 @@ export async function resolveNextConfig(
     if (!prefetchInlining) {
       missingCoFlags.push("experimental.prefetchInlining");
     }
-    if (experimental?.varyParams !== true) {
+    if (experimental?.varyParams === false) {
       missingCoFlags.push("experimental.varyParams");
     }
     if (experimental?.optimisticRouting !== true) {
@@ -2472,6 +2481,7 @@ export async function resolveNextConfig(
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,
+    varyParams: experimental?.varyParams !== false,
     redirects,
     rewrites,
     headers,
