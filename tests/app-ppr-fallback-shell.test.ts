@@ -347,4 +347,17 @@ describe("replaceAppPprShellFallbackParamKeys", () => {
       ]),
     ).toEqual({ key: JSON.stringify(["xslug|%5B...rest%5D|d", "rest|a/b%2Fc|c"]) });
   });
+
+  it("matches a param name holding a quote or backslash in either key spelling", () => {
+    const segments = ['say"hi\\|%5Bsay%22hi%5C%5D|d'];
+    const nested = JSON.stringify(["page", JSON.stringify(segments)]);
+    const plain = JSON.stringify(segments);
+
+    const replaced = replaceAppPprShellFallbackParamKeys({ nested, plain }, [
+      { name: 'say"hi\\', shellValue: "%5Bsay%22hi%5C%5D", requestValue: "x" },
+    ]) as { nested: string; plain: string };
+
+    expect(JSON.parse(JSON.parse(replaced.nested)[1])).toEqual(['say"hi\\|x|d']);
+    expect(JSON.parse(replaced.plain)).toEqual(['say"hi\\|x|d']);
+  });
 });
