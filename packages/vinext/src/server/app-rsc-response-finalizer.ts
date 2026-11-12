@@ -20,6 +20,7 @@ import {
   hasPostConfigLinkHeaders,
 } from "./app-response-header-provenance.js";
 import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 import { captureRouteCacheabilityResponsePolicy } from "vinext/shims/cacheability-classification";
 
 type FinalizeAppRscResponseOptions = {
@@ -191,6 +192,9 @@ export async function finalizeAppRscResponse(
   request: Request,
   options: FinalizeAppRscResponseOptions,
 ): Promise<Response> {
+  // A Route Handler's WebSocket upgrade can carry a fetch() response's
+  // immutable headers, and no response header policy applies to it.
+  if (isWebSocketUpgradeResponse(response)) return response;
   const routeHandlerRuntime = routeHandlerResponses.get(response);
   if (response.status >= 300 && response.status < 400) {
     if (!applicationResponses.has(response) || configHeadersAlreadyApplied.has(response)) {

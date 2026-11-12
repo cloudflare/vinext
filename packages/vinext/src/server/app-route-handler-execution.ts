@@ -61,6 +61,7 @@ import {
 import { frameworkTracer } from "./tracer.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
 import { logRequestError } from "./request-error-log.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
@@ -409,6 +410,14 @@ async function executeAppRouteHandlerImpl(
     const handlerResult = tracedResult.handlerResult;
     let { dynamicUsedInHandler, response } = handlerResult;
     assertSupportedAppRouteHandlerResponse(response);
+    // Rebuilding an upgrade would throw on its 101 status and drop its
+    // webSocket, and no cache or header policy applies to it.
+    if (isWebSocketUpgradeResponse(response)) {
+      if (dynamicUsedInHandler) markKnownDynamicAppRoute(options.routePattern);
+      recordRouteCacheability({ cacheable: false, dynamicUsage: true });
+      options.clearRequestContext();
+      return response;
+    }
     const draftModeBeforeCompletion =
       options.getActiveDraftModeState?.() ?? options.isDraftMode === true;
     const handlerDraftCookieBeforeCompletion =
