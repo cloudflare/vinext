@@ -8178,6 +8178,41 @@ describe("app page dispatch", () => {
     ]);
   });
 
+  it("stores a static page's RSC payload over its own shell's RSC part", async () => {
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      isRscRequest: true,
+      isrGet: vi.fn(async (key: string) =>
+        key === "rsc:/en/blog/hello"
+          ? buildISRCacheEntry(buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")))
+          : key === "html:/en/blog/hello"
+            ? buildISRCacheEntry(
+                buildCachedAppPageValue("<html><head></head><body>Stored page</body></html>"),
+              )
+            : null,
+      ),
+      params: { locale: "en", slug: "hello" },
+      renderToReadableStream() {
+        return createStream(["payload"]);
+      },
+      request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage(options),
+    );
+    await response.text();
+
+    // A part left beside a page another request stored, as when that page's
+    // write races the shell's, is replaced by the page's next RSC render.
+    await vi.waitFor(() =>
+      expect(vi.mocked(options.isrSet).mock.calls.map(([key]) => key)).toContain(
+        "rsc:/en/blog/hello",
+      ),
+    );
+  });
+
   it("stores no RSC part for a path's own shell whose document wasn't stored", async () => {
     const jobs = new Map<string, () => Promise<void>>();
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
