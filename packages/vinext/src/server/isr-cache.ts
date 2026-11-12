@@ -112,7 +112,7 @@ export async function isrGetFallbackShell(key: string): Promise<ISRCacheEntry | 
 
 /**
  * Whether {@link isrGet} reads the data cache, where {@link isrGetFallbackShell}
- * reads first. A path's own shell is stored under its page key, as Next.js
+ * reads first. A path's own shell is stored under its page keys, as Next.js
  * stores a path's prerender, so then the page read finds it too.
  */
 export function isrGetReadsFallbackShells(): boolean {

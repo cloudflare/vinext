@@ -57,6 +57,7 @@ import {
   _isOnDemandRevalidate,
   _setRequestScopedCacheLife,
 } from "../packages/vinext/src/shims/cache-request-state.js";
+import { collectUseCacheResumeDataCacheEntry } from "../packages/vinext/src/shims/resume-data-cache.js";
 import {
   runWithExecutionContext,
   type ExecutionContextLike,
@@ -7923,8 +7924,17 @@ describe("app page dispatch", () => {
     expect(resumes).toHaveLength(2);
     expect(resumes[0]).toBeDefined();
     expect(resumes[1]).toBeUndefined();
-    expect(isrSetFallbackShell).toHaveBeenCalledTimes(1);
+    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toEqual([
+      "html:/en/blog/hello",
+      "rsc:/en/blog/hello",
+    ]);
     expect(isrSetFallbackShell.mock.calls[0]![1].html).not.toContain("stale");
+    // Its part beside the page's RSC payload holds no document, only the
+    // values the shell was built with, which it read none of.
+    expect(isrSetFallbackShell.mock.calls[1]![1]).toMatchObject({
+      html: markAppPprDynamicFallbackShellHtml(""),
+      postponed: undefined,
+    });
   });
 
   // A Workers Cache dispatch of a static-candidate path dropped the query, so
@@ -8028,26 +8038,16 @@ describe("app page dispatch", () => {
 
   it("regenerates a stale shell an RSC request reads, though it has no resume data cache", async () => {
     const scheduledKeys: string[] = [];
+    const isrGet = vi.fn(async (key: string) =>
+      key === "rsc:/en/blog/hello"
+        ? buildISRCacheEntry(buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")), true)
+        : null,
+    );
     const { options } = createPprBlogDispatchOptions({
       buildPageElement: createParamTextPageElement("fresh"),
       cleanPathname: "/en/blog/hello",
       isRscRequest: true,
-      isrGet: vi.fn(async (key: string) =>
-        key === "html:/en/blog/hello"
-          ? buildISRCacheEntry(
-              {
-                ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<!DOCTYPE html>")),
-                postponed: formatAppPprShellState({
-                  prelude: true,
-                  postponed: {},
-                  resumeDataCache: null,
-                  generated: null,
-                }),
-              },
-              true,
-            )
-          : null,
-      ),
+      isrGet,
       params: { locale: "en", slug: "hello" },
       request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
     });
@@ -8063,6 +8063,8 @@ describe("app page dispatch", () => {
     await response.text();
 
     expect(scheduledKeys).toEqual(["html:/en/blog/hello"]);
+    // The page read found the shell's part beside the page's RSC payload.
+    expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["rsc:/en/blog/hello"]);
   });
 
   it("renders an RSC request with its own shell's resume data cache, and regenerates a stale shell", async () => {
@@ -8076,13 +8078,13 @@ describe("app page dispatch", () => {
       cleanPathname: "/en/blog/hello",
       isRscRequest: true,
       isrGet: vi.fn(async (key: string) =>
-        key === "html:/en/blog/hello"
+        key === "rsc:/en/blog/hello"
           ? buildISRCacheEntry(
               {
-                ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<!DOCTYPE html>")),
+                ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")),
                 postponed: formatAppPprShellState({
-                  prelude: true,
-                  postponed: {},
+                  prelude: false,
+                  postponed: null,
                   resumeDataCache: JSON.stringify({
                     cache: { "use-cache-key": { body: "c2hlbGw=", tags: [] } },
                     fetch: {},
@@ -8112,6 +8114,203 @@ describe("app page dispatch", () => {
     expect(seeds).toEqual([{ body: "c2hlbGw=", tags: [] }]);
     expect(response.headers.get("x-nextjs-postponed")).toBeNull();
     expect(scheduledKeys).toEqual(["html:/en/blog/hello"]);
+  });
+
+  it.each([
+    { name: "has no part beside the page's RSC payload", rscRead: "missing" },
+    { name: "can't read the page's RSC key", rscRead: "error" },
+    { name: "finds the part beside the page's RSC payload expired", rscRead: "expired" },
+  ])("renders an RSC request with its own shell's values when it $name", async ({ rscRead }) => {
+    const seeds: unknown[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const isrGet = vi.fn(async (key: string): Promise<ISRCacheEntry | null> => {
+      if (key === "rsc:/en/blog/hello") {
+        if (rscRead === "error") throw new Error("read failed");
+        return rscRead === "expired"
+          ? {
+              ...buildISRCacheEntry(
+                buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")),
+                true,
+              ),
+              isExpired: true,
+            }
+          : null;
+      }
+      return key === "html:/en/blog/hello"
+        ? buildISRCacheEntry({
+            ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<!DOCTYPE html>")),
+            postponed: formatAppPprShellState({
+              prelude: true,
+              postponed: {},
+              resumeDataCache: JSON.stringify({
+                cache: { "use-cache-key": { body: "c2hlbGw=", tags: [] } },
+                fetch: {},
+              }),
+              generated: null,
+            }),
+          })
+        : null;
+    });
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: vi.fn<DispatchOptions["buildPageElement"]>(async () => {
+        seeds.push(_getResumeDataCacheSeed()?.cache.get("use-cache-key"));
+        return React.createElement("main", null, "page");
+      }),
+      cleanPathname: "/en/blog/hello",
+      isRscRequest: true,
+      isrGet,
+      params: { locale: "en", slug: "hello" },
+      request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+    });
+
+    try {
+      await (
+        await runWithRequestContext(createRequestContext(), () => dispatchAppPage(options))
+      ).text();
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(seeds).toEqual([{ body: "c2hlbGw=", tags: [] }]);
+    expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
+      "rsc:/en/blog/hello",
+      "html:/en/blog/hello",
+    ]);
+  });
+
+  it("stores a static page's RSC payload over its own shell's RSC part", async () => {
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      isRscRequest: true,
+      isrGet: vi.fn(async (key: string) =>
+        key === "rsc:/en/blog/hello"
+          ? buildISRCacheEntry(buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")))
+          : key === "html:/en/blog/hello"
+            ? buildISRCacheEntry(
+                buildCachedAppPageValue("<html><head></head><body>Stored page</body></html>"),
+              )
+            : null,
+      ),
+      params: { locale: "en", slug: "hello" },
+      renderToReadableStream() {
+        return createStream(["payload"]);
+      },
+      request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage(options),
+    );
+    await response.text();
+
+    // A part left beside a page another request stored, as when that page's
+    // write races the shell's, is replaced by the page's next RSC render.
+    await vi.waitFor(() =>
+      expect(vi.mocked(options.isrSet).mock.calls.map(([key]) => key)).toContain(
+        "rsc:/en/blog/hello",
+      ),
+    );
+  });
+
+  it("stores no RSC part for a path's own shell whose document wasn't stored", async () => {
+    const jobs = new Map<string, () => Promise<void>>();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      async (key) => {
+        if (key === "html:/en/blog/hello") throw new Error("write failed");
+      },
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      isRscRequest: true,
+      isrGet: vi.fn(async () => null),
+      params: { locale: "en", slug: "hello" },
+      renderToReadableStream() {
+        markDynamicUsage();
+        return createStream(["payload"]);
+      },
+      request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+    });
+
+    try {
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          isrSetFallbackShell,
+          scheduleFallbackShellRegeneration(key, job) {
+            if (!jobs.has(key)) jobs.set(key, job);
+          },
+        }),
+      );
+      await response.text();
+      await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+      await jobs.get("html:/en/blog/hello")!();
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    // An RSC request would trust the part, and never produce the document.
+    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/hello"]);
+  });
+
+  it("stores the values a path's own shell was built with beside the page's RSC payload", async () => {
+    const jobs = new Map<string, () => Promise<void>>();
+    let ssrCalls = 0;
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      async () => {},
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: vi.fn<DispatchOptions["buildPageElement"]>(async () => {
+        // Only the shell's prerender collects the value.
+        collectUseCacheResumeDataCacheEntry("use-cache-key", {
+          body: "c2hlbGw=",
+          cacheControl: undefined,
+          tags: [],
+        });
+        return React.createElement("main", null, "page");
+      }),
+      cleanPathname: "/en/blog/hello",
+      isrGet: vi.fn(async () => null),
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          // The request renders dynamically; the shell's prerender doesn't.
+          ssrCalls++;
+          if (ssrCalls === 1) markDynamicUsage();
+          return createStream(["<!DOCTYPE html><html><head></head><body>page</body></html>"]);
+        },
+      }),
+      params: { locale: "en", slug: "hello" },
+      request: new Request("https://example.test/en/blog/hello"),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({
+        ...options,
+        isrSetFallbackShell,
+        scheduleFallbackShellRegeneration(key, job) {
+          if (!jobs.has(key)) jobs.set(key, job);
+        },
+      }),
+    );
+    await response.text();
+    await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+    await runWithRequestContext(createRequestContext(), () => jobs.get("html:/en/blog/hello")!());
+
+    const parts = new Map(isrSetFallbackShell.mock.calls.map(([key, value]) => [key, value]));
+    const documentState = parseAppPprShellState(parts.get("html:/en/blog/hello")?.postponed);
+    const rscPart = parts.get("rsc:/en/blog/hello");
+    expect(documentState?.resumeDataCache).toContain("use-cache-key");
+    expect(rscPart?.html).toBe(markAppPprDynamicFallbackShellHtml(""));
+    expect(parseAppPprShellState(rscPart?.postponed)?.resumeDataCache).toBe(
+      documentState?.resumeDataCache,
+    );
+    // Both parts go stale, and are invalidated, together.
+    const policies = new Map(
+      isrSetFallbackShell.mock.calls.map(([key, , policy]) => [key, policy]),
+    );
+    expect(policies.get("rsc:/en/blog/hello")).toEqual(policies.get("html:/en/blog/hello"));
   });
 
   it.each([
@@ -8304,16 +8503,92 @@ describe("app page dispatch", () => {
       await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
       await jobs.get("html:/en/blog/hello")!();
 
-      // The request's read, then a check that no page was stored meanwhile.
+      // The request's page read, then a check of both of the page's keys
+      // that no page was stored meanwhile.
+      // An RSC request without the shell's part reads the shell's document
+      // entry too.
       expect(isrGet.mock.calls.filter(([key]) => key === "html:/en/blog/hello")).toHaveLength(2);
-      expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toContain("html:/en/blog/hello");
+      expect(isrGet.mock.calls.filter(([key]) => key === "rsc:/en/blog/hello")).toHaveLength(
+        isRscRequest ? 2 : 1,
+      );
+      expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toEqual(
+        expect.arrayContaining(["html:/en/blog/hello", "rsc:/en/blog/hello"]),
+      );
     },
   );
 
+  it("stores a path's own shell under its document key alone when the page read doesn't read shells", async () => {
+    const jobs = new Map<string, () => Promise<void>>();
+    const isrGetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrGetFallbackShell"]>>(
+      async () => null,
+    );
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      async () => {},
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      isRscRequest: true,
+      isrGet: vi.fn(async () => null),
+      params: { locale: "en", slug: "hello" },
+      renderToReadableStream() {
+        markDynamicUsage();
+        return createStream(["payload"]);
+      },
+      request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({
+        ...options,
+        isrGetFallbackShell,
+        isrGetReadsFallbackShells: false,
+        isrSetFallbackShell,
+        scheduleFallbackShellRegeneration(key, job) {
+          if (!jobs.has(key)) jobs.set(key, job);
+        },
+      }),
+    );
+    await response.text();
+    await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+    await jobs.get("html:/en/blog/hello")!();
+
+    // An edge's page read, as Workers Cache's, can't find a shell, so the RSC
+    // request reads the shell's document entry and nothing is stored beside
+    // the page's RSC payload.
+    const readKeys = isrGetFallbackShell.mock.calls.map(([key]) => key);
+    expect(readKeys).toContain("html:/en/blog/hello");
+    expect(readKeys).not.toContain("rsc:/en/blog/hello");
+    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toContain("html:/en/blog/hello");
+    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).not.toContain("rsc:/en/blog/hello");
+  });
+
   it.each([
-    { name: "a page another request stored", meanwhile: "page" },
-    { name: "what a failed read may hold", meanwhile: "read-error" },
-  ])("keeps $name while its path's shell rendered", async ({ meanwhile }) => {
+    {
+      name: "a page another request stored",
+      meanwhile: "page",
+      pageKey: "html:/en/blog/hello",
+      written: [],
+    },
+    {
+      name: "an RSC payload another request stored",
+      meanwhile: "page",
+      pageKey: "rsc:/en/blog/hello",
+      written: ["html:/en/blog/hello"],
+    },
+    {
+      name: "what a failed read may hold",
+      meanwhile: "read-error",
+      pageKey: "html:/en/blog/hello",
+      written: [],
+    },
+    {
+      name: "what a failed RSC read may hold",
+      meanwhile: "read-error",
+      pageKey: "rsc:/en/blog/hello",
+      written: ["html:/en/blog/hello"],
+    },
+  ])("keeps $name while its path's shell rendered", async ({ meanwhile, pageKey, written }) => {
     const jobs = new Map<string, () => Promise<void>>();
     let stored: ISRCacheEntry | null = null;
     let readError: Error | null = null;
@@ -8325,7 +8600,7 @@ describe("app page dispatch", () => {
       buildPageElement: createParamTextPageElement("fresh"),
       cleanPathname: "/en/blog/hello",
       isrGet: vi.fn(async (key: string) => {
-        if (key !== "html:/en/blog/hello") return null;
+        if (key !== pageKey) return null;
         if (readError) throw readError;
         return stored;
       }),
@@ -8366,7 +8641,13 @@ describe("app page dispatch", () => {
       errorSpy.mockRestore();
     }
 
-    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).not.toContain("html:/en/blog/hello");
+    // A page under the document key means the path has no shell. Under the
+    // RSC key alone, it keeps only the shell's RSC part out.
+    expect(
+      isrSetFallbackShell.mock.calls
+        .map(([key]) => key)
+        .filter((key) => key.endsWith(":/en/blog/hello")),
+    ).toEqual(written);
   });
 
   it.each([
@@ -8377,18 +8658,12 @@ describe("app page dispatch", () => {
     async ({ isRscRequest }) => {
       const scheduledKeys: string[] = [];
       // An empty shell, as a page that reads the request outside any boundary
-      // leaves, which no request resumes.
+      // leaves, which no request resumes. Its part beside the page's RSC
+      // payload has no values to seed.
+      const pageKey = isRscRequest ? "rsc:/en/blog/hello" : "html:/en/blog/hello";
       const isrGet = vi.fn<DispatchOptions["isrGet"]>(async (key: string) =>
-        key === "html:/en/blog/hello"
-          ? buildISRCacheEntry({
-              ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")),
-              postponed: formatAppPprShellState({
-                prelude: false,
-                postponed: null,
-                resumeDataCache: null,
-                generated: null,
-              }),
-            })
+        key === pageKey
+          ? buildISRCacheEntry(buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")))
           : null,
       );
       const { options } = createPprBlogDispatchOptions({
@@ -8424,7 +8699,8 @@ describe("app page dispatch", () => {
       await response.text();
 
       expect(scheduledKeys).not.toContain("html:/en/blog/hello");
-      expect(isrGet.mock.calls.filter(([key]) => key === "html:/en/blog/hello")).toHaveLength(1);
+      expect(isrGet.mock.calls.filter(([key]) => key === pageKey)).toHaveLength(1);
+      expect(isrGet.mock.calls.filter(([key]) => key.endsWith(":/en/blog/hello"))).toHaveLength(1);
     },
   );
 
@@ -8441,7 +8717,9 @@ describe("app page dispatch", () => {
         buildPageElement: createParamTextPageElement("fresh"),
         cleanPathname: "/en/blog/hello",
         isRscRequest,
-        isrGet: vi.fn(async (key: string) => (key === "html:/en/blog/hello" ? unusable : null)),
+        // Under both of the page's keys, so an RSC request's read of the
+        // shell finds it too.
+        isrGet: vi.fn(async (key: string) => (key.endsWith(":/en/blog/hello") ? unusable : null)),
         loadSsrHandler: async () => ({
           async handleSsr() {
             markDynamicUsage();

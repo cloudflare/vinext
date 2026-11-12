@@ -481,9 +481,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   /** Read a fallback shell from the data cache. Defaults to `isrGet`. */
   isrGetFallbackShell?: AppPageCacheGetter;
   /**
-   * Whether `isrGet` reads where `isrGetFallbackShell` does, so a document
-   * request's page read is its read of the path's own shell, stored under the
-   * page's key.
+   * Whether `isrGet` reads where `isrGetFallbackShell` does, so a page read is
+   * its read of the path's own shell, stored under the page's keys.
    */
   isrGetReadsFallbackShells?: boolean;
   /** Store a fallback shell a request rendered. Without it, shells are only read. */
@@ -1430,10 +1429,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
-      // A path's own shell is stored under its page key, as Next.js stores a
+      // A path's own shell is stored under its page keys, as Next.js stores a
       // path's prerender, so the page read finds it too when it reads the
       // data cache.
-      onDocumentEntryRead:
+      onPageEntryRead:
         options.pprRuntime !== undefined && options.isrGetReadsFallbackShells === true
           ? (cached) => {
               pprOwnShellRead.cached = cached;

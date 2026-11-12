@@ -127,10 +127,11 @@ type ReadAppPageCacheResponseOptions = {
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
   /**
-   * Receives what a document request's read found under the page's key, where
-   * a path's own shell is stored too. Not called when the read fails.
+   * Receives what the read of the page's document, or of its RSC payload,
+   * found under its key, where a path's own shell is stored too. Not called
+   * for an RSC variant's read, nor when the read fails.
    */
-  onDocumentEntryRead?: (cached: ISRCacheEntry | null) => void;
+  onPageEntryRead?: (cached: ISRCacheEntry | null) => void;
   /**
    * Resolves the current request's route params for a cached RSC response.
    * Called only once an entry can answer the request, since resolving them
@@ -553,7 +554,9 @@ export async function readAppPageCacheResponse(
   try {
     const cached = await options.isrGet(isrKey);
     const cachedValue = getCachedAppPageValue(cached);
-    if (!options.isRscRequest) options.onDocumentEntryRead?.(cached);
+    if (!options.isRscRequest || isrKey === options.isrRscKey(options.cleanPathname, null)) {
+      options.onPageEntryRead?.(cached);
+    }
 
     if (cached?.isExpired) {
       recordAppPageCacheOutcome(options.recordCacheOutcome, {
@@ -578,13 +581,10 @@ export async function readAppPageCacheResponse(
     }
 
     // Like Next.js, a path's own shell is stored as its page, and its
-    // requests resume it instead of serving it. Its regeneration is the
-    // shell's, so it never regenerates as a page.
-    if (
-      !options.isRscRequest &&
-      cachedValue &&
-      isAppPprDynamicFallbackShellHtml(cachedValue.html)
-    ) {
+    // requests resume it, or read the values it was built with, instead of
+    // serving it. Its regeneration is the shell's, so it never regenerates as
+    // a page.
+    if (cachedValue && isAppPprDynamicFallbackShellHtml(cachedValue.html)) {
       recordAppPageCacheOutcome(options.recordCacheOutcome, {
         artifact,
         cacheKey: isrKey,
