@@ -7751,6 +7751,25 @@ describe("next/cache shim", () => {
     }
   });
 
+  it("unstable_cache passes the token its read was given to the write filling a miss", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+    try {
+      const get = vi.spyOn(handler, "get");
+      const set = vi.spyOn(handler, "set");
+      await unstable_cache(async () => "value", ["miss-fill-token"])();
+
+      const cacheRead = get.mock.calls[0]?.[1]?.cacheRead;
+      expect(cacheRead).toBeTypeOf("object");
+      expect(set).toHaveBeenCalledOnce();
+      expect(set.mock.calls[0]?.[2]?.cacheRead).toBe(cacheRead);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("unstable_cache doesn't store a background refresh under arguments changed before it ran", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -8602,6 +8621,27 @@ describe('"use cache" runtime', () => {
       }
     },
   );
+
+  it("a use cache miss passes the token its read was given to the write filling it", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+    try {
+      const get = vi.spyOn(handler, "get");
+      const set = vi.spyOn(handler, "set");
+      await registerCachedFunction(async () => ({ data: 1 }), "test:miss-fill-token")();
+
+      const cacheRead = get.mock.calls[0]?.[1]?.cacheRead;
+      expect(cacheRead).toBeTypeOf("object");
+      expect(set).toHaveBeenCalledOnce();
+      expect(set.mock.calls[0]?.[2]?.cacheRead).toBe(cacheRead);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
 
   it("a use cache root-param regeneration passes the stale entry only to its specific key", async () => {
     const { registerCachedFunction } =
