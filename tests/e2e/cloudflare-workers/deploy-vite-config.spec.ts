@@ -43,7 +43,7 @@ async function createProject(): Promise<string> {
     path.join(dir, "node_modules/wrangler/package.json"),
     JSON.stringify({
       name: "wrangler",
-      version: "0.0.0",
+      version: "4.66.0",
       type: "module",
       bin: { wrangler: "bin/wrangler.js" },
     }),
