@@ -65,6 +65,7 @@ import {
   createPprFallbackShellRequestDataSuspensePromise,
   createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
+  recordPprFallbackShellVaryParams,
   trackPprFallbackShellCacheTask,
   waitForPprFallbackShellCacheInput,
 } from "./ppr-fallback-shell.js";
@@ -604,6 +605,14 @@ function isRootParamRedirect(entry: CacheHandlerValue | null): boolean {
   );
 }
 
+/**
+ * A hit skips the function, so the root params its earlier runs read count
+ * toward a shell's vary params instead.
+ */
+function recordRootParamNamesInShellVaryParams(names: ReadonlySet<string> | undefined): void {
+  if (names) recordPprFallbackShellVaryParams(getPprFallbackShellState(), names);
+}
+
 function propagateRootParamNamesToParent(names: ReadonlySet<string> | undefined): void {
   if (!names || names.size === 0) return;
   const parent = cacheContextStorage.getStore();
@@ -965,6 +974,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             { preserveServerReferences: true },
           );
           propagateCacheTagsToRequest(resumeEntry.tags);
+          recordRootParamNamesInShellVaryParams(knownRootParamNames);
           recordRequestScopedCacheControl(resumeEntry.cacheControl);
           collectUseCacheResumeDataCacheEntry(coarseCacheKey, resumeEntry);
           return result;
@@ -1185,6 +1195,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         if (omitFromShell(existing.cacheControl)) return OMITTED_FROM_SHELL;
         try {
           propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
+          recordRootParamNamesInShellVaryParams(knownRootParamsByFunctionId.get(id));
           // Surface the cached entry's tags to the surrounding request so the
           // enclosing page / route-handler ISR entry carries them even on a data
           // cache HIT — otherwise `revalidateTag()` could not evict the rendered

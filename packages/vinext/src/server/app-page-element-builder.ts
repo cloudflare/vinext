@@ -76,6 +76,9 @@ import {
 } from "./app-render-dependency.js";
 import { isPromiseLike } from "../utils/promise.js";
 
+// Reads of search params vary a shell on `?`.
+const SEARCH_PARAMS = { isSearchParams: true } as const;
+
 type SiblingInterceptPageOutcome =
   | { error: unknown }
   | { result: React.ReactNode | Promise<React.ReactNode> }
@@ -723,7 +726,7 @@ export async function buildPageElements<
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
-          : makeThenableParams(pageSearchParams);
+          : makeThenableParams(pageSearchParams, undefined, SEARCH_PARAMS);
       }
       return createElement(PageComponent, withUseCachePageMarker(PageComponent, invocationProps));
     }
@@ -750,7 +753,7 @@ export async function buildPageElements<
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
-          : makeThenableParams(pageSearchParams);
+          : makeThenableParams(pageSearchParams, undefined, SEARCH_PARAMS);
       }
 
       try {
@@ -811,7 +814,9 @@ export async function buildPageElements<
     };
     return PageInvoker;
   };
-  const pageSearchParamsThenable = searchParams ? makeThenableParams(pageSearchParams) : undefined;
+  const pageSearchParamsThenable = searchParams
+    ? makeThenableParams(pageSearchParams, undefined, SEARCH_PARAMS)
+    : undefined;
 
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 

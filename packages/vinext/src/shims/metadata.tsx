@@ -48,7 +48,9 @@ export async function resolveModuleViewport(
         ? withUseCacheLayoutMarker(mod.generateViewport, { params: asyncParams })
         : withUseCachePageMarker(mod.generateViewport, {
             params: asyncParams,
-            searchParams: makeThenableParams(searchParams, searchParamsObserver),
+            searchParams: makeThenableParams(searchParams, searchParamsObserver, {
+              isSearchParams: true,
+            }),
           });
     return (await callSegmentResolver(
       mod.generateViewport as SegmentResolver<ResolvedViewport>,
@@ -720,7 +722,9 @@ export async function resolveModuleMetadata(
         ? withUseCacheLayoutMarker(generateMetadata, { params: asyncParams })
         : withUseCachePageMarker(generateMetadata, {
             params: asyncParams,
-            searchParams: makeThenableParams(searchParams, searchParamsObserver),
+            searchParams: makeThenableParams(searchParams, searchParamsObserver, {
+              isSearchParams: true,
+            }),
           });
     return (await callSegmentResolver(
       generateMetadata as SegmentResolver<Metadata>,

@@ -24,6 +24,20 @@ export const APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL =
  * and `runtime` when the page's runtime prefetch rendered it for the request.
  */
 export const VINEXT_STATIC_SHELL_HEADER = "X-Vinext-Static-Shell";
+/**
+ * The route params a static shell or runtime prefetch read, `0` for search
+ * params, as a URI-encoded JSON array. A client reuses the payload for another
+ * URL of the route with the same values for them, as Next.js's `varyParams`
+ * does.
+ */
+export const VINEXT_VARY_PARAMS_HEADER = "X-Vinext-Vary-Params";
+/**
+ * A vary param for a read of search params. Like Next.js's, it's a number, so
+ * no route param name can be it.
+ */
+export const SEARCH_PARAMS_VARY_PARAM = 0;
+/** A route param name a render read, or `SEARCH_PARAMS_VARY_PARAM`. */
+export type VaryParam = string | typeof SEARCH_PARAMS_VARY_PARAM;
 
 export function getRscRenderModeCacheVariant(mode: AppRscRenderMode): string | null {
   if (mode === APP_RSC_RENDER_MODE_PREFETCH_EMPTY) {

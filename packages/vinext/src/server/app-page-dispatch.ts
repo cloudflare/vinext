@@ -109,7 +109,9 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
+  VINEXT_VARY_PARAMS_HEADER,
   type AppRscRenderMode,
+  type VaryParam,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
@@ -473,6 +475,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     fallbackParamNames: readonly string[];
     isRuntimePrefetch?: boolean;
     routePattern: string;
+    varyParams?: Set<VaryParam>;
   };
   pprRuntime?: AppPagePprRuntime<TRoute>;
   /**
@@ -957,10 +960,12 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
   if (!options.withRequest) throw new Error("[vinext] A static shell needs its own request.");
   const route = options.route;
   const pathname = options.cleanPathname;
+  const varyParams = new Set<VaryParam>();
   const pprFallbackShell = {
     fallbackParamNames: [],
     ...(isRuntimePrefetch ? { isRuntimePrefetch: true } : {}),
     routePattern: route.pattern,
+    varyParams,
   };
   const requestOptions = options.withRequest({
     actionError: undefined,
@@ -1026,8 +1031,17 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
             const response = await dispatchAppPageInner(await withResolvedIntercept(shellOptions));
             const body = response.body ? await response.arrayBuffer() : null;
             isPartial = pprRuntime.getState()?.hasDynamicBoundary === true;
+            const headers = new Headers(response.headers);
+            // Encoded like X-Vinext-Params: a header value can't hold every
+            // segment name's characters.
+            headers.set(
+              VINEXT_VARY_PARAMS_HEADER,
+              encodeURIComponent(
+                JSON.stringify([...varyParams].sort((a, b) => String(a).localeCompare(String(b)))),
+              ),
+            );
             return new Response(body, {
-              headers: response.headers,
+              headers,
               status: response.status,
               statusText: response.statusText,
             });

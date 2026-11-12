@@ -122,4 +122,36 @@ describe('"use cache" root-param entry generation', () => {
     await expect(invoke()).resolves.toBe("en");
     expect(calls).toBe(1);
   });
+
+  // A hit skips the function, so a shell must still vary on the root params
+  // its earlier runs read.
+  it("records a cached function's root params in a shell's vary params on a hit", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    const { createPprFallbackShellState, runWithPprFallbackShellState } =
+      await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+
+    let calls = 0;
+    const cached = registerCachedFunction(async () => {
+      calls++;
+      return getRootParam("lang");
+    }, "test:shell-vary-root-param");
+    await runWithRootParamsScope({ lang: "en" }, () => cached());
+
+    const varyParams = new Set<string>();
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/:lang",
+      varyParams,
+    });
+    await expect(
+      runWithPprFallbackShellState(state, () =>
+        runWithRootParamsScope({ lang: "en" }, () => cached()),
+      ),
+    ).resolves.toBe("en");
+    expect(calls).toBe(1);
+    expect([...varyParams]).toEqual(["lang"]);
+  });
 });
