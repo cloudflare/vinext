@@ -28,33 +28,52 @@ const DEFAULT_EXPIRE_SECONDS = 31_536_000;
  * Render a fallback shell a request needs, and store the entry the build would
  * have seeded for it. Returns the entry for the request to use, or null when
  * the shell can't be prerendered, as the build would skip it.
+ *
+ * A path's own shell is produced after its page rendered dynamically. One
+ * that can't be prerendered is stored empty, as its route renders blocking,
+ * so later requests don't produce it again.
  */
 export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   fallbackShell: AppPagePprFallbackCacheShell,
   key: string,
   routeRevalidateSeconds: number | null,
+  isConcrete = false,
 ): Promise<ISRCacheEntry | null> {
   const fallbackPathname = normalizePregeneratedPathname(fallbackShell.pathname);
   const response = await renderAppPageFallbackShell(options, fallbackShell);
   const cacheControlHeader = response.headers.get("cache-control") ?? "";
-  if (!response.ok || cacheControlHeader.includes("no-store")) {
+  const isDynamic = cacheControlHeader.includes("no-store");
+  if (!response.ok || (isDynamic && !isConcrete)) {
     await response.body?.cancel();
     options.isrDebug?.("SKIP (dynamic fallback shell render)", fallbackPathname);
     return null;
   }
 
-  const shell = splitAppPprFallbackShellState(await response.text());
-  const linkHeader = response.headers.get("link");
-  const value: CachedAppPageValue = {
-    kind: "APP_PAGE",
-    html: markAppPprDynamicFallbackShellHtml(shell.html),
-    rscData: undefined,
-    headers: linkHeader ? { link: linkHeader } : undefined,
-    // An empty shell renders blocking, so it keeps nothing to resume from.
-    postponed: shell.state && hasAppPprFallbackShellPrelude(shell.html) ? shell.state : undefined,
-    status: undefined,
-  };
+  let value: CachedAppPageValue;
+  if (isDynamic) {
+    await response.body?.cancel();
+    value = {
+      kind: "APP_PAGE",
+      html: markAppPprDynamicFallbackShellHtml(""),
+      rscData: undefined,
+      headers: undefined,
+      postponed: undefined,
+      status: undefined,
+    };
+  } else {
+    const shell = splitAppPprFallbackShellState(await response.text());
+    const linkHeader = response.headers.get("link");
+    value = {
+      kind: "APP_PAGE",
+      html: markAppPprDynamicFallbackShellHtml(shell.html),
+      rscData: undefined,
+      headers: linkHeader ? { link: linkHeader } : undefined,
+      // An empty shell renders blocking, so it keeps nothing to resume from.
+      postponed: shell.state && hasAppPprFallbackShellPrelude(shell.html) ? shell.state : undefined,
+      status: undefined,
+    };
+  }
 
   // The lifetime and tags build/prerender.ts records for a shell.
   const requestCacheLife = readPrerenderCacheLifeHeader(response.headers);
@@ -88,7 +107,10 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     // Requests sharing this production find the shell stored once it settles.
     await write;
   }
-  options.isrDebug?.("STORE (fallback shell)", fallbackPathname);
+  options.isrDebug?.(
+    isDynamic ? "STORE (empty shell)" : "STORE (fallback shell)",
+    fallbackPathname,
+  );
 
   return {
     value: { lastModified: Date.now(), value, cacheControl },
