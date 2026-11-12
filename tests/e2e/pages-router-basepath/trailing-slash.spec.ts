@@ -97,6 +97,26 @@ test.describe("basePath + trailingSlash", () => {
     await expect(page.locator("h1")).toHaveText("404 - Page Not Found");
   });
 
+  // The same-URL guard compares whole hrefs, like Next.js's
+  // handleHardNavigation(): a hydration-update redirect that changes only the
+  // hash is still followed, as a same-document navigation.
+  test("follows a fallback hydration redirect that changes only the hash", async ({ page }) => {
+    const path = "/docs/fallback-hash-redirect/first/";
+    let documentLoads = 0;
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.resourceType() === "document") documentLoads++;
+    });
+    const dataResponse = page.waitForResponse((response) =>
+      new URL(response.url()).pathname.endsWith("/fallback-hash-redirect/first.json"),
+    );
+
+    await page.goto(`${BASE}${path}#old`);
+    expect((await dataResponse).status()).toBe(200);
+
+    await expect(page).toHaveURL(`${BASE}${path}#new`);
+    expect(documentLoads).toBe(1);
+  });
+
   test("replaces state when same asPath but different url", async ({ page }) => {
     await page.goto(`${BASE}/docs/`);
     await expect(page.locator("#index-page")).toBeVisible({ timeout: 5_000 });

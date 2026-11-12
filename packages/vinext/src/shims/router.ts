@@ -1665,7 +1665,9 @@ function cancelPreviousRenderCommit(): void {
 function isHydrationQueryUpdateReload(url: string, isHydrationQueryUpdate: boolean): boolean {
   if (typeof window === "undefined" || !isHydrationQueryUpdate) return false;
   try {
-    return stripHash(new URL(url, window.location.href).href) === stripHash(window.location.href);
+    // Compare whole hrefs, as Next.js does: a hash-only change is a
+    // same-document navigation, not a reload.
+    return new URL(url, window.location.href).href === window.location.href;
   } catch {
     return false;
   }
