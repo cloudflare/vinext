@@ -221,12 +221,23 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
   }
   const { isrSetFallbackShell } = options;
   if (isrSetFallbackShell) {
-    const stored = Promise.all(
-      unstored.map(([writeKey, writeValue]) =>
-        isrSetFallbackShell(writeKey, writeValue, { cacheControl, tags }).catch((error) => {
-          console.error("[vinext] ISR fallback shell cache write error:", error);
-        }),
-      ),
+    const write = ([writeKey, writeValue]: readonly [string, CachedAppPageValue]) =>
+      isrSetFallbackShell(writeKey, writeValue, { cacheControl, tags });
+    const [document, ...parts] = unstored;
+    // An RSC request trusts the shell's RSC part, so it's stored only once
+    // the document is, which the next dynamic render can produce again.
+    const stored = write(document!).then(
+      () =>
+        Promise.all(
+          parts.map((part) =>
+            write(part).catch((error) => {
+              console.error("[vinext] ISR fallback shell cache write error:", error);
+            }),
+          ),
+        ),
+      (error) => {
+        console.error("[vinext] ISR fallback shell cache write error:", error);
+      },
     );
     getRequestExecutionContext()?.waitUntil(stored);
     // Requests sharing this production find the shell stored once it settles.
