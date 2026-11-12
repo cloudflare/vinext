@@ -3,7 +3,6 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { buildAppPageCacheTags, resolveStaticStaleTimeSeconds } from "./app-page-cache.js";
 import {
-  hasSearchParams,
   renderAppPageStaticShell,
   type AppPageDispatchRoute,
   type DispatchAppPageOptions,
@@ -16,6 +15,7 @@ import {
   NEXTJS_CACHE_HEADER,
   VINEXT_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "./headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -50,6 +50,8 @@ const UNREPLAYED_HEADERS = new Set([
   // The render's own cache state, which says nothing about the stored shell.
   NEXTJS_CACHE_HEADER,
   VINEXT_CACHE_HEADER.toLowerCase(),
+  // The URL the producing request resolved to. Each request sends its own.
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER.toLowerCase(),
 ]);
 
 function hasRuntimePrefetchConfig(module: unknown): boolean {
@@ -90,8 +92,10 @@ export function markRuntimePrefetchResponse(response: Response): Response {
 
 /**
  * Whether a prefetch can get a Cache Components page's static shell. Like
- * Next.js, only a production page's own payload has one: draft mode, an
- * interception or a search string make it the page's.
+ * Next.js, only a production page's own payload has one: draft mode or an
+ * interception make it the page's. A search string doesn't: like Next.js's
+ * static prefetch, the shell never renders search params, so every query
+ * string of the page shares it.
  */
 function canServeStaticShell<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
@@ -104,7 +108,6 @@ function canServeStaticShell<TRoute extends AppPageDispatchRoute>(
     options.request.method === "GET" &&
     !isDraftMode &&
     options.interceptionContext === null &&
-    !hasSearchParams(options.searchParams) &&
     options.dynamicConfig !== "force-dynamic"
   );
 }
@@ -134,8 +137,12 @@ function canServeRuntimePrefetch<TRoute extends AppPageDispatchRoute>(
  */
 function buildStaticShellResponse(
   value: CachedAppPageValue,
-  middlewareContext: DispatchAppPageOptions<AppPageDispatchRoute>["middlewareContext"],
+  options: Pick<
+    DispatchAppPageOptions<AppPageDispatchRoute>,
+    "middlewareContext" | "renderedPathAndSearch"
+  >,
 ): Response {
+  const { middlewareContext } = options;
   const headers = new Headers();
   for (const [name, headerValue] of Object.entries(value.headers ?? {})) {
     for (const item of Array.isArray(headerValue) ? headerValue : [headerValue]) {
@@ -149,6 +156,13 @@ function buildStaticShellResponse(
   // holes, so it stays the renderer's.
   const shell = value.headers?.[VINEXT_STATIC_SHELL_HEADER.toLowerCase()];
   if (typeof shell === "string") headers.set(VINEXT_STATIC_SHELL_HEADER, shell);
+  // Like Next.js's search-agnostic prefetch, the shell is the requested URL's.
+  if (options.renderedPathAndSearch) {
+    headers.set(
+      VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+      encodeURIComponent(options.renderedPathAndSearch),
+    );
+  }
   return new Response(value.rscData ?? null, {
     headers,
     status: middlewareContext.status ?? value.status ?? 200,
@@ -248,7 +262,7 @@ export async function serveAppPageStaticShellPrefetch<TRoute extends AppPageDisp
       console.error("[vinext] ISR static shell render error:", renderError);
       return null;
     }
-    return value ? buildStaticShellResponse(value, options.middlewareContext) : null;
+    return value ? buildStaticShellResponse(value, options) : null;
   }
   const key = appIsrStaticShellRscKey(options.cachePathname ?? options.cleanPathname);
   const produce = () => produceStaticShell(options, key);
@@ -274,7 +288,7 @@ export async function serveAppPageStaticShellPrefetch<TRoute extends AppPageDisp
       );
     }
     options.isrDebug?.(cached.isStale ? "STALE (static shell)" : "HIT (static shell)", key);
-    return buildStaticShellResponse(cachedValue, options.middlewareContext);
+    return buildStaticShellResponse(cachedValue, options);
   }
 
   options.isrDebug?.("RENDER (static shell)", options.cleanPathname);
@@ -286,7 +300,7 @@ export async function serveAppPageStaticShellPrefetch<TRoute extends AppPageDisp
     console.error("[vinext] ISR static shell render error:", renderError);
     return null;
   }
-  return value ? buildStaticShellResponse(value, options.middlewareContext) : null;
+  return value ? buildStaticShellResponse(value, options) : null;
 }
 
 /**
@@ -308,5 +322,5 @@ export async function serveAppPageRuntimePrefetch<TRoute extends AppPageDispatch
     console.error("[vinext] Runtime prefetch render error:", renderError);
     return null;
   }
-  return value ? buildStaticShellResponse(value, options.middlewareContext) : null;
+  return value ? buildStaticShellResponse(value, options) : null;
 }

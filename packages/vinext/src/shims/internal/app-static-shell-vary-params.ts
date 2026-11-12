@@ -86,6 +86,9 @@ function parseParamsHeader(paramsHeader: string | null): Params | null {
  */
 export function createVaryingStaticShellResolver(
   targetHref: string,
+  // With `experimental.varyParams: false`, a shell is only reused for the
+  // same params, though still for any query string, as in Next.js.
+  varyParams: boolean,
 ): (source: CachedRscResponse, sourceHref: string) => CachedRscResponse | null {
   const target = resolveHref(targetHref, __basePath);
   if (target === null) return () => null;
@@ -108,6 +111,7 @@ export function createVaryingStaticShellResolver(
     }
     const sourceParams = parseParamsHeader(source.paramsHeader);
     if (sourceParams === null || !isSameParams(sourceParams, resolvedSource.params)) return null;
+    if (!varyParams && !isSameParams(sourceParams, target.params)) return null;
     // A complete shell is the page a navigation commits, and its tree keeps
     // the segment values of the path it rendered (`LayoutSegmentProvider`), so
     // only a URL with the same path, and another query string, reuses it.

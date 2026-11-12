@@ -59,6 +59,13 @@ type CapturedPrefetchLinkElement = {
 
 const linkPrefetchRoutes = [
   { canPrefetchLoadingShell: false, patternParts: ["viewport-prefetch-target"], isDynamic: false },
+  // A dynamic route with parallel slots has no static shell.
+  {
+    canPrefetchLoadingShell: false,
+    isDynamic: true,
+    patternParts: ["slotted-prefetch-target", ":id"],
+    requiresDynamicNavigationRequest: true,
+  },
   { canPrefetchLoadingShell: false, patternParts: ["intent-prefetch-target"], isDynamic: false },
   { canPrefetchLoadingShell: false, patternParts: ["touch-prefetch-target"], isDynamic: false },
   {
@@ -2559,7 +2566,7 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("prefetches visible links with search params as non-consumable shells", async () => {
+  it("prefetches visible links with search params as static shells", async () => {
     vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
     const observer = stubIntersectionObserver();
 
@@ -2578,6 +2585,51 @@ describe("Link prefetch scheduling", () => {
       expectCanonicalRscFetchCall(
         result.fetch.mock.calls[0],
         "/viewport-prefetch-target",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchedInput = result.fetch.mock.calls[0]?.[0];
+      expect(typeof fetchedInput).toBe("string");
+      const fetchedUrl = new URL(fetchedInput as string, "https://example.com");
+      expect(fetchedUrl.searchParams.get("searchParam")).toBe("a_PPR");
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      // Like Next.js's PPR shell, it never renders search params.
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
+      );
+      expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
+        "1",
+      );
+      const { getPrefetchCache } =
+        await import("../packages/vinext/src/shims/app-router-navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry?.cacheForNavigation).toBe(false);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches a query href of a route without a static shell as a non-consumable shell", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/slotted-prefetch-target/1?searchParam=a_PPR",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      // Ported from Next.js:
+      // test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/slotted-prefetch-target/1",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -2732,7 +2784,7 @@ describe("Link prefetch scheduling", () => {
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({
-      href: "/viewport-prefetch-target?searchParam=c_PPR",
+      href: "/slotted-prefetch-target/1?searchParam=c_PPR",
       nodeEnv: "production",
     });
 
@@ -2740,7 +2792,7 @@ describe("Link prefetch scheduling", () => {
       const { getPrefetchCache, prefetchRscResponse } =
         await import("../packages/vinext/src/shims/app-router-navigation.js");
       prefetchRscResponse(
-        "/viewport-prefetch-target?searchParam=a_PPR&_rsc=first",
+        "/slotted-prefetch-target/1?searchParam=a_PPR&_rsc=first",
         Promise.resolve(createFlightResponse("target-page-with-search-param")),
         null,
         null,
@@ -2761,7 +2813,7 @@ describe("Link prefetch scheduling", () => {
       // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
       expectCanonicalRscFetchCall(
         result.fetch.mock.calls[0],
-        "/viewport-prefetch-target",
+        "/slotted-prefetch-target/1",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
