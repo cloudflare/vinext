@@ -155,6 +155,8 @@ describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (bui
     if (build.dev) {
       devServer = await createServer({
         root,
+        // root/node_modules links to the fixture's shared node_modules.
+        cacheDir: path.join(root, ".vite"),
         configFile: false,
         plugins: plugins(),
         server: { host: "127.0.0.1", port: 0 },
