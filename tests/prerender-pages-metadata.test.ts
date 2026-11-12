@@ -51,7 +51,7 @@ async function render(
     pagesDir,
     outDir: path.join(root, "out"),
     config: await resolveNextConfig(nextConfig),
-    _prodServer: { server, port },
+    _prodServer: { port },
     _prerenderSecret: "test-secret",
   });
 }
