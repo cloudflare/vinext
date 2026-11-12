@@ -289,6 +289,14 @@ export type CdnCacheAdapter = {
 // streamed MISS response. Keep it identical so default behavior is unchanged.
 const PENDING_DYNAMIC_CACHE_CONTROL = "no-store, must-revalidate";
 
+// A brand rather than the class, which duplicated stage modules each have.
+const READS_DATA_CACHE = Symbol.for("vinext.cdnCacheAdapter.readsDataCache");
+
+/** Whether an adapter's page reads are the data cache's, as the default's are. */
+export function cdnCacheAdapterReadsDataCache(adapter: CdnCacheAdapter): boolean {
+  return (adapter as { [READS_DATA_CACHE]?: unknown })[READS_DATA_CACHE] === true;
+}
+
 /**
  * Default origin-managed ISR strategy: store page artifacts in the data cache,
  * serve HIT/STALE from it, run in-process background regeneration, and emit the
@@ -298,6 +306,7 @@ const PENDING_DYNAMIC_CACHE_CONTROL = "no-store, must-revalidate";
  */
 export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
+  readonly [READS_DATA_CACHE] = true;
 
   constructor(private readonly buildIdentity?: string) {}
 

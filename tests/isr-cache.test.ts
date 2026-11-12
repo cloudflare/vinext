@@ -1228,6 +1228,16 @@ describe("isrGetFallbackShell", () => {
     expect(get).toHaveBeenCalledTimes(1);
   });
 
+  it("knows the default adapter another copy of its module registered", async () => {
+    vi.resetModules();
+    const copy = await import("../packages/vinext/src/shims/cdn-cache.js");
+    expect(copy.DefaultCdnCacheAdapter).not.toBe(DefaultCdnCacheAdapter);
+    // As a duplicated stage module registers it first.
+    setCdnCacheAdapter(new copy.DefaultCdnCacheAdapter("build-42"));
+
+    expect(isrGetReadsFallbackShells()).toBe(true);
+  });
+
   it("reads an edge adapter for a shell the data cache doesn't have", async () => {
     setCacheHandler(new MemoryCacheHandler());
     const edgeGet = vi.fn(async () => null);

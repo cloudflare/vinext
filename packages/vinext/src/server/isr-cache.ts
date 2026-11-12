@@ -21,7 +21,7 @@ import {
   type CachedPagesValue,
   type CachedAppPageValue,
 } from "vinext/shims/cache-handler";
-import { DefaultCdnCacheAdapter, getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { cdnCacheAdapterReadsDataCache, getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
@@ -119,7 +119,7 @@ export function isrGetReadsFallbackShells(): boolean {
   // A data adapter that provides build identity registers the default
   // adapter explicitly.
   const adapter = getExplicitCdnCacheAdapter();
-  return adapter === null || adapter instanceof DefaultCdnCacheAdapter;
+  return adapter === null || cdnCacheAdapterReadsDataCache(adapter);
 }
 
 /**
