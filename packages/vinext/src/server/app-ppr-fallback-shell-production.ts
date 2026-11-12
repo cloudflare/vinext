@@ -107,6 +107,8 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
   }
 
   let value: CachedAppPageValue;
+  // The values the shell was built with, which an RSC request reads too.
+  let resumeDataCache: string | null = null;
   if (isDynamic) {
     // A shell that can't be prerendered is stored empty: its route renders
     // blocking, and later requests neither produce it again nor, with its
@@ -135,6 +137,7 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     const state = hasAppPprFallbackShellPrelude(shell.html)
       ? parseAppPprShellState(shell.state ?? undefined)
       : null;
+    resumeDataCache = state?.resumeDataCache ?? null;
     value = {
       kind: "APP_PAGE",
       html: markAppPprDynamicFallbackShellHtml(shell.html),
@@ -177,19 +180,55 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     readPrerenderCacheTagsHeader(response.headers),
   );
 
-  // A path's own shell shares its page's key, so a page another request
+  // vinext stores a page's document and RSC payload apart, where Next.js keeps
+  // them in one entry with the shell's state. So where a page read finds the
+  // shell, a path's own shell is stored beside the page's RSC payload too,
+  // holding the values the shell was built with, which an RSC request reads.
+  const rscKey =
+    isConcrete && options.isrGetReadsFallbackShells === true
+      ? options.isrRscKey(options.cleanPathname, null)
+      : null;
+  const writes: [string, CachedAppPageValue][] = [[key, value]];
+  if (rscKey !== null) {
+    writes.push([
+      rscKey,
+      {
+        kind: "APP_PAGE",
+        html: markAppPprDynamicFallbackShellHtml(""),
+        rscData: undefined,
+        headers: undefined,
+        postponed:
+          resumeDataCache === null
+            ? undefined
+            : formatAppPprShellState({
+                prelude: false,
+                postponed: null,
+                resumeDataCache,
+                generated: null,
+              }),
+        status: undefined,
+      },
+    ]);
+  }
+
+  // A path's own shell shares its page's keys, so a page another request
   // stored while the shell rendered is kept.
-  if (isConcrete && (await hasStoredPage(options, key))) {
+  if (isConcrete && (await hasStoredPage(options, writes))) {
     options.isrDebug?.("SKIP (page stored under the shell's key)", fallbackPathname);
     return null;
   }
-  if (options.isrSetFallbackShell) {
-    const write = options.isrSetFallbackShell(key, value, { cacheControl, tags }).catch((error) => {
-      console.error("[vinext] ISR fallback shell cache write error:", error);
-    });
-    getRequestExecutionContext()?.waitUntil(write);
+  const { isrSetFallbackShell } = options;
+  if (isrSetFallbackShell) {
+    const stored = Promise.all(
+      writes.map(([writeKey, writeValue]) =>
+        isrSetFallbackShell(writeKey, writeValue, { cacheControl, tags }).catch((error) => {
+          console.error("[vinext] ISR fallback shell cache write error:", error);
+        }),
+      ),
+    );
+    getRequestExecutionContext()?.waitUntil(stored);
     // Requests sharing this production find the shell stored once it settles.
-    await write;
+    await stored;
   }
   options.isrDebug?.(
     isDynamic
@@ -208,10 +247,12 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
 
 async function hasStoredPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
-  key: string,
+  writes: readonly (readonly [string, unknown])[],
 ): Promise<boolean> {
+  const read = options.isrGetFallbackShell ?? options.isrGet;
   try {
-    return isAppPprStoredPage(await (options.isrGetFallbackShell ?? options.isrGet)(key));
+    const stored = await Promise.all(writes.map(([key]) => read(key)));
+    return stored.some(isAppPprStoredPage);
   } catch (isrReadError) {
     // A page may be stored there, so the shell isn't written. A later dynamic
     // render produces it again.

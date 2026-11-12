@@ -228,8 +228,15 @@ async function seedRscRequestFromOwnShell<TRoute extends AppPageDispatchRoute>(
 ): Promise<void> {
   const concreteShell = createAppPprRequestConcreteShell(options.route, options.params);
   if (!concreteShell) return;
-  const read = await readShell(options, concreteShell, true);
-  if (read.ok) ownShellRead.cached = read.cached;
+  // The page read finds the shell's part stored beside the page's RSC payload
+  // when it reads the data cache.
+  let read: ShellRead;
+  if (ownShellRead.cached === undefined) {
+    read = await readShell(options, concreteShell, true);
+    if (read.ok) ownShellRead.cached = read.cached;
+  } else {
+    read = { ok: true, cached: ownShellRead.cached };
+  }
   if (!read.ok || read.cached === null || read.cached.isExpired === true) return;
   const value = read.cached.value.value;
   // A page stored under the shell's key has no values to seed.

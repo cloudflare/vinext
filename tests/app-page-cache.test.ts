@@ -798,13 +798,21 @@ describe("app page cache helpers", () => {
     ]);
   });
 
-  it.each([false, true])(
-    "misses a path's own shell stored under its page key without regenerating it (stale: %s)",
-    async (isStale) => {
+  it.each([
+    { isRscRequest: false, isStale: false },
+    { isRscRequest: false, isStale: true },
+    { isRscRequest: true, isStale: false },
+    { isRscRequest: true, isStale: true },
+  ])(
+    "misses a path's own shell stored under its page key without regenerating it (RSC: $isRscRequest, stale: $isStale)",
+    async ({ isRscRequest, isStale }) => {
       const cacheOutcomes: AppPageCacheOutcomeMetric[] = [];
       const reads: (ISRCacheEntry | null)[] = [];
+      // Beside the page's RSC payload, the shell has no document of its own.
       const shell = buildISRCacheEntry(
-        buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<!DOCTYPE html><h1>shell")),
+        buildCachedAppPageValue(
+          markAppPprDynamicFallbackShellHtml(isRscRequest ? "" : "<!DOCTYPE html><h1>shell"),
+        ),
         isStale,
       );
 
@@ -813,7 +821,7 @@ describe("app page cache helpers", () => {
         clearRequestContext() {
           throw new Error("an own shell is not a page hit");
         },
-        isRscRequest: false,
+        isRscRequest,
         async isrGet() {
           return shell;
         },
@@ -824,7 +832,7 @@ describe("app page cache helpers", () => {
           return "rsc:" + pathname;
         },
         async isrSet() {},
-        onDocumentEntryRead(cached) {
+        onPageEntryRead(cached) {
           reads.push(cached);
         },
         recordCacheOutcome(metric) {
@@ -843,10 +851,52 @@ describe("app page cache helpers", () => {
       // The request resumes the shell it read.
       expect(reads).toEqual([shell]);
       expect(cacheOutcomes).toEqual([
-        { artifact: "html", cacheKey: "html:/cached", outcome: "miss", reason: "own-shell-entry" },
+        isRscRequest
+          ? { artifact: "rsc", cacheKey: "rsc:/cached", outcome: "miss", reason: "own-shell-entry" }
+          : {
+              artifact: "html",
+              cacheKey: "html:/cached",
+              outcome: "miss",
+              reason: "own-shell-entry",
+            },
       ]);
     },
   );
+
+  it("doesn't take an RSC variant's read for the read of its page's own shell", async () => {
+    const reads: (ISRCacheEntry | null)[] = [];
+    const isrGet = vi.fn(async (_key: string) => null);
+
+    await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext() {},
+      isRscRequest: true,
+      isrGet,
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname, _mountedSlotsHeader, renderMode) {
+        return renderMode && renderMode !== "navigation"
+          ? `rsc:${pathname}:${renderMode}`
+          : `rsc:${pathname}`;
+      },
+      async isrSet() {},
+      onPageEntryRead(cached) {
+        reads.push(cached);
+      },
+      renderMode: "prefetch-loading-shell",
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("a miss does not regenerate");
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("a miss does not regenerate");
+      },
+    });
+
+    expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["rsc:/cached:prefetch-loading-shell"]);
+    expect(reads).toEqual([]);
+  });
 
   it("serves a page whose document renders a shell's marker inside it", async () => {
     const response = await readAppPageCacheResponse({
