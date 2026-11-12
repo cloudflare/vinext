@@ -8119,13 +8119,22 @@ describe("app page dispatch", () => {
   it.each([
     { name: "has no part beside the page's RSC payload", rscRead: "missing" },
     { name: "can't read the page's RSC key", rscRead: "error" },
+    { name: "finds the part beside the page's RSC payload expired", rscRead: "expired" },
   ])("renders an RSC request with its own shell's values when it $name", async ({ rscRead }) => {
     const seeds: unknown[] = [];
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const isrGet = vi.fn(async (key: string) => {
+    const isrGet = vi.fn(async (key: string): Promise<ISRCacheEntry | null> => {
       if (key === "rsc:/en/blog/hello") {
         if (rscRead === "error") throw new Error("read failed");
-        return null;
+        return rscRead === "expired"
+          ? {
+              ...buildISRCacheEntry(
+                buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")),
+                true,
+              ),
+              isExpired: true,
+            }
+          : null;
       }
       return key === "html:/en/blog/hello"
         ? buildISRCacheEntry({
@@ -8220,6 +8229,11 @@ describe("app page dispatch", () => {
     expect(parseAppPprShellState(rscPart?.postponed)?.resumeDataCache).toBe(
       documentState?.resumeDataCache,
     );
+    // Both parts go stale, and are invalidated, together.
+    const policies = new Map(
+      isrSetFallbackShell.mock.calls.map(([key, , policy]) => [key, policy]),
+    );
+    expect(policies.get("rsc:/en/blog/hello")).toEqual(policies.get("html:/en/blog/hello"));
   });
 
   it.each([
@@ -8477,7 +8491,7 @@ describe("app page dispatch", () => {
       name: "a page another request stored",
       meanwhile: "page",
       pageKey: "html:/en/blog/hello",
-      written: ["rsc:/en/blog/hello"],
+      written: [],
     },
     {
       name: "an RSC payload another request stored",
@@ -8489,7 +8503,13 @@ describe("app page dispatch", () => {
       name: "what a failed read may hold",
       meanwhile: "read-error",
       pageKey: "html:/en/blog/hello",
-      written: ["rsc:/en/blog/hello"],
+      written: [],
+    },
+    {
+      name: "what a failed RSC read may hold",
+      meanwhile: "read-error",
+      pageKey: "rsc:/en/blog/hello",
+      written: ["html:/en/blog/hello"],
     },
   ])("keeps $name while its path's shell rendered", async ({ meanwhile, pageKey, written }) => {
     const jobs = new Map<string, () => Promise<void>>();
@@ -8544,7 +8564,8 @@ describe("app page dispatch", () => {
       errorSpy.mockRestore();
     }
 
-    // Only the shell's part under the other key is stored.
+    // A page under the document key means the path has no shell. Under the
+    // RSC key alone, it keeps only the shell's RSC part out.
     expect(
       isrSetFallbackShell.mock.calls
         .map(([key]) => key)

@@ -212,10 +212,11 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
   }
 
   // A path's own shell shares its page's keys, so a page another request
-  // stored under one of them while the shell rendered is kept.
+  // stored under one of them while the shell rendered is kept. A page under
+  // its document key means the path has no shell, so neither part is stored.
   const unstored = isConcrete ? await withoutStoredPages(options, writes) : writes;
-  if (unstored.length === 0) {
-    options.isrDebug?.("SKIP (page stored under the shell's keys)", fallbackPathname);
+  if (unstored[0]?.[0] !== key) {
+    options.isrDebug?.("SKIP (page stored under the shell's key)", fallbackPathname);
     return null;
   }
   const { isrSetFallbackShell } = options;
