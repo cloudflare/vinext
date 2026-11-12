@@ -12,13 +12,21 @@ concurrency:
 
 jobs:
   bonk:
+    # The alcora-dev GitHub App is allowed by exact login: it is a Bot with no
+    # author association, so it would fail both the sender check and the
+    # association check below.
     if: >-
-      github.event.sender.type != 'Bot' &&
       contains(github.event.comment.body, '/bigbonk') &&
       (
-        github.event.comment.author_association == 'MEMBER' ||
-        github.event.comment.author_association == 'COLLABORATOR' ||
-        github.event.comment.author_association == 'OWNER'
+        github.event.comment.user.login == 'alcora-dev[bot]' ||
+        (
+          github.event.sender.type != 'Bot' &&
+          (
+            github.event.comment.author_association == 'MEMBER' ||
+            github.event.comment.author_association == 'COLLABORATOR' ||
+            github.event.comment.author_association == 'OWNER'
+          )
+        )
       )
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -50,7 +58,9 @@ jobs:
           model: "cloudflare-ai-gateway/openai/gpt-5.6-sol"
           mentions: "/bigbonk"
           variant: "high"
-          permissions: write
+          # ask-bonk checks the commenter's repo collaborator permission, which is
+          # "none" for GitHub Apps; alcora-dev[bot] is already gated by login above.
+          permissions: ${{ github.event.comment.user.login == 'alcora-dev[bot]' && 'any' || 'write' }}
           opencode_dev: true
           opencode_version: latest
           agent: viguy
