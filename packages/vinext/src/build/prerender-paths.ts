@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path, { toSlash } from "pathslash";
-import type { Server as HttpServer } from "node:http";
 import {
   loadNextConfig,
   resolveNextConfig,
@@ -38,7 +37,7 @@ import {
 } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { tryRealpathSync } from "./ssr-manifest.js";
-import { startProdServer } from "../server/prod-server.js";
+import { startPrerenderProdServer, type PrerenderProdServer } from "./prerender-server-pool.js";
 import { loadMdxEsmReader } from "../utils/mdx-scan.js";
 import { findDir } from "../utils/project.js";
 import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
@@ -1360,19 +1359,17 @@ async function startPathDiscoveryServer(options: {
   serverDir: string;
   pagesBundlePath?: string;
   rscBundlePath?: string;
-}): Promise<{ server: HttpServer; port: number }> {
-  return startProdServer({
-    port: 0,
-    host: "127.0.0.1",
-    outDir: options.pagesBundlePath
+}): Promise<PrerenderProdServer> {
+  return startPrerenderProdServer(
+    options.pagesBundlePath
       ? path.dirname(path.dirname(options.pagesBundlePath))
       : path.dirname(options.serverDir),
-    rscEntryPath: options.rscBundlePath,
-    serverDir: options.serverDir,
-    serverEntryPath: options.pagesBundlePath,
-    noCompression: true,
-    purpose: "prerender",
-  });
+    {
+      rscEntryPath: options.rscBundlePath,
+      serverDir: options.serverDir,
+      serverEntryPath: options.pagesBundlePath,
+    },
+  );
 }
 
 export async function discoverPrerenderPathManifest(
@@ -1426,7 +1423,7 @@ export async function discoverPrerenderPathManifest(
   const candidateOnlyPathSet = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   await withPrerenderEndpoints(async () => {
-    let prodServer: { server: HttpServer; port: number } | null = null;
+    let prodServer: PrerenderProdServer | null = null;
     const needsServer = await shouldStartPathDiscoveryServer({
       appDir,
       pagesDir,
@@ -1527,10 +1524,9 @@ export async function discoverPrerenderPathManifest(
         }
         fallbackRoutePatterns.push(...pagesPathResult.fallbackRoutePatterns);
       }
+      prodServer?.assertHealthy();
     } finally {
-      if (prodServer) {
-        await new Promise<void>((resolve) => prodServer!.server.close(() => resolve()));
-      }
+      if (prodServer) await prodServer.close();
     }
   });
 

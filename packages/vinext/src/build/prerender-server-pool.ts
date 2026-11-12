@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "pathslash";
 import { fileURLToPath } from "node:url";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
+import { startProdServer } from "../server/prod-server.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKER_ENTRY = path.join(__dirname, "prerender-server-entry.js");
@@ -81,6 +82,61 @@ export type PrerenderServerPool = {
   close: () => Promise<void>;
 };
 
+/** A started prerender production server and its health checks. */
+export type PrerenderProdServer = {
+  port: number;
+  /** Throw if the server's process exited unexpectedly. */
+  assertHealthy: () => void;
+  /** Record a failed fetch to this server (see {@link PrerenderServerPool}). */
+  recordRenderError: (err: unknown) => void;
+  close: () => Promise<void>;
+};
+
+type PrerenderServerOptions = {
+  rscEntryPath?: string;
+  serverDir?: string;
+  serverEntryPath?: string;
+};
+
+/**
+ * Start the production server the prerender phase talks to.
+ *
+ * Like Next.js's static workers, application modules run in a forked process
+ * rather than the build process. Handles that a user module opens at import
+ * time (timers, database pools, sockets) then end with the child, instead of
+ * keeping `vite build` alive after it reports completion. Falls back to an
+ * in-process server when the forkable entry is unavailable (running from
+ * source).
+ */
+export async function startPrerenderProdServer(
+  outDir: string,
+  options: PrerenderServerOptions = {},
+): Promise<PrerenderProdServer> {
+  if (prerenderPoolAvailable()) {
+    const pool = await startPrerenderServerPool(outDir, 1, { ...options, silent: false });
+    return {
+      port: pool.ports[0]!,
+      assertHealthy: pool.assertHealthy,
+      recordRenderError: pool.recordRenderError,
+      close: pool.close,
+    };
+  }
+  const { server, port } = await startProdServer({
+    port: 0,
+    host: "127.0.0.1",
+    outDir,
+    ...options,
+    noCompression: true,
+    purpose: "prerender",
+  });
+  return {
+    port,
+    assertHealthy() {},
+    recordRenderError() {},
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
 /**
  * Choose how many render processes to fork for `routeCount` routes.
  *
@@ -126,9 +182,9 @@ function isWorkerTransportError(err: unknown): boolean {
 export async function startPrerenderServerPool(
   outDir: string,
   size: number,
-  options: { entry?: string; rscEntryPath?: string; serverDir?: string } = {},
+  options: PrerenderServerOptions & { entry?: string; silent?: boolean } = {},
 ): Promise<PrerenderServerPool> {
-  const { entry = WORKER_ENTRY, rscEntryPath, serverDir } = options;
+  const { entry = WORKER_ENTRY, rscEntryPath, serverDir, serverEntryPath, silent = true } = options;
   const children: ChildProcess[] = [];
   let shuttingDown = false;
   let crash: { port?: number; code: number | null; signal: NodeJS.Signals | null } | null = null;
@@ -150,6 +206,11 @@ export async function startPrerenderServerPool(
           VINEXT_PRERENDER_OUTDIR: outDir,
           ...(rscEntryPath ? { VINEXT_PRERENDER_RSC_ENTRY_PATH: rscEntryPath } : {}),
           ...(serverDir ? { VINEXT_PRERENDER_SERVER_DIR: serverDir } : {}),
+          ...(serverEntryPath ? { VINEXT_PRERENDER_SERVER_ENTRY_PATH: serverEntryPath } : {}),
+          ...(silent ? {} : { VINEXT_PRERENDER_SERVER_LOG: "1" }),
+          // enablePrerenderSourceMaps turns source maps on in the build
+          // process at runtime; carry that over to the child.
+          ...(process.sourceMapsEnabled ? { VINEXT_PRERENDER_SOURCE_MAPS: "1" } : {}),
         },
         // Inherit stdout/stderr so server-side errors surface; keep IPC.
         stdio: ["ignore", "inherit", "inherit", "ipc"],

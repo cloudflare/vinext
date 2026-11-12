@@ -9,8 +9,8 @@
  * over IPC. The parent then load-balances per-route fetches across the pool.
  *
  * `VINEXT_PRERENDER`, `NEXT_PHASE`, `VINEXT_PRERENDER_OUTDIR`, and the optional
- * `VINEXT_PRERENDER_RSC_ENTRY_PATH`, and `VINEXT_PRERENDER_SERVER_DIR` are
- * passed via the fork env so they are set
+ * `VINEXT_PRERENDER_RSC_ENTRY_PATH`, `VINEXT_PRERENDER_SERVER_DIR`, and
+ * `VINEXT_PRERENDER_SERVER_ENTRY_PATH` are passed via the fork env so they are set
  * before any module loads (some server and user modules read the phase at
  * import time).
  */
@@ -22,6 +22,7 @@ async function main(): Promise<void> {
   const outDir = process.env.VINEXT_PRERENDER_OUTDIR;
   const rscEntryPath = process.env.VINEXT_PRERENDER_RSC_ENTRY_PATH;
   const serverDir = process.env.VINEXT_PRERENDER_SERVER_DIR;
+  const serverEntryPath = process.env.VINEXT_PRERENDER_SERVER_ENTRY_PATH;
   if (!outDir) {
     throw new Error("[vinext] prerender server worker: VINEXT_PRERENDER_OUTDIR not set");
   }
@@ -31,6 +32,11 @@ async function main(): Promise<void> {
   // makes this child render byte-identically to the in-process server — no ISR
   // / unstable_cache / fetch-cache reuse across routes within a worker.
   setCacheHandler(new NoOpCacheHandler());
+  if (process.env.VINEXT_PRERENDER_SOURCE_MAPS === "1") {
+    // Mirror the build process before the server bundle loads.
+    process.setSourceMapsEnabled(true);
+    Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
+  }
   registerPrerenderCloudflareLoader();
   const { port } = await startProdServer({
     port: 0,
@@ -38,9 +44,10 @@ async function main(): Promise<void> {
     outDir,
     ...(rscEntryPath ? { rscEntryPath } : {}),
     ...(serverDir ? { serverDir } : {}),
+    ...(serverEntryPath ? { serverEntryPath } : {}),
     noCompression: true,
     purpose: "prerender",
-    silent: true,
+    silent: process.env.VINEXT_PRERENDER_SERVER_LOG !== "1",
   });
   if (typeof process.send === "function") {
     process.send({ type: "ready", port });
