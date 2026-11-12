@@ -34,6 +34,8 @@ type RegenerationScope = {
    */
   sideWrites: Promise<void>[];
   targetKey: string;
+  /** The target is a part of a path's own shell. */
+  targetsOwnShell?: boolean;
 };
 
 type ResponseStoreInvocation = {
@@ -65,7 +67,10 @@ export type ResponseStoreInvocationCapture = {
   streamResponse?: boolean;
 };
 
-/** The page part a path's own shell is stored under. */
+/**
+ * The page part a path's own shell is stored under. Core's `isr-cache.ts`
+ * passes it as `appPageShellPart`; keep the two in sync.
+ */
 type AppPageShellPart = "document" | "rsc";
 
 const ARRAY_BUFFER_MARKER = "$vinextArrayBuffer";
@@ -267,8 +272,13 @@ export function trackResponseStoreRegenerationWork(work: Promise<unknown>): void
 export async function captureResponseStoreDataRegeneration(
   key: string,
   callback: () => Promise<void>,
+  targetsOwnShell = false,
 ): Promise<Response> {
-  const scope: RegenerationScope = { sideWrites: [], targetKey: key };
+  const scope: RegenerationScope = {
+    sideWrites: [],
+    targetKey: key,
+    ...(targetsOwnShell ? { targetsOwnShell } : {}),
+  };
   try {
     await regenerationStorage.run(scope, callback);
   } finally {
@@ -304,8 +314,19 @@ async function cacheRequest(key: string, path = DATA_ENTRY_PATH): Promise<Reques
   return new Request(`https://vinext-data-cache.invalid/${path}/${await digest(key)}`);
 }
 
-function serializePageParts(parts: ResponseStoreInvocationCapture["pageParts"]): string {
-  return JSON.stringify({ document: parts?.document?.url, rsc: parts?.rsc?.url });
+/**
+ * What a data revalidator replays beside the render: its page's keys, and
+ * whether its entry is a part of a path's own shell.
+ */
+function serializePageParts(
+  parts: ResponseStoreInvocationCapture["pageParts"],
+  ownShell: boolean,
+): string {
+  return JSON.stringify({
+    document: parts?.document?.url,
+    rsc: parts?.rsc?.url,
+    ...(ownShell ? { ownShell } : {}),
+  });
 }
 
 /** Whether a response stored under a page's key is the path's own shell. */
@@ -553,7 +574,9 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       }
       // Regenerating one part of a path's own shell regenerates the shell, as
       // Next.js regenerates its one entry, so its other part reads as stale.
-      if (pageRequest && regeneration && cacheState !== "expired") cacheState = "stale";
+      if (regeneration?.targetsOwnShell && readShellPart(context) && cacheState !== "expired") {
+        cacheState = "stale";
+      }
       const value: CacheHandlerValue = {
         lastModified: entry.lastModified,
         value: entry.value,
@@ -636,6 +659,8 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
 
     const invocation = invocationStorage.getStore();
     const pageRequest = pagePartRequest(context);
+    const shellPart = readShellPart(context);
+    const pageParts = invocation?.capture?.pageParts;
     const cacheFunctionInvocation = context?.cacheFunctionInvocation;
     const revalidator =
       cacheFunctionInvocation &&
@@ -649,10 +674,16 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         : invocation?.replayable
           ? {
               id: DATA_REVALIDATOR_ID,
-              // A shell under its page's key regenerates under its keys too.
-              args: pageRequest
-                ? [key, serializePageParts(invocation.capture?.pageParts), invocation.serialized]
-                : [key, invocation.serialized],
+              // A replay of a render that stored a path's own shell under its
+              // page's keys stores it there too.
+              args:
+                pageParts || shellPart
+                  ? [
+                      key,
+                      serializePageParts(pageParts, shellPart !== undefined),
+                      invocation.serialized,
+                    ]
+                  : [key, invocation.serialized],
             }
           : undefined;
     // Like Next.js, a "use cache" entry is dated from when its generation started.
@@ -711,7 +742,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       // As the gateway stores a page's other part, the RSC part of a path's
       // own shell doesn't purge its edge copy, which keeps an earlier shell's
       // values until its own policy ends.
-      purgeExisting: readShellPart(context) !== "rsc" || !pageRequest,
+      purgeExisting: !(pageRequest && shellPart === "rsc"),
       ...(replaces
         ? {
             replacesRevision: replaces.revision,
