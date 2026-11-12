@@ -15,5 +15,12 @@ export default function handler(request: NextRequest) {
   server.addEventListener("message", (event) => {
     server.send(`${session}:${String(event.data)}`);
   });
-  return new Response(null, { status: 101, webSocket: client } as ResponseInit);
+  // `?edge-policy` adds the Cloudflare edge policy the CDN adapters strip, and
+  // `?route-miss` vinext's reserved route-miss marker.
+  const headers: Record<string, string> = {};
+  if (request.nextUrl.searchParams.has("edge-policy")) {
+    headers["Cloudflare-CDN-Cache-Control"] = "no-store";
+  }
+  if (request.nextUrl.searchParams.has("route-miss")) headers["x-vinext-route-miss"] = "1";
+  return new Response(null, { status: 101, webSocket: client, headers } as ResponseInit);
 }

@@ -246,6 +246,46 @@ describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (bui
     ).resolves.toBe("proxied-abc:ping");
   }, 30_000);
 
+  // The CDN adapters strip this policy from the response at the gateway.
+  it.runIf(build.appRouter)(
+    "completes a Route Handler upgrade that carries the Cloudflare edge policy",
+    async () => {
+      await expect(
+        exchangeWebSocketMessage(
+          webSocketUrl("/api/websocket-upgrade?edge-policy"),
+          { cookie: "session=abc" },
+          "ping",
+        ),
+      ).resolves.toBe("abc:ping");
+    },
+    30_000,
+  );
+
+  it("completes a Pages Router edge API upgrade that carries the Cloudflare edge policy", async () => {
+    await expect(
+      exchangeWebSocketMessage(
+        webSocketUrl("/api/websocket-upgrade-pages?edge-policy"),
+        { cookie: "session=abc" },
+        "ping",
+      ),
+    ).resolves.toBe("abc:ping");
+  }, 30_000);
+
+  // The proxied response's immutable headers carry vinext's reserved marker.
+  it.runIf(build.appRouter)(
+    "completes an upgrade a Route Handler proxies with the route-miss marker",
+    async () => {
+      await expect(
+        exchangeWebSocketMessage(
+          webSocketUrl("/api/websocket-upgrade-proxy?route-miss"),
+          { cookie: "session=abc" },
+          "ping",
+        ),
+      ).resolves.toBe("proxied-abc:ping");
+    },
+    30_000,
+  );
+
   // Middleware enables draft mode on `?draft=true`, so its cookie is pending.
   it.runIf(build.appRouter)(
     "completes a Route Handler upgrade while middleware enables draft mode",

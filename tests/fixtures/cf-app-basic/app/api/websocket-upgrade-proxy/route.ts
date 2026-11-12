@@ -5,7 +5,12 @@ import { cookies } from "next/headers";
 // coverage for #4661.
 export async function GET(request: Request) {
   const session = (await cookies()).get("session")?.value ?? "anonymous";
-  return fetch(new URL("/api/websocket-upgrade", request.url), {
+  // `?route-miss` proxies an upstream upgrade carrying vinext's reserved
+  // route-miss marker.
+  const upstream = new URL(request.url).searchParams.has("route-miss")
+    ? "/api/websocket-upgrade-pages?route-miss"
+    : "/api/websocket-upgrade";
+  return fetch(new URL(upstream, request.url), {
     headers: { cookie: `session=proxied-${session}`, upgrade: "websocket" },
   });
 }

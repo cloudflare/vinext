@@ -416,7 +416,8 @@ async function executeAppRouteHandlerImpl(
       if (dynamicUsedInHandler) markKnownDynamicAppRoute(options.routePattern);
       recordRouteCacheability({ cacheable: false, dynamicUsage: true });
       options.clearRequestContext();
-      return response;
+      // The marker is reserved for routing; this rebuild keeps the webSocket.
+      return stripAppRouteHandlerRouteMissMarker(response);
     }
     const draftModeBeforeCompletion =
       options.getActiveDraftModeState?.() ?? options.isDraftMode === true;

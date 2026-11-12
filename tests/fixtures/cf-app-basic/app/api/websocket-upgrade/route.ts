@@ -13,5 +13,9 @@ export async function GET(request: Request) {
   server.addEventListener("message", (event) => {
     server.send(`${session}:${String(event.data)}`);
   });
-  return new Response(null, { status: 101, webSocket: client } as ResponseInit);
+  // `?edge-policy` adds the Cloudflare edge policy the CDN adapters strip.
+  const headers: Record<string, string> = new URL(request.url).searchParams.has("edge-policy")
+    ? { "Cloudflare-CDN-Cache-Control": "no-store" }
+    : {};
+  return new Response(null, { status: 101, webSocket: client, headers } as ResponseInit);
 }
