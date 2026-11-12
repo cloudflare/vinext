@@ -360,6 +360,7 @@ const projectServers = {
     testDir: "./tests/e2e",
     testMatch: [
       "**/cloudflare-dev/**/*.spec.ts",
+      "**/cloudflare-workers/route-handler-websocket.spec.ts",
       "**/cloudflare-response-store.spec.ts",
       "**/app-router/instrumentation.spec.ts",
       "**/og-image.spec.ts",

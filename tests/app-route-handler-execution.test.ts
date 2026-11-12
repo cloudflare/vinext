@@ -355,6 +355,95 @@ describe("app route handler execution helpers", () => {
     expect(reportCalls).toEqual([]);
   });
 
+  // workerd lets only an init with a `webSocket` construct status 101, and
+  // Node's Response can't at all, so the upgrade is modelled on a 200.
+  function createWorkersUpgradeResponse(): Response & { webSocket: object } {
+    const response = new Response(null, { headers: { upgrade: "websocket" } });
+    Object.defineProperty(response, "status", { value: 101 });
+    Object.defineProperty(response, "statusText", { value: "Switching Protocols" });
+    Object.defineProperty(response, "webSocket", { value: { kind: "fake-websocket" } });
+    return response as Response & { webSocket: object };
+  }
+
+  it.each([
+    { name: "a request-reading handler", readsRequest: true },
+    { name: "a static handler with revalidate", readsRequest: false },
+  ])("returns a WebSocket upgrade from $name as-is", async ({ readsRequest }) => {
+    const dynamicUsage = createDynamicUsageState();
+    const upgrade = createWorkersUpgradeResponse();
+    const isrSetCalls: string[] = [];
+    const phaseCalls: string[] = [];
+    const reportCalls: unknown[] = [];
+    let didClearRequestContext = false;
+    const request = new Request("https://example.com/api/realtime", {
+      headers: { cookie: "session=abc", upgrade: "websocket" },
+    });
+    // The Workers adapters' admission finalizes every response on the way out.
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+
+    const executed = await runWithExecutionContext(context, () =>
+      executeAppRouteHandler({
+        buildPageCacheTags: (pathname, extraTags) => [pathname, ...extraTags],
+        cleanPathname: "/api/realtime",
+        clearRequestContext() {
+          didClearRequestContext = true;
+        },
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        executionContext: null,
+        getAndClearPendingCookies: () => ["session=refreshed; Path=/"],
+        getCollectedFetchTags: () => [],
+        getDraftModeCookieHeader: () => null,
+        handler: { dynamic: "auto" },
+        handlerFn(request) {
+          if (readsRequest) request.headers.get("cookie");
+          return upgrade;
+        },
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey: (pathname) => "route:" + pathname,
+        async isrSet(key) {
+          isrSetCalls.push(key);
+        },
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        method: "GET",
+        middlewareContext: {
+          headers: new Headers([["x-middleware", "present"]]),
+          status: null,
+        },
+        params: null,
+        reportRequestError(error) {
+          reportCalls.push(error);
+        },
+        request,
+        revalidateSeconds: readsRequest ? null : 60,
+        routePattern: `/api/realtime-${readsRequest ? "dynamic" : "static"}`,
+        setHeadersAccessPhase(phase) {
+          phaseCalls.push(phase);
+          return "render";
+        },
+      }),
+    );
+
+    expect(reportCalls).toEqual([]);
+    expect(executed).toBe(upgrade);
+    const response = await finalizeWorkerCacheabilityResponse(executed, context);
+    expect(response).toBe(upgrade);
+    expect(response.status).toBe(101);
+    expect(response.headers.get("cache-control")).toBeNull();
+    expect(isrSetCalls).toEqual([]);
+    expect(isKnownDynamicAppRoute(`/api/realtime-${readsRequest ? "dynamic" : "static"}`)).toBe(
+      readsRequest,
+    );
+    expect(phaseCalls).toEqual(["route-handler", "render"]);
+    expect(didClearRequestContext).toBe(true);
+  });
+
   it.each(["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"])(
     "preserves handler-owned %s instead of applying framework revalidation",
     async (policyHeader) => {

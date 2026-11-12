@@ -961,6 +961,9 @@ export async function finalizeWorkerCacheabilityResponse(
   if (!state) return response;
 
   if (state.mode === "admit") {
+    // A Workers WebSocket upgrade (status 101 with a `webSocket`) is never
+    // admitted, and `new Response()` cannot rebuild it with a cache policy.
+    if (response.status === 101) return response;
     return finalizeWorkerCacheabilityAdmission(response, state);
   }
 

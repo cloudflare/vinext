@@ -409,6 +409,17 @@ async function executeAppRouteHandlerImpl(
     const handlerResult = tracedResult.handlerResult;
     let { dynamicUsedInHandler, response } = handlerResult;
     assertSupportedAppRouteHandlerResponse(response);
+    // A Workers WebSocket upgrade (status 101 with a `webSocket`) is handed to
+    // the runtime as-is. `new Response()` rejects status 101 and its init would
+    // drop the `webSocket`, so the upgrade cannot be rebuilt to add headers.
+    // Nothing caches a 101.
+    // https://developers.cloudflare.com/workers/runtime-apis/websockets/
+    if (response.status === 101) {
+      if (dynamicUsedInHandler) markKnownDynamicAppRoute(options.routePattern);
+      recordRouteCacheability({ cacheable: false, dynamicUsage: true });
+      options.clearRequestContext();
+      return response;
+    }
     const draftModeBeforeCompletion =
       options.getActiveDraftModeState?.() ?? options.isDraftMode === true;
     const handlerDraftCookieBeforeCompletion =

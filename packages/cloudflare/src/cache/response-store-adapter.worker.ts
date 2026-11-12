@@ -667,6 +667,10 @@ function publicResponse(
   responseStageProps: unknown,
   pendingAdmission = false,
 ): Response {
+  // A WebSocket upgrade (status 101 with a `webSocket`) is never stored, and
+  // `new Response()` cannot rebuild it: workerd rejects status 101 unless the
+  // init carries the `webSocket`. Hand it to the runtime as-is.
+  if (response.status === 101) return response;
   const headers = new Headers(response.headers);
   const publicCacheStatus =
     cacheStatus === "HIT" && headers.get("CF-Cache-Status") === "UPDATING"
@@ -899,7 +903,7 @@ const handler = {
     const sharedResponses = new Map<string, SharedResponseStage>();
     const dispatch: VinextResponseStageTransport = async (stageRequest, props, options) => {
       const response = await dispatchResponseStage(stageRequest, props, options);
-      if (options.cache !== "shared") return response;
+      if (options.cache !== "shared" || response.status === 101) return response;
       // Record the normalized foreground response, never the persisted object.
       const headers = new Headers(response.headers);
       const token = crypto.randomUUID();
