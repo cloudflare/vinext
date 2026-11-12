@@ -49,7 +49,7 @@ jobs:
       - name: Run Bonk
         # Fork of Cloudflare-Studio/ask-bonk@2c20fe3 whose turn runner skips
         # `opencode github run`'s collaborator check, which refuses every GitHub App.
-        uses: james-elicx/ask-bonk/github@ee682c1197bceb2230cea532bebf79db1226cbff # app-actors
+        uses: james-elicx/ask-bonk/github@8b31f5a4d57319184bac710b65c6d1128d763ec3 # app-actors
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
