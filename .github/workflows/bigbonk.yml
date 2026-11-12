@@ -13,19 +13,21 @@ concurrency:
 jobs:
   bonk:
     # The alcora-dev GitHub App is allowed by exact login: it is a Bot with no
-    # author association, so it would fail both the sender check and the
-    # association check below.
+    # author association, so it would fail the human checks below. Its comments
+    # must start with /bigbonk so a triage reply that echoes reporter text can't
+    # trigger a run.
     if: >-
-      contains(github.event.comment.body, '/bigbonk') &&
       (
-        github.event.comment.user.login == 'alcora-dev[bot]' ||
+        github.event.comment.user.login == 'alcora-dev[bot]' &&
+        startsWith(github.event.comment.body, '/bigbonk')
+      ) ||
+      (
+        github.event.sender.type != 'Bot' &&
+        contains(github.event.comment.body, '/bigbonk') &&
         (
-          github.event.sender.type != 'Bot' &&
-          (
-            github.event.comment.author_association == 'MEMBER' ||
-            github.event.comment.author_association == 'COLLABORATOR' ||
-            github.event.comment.author_association == 'OWNER'
-          )
+          github.event.comment.author_association == 'MEMBER' ||
+          github.event.comment.author_association == 'COLLABORATOR' ||
+          github.event.comment.author_association == 'OWNER'
         )
       )
     runs-on: ubuntu-latest
