@@ -96,6 +96,10 @@ export async function middleware(request: NextRequest) {
   ) {
     response.headers.set("x-cdn-stage-visitor", visitorId);
   }
+  // Middleware response headers cannot be added to a WebSocket upgrade (#4661).
+  if (request.nextUrl.pathname.startsWith("/api/websocket-upgrade")) {
+    response.headers.set("x-websocket-middleware", "applied");
+  }
   if (
     request.nextUrl.pathname.startsWith("/api/draft-isr/") &&
     request.headers.has("x-browser-policy")

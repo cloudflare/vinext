@@ -1,7 +1,8 @@
 /**
- * On Cloudflare Workers, an App Router Route Handler may return a WebSocket
- * upgrade: a status 101 response carrying the Workers-only `webSocket`
- * property, from a `WebSocketPair`, a service binding or a Durable Object.
+ * On Cloudflare Workers, an App Router Route Handler or a Pages Router edge API
+ * route may return a WebSocket upgrade: a status 101 response carrying the
+ * Workers-only `webSocket` property, from a `WebSocketPair`, a service binding
+ * or a Durable Object.
  * workerd's `Response` constructor rejects status 101 unless the init carries
  * that `webSocket`, so the response must reach the runtime as returned.
  *
@@ -20,7 +21,7 @@ import { createIsolatedFixture } from "./helpers.js";
 const CF_APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/cf-app-basic");
 const CLOUDFLARE_NODE_MODULES = path.join(CF_APP_FIXTURE_DIR, "node_modules");
 
-type CloudflarePluginFactory = (options: {
+type CloudflarePluginFactory = (options?: {
   viteEnvironment: { name: string; childEnvironments: string[] };
 }) => import("vite").Plugin;
 
@@ -48,11 +49,25 @@ async function exchangeWebSocketMessage(
   }
 }
 
-describe.each([
-  { name: "without a CDN adapter", options: {} },
-  // The adapter stamps a build identity on every route handler response.
-  { name: "with the Workers Cache adapter", options: { cache: { cdn: workersCacheCdnAdapter() } } },
-])("App Route Handler WebSocket upgrades on the Workers runtime $name", ({ options }) => {
+type Build = {
+  name: string;
+  appRouter: boolean;
+  cdnAdapter: boolean;
+};
+
+const BUILDS: Build[] = [
+  { name: "a hybrid app", appRouter: true, cdnAdapter: false },
+  // The adapter stamps a build identity on every response.
+  { name: "a hybrid app with the Workers Cache adapter", appRouter: true, cdnAdapter: true },
+  { name: "a Pages Router app", appRouter: false, cdnAdapter: false },
+  {
+    name: "a Pages Router app with the Workers Cache adapter",
+    appRouter: false,
+    cdnAdapter: true,
+  },
+];
+
+describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (build) => {
   let root = "";
   let worker: StartedWorker | undefined;
   let baseUrl = "";
@@ -60,7 +75,7 @@ describe.each([
   beforeAll(async () => {
     root = await createIsolatedFixture(
       CF_APP_FIXTURE_DIR,
-      "vinext-app-route-websocket-upgrade-worker-",
+      "vinext-websocket-upgrade-worker-",
       undefined,
       CLOUDFLARE_NODE_MODULES,
     );
@@ -75,8 +90,14 @@ describe.each([
       root,
       configFile: false,
       plugins: [
-        vinext({ appDir: root, ...options }),
-        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+        vinext({
+          appDir: root,
+          ...(build.cdnAdapter ? { cache: { cdn: workersCacheCdnAdapter() } } : {}),
+          ...(build.appRouter ? {} : { disableAppRouter: true }),
+        }),
+        build.appRouter
+          ? cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } })
+          : cloudflare(),
       ],
       logLevel: "silent",
     });
@@ -97,7 +118,11 @@ describe.each([
       }): Promise<StartedWorker>;
     };
     worker = await wrangler.unstable_startWorker({
-      config: path.join(root, "dist/server/wrangler.json"),
+      config: path.join(
+        root,
+        build.appRouter ? "dist/server" : "dist/cf_app_basic",
+        "wrangler.json",
+      ),
       dev: {
         remote: false,
         persist: false,
@@ -121,23 +146,81 @@ describe.each([
     return url.href;
   }
 
-  it("completes the upgrade a cookie-reading Route Handler returns", async () => {
+  it.runIf(build.appRouter)(
+    "completes the upgrade a cookie-reading Route Handler returns",
+    async () => {
+      await expect(
+        exchangeWebSocketMessage(
+          webSocketUrl("/api/websocket-upgrade"),
+          { cookie: "session=abc" },
+          "ping",
+        ),
+      ).resolves.toBe("abc:ping");
+    },
+    30_000,
+  );
+
+  it.runIf(build.appRouter)(
+    "completes an upgrade a Route Handler proxies from fetch()",
+    async () => {
+      await expect(
+        exchangeWebSocketMessage(
+          webSocketUrl("/api/websocket-upgrade-proxy"),
+          { cookie: "session=abc" },
+          "ping",
+        ),
+      ).resolves.toBe("proxied-abc:ping");
+    },
+    30_000,
+  );
+
+  it("completes the upgrade a Pages Router edge API route returns", async () => {
     await expect(
       exchangeWebSocketMessage(
-        webSocketUrl("/api/websocket-upgrade"),
+        webSocketUrl("/api/websocket-upgrade-pages"),
         { cookie: "session=abc" },
         "ping",
       ),
     ).resolves.toBe("abc:ping");
   }, 30_000);
 
-  it("completes an upgrade a Route Handler proxies from fetch()", async () => {
+  it("completes an upgrade a Pages Router edge API route proxies from fetch()", async () => {
     await expect(
       exchangeWebSocketMessage(
-        webSocketUrl("/api/websocket-upgrade-proxy"),
+        webSocketUrl("/api/websocket-upgrade-pages-proxy"),
         { cookie: "session=abc" },
         "ping",
       ),
     ).resolves.toBe("proxied-abc:ping");
   }, 30_000);
+
+  // Middleware enables draft mode on `?draft=true`, so its cookie is pending.
+  it.runIf(build.appRouter)(
+    "completes a Route Handler upgrade while middleware enables draft mode",
+    async () => {
+      await expect(
+        exchangeWebSocketMessage(
+          webSocketUrl("/api/websocket-upgrade?draft=true"),
+          { cookie: "session=abc" },
+          "ping",
+        ),
+      ).resolves.toBe("abc:ping");
+    },
+    30_000,
+  );
+
+  // Pages-only middleware has no draftMode() scope in this fixture.
+  it.runIf(build.appRouter)(
+    "completes a Pages Router edge API upgrade while middleware enables draft mode",
+    async () => {
+      await expect(
+        exchangeWebSocketMessage(
+          webSocketUrl("/api/websocket-upgrade-pages?draft=true"),
+          { cookie: "session=abc" },
+          "ping",
+        ),
+      ).resolves.toBe("abc:ping");
+    },
+    30_000,
+  );
 });
