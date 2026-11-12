@@ -18,7 +18,7 @@ import {
   type AppPagePprFallbackCacheShell,
 } from "./app-ppr-fallback-shell.js";
 import type { GeneratedStaticParamsMemo } from "./app-page-request.js";
-import { isrCacheControl, type ISRCacheEntry } from "./isr-cache.js";
+import { isrCacheControl, type AppPageShellPart, type ISRCacheEntry } from "./isr-cache.js";
 import { normalizePregeneratedPathname } from "./pregenerated-concrete-paths.js";
 import { encodePrerenderRouteParams } from "./prerender-route-params.js";
 import {
@@ -185,10 +185,10 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
   // shell, a path's own shell is stored beside the page's RSC payload too,
   // holding the values the shell was built with, which an RSC request reads.
   const rscKey =
-    isConcrete && options.isrGetReadsFallbackShells === true
+    isConcrete && options.isrPageReadsFindOwnShells === true
       ? options.isrRscKey(options.cleanPathname, null)
       : null;
-  const writes: [string, CachedAppPageValue][] = [[key, value]];
+  const writes: ShellWrite[] = [[key, value, isConcrete ? "document" : undefined]];
   if (rscKey !== null) {
     writes.push([
       rscKey,
@@ -208,6 +208,7 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
               }),
         status: undefined,
       },
+      "rsc",
     ]);
   }
 
@@ -222,8 +223,8 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
   const { isrSetFallbackShell } = options;
   if (isrSetFallbackShell) {
     const stored = Promise.all(
-      unstored.map(([writeKey, writeValue]) =>
-        isrSetFallbackShell(writeKey, writeValue, { cacheControl, tags }).catch((error) => {
+      unstored.map(([writeKey, writeValue, part]) =>
+        isrSetFallbackShell(writeKey, writeValue, { cacheControl, tags }, part).catch((error) => {
           console.error("[vinext] ISR fallback shell cache write error:", error);
         }),
       ),
@@ -247,16 +248,22 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
   };
 }
 
+/** A shell's key and value, and the page part a path's own shell is stored under. */
+type ShellWrite = [key: string, value: CachedAppPageValue, part?: AppPageShellPart];
+
 /** The writes whose key holds no stored page. */
-async function withoutStoredPages<TRoute extends AppPageDispatchRoute, TWrite>(
+async function withoutStoredPages<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
-  writes: readonly (readonly [string, TWrite])[],
-): Promise<(readonly [string, TWrite])[]> {
-  const read = options.isrGetFallbackShell ?? options.isrGet;
+  writes: readonly ShellWrite[],
+): Promise<ShellWrite[]> {
   const stored = await Promise.all(
-    writes.map(async ([key]) => {
+    writes.map(async ([key, , part]) => {
       try {
-        return isAppPprStoredPage(await read(key));
+        return isAppPprStoredPage(
+          await (options.isrGetFallbackShell
+            ? options.isrGetFallbackShell(key, part)
+            : options.isrGet(key)),
+        );
       } catch (isrReadError) {
         // A page may be stored there, so that part isn't written. A later
         // dynamic render produces it again.

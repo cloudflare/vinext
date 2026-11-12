@@ -549,6 +549,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     isrGet,
     // Like the default CDN adapter, `isrGet` reads where shells are stored.
     isrGetReadsFallbackShells: true,
+    isrPageReadsFindOwnShells: true,
     isrFallbackShellHtmlKey(pathname: string) {
       return `shell:${pathname}`;
     },
@@ -7787,7 +7788,12 @@ describe("app page dispatch", () => {
 
     await (
       await runWithRequestContext(createRequestContext(), () =>
-        dispatchAppPage({ ...options, isrGetFallbackShell, isrGetReadsFallbackShells: false }),
+        dispatchAppPage({
+          ...options,
+          isrGetFallbackShell,
+          isrGetReadsFallbackShells: false,
+          isrPageReadsFindOwnShells: false,
+        }),
       )
     ).text();
 
@@ -8466,6 +8472,7 @@ describe("app page dispatch", () => {
         ...options,
         isrGetFallbackShell,
         isrGetReadsFallbackShells: false,
+        isrPageReadsFindOwnShells: false,
         isrSetFallbackShell,
         scheduleFallbackShellRegeneration(key, job) {
           if (!jobs.has(key)) jobs.set(key, job);
@@ -8484,6 +8491,98 @@ describe("app page dispatch", () => {
     expect(readKeys).not.toContain("rsc:/en/blog/hello");
     expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toContain("html:/en/blog/hello");
     expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).not.toContain("rsc:/en/blog/hello");
+  });
+
+  it("stores a path's own shell under both of its page's parts when an edge's page read finds it", async () => {
+    const jobs = new Map<string, () => Promise<void>>();
+    const isrGetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrGetFallbackShell"]>>(
+      async () => null,
+    );
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      async () => {},
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      isRscRequest: true,
+      isrGet: vi.fn(async () => null),
+      params: { locale: "en", slug: "hello" },
+      renderToReadableStream() {
+        markDynamicUsage();
+        return createStream(["payload"]);
+      },
+      request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({
+        ...options,
+        isrGetFallbackShell,
+        isrGetReadsFallbackShells: false,
+        isrSetFallbackShell,
+        scheduleFallbackShellRegeneration(key, job) {
+          if (!jobs.has(key)) jobs.set(key, job);
+        },
+      }),
+    );
+    await response.text();
+    await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+    await jobs.get("html:/en/blog/hello")!();
+
+    // As Response Store's gateway does, the edge hands the render what its
+    // read of the page's part found, so each read and write names its part.
+    expect(isrGetFallbackShell.mock.calls).toEqual([
+      ["rsc:/en/blog/hello", "rsc"],
+      ["html:/en/blog/hello", "document"],
+      ["html:/en/blog/hello", "document"],
+      ["rsc:/en/blog/hello", "rsc"],
+    ]);
+    expect(isrSetFallbackShell.mock.calls.map(([key, , , part]) => [key, part])).toEqual([
+      ["html:/en/blog/hello", "document"],
+      ["rsc:/en/blog/hello", "rsc"],
+    ]);
+  });
+
+  it("renders an RSC request with its own shell's values from the part an edge's page read found", async () => {
+    const seeds: unknown[] = [];
+    const isrGetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrGetFallbackShell"]>>(
+      async (key) =>
+        key === "rsc:/en/blog/hello"
+          ? buildISRCacheEntry({
+              ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")),
+              postponed: formatAppPprShellState({
+                prelude: false,
+                postponed: null,
+                resumeDataCache: JSON.stringify({
+                  cache: { "use-cache-key": { body: "c2hlbGw=", tags: [] } },
+                  fetch: {},
+                }),
+                generated: null,
+              }),
+            })
+          : null,
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: vi.fn<DispatchOptions["buildPageElement"]>(async () => {
+        seeds.push(_getResumeDataCacheSeed()?.cache.get("use-cache-key"));
+        return React.createElement("main", null, "page");
+      }),
+      cleanPathname: "/en/blog/hello",
+      isRscRequest: true,
+      isrGet: vi.fn(async () => null),
+      params: { locale: "en", slug: "hello" },
+      request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+    });
+
+    await (
+      await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, isrGetFallbackShell, isrGetReadsFallbackShells: false }),
+      )
+    ).text();
+
+    expect(seeds).toEqual([{ body: "c2hlbGw=", tags: [] }]);
+    // The shell's document entry isn't read.
+    expect(isrGetFallbackShell.mock.calls).toEqual([["rsc:/en/blog/hello", "rsc"]]);
   });
 
   it.each([
@@ -8783,7 +8882,12 @@ describe("app page dispatch", () => {
     });
 
     const response = await runWithRequestContext(createRequestContext(), () =>
-      dispatchAppPage({ ...options, isrGetFallbackShell, isrGetReadsFallbackShells: false }),
+      dispatchAppPage({
+        ...options,
+        isrGetFallbackShell,
+        isrGetReadsFallbackShells: false,
+        isrPageReadsFindOwnShells: false,
+      }),
     );
 
     expect(response.status).toBe(200);

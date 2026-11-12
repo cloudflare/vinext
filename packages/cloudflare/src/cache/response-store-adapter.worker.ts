@@ -51,6 +51,7 @@ import {
   CACHE_FUNCTION_REVALIDATOR_ID,
   captureResponseStoreDataRegeneration,
   DATA_REVALIDATOR_ID,
+  isResponseStorePageShell,
   runWithResponseStoreInvocation,
   setResponseStore,
   trackResponseStoreRegenerationWork,
@@ -330,6 +331,8 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
       }
       if (input.id === DATA_REVALIDATOR_ID && typeof input.args[0] === "string") {
         const invocation = parseInvocation(input.args.at(-1));
+        // A path's own shell under its page's keys regenerates under them.
+        const pageParts = input.args.length > 2 ? parsePageParts(input.args[1]) : undefined;
         return captureResponseStoreDataRegeneration(input.args[0], async () => {
           const response = await invokeResponseStage(
             restoreRequest(invocation),
@@ -337,6 +340,7 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
             env,
             ctx,
             { cache: "bypass" },
+            pageParts ? { pageParts } : undefined,
           );
           await response.body?.pipeTo(new WritableStream());
         });
@@ -363,6 +367,10 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
     RESPONSE_STORE_KEY_PARAM,
     `v1.${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`,
   );
+  return storeKeyRequest(url.toString());
+}
+
+function storeKeyRequest(url: string): Request {
   // The opaque URL already partitions these selectors. Keep every Vary field
   // present so cache-selection rules agree on the selected representation.
   return new Request(url, {
@@ -371,6 +379,16 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
     // A stored redirect is the response; following it would look up its target.
     redirect: "manual",
   });
+}
+
+/** The keys of a page's parts a shell's revalidator holds. */
+function parsePageParts(value: unknown): ResponseStoreInvocationCapture["pageParts"] {
+  if (typeof value !== "string") return undefined;
+  const urls = JSON.parse(value) as { document?: unknown; rsc?: unknown };
+  return {
+    ...(typeof urls.document === "string" ? { document: storeKeyRequest(urls.document) } : {}),
+    ...(typeof urls.rsc === "string" ? { rsc: storeKeyRequest(urls.rsc) } : {}),
+  };
 }
 
 /**
@@ -758,14 +776,19 @@ const handler = {
         isWarmup || options.cacheIdentity?.queryFree
           ? otherPagePart(identityRequest, identityProps)
           : undefined;
+      const otherKey = otherPart ? await cacheRequest(otherPart.invocation) : undefined;
       // A warm-up renders the page again when its RSC payload is missing.
-      const rscKey =
-        isWarmup && otherPart?.kind === "rsc"
-          ? await cacheRequest(otherPart.invocation)
-          : undefined;
+      const rscKey = isWarmup && otherPart?.kind === "rsc" ? otherKey : undefined;
       const invocation = prepareInvocation(identityRequest, identityProps);
       const key = await cacheRequest(invocation);
-      const stored = await readStoredResponse(key);
+      let stored = await readStoredResponse(key);
+      // A path's own shell, stored under its page's keys, isn't the page: the
+      // render reads it instead of the Store.
+      let pageShell: Response | null = null;
+      if (stored && isResponseStorePageShell(stored)) {
+        pageShell = new Response(await stored.text(), stored);
+        stored = null;
+      }
       if (stored) {
         if (!rscKey) {
           return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
@@ -774,14 +797,23 @@ const handler = {
         const storedRsc = await readStoredResponse(rscKey);
         if (storedRsc) {
           void storedRsc.body?.cancel().catch(() => {});
-          return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
+          if (!isResponseStorePageShell(storedRsc)) {
+            return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
+          }
         }
         void stored.body?.cancel().catch(() => {});
       }
 
+      const ownPart = otherPart?.kind === "rsc" ? "document" : "rsc";
       const capture: ResponseStoreInvocationCapture = {
         ...(isWarmup ? {} : { streamResponse: true }),
         ...otherPagePartCapture(otherPart),
+        ...(otherPart && otherKey
+          ? {
+              pageParts: { [ownPart]: key, [otherPart.kind]: otherKey },
+              pageShell: { part: ownPart, response: pageShell },
+            }
+          : {}),
       };
       const serializedInvocation = JSON.stringify(invocation);
       // A Pages render can read the request host, so a Pages page regenerates

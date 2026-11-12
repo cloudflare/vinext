@@ -717,6 +717,142 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     ]);
   });
 
+  describe("a path's own shell", () => {
+    const shell = (html: string) => ({
+      kind: "APP_PAGE" as const,
+      html,
+      rscData: undefined,
+      headers: undefined,
+      postponed: "state",
+      status: undefined,
+    });
+    const shellContext = (part: "document" | "rsc") => ({
+      appPageShellPart: part,
+      cacheControl: { revalidate: 60 },
+      revalidate: 60,
+      tags: ["_N_T_/page"],
+    });
+    const dynamicResponse = () =>
+      new Response("dynamic", { headers: { "Cache-Control": "private, no-store" } });
+
+    async function fetchPage(
+      handler: ReturnType<typeof createVinextResponseStoreHandler>,
+      url = "https://example.com/page",
+    ) {
+      const ctx = context();
+      const response = await handler.fetch(new Request(url), {} as never, ctx);
+      const body = await response.text();
+      await Promise.all(ctx.waitUntil.mock.calls.map(([promise]) => promise));
+      return { body, response };
+    }
+
+    it("is stored under its page's keys and read through the gateway's read", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      const reads: unknown[] = [];
+      stages.response.mockImplementation(async () => {
+        const read = await dataCache.get("html:/page", { appPageShellPart: "document" });
+        reads.push(read?.value);
+        if (!read) {
+          await dataCache.set("html:/page", shell("<!--shell-->"), shellContext("document"));
+          await dataCache.set("rsc:/page", shell(""), shellContext("rsc"));
+        }
+        return dynamicResponse();
+      });
+
+      const first = await fetchPage(handler);
+      // The shell's read was the gateway's.
+      expect(store.fetch).toHaveBeenCalledTimes(1);
+      const pageKey = store.fetch.mock.calls[0]![0].url;
+      const stored = [...entries.entries()];
+      expect(stored.map(([url]) => url)).toContain(pageKey);
+      expect(stored).toHaveLength(2);
+      for (const [, entry] of stored) {
+        expect(entry.headers.get("X-Vinext-Response-Store-Page-Shell")).toBe("1");
+        expect(entry.options?.revalidator?.id).toBe("vinext:data");
+        expect(JSON.parse(String(entry.options?.revalidator?.args[1]))).toEqual({
+          document: pageKey,
+          rsc: stored.find(([url]) => url !== pageKey)![0],
+        });
+      }
+
+      // Every query shares the page's shell, which is never served.
+      const second = await fetchPage(handler, "https://example.com/page?q=a");
+      expect(second.body).toBe("dynamic");
+      expect(store.fetch).toHaveBeenCalledTimes(2);
+      expect(reads).toEqual([undefined, shell("<!--shell-->")]);
+      expect(first.body).toBe("dynamic");
+    });
+
+    it("regenerates under its page's keys", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      stages.response.mockImplementation(async () => {
+        const read = await dataCache.get("html:/page", { appPageShellPart: "document" });
+        if (!read) {
+          await dataCache.set("html:/page", shell("<!--fresh-->"), shellContext("document"));
+          await dataCache.set("rsc:/page", shell("fresh"), shellContext("rsc"));
+        }
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const pageKey = store.fetch.mock.calls[0]![0].url;
+      const rscKey = [...entries.keys()].find((url) => url !== pageKey)!;
+      entries.delete(rscKey);
+
+      const regenerated = await createVinextResponseStoreOptions().regenerate(
+        {
+          args: entries.get(pageKey)!.options!.revalidator!.args as string[],
+          id: "vinext:data",
+          reason: "stale",
+          request: new Request(pageKey),
+        } as never,
+        { ctx: context(), env: {} } as never,
+      );
+
+      // The regeneration returns the document part for the Store to store
+      // under its key, and stores the RSC part under the page's RSC key.
+      expect(regenerated.headers.get("X-Vinext-Response-Store-Page-Shell")).toBe("1");
+      expect(await regenerated.text()).toContain("<!--fresh-->");
+      expect(entries.get(rscKey)?.body).toContain("fresh");
+    });
+
+    it("leaves a page stored under its page's key to the render", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      stages.response.mockImplementationOnce(async () => {
+        captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
+        return new Response("html", { headers: { "Cache-Control": "public, max-age=60" } });
+      });
+      await fetchPage(handler);
+      const pageKey = store.fetch.mock.calls[0]![0].url;
+      // The document's entry is gone, its RSC payload's stays.
+      entries.delete(pageKey);
+      const reads: unknown[] = [];
+      stages.response.mockImplementationOnce(async () => {
+        reads.push(
+          (await dataCache.get("html:/page", { appPageShellPart: "document" }))?.value,
+          (await dataCache.get("rsc:/page", { appPageShellPart: "rsc" }))?.value,
+        );
+        return dynamicResponse();
+      });
+
+      await fetchPage(handler);
+
+      expect(reads).toEqual([
+        undefined,
+        expect.objectContaining({ kind: "APP_PAGE", html: "", postponed: undefined }),
+      ]);
+      expect(store.purge).not.toHaveBeenCalled();
+    });
+  });
+
   it("stores both parts of a page only under a query-free identity", async () => {
     stages.response.mockImplementation(async () => {
       captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
