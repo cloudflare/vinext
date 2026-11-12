@@ -138,6 +138,10 @@
       "types": "./dist/server/response-start-tracing.d.ts",
       "import": "./dist/server/response-start-tracing.js"
     },
+    "./internal/server/websocket-upgrade-response": {
+      "types": "./dist/server/websocket-upgrade-response.d.ts",
+      "import": "./dist/server/websocket-upgrade-response.js"
+    },
     "./internal/build/run-prerender": {
       "types": "./dist/build/run-prerender.d.ts",
       "import": "./dist/build/run-prerender.js"

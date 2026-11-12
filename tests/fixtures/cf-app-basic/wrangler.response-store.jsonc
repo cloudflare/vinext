@@ -1,0 +1,28 @@
+// The Workers Response Store adapter in self-contained mode, for
+// tests/websocket-upgrade-worker.test.ts.
+{
+  "name": "cf-app-basic",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "worker/index.ts",
+  "assets": {
+    "not_found_handling": "none",
+    "binding": "ASSETS",
+  },
+  "cache": { "enabled": false },
+  "exports": {
+    "default": { "type": "worker", "cache": { "enabled": false } },
+    "ResponseStoreBinding": { "type": "worker", "cache": { "enabled": true } },
+  },
+  "r2_buckets": [
+    {
+      "binding": "CACHE_BODIES",
+      "bucket_name": "cf-app-basic-cache-bodies",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "CACHE_METADATA", "class_name": "CacheMetadata" }],
+  },
+  "migrations": [{ "tag": "vinext-response-store-v1", "new_sqlite_classes": ["CacheMetadata"] }],
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+}

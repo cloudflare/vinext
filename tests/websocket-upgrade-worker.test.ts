@@ -15,6 +15,7 @@ import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { responseStoreAdapter } from "../packages/cloudflare/src/cache/response-store-adapter.js";
 import { workersCacheCdnAdapter } from "../packages/cloudflare/src/cache/workers-cache-cdn-adapter.js";
 import { createIsolatedFixture } from "./helpers.js";
 
@@ -22,10 +23,20 @@ const CF_APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/cf-app-
 const CLOUDFLARE_NODE_MODULES = path.join(CF_APP_FIXTURE_DIR, "node_modules");
 
 type CloudflarePluginFactory = (options?: {
-  viteEnvironment: { name: string; childEnvironments: string[] };
+  configPath?: string;
+  viteEnvironment?: { name: string; childEnvironments: string[] };
 }) => import("vite").Plugin;
 
-type StartedWorker = { url: Promise<URL>; dispose(): Promise<void> };
+type StartedWorker = {
+  url: Promise<URL>;
+  raw: {
+    once(
+      event: "error",
+      listener: (error: Error | { source: string; reason: string; cause?: unknown }) => void,
+    ): void;
+    teardown(): Promise<void>;
+  };
+};
 
 /** Opens a WebSocket and resolves with the first message it receives. */
 async function exchangeWebSocketMessage(
@@ -52,20 +63,43 @@ async function exchangeWebSocketMessage(
 type Build = {
   name: string;
   appRouter: boolean;
-  cdnAdapter: boolean;
+  cache: "none" | "workers-cache" | "response-store";
 };
 
 const BUILDS: Build[] = [
-  { name: "a hybrid app", appRouter: true, cdnAdapter: false },
+  { name: "a hybrid app", appRouter: true, cache: "none" },
   // The adapter stamps a build identity on every response.
-  { name: "a hybrid app with the Workers Cache adapter", appRouter: true, cdnAdapter: true },
-  { name: "a Pages Router app", appRouter: false, cdnAdapter: false },
+  {
+    name: "a hybrid app with the Workers Cache adapter",
+    appRouter: true,
+    cache: "workers-cache",
+  },
+  // The adapter rewrites the cache headers of every response it dispatches.
+  {
+    name: "a hybrid app with the Response Store adapter",
+    appRouter: true,
+    cache: "response-store",
+  },
+  { name: "a Pages Router app", appRouter: false, cache: "none" },
   {
     name: "a Pages Router app with the Workers Cache adapter",
     appRouter: false,
-    cdnAdapter: true,
+    cache: "workers-cache",
+  },
+  {
+    name: "a Pages Router app with the Response Store adapter",
+    appRouter: false,
+    cache: "response-store",
   },
 ];
+
+function cacheOption(build: Build) {
+  if (build.cache === "workers-cache") return { cache: { cdn: workersCacheCdnAdapter() } };
+  if (build.cache === "response-store") {
+    return { cache: responseStoreAdapter({ mode: "self-contained" }) };
+  }
+  return {};
+}
 
 describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (build) => {
   let root = "";
@@ -92,12 +126,17 @@ describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (bui
       plugins: [
         vinext({
           appDir: root,
-          ...(build.cdnAdapter ? { cache: { cdn: workersCacheCdnAdapter() } } : {}),
+          ...cacheOption(build),
           ...(build.appRouter ? {} : { disableAppRouter: true }),
         }),
-        build.appRouter
-          ? cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } })
-          : cloudflare(),
+        cloudflare({
+          ...(build.cache === "response-store"
+            ? { configPath: path.join(root, "wrangler.response-store.jsonc") }
+            : {}),
+          ...(build.appRouter
+            ? { viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }
+            : {}),
+        }),
       ],
       logLevel: "silent",
     });
@@ -117,7 +156,7 @@ describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (bui
         };
       }): Promise<StartedWorker>;
     };
-    worker = await wrangler.unstable_startWorker({
+    const started = await wrangler.unstable_startWorker({
       config: path.join(
         root,
         build.appRouter ? "dist/server" : "dist/cf_app_basic",
@@ -132,11 +171,24 @@ describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (bui
         inspector: false,
       },
     });
-    baseUrl = (await worker.url).origin;
+    worker = started;
+    // wrangler reports startup failures as `error` events and leaves `url`
+    // pending, so fail with the cause instead of waiting out the hook timeout.
+    const startupError = new Promise<never>((_, reject) => {
+      started.raw.once("error", (error) => {
+        reject(
+          error instanceof Error
+            ? error
+            : new Error(`${error.source}: ${error.reason}`, { cause: error.cause }),
+        );
+      });
+    });
+    baseUrl = (await Promise.race([started.url, startupError])).origin;
   }, 180_000);
 
   afterAll(async () => {
-    await worker?.dispose();
+    // `dispose()` waits for a startup that may never finish; tear down directly.
+    await worker?.raw.teardown();
     if (root) await fs.rm(root, { recursive: true, force: true });
   });
 
