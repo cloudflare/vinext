@@ -21,6 +21,7 @@ import {
   parseDeployArgs,
   projectRequiresRouteCacheabilityProbeManifest,
   resolveCfBin,
+  resolveDeployVersionAnnotations,
   resolvePrerenderOutputDirs,
   resolveDeploymentTool,
   resolveViteBuildMode,
@@ -32,6 +33,7 @@ import {
   validateWranglerEnvName,
   withCloudflareEnv,
   withCloudflarePreviewBuild,
+  wranglerSupportsVersionAnnotations,
 } from "../packages/cloudflare/src/deploy.js";
 import { parsePreviewsDeployArgs } from "../packages/cloudflare/src/previews-deploy.js";
 import {
@@ -4416,5 +4418,42 @@ describe("resolveVersionAnnotations", () => {
     expect(resolveVersionAnnotations("/app", {}, {}, noGit)).toEqual({
       message: DEFAULT_VERSION_MESSAGE,
     });
+  });
+});
+
+describe("resolveDeployVersionAnnotations", () => {
+  const explicit = { message: "Release 2", tag: "v2" };
+
+  it.each([
+    ["4.66.0", true],
+    ["4.153.0", true],
+    ["5.0.0", true],
+    ["4.65.9", false],
+    ["3.114.0", false],
+    [undefined, true],
+  ])("detects Wrangler %s annotation support", (version, supported) => {
+    expect(wranglerSupportsVersionAnnotations(version)).toBe(supported);
+  });
+
+  it("keeps annotations for cf and supported Wrangler versions", () => {
+    expect(resolveDeployVersionAnnotations("/app", "cf", explicit, () => "4.0.0")).toEqual(
+      explicit,
+    );
+    expect(resolveDeployVersionAnnotations("/app", "wrangler", explicit, () => "4.66.0")).toEqual(
+      explicit,
+    );
+  });
+
+  it("skips the commit defaults for older Wrangler versions", () => {
+    expect(resolveDeployVersionAnnotations("/app", "wrangler", {}, () => "4.65.0")).toEqual({});
+    expect(
+      resolveDeployVersionAnnotations("/app", "wrangler", { message: "", tag: "" }, () => "4.65.0"),
+    ).toEqual({});
+  });
+
+  it("rejects explicit values for older Wrangler versions", () => {
+    expect(() =>
+      resolveDeployVersionAnnotations("/app", "wrangler", { tag: "v2" }, () => "4.65.0"),
+    ).toThrow("--message and --tag require Wrangler 4.66.0 or newer (found 4.65.0).");
   });
 });

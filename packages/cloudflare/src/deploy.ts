@@ -99,7 +99,11 @@ import {
   type WranglerVersionUploadResult,
   type WranglerVersionTraffic,
 } from "./version-deploy.js";
-import { buildVersionAnnotationArgs, resolveVersionAnnotations } from "./version-annotations.js";
+import {
+  buildVersionAnnotationArgs,
+  resolveVersionAnnotations,
+  type VersionAnnotations,
+} from "./version-annotations.js";
 import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
@@ -747,15 +751,17 @@ export function buildCfDeployArgs(
  * Invoking the JavaScript file through `process.execPath` avoids the `.cmd`
  * shim and command shell that package managers create on Windows.
  */
+function resolveWranglerPackageJson(root: string): string | null {
+  try {
+    return createRequire(path.join(root, "package.json")).resolve("wrangler/package.json");
+  } catch {
+    return findInNodeModules(root, "wrangler/package.json");
+  }
+}
+
 export function resolveWranglerBin(
   root: string,
-  resolvePackageJson: (root: string) => string | null = (projectRoot) => {
-    try {
-      return createRequire(path.join(projectRoot, "package.json")).resolve("wrangler/package.json");
-    } catch {
-      return findInNodeModules(projectRoot, "wrangler/package.json");
-    }
-  },
+  resolvePackageJson: (root: string) => string | null = resolveWranglerPackageJson,
 ): string {
   const packageJsonPath = resolvePackageJson(root);
   if (packageJsonPath) {
@@ -767,6 +773,58 @@ export function resolveWranglerBin(
   }
 
   return path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
+}
+
+/** `wrangler deploy` accepts `--message` and `--tag` since Wrangler 4.66.0. */
+const WRANGLER_VERSION_ANNOTATIONS_VERSION = [4, 66, 0] as const;
+
+export function wranglerSupportsVersionAnnotations(version: string | undefined): boolean {
+  const parts = version
+    ?.match(/^(\d+)\.(\d+)\.(\d+)/)
+    ?.slice(1)
+    .map(Number);
+  // Keep the annotations when the installed version cannot be read.
+  if (!parts) return true;
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i] !== WRANGLER_VERSION_ANNOTATIONS_VERSION[i]) {
+      return parts[i] > WRANGLER_VERSION_ANNOTATIONS_VERSION[i];
+    }
+  }
+  return true;
+}
+
+function readWranglerVersion(root: string): string | undefined {
+  const packageJsonPath = resolveWranglerPackageJson(root);
+  if (!packageJsonPath) return undefined;
+  try {
+    return (JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as { version?: string }).version;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the version message and tag for a deployment. Wrangler versions without
+ * annotation flags on `wrangler deploy` skip the commit defaults and reject explicit values.
+ */
+export function resolveDeployVersionAnnotations(
+  root: string,
+  deploymentTool: DeploymentTool,
+  options: Pick<DeployOptions, "message" | "tag">,
+  wranglerVersion: () => string | undefined = () => readWranglerVersion(root),
+): VersionAnnotations {
+  if (deploymentTool === "wrangler") {
+    const version = wranglerVersion();
+    if (!wranglerSupportsVersionAnnotations(version)) {
+      if (options.message || options.tag) {
+        throw new Error(
+          `--message and --tag require Wrangler 4.66.0 or newer (found ${version}). Upgrade wrangler or omit them.`,
+        );
+      }
+      return {};
+    }
+  }
+  return resolveVersionAnnotations(root, options);
 }
 
 export function resolveCfBin(
@@ -2236,6 +2294,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
       "--config is not supported for cloudflare.config.ts projects. cf always uses cloudflare.config.ts in the project root; select a mode with --env instead.",
     );
   }
+  const versionAnnotations = isPreview
+    ? {}
+    : resolveDeployVersionAnnotations(root, deploymentTool, options);
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);
   // Undefined keeps Vite's default vite.config.* lookup in the root.
   const viteConfigFile = options.viteConfig ? path.resolve(root, options.viteConfig) : undefined;
@@ -2451,7 +2512,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     config: options.config,
     verbose: options.verbose,
     deploymentTool,
-    ...(isPreview ? {} : resolveVersionAnnotations(root, options)),
+    ...versionAnnotations,
   };
   let shouldWarmTpr = tprRoutes.length > 0;
   if (shouldWarmTpr && !options.warmCdnCache) {
