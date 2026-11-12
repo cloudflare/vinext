@@ -1157,10 +1157,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
         metadata.expiryBehavior === "miss" ? "miss" : null,
         JSON.stringify(metadata.cacheTags),
-        // Only a revision the key has reached is one this write can have replaced.
-        replaces !== undefined &&
-          current.active_revision !== null &&
-          replaces.revision <= current.active_revision
+        // Only a revision the key has reached is one this write can have replaced; 0 is a
+        // miss of a key without one.
+        replaces !== undefined && replaces.revision <= (current.active_revision ?? 0)
           ? replaces.revision
           : null,
         keyHash,
@@ -1513,7 +1512,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         Boolean(row.refreshable),
       );
       // A path can also match a key whose first write is still in flight. Like
-      // purge, advance its revision so that write cannot publish.
+      // purge, advance its revision so that write cannot publish, and record it as
+      // invalidated, so a fill of the miss read before it isn't dropped as a duplicate.
       const reserved = rows.filter((row) => !row.refreshable).map((row) => row.key_hash);
       const tags = normalizeTags(options.tags ?? []);
       const tombstoneSequence = this.tombstoneSequence(matches.length > 0);
@@ -1528,7 +1528,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         this.ctx.storage.sql.exec(
           `UPDATE entries SET
             latest_revision = latest_revision + 1,
-            active_revision = latest_revision + 1
+            active_revision = latest_revision + 1,
+            invalidated_revision = latest_revision + 1
           WHERE tombstoned = 1 AND key_hash IN (${batch.map(() => "?").join(", ")})`,
           ...batch,
         );

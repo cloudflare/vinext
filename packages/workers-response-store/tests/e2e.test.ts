@@ -543,7 +543,7 @@ test("replacesRevision drops a refresh of a revision another refresh already rep
   assert.deepEqual(await (await worker.fetch("https://user.test/admin/edge-calls")).json(), []);
   assert.equal(await (await read("/refresh-race")).text(), "second");
   // A value that isn't a revision, or a revision not reached yet, leaves a plain write.
-  for (const value of ["0", "-1", "abc", "1000000"]) {
+  for (const value of ["1.5", "-1", "abc", "1000000"]) {
     const write = await put("/refresh-race", value, { ...refresh, replacesRevision: value });
     assert.equal(write.json.backingStoreUpdated, true, value);
     assert.equal(await (await read("/refresh-race")).text(), value);
@@ -591,6 +591,87 @@ test("replacesRevision drops a refresh of a revision another refresh already rep
   const duplicate = await put("/refresh-race-invalidated-twice", "third", duplicates);
   assert.deepEqual(duplicate.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
   assert.equal(await (await read("/refresh-race-invalidated-twice")).text(), "second");
+});
+
+test("replacesRevision drops a fill of a miss another fill already replaced", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  const edgeCalls = async () =>
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[];
+  const options = { purgeExisting: true, tags: ["cold-fill"] };
+  const missRevision = async (path: string) => {
+    const miss = await read(path);
+    assert.equal(miss.status, 404, path);
+    assert.equal(miss.headers.get("X-Workers-Response-Store"), "MISS", path);
+    await miss.arrayBuffer();
+    const revision = miss.headers.get("X-Workers-Response-Store-Revision");
+    assert.ok(revision, path);
+    return revision;
+  };
+
+  // Two readers miss a key never written, and both fill it.
+  const none = await missRevision("/cold-fill");
+  assert.equal(none, "0");
+  const first = await put("/cold-fill", "first", { ...options, replacesRevision: none });
+  assert.deepEqual(first.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  // The later fill would replace the fresh first one and purge it: drop it instead.
+  const second = await put("/cold-fill", "second", { ...options, replacesRevision: none });
+  assert.deepEqual(second.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
+  assert.equal(await (await read("/cold-fill")).text(), "first");
+  assert.equal((await edgeCalls()).length, 0);
+
+  // A miss of a purged key carries its tombstone's revision; a fill read before the purge
+  // still lands.
+  await purge({ tags: ["cold-fill"] });
+  assert.equal((await edgeCalls()).length, 1);
+  const tombstone = await missRevision("/cold-fill");
+  assert.ok(Number(tombstone) > 1);
+  const late = await put("/cold-fill", "late", { ...options, replacesRevision: none });
+  assert.deepEqual(late.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal(await (await read("/cold-fill")).text(), "late");
+  await purge({ tags: ["cold-fill"] });
+  const refilled = await missRevision("/cold-fill");
+  const refill = await put("/cold-fill", "refill", { ...options, replacesRevision: refilled });
+  assert.deepEqual(refill.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  const duplicate = await put("/cold-fill", "duplicate", {
+    ...options,
+    replacesRevision: refilled,
+  });
+  assert.deepEqual(duplicate.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
+  assert.equal(await (await read("/cold-fill")).text(), "refill");
+  assert.equal((await edgeCalls()).length, 2);
+
+  // Fills of a miss read before a path invalidate() of a key whose first write was still in
+  // flight straddle it, so both land.
+  const pending = put("/cold-fill-pending", "pending", { bodyDelayMs: 300 });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects")) > 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(await metadataRowCount("pending_objects"), 1);
+  await invalidate({ pathPrefixes: ["/cold-fill-pending"] });
+  assert.equal((await pending).json.backingStoreUpdated, false);
+  for (const body of ["straddling", "also-straddling"]) {
+    const fill = await put("/cold-fill-pending", body, { ...options, replacesRevision: none });
+    assert.equal(fill.json.backingStoreUpdated, true, body);
+    assert.equal(await (await read("/cold-fill-pending")).text(), body);
+  }
+
+  // A miss of an expired entry carries its revision.
+  const expiring = {
+    cacheControl: "public, max-age=1, stale-while-revalidate=0",
+    expiryBehavior: "miss" as const,
+    purgeExisting: true,
+  };
+  await put("/cold-fill-expired", "expired", expiring);
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const expired = await missRevision("/cold-fill-expired");
+  assert.equal(expired, "1");
+  const fresh = { ...expiring, cacheControl: "public, max-age=60, stale-while-revalidate=0" };
+  const winner = await put("/cold-fill-expired", "winner", { ...fresh, replacesRevision: expired });
+  assert.equal(winner.json.backingStoreUpdated, true);
+  const loser = await put("/cold-fill-expired", "loser", { ...fresh, replacesRevision: expired });
+  assert.deepEqual(loser.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
+  assert.equal(await (await read("/cold-fill-expired")).text(), "winner");
 });
 
 test("replacesRevision lets a refresh of any other revision, or after another write, land", async () => {
