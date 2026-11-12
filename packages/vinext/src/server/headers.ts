@@ -227,9 +227,11 @@ export const ACTION_REDIRECT_STATUS_HEADER = "x-action-redirect-status";
 // ---------------------------------------------------------------------------
 
 export {
+  isMiddlewareSetCookieHeader,
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_SET_COOKIE_HEADER,
   MIDDLEWARE_SKIP_HEADER,
+  responseWithoutMiddlewareSetCookie,
 } from "../utils/protocol-headers.js";
 
 /** Signal from `NextResponse.next()` — value "1" means "continue to next handler". */

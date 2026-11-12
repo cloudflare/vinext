@@ -22,6 +22,45 @@ export const MIDDLEWARE_OVERRIDE_HEADERS = "x-middleware-override-headers";
 /** Carries cookies set by middleware for same-render reads. */
 export const MIDDLEWARE_SET_COOKIE_HEADER = "x-middleware-set-cookie";
 
+/** True for the internal middleware cookie header, regardless of source casing. */
+export function isMiddlewareSetCookieHeader(name: string): boolean {
+  return name.toLowerCase() === MIDDLEWARE_SET_COOKIE_HEADER;
+}
+
+/**
+ * Drop `x-middleware-set-cookie` from a response that is about to be sent.
+ *
+ * The header is only how middleware publishes cookie mutations for the rest of
+ * this render. `Set-Cookie` is the client-visible copy. Mutable headers are
+ * edited in place so response identity (and any marks on it) stays put.
+ */
+export function responseWithoutMiddlewareSetCookie(response: Response): Response {
+  if (!response.headers.has(MIDDLEWARE_SET_COOKIE_HEADER)) return response;
+  try {
+    response.headers.delete(MIDDLEWARE_SET_COOKIE_HEADER);
+    return response;
+  } catch {
+    const headers = new Headers(response.headers);
+    headers.delete(MIDDLEWARE_SET_COOKIE_HEADER);
+    const cloned = new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+    const streamedHtml = (response as { __vinextStreamedHtmlResponse?: boolean })
+      .__vinextStreamedHtmlResponse;
+    const streamedApi = (response as { __vinextStreamedApiResponse?: boolean })
+      .__vinextStreamedApiResponse;
+    if (streamedHtml) {
+      (cloned as { __vinextStreamedHtmlResponse?: boolean }).__vinextStreamedHtmlResponse = true;
+    }
+    if (streamedApi) {
+      (cloned as { __vinextStreamedApiResponse?: boolean }).__vinextStreamedApiResponse = true;
+    }
+    return cloned;
+  }
+}
+
 /** Signals Pages Router prefetch cache opt-out. */
 export const MIDDLEWARE_CACHE_HEADER = "x-middleware-cache";
 

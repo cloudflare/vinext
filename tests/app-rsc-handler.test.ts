@@ -3885,6 +3885,7 @@ describe("createAppRscHandler", () => {
     expect(renderResponseStageLocally).not.toHaveBeenCalled();
     expect(dispatchMatchedPage).toHaveBeenCalledOnce();
     expect(await response.text()).toBe("cookie-render");
+    expect(response.headers.get("x-middleware-set-cookie")).toBeNull();
   });
 
   it("carries a middleware CSP nonce into a bypassed response-stage render", async () => {

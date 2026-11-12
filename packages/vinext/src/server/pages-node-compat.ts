@@ -10,6 +10,7 @@ import {
   type PagesBodyDecoder,
 } from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
+import { MIDDLEWARE_SET_COOKIE_HEADER } from "./headers.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   clearPagesPreviewData,
@@ -600,6 +601,7 @@ class PagesResponseStream extends Writable {
 
     const headers = new Headers();
     for (const [key, value] of Object.entries(this.resHeaders)) {
+      if (key.toLowerCase() === MIDDLEWARE_SET_COOKIE_HEADER) continue;
       if (Array.isArray(value)) {
         for (const item of value) headers.append(key, String(item));
       } else {
@@ -707,7 +709,12 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     rejectResponse,
   ) as PagesReqResResponse;
   for (const [name, value] of options.initialResponseHeaders ?? []) {
-    if (name.toLowerCase() === "set-cookie") continue;
+    if (
+      name.toLowerCase() === "set-cookie" ||
+      name.toLowerCase() === MIDDLEWARE_SET_COOKIE_HEADER
+    ) {
+      continue;
+    }
     res.setHeader(name, value);
   }
   const initialCookies = options.initialResponseHeaders?.getSetCookie() ?? [];

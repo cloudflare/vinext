@@ -95,6 +95,7 @@ import type {
 import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret, readServerCompress } from "../build/server-manifest.js";
 import {
+  isMiddlewareSetCookieHeader,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -436,12 +437,17 @@ const IMAGE_REPRESENTATION_HEADERS = buildCacheStateHeaders(IMAGE_RESPONSE_CACHE
 // Constant header-name sets for `omitHeadersCaseInsensitive`. Hoisted to module
 // scope so the Set allocation happens once at module load instead of per response.
 // All entries must be lowercase.
-const OMIT_BODY_HEADERS: ReadonlySet<string> = new Set(["content-length", "content-type"]);
+const OMIT_BODY_HEADERS: ReadonlySet<string> = new Set([
+  "content-length",
+  "content-type",
+  "x-middleware-set-cookie",
+]);
 const OMIT_STATIC_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   "content-encoding",
   "content-length",
   "content-range",
   "content-type",
+  "x-middleware-set-cookie",
   // Only a page's recorded special error carries it; see markPrerenderSpecialError.
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
 ]);
@@ -1388,6 +1394,7 @@ async function sendWebResponse(
   // Collect headers, handling multi-value headers (e.g. Set-Cookie)
   const nodeHeaders: Record<string, string | string[]> = {};
   webResponse.headers.forEach((value, key) => {
+    if (isMiddlewareSetCookieHeader(key)) return;
     const existing = nodeHeaders[key];
     if (existing !== undefined) {
       nodeHeaders[key] = Array.isArray(existing) ? [...existing, value] : [existing, value];
@@ -2967,6 +2974,7 @@ async function createPagesRouterRequestHandler(
           // under the basePath, including when a rewrite targets it there.
           if (resolvedPathnameHasBasePath && isImageOptimizationPath(requestPathname)) {
             for (const [name, value] of Object.entries(stagedHeaders)) {
+              if (isMiddlewareSetCookieHeader(name)) continue;
               res.setHeader(name, value);
             }
             const parsedUrl = new URL(resolvedUrl, "http://localhost");
@@ -3129,7 +3137,7 @@ async function createPagesRouterRequestHandler(
           (responseBody.length > 0 ? result.defaultContentType : undefined);
         const responseHeaders: Record<string, string | string[]> = {};
         response.headers.forEach((v, k) => {
-          if (k === "set-cookie") return;
+          if (k === "set-cookie" || isMiddlewareSetCookieHeader(k)) return;
           responseHeaders[k] = v;
         });
         const setCookies = response.headers.getSetCookie?.() ?? [];

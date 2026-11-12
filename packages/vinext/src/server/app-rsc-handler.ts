@@ -48,6 +48,7 @@ import {
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_ROUTE_MISS_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
+  responseWithoutMiddlewareSetCookie,
 } from "./headers.js";
 import type { ReactFormState } from "react-dom/client";
 import {
@@ -3559,10 +3560,13 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
       throw error;
     }
     const closedResponse = closeAfterResponseWithBody(response, requestContext);
+    // Middleware keeps x-middleware-set-cookie for this render's cookie reads.
+    // The client response carries the same mutations only as Set-Cookie.
+    const publicResponse = responseWithoutMiddlewareSetCookie(closedResponse);
     // A forwarded action's streamed redirect is read back through this wrapper.
     return isStreamedActionRedirectResponse(response)
-      ? markStreamedActionRedirectResponse(closedResponse)
-      : closedResponse;
+      ? markStreamedActionRedirectResponse(publicResponse)
+      : publicResponse;
   };
 
   const appRscHandler = async function appRscHandler(
