@@ -786,6 +786,24 @@ export function createBuilder(config) {
     ]);
   });
 
+  it("rejects explicit annotations before a TPR fallback runs an older wrangler deploy", async () => {
+    writeProject(undefined);
+    writeFile(
+      "node_modules/wrangler/package.json",
+      JSON.stringify({ name: "wrangler", version: "4.65.0", type: "module", main: "index.js" }),
+    );
+    writeFile(
+      "node_modules/wrangler/index.js",
+      `export * from ${JSON.stringify(realWranglerUrl)};\n`,
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deploy({ root: tmpDir, skipBuild: true, experimentalTPR: true, tag: "v2" }),
+    ).rejects.toThrow("--message and --tag require Wrangler 4.66.0 or newer (found 4.65.0).");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("does not silently deploy when certified TPR has no traffic", async () => {
     writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");

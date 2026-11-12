@@ -2287,7 +2287,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
     );
   }
   // Staged warming and --no-promote upload with `versions upload`, never `wrangler deploy`.
-  if (deploymentTool === "wrangler" && !options.warmCdnCache && options.warmCdnPromote !== false) {
+  // Traffic-aware warming decides later and re-checks before falling back to `wrangler deploy`.
+  const mayRunWranglerDeploy =
+    deploymentTool === "wrangler" && !options.warmCdnCache && options.warmCdnPromote !== false;
+  if (mayRunWranglerDeploy && !options.experimentalTPR) {
     assertWranglerDeployAnnotations(options, readWranglerVersion(root));
   }
   const versionAnnotations = isPreview ? {} : resolveVersionAnnotations(root, options);
@@ -2694,6 +2697,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
     } else if (deploymentTool === "cf") {
       url = await runCfDeploy(root, { ...wranglerOptions, target: options.target });
     } else {
+      if (mayRunWranglerDeploy) {
+        assertWranglerDeployAnnotations(options, readWranglerVersion(root));
+      }
       url = await runWranglerDeploy(root, {
         ...wranglerOptions,
         promote: options.warmCdnPromote,

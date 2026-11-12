@@ -320,6 +320,10 @@ describe("deploy environment validation", () => {
     await expect(
       deploy({ root: tmpDir, tag: "v2", warmCdnPromote: false, dryRun: true }),
     ).rejects.toThrow("Run `vinext init --platform=cloudflare` first.");
+    // Traffic-aware warming may still upload with `versions upload`, so it checks later.
+    await expect(
+      deploy({ root: tmpDir, tag: "v2", experimentalTPR: true, dryRun: true }),
+    ).rejects.toThrow("Run `vinext init --platform=cloudflare` first.");
   });
 
   it("does not require a custom Worker entry for App Router deployments", async () => {
