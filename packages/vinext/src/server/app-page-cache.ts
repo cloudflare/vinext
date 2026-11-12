@@ -581,8 +581,9 @@ export async function readAppPageCacheResponse(
     }
 
     // Like Next.js, a path's own shell is stored as its page, and its
-    // requests resume it instead of serving it. Its regeneration is the
-    // shell's, so it never regenerates as a page.
+    // requests resume it, or read the values it was built with, instead of
+    // serving it. Its regeneration is the shell's, so it never regenerates as
+    // a page.
     if (cachedValue && isAppPprDynamicFallbackShellHtml(cachedValue.html)) {
       recordAppPageCacheOutcome(options.recordCacheOutcome, {
         artifact,

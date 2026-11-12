@@ -212,15 +212,16 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
   }
 
   // A path's own shell shares its page's keys, so a page another request
-  // stored while the shell rendered is kept.
-  if (isConcrete && (await hasStoredPage(options, writes))) {
-    options.isrDebug?.("SKIP (page stored under the shell's key)", fallbackPathname);
+  // stored under one of them while the shell rendered is kept.
+  const unstored = isConcrete ? await withoutStoredPages(options, writes) : writes;
+  if (unstored.length === 0) {
+    options.isrDebug?.("SKIP (page stored under the shell's keys)", fallbackPathname);
     return null;
   }
   const { isrSetFallbackShell } = options;
   if (isrSetFallbackShell) {
     const stored = Promise.all(
-      writes.map(([writeKey, writeValue]) =>
+      unstored.map(([writeKey, writeValue]) =>
         isrSetFallbackShell(writeKey, writeValue, { cacheControl, tags }).catch((error) => {
           console.error("[vinext] ISR fallback shell cache write error:", error);
         }),
@@ -245,20 +246,25 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
   };
 }
 
-async function hasStoredPage<TRoute extends AppPageDispatchRoute>(
+/** The writes whose key holds no stored page. */
+async function withoutStoredPages<TRoute extends AppPageDispatchRoute, TWrite>(
   options: DispatchAppPageOptions<TRoute>,
-  writes: readonly (readonly [string, unknown])[],
-): Promise<boolean> {
+  writes: readonly (readonly [string, TWrite])[],
+): Promise<(readonly [string, TWrite])[]> {
   const read = options.isrGetFallbackShell ?? options.isrGet;
-  try {
-    const stored = await Promise.all(writes.map(([key]) => read(key)));
-    return stored.some(isAppPprStoredPage);
-  } catch (isrReadError) {
-    // A page may be stored there, so the shell isn't written. A later dynamic
-    // render produces it again.
-    console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
-    return true;
-  }
+  const stored = await Promise.all(
+    writes.map(async ([key]) => {
+      try {
+        return isAppPprStoredPage(await read(key));
+      } catch (isrReadError) {
+        // A page may be stored there, so that part isn't written. A later
+        // dynamic render produces it again.
+        console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
+        return true;
+      }
+    }),
+  );
+  return writes.filter((_write, index) => !stored[index]);
 }
 
 /**

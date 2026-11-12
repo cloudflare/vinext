@@ -229,13 +229,14 @@ async function seedRscRequestFromOwnShell<TRoute extends AppPageDispatchRoute>(
   const concreteShell = createAppPprRequestConcreteShell(options.route, options.params);
   if (!concreteShell) return;
   // The page read finds the shell's part stored beside the page's RSC payload
-  // when it reads the data cache.
+  // when it reads the data cache. Without that part, the request reads the
+  // shell itself.
   let read: ShellRead;
-  if (ownShellRead.cached === undefined) {
-    read = await readShell(options, concreteShell, true);
-    if (read.ok) ownShellRead.cached = read.cached;
-  } else {
+  if (isAppPprOwnShellPart(ownShellRead.cached)) {
     read = { ok: true, cached: ownShellRead.cached };
+  } else {
+    read = await readShell(options, concreteShell, true);
+    ownShellRead.cached = read.ok ? read.cached : undefined;
   }
   if (!read.ok || read.cached === null || read.cached.isExpired === true) return;
   const value = read.cached.value.value;
@@ -257,6 +258,16 @@ async function seedRscRequestFromOwnShell<TRoute extends AppPageDispatchRoute>(
     parseAppPprShellState(value.postponed)?.resumeDataCache ?? undefined,
   );
   if (resumeDataCache !== null) _setResumeDataCacheSeed(resumeDataCache);
+}
+
+/** A path's own shell, or its part beside the page's RSC payload, that isn't expired. */
+function isAppPprOwnShellPart(cached: ISRCacheEntry | null | undefined): cached is ISRCacheEntry {
+  const value = cached?.value.value;
+  return (
+    cached?.isExpired !== true &&
+    value?.kind === "APP_PAGE" &&
+    isAppPprDynamicFallbackShellHtml(value.html)
+  );
 }
 
 /** A concrete shell that isn't stored, or is expired. */
