@@ -71,6 +71,32 @@ test.describe("basePath + trailingSlash", () => {
     expect(missing.body).toContain('<p id="as-path">/404/</p>');
   });
 
+  // The /404 page exports getStaticProps and the app has middleware, so the
+  // client replaces the current URL after hydration (`_h: 1`). Its 404 response
+  // must not hard-navigate to the same URL: Next.js's handleHardNavigation()
+  // refuses that, and the reloaded page would repeat it forever.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
+  test("loads an unknown URL once after the hydration query update", async ({ page }) => {
+    const missingPath = "/docs/missing-page/";
+    let documentLoads = 0;
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.resourceType() === "document") documentLoads++;
+    });
+    const hydrationUpdate = page.waitForResponse(
+      (response) =>
+        !response.request().isNavigationRequest() &&
+        new URL(response.url()).pathname === missingPath,
+    );
+
+    await page.goto(`${BASE}${missingPath}`);
+    expect((await hydrationUpdate).status()).toBe(404);
+    // A hard navigation scheduled by the update starts within a task.
+    await page.waitForTimeout(500);
+
+    expect(documentLoads).toBe(1);
+    await expect(page.locator("h1")).toHaveText("404 - Page Not Found");
+  });
+
   test("replaces state when same asPath but different url", async ({ page }) => {
     await page.goto(`${BASE}/docs/`);
     await expect(page.locator("#index-page")).toBeVisible({ timeout: 5_000 });

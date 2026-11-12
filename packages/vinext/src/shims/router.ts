@@ -435,6 +435,8 @@ type PagesRouterRuntimeState = {
   beforePopStateCb?: BeforePopStateCallback;
   lastPathnameAndSearch: string;
   lastHash: string;
+  /** navigationId of the in-flight post-hydration query update (`_h: 1`), if any. */
+  hydrationQueryUpdateNavigationId: number | null;
   isFirstPopStateEvent: boolean;
   routerDidNavigate: boolean;
   deprecatedEventBridgeInstalled: boolean;
@@ -464,6 +466,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     lastPathnameAndSearch:
       typeof window !== "undefined" ? window.location.pathname + window.location.search : "",
     lastHash: typeof window !== "undefined" ? window.location.hash : "",
+    hydrationQueryUpdateNavigationId: null,
     isFirstPopStateEvent: true,
     routerDidNavigate: false,
     deprecatedEventBridgeInstalled: false,
@@ -1649,10 +1652,39 @@ function cancelPreviousRenderCommit(): void {
   routerRuntimeState.cancelPendingRenderCommit = null;
 }
 
+/**
+ * Whether a hard navigation to `url` would reload the document the
+ * post-hydration query update (`_h: 1`) is running on.
+ *
+ * Next.js's handleHardNavigation() refuses to hard-navigate to the router's
+ * current asPath, because the reloaded document would repeat the same failure
+ * forever. Vinext derives asPath from the live browser URL, which is only the
+ * committed route state while the hydration query update replaces the current
+ * URL, so the guard is limited to that navigation.
+ */
+function isHydrationQueryUpdateReload(url: string, isHydrationQueryUpdate: boolean): boolean {
+  if (typeof window === "undefined" || !isHydrationQueryUpdate) return false;
+  try {
+    return stripHash(new URL(url, window.location.href).href) === stripHash(window.location.href);
+  } catch {
+    return false;
+  }
+}
+
 function scheduleHardNavigationAndThrow(url: string, message: string): never {
   assertSafeNavigationUrl(url, HardNavigationScheduledError);
   if (typeof window === "undefined") {
     throw new HardNavigationScheduledError(message);
+  }
+  if (
+    isHydrationQueryUpdateReload(
+      url,
+      routerRuntimeState.hydrationQueryUpdateNavigationId === routerRuntimeState.navigationId,
+    )
+  ) {
+    throw new Error(
+      `Invariant: attempted to hard navigate to the same URL ${url} ${window.location.href}`,
+    );
   }
   window.location.href = url;
   throw new HardNavigationScheduledError(message);
@@ -2847,6 +2879,9 @@ async function navigateClient(
   routerRuntimeState.activeAbortController = controller;
 
   const navId = ++routerRuntimeState.navigationId;
+  if (options.isHydrationQueryUpdate === true) {
+    routerRuntimeState.hydrationQueryUpdateNavigationId = navId;
+  }
   let middlewareDataCacheEvictHref: string | null = null;
 
   /** Check if this navigation is still the active one. If not, throw. */
@@ -3029,6 +3064,9 @@ async function navigateClient(
     if (navId === routerRuntimeState.navigationId) {
       routerRuntimeState.activeAbortController = null;
     }
+    if (routerRuntimeState.hydrationQueryUpdateNavigationId === navId) {
+      routerRuntimeState.hydrationQueryUpdateNavigationId = null;
+    }
     if (middlewareDataCacheEvictHref !== null) {
       evictPagesDataCache(middlewareDataCacheEvictHref);
     }
@@ -3080,8 +3118,13 @@ async function runNavigateClient(
     // navigation so the browser lands on the correct page. Known failure modes
     // throw HardNavigationScheduledError, and this guard skips those; only
     // unexpected failures (parse, import, render) need recovery here.
-    if (typeof window !== "undefined" && !(err instanceof HardNavigationScheduledError)) {
-      window.location.href = options.redirectBrowserHref ?? fullUrl;
+    const fallbackUrl = options.redirectBrowserHref ?? fullUrl;
+    if (
+      typeof window !== "undefined" &&
+      !(err instanceof HardNavigationScheduledError) &&
+      !isHydrationQueryUpdateReload(fallbackUrl, options.isHydrationQueryUpdate === true)
+    ) {
+      window.location.href = fallbackUrl;
     }
     return "failed";
   }
