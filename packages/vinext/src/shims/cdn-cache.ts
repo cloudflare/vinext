@@ -289,7 +289,8 @@ export type CdnCacheAdapter = {
 // streamed MISS response. Keep it identical so default behavior is unchanged.
 const PENDING_DYNAMIC_CACHE_CONTROL = "no-store, must-revalidate";
 
-// A brand rather than the class, which duplicated stage modules each have.
+// A brand rather than the class, which duplicated stage modules each have. A
+// subclass may store pages elsewhere, so only the default itself carries it.
 const READS_DATA_CACHE = Symbol.for("vinext.cdnCacheAdapter.readsDataCache");
 
 /** Whether an adapter's page reads are the data cache's, as the default's are. */
@@ -306,9 +307,11 @@ export function cdnCacheAdapterReadsDataCache(adapter: CdnCacheAdapter): boolean
  */
 export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
-  readonly [READS_DATA_CACHE] = true;
+  readonly [READS_DATA_CACHE]: boolean;
 
-  constructor(private readonly buildIdentity?: string) {}
+  constructor(private readonly buildIdentity?: string) {
+    this[READS_DATA_CACHE] = new.target === DefaultCdnCacheAdapter;
+  }
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const { getDataCacheHandler } = await import("./cache-handler.js");

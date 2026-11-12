@@ -1238,6 +1238,20 @@ describe("isrGetFallbackShell", () => {
     expect(isrGetReadsFallbackShells()).toBe(true);
   });
 
+  it("reads a subclass of the default adapter for a shell the data cache doesn't have", async () => {
+    setCacheHandler(new MemoryCacheHandler());
+    const edgeGet = vi.fn(async () => null);
+    // A subclass that stores pages at an edge.
+    class EdgeCdnCacheAdapter extends DefaultCdnCacheAdapter {
+      override get = edgeGet;
+    }
+    setCdnCacheAdapter(new EdgeCdnCacheAdapter());
+
+    expect(isrGetReadsFallbackShells()).toBe(false);
+    await expect(isrGetFallbackShell(appIsrHtmlKey("/posts/hello"))).resolves.toBeNull();
+    expect(edgeGet).toHaveBeenCalledTimes(1);
+  });
+
   it("reads an edge adapter for a shell the data cache doesn't have", async () => {
     setCacheHandler(new MemoryCacheHandler());
     const edgeGet = vi.fn(async () => null);
