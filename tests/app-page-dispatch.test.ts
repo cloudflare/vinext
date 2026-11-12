@@ -8310,16 +8310,25 @@ describe("app page dispatch", () => {
     },
   );
 
-  it("keeps a page another request stored while its path's shell rendered", async () => {
+  it.each([
+    { name: "a page another request stored", meanwhile: "page" },
+    { name: "what a failed read may hold", meanwhile: "read-error" },
+  ])("keeps $name while its path's shell rendered", async ({ meanwhile }) => {
     const jobs = new Map<string, () => Promise<void>>();
     let stored: ISRCacheEntry | null = null;
+    let readError: Error | null = null;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
       async () => {},
     );
     const { options } = createPprBlogDispatchOptions({
       buildPageElement: createParamTextPageElement("fresh"),
       cleanPathname: "/en/blog/hello",
-      isrGet: vi.fn(async (key: string) => (key === "html:/en/blog/hello" ? stored : null)),
+      isrGet: vi.fn(async (key: string) => {
+        if (key !== "html:/en/blog/hello") return null;
+        if (readError) throw readError;
+        return stored;
+      }),
       loadSsrHandler: async () => ({
         async handleSsr() {
           markDynamicUsage();
@@ -8341,12 +8350,21 @@ describe("app page dispatch", () => {
     );
     await response.text();
     await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
-    // Another request stores the page after this one read the key.
-    stored = buildISRCacheEntry(
-      buildCachedAppPageValue("<html><head></head><body>Stored page</body></html>"),
-      false,
-    );
-    await jobs.get("html:/en/blog/hello")!();
+    // After this request read the key, another stores a page there, or the
+    // key can't be read.
+    if (meanwhile === "page") {
+      stored = buildISRCacheEntry(
+        buildCachedAppPageValue("<html><head></head><body>Stored page</body></html>"),
+        false,
+      );
+    } else {
+      readError = new Error("read failed");
+    }
+    try {
+      await jobs.get("html:/en/blog/hello")!();
+    } finally {
+      errorSpy.mockRestore();
+    }
 
     expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).not.toContain("html:/en/blog/hello");
   });

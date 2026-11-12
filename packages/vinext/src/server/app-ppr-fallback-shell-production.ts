@@ -213,9 +213,10 @@ async function hasStoredPage<TRoute extends AppPageDispatchRoute>(
   try {
     return isAppPprStoredPage(await (options.isrGetFallbackShell ?? options.isrGet)(key));
   } catch (isrReadError) {
-    // As a failed read of a missing shell, a failed check stores the shell.
+    // A page may be stored there, so the shell isn't written. A later dynamic
+    // render produces it again.
     console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
-    return false;
+    return true;
   }
 }
 
