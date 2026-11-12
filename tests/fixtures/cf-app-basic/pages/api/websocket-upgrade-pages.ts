@@ -22,5 +22,9 @@ export default function handler(request: NextRequest) {
     headers["Cloudflare-CDN-Cache-Control"] = "no-store";
   }
   if (request.nextUrl.searchParams.has("route-miss")) headers["x-vinext-route-miss"] = "1";
+  // `?cookie` sets the cookie middleware also sets on it.
+  if (request.nextUrl.searchParams.has("cookie")) {
+    headers["Set-Cookie"] = "websocket-upgrade=1; Path=/";
+  }
   return new Response(null, { status: 101, webSocket: client, headers } as ResponseInit);
 }

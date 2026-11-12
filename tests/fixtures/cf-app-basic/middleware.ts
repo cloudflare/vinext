@@ -99,6 +99,10 @@ export async function middleware(request: NextRequest) {
   // Middleware response headers cannot be added to a WebSocket upgrade (#4661).
   if (request.nextUrl.pathname.startsWith("/api/websocket-upgrade")) {
     response.headers.set("x-websocket-middleware", "applied");
+    // The edge API route on `?cookie` returns this same cookie.
+    if (request.nextUrl.searchParams.has("cookie")) {
+      response.headers.append("Set-Cookie", "websocket-upgrade=1; Path=/");
+    }
   }
   if (
     request.nextUrl.pathname.startsWith("/api/draft-isr/") &&

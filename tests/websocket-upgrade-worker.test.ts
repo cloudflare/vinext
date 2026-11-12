@@ -286,6 +286,34 @@ describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (bui
     30_000,
   );
 
+  // A Route Handler response reached through a rewrite gets a never-cache
+  // policy, here on the proxied response's immutable headers.
+  it.runIf(build.appRouter)(
+    "completes an upgrade a rewritten Route Handler proxies from fetch()",
+    async () => {
+      await expect(
+        exchangeWebSocketMessage(
+          webSocketUrl("/api/websocket-upgrade-rewrite"),
+          { cookie: "session=abc" },
+          "ping",
+        ),
+      ).resolves.toBe("proxied-abc:ping");
+    },
+    30_000,
+  );
+
+  // Middleware sets the same cookie the handler returns, which the response
+  // stage could take for the copy the handler inherited.
+  it("completes a Pages Router edge API upgrade that sets the cookie middleware sets", async () => {
+    await expect(
+      exchangeWebSocketMessage(
+        webSocketUrl("/api/websocket-upgrade-pages?cookie"),
+        { cookie: "session=abc" },
+        "ping",
+      ),
+    ).resolves.toBe("abc:ping");
+  }, 30_000);
+
   // Middleware enables draft mode on `?draft=true`, so its cookie is pending.
   it.runIf(build.appRouter)(
     "completes a Route Handler upgrade while middleware enables draft mode",
