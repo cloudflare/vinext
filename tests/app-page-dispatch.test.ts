@@ -8184,6 +8184,48 @@ describe("app page dispatch", () => {
     ]);
   });
 
+  it("stores no RSC part for a path's own shell whose document wasn't stored", async () => {
+    const jobs = new Map<string, () => Promise<void>>();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      async (key) => {
+        if (key === "html:/en/blog/hello") throw new Error("write failed");
+      },
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      isRscRequest: true,
+      isrGet: vi.fn(async () => null),
+      params: { locale: "en", slug: "hello" },
+      renderToReadableStream() {
+        markDynamicUsage();
+        return createStream(["payload"]);
+      },
+      request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+    });
+
+    try {
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          isrSetFallbackShell,
+          scheduleFallbackShellRegeneration(key, job) {
+            if (!jobs.has(key)) jobs.set(key, job);
+          },
+        }),
+      );
+      await response.text();
+      await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+      await jobs.get("html:/en/blog/hello")!();
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    // An RSC request would trust the part, and never produce the document.
+    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/hello"]);
+  });
+
   it("stores the values a path's own shell was built with beside the page's RSC payload", async () => {
     const jobs = new Map<string, () => Promise<void>>();
     let ssrCalls = 0;
