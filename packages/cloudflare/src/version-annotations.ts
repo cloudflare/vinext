@@ -37,13 +37,6 @@ function readGit(git: GitRunner, args: string[], cwd: string): string | undefine
   }
 }
 
-/**
- * Resolve the message and tag recorded on uploaded Worker versions.
- *
- * Without explicit values, the tag is the deployed commit SHA and the message is
- * its subject, so the dashboard identifies each version instead of showing
- * "Manually deployed". An explicit empty value omits that annotation.
- */
 function truncateUtf8(value: string, maxBytes: number): string {
   let bytes = 0;
   let end = 0;
@@ -55,6 +48,13 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return value.slice(0, end);
 }
 
+/**
+ * Resolve the message and tag recorded on uploaded Worker versions.
+ *
+ * Without explicit values, the tag is the deployed commit SHA and the message is
+ * its subject, so the dashboard identifies each version instead of showing
+ * "Manually deployed". An explicit empty value omits that annotation.
+ */
 export function resolveVersionAnnotations(
   root: string,
   options: VersionAnnotations,
