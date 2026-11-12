@@ -155,8 +155,13 @@ test.describe("vinext-cloudflare deploy --vite-config", () => {
     const result = await runDeploy(["--vite-config", "vite.cdn-cache.config.ts"]);
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain(`Deployed to: ${DEPLOYED_URL}`);
-    expect(JSON.parse(await fs.readFile(path.join(root, "wrangler-args.json"), "utf8"))).toEqual([
+    const wranglerArgs: string[] = JSON.parse(
+      await fs.readFile(path.join(root, "wrangler-args.json"), "utf8"),
+    );
+    // The temporary project has no Git checkout, so only a CI commit variable supplies the tag.
+    expect(wranglerArgs.filter((arg) => !arg.startsWith("--tag="))).toEqual([
       "deploy",
+      "--message=Deployed with vinext",
     ]);
 
     await startWorker();
