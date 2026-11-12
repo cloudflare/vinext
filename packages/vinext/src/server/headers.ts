@@ -123,6 +123,13 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
 
+/**
+ * Renderer-only `Link` value for a build prerender. The public `Link` header
+ * already includes next.config.js and middleware values, which are applied
+ * again when the cached page is served.
+ */
+export const VINEXT_PRERENDER_LINK_HEADER = "x-vinext-prerender-link";
+
 /** Prerender-only Pages marker: "0" confirms the page render used the requested URL. */
 export const VINEXT_PRERENDER_REWRITTEN_HEADER = "x-vinext-prerender-rewritten";
 
@@ -318,6 +325,7 @@ export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_LINK_HEADER,
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,

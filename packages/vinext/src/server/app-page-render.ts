@@ -79,6 +79,7 @@ import {
 import { setCacheStateHeaders } from "./cache-headers.js";
 import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_PRERENDER_LINK_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
 } from "./headers.js";
@@ -1722,6 +1723,11 @@ async function renderAppPageLifecycleImpl(
     });
 
     if (options.isPrerender === true) {
+      // Cache metadata must not keep Link values that config or middleware
+      // already put on this response. Those are applied again at request time.
+      if (linkHeader) {
+        isrResponse.headers.set(VINEXT_PRERENDER_LINK_HEADER, linkHeader);
+      }
       return isrResponse;
     }
 
@@ -1742,6 +1748,9 @@ async function renderAppPageLifecycleImpl(
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
   });
+  if (options.isPrerender === true && linkHeader) {
+    response.headers.set(VINEXT_PRERENDER_LINK_HEADER, linkHeader);
+  }
   return finalizeAppPageCacheabilityEvaluationResponse(response, {
     capturedDynamicUsageBeforeContextCleanup() {
       return dynamicUsedBeforeContextCleanup;
