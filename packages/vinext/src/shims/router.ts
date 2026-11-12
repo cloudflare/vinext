@@ -1649,6 +1649,18 @@ class HardNavigationScheduledError extends Error {
   }
 }
 
+/**
+ * Next.js's "attempted to hard navigate to the same URL" invariant. It
+ * propagates without a fallback hard navigation, as in Next.js's change(),
+ * because any other reload target can redirect back to the same document.
+ */
+class SameUrlHardNavigationError extends Error {
+  constructor(url: string) {
+    super(`Invariant: attempted to hard navigate to the same URL ${url} ${window.location.href}`);
+    this.name = "SameUrlHardNavigationError";
+  }
+}
+
 function cancelPreviousRenderCommit(): void {
   routerRuntimeState.cancelPendingRenderCommit?.();
   routerRuntimeState.cancelPendingRenderCommit = null;
@@ -1686,9 +1698,7 @@ function scheduleHardNavigationAndThrow(url: string, message: string): never {
     hydrationQueryUpdate?.navigationId === routerRuntimeState.navigationId &&
     isHydrationQueryUpdateReload(url, hydrationQueryUpdate.href)
   ) {
-    throw new Error(
-      `Invariant: attempted to hard navigate to the same URL ${url} ${window.location.href}`,
-    );
+    throw new SameUrlHardNavigationError(url);
   }
   window.location.href = url;
   throw new HardNavigationScheduledError(message);
@@ -3128,6 +3138,7 @@ async function runNavigateClient(
     if (
       typeof window !== "undefined" &&
       !(err instanceof HardNavigationScheduledError) &&
+      !(err instanceof SameUrlHardNavigationError) &&
       !isHydrationQueryUpdateReload(fallbackUrl, options.hydrationHref)
     ) {
       window.location.href = fallbackUrl;

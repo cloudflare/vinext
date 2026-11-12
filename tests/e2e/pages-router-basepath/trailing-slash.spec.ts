@@ -140,6 +140,31 @@ test.describe("basePath + trailingSlash", () => {
     await expect(page).toHaveURL(`${BASE}${targetPath}`);
   });
 
+  // A hydration redirect chain that comes back to the hydration document is
+  // refused by the same-URL guard. Like Next.js, the refusal schedules no other
+  // hard navigation: reloading the middle URL would redirect back here.
+  test("stops a hydration redirect chain that returns to its document", async ({ page }) => {
+    // A fresh slug per run: once generated, the path redirects on the server.
+    const slug = `run-${Date.now()}`;
+    const sourcePath = `/docs/fallback-redirect-loop/${slug}/`;
+    const documents: string[] = [];
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.resourceType() === "document") {
+        documents.push(new URL(request.url()).pathname);
+      }
+    });
+    const middleData = page.waitForResponse((response) =>
+      new URL(response.url()).pathname.endsWith(`/redirect-loop-middle/${slug}.json`),
+    );
+
+    await page.goto(`${BASE}${sourcePath}`);
+    expect((await middleData).status()).toBe(200);
+    // A hard navigation scheduled by the update starts within a task.
+    await page.waitForTimeout(500);
+
+    expect(documents).toEqual([sourcePath]);
+  });
+
   test("replaces state when same asPath but different url", async ({ page }) => {
     await page.goto(`${BASE}/docs/`);
     await expect(page.locator("#index-page")).toBeVisible({ timeout: 5_000 });
