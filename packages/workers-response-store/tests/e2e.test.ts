@@ -13,6 +13,7 @@ import type {
   ResponseStoreRefreshOptions,
   SerializableValue,
 } from "../src/index.js";
+import { edgeCacheControl } from "../src/cache-policy.js";
 import { IsolateNegativeCache } from "../src/isolate-negative-cache.js";
 import { mapSettledWithR2Concurrency } from "../src/r2-concurrency.js";
 
@@ -349,6 +350,17 @@ test("bounded concurrency preserves settled results", async () => {
   assert.deepEqual(settled[12], { status: "fulfilled", value: 24 });
 });
 
+test("an edge copy never goes stale later than its entry", () => {
+  // 1.9 seconds of freshness left: rounding up would keep the edge copy fresh past the
+  // entry, and a put replacing the stale entry skips the edge purge.
+  assert.equal(edgeCacheControl(11_900, 71_900, 10_000), "max-age=1, stale-while-revalidate=60");
+  assert.equal(edgeCacheControl(10_900, 70_900, 10_000), "max-age=0, stale-while-revalidate=60");
+  assert.equal(
+    edgeCacheControl(11_900, 71_900, 10_000, false),
+    "max-age=1, stale-while-revalidate=0, stale-if-error=0",
+  );
+});
+
 test("isolate miss caching expires and evicts least-recently-used keys", () => {
   vi.useFakeTimers();
   vi.setSystemTime(0);
@@ -444,6 +456,39 @@ test("purgeExisting skips replacing an entry without a revalidator once its edge
     1,
   );
   assert.equal(await (await read("/expired-edge-copy")).text(), "third");
+});
+
+test("purgeExisting skips replacing an entry with a revalidator once its edge copy went stale", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+  const options = { cacheControl: "public, max-age=2, stale-while-revalidate=60" };
+  // Long-lived, so it is still fresh when it is replaced.
+  await put("/stale-edge-copy", "first", {
+    cacheControl: "public, max-age=60, stale-while-revalidate=60",
+  });
+  const fresh = await read("/stale-edge-copy");
+  // Rounded down, so the edge copy goes stale no later than the entry.
+  assert.match(
+    fresh.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=(59|60), stale-while-revalidate=60$/,
+  );
+  await fresh.arrayBuffer();
+
+  // A replacement of a fresh entry still purges its edge copy.
+  const replacement = await put("/stale-edge-copy", "second", { ...options, purgeExisting: true });
+  assert.deepEqual(replacement.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+  const edgeCalls = async () =>
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[];
+  assert.equal((await edgeCalls()).length, 1);
+
+  await new Promise((resolve) => setTimeout(resolve, 2100));
+  // Workers Cache revalidates a stale edge copy, and gets the replacement that a later put
+  // stores, so that put needs no purge.
+  const refill = await put("/stale-edge-copy", "third", { ...options, purgeExisting: true });
+  assert.deepEqual(refill.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal((await edgeCalls()).length, 1);
+  const revalidation = await conditionalRead("/stale-edge-copy");
+  assert.equal(revalidation.status, 200);
+  assert.equal(await revalidation.text(), "third");
 });
 
 test("replacesRevision drops a refresh of a revision another refresh already replaced", async () => {
@@ -1199,31 +1244,29 @@ test("an entry without a revalidator keeps its edge policy with response metadat
   assert.equal(await stale.text(), "body");
 });
 
-test("purgeExisting still purges a stale entry whose edge copy may still be served", async () => {
-  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
-  // Workers Cache keeps serving an entry with a revalidator through its SWR window.
-  await put("/stale-with-revalidator", "first", {
-    cacheControl: "public, max-age=0, stale-while-revalidate=60",
-  });
-  const replacement = await put("/stale-with-revalidator", "second", { purgeExisting: true });
-  assert.deepEqual(replacement.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
-
-  // invalidate() made this one stale early; its refused purge of the earlier copies is queued.
-  await put("/stale-invalidated", "first", { noRevalidator: true, tags: ["stale-invalidated"] });
-  assert.deepEqual((await invalidate({ tags: ["stale-invalidated"] })).json, {
-    backingStoreUpdated: true,
-    edgePurgeAccepted: false,
-  });
-  const afterInvalidate = await put("/stale-invalidated", "second", {
-    noRevalidator: true,
-    purgeExisting: true,
-  });
-  assert.deepEqual(afterInvalidate.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
-  assert.equal(
-    ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[]).length,
-    3,
-  );
-});
+test.each([
+  ["without", true],
+  ["with", false],
+])(
+  "purgeExisting still purges an entry %s a revalidator while its invalidate() edge update is queued",
+  async (_, noRevalidator) => {
+    await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+    // invalidate() made it stale early; its refused update of the earlier copies is queued.
+    const path = `/stale-invalidated-${String(noRevalidator)}`;
+    await put(path, "first", { noRevalidator, tags: [path] });
+    assert.deepEqual((await invalidate({ tags: [path] })).json, {
+      backingStoreUpdated: true,
+      edgePurgeAccepted: false,
+    });
+    const afterInvalidate = await put(path, "second", { noRevalidator, purgeExisting: true });
+    assert.deepEqual(afterInvalidate.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+    assert.equal(
+      ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[])
+        .length,
+      2,
+    );
+  },
+);
 
 test("put clears a miss cached while the write is in flight", async () => {
   const write = put("/miss-during-put", "stored-after-delayed-put", { bodyDelayMs: 200 });
@@ -1987,9 +2030,10 @@ test("a cold refill preserves downstream headers, representation age, and remain
     first.headers.get("Cache-Control"),
     "public, max-age=100, stale-while-revalidate=100",
   );
-  assert.equal(
-    first.headers.get("Cloudflare-CDN-Cache-Control"),
-    "max-age=2, stale-while-revalidate=4",
+  // Rounded down, so the edge copy goes stale no later than the entry.
+  assert.match(
+    first.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=[12], stale-while-revalidate=4$/,
   );
   assert.equal(first.headers.get("Age"), "1");
   const ageBasis = first.headers.get("X-Workers-Response-Store-Age-Basis");
@@ -2015,9 +2059,9 @@ test("cache policy disables SWR when Workers Cache forbids stale serving", async
   ]) {
     await put(path, "policy", { cacheControl });
     const response = await read(path);
-    assert.equal(
-      response.headers.get("Cloudflare-CDN-Cache-Control"),
-      "max-age=60, stale-while-revalidate=0",
+    assert.match(
+      response.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+      /^max-age=(59|60), stale-while-revalidate=0$/,
     );
   }
 
