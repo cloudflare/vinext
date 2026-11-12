@@ -4,6 +4,7 @@ import {
   createVinextResponseStoreOptions,
 } from "../packages/cloudflare/src/cache/response-store-adapter.worker.js";
 import createResponseStoreDataCacheAdapter, {
+  captureResponseStoreAppPageDocument,
   captureResponseStoreRscData,
   deferResponseStoreAdmission,
 } from "../packages/cloudflare/src/cache/response-store-data.runtime.js";
@@ -33,6 +34,10 @@ describe("Cloudflare Response Store Worker", () => {
     stages.request.mockImplementation((request, _env, _context, dispatchResponseStage) =>
       dispatchResponseStage(request, { kind: "app-page" }, { cache: "shared" }),
     );
+  });
+
+  it("hands the render the path's own shell its page read finds", () => {
+    expect(createResponseStoreCdnCacheAdapter({}).pageReadsOwnShells).toBe(true);
   });
 
   it("preserves explicit browser policy through the shared header builder", () => {
@@ -919,6 +924,33 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
         true,
         true,
       ]);
+    });
+
+    it("purges a shell's other part the render found when its page is stored over it", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      stages.response.mockImplementationOnce(async () => {
+        await dataCache.set("html:/page", shell("<!--shell-->"), shellContext("document"));
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const pageKey = store.fetch.mock.calls[0]![0].url;
+      // An RSC navigation finds no RSC part, and reads the shell's document.
+      dispatchWithIdentity(true, { isRscRequest: true });
+      const reads: unknown[] = [];
+      stages.response.mockImplementationOnce(async () => {
+        reads.push((await dataCache.get("html:/page", { appPageShellPart: "document" }))?.value);
+        captureResponseStoreAppPageDocument()?.({ html: "page" });
+        return new Response("rsc", { headers: { "Cache-Control": "public, max-age=60" } });
+      });
+
+      await fetchPage(handler);
+
+      expect(reads).toEqual([shell("<!--shell-->")]);
+      expect(entries.get(pageKey)?.body).toBe("page");
+      expect(entries.get(pageKey)?.options?.purgeExisting).toBe(true);
     });
 
     it("re-renders a warm-up whose page's RSC part is a shell", async () => {

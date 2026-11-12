@@ -570,7 +570,8 @@ async function putOtherPagePart(
     // Replacing a stored part doesn't purge its edge copy: one more purge for
     // every regeneration would spend the account's shared purge budget. The
     // edge keeps an earlier render's part until its own policy ends. A path's
-    // own shell is purged, as the gateway's read would find it, not the page.
+    // own shell, which the gateway or the render found there, is purged, as
+    // the gateway's read would find it, not the page.
     ...(replacesShell ? { purgeExisting: true } : {}),
     revalidator: routeRevalidator(JSON.stringify(part.invocation), true),
   });
@@ -857,6 +858,11 @@ const handler = {
             }
           : {}),
       };
+      // Whether the page is stored over a shell under its other part: as both
+      // parts of a shell are, or as the gateway or the render found it.
+      const replacesOtherShell = () =>
+        otherPartIsShell ||
+        (otherPart !== undefined && capture.pageShellParts?.has(otherPart.kind) === true);
       const serializedInvocation = JSON.stringify(invocation);
       // A Pages render can read the request host, so a Pages page regenerates
       // from the request that filled it, not the identity. An entry keyed by
@@ -899,7 +905,7 @@ const handler = {
               }
               const stored = withoutRequestScopedHeaders(admitted, props);
               try {
-                await putOtherPagePart(otherPart, capture, stored, otherPartIsShell);
+                await putOtherPagePart(otherPart, capture, stored, replacesOtherShell());
               } catch (error) {
                 await stored.body?.cancel().catch(() => {});
                 throw error;
@@ -947,7 +953,7 @@ const handler = {
       const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered), props);
       try {
         // A manifest-backed admission completes the response before it returns.
-        await putOtherPagePart(otherPart, capture, cacheResponse, otherPartIsShell);
+        await putOtherPagePart(otherPart, capture, cacheResponse, replacesOtherShell());
         await responseStore.put(key, cacheResponse, {
           coalesce: true,
           ...replacesShell,

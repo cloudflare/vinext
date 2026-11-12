@@ -63,6 +63,8 @@ export type ResponseStoreInvocationCapture = {
    * shell, or nothing. The render's first read of that part takes it.
    */
   pageShell?: { part: AppPageShellPart; response: Response | null };
+  /** The page's parts under which the render found a path's own shell. */
+  pageShellParts?: Set<AppPageShellPart>;
   rscData?: Promise<ArrayBuffer>;
   streamResponse?: boolean;
 };
@@ -471,7 +473,10 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       const gatewayRead = pageRequest ? takeGatewayRead(context) : undefined;
       if (gatewayRead === null) return null;
       const response = gatewayRead ?? (await this.store.fetch(request));
-      if (pageRequest && !isResponseStorePageShell(response)) {
+      if (pageRequest && isResponseStorePageShell(response)) {
+        const capture = invocationStorage.getStore()!.capture!;
+        (capture.pageShellParts ??= new Set()).add(readShellPart(context)!);
+      } else if (pageRequest) {
         const storeStatus = response.headers.get("X-Workers-Response-Store");
         // A page stored under the key, its notFound() included, which the
         // render keeps.
