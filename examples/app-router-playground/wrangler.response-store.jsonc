@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "app-router-playground-response-store",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "preview_urls": true,
+  "assets": {
+    "not_found_handling": "none",
+    "binding": "ASSETS"
+  },
+  "images": {
+    "binding": "IMAGES"
+  },
+  "cache": { "enabled": false },
+  // The Response Store service the response-store-demo deploys.
+  "services": [
+    {
+      "binding": "RESPONSE_STORE",
+      "service": "response-store-demo-response-store",
+      "entrypoint": "ResponseStoreService"
+    }
+  ],
+  "version_metadata": { "binding": "CF_VERSION_METADATA" }
+}

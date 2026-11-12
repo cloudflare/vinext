@@ -37,6 +37,7 @@ import {
   appIsrFallbackShellKey,
   isrSet,
   isrSetPrerenderedAppPage,
+  isrSetPrerenderedFallbackShell,
   type IsrWritePolicy,
 } from "./isr-cache.js";
 import { buildAppPageCacheTags, buildAppRouteCacheTags } from "./app-page-cache.js";
@@ -81,6 +82,12 @@ type PrerenderCacheSeedOptions = {
     data: CachedAppPageValue,
     metadata: PrerenderCacheSeedMetadata,
   ) => Promise<void>;
+  /** Fallback shells live in the data cache on every backend. */
+  writeAppPageFallbackShellEntry?: (
+    key: string,
+    data: CachedAppPageValue,
+    metadata: PrerenderCacheSeedMetadata,
+  ) => Promise<void>;
   writeAppRouteEntry?: (
     key: string,
     data: CachedRouteValue,
@@ -118,7 +125,9 @@ export async function seedMemoryCacheFromPrerender(
 
   const trailingSlash = manifest.trailingSlash ?? false;
   const prerenderDir = path.join(serverDir, "prerendered-routes");
-  const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
+  const writeConcreteAppPageEntry = options?.writeAppPageEntry ?? isrSetPrerenderedAppPage;
+  const writeAppPageFallbackShellEntry =
+    options?.writeAppPageFallbackShellEntry ?? isrSetPrerenderedFallbackShell;
   const writeAppRouteEntry = options?.writeAppRouteEntry ?? isrSet;
   let seeded = 0;
 
@@ -136,6 +145,9 @@ export async function seedMemoryCacheFromPrerender(
     if (!isFallbackShell) {
       addPregeneratedConcretePath(route.route, concretePathname);
     }
+    const writeAppPageEntry = isFallbackShell
+      ? writeAppPageFallbackShellEntry
+      : writeConcreteAppPageEntry;
 
     const artifactPathname = route.path ?? route.route;
     const cachePathname = normalizePregeneratedPathname(artifactPathname);
@@ -232,12 +244,6 @@ export async function seedMemoryCacheFromPrerender(
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
-
-function createDefaultAppPageEntryWriter(): NonNullable<
-  PrerenderCacheSeedOptions["writeAppPageEntry"]
-> {
-  return (key, data, metadata) => isrSetPrerenderedAppPage(key, data, metadata);
-}
 
 /**
  * Seed the HTML cache entry for a single route.

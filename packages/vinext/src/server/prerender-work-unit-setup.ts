@@ -15,9 +15,16 @@ import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import { isRouteCacheabilityProbe } from "vinext/shims/cacheability-classification";
 import { NO_STORE_CACHE_CONTROL } from "./cache-control.js";
 
+type WorkUnitOptions = {
+  cacheComponents?: boolean;
+  /** Prerender outside the build, as a runtime fallback-shell render does. */
+  prerender?: boolean;
+  route?: string | (() => string);
+};
+
 export function runWithPrerenderWorkUnit(
   fn: () => Promise<Response>,
-  options?: { cacheComponents?: boolean; route?: string | (() => string) },
+  options?: WorkUnitOptions,
 ): Promise<Response> {
   // Like Next.js's work store, the scope covers App Router work and middleware.
   // The Pages fallback leaves it.
@@ -26,9 +33,13 @@ export function runWithPrerenderWorkUnit(
 
 function runWithWorkUnit(
   fn: () => Promise<Response>,
-  options?: { cacheComponents?: boolean; route?: string | (() => string) },
+  options?: WorkUnitOptions,
 ): Promise<Response> {
-  if (process.env.VINEXT_PRERENDER === "1" || isRouteCacheabilityProbe()) {
+  if (
+    options?.prerender === true ||
+    process.env.VINEXT_PRERENDER === "1" ||
+    isRouteCacheabilityProbe()
+  ) {
     if (options?.cacheComponents !== true) {
       return workUnitAsyncStorage.run({ type: "prerender-legacy" }, fn);
     }

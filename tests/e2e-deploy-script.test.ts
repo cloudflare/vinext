@@ -269,10 +269,20 @@ describe("Next.js deploy harness", () => {
     expect(script).toContain(
       '"${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force >> "${BUILD_LOG}" 2>&1',
     );
-    expect(script).toContain('"${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1');
     expect(script).toContain(
-      '"${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force --prerender',
+      '"${VINEXT_BIN}" build ${PRERENDER_BUILD_FLAG} >> "${BUILD_LOG}" 2>&1',
     );
+    expect(script).toContain(
+      '"${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force ${PRERENDER_INIT_FLAG}',
+    );
+  });
+
+  it("prerenders unless VINEXT_E2E_NO_PRERENDER=1", () => {
+    const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
+
+    expect(script).toContain('PRERENDER_BUILD_FLAG="--prerender-all"');
+    expect(script).toContain('PRERENDER_INIT_FLAG="--prerender"');
+    expect(script).toContain('if [ "${VINEXT_E2E_NO_PRERENDER:-}" = "1" ]; then');
   });
 
   it("runs the installed vinext binary directly after pnpm install", () => {
