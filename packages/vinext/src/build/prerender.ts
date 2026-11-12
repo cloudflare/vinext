@@ -881,18 +881,23 @@ export async function prerenderPages({
     }
 
     // Use caller-provided prod server if available; otherwise start our own.
-    const prodServer: SharedPrerenderProdServer = options._prodServer
-      ? options._prodServer
-      : await (async () => {
-          // pagesBundlePath is guaranteed non-null: the guard above ensures
-          // either _prodServer or pagesBundlePath is provided.
-          const srv = await startPrerenderProdServer(path.dirname(path.dirname(pagesBundlePath!)), {
-            serverDir: path.dirname(pagesBundlePath!),
-            serverEntryPath: pagesBundlePath,
-          });
-          ownedProdServerHandle = srv;
-          return srv;
-        })();
+    // Assigned in this function body (not a nested closure) so the finally
+    // sees ownedProdServerHandle as possibly set rather than narrowed to null.
+    let prodServer: SharedPrerenderProdServer;
+    if (options._prodServer) {
+      prodServer = options._prodServer;
+    } else {
+      // pagesBundlePath is guaranteed non-null: the guard above ensures
+      // either _prodServer or pagesBundlePath is provided.
+      ownedProdServerHandle = await startPrerenderProdServer(
+        path.dirname(path.dirname(pagesBundlePath!)),
+        {
+          serverDir: path.dirname(pagesBundlePath!),
+          serverEntryPath: pagesBundlePath,
+        },
+      );
+      prodServer = ownedProdServerHandle;
+    }
 
     const baseUrl = `http://127.0.0.1:${prodServer.port}`;
     const secretHeaders: Record<string, string> = prerenderSecret
@@ -1489,16 +1494,18 @@ export async function prerenderApp({
     }
 
     // Use caller-provided prod server if available; otherwise start our own.
-    const prodServer: SharedPrerenderProdServer = options._prodServer
-      ? options._prodServer
-      : await (async () => {
-          const srv = await startPrerenderProdServer(buildOutDir, {
-            rscEntryPath: rscBundlePath,
-            serverDir,
-          });
-          ownedProdServerHandle = srv;
-          return srv;
-        })();
+    // Assigned in this function body (not a nested closure) so the finally
+    // sees ownedProdServerHandle as possibly set rather than narrowed to null.
+    let prodServer: SharedPrerenderProdServer;
+    if (options._prodServer) {
+      prodServer = options._prodServer;
+    } else {
+      ownedProdServerHandle = await startPrerenderProdServer(buildOutDir, {
+        rscEntryPath: rscBundlePath,
+        serverDir,
+      });
+      prodServer = ownedProdServerHandle;
+    }
 
     const baseUrl = `http://127.0.0.1:${prodServer.port}`;
     renderPorts = [prodServer.port];
