@@ -786,9 +786,15 @@ const handler = {
       // render reads it instead of the Store.
       let pageShell: Response | null = null;
       if (stored && isResponseStorePageShell(stored)) {
-        pageShell = new Response(await stored.text(), stored);
+        if (otherPart) pageShell = new Response(await stored.text(), stored);
+        else void stored.body?.cancel().catch(() => {});
         stored = null;
       }
+      // What the read found for the render, unless it found the page.
+      const ownPartRead = stored ? undefined : pageShell;
+      // A page stored over a shell purges the shell's edge copy, which the
+      // gateway's read would otherwise find instead of the page.
+      const replacesShell = pageShell ? { purgeExisting: true } : {};
       if (stored) {
         if (!rscKey) {
           return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
@@ -811,7 +817,9 @@ const handler = {
         ...(otherPart && otherKey
           ? {
               pageParts: { [ownPart]: key, [otherPart.kind]: otherKey },
-              pageShell: { part: ownPart, response: pageShell },
+              ...(ownPartRead === undefined
+                ? {}
+                : { pageShell: { part: ownPart, response: ownPartRead } }),
             }
           : {}),
       };
@@ -864,6 +872,7 @@ const handler = {
               }
               await responseStore.put(key, stored, {
                 coalesce: true,
+                ...replacesShell,
                 revalidator: routeRevalidator(revalidatorInvocation, otherPart !== undefined),
               });
             })
@@ -907,6 +916,7 @@ const handler = {
         await putOtherPagePart(otherPart, capture, cacheResponse);
         await responseStore.put(key, cacheResponse, {
           coalesce: true,
+          ...replacesShell,
           revalidator: routeRevalidator(revalidatorInvocation, otherPart !== undefined),
         });
       } catch (error) {

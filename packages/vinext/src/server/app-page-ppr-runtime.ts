@@ -236,7 +236,10 @@ async function seedRscRequestFromOwnShell<TRoute extends AppPageDispatchRoute>(
     read = { ok: true, cached: ownShellRead.cached };
   } else if (options.isrPageReadsFindOwnShells === true && !options.isrGetReadsFallbackShells) {
     const part = await readRscShellPart(options);
-    if (part.ok && isAppPprOwnShellPart(part.cached)) read = part;
+    if (part.ok && isAppPprOwnShellPart(part.cached)) {
+      read = part;
+      ownShellRead.cached = part.cached;
+    }
   }
   if (!read) {
     read = await readShell(options, concreteShell, true);

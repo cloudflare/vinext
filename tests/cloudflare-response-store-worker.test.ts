@@ -769,6 +769,13 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       const stored = [...entries.entries()];
       expect(stored.map(([url]) => url)).toContain(pageKey);
       expect(stored).toHaveLength(2);
+      // The RSC part leaves its edge copy, as the page's other part does.
+      expect(stored.map(([url, entry]) => [url === pageKey, entry.options?.purgeExisting])).toEqual(
+        [
+          [true, true],
+          [false, false],
+        ],
+      );
       for (const [, entry] of stored) {
         expect(entry.headers.get("X-Vinext-Response-Store-Page-Shell")).toBe("1");
         expect(entry.options?.revalidator?.id).toBe("vinext:data");
@@ -819,6 +826,85 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       expect(regenerated.headers.get("X-Vinext-Response-Store-Page-Shell")).toBe("1");
       expect(await regenerated.text()).toContain("<!--fresh-->");
       expect(entries.get(rscKey)?.body).toContain("fresh");
+    });
+
+    it("regenerates both parts when the Store regenerates one", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      let version = "first";
+      const documentStates: unknown[] = [];
+      stages.response.mockImplementation(async () => {
+        const read = await dataCache.get("html:/page", { appPageShellPart: "document" });
+        documentStates.push(read && (read.cacheState ?? "fresh"));
+        if (!read || read.cacheState === "stale") {
+          await dataCache.set("html:/page", shell(`<!--${version}-->`), shellContext("document"));
+          await dataCache.set("rsc:/page", shell(version), shellContext("rsc"));
+        }
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const pageKey = store.fetch.mock.calls[0]![0].url;
+      const rscKey = [...entries.keys()].find((url) => url !== pageKey)!;
+      version = "second";
+
+      const regenerated = await createVinextResponseStoreOptions().regenerate(
+        {
+          args: entries.get(rscKey)!.options!.revalidator!.args as string[],
+          id: "vinext:data",
+          reason: "stale",
+          request: new Request(rscKey),
+        } as never,
+        { ctx: context(), env: {} } as never,
+      );
+
+      // The document part, fresh to the Store, reads stale to the regeneration.
+      expect(documentStates).toEqual([null, "stale"]);
+      expect(await regenerated.text()).toContain("second");
+      expect(entries.get(pageKey)?.body).toContain("<!--second-->");
+    });
+
+    it("fails a shell's read when the Store can't say what its page's key holds", async () => {
+      dispatchWithIdentity();
+      const { store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const reads: PromiseSettledResult<unknown>[] = [];
+      stages.response.mockImplementation(async () => {
+        store.fetch.mockRejectedValueOnce(new Error("unavailable"));
+        reads.push(
+          ...(await Promise.allSettled([dataCache.get("rsc:/page", { appPageShellPart: "rsc" })])),
+        );
+        return dynamicResponse();
+      });
+
+      await fetchPage(handler);
+
+      // A page may be stored there, so a shell isn't written over it.
+      expect(reads).toEqual([{ status: "rejected", reason: new Error("unavailable") }]);
+    });
+
+    it("purges a shell's edge copy when its page is stored over it", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      stages.response.mockImplementationOnce(async () => {
+        await dataCache.set("html:/page", shell("<!--shell-->"), shellContext("document"));
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const pageKey = store.fetch.mock.calls[0]![0].url;
+      stages.response.mockImplementationOnce(
+        async () => new Response("page", { headers: { "Cache-Control": "public, max-age=60" } }),
+      );
+
+      await fetchPage(handler);
+
+      expect(entries.get(pageKey)?.body).toBe("page");
+      expect(entries.get(pageKey)?.options?.purgeExisting).toBe(true);
     });
 
     it("leaves a page stored under its page's key to the render", async () => {

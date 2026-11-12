@@ -8543,6 +8543,45 @@ describe("app page dispatch", () => {
     ]);
   });
 
+  it("doesn't produce a path's own shell again when an edge's page read found its RSC part", async () => {
+    const scheduledKeys: string[] = [];
+    const isrGetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrGetFallbackShell"]>>(
+      async (key) =>
+        key === "rsc:/en/blog/hello"
+          ? buildISRCacheEntry(buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("")))
+          : null,
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      isRscRequest: true,
+      isrGet: vi.fn(async () => null),
+      params: { locale: "en", slug: "hello" },
+      renderToReadableStream() {
+        markDynamicUsage();
+        return createStream(["payload"]);
+      },
+      request: new Request("https://example.test/en/blog/hello", { headers: { RSC: "1" } }),
+    });
+
+    await (
+      await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          isrGetFallbackShell,
+          isrGetReadsFallbackShells: false,
+          scheduleFallbackShellRegeneration(key) {
+            scheduledKeys.push(key);
+          },
+        }),
+      )
+    ).text();
+
+    // A shell that read no cached data seeds nothing, but is still stored.
+    expect(isrGetFallbackShell.mock.calls).toEqual([["rsc:/en/blog/hello", "rsc"]]);
+    expect(scheduledKeys).not.toContain("html:/en/blog/hello");
+  });
+
   it("renders an RSC request with its own shell's values from the part an edge's page read found", async () => {
     const seeds: unknown[] = [];
     const isrGetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrGetFallbackShell"]>>(

@@ -339,15 +339,20 @@ function takeGatewayRead(
   return shell.response;
 }
 
-/** What a stored response says of an entry under a page's key that isn't a shell. */
-const STORED_PAGE: IncrementalCacheValue = {
-  kind: "APP_PAGE",
-  html: "",
-  rscData: undefined,
-  headers: undefined,
-  postponed: undefined,
-  status: undefined,
-};
+/** What a read says of an entry under a page's key that isn't a shell. */
+function storedPage(): CacheHandlerValue {
+  return {
+    lastModified: Date.now(),
+    value: {
+      kind: "APP_PAGE",
+      html: "",
+      rscData: undefined,
+      headers: undefined,
+      postponed: undefined,
+      status: undefined,
+    },
+  };
+}
 
 function readStringArrayField(
   context: Record<string, unknown> | undefined,
@@ -436,7 +441,8 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
   }
 
   async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
-    if (regenerationStorage.getStore()?.targetKey === key) return null;
+    const regeneration = regenerationStorage.getStore();
+    if (regeneration?.targetKey === key) return null;
 
     const pageRequest = pagePartRequest(context);
     const request = pageRequest ?? (await cacheRequest(key));
@@ -454,7 +460,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
             (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE"))
         ) {
           void response.body?.cancel().catch(() => {});
-          return { lastModified: Date.now(), value: STORED_PAGE };
+          return storedPage();
         }
       }
       if (!response.ok) {
@@ -545,6 +551,9 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       ) {
         cacheState = "stale";
       }
+      // Regenerating one part of a path's own shell regenerates the shell, as
+      // Next.js regenerates its one entry, so its other part reads as stale.
+      if (pageRequest && regeneration && cacheState !== "expired") cacheState = "stale";
       const value: CacheHandlerValue = {
         lastModified: entry.lastModified,
         value: entry.value,
@@ -572,6 +581,8 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
           error: error instanceof Error ? error.message : String(error),
         }),
       );
+      // A page may be stored under a page's key, which a shell mustn't replace.
+      if (pageRequest) throw error;
       return null;
     }
   }
@@ -697,7 +708,10 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         ? { expiryBehavior: "miss" as const }
         : {}),
       coalesce: true,
-      purgeExisting: true,
+      // As the gateway stores a page's other part, the RSC part of a path's
+      // own shell doesn't purge its edge copy, which keeps an earlier shell's
+      // values until its own policy ends.
+      purgeExisting: readShellPart(context) !== "rsc" || !pageRequest,
       ...(replaces
         ? {
             replacesRevision: replaces.revision,
