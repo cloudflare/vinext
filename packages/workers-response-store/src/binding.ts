@@ -739,20 +739,33 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   /**
-   * Update drained entries' edge responses. Stale entries with a revalidator
-   * are invalidated, so Workers Cache keeps serving them while it refetches.
-   * Tombstones are purged, as are stale entries the Store cannot regenerate,
-   * so their next read reaches R2 and sees `BLOB-STALE`.
+   * Update drained entries' edge responses, and return the entries whose request was accepted, so
+   * a retry sends only the rest. Stale entries with a revalidator are invalidated, so Workers Cache
+   * keeps serving them while it refetches. Tombstones are purged, as are stale entries the Store
+   * cannot regenerate, so their next read reaches R2 and sees `BLOB-STALE`.
    */
-  async purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<boolean> {
-    const invalidated = entries.filter((entry) => entry.edgeInvalidate);
-    const purged = entries.filter((entry) => !entry.edgeInvalidate);
+  async purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<PurgedEntry[]> {
     const accepted = await Promise.all([
-      !purged.length || this.updateEdgeCacheByTags(purged.map(purgeTagForEntry)),
-      !invalidated.length ||
-        this.updateEdgeCacheByTags(invalidated.map(purgeTagForEntry), "invalidate"),
+      this.updateEntryEdges(entries.filter((entry) => !entry.edgeInvalidate)),
+      this.updateEntryEdges(
+        entries.filter((entry) => entry.edgeInvalidate),
+        "invalidate",
+      ),
     ]);
-    return accepted.every(Boolean);
+    return accepted.flat();
+  }
+
+  private async updateEntryEdges(
+    entries: PurgedEntry[],
+    operation: EdgeCacheOperation = "purge",
+  ): Promise<PurgedEntry[]> {
+    const accepted: PurgedEntry[] = [];
+    for (const batch of batches(entries, CACHE_PURGE_BATCH_SIZE)) {
+      if (await this.updateEdgeCache({ tags: batch.map(purgeTagForEntry) }, operation)) {
+        accepted.push(...batch);
+      }
+    }
+    return accepted;
   }
 
   private async purgePendingEdgeEntries(
@@ -765,10 +778,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         tombstoneSequence,
       );
       if (!entries.length) return true;
-      if (!(await this.purgeR2TombstoneEdges(entries))) {
-        return false;
-      }
-      await metadata.markTombstonesEdgePurged(entries);
+      const accepted = await this.purgeR2TombstoneEdges(entries);
+      if (accepted.length) await metadata.markTombstonesEdgePurged(accepted);
+      if (accepted.length < entries.length) return false;
     }
   }
 

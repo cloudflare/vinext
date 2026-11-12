@@ -119,6 +119,7 @@ beforeEach(async () => {
               let edgeCalls = [];
               let failR2Write = false;
               let delayFirstPurgeMs = 0;
+              let acceptFirst = 0;
               export class ResponseStoreBinding extends BaseBinding {
                 constructor(ctx, env) {
                   super(ctx, {
@@ -145,7 +146,7 @@ beforeEach(async () => {
                       if (purgeMode === "throw") throw new Error("Purge unavailable");
                       if (purgeMode === "reject") return Promise.reject(new Error("Purge unavailable"));
                       return Promise.resolve({
-                        success: purgeMode === "success",
+                        success: purgeMode === "success" || edgeCalls.length <= acceptFirst,
                         errors: [{ code: 1134, message: "Rate limited" }],
                       });
                     };
@@ -167,6 +168,7 @@ beforeEach(async () => {
                     metadataR2DelayMs = Number(
                       new URL(request.url).searchParams.get("metadata-r2-delay-ms") ?? 0,
                     );
+                    acceptFirst = Number(new URL(request.url).searchParams.get("accept-first") ?? 0);
                     delayFirstPurgeMs = Number(
                       new URL(request.url).searchParams.get("delay-first-ms") ?? 0,
                     );
@@ -712,6 +714,41 @@ test("a flush sends each kind of edge update in full requests", async () => {
     "purge 100",
     "purge 100",
   ]);
+});
+
+test("a flush retries only the edge requests that were refused", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit&accept-first=1");
+  const stub = await queueEdgeRows(250, "partial");
+  await assert.rejects(stub.retryPendingTombstones());
+  const first = await edgeCallTags();
+  assert.deepEqual(await edgeCallSizes(), ["purge 100", "purge 100", "purge 50"]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 150);
+
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  assert.equal(await stub.retryPendingTombstones(), false);
+  const retried = await edgeCallTags();
+  assert.deepEqual(await edgeCallSizes(), ["purge 100", "purge 50"]);
+  assert.deepEqual(
+    retried.flatMap(({ tags }) => tags).sort(),
+    first
+      .slice(1)
+      .flatMap(({ tags }) => tags)
+      .sort(),
+  );
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+});
+
+test("a purge marks the edge requests that were accepted before one was refused", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  const paths = Array.from({ length: 101 }, (_, index) => `/partial-purge/${index}`);
+  for (const path of paths) await put(path, "first", { tags: ["partial-purge"] });
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit&accept-first=1");
+  assert.deepEqual((await purge({ tags: ["partial-purge"] })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.deepEqual(await edgeCallSizes(), ["purge 100", "purge 1"]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
 });
 
 test("a backlog's later flush runs leave edge work queued during it for its own flush", async () => {

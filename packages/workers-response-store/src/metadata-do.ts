@@ -75,7 +75,7 @@ export type TombstoneDrainResult = {
 };
 
 type R2TombstoneEdgePurger = {
-  purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<boolean>;
+  purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<PurgedEntry[]>;
 };
 
 export type CacheMetadataStub = DurableObjectStub & {
@@ -889,10 +889,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     );
     const edgeEntries = edgeBatches.flat();
     if (edgeEntries.length) {
-      if (!(await this.getR2TombstoneEdgePurger().purgeR2TombstoneEdges(edgeEntries))) {
+      const accepted = await this.getR2TombstoneEdgePurger().purgeR2TombstoneEdges(edgeEntries);
+      // The retry sends only the requests that weren't accepted.
+      if (accepted.length) this.markTombstonesEdgePurged(accepted);
+      if (accepted.length < edgeEntries.length) {
         throw new Error("Workers Response Store cache purge is unavailable");
       }
-      this.markTombstonesEdgePurged(edgeEntries);
     }
     if (
       drained.pending.length === PENDING_TOMBSTONE_FLUSH_LIMIT ||
