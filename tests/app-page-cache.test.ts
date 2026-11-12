@@ -1479,7 +1479,11 @@ describe("app page cache helpers", () => {
 
   it("returns the prelude a dynamic fallback shell resumes from", async () => {
     const debugCalls: Array<[string, string]> = [];
-    const resume = { prelude: "<!DOCTYPE html><html><head></head><body>", postponed: {} };
+    const resume = {
+      prelude: "<!DOCTYPE html><html><head></head><body>",
+      postponed: {},
+      browserSearch: "",
+    };
     const response = await serveAppPageFallbackShellCacheEntry({
       clearRequestContext() {
         throw new Error("should not clear request context when resuming");
