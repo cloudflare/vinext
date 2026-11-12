@@ -100,6 +100,8 @@ Set `accountId` at the top level of `defineConfig` in `cloudflare.config.ts` (ou
 
 The deploy command validates the initialized setup, builds all Vite environments, and deploys the application Worker's Build Output using `cf`. `--env staging` selects the staging Vite mode. The existing `--preview` flag is an alias for `--env preview`; it selects the preview mode but does not create a Worker Preview. If your vinext and `cloudflare()` config is not the root `vite.config.*` (for example because another tool owns that file), pass it with `--vite-config vite.web.config.ts`. The Worker name and settings come from `cloudflare.config.ts`, so the Wrangler-only `--name` and `--config` flags are rejected.
 
+Each uploaded Worker version records the latest commit subject as its message and the commit SHA as its tag, so the Cloudflare dashboard identifies the deployment instead of showing "Manually deployed". Without a Git checkout, the tag falls back to the CI commit variable (for example `GITHUB_SHA`) and the message to "Deployed with vinext". Override either with `--message <text>` or `--tag <text>`, or pass an empty value (`--tag ""`) to omit it.
+
 For Response Store service-binding mode, build and deploy the cache Worker explicitly before the first application deployment:
 
 ```sh

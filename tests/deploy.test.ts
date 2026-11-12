@@ -7,6 +7,10 @@ import { execFileSync, type ChildProcess, type spawn } from "node:child_process"
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
+  DEFAULT_VERSION_MESSAGE,
+  resolveVersionAnnotations,
+} from "../packages/cloudflare/src/version-annotations.js";
+import {
   deploy,
   buildCfDeployArgs,
   buildNodeCliInvocation,
@@ -221,6 +225,13 @@ describe("buildWranglerDeployArgs", () => {
 
   it("treats empty string env as production", () => {
     expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
+  });
+
+  it("records the version message and tag", () => {
+    expect(buildWranglerDeployArgs({ message: "-Fix the header", tag: "abc123" })).toEqual({
+      args: ["deploy", "--message=-Fix the header", "--tag=abc123"],
+      env: undefined,
+    });
   });
 
   it("preserves shell metacharacters as a literal environment argument", () => {
@@ -623,6 +634,16 @@ describe("cf Build Output deployment", () => {
       args: ["deploy", "--prebuilt", "--mode", "preview"],
       mode: "preview",
     });
+    expect(buildCfDeployArgs({ message: "Fix the header", tag: "abc123" })).toEqual({
+      args: ["deploy", "--prebuilt", "--message=Fix the header", "--tag=abc123"],
+      mode: undefined,
+    });
+  });
+
+  it("leaves Preview deploy annotations to cf", () => {
+    expect(
+      buildCfDeployArgs({ target: { type: "preview" }, message: "Fix the header", tag: "abc123" }),
+    ).toEqual({ args: ["previews", "deploy", "--prebuilt"], mode: undefined });
   });
 
   it.each([undefined, "pr-123"])("builds Preview deploy args (name: %s)", (name) => {
@@ -943,6 +964,21 @@ describe("parseDeployArgs", () => {
     );
 
     expect(cliSource).toContain("verbose: parsed.verbose");
+  });
+
+  it("parses and forwards version message and tag flags", () => {
+    const parsed = parseDeployArgs(["--message", " Fix the header ", "--tag="]);
+    expect(parsed.message).toBe("Fix the header");
+    // An explicit empty value opts out of the commit default.
+    expect(parsed.tag).toBe("");
+    expect(parseDeployArgs([]).message).toBeUndefined();
+
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+    expect(cliSource).toContain("message: parsed.message");
+    expect(cliSource).toContain("tag: parsed.tag");
   });
 
   it("defaults to production deploy with no flags", () => {
@@ -4344,5 +4380,41 @@ describe("getZeroPercentStagingTraffic", () => {
         "22222222-2222-4222-8222-222222222222",
       ),
     ).toBeNull();
+  });
+});
+
+describe("resolveVersionAnnotations", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const git = (args: string[]) => {
+    if (args[0] === "rev-parse") return `${sha}\n`;
+    if (args[0] === "log") return "Fix the header\n";
+    throw new Error(`unexpected git ${args.join(" ")}`);
+  };
+  const noGit = () => {
+    throw new Error("not a git repository");
+  };
+
+  it("defaults to the HEAD commit SHA and subject", () => {
+    expect(resolveVersionAnnotations("/app", {}, {}, git)).toEqual({
+      message: "Fix the header",
+      tag: sha,
+    });
+  });
+
+  it("prefers explicit values and omits explicitly empty ones", () => {
+    expect(resolveVersionAnnotations("/app", { message: "Release 2", tag: "v2" }, {}, git)).toEqual(
+      { message: "Release 2", tag: "v2" },
+    );
+    expect(resolveVersionAnnotations("/app", { message: "", tag: "" }, {}, git)).toEqual({});
+  });
+
+  it("falls back to CI commit variables and a generic message without git", () => {
+    expect(resolveVersionAnnotations("/app", {}, { GITHUB_SHA: sha }, noGit)).toEqual({
+      message: DEFAULT_VERSION_MESSAGE,
+      tag: sha,
+    });
+    expect(resolveVersionAnnotations("/app", {}, {}, noGit)).toEqual({
+      message: DEFAULT_VERSION_MESSAGE,
+    });
   });
 });

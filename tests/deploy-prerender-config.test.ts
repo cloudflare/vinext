@@ -14,6 +14,10 @@ const discoverPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
 const resolveTPRRoutesMock = vi.hoisted(() =>
   vi.fn(async (): Promise<TPRRouteResult> => ({ routes: [] })),
 );
+// Keep the git lookup out of the mocked child_process calls these tests assert on.
+const resolveVersionAnnotationsMock = vi.hoisted(() =>
+  vi.fn((): { message?: string; tag?: string } => ({})),
+);
 const realWranglerUrl = pathToFileURL(
   createRequire(path.join(process.cwd(), "examples/app-router-cloudflare/package.json")).resolve(
     "wrangler",
@@ -22,6 +26,11 @@ const realWranglerUrl = pathToFileURL(
 
 vi.mock("vinext/internal/build/run-prerender", () => ({
   runPrerender: runPrerenderMock,
+}));
+
+vi.mock("../packages/cloudflare/src/version-annotations.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../packages/cloudflare/src/version-annotations.js")>()),
+  resolveVersionAnnotations: resolveVersionAnnotationsMock,
 }));
 
 vi.mock("../packages/cloudflare/src/tpr.js", async (importOriginal) => ({
@@ -297,6 +306,7 @@ describe("deploy prerender config wiring", () => {
     emitPrerenderPathManifestMock.mockClear();
     discoverPrerenderPathManifestMock.mockClear();
     resolveTPRRoutesMock.mockClear();
+    resolveVersionAnnotationsMock.mockClear();
     vi.mocked(execFileSync).mockClear();
     vi.mocked(spawn).mockClear();
     vi.mocked(spawnSync).mockClear();
@@ -1122,6 +1132,33 @@ export function createBuilder(config) {
     } finally {
       delete process.env[envKey];
     }
+  });
+
+  it("records the resolved version message and tag on the cf deploy", async () => {
+    writeProjectWithInlineNextConfig(`{ output: "export" }`);
+    writeCfBuildOutputScaffolding();
+    resolveVersionAnnotationsMock.mockReturnValueOnce({ message: "Fix the header", tag: "abc123" });
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, message: "Fix the header" });
+
+    expect(resolveVersionAnnotationsMock).toHaveBeenCalledWith(
+      tmpDir,
+      expect.objectContaining({ message: "Fix the header" }),
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [
+        path.join(tmpDir, "node_modules/cf/bin/cf"),
+        "deploy",
+        "--prebuilt",
+        "--mode",
+        "production",
+        "--message=Fix the header",
+        "--tag=abc123",
+      ],
+      expect.objectContaining({ cwd: tmpDir }),
+    );
   });
 
   it.each([

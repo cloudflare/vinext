@@ -28,6 +28,10 @@ export function formatDeployHelp(deploymentTool: DeploymentTool): string {
     --preview                Deploy to preview environment (same as --env preview)
     --env <name>             Cloudflare mode for typed config; Wrangler environment otherwise
 ${wranglerOptions}    --vite-config <path>     Vite config file to build with (default: vite.config.*)
+    --message <text>         Message for the uploaded Worker version (default: the
+                             latest commit subject; pass "" to omit)
+    --tag <text>             Tag for the uploaded Worker version (default: the
+                             latest commit SHA; pass "" to omit)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying
     --verbose                Print raw output from internal Cloudflare CLI commands
