@@ -46,6 +46,7 @@ import {
   type CacheabilityRepresentation,
 } from "./cacheability-manifest.js";
 import { applyResponseStagePolicyHeaders } from "./response-stage-policy.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 type CacheabilityProbeRouteState =
   | "dynamic"
@@ -959,6 +960,8 @@ export async function finalizeWorkerCacheabilityResponse(
 ): Promise<Response> {
   const state = readState(ctx);
   if (!state) return response;
+  // An upgrade is never cached, and rebuilding it drops its webSocket.
+  if (isWebSocketUpgradeResponse(response)) return response;
 
   if (state.mode === "admit") {
     return finalizeWorkerCacheabilityAdmission(response, state);

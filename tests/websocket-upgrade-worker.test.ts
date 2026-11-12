@@ -6,13 +6,13 @@
  * workerd's `Response` constructor rejects status 101 unless the init carries
  * that `webSocket`, so the response must reach the runtime as returned.
  *
- * Runs inside the actual Workers runtime (via wrangler's workerd): Node cannot
- * construct a 101 response at all.
+ * Runs inside the actual Workers runtime (wrangler's workerd, or the Cloudflare
+ * Vite plugin's in dev): Node cannot construct a 101 response at all.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createBuilder } from "vite";
+import { createBuilder, createServer, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { responseStoreAdapter } from "../packages/cloudflare/src/cache/response-store-adapter.js";
@@ -64,6 +64,8 @@ type Build = {
   name: string;
   appRouter: boolean;
   cache: "none" | "workers-cache" | "response-store";
+  /** Serve with `vinext dev` instead of building and running wrangler. */
+  dev?: boolean;
 };
 
 const BUILDS: Build[] = [
@@ -80,6 +82,14 @@ const BUILDS: Build[] = [
     appRouter: true,
     cache: "response-store",
   },
+  // Dev keeps the single-stage router entry, which runs completed-response
+  // admission in the same request when the adapter requires it.
+  {
+    name: "a hybrid app in dev with the Workers Cache adapter",
+    appRouter: true,
+    cache: "workers-cache",
+    dev: true,
+  },
   { name: "a Pages Router app", appRouter: false, cache: "none" },
   {
     name: "a Pages Router app with the Workers Cache adapter",
@@ -90,6 +100,12 @@ const BUILDS: Build[] = [
     name: "a Pages Router app with the Response Store adapter",
     appRouter: false,
     cache: "response-store",
+  },
+  {
+    name: "a Pages Router app in dev with the Workers Cache adapter",
+    appRouter: false,
+    cache: "workers-cache",
+    dev: true,
   },
 ];
 
@@ -104,6 +120,7 @@ function cacheOption(build: Build) {
 describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (build) => {
   let root = "";
   let worker: StartedWorker | undefined;
+  let devServer: ViteDevServer | undefined;
   let baseUrl = "";
 
   beforeAll(async () => {
@@ -120,24 +137,41 @@ describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (bui
     const { cloudflare } = (await import(pathToFileURL(cloudflarePluginPath).href)) as {
       cloudflare: CloudflarePluginFactory;
     };
+    const plugins = () => [
+      vinext({
+        appDir: root,
+        ...cacheOption(build),
+        ...(build.appRouter ? {} : { disableAppRouter: true }),
+      }),
+      cloudflare({
+        ...(build.cache === "response-store"
+          ? { configPath: path.join(root, "wrangler.response-store.jsonc") }
+          : {}),
+        ...(build.appRouter
+          ? { viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }
+          : {}),
+      }),
+    ];
+    if (build.dev) {
+      devServer = await createServer({
+        root,
+        configFile: false,
+        plugins: plugins(),
+        server: { host: "127.0.0.1", port: 0 },
+        logLevel: "silent",
+      });
+      await devServer.listen();
+      const address = devServer.httpServer?.address();
+      if (!address || typeof address === "string") {
+        throw new Error("The dev server did not bind to a TCP port");
+      }
+      baseUrl = `http://127.0.0.1:${address.port}`;
+      return;
+    }
     const builder = await createBuilder({
       root,
       configFile: false,
-      plugins: [
-        vinext({
-          appDir: root,
-          ...cacheOption(build),
-          ...(build.appRouter ? {} : { disableAppRouter: true }),
-        }),
-        cloudflare({
-          ...(build.cache === "response-store"
-            ? { configPath: path.join(root, "wrangler.response-store.jsonc") }
-            : {}),
-          ...(build.appRouter
-            ? { viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }
-            : {}),
-        }),
-      ],
+      plugins: plugins(),
       logLevel: "silent",
     });
     await builder.buildApp();
@@ -189,6 +223,7 @@ describe.each(BUILDS)("WebSocket upgrades on the Workers runtime in $name", (bui
   afterAll(async () => {
     // `dispose()` waits for a startup that may never finish; tear down directly.
     await worker?.raw.teardown();
+    await devServer?.close();
     if (root) await fs.rm(root, { recursive: true, force: true });
   });
 
