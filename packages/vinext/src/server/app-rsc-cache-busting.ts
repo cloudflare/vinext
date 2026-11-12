@@ -399,6 +399,17 @@ export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): bool
 }
 
 /**
+ * Leave the client's router state out of a static-shell prefetch: the shell is
+ * the same whatever page asks for it, so it mustn't split its cache key, as
+ * Next.js keys a prefetched segment by its URL alone.
+ */
+export function omitStaticShellRouterStateHeaders(headers: Headers): void {
+  headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
+  headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
+}
+
+/**
  * Convert a search-param shell prefetch to the canonical navigation of its
  * page. The shell renders the page with an empty query (app-page-dispatch.ts),
  * which is what the query-free navigation renders, as Next.js's static

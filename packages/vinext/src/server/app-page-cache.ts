@@ -343,6 +343,11 @@ function resolveUnclaimedPrerenderStaleTimeSeconds(
 ): number | undefined {
   if (isRoutePPREnabled !== true) return undefined;
   if (String(process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS) !== "true") return undefined;
+  return resolveStaticStaleTimeSeconds();
+}
+
+/** `experimental.staleTimes.static`, the stale time of a prerender with no `cacheLife` claim. */
+export function resolveStaticStaleTimeSeconds(): number | undefined {
   const raw = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
   // Next.js' default `staleTimes.static` when the plugin define is absent.
   const seconds = raw === undefined || raw === "" ? 300 : Number(raw);

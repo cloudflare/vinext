@@ -495,13 +495,73 @@ export function keepOptimisticStreamingMetadata(
   if (id === null || optimisticId === null) return elements;
   const optimisticMetadata = optimisticElements[optimisticId];
   if (optimisticMetadata == null) return elements;
+  // A static shell's metadata may itself still be streaming. It then shows
+  // nothing rather than suspend this fallback and hold the commit after all.
+  const fallback = createElement(Suspense, { fallback: null }, optimisticMetadata as ReactNode);
   return {
     ...elements,
-    [id]: createElement(
-      Suspense,
-      { fallback: optimisticMetadata as ReactNode, key: navigationKey },
-      elements[id] as ReactNode,
-    ),
+    [id]: createElement(Suspense, { fallback, key: navigationKey }, elements[id] as ReactNode),
+  };
+}
+
+/**
+ * Keeps the shell a navigation committed, optimistic or static, so its streamed
+ * metadata stays up while the page's own streams. A static shell decodes on its
+ * own: it's read once the page's payload decodes, and never awaited. A redirect
+ * drops it: the shell was for the URL the navigation left. The page's metadata
+ * still streams in its own boundary then, with no fallback, so the commit
+ * doesn't wait for it.
+ */
+export function createShellMetadataKeeper(navigationKey: string): {
+  keep(payload: Promise<AppElements> | AppElements): Promise<AppElements> | AppElements;
+  reset(): void;
+  setShell(elements: AppElements): void;
+  trackShell(payload: Promise<AppElements>): void;
+} {
+  let shellElements: AppElements | null = null;
+  let hasCommittedShell = false;
+  let generation = 0;
+  const keepShellMetadata = (elements: AppElements): AppElements => {
+    if (shellElements !== null) {
+      return keepOptimisticStreamingMetadata(elements, shellElements, navigationKey);
+    }
+    const id = findStreamingMetadataBody(elements);
+    return id === null
+      ? elements
+      : {
+          ...elements,
+          [id]: createElement(
+            Suspense,
+            { fallback: null, key: navigationKey },
+            elements[id] as ReactNode,
+          ),
+        };
+  };
+  return {
+    keep(payload) {
+      if (!hasCommittedShell) return payload;
+      return payload instanceof Promise
+        ? payload.then(keepShellMetadata)
+        : keepShellMetadata(payload);
+    },
+    reset() {
+      generation += 1;
+      shellElements = null;
+    },
+    setShell(elements) {
+      hasCommittedShell = true;
+      shellElements = elements;
+    },
+    trackShell(payload) {
+      hasCommittedShell = true;
+      const trackedGeneration = generation;
+      void payload.then(
+        (elements) => {
+          if (trackedGeneration === generation) shellElements = elements;
+        },
+        () => {},
+      );
+    },
   };
 }
 
