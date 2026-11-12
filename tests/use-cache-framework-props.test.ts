@@ -26,6 +26,18 @@ import {
 
 beforeEach(() => setCacheHandler(new MemoryCacheHandler()));
 
+async function isPending(promise: Promise<unknown>): Promise<boolean> {
+  const pending = Symbol("pending");
+  const settled = await Promise.race([
+    promise.then(
+      () => "resolved",
+      () => "rejected",
+    ),
+    new Promise((resolve) => setTimeout(resolve, 20, pending)),
+  ]);
+  return settled === pending;
+}
+
 // Next.js restores framework segment params separately from ordinary arguments:
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
 // See isPageSegmentFunction/isLayoutSegmentFunction and their outerParams wrappers.
@@ -108,21 +120,63 @@ describe("use cache framework props", () => {
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.params.test.ts
   describe.each(["$$isPage", "$$isLayout"])("fallback params for %s", (marker) => {
     const markProps = marker === "$$isLayout" ? withUseCacheLayoutMarker : withUseCachePageMarker;
-    it.each(["unused", "await-only", "known-key"])(
-      "does not suspend when params are %s",
+    it("does not suspend when params are unused", async () => {
+      const handler = new MemoryCacheHandler();
+      const get = vi.spyOn(handler, "get");
+      const set = vi.spyOn(handler, "set");
+      setCacheHandler(handler);
+      const observed: string[][] = [];
+      const state = createPprFallbackShellState({
+        fallbackParamNames: ["slug"],
+        routePattern: "/:locale/:slug",
+      });
+      const cached = registerCachedFunction(
+        async (_props: { params: Promise<{ locale: string; slug: string }> }) => "ready",
+        `fallback:${marker}:unused`,
+        "",
+        { argumentCount: 1 },
+      );
+
+      try {
+        const result = runWithPprFallbackShellState(state, () =>
+          cached(
+            markProps(cached, {
+              params: makeThenableParams(
+                { locale: "en", slug: "[slug]" },
+                { observeParamAccess: (keys) => observed.push([...keys]) },
+              ),
+            }),
+          ),
+        );
+        await expect(result).resolves.toBe("ready");
+        expect(state.hasDynamicBoundary).toBe(false);
+        expect(observed).toEqual([]);
+        // Placeholder params are incomplete and must not read or populate a
+        // concrete route's data entry, or persist an unguarded replay.
+        expect(get).not.toHaveBeenCalled();
+        expect(set).not.toHaveBeenCalled();
+      } finally {
+        state.abortController.abort();
+      }
+    });
+
+    // Like Next.js's `makeHangingParams`, awaiting params that hold a fallback
+    // key never resolves while the shell prerenders, even inside a cached
+    // segment (it receives the outer params), so the segment is left out of
+    // the shell instead of reading the placeholder.
+    it.each(["await-only", "known-key"])(
+      "leaves the segment out of the shell when params are %s",
       async (access) => {
         const handler = new MemoryCacheHandler();
         const get = vi.spyOn(handler, "get");
         const set = vi.spyOn(handler, "set");
         setCacheHandler(handler);
-        const observed: string[][] = [];
         const state = createPprFallbackShellState({
           fallbackParamNames: ["slug"],
           routePattern: "/:locale/:slug",
         });
         const cached = registerCachedFunction(
           async ({ params }: { params: Promise<{ locale: string; slug: string }> }) => {
-            if (access === "unused") return "ready";
             const resolved = await params;
             return access === "known-key" ? resolved.locale : "ready";
           },
@@ -134,19 +188,11 @@ describe("use cache framework props", () => {
         try {
           const result = runWithPprFallbackShellState(state, () =>
             cached(
-              markProps(cached, {
-                params: makeThenableParams(
-                  { locale: "en", slug: "[slug]" },
-                  { observeParamAccess: (keys) => observed.push([...keys]) },
-                ),
-              }),
+              markProps(cached, { params: makeThenableParams({ locale: "en", slug: "[slug]" }) }),
             ),
           );
-          await expect(result).resolves.toBe(access === "known-key" ? "en" : "ready");
-          expect(state.hasDynamicBoundary).toBe(false);
-          expect(observed).toEqual(access === "known-key" ? [["locale"]] : []);
-          // Placeholder params are incomplete and must not read or populate a
-          // concrete route's data entry, or persist an unguarded replay.
+          expect(await isPending(result)).toBe(true);
+          expect(state.hasDynamicBoundary).toBe(true);
           expect(get).not.toHaveBeenCalled();
           expect(set).not.toHaveBeenCalled();
         } finally {
@@ -177,13 +223,8 @@ describe("use cache framework props", () => {
         routePattern: "/:slug",
       });
       try {
-        const suspended = await runWithPprFallbackShellState(state, () =>
-          cached(props()).then(
-            () => false,
-            (error: unknown) => error instanceof Promise,
-          ),
-        );
-        expect(suspended).toBe(true);
+        const result = runWithPprFallbackShellState(state, () => cached(props()));
+        expect(await isPending(result)).toBe(true);
         expect(state.hasDynamicBoundary).toBe(true);
         expect(fn).toHaveBeenCalledTimes(2);
         expect(get).not.toHaveBeenCalled();

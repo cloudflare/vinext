@@ -217,7 +217,7 @@ export function encodePrerenderRouteParams(
   params: PrerenderRouteParams,
   fallbackParamNames?: readonly string[],
 ): PrerenderRouteParamsPayload | null {
-  const encoded: PrerenderRouteParams = {};
+  const encoded: PrerenderRouteParams = Object.create(null);
 
   for (const part of pattern.split("/").filter(Boolean)) {
     let paramName: string | null = null;

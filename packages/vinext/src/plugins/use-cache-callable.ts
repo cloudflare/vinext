@@ -188,7 +188,6 @@ function shouldTransformModuleExport(name: string, id: string, meta: ModuleExpor
   ) {
     return false;
   }
-  if (/\/(layout|template)\.(?:m?[jt]s|[jt]sx)$/.test(id) && name === "default") return false;
   return true;
 }
 

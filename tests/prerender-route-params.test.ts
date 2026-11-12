@@ -243,6 +243,19 @@ describe("encodePrerenderRouteParams", () => {
     });
   });
 
+  it("keeps a param named __proto__, so its payload matches the route", () => {
+    const params = JSON.parse('{"__proto__":"en","slug":"[slug]"}');
+    const payload = encodePrerenderRouteParams("/:__proto__/:slug", params, ["slug"]);
+
+    expect(payload && Object.entries(payload.params)).toEqual([
+      ["__proto__", "en"],
+      ["slug", "%5Bslug%5D"],
+    ]);
+    expect(matchPrerenderRouteParamsPayload(payload, "/:__proto__/:slug", params)?.kind).toBe(
+      "fallback-shell",
+    );
+  });
+
   it("omits fallbackParamNames when the array is empty", () => {
     const payload = encodePrerenderRouteParams("/product/:id", { id: "abc" }, []);
 

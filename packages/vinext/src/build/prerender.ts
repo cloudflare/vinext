@@ -75,6 +75,7 @@ import {
   assertNormalizedPagePath,
   getAppRouteOutputPath,
   getOutputPath,
+  getPostponedOutputPath,
   getRscOutputPath,
   PagePathMismatchError,
 } from "../utils/prerender-output-paths.js";
@@ -83,19 +84,13 @@ import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import type { PrerenderableMetadataRoute } from "../server/metadata-route-response.js";
 import {
   createAppPprFallbackShells,
+  hasAppPprFallbackShellPrelude,
   markAppPprDynamicFallbackShellHtml,
+  splitAppPprFallbackShellResumeDataCache,
 } from "../server/app-ppr-fallback-shell.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
 export { readPrerenderSecret } from "./server-manifest.js";
-
-const EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV = "__VINEXT_EXPERIMENTAL_PPR_FALLBACK_SHELLS";
-
-function isExperimentalPprFallbackShellGenerationEnabled(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  return env[EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV] === "1";
-}
 
 function getErrorMessageWithStack(err: Error): string {
   // Include the full stack trace for sourcemap-aware error reporting during
@@ -1601,6 +1596,45 @@ export async function prerenderApp({
       isFallback?: boolean;
     };
     const urlsToRender: UrlToRender[] = [];
+    // A Cache Components route also renders the shells a request for a param
+    // it didn't generate resumes. A shell that fails to render is skipped.
+    const queueFallbackShells = (
+      route: (typeof routes)[number],
+      params: Record<string, string | string[]>,
+      revalidate: number | false,
+      queuedRouteUrls: Set<string>,
+    ): void => {
+      if (config.cacheComponents !== true || mode === "export") return;
+      for (const fallbackShell of createAppPprFallbackShells(route, params)) {
+        if (queuedRouteUrls.has(fallbackShell.pathname)) continue;
+        queuedRouteUrls.add(fallbackShell.pathname);
+        urlsToRender.push({
+          urlPath: fallbackShell.pathname,
+          routePattern: route.pattern,
+          prerenderRouteParams: encodePrerenderRouteParams(
+            route.pattern,
+            fallbackShell.params,
+            fallbackShell.fallbackParamNames,
+          ),
+          revalidate,
+          isSpeculative: false,
+          isFallback: true,
+        });
+      }
+    };
+
+    // Without complete params, the shells come from the params the route's
+    // layouts generated, so a required root param like `/en/[slug]` is kept.
+    const queueParentFallbackShells = (
+      route: (typeof routes)[number],
+      parentParamSets: readonly Record<string, string | string[]>[],
+      revalidate: number | false,
+    ): void => {
+      const queuedRouteUrls = new Set<string>();
+      for (const parentParams of parentParamSets.length > 0 ? parentParamSets : [{}]) {
+        queueFallbackShells(route, parentParams, revalidate, queuedRouteUrls);
+      }
+    };
 
     for (const route of routes) {
       const renderEntryPath = getAppRouteRenderEntryPath(route);
@@ -1672,6 +1706,7 @@ export async function prerenderApp({
               });
             } else {
               results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+              queueFallbackShells(route, {}, revalidate, new Set());
             }
             continue;
           }
@@ -1745,6 +1780,7 @@ export async function prerenderApp({
               });
             } else {
               results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+              queueParentFallbackShells(route, parentParamSets, revalidate);
             }
             continue;
           }
@@ -1757,6 +1793,7 @@ export async function prerenderApp({
               status: "skipped",
               reason: "empty-static-params",
             });
+            queueParentFallbackShells(route, parentParamSets, revalidate);
             continue;
           }
 
@@ -1789,31 +1826,7 @@ export async function prerenderApp({
               isSpeculative: false,
             });
 
-            // These artifacts contain a partial HTML/RSC shell that requires
-            // request-time resume. Keep generation internal-only until vinext
-            // implements that resume lifecycle; serving one as complete HTML
-            // causes hydration to fall into the global error boundary.
-            if (
-              config.cacheComponents === true &&
-              isExperimentalPprFallbackShellGenerationEnabled()
-            ) {
-              for (const fallbackShell of createAppPprFallbackShells(route, params)) {
-                if (queuedRouteUrls.has(fallbackShell.pathname)) continue;
-                queuedRouteUrls.add(fallbackShell.pathname);
-                urlsToRender.push({
-                  urlPath: fallbackShell.pathname,
-                  routePattern: route.pattern,
-                  prerenderRouteParams: encodePrerenderRouteParams(
-                    route.pattern,
-                    fallbackShell.params,
-                    fallbackShell.fallbackParamNames,
-                  ),
-                  revalidate,
-                  isSpeculative: false,
-                  isFallback: true,
-                });
-              }
-            }
+            queueFallbackShells(route, params, revalidate, queuedRouteUrls);
           }
         } catch (e) {
           const err = e as Error;
@@ -2066,7 +2079,15 @@ export async function prerenderApp({
         );
         const htmlCacheControl = htmlRender.cacheControl;
         if (!htmlRender.ok) {
-          if (isSpeculative && !htmlRender.fatal) {
+          if ((isSpeculative && !htmlRender.fatal) || isFallback) {
+            // A fallback shell that fails to render is skipped so requests
+            // render without it, but a thrown render error is still surfaced.
+            if (isFallback && htmlRender.fatal) {
+              console.warn(
+                `[vinext] Warning: fallback shell for ${routePattern} failed to render (${htmlRender.status}). ` +
+                  `Requests for it will render without a fallback shell.`,
+              );
+            }
             return { route: routePattern, status: "skipped", reason: "dynamic" };
           }
           return {
@@ -2094,8 +2115,11 @@ export async function prerenderApp({
             error: "RSC handler returned no prerender HTML",
           };
         }
-        const html = isFallback
-          ? markAppPprDynamicFallbackShellHtml(htmlRender.html)
+        const fallbackShell = isFallback
+          ? splitAppPprFallbackShellResumeDataCache(htmlRender.html)
+          : null;
+        const html = fallbackShell
+          ? markAppPprDynamicFallbackShellHtml(fallbackShell.html)
           : htmlRender.html;
 
         // Reconstruct the RSC payload from the inline bootstrap chunks already
@@ -2162,6 +2186,16 @@ export async function prerenderApp({
         fs.writeFileSync(rscFullPath, rscData);
         outputFiles.push(rscOutputPath);
 
+        // A request resumes the shell from this private artifact, seeded as
+        // the shell entry's `postponed` value. An empty shell renders blocking.
+        // An earlier build's sidecar is removed first: its presence alone marks
+        // a shell as resumable.
+        const postponedFullPath = path.join(outDir, getPostponedOutputPath(urlPath));
+        fs.rmSync(postponedFullPath, { force: true });
+        if (fallbackShell?.resumeDataCache && hasAppPprFallbackShellPrelude(fallbackShell.html)) {
+          fs.writeFileSync(postponedFullPath, fallbackShell.resumeDataCache, "utf-8");
+        }
+
         const renderedCacheControl = resolveRenderedCacheControl(
           htmlRender.requestCacheLife ?? {},
           htmlCacheControl,
@@ -2204,7 +2238,7 @@ export async function prerenderApp({
         };
       } catch (e) {
         renderPool?.recordRenderError(e);
-        if (isSpeculative) {
+        if (isSpeculative || isFallback) {
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
         const err = e as Error & { digest?: string };

@@ -1021,6 +1021,7 @@ describe("seedMemoryCacheFromPrerender", () => {
       {
         "en/blog/[slug].html": "<html>shell</html>",
         "en/blog/[slug].rsc": "shell-flight-data",
+        "en/blog/[slug].postponed": '{"cache":{},"fetch":{}}',
       },
     );
     await seedMemoryCacheFromPrerender(serverDir);
@@ -1030,7 +1031,12 @@ describe("seedMemoryCacheFromPrerender", () => {
     const shellEntry = await getCacheHandler().get(
       appIsrFallbackShellKey("/en/blog/[slug]", "html", buildId),
     );
-    expect(shellEntry?.value).toMatchObject({ kind: "APP_PAGE", html: "<html>shell</html>" });
+    // With the resume data cache its build render collected.
+    expect(shellEntry?.value).toMatchObject({
+      kind: "APP_PAGE",
+      html: "<html>shell</html>",
+      postponed: '{"cache":{},"fetch":{}}',
+    });
     const shellRscEntry = await getCacheHandler().get(
       appIsrFallbackShellKey("/en/blog/[slug]", "rsc", buildId),
     );

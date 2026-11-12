@@ -45,6 +45,13 @@ function isMetadata(value: unknown): value is StaticAssetCacheMetadata {
   );
 }
 
+async function readPostponed(response: Response | undefined): Promise<string | undefined> {
+  if (!response) return undefined;
+  if (response.ok) return response.text();
+  void response.body?.cancel().catch(() => {});
+  return undefined;
+}
+
 export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
   readonly hasPrerenderedPages = true;
   readonly ownsBackgroundRevalidation = false;
@@ -93,10 +100,16 @@ export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
     if (!isMetadata(metadata)) return null;
 
     const extension = metadata.kind;
-    const bodyResponse = await this.assets.fetch(
-      `https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/${id}.${extension}`,
-    );
-    if (!bodyResponse.ok) return null;
+    const [bodyResponse, postponedResponse] = await Promise.all([
+      this.assets.fetch(`https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/${id}.${extension}`),
+      metadata.kind === "html" && metadata.postponed === true
+        ? this.assets.fetch(`https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/${id}.postponed`)
+        : undefined,
+    ]);
+    if (!bodyResponse.ok) {
+      void postponedResponse?.body?.cancel().catch(() => {});
+      return null;
+    }
 
     let value:
       | CachedAppPageValue
@@ -128,7 +141,9 @@ export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
         html: await bodyResponse.text(),
         rscData: undefined,
         headers: metadata.headers,
-        postponed: undefined,
+        // A fallback shell resumes from its resume data cache; without it the
+        // shell falls through to a blocking render.
+        postponed: await readPostponed(postponedResponse),
         prerendered: true,
         status: metadata.status,
       };
