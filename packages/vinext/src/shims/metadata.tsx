@@ -198,7 +198,25 @@ export function ViewportHead({ viewport }: { viewport: Viewport }) {
     elements.push(<meta key={key++} name="color-scheme" content={resolvedViewport.colorScheme} />);
   }
 
-  return <>{elements}</>;
+  const seenKeys = new Map<string, number>();
+
+  const stableElements = elements.map((element) => {
+    if (!React.isValidElement(element)) return element;
+
+    const props = element.props as Record<string, unknown>;
+
+    // Create a deterministic identity string based on the element's actual content
+    const identity = `${String(element.type)}|${String(props.name ?? props.property ?? props.rel ?? props.httpEquiv ?? props.charSet ?? "")}|${String(props.hrefLang ?? "")}|${String(props.media ?? "")}|${String(props.sizes ?? "")}|${String(props.href ?? props.content ?? "")}`;
+
+    const seen = seenKeys.get(identity) ?? 0;
+    seenKeys.set(identity, seen + 1);
+
+    return React.cloneElement(element, {
+      key: seen ? `${identity}#${seen}` : identity
+    });
+  });
+
+  return <>{stableElements}</>;
 }
 
 function resolveThemeColor(themeColor: Viewport["themeColor"]): ResolvedViewport["themeColor"] {
