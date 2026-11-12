@@ -51,6 +51,8 @@ import {
   CACHE_FUNCTION_REVALIDATOR_ID,
   captureResponseStoreDataRegeneration,
   DATA_REVALIDATOR_ID,
+  isResponseStorePageShell,
+  PAGE_SHELL_HEADER,
   runWithResponseStoreInvocation,
   setResponseStore,
   trackResponseStoreRegenerationWork,
@@ -330,16 +332,24 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
       }
       if (input.id === DATA_REVALIDATOR_ID && typeof input.args[0] === "string") {
         const invocation = parseInvocation(input.args.at(-1));
-        return captureResponseStoreDataRegeneration(input.args[0], async () => {
-          const response = await invokeResponseStage(
-            restoreRequest(invocation),
-            invocation.props,
-            env,
-            ctx,
-            { cache: "bypass" },
-          );
-          await response.body?.pipeTo(new WritableStream());
-        });
+        // A path's own shell under its page's keys regenerates under them.
+        const replay = input.args.length > 2 ? parsePageReplay(input.args[1]) : undefined;
+        const pageParts = replay?.pageParts;
+        return captureResponseStoreDataRegeneration(
+          input.args[0],
+          async () => {
+            const response = await invokeResponseStage(
+              restoreRequest(invocation),
+              invocation.props,
+              env,
+              ctx,
+              { cache: "bypass" },
+              pageParts ? { pageParts } : undefined,
+            );
+            await response.body?.pipeTo(new WritableStream());
+          },
+          replay?.ownShell,
+        );
       }
       throw new Error(`Unknown vinext response-store revalidator ${input.id}`);
     },
@@ -363,6 +373,10 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
     RESPONSE_STORE_KEY_PARAM,
     `v1.${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`,
   );
+  return storeKeyRequest(url.toString());
+}
+
+function storeKeyRequest(url: string): Request {
   // The opaque URL already partitions these selectors. Keep every Vary field
   // present so cache-selection rules agree on the selected representation.
   return new Request(url, {
@@ -371,6 +385,26 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
     // A stored redirect is the response; following it would look up its target.
     redirect: "manual",
   });
+}
+
+/**
+ * What a data revalidator replays beside the render: its page's keys, and
+ * whether its entry is a part of a path's own shell.
+ */
+function parsePageReplay(value: unknown): {
+  ownShell: boolean;
+  pageParts: ResponseStoreInvocationCapture["pageParts"];
+} {
+  if (typeof value !== "string") return { ownShell: false, pageParts: undefined };
+  const replay = JSON.parse(value) as { document?: unknown; ownShell?: unknown; rsc?: unknown };
+  const pageParts = {
+    ...(typeof replay.document === "string" ? { document: storeKeyRequest(replay.document) } : {}),
+    ...(typeof replay.rsc === "string" ? { rsc: storeKeyRequest(replay.rsc) } : {}),
+  };
+  return {
+    ownShell: replay.ownShell === true,
+    pageParts: Object.keys(pageParts).length ? pageParts : undefined,
+  };
 }
 
 /**
@@ -383,19 +417,21 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
  * holds the context.
  */
 function withoutRequestScopedHeaders(response: Response, responseStageProps: unknown): Response {
-  if (
-    responseStageProps === null ||
-    typeof responseStageProps !== "object" ||
-    Reflect.get(responseStageProps, "kind") !== "app-page" ||
-    Reflect.get(responseStageProps, "isRscRequest") !== true
-  ) {
-    return response;
-  }
+  const isAppPageRsc =
+    responseStageProps !== null &&
+    typeof responseStageProps === "object" &&
+    Reflect.get(responseStageProps, "kind") === "app-page" &&
+    Reflect.get(responseStageProps, "isRscRequest") === true;
+  // Only the data cache marks a path's own shell, which is never served.
+  if (!isAppPageRsc && !response.headers.has(PAGE_SHELL_HEADER)) return response;
   const headers = new Headers(response.headers);
-  if (Reflect.get(responseStageProps, "interceptionContext") == null) {
-    headers.delete(VINEXT_PARAMS_HEADER);
+  headers.delete(PAGE_SHELL_HEADER);
+  if (isAppPageRsc) {
+    if (Reflect.get(responseStageProps, "interceptionContext") == null) {
+      headers.delete(VINEXT_PARAMS_HEADER);
+    }
+    headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
   }
-  headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
   return new Response(response.body, {
     headers,
     status: response.status,
@@ -522,6 +558,7 @@ async function putOtherPagePart(
   part: PagePart | undefined,
   capture: ResponseStoreInvocationCapture,
   stored: Response,
+  replacesShell = false,
 ): Promise<void> {
   let response: Response;
   if (part?.kind === "rsc" && capture.rscData) {
@@ -535,7 +572,10 @@ async function putOtherPagePart(
     coalesce: true,
     // Replacing a stored part doesn't purge its edge copy: one more purge for
     // every regeneration would spend the account's shared purge budget. The
-    // edge keeps an earlier render's part until its own policy ends.
+    // edge keeps an earlier render's part until its own policy ends. A path's
+    // own shell, which the gateway or the render found there, is purged, as
+    // the gateway's read would find it, not the page.
+    ...(replacesShell ? { purgeExisting: true } : {}),
     revalidator: routeRevalidator(JSON.stringify(part.invocation), true),
   });
   // An unpublished write leaves the pair to the next miss.
@@ -634,7 +674,8 @@ function storedForRequest(
     : stored;
 }
 
-async function readStoredResponse(key: Request): Promise<Response | null> {
+/** A stored response, `null` for the Store's miss, or `undefined` when the lookup failed. */
+async function readStoredResponse(key: Request): Promise<Response | null | undefined> {
   try {
     const response = await responseStore.fetch(key);
     // The backend's marker distinguishes a stored 404 from its 404 cache miss.
@@ -657,7 +698,7 @@ async function readStoredResponse(key: Request): Promise<Response | null> {
         error: error instanceof Error ? error.message : String(error),
       }),
     );
-    return null;
+    return undefined;
   }
 }
 
@@ -758,14 +799,34 @@ const handler = {
         isWarmup || options.cacheIdentity?.queryFree
           ? otherPagePart(identityRequest, identityProps)
           : undefined;
+      const otherKey = otherPart ? await cacheRequest(otherPart.invocation) : undefined;
       // A warm-up renders the page again when its RSC payload is missing.
-      const rscKey =
-        isWarmup && otherPart?.kind === "rsc"
-          ? await cacheRequest(otherPart.invocation)
-          : undefined;
+      const rscKey = isWarmup && otherPart?.kind === "rsc" ? otherKey : undefined;
       const invocation = prepareInvocation(identityRequest, identityProps);
       const key = await cacheRequest(invocation);
-      const stored = await readStoredResponse(key);
+      let stored = await readStoredResponse(key);
+      // A path's own shell, stored under its page's keys, isn't the page: the
+      // render reads it instead of the Store. Only an App page's keys hold one.
+      const foundShell = otherPart !== undefined && !!stored && isResponseStorePageShell(stored);
+      // What the read found for the render: the Store's miss, or a shell. A
+      // failed lookup, or a shell that can't be read, is left to the
+      // render's own read.
+      let ownPartRead: Response | null | undefined = stored === null ? null : undefined;
+      if (stored && foundShell) {
+        try {
+          ownPartRead = new Response(await stored.text(), stored);
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              message: "Vinext response-store failed to read a path's own shell",
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+        stored = null;
+      }
+      // Whether the other part is a shell, as the warm-up's read found it.
+      let otherPartIsShell = false;
       if (stored) {
         if (!rscKey) {
           return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
@@ -774,15 +835,38 @@ const handler = {
         const storedRsc = await readStoredResponse(rscKey);
         if (storedRsc) {
           void storedRsc.body?.cancel().catch(() => {});
-          return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
+          if (!isResponseStorePageShell(storedRsc)) {
+            return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
+          }
+          otherPartIsShell = true;
         }
         void stored.body?.cancel().catch(() => {});
       }
 
+      const ownPart = otherPart && (otherPart.kind === "rsc" ? "document" : "rsc");
       const capture: ResponseStoreInvocationCapture = {
         ...(isWarmup ? {} : { streamResponse: true }),
         ...otherPagePartCapture(otherPart),
+        ...(ownPart && otherKey
+          ? {
+              pageParts: { [ownPart]: key, [otherPart.kind]: otherKey },
+              ...(ownPartRead === undefined
+                ? {}
+                : { pageShell: { part: ownPart, response: ownPartRead } }),
+            }
+          : {}),
       };
+      // A page stored over a shell purges the shell's edge copies, which the
+      // gateway's read would otherwise find instead of the page: a shell the
+      // gateway or the render found. A path's own shell stores both parts, so
+      // the other part of one found under the dispatch's key is a shell too.
+      const replacesOwnShell = () =>
+        foundShell || (ownPart !== undefined && capture.pageShellParts?.has(ownPart) === true);
+      const replacesShell = () => (replacesOwnShell() ? { purgeExisting: true } : {});
+      const replacesOtherShell = () =>
+        replacesOwnShell() ||
+        otherPartIsShell ||
+        (otherPart !== undefined && capture.pageShellParts?.has(otherPart.kind) === true);
       const serializedInvocation = JSON.stringify(invocation);
       // A Pages render can read the request host, so a Pages page regenerates
       // from the request that filled it, not the identity. An entry keyed by
@@ -825,13 +909,14 @@ const handler = {
               }
               const stored = withoutRequestScopedHeaders(admitted, props);
               try {
-                await putOtherPagePart(otherPart, capture, stored);
+                await putOtherPagePart(otherPart, capture, stored, replacesOtherShell());
               } catch (error) {
                 await stored.body?.cancel().catch(() => {});
                 throw error;
               }
               await responseStore.put(key, stored, {
                 coalesce: true,
+                ...replacesShell(),
                 revalidator: routeRevalidator(revalidatorInvocation, otherPart !== undefined),
               });
             })
@@ -872,9 +957,10 @@ const handler = {
       const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered), props);
       try {
         // A manifest-backed admission completes the response before it returns.
-        await putOtherPagePart(otherPart, capture, cacheResponse);
+        await putOtherPagePart(otherPart, capture, cacheResponse, replacesOtherShell());
         await responseStore.put(key, cacheResponse, {
           coalesce: true,
+          ...replacesShell(),
           revalidator: routeRevalidator(revalidatorInvocation, otherPart !== undefined),
         });
       } catch (error) {

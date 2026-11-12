@@ -2640,6 +2640,13 @@ describe("App Router entry templates", () => {
     }
   });
 
+  it("generateRscEntry passes the ISR cache's shell reads to App page dispatch", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("isrGetReadsFallbackShells: __isrGetReadsFallbackShells(),");
+    expect(code).toContain("isrPageReadsFindOwnShells: __isrPageReadsFindOwnShells(),");
+  });
+
   it("generateRscEntry delegates App Router request handling to the typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 

@@ -31,7 +31,7 @@ import {
 } from "./app-ppr-fallback-shell.js";
 import type { AppPageRouteParamNames, GeneratedStaticParamsMemo } from "./app-page-request.js";
 import type { AppPagePprShellResume } from "./app-page-stream.js";
-import type { ISRCacheEntry } from "./isr-cache.js";
+import type { AppPageShellPart, ISRCacheEntry } from "./isr-cache.js";
 
 type PprFallbackShellEligibility =
   | {
@@ -197,7 +197,7 @@ function scheduleShellProduction<TRoute extends AppPageDispatchRoute>(
     async () => {
       const cached = known
         ? known.cached
-        : await (options.isrGetFallbackShell ?? options.isrGet)(key);
+        : await readShellKey(options, key, isConcrete ? "document" : undefined);
       // A stale shell regenerates here whatever scheduled this: a request that
       // serves it while this runs finds the key pending, so its own
       // regeneration is dropped.
@@ -228,13 +228,20 @@ async function seedRscRequestFromOwnShell<TRoute extends AppPageDispatchRoute>(
 ): Promise<void> {
   const concreteShell = createAppPprRequestConcreteShell(options.route, options.params);
   if (!concreteShell) return;
-  // The page read finds the shell's part stored beside the page's RSC payload
-  // when it reads the data cache. Without that part, the request reads the
-  // shell itself.
-  let read: ShellRead;
+  // A page read finds the shell's part stored beside the page's RSC payload.
+  // An edge's hands it to the read here instead. Without that part, the
+  // request reads the shell itself.
+  let read: ShellRead | undefined;
   if (isAppPprOwnShellPart(ownShellRead.cached)) {
     read = { ok: true, cached: ownShellRead.cached };
-  } else {
+  } else if (options.isrPageReadsFindOwnShells === true && !options.isrGetReadsFallbackShells) {
+    const part = await readRscShellPart(options);
+    if (part.ok && isAppPprOwnShellPart(part.cached)) {
+      read = part;
+      ownShellRead.cached = part.cached;
+    }
+  }
+  if (!read) {
     read = await readShell(options, concreteShell, true);
     ownShellRead.cached = read.ok ? read.cached : undefined;
   }
@@ -284,8 +291,10 @@ async function readShell<TRoute extends AppPageDispatchRoute>(
   try {
     return {
       ok: true,
-      cached: await (options.isrGetFallbackShell ?? options.isrGet)(
+      cached: await readShellKey(
+        options,
         shellKeyOf(options, shell, isConcrete),
+        isConcrete ? "document" : undefined,
       ),
     };
   } catch (isrReadError) {
@@ -293,6 +302,31 @@ async function readShell<TRoute extends AppPageDispatchRoute>(
     console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
     return { ok: false };
   }
+}
+
+/** Read the part of a path's own shell stored beside the page's RSC payload. */
+async function readRscShellPart<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+): Promise<ShellRead> {
+  try {
+    return {
+      ok: true,
+      cached: await readShellKey(options, options.isrRscKey(options.cleanPathname, null), "rsc"),
+    };
+  } catch (isrReadError) {
+    options.isrDebug?.("MISS (fallback shell read error)", options.cleanPathname);
+    console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
+    return { ok: false };
+  }
+}
+
+/** Read a shell, naming the page part a path's own shell is stored under. */
+function readShellKey<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  key: string,
+  part?: AppPageShellPart,
+): Promise<ISRCacheEntry | null> {
+  return options.isrGetFallbackShell ? options.isrGetFallbackShell(key, part) : options.isrGet(key);
 }
 
 async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(

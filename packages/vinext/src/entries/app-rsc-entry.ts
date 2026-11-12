@@ -1053,6 +1053,7 @@ import {
   isrGet as __isrGet,
   isrGetFallbackShell as __isrGetFallbackShell,
   isrGetReadsFallbackShells as __isrGetReadsFallbackShells,
+  isrPageReadsFindOwnShells as __isrPageReadsFindOwnShells,
   isrSet as __isrSet,
   isrSetFallbackShell as __isrSetFallbackShell,
   isrSetPrerenderedAppPage as __isrSetPrerenderedAppPage,
@@ -1645,6 +1646,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isrGet: __isrGet,
       isrGetFallbackShell: __isrGetFallbackShell,
       isrGetReadsFallbackShells: __isrGetReadsFallbackShells(),
+      isrPageReadsFindOwnShells: __isrPageReadsFindOwnShells(),
       isrSetFallbackShell: __isrSetFallbackShell,
       isrFallbackShellHtmlKey: __isrFallbackShellHtmlKey,
       isrHtmlKey(pathname) {
