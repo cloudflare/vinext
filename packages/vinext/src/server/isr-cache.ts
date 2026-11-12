@@ -21,7 +21,7 @@ import {
   type CachedPagesValue,
   type CachedAppPageValue,
 } from "vinext/shims/cache-handler";
-import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { DefaultCdnCacheAdapter, getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
@@ -104,7 +104,8 @@ export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
 export async function isrGetFallbackShell(key: string): Promise<ISRCacheEntry | null> {
   const { getDataCacheHandler } = await import("vinext/shims/cache-handler");
   const stored = await getDataCacheHandler().get(key);
-  if (stored) return toIsrCacheEntry(stored);
+  // An adapter that reads the data cache has no packaged shell to add.
+  if (stored || isrGetReadsFallbackShells()) return toIsrCacheEntry(stored);
   const packaged = await getExplicitCdnCacheAdapter()?.get(key);
   return toIsrCacheEntry(packaged ? withPackagedCacheState(packaged) : null);
 }
@@ -115,7 +116,10 @@ export async function isrGetFallbackShell(key: string): Promise<ISRCacheEntry | 
  * stores a path's prerender, so then the page read finds it too.
  */
 export function isrGetReadsFallbackShells(): boolean {
-  return getExplicitCdnCacheAdapter() === null;
+  // A data adapter that provides build identity registers the default
+  // adapter explicitly.
+  const adapter = getExplicitCdnCacheAdapter();
+  return adapter === null || adapter instanceof DefaultCdnCacheAdapter;
 }
 
 /**

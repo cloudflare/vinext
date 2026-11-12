@@ -26,6 +26,7 @@ import { encodePrerenderRouteParams } from "./prerender-route-params.js";
 import {
   createAppPprRequestConcreteShell,
   isAppPprDynamicFallbackShellHtml,
+  isAppPprStoredPage,
   type AppPagePprFallbackCacheShell,
 } from "./app-ppr-fallback-shell.js";
 import type { AppPageRouteParamNames, GeneratedStaticParamsMemo } from "./app-page-request.js";
@@ -174,16 +175,6 @@ function shellKeyOf<TRoute extends AppPageDispatchRoute>(
     : options.isrFallbackShellHtmlKey(normalizePregeneratedPathname(shell.pathname));
 }
 
-/** A page stored under the key its path's own shell shares, which no shell replaces. */
-function isStoredPage(cached: ISRCacheEntry | null): boolean {
-  const value = cached?.value.value;
-  return (
-    cached?.isExpired !== true &&
-    value?.kind === "APP_PAGE" &&
-    !isAppPprDynamicFallbackShellHtml(value.html)
-  );
-}
-
 /** Produce a shell in the background unless it's stored, or regenerate a stale one. */
 function scheduleShellProduction<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
@@ -210,7 +201,7 @@ function scheduleShellProduction<TRoute extends AppPageDispatchRoute>(
       // A stale shell regenerates here whatever scheduled this: a request that
       // serves it while this runs finds the key pending, so its own
       // regeneration is dropped.
-      if (isFreshShell(cached) || (isConcrete && isStoredPage(cached))) return;
+      if (isFreshShell(cached) || (isConcrete && isAppPprStoredPage(cached))) return;
       const { produceAppPprFallbackShell } = await import("./app-ppr-fallback-shell-production.js");
       const { coalesceFallbackShellProduction } = await import("./isr-cache.js");
       options.isrDebug?.(
@@ -337,7 +328,7 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
   let cached = shellRead.cached;
   // A request without its path's shell renders the page, and the shell is
   // produced after it. A page stored under the shell's key isn't a shell.
-  if (isConcrete && (cached === null || cached.isExpired === true || isStoredPage(cached))) {
+  if (isConcrete && (cached === null || cached.isExpired === true || isAppPprStoredPage(cached))) {
     return SHELL_MISSING;
   }
   // Like Next.js, a request without a servable shell renders it first, blocking.

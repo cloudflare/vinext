@@ -1,5 +1,6 @@
 import { createInlineScriptTag } from "./html.js";
 import { createNavigationRuntimeRscMetadataScript } from "./app-ssr-stream.js";
+import type { ISRCacheEntry } from "./isr-cache.js";
 
 const PPR_DYNAMIC_FALLBACK_SHELL_MARKER = "<!--vinext-ppr-dynamic-fallback-shell-->";
 const PPR_SHELL_STATE_TRAILER_START = "<!--vinext-ppr-shell-state:";
@@ -33,7 +34,19 @@ export function markAppPprDynamicFallbackShellHtml(html: string): string {
 }
 
 export function isAppPprDynamicFallbackShellHtml(html: string): boolean {
-  return html.includes(PPR_DYNAMIC_FALLBACK_SHELL_MARKER);
+  // A shell's marker ends its document, so a page rendering the same comment
+  // isn't one.
+  return html.endsWith(PPR_DYNAMIC_FALLBACK_SHELL_MARKER);
+}
+
+/** A page stored under the key its path's own shell shares, which no shell replaces. */
+export function isAppPprStoredPage(cached: ISRCacheEntry | null): boolean {
+  const value = cached?.value.value;
+  return (
+    cached?.isExpired !== true &&
+    value?.kind === "APP_PAGE" &&
+    !isAppPprDynamicFallbackShellHtml(value.html)
+  );
 }
 
 export function stripAppPprDynamicFallbackShellMarker(html: string): string {

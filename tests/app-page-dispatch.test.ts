@@ -8261,17 +8261,65 @@ describe("app page dispatch", () => {
   it.each([
     { name: "a document request", isRscRequest: false },
     { name: "an RSC request", isRscRequest: true },
-  ])("produces a missing own shell without reading it again ($name)", async ({ isRscRequest }) => {
+  ])(
+    "produces a missing own shell, reading it again only to write it ($name)",
+    async ({ isRscRequest }) => {
+      const jobs = new Map<string, () => Promise<void>>();
+      const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+      const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+        async () => {},
+      );
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement("fresh"),
+        cleanPathname: "/en/blog/hello",
+        isRscRequest,
+        isrGet,
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            markDynamicUsage();
+            return createStream(["<html><head></head><body>page</body></html>"]);
+          },
+        }),
+        params: { locale: "en", slug: "hello" },
+        renderToReadableStream() {
+          markDynamicUsage();
+          return createStream(["payload"]);
+        },
+        request: new Request(
+          "https://example.test/en/blog/hello",
+          isRscRequest ? { headers: { RSC: "1" } } : undefined,
+        ),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          isrSetFallbackShell,
+          scheduleFallbackShellRegeneration(key, job) {
+            if (!jobs.has(key)) jobs.set(key, job);
+          },
+        }),
+      );
+      await response.text();
+      await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+      await jobs.get("html:/en/blog/hello")!();
+
+      // The request's read, then a check that no page was stored meanwhile.
+      expect(isrGet.mock.calls.filter(([key]) => key === "html:/en/blog/hello")).toHaveLength(2);
+      expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toContain("html:/en/blog/hello");
+    },
+  );
+
+  it("keeps a page another request stored while its path's shell rendered", async () => {
     const jobs = new Map<string, () => Promise<void>>();
-    const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+    let stored: ISRCacheEntry | null = null;
     const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
       async () => {},
     );
     const { options } = createPprBlogDispatchOptions({
       buildPageElement: createParamTextPageElement("fresh"),
       cleanPathname: "/en/blog/hello",
-      isRscRequest,
-      isrGet,
+      isrGet: vi.fn(async (key: string) => (key === "html:/en/blog/hello" ? stored : null)),
       loadSsrHandler: async () => ({
         async handleSsr() {
           markDynamicUsage();
@@ -8279,14 +8327,7 @@ describe("app page dispatch", () => {
         },
       }),
       params: { locale: "en", slug: "hello" },
-      renderToReadableStream() {
-        markDynamicUsage();
-        return createStream(["payload"]);
-      },
-      request: new Request(
-        "https://example.test/en/blog/hello",
-        isRscRequest ? { headers: { RSC: "1" } } : undefined,
-      ),
+      request: new Request("https://example.test/en/blog/hello"),
     });
 
     const response = await runWithRequestContext(createRequestContext(), () =>
@@ -8300,10 +8341,14 @@ describe("app page dispatch", () => {
     );
     await response.text();
     await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+    // Another request stores the page after this one read the key.
+    stored = buildISRCacheEntry(
+      buildCachedAppPageValue("<html><head></head><body>Stored page</body></html>"),
+      false,
+    );
     await jobs.get("html:/en/blog/hello")!();
 
-    expect(isrGet.mock.calls.filter(([key]) => key === "html:/en/blog/hello")).toHaveLength(1);
-    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toContain("html:/en/blog/hello");
+    expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).not.toContain("html:/en/blog/hello");
   });
 
   it.each([

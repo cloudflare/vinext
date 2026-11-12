@@ -848,6 +848,37 @@ describe("app page cache helpers", () => {
     },
   );
 
+  it("serves a page whose document renders a shell's marker inside it", async () => {
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext() {},
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue(
+            `<html><body>${markAppPprDynamicFallbackShellHtml("<p>page</p>")}</body></html>`,
+          ),
+        );
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("a fresh page does not regenerate");
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("a fresh page does not regenerate");
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+  });
+
   it("serves cached HIT responses for query-bearing requests with negative searchParams proof", async () => {
     let didClearRequestContext = false;
 
