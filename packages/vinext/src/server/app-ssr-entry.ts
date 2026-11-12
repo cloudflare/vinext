@@ -33,6 +33,7 @@ import {
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import {
   resolveSsrSearchParams,
+  resolveClientPageSearchParamsGate,
   startCandidateSearchParamsGate,
 } from "./app-ssr-search-params-gate.js";
 import { onRenderDynamicLatched } from "vinext/shims/internal/headers-state";
@@ -540,10 +541,16 @@ export async function handleSsr(
       isForceStatic: options?.isForceStatic,
       searchParamsGate: gate,
       // A client page reading this marks the render dynamic, like a server
-      // page's searchParams.
+      // page's searchParams. With Cache Components, it waits on the gate
+      // like useSearchParams(), as Next.js's prerender stores a route whose
+      // only query read is a client page's as static.
       getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {
         isForceStatic: options?.isForceStatic,
         isPprFallbackShell: options?.pprFallbackShellSignal !== undefined,
+        searchParamsGate:
+          String(process.env.__NEXT_CACHE_COMPONENTS) === "true"
+            ? resolveClientPageSearchParamsGate(gate, options?.isStaticGeneration === true)
+            : undefined,
       }),
     };
 

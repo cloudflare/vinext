@@ -1465,7 +1465,8 @@ async function renderAppPageLifecycleImpl(
     },
     renderErrorBoundaryResponse(error) {
       if (isCacheCandidateHtmlRender && isBailoutToCSRError(error)) {
-        // A gated useSearchParams() outside Suspense. Next.js rethrows the
+        // A gated useSearchParams() outside Suspense, or with Cache
+        // Components a client page's searchParams. Next.js rethrows the
         // bail-out instead of rendering an error boundary, so the request
         // fails with a 500 and nothing is stored.
         console.error(
