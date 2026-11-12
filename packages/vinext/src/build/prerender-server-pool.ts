@@ -228,22 +228,28 @@ export async function startPrerenderServerPool(
           child.off("error", onError);
           child.off("exit", onStartupExit);
         };
-        const onMessage = (msg: { type?: string; port?: number; error?: string }) => {
-          cleanupStartupListeners();
-          if (msg?.type === "ready" && typeof msg.port === "number") {
+        const onMessage = (msg: { type?: unknown; port?: unknown; error?: unknown }) => {
+          // Application code also runs in the child and may use its IPC channel;
+          // only vinext's own startup messages settle the worker.
+          if (msg?.type === "vinext:prerender-server-ready" && typeof msg.port === "number") {
+            cleanupStartupListeners();
+            const port = msg.port;
             // Once ready, a later exit before close() is a crash — record it so
             // assertHealthy() can fail the build instead of shipping partial output.
             child.once("exit", (code, signal) => {
               if (!shuttingDown && !crash) {
                 // First crash is enough to fail the build; keep the earliest
                 // port/code in the error rather than collecting every exit.
-                crash = { port: msg.port, code, signal };
+                crash = { port, code, signal };
               }
             });
-            resolve(msg.port);
-          } else {
+            resolve(port);
+          } else if (msg?.type === "vinext:prerender-server-error") {
+            cleanupStartupListeners();
             reject(
-              new Error(`[vinext] prerender render server failed: ${msg?.error ?? "unknown"}`),
+              new Error(
+                `[vinext] prerender render server failed: ${typeof msg.error === "string" ? msg.error : "unknown"}`,
+              ),
             );
           }
         };
@@ -262,7 +268,7 @@ export async function startPrerenderServerPool(
           }
         };
 
-        child.once("message", onMessage);
+        child.on("message", onMessage);
         child.once("error", onError);
         // A child killed by signal reports code === null; reject on either so an
         // OOM-killed (SIGKILL) startup fails fast instead of waiting out the 60s

@@ -1063,6 +1063,7 @@ export async function prerenderPages({
             defaultLocale: config.i18n?.defaultLocale ?? "",
           });
         } catch (e) {
+          recordRenderError(e);
           results.push({
             route: route.pattern,
             status: "error",
@@ -1824,6 +1825,7 @@ export async function prerenderApp({
             }
           }
         } catch (e) {
+          recordRenderError(e);
           const err = e as Error;
           const detail = config.enablePrerenderSourceMaps
             ? getErrorMessageWithStack(err)

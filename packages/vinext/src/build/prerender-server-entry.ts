@@ -18,6 +18,10 @@ import { startProdServer } from "../server/prod-server.js";
 import { NoOpCacheHandler, setCacheHandler } from "vinext/shims/cache-handler";
 import { registerPrerenderCloudflareLoader } from "./prerender-cloudflare-loader.js";
 
+// A Workers server bundle can replace `globalThis.process` with a polyfill that
+// has no IPC channel, so keep the real process for talking to the parent.
+const nodeProcess = process;
+
 async function main(): Promise<void> {
   const outDir = process.env.VINEXT_PRERENDER_OUTDIR;
   const rscEntryPath = process.env.VINEXT_PRERENDER_RSC_ENTRY_PATH;
@@ -49,8 +53,8 @@ async function main(): Promise<void> {
     purpose: "prerender",
     silent: process.env.VINEXT_PRERENDER_SERVER_LOG !== "1",
   });
-  if (typeof process.send === "function") {
-    process.send({ type: "ready", port });
+  if (typeof nodeProcess.send === "function") {
+    nodeProcess.send({ type: "vinext:prerender-server-ready", port });
   } else {
     throw new Error("[vinext] prerender server worker: no IPC channel to parent");
   }
@@ -59,13 +63,15 @@ async function main(): Promise<void> {
 // If the parent build process dies (crash, SIGKILL, cancelled CI job), the IPC
 // channel closes — exit so this listening server doesn't survive as an orphan
 // holding its port and ~hundreds of MB.
-process.on("disconnect", () => process.exit(0));
+nodeProcess.on("disconnect", () => nodeProcess.exit(0));
 
 main().catch((err: unknown) => {
   const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
-  if (typeof process.send === "function") {
-    process.send({ type: "error", error: message }, () => process.exit(1));
+  if (typeof nodeProcess.send === "function") {
+    nodeProcess.send({ type: "vinext:prerender-server-error", error: message }, () =>
+      nodeProcess.exit(1),
+    );
     return;
   }
-  process.exit(1);
+  nodeProcess.exit(1);
 });
