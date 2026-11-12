@@ -822,11 +822,8 @@ const handler = {
         }
         stored = null;
       }
-      // A page stored over a shell purges the shell's edge copies, which the
-      // gateway's read would otherwise find instead of the page.
-      const replacesShell = foundShell ? { purgeExisting: true } : {};
-      // A path's own shell stores both parts, so the other part is a shell too.
-      let otherPartIsShell = foundShell;
+      // Whether the other part is a shell, as the warm-up's read found it.
+      let otherPartIsShell = false;
       if (stored) {
         if (!rscKey) {
           return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
@@ -856,9 +853,15 @@ const handler = {
             }
           : {}),
       };
-      // Whether the page is stored over a shell under its other part: as both
-      // parts of a shell are, or as the gateway or the render found it.
+      // A page stored over a shell purges the shell's edge copies, which the
+      // gateway's read would otherwise find instead of the page: a shell the
+      // gateway or the render found. A path's own shell stores both parts, so
+      // the other part of one found under the dispatch's key is a shell too.
+      const replacesOwnShell = () =>
+        foundShell || (ownPart !== undefined && capture.pageShellParts?.has(ownPart) === true);
+      const replacesShell = () => (replacesOwnShell() ? { purgeExisting: true } : {});
       const replacesOtherShell = () =>
+        replacesOwnShell() ||
         otherPartIsShell ||
         (otherPart !== undefined && capture.pageShellParts?.has(otherPart.kind) === true);
       const serializedInvocation = JSON.stringify(invocation);
@@ -910,7 +913,7 @@ const handler = {
               }
               await responseStore.put(key, stored, {
                 coalesce: true,
-                ...replacesShell,
+                ...replacesShell(),
                 revalidator: routeRevalidator(revalidatorInvocation, otherPart !== undefined),
               });
             })
@@ -954,7 +957,7 @@ const handler = {
         await putOtherPagePart(otherPart, capture, cacheResponse, replacesOtherShell());
         await responseStore.put(key, cacheResponse, {
           coalesce: true,
-          ...replacesShell,
+          ...replacesShell(),
           revalidator: routeRevalidator(revalidatorInvocation, otherPart !== undefined),
         });
       } catch (error) {

@@ -1060,6 +1060,36 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       expect(reads).toEqual([shell("<!--shell-->")]);
     });
 
+    it("purges a shell the render found after its gateway's lookup failed", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      stages.response.mockImplementationOnce(async () => {
+        await dataCache.set("html:/page", shell("<!--shell-->"), shellContext("document"));
+        await dataCache.set("rsc:/page", shell(""), shellContext("rsc"));
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const pageKey = store.fetch.mock.calls[0]![0].url;
+      const rscKey = [...entries.keys()].find((url) => url !== pageKey)!;
+      store.fetch.mockRejectedValueOnce(new Error("unavailable"));
+      stages.response.mockImplementationOnce(async () => {
+        await dataCache.get("html:/page", { appPageShellPart: "document" });
+        captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
+        return new Response("page", { headers: { "Cache-Control": "public, max-age=60" } });
+      });
+
+      await fetchPage(handler);
+
+      expect(entries.get(pageKey)?.body).toBe("page");
+      expect([pageKey, rscKey].map((url) => entries.get(url)?.options?.purgeExisting)).toEqual([
+        true,
+        true,
+      ]);
+    });
+
     it("regenerates a shell under the data cache's keys with both of its parts", async () => {
       dispatchWithIdentity(false);
       const { entries, store } = createMemoryStore();
