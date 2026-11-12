@@ -354,10 +354,18 @@ describe("ppr fallback shell render lifecycle", () => {
 
     await runWithRequestContext(createRequestContext(), async () => {
       setHeadersContext({ headers: new Headers(), cookies: new Map() });
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const privateCache = registerCachedFunction(
+        async () => "private",
+        "test:shell-private",
+        "private",
+      );
       runWithPprFallbackShellState(state, () => {
         void cookies();
         void headers();
         void connection();
+        void privateCache();
       });
       await delay(0);
       expect(state.hasDynamicBoundary).toBe(true);
@@ -368,6 +376,38 @@ describe("ppr fallback shell render lifecycle", () => {
       expect(consumeDynamicUsage()).toBe(true);
     });
 
+    state.abortController.abort();
+  });
+
+  // A runtime fallback shell renders in a prerender work unit.
+  it("leaves a private cache as a hole in a shell rendered in a prerender work unit", async () => {
+    const { runWithPrerenderWorkUnit } =
+      await import("../packages/vinext/src/server/prerender-work-unit-setup.js");
+    const privateCache = registerCachedFunction(
+      async () => "private",
+      "test:shell-private-prerender",
+      "private",
+    );
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/:locale/about",
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      runWithPrerenderWorkUnit(
+        () =>
+          runWithPprFallbackShellState(state, async () => {
+            void privateCache();
+            await delay(0);
+            return new Response("shell");
+          }),
+        { cacheComponents: true, prerender: true, route: "/:locale/about" },
+      ),
+    );
+
+    // The render carries on to its shell instead of bailing out of it.
+    await expect(response.text()).resolves.toBe("shell");
+    expect(state.hasDynamicBoundary).toBe(true);
     state.abortController.abort();
   });
 
