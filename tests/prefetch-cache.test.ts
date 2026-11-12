@@ -3496,6 +3496,27 @@ describe("static-shell prefetch", () => {
     expect(resolveAutoAppRoutePrefetch("/test").staticShell).toBeUndefined();
   });
 
+  it("prefetches the static shell of a page under a loading boundary", async () => {
+    useCacheComponentsProduction();
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, isDynamic: false, patternParts: ["loading"] },
+    ];
+    const { resolveAutoAppRoutePrefetch } =
+      await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
+
+    // Next.js prefetches the page's prerender, which stops at loading.tsx only
+    // where the page itself suspends.
+    expect(resolveAutoAppRoutePrefetch("/loading")).toMatchObject({
+      cacheForNavigation: false,
+      dynamicStaleTime: "ignore",
+      staticShell: true,
+    });
+    expect(resolveAutoAppRoutePrefetch("/loading?q=1").staticShell).toBeUndefined();
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "false");
+    expect(resolveAutoAppRoutePrefetch("/loading")).toMatchObject({ cacheForNavigation: false });
+    expect(resolveAutoAppRoutePrefetch("/loading").staticShell).toBeUndefined();
+  });
+
   it("prefetches a runtime prefetch route's search-param and root-param hrefs as static shells", async () => {
     useCacheComponentsProduction();
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
