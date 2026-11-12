@@ -43,7 +43,7 @@ async function createProject(): Promise<string> {
     path.join(dir, "node_modules/wrangler/package.json"),
     JSON.stringify({
       name: "wrangler",
-      version: "4.66.0",
+      version: "0.0.0",
       type: "module",
       bin: { wrangler: "bin/wrangler.js" },
     }),
@@ -155,13 +155,8 @@ test.describe("vinext-cloudflare deploy --vite-config", () => {
     const result = await runDeploy(["--vite-config", "vite.cdn-cache.config.ts"]);
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain(`Deployed to: ${DEPLOYED_URL}`);
-    const wranglerArgs: string[] = JSON.parse(
-      await fs.readFile(path.join(root, "wrangler-args.json"), "utf8"),
-    );
-    // The temporary project has no Git checkout, so only a CI commit variable supplies the tag.
-    expect(wranglerArgs.filter((arg) => !arg.startsWith("--tag="))).toEqual([
+    expect(JSON.parse(await fs.readFile(path.join(root, "wrangler-args.json"), "utf8"))).toEqual([
       "deploy",
-      "--message=Deployed with vinext",
     ]);
 
     await startWorker();

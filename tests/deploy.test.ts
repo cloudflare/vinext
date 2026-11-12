@@ -6,10 +6,7 @@ import Module from "node:module";
 import { execFileSync, type ChildProcess, type spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import {
-  DEFAULT_VERSION_MESSAGE,
-  resolveVersionAnnotations,
-} from "../packages/cloudflare/src/version-annotations.js";
+import { resolveVersionAnnotations } from "../packages/cloudflare/src/version-annotations.js";
 import {
   assertWranglerDeployAnnotations,
   deploy,
@@ -4425,45 +4422,36 @@ describe("getZeroPercentStagingTraffic", () => {
 });
 
 describe("resolveVersionAnnotations", () => {
-  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const ci = { CI: "true" };
   const git = (args: string[]) => {
-    if (args[0] === "rev-parse") return `${sha}\n`;
-    if (args[0] === "log") return "Fix the header\n";
+    if (args.join(" ") === "rev-parse --short HEAD") return "0123456\n";
+    if (args.join(" ") === "log -1 --format=%B")
+      return "Fix the header\n\nKeep the logo aligned.\n";
     throw new Error(`unexpected git ${args.join(" ")}`);
   };
   const noGit = () => {
     throw new Error("not a git repository");
   };
 
-  it("defaults to the HEAD commit SHA and subject", () => {
-    expect(resolveVersionAnnotations("/app", {}, {}, git)).toEqual({
-      message: "Fix the header",
-      tag: sha,
+  it("defaults to the short HEAD SHA and commit message in CI, like cf previews deploy", () => {
+    expect(resolveVersionAnnotations("/app", {}, ci, git)).toEqual({
+      message: "Fix the header\n\nKeep the logo aligned.",
+      tag: "0123456",
     });
+    expect(resolveVersionAnnotations("/app", {}, { CI: "1" }, git).tag).toBe("0123456");
   });
 
-  it("cuts a long commit subject to the 1000-byte message limit", () => {
-    const subject = "a".repeat(999) + "é".repeat(5);
-    const { message } = resolveVersionAnnotations("/app", { tag: "v2" }, {}, () => subject);
-    expect(message).toBe("a".repeat(999));
-    expect(Buffer.byteLength(message!)).toBeLessThanOrEqual(1000);
+  it("adds no defaults outside CI or without a Git checkout", () => {
+    expect(resolveVersionAnnotations("/app", {}, {}, git)).toEqual({});
+    expect(resolveVersionAnnotations("/app", {}, { CI: "false" }, git)).toEqual({});
+    expect(resolveVersionAnnotations("/app", {}, ci, noGit)).toEqual({});
   });
 
   it("prefers explicit values and omits explicitly empty ones", () => {
-    expect(resolveVersionAnnotations("/app", { message: "Release 2", tag: "v2" }, {}, git)).toEqual(
-      { message: "Release 2", tag: "v2" },
-    );
-    expect(resolveVersionAnnotations("/app", { message: "", tag: "" }, {}, git)).toEqual({});
-  });
-
-  it("falls back to CI commit variables and a generic message without git", () => {
-    expect(resolveVersionAnnotations("/app", {}, { GITHUB_SHA: sha }, noGit)).toEqual({
-      message: DEFAULT_VERSION_MESSAGE,
-      tag: sha,
-    });
-    expect(resolveVersionAnnotations("/app", {}, {}, noGit)).toEqual({
-      message: DEFAULT_VERSION_MESSAGE,
-    });
+    expect(
+      resolveVersionAnnotations("/app", { message: "Release 2", tag: "v2" }, {}, noGit),
+    ).toEqual({ message: "Release 2", tag: "v2" });
+    expect(resolveVersionAnnotations("/app", { message: "", tag: "" }, ci, git)).toEqual({});
   });
 });
 

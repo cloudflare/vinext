@@ -1,19 +1,5 @@
 import { execFileSync } from "node:child_process";
 
-export const DEFAULT_VERSION_MESSAGE = "Deployed with vinext";
-
-/** Uploads with a longer version message fail, so the commit default is cut to fit. */
-const MAX_VERSION_MESSAGE_BYTES = 1000;
-
-/** Commit SHA variables set by common CI providers, for checkouts without a `.git` directory. */
-const COMMIT_SHA_ENV_VARS = [
-  "WORKERS_CI_COMMIT_SHA",
-  "GITHUB_SHA",
-  "CI_COMMIT_SHA",
-  "CIRCLE_SHA1",
-  "COMMIT_SHA",
-] as const;
-
 export type VersionAnnotations = {
   message?: string;
   tag?: string;
@@ -37,23 +23,12 @@ function readGit(git: GitRunner, args: string[], cwd: string): string | undefine
   }
 }
 
-function truncateUtf8(value: string, maxBytes: number): string {
-  let bytes = 0;
-  let end = 0;
-  for (const char of value) {
-    bytes += Buffer.byteLength(char);
-    if (bytes > maxBytes) break;
-    end += char.length;
-  }
-  return value.slice(0, end);
-}
-
 /**
  * Resolve the message and tag recorded on uploaded Worker versions.
  *
- * Without explicit values, the tag is the deployed commit SHA and the message is
- * its subject, so the dashboard identifies each version instead of showing
- * "Manually deployed". An explicit empty value omits that annotation.
+ * Like `cf previews deploy`, CI deploys default the tag to the short HEAD commit
+ * SHA and the message to its commit message. An explicit empty value omits that
+ * annotation.
  */
 export function resolveVersionAnnotations(
   root: string,
@@ -61,17 +36,11 @@ export function resolveVersionAnnotations(
   env: Readonly<Record<string, string | undefined>> = process.env,
   git: GitRunner = runGit,
 ): VersionAnnotations {
+  const isCI = env.CI === "1" || env.CI === "true";
   const tag =
-    options.tag ??
-    readGit(git, ["rev-parse", "HEAD"], root) ??
-    COMMIT_SHA_ENV_VARS.map((name) => env[name]?.trim()).find(Boolean);
-  const commitSubject =
-    options.message === undefined ? readGit(git, ["log", "-1", "--format=%s"], root) : undefined;
+    options.tag ?? (isCI ? readGit(git, ["rev-parse", "--short", "HEAD"], root) : undefined);
   const message =
-    options.message ??
-    (commitSubject
-      ? truncateUtf8(commitSubject, MAX_VERSION_MESSAGE_BYTES)
-      : DEFAULT_VERSION_MESSAGE);
+    options.message ?? (isCI ? readGit(git, ["log", "-1", "--format=%B"], root) : undefined);
   return { message: message || undefined, tag: tag || undefined };
 }
 

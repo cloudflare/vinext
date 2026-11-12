@@ -130,9 +130,9 @@ export type DeployOptions = {
   name?: string;
   /** Wrangler config path, relative to root unless absolute */
   config?: string;
-  /** Message recorded on uploaded Worker versions (default: the HEAD commit subject; empty omits it) */
+  /** Message recorded on uploaded Worker versions (default in CI: the HEAD commit message; empty omits it) */
   message?: string;
-  /** Tag recorded on uploaded Worker versions (default: the HEAD commit SHA; empty omits it) */
+  /** Tag recorded on uploaded Worker versions (default in CI: the short HEAD commit SHA; empty omits it) */
   tag?: string;
   /** Vite config file used to build and read deploy metadata, relative to root unless absolute */
   viteConfig?: string;
