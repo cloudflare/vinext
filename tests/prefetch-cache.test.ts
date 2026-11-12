@@ -3522,6 +3522,43 @@ describe("static-shell prefetch", () => {
     expect(resolveAutoAppRoutePrefetch("/loading").staticShell).toBeUndefined();
   });
 
+  it("prefetches the static shell of a page under root params", async () => {
+    useCacheComponentsProduction();
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        hasRootParams: true,
+        isDynamic: true,
+        patternParts: [":lang"],
+      },
+      {
+        canPrefetchLoadingShell: false,
+        hasRootParams: true,
+        isDynamic: true,
+        patternParts: [":lang", "about"],
+      },
+    ];
+    const { resolveAutoAppRoutePrefetch } =
+      await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
+
+    // Like Next.js, which prerenders a shell per root param value, the page
+    // gets its own shell rendered with its root params.
+    for (const href of ["/en", "/en/about", "/en/about?q=1"]) {
+      expect(resolveAutoAppRoutePrefetch(href)).toMatchObject({
+        cacheForNavigation: false,
+        dynamicStaleTime: "ignore",
+        staticShell: true,
+      });
+    }
+    // Development has no static shells, so the route tree still comes first.
+    vi.stubEnv("NODE_ENV", "development");
+    expect(resolveAutoAppRoutePrefetch("/en/about")).toMatchObject({
+      cacheForNavigation: true,
+      requiresRouteTreePrefetch: true,
+    });
+    expect(resolveAutoAppRoutePrefetch("/en/about").staticShell).toBeUndefined();
+  });
+
   it("prefetches a runtime prefetch route's search-param and root-param hrefs as static shells", async () => {
     useCacheComponentsProduction();
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
@@ -3543,8 +3580,8 @@ describe("static-shell prefetch", () => {
     const { resolveAutoAppRoutePrefetch } =
       await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
 
-    // Next.js renders a runtime prefetch with the request's search params and
-    // root params, so those hrefs prefetch it too.
+    // Next.js renders a runtime prefetch with the request's search params, so
+    // those hrefs prefetch it too.
     expect(resolveAutoAppRoutePrefetch("/runtime?q=1")).toMatchObject({
       cacheForNavigation: false,
       staticShell: true,
