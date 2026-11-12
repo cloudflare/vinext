@@ -6,6 +6,7 @@ import {
   makeClientPageSsrSearchParamsThenable,
 } from "../packages/vinext/src/server/app-page-search-params-observation.js";
 import {
+  createClientPageSearchParamsHang,
   resolveClientPageSearchParamsGate,
   startCandidateSearchParamsGate,
 } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
@@ -27,6 +28,19 @@ type SearchParamsProps = { searchParams: Promise<Record<string, string | string[
 
 function ReadingPage({ searchParams }: SearchParamsProps): React.ReactNode {
   const { q } = React.use(searchParams);
+  return React.createElement("p", null, `page:${String(q)}`);
+}
+
+const caughtSearchParams = new WeakMap<object, Promise<Record<string, string | string[]>>>();
+
+/** Catches its searchParams' rejection, as a page that doesn't trust them might. */
+function CatchingPage({ searchParams }: SearchParamsProps): React.ReactNode {
+  let caught = caughtSearchParams.get(searchParams);
+  if (!caught) {
+    caught = searchParams.catch(() => ({ q: "caught" }));
+    caughtSearchParams.set(searchParams, caught);
+  }
+  const { q } = React.use(caught);
   return React.createElement("p", null, `page:${String(q)}`);
 }
 
@@ -66,6 +80,10 @@ function startCandidateSsr(options?: {
 }) {
   const searchParams = new URLSearchParams("q=secret");
   const gate = startCandidateSearchParamsGate();
+  const hang =
+    options?.isCacheComponents && !options.isPprFallbackShell
+      ? createClientPageSearchParamsHang(undefined)
+      : null;
   setNavigationContext({
     pathname: "/client",
     searchParams,
@@ -74,15 +92,17 @@ function startCandidateSsr(options?: {
     getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {
       isPprFallbackShell: options?.isPprFallbackShell,
       searchParamsGate: options?.isCacheComponents ? gate.gate : undefined,
+      onSearchParamsHang: hang?.onHang,
     }),
   });
-  return gate;
+  return Object.assign(gate, { hang });
 }
 
 /** Settle a candidate gate as handleSsr does once SSR has read the whole payload. */
-async function settleCandidateGate(gate: ReturnType<typeof startCandidateSearchParamsGate>) {
+async function settleCandidateGate(gate: ReturnType<typeof startCandidateSsr>) {
   const ended = new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
-  await new Response(gate.settleWhenConsumed(ended)).text();
+  const settled = gate.settleWhenConsumed(ended);
+  await new Response(gate.hang ? gate.hang.trackFlightConsumed(settled) : settled).text();
 }
 
 async function renderPage(
@@ -111,8 +131,8 @@ async function renderPage(
  * Render to HTML once everything settles. A page suspends the first time it
  * uses a searchParams promise React hasn't tracked yet.
  */
-async function renderMarkup(element: React.ReactNode): Promise<string> {
-  const stream = await renderToReadableStream(element);
+async function renderMarkup(element: React.ReactNode, signal?: AbortSignal): Promise<string> {
+  const stream = await renderToReadableStream(element, signal ? { signal } : undefined);
   await stream.allReady;
   return new Response(stream).text();
 }
@@ -257,6 +277,7 @@ describe("ClientPageRoot in SSR with Cache Components", () => {
             pageProps: { params: Promise.resolve({}) },
           }),
         ),
+        gate.hang?.signal,
       );
       await settleCandidateGate(gate);
       const html = await rendering;
@@ -276,6 +297,7 @@ describe("ClientPageRoot in SSR with Cache Components", () => {
     // A regeneration renders with no gate and no query to give the page.
     await inRequest(async () => {
       const searchParams = new URLSearchParams("q=secret");
+      const hang = createClientPageSearchParamsHang(undefined);
       setNavigationContext({
         pathname: "/client",
         searchParams,
@@ -283,21 +305,91 @@ describe("ClientPageRoot in SSR with Cache Components", () => {
         isStaticGeneration: true,
         getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {
           searchParamsGate: resolveClientPageSearchParamsGate(undefined, true),
+          onSearchParamsHang: hang.onHang,
         }),
       });
-      const html = await renderMarkup(
+      const rendering = renderMarkup(
         inSuspense(
           React.createElement(ClientPageRoot, {
             Component: ReadingPage as React.ComponentType<Record<string, unknown>>,
             pageProps: { params: Promise.resolve({}) },
           }),
         ),
+        hang.signal,
       );
+      // SSR reads the whole payload.
+      const ended = new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
+      await new Response(hang.trackFlightConsumed(ended)).text();
+      const html = await rendering;
 
       expect(html).toContain("fallback");
       expect(html).not.toContain("secret");
       expect(isRenderDynamicLatched()).toBe(false);
       expect(consumeRenderRequestApiUsage()).not.toContain("searchParams");
+    });
+  });
+
+  it("never lets a static render's page catch the bail-out", async () => {
+    // Like Next.js's prerender (`makeHangingPromise`), the page's searchParams
+    // never settle, so its catch branch never reaches the stored HTML.
+    await inRequest(async () => {
+      const gate = startCandidateSsr({ isCacheComponents: true });
+      const rendering = renderMarkup(
+        React.createElement(
+          React.Fragment,
+          null,
+          inSuspense(
+            React.createElement(ClientPageRoot, {
+              Component: CatchingPage as React.ComponentType<Record<string, unknown>>,
+              pageProps: { params: Promise.resolve({}) },
+            }),
+          ),
+          React.createElement("p", null, "static sibling"),
+        ),
+        gate.hang?.signal,
+      );
+      await settleCandidateGate(gate);
+      const html = await rendering;
+
+      expect(html).toContain("fallback");
+      expect(html).toContain("static sibling");
+      expect(html).not.toContain("caught");
+      expect(html).not.toContain("secret");
+      expect(gate.gate.decision).toBe("bailout");
+      expect(isRenderDynamicLatched()).toBe(false);
+    });
+  });
+
+  it("aborts a hung render only once SSR has read the whole payload", async () => {
+    await inRequest(async () => {
+      const gate = startCandidateSsr({ isCacheComponents: true });
+      let flight!: ReadableStreamDefaultController<Uint8Array>;
+      const consumed = new Response(
+        gate.hang!.trackFlightConsumed(
+          new ReadableStream<Uint8Array>({ start: (controller) => (flight = controller) }),
+        ),
+      ).text();
+      const rendering = renderMarkup(
+        inSuspense(
+          React.createElement(ClientPageRoot, {
+            Component: CatchingPage as React.ComponentType<Record<string, unknown>>,
+            pageProps: { params: Promise.resolve({}) },
+          }),
+        ),
+        gate.hang?.signal,
+      );
+      // The gate bails out, but the payload is still streaming.
+      const ended = new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
+      await new Response(gate.settleWhenConsumed(ended)).text();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(gate.hang!.signal.aborted).toBe(false);
+
+      flight.close();
+      await consumed;
+      const html = await rendering;
+      expect(gate.hang!.signal.aborted).toBe(true);
+      expect(html).toContain("fallback");
+      expect(html).not.toContain("caught");
     });
   });
 
