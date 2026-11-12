@@ -101,13 +101,15 @@ test.describe("basePath + trailingSlash", () => {
   // handleHardNavigation(): a hydration-update redirect that changes only the
   // hash is still followed, as a same-document navigation.
   test("follows a fallback hydration redirect that changes only the hash", async ({ page }) => {
-    const path = "/docs/fallback-hash-redirect/first/";
+    // A fresh slug per run: once generated, the path redirects on the server.
+    const slug = `run-${Date.now()}`;
+    const path = `/docs/fallback-hash-redirect/${slug}/`;
     let documentLoads = 0;
     page.on("request", (request) => {
       if (request.isNavigationRequest() && request.resourceType() === "document") documentLoads++;
     });
     const dataResponse = page.waitForResponse((response) =>
-      new URL(response.url()).pathname.endsWith("/fallback-hash-redirect/first.json"),
+      new URL(response.url()).pathname.endsWith(`/fallback-hash-redirect/${slug}.json`),
     );
 
     await page.goto(`${BASE}${path}#old`);
@@ -115,6 +117,27 @@ test.describe("basePath + trailingSlash", () => {
 
     await expect(page).toHaveURL(`${BASE}${path}#new`);
     expect(documentLoads).toBe(1);
+  });
+
+  // History moves to the redirect target before its render commits. The guard
+  // compares against the document the hydration update started on, so a failed
+  // target render still recovers with a hard navigation to the target.
+  test("hard-navigates when a hydration redirect target fails to render", async ({ page }) => {
+    // A fresh slug per run: once generated, the path redirects on the server.
+    const sourcePath = `/docs/fallback-redirect-render-error/run-${Date.now()}/`;
+    const targetPath = "/docs/render-error-target/";
+    const documents: string[] = [];
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.resourceType() === "document") {
+        documents.push(new URL(request.url()).pathname);
+      }
+    });
+
+    await page.goto(`${BASE}${sourcePath}`);
+
+    await expect.poll(() => documents).toEqual([sourcePath, targetPath]);
+    await expect(page.locator("#render-error-target")).toHaveText("render error target");
+    await expect(page).toHaveURL(`${BASE}${targetPath}`);
   });
 
   test("replaces state when same asPath but different url", async ({ page }) => {
