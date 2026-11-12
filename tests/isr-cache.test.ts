@@ -18,6 +18,7 @@ import {
   appIsrRouteKey,
   isrGet,
   isrGetFallbackShell,
+  isrGetReadsFallbackShells,
   isrSet,
   buildPagesCacheValue,
   buildAppPageCacheValue,
@@ -1212,5 +1213,52 @@ describe("isrGetFallbackShell", () => {
 
     expect(entry).toMatchObject(state);
     expect(entry?.isExpired).toBe(state.isExpired);
+  });
+
+  it("reads a missing shell once through the default adapter a data adapter registers", async () => {
+    const handler = new MemoryCacheHandler();
+    const get = vi.spyOn(handler, "get");
+    setCacheHandler(handler);
+    // As `cache: { data: kvDataAdapter() }` registers it, for its build identity.
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter("build-42"));
+
+    // Its page read reads the data cache, where shells are stored.
+    expect(isrGetReadsFallbackShells()).toBe(true);
+    await expect(isrGetFallbackShell(appIsrHtmlKey("/posts/hello"))).resolves.toBeNull();
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("knows the default adapter another copy of its module registered", async () => {
+    vi.resetModules();
+    const copy = await import("../packages/vinext/src/shims/cdn-cache.js");
+    expect(copy.DefaultCdnCacheAdapter).not.toBe(DefaultCdnCacheAdapter);
+    // As a duplicated stage module registers it first.
+    setCdnCacheAdapter(new copy.DefaultCdnCacheAdapter("build-42"));
+
+    expect(isrGetReadsFallbackShells()).toBe(true);
+  });
+
+  it("reads a subclass of the default adapter for a shell the data cache doesn't have", async () => {
+    setCacheHandler(new MemoryCacheHandler());
+    const edgeGet = vi.fn(async () => null);
+    // A subclass that stores pages at an edge.
+    class EdgeCdnCacheAdapter extends DefaultCdnCacheAdapter {
+      override get = edgeGet;
+    }
+    setCdnCacheAdapter(new EdgeCdnCacheAdapter());
+
+    expect(isrGetReadsFallbackShells()).toBe(false);
+    await expect(isrGetFallbackShell(appIsrHtmlKey("/posts/hello"))).resolves.toBeNull();
+    expect(edgeGet).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads an edge adapter for a shell the data cache doesn't have", async () => {
+    setCacheHandler(new MemoryCacheHandler());
+    const edgeGet = vi.fn(async () => null);
+    setCdnCacheAdapter({ get: edgeGet } as unknown as CdnCacheAdapter);
+
+    expect(isrGetReadsFallbackShells()).toBe(false);
+    await expect(isrGetFallbackShell(appIsrHtmlKey("/posts/hello"))).resolves.toBeNull();
+    expect(edgeGet).toHaveBeenCalledTimes(1);
   });
 });

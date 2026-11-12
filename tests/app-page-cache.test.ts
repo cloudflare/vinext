@@ -798,6 +798,87 @@ describe("app page cache helpers", () => {
     ]);
   });
 
+  it.each([false, true])(
+    "misses a path's own shell stored under its page key without regenerating it (stale: %s)",
+    async (isStale) => {
+      const cacheOutcomes: AppPageCacheOutcomeMetric[] = [];
+      const reads: (ISRCacheEntry | null)[] = [];
+      const shell = buildISRCacheEntry(
+        buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<!DOCTYPE html><h1>shell")),
+        isStale,
+      );
+
+      const response = await readAppPageCacheResponse({
+        cleanPathname: "/cached",
+        clearRequestContext() {
+          throw new Error("an own shell is not a page hit");
+        },
+        isRscRequest: false,
+        async isrGet() {
+          return shell;
+        },
+        isrHtmlKey(pathname) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname) {
+          return "rsc:" + pathname;
+        },
+        async isrSet() {},
+        onDocumentEntryRead(cached) {
+          reads.push(cached);
+        },
+        recordCacheOutcome(metric) {
+          cacheOutcomes.push(metric);
+        },
+        revalidateSeconds: 60,
+        async renderFreshPageForCache() {
+          throw new Error("an own shell does not regenerate as a page");
+        },
+        scheduleBackgroundRegeneration() {
+          throw new Error("an own shell does not regenerate as a page");
+        },
+      });
+
+      expect(response).toBeNull();
+      // The request resumes the shell it read.
+      expect(reads).toEqual([shell]);
+      expect(cacheOutcomes).toEqual([
+        { artifact: "html", cacheKey: "html:/cached", outcome: "miss", reason: "own-shell-entry" },
+      ]);
+    },
+  );
+
+  it("serves a page whose document renders a shell's marker inside it", async () => {
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext() {},
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue(
+            `<html><body>${markAppPprDynamicFallbackShellHtml("<p>page</p>")}</body></html>`,
+          ),
+        );
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("a fresh page does not regenerate");
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("a fresh page does not regenerate");
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+  });
+
   it("serves cached HIT responses for query-bearing requests with negative searchParams proof", async () => {
     let didClearRequestContext = false;
 
