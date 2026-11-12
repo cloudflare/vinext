@@ -99,11 +99,7 @@ import {
   type WranglerVersionUploadResult,
   type WranglerVersionTraffic,
 } from "./version-deploy.js";
-import {
-  buildVersionAnnotationArgs,
-  resolveVersionAnnotations,
-  type VersionAnnotations,
-} from "./version-annotations.js";
+import { buildVersionAnnotationArgs, resolveVersionAnnotations } from "./version-annotations.js";
 import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
@@ -804,27 +800,18 @@ function readWranglerVersion(root: string): string | undefined {
 }
 
 /**
- * Resolve the version message and tag for a deployment. Wrangler versions without
- * annotation flags on `wrangler deploy` skip the commit defaults and reject explicit values.
+ * Older Wrangler releases accept annotations on `versions upload` but not on
+ * `wrangler deploy`, so explicit values fail before a deploy that may run it.
  */
-export function resolveDeployVersionAnnotations(
-  root: string,
-  deploymentTool: DeploymentTool,
+export function assertWranglerDeployAnnotations(
   options: Pick<DeployOptions, "message" | "tag">,
-  wranglerVersion: () => string | undefined = () => readWranglerVersion(root),
-): VersionAnnotations {
-  if (deploymentTool === "wrangler") {
-    const version = wranglerVersion();
-    if (!wranglerSupportsVersionAnnotations(version)) {
-      if (options.message || options.tag) {
-        throw new Error(
-          `--message and --tag require Wrangler 4.66.0 or newer (found ${version}). Upgrade wrangler or omit them.`,
-        );
-      }
-      return {};
-    }
+  wranglerVersion: string | undefined,
+): void {
+  if ((options.message || options.tag) && !wranglerSupportsVersionAnnotations(wranglerVersion)) {
+    throw new Error(
+      `--message and --tag require Wrangler 4.66.0 or newer (found ${wranglerVersion}). Upgrade wrangler or omit them.`,
+    );
   }
-  return resolveVersionAnnotations(root, options);
 }
 
 export function resolveCfBin(
@@ -862,7 +849,12 @@ export function buildWranglerInvocation(
   nodeExecutable: string = process.execPath,
 ): { file: string; args: string[]; env: string | undefined } {
   const wranglerBin = resolveWranglerBin(root);
-  const { args, env } = buildWranglerDeployArgs(options);
+  // deploy() rejects explicit annotations for these versions, so only defaults are dropped.
+  const { args, env } = buildWranglerDeployArgs(
+    wranglerSupportsVersionAnnotations(readWranglerVersion(root))
+      ? options
+      : { ...options, message: undefined, tag: undefined },
+  );
   return { ...buildNodeCliInvocation(wranglerBin, args, nodeExecutable), env };
 }
 
@@ -2294,9 +2286,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
       "--config is not supported for cloudflare.config.ts projects. cf always uses cloudflare.config.ts in the project root; select a mode with --env instead.",
     );
   }
-  const versionAnnotations = isPreview
-    ? {}
-    : resolveDeployVersionAnnotations(root, deploymentTool, options);
+  // Staged warming and --no-promote upload with `versions upload`, never `wrangler deploy`.
+  if (deploymentTool === "wrangler" && !options.warmCdnCache && options.warmCdnPromote !== false) {
+    assertWranglerDeployAnnotations(options, readWranglerVersion(root));
+  }
+  const versionAnnotations = isPreview ? {} : resolveVersionAnnotations(root, options);
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);
   // Undefined keeps Vite's default vite.config.* lookup in the root.
   const viteConfigFile = options.viteConfig ? path.resolve(root, options.viteConfig) : undefined;

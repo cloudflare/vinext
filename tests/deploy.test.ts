@@ -11,6 +11,7 @@ import {
   resolveVersionAnnotations,
 } from "../packages/cloudflare/src/version-annotations.js";
 import {
+  assertWranglerDeployAnnotations,
   deploy,
   buildCfDeployArgs,
   buildNodeCliInvocation,
@@ -21,7 +22,6 @@ import {
   parseDeployArgs,
   projectRequiresRouteCacheabilityProbeManifest,
   resolveCfBin,
-  resolveDeployVersionAnnotations,
   resolvePrerenderOutputDirs,
   resolveDeploymentTool,
   resolveViteBuildMode,
@@ -303,6 +303,25 @@ describe("deploy environment validation", () => {
     expect(fs.existsSync(path.join(tmpDir, "worker"))).toBe(false);
   });
 
+  it("rejects explicit annotations on older Wrangler only when it runs wrangler deploy", async () => {
+    writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
+    writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
+    writeWranglerPackageForTest(tmpDir);
+    writeFile(
+      tmpDir,
+      "node_modules/wrangler/package.json",
+      JSON.stringify({ name: "wrangler", version: "4.65.0", bin: { wrangler: "bin/wrangler.js" } }),
+    );
+
+    await expect(deploy({ root: tmpDir, tag: "v2", dryRun: true })).rejects.toThrow(
+      "--message and --tag require Wrangler 4.66.0 or newer (found 4.65.0).",
+    );
+    // `versions upload` accepts annotations on older Wrangler releases.
+    await expect(
+      deploy({ root: tmpDir, tag: "v2", warmCdnPromote: false, dryRun: true }),
+    ).rejects.toThrow("Run `vinext init --platform=cloudflare` first.");
+  });
+
   it("does not require a custom Worker entry for App Router deployments", async () => {
     writeFile(tmpDir, "package.json", '{"name":"app"}\n');
     writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
@@ -455,6 +474,22 @@ describe("resolveWranglerBin", () => {
       args: [expectedWranglerBin(), "deploy", "--env", "preview-1"],
       env: "preview-1",
     });
+  });
+
+  it.each([
+    ["4.66.0", ["--message=Fix the header", "--tag=abc123"]],
+    ["4.65.0", []],
+  ])("only annotates wrangler deploy on Wrangler %s when supported", (version, annotations) => {
+    writeWranglerPackage();
+    const packageJsonPath = path.join(tmpDir, "node_modules/wrangler/package.json");
+    fs.writeFileSync(
+      packageJsonPath,
+      JSON.stringify({ ...JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")), version }),
+    );
+    expect(
+      buildWranglerInvocation(tmpDir, { message: "Fix the header", tag: "abc123" }, "node.exe")
+        .args,
+    ).toEqual([expectedWranglerBin(), "deploy", ...annotations]);
   });
 
   it("keeps Windows shell metacharacters in one literal argument", () => {
@@ -4421,9 +4456,7 @@ describe("resolveVersionAnnotations", () => {
   });
 });
 
-describe("resolveDeployVersionAnnotations", () => {
-  const explicit = { message: "Release 2", tag: "v2" };
-
+describe("Wrangler deploy annotations", () => {
   it.each([
     ["4.66.0", true],
     ["4.153.0", true],
@@ -4435,25 +4468,12 @@ describe("resolveDeployVersionAnnotations", () => {
     expect(wranglerSupportsVersionAnnotations(version)).toBe(supported);
   });
 
-  it("keeps annotations for cf and supported Wrangler versions", () => {
-    expect(resolveDeployVersionAnnotations("/app", "cf", explicit, () => "4.0.0")).toEqual(
-      explicit,
+  it("rejects explicit values only for older Wrangler versions", () => {
+    expect(() => assertWranglerDeployAnnotations({ tag: "v2" }, "4.65.0")).toThrow(
+      "--message and --tag require Wrangler 4.66.0 or newer (found 4.65.0).",
     );
-    expect(resolveDeployVersionAnnotations("/app", "wrangler", explicit, () => "4.66.0")).toEqual(
-      explicit,
-    );
-  });
-
-  it("skips the commit defaults for older Wrangler versions", () => {
-    expect(resolveDeployVersionAnnotations("/app", "wrangler", {}, () => "4.65.0")).toEqual({});
-    expect(
-      resolveDeployVersionAnnotations("/app", "wrangler", { message: "", tag: "" }, () => "4.65.0"),
-    ).toEqual({});
-  });
-
-  it("rejects explicit values for older Wrangler versions", () => {
-    expect(() =>
-      resolveDeployVersionAnnotations("/app", "wrangler", { tag: "v2" }, () => "4.65.0"),
-    ).toThrow("--message and --tag require Wrangler 4.66.0 or newer (found 4.65.0).");
+    expect(() => assertWranglerDeployAnnotations({ message: "", tag: "" }, "4.65.0")).not.toThrow();
+    expect(() => assertWranglerDeployAnnotations({}, "4.65.0")).not.toThrow();
+    expect(() => assertWranglerDeployAnnotations({ tag: "v2" }, "4.66.0")).not.toThrow();
   });
 });
