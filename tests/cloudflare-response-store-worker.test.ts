@@ -1037,6 +1037,29 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       expect(store.fetch).toHaveBeenCalledTimes(3);
     });
 
+    it("leaves a shell its gateway's lookup failed to read to the render's read", async () => {
+      dispatchWithIdentity();
+      const { store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      stages.response.mockImplementationOnce(async () => {
+        await dataCache.set("html:/page", shell("<!--shell-->"), shellContext("document"));
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      store.fetch.mockRejectedValueOnce(new Error("unavailable"));
+      const reads: unknown[] = [];
+      stages.response.mockImplementationOnce(async () => {
+        reads.push((await dataCache.get("html:/page", { appPageShellPart: "document" }))?.value);
+        return dynamicResponse();
+      });
+
+      await fetchPage(handler);
+
+      expect(reads).toEqual([shell("<!--shell-->")]);
+    });
+
     it("regenerates a shell under the data cache's keys with both of its parts", async () => {
       dispatchWithIdentity(false);
       const { entries, store } = createMemoryStore();

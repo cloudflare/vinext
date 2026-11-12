@@ -671,7 +671,8 @@ function storedForRequest(
     : stored;
 }
 
-async function readStoredResponse(key: Request): Promise<Response | null> {
+/** A stored response, `null` for the Store's miss, or `undefined` when the lookup failed. */
+async function readStoredResponse(key: Request): Promise<Response | null | undefined> {
   try {
     const response = await responseStore.fetch(key);
     // The backend's marker distinguishes a stored 404 from its 404 cache miss.
@@ -694,7 +695,7 @@ async function readStoredResponse(key: Request): Promise<Response | null> {
         error: error instanceof Error ? error.message : String(error),
       }),
     );
-    return null;
+    return undefined;
   }
 }
 
@@ -803,11 +804,11 @@ const handler = {
       let stored = await readStoredResponse(key);
       // A path's own shell, stored under its page's keys, isn't the page: the
       // render reads it instead of the Store. Only an App page's keys hold one.
-      const foundShell =
-        otherPart !== undefined && stored !== null && isResponseStorePageShell(stored);
-      // What the read found for the render, unless it found the page. A
-      // shell that can't be read is left to the render's own read.
-      let ownPartRead: Response | null | undefined = stored ? undefined : null;
+      const foundShell = otherPart !== undefined && !!stored && isResponseStorePageShell(stored);
+      // What the read found for the render: the Store's miss, or a shell. A
+      // failed lookup, or a shell that can't be read, is left to the
+      // render's own read.
+      let ownPartRead: Response | null | undefined = stored === null ? null : undefined;
       if (stored && foundShell) {
         try {
           ownPartRead = new Response(await stored.text(), stored);
