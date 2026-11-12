@@ -32,6 +32,11 @@ export type VinextLinkPrefetchRoute = {
   requiresDynamicNavigationRequest?: boolean;
   /** The route has dynamic params above its root layout. */
   hasRootParams?: true;
+  /**
+   * A segment's `unstable_instant` config, read at build time with Cache
+   * Components: "runtime" when the route's prefetches render at runtime.
+   */
+  instant?: "runtime" | "static";
 };
 
 export type VinextLinkPrefetchIntercept = {
@@ -40,6 +45,8 @@ export type VinextLinkPrefetchIntercept = {
   /** The URL pattern the intercepting page intercepts. */
   targetPatternParts: string[];
   rendersDynamically?: true;
+  /** The intercepting page's `unstable_instant` config, as a route's `instant`. */
+  instant?: "runtime" | "static";
 };
 
 /**

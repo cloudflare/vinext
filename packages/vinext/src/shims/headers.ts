@@ -23,7 +23,7 @@ import {
   isInsideUnifiedScope,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
-import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
+import { createPprFallbackShellRequestDataSuspensePromise } from "./ppr-fallback-shell.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
 import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
@@ -890,7 +890,8 @@ export function headers(): Promise<Headers> & Headers {
   }
 
   markDynamicUsage();
-  const fallbackShellPromise = createPprFallbackShellSuspensePromise<Headers>("`headers()`");
+  const fallbackShellPromise =
+    createPprFallbackShellRequestDataSuspensePromise<Headers>("`headers()`");
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
   }
@@ -925,7 +926,8 @@ function cookiesImpl(): Promise<RequestCookies> & RequestCookies {
   }
 
   markDynamicUsage();
-  const fallbackShellPromise = createPprFallbackShellSuspensePromise<RequestCookies>("`cookies()`");
+  const fallbackShellPromise =
+    createPprFallbackShellRequestDataSuspensePromise<RequestCookies>("`cookies()`");
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
   }
