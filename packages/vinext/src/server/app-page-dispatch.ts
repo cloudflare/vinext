@@ -114,7 +114,11 @@ import {
   type VaryParam,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
-import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
+import {
+  createAppPageRscErrorTracker,
+  type AppPagePprShellResume,
+  type AppPageSsrHandler,
+} from "./app-page-stream.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
@@ -344,7 +348,7 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isDraftMode: boolean,
     isForceStatic: boolean,
     isForceDynamic: boolean,
-  ): Promise<Response | null>;
+  ): Promise<Response | AppPagePprShellResume | null>;
   /** Produce the missing shells of a generated path rendered for the cache. */
   produceMissingShells(
     options: DispatchAppPageOptions<TRoute>,
@@ -1699,7 +1703,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  const fallbackShellResponse = options.pprRuntime
+  const fallbackShellResult = options.pprRuntime
     ? await options.pprRuntime.tryServe(
         options,
         currentRevalidateSeconds,
@@ -1708,9 +1712,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isForceDynamic,
       )
     : null;
-  if (fallbackShellResponse) {
-    return fallbackShellResponse;
+  if (fallbackShellResult instanceof Response) {
+    return fallbackShellResult;
   }
+  // The stored shell whose prelude this request sends before its holes.
+  const pprShellResume = fallbackShellResult ?? undefined;
 
   let interceptConfig: AppPageInterceptSegmentConfig | null = null;
   // Whether the intercepted response's render is force-dynamic or
@@ -2026,6 +2032,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           options.pprRuntime!.beginFinalRender(activeFallbackShellState);
         }
       : undefined,
+    isPprFallbackShellPartial: activeFallbackShellState
+      ? () => activeFallbackShellState.hasDynamicBoundary
+      : undefined,
+    pprShellResume,
     rootParams: options.rootParams,
     peekRenderObservationState() {
       return {

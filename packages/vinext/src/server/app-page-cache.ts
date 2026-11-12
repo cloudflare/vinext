@@ -33,6 +33,7 @@ import {
 } from "./app-ppr-fallback-shell.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import type { AppPagePprShellResume } from "./app-page-stream.js";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -162,11 +163,15 @@ type ServeAppPageFallbackShellCacheEntryOptions = {
   middlewareStatus?: number | null;
   revalidateSeconds: number;
   /**
-   * Resumes a dynamic shell, whose holes need a render. Returns whether the
+   * Resumes a dynamic shell, whose holes need a render. Returns the prelude
+   * the render sends first, when the shell's document is one, and whether the
    * shell carried the resume data cache that render uses. An empty shell has
    * no prelude to serve, so its route renders blocking instead.
    */
-  resumeDynamicShell: (postponed: string | undefined, hasPrelude: boolean) => boolean;
+  resumeDynamicShell: (
+    value: CachedAppPageValue,
+    hasPrelude: boolean,
+  ) => { isResumed: boolean; resume: AppPagePprShellResume | null };
   rewriteHtml: (html: string) => string;
   /** Regenerate the stale shell in the background. */
   scheduleRegeneration: () => void;
@@ -848,11 +853,12 @@ export async function readAppPageCacheResponse(
 
 /**
  * Serve or resume a fallback shell the caller read or rendered. A missing or
- * expired shell is rendered before this, so `cached` can be served.
+ * expired shell is rendered before this, so `cached` can be served. A shell
+ * whose document is a prelude returns what its request resumes from.
  */
 export async function serveAppPageFallbackShellCacheEntry(
   options: ServeAppPageFallbackShellCacheEntryOptions,
-): Promise<Response | null> {
+): Promise<Response | AppPagePprShellResume | null> {
   const { cached } = options;
   const cachedValue = getCachedAppPageValue(cached);
   if (!cachedValue) {
@@ -867,17 +873,19 @@ export async function serveAppPageFallbackShellCacheEntry(
       return null;
     }
     if (cached.isStale) options.scheduleRegeneration();
-    const isResumed = options.resumeDynamicShell(
-      cachedValue.postponed,
+    const { isResumed, resume } = options.resumeDynamicShell(
+      cachedValue,
       hasAppPprFallbackShellPrelude(cachedValue.html),
     );
     options.isrDebug?.(
-      isResumed
-        ? "RESUME (dynamic fallback shell)"
-        : "MISS (dynamic fallback shell without resume data cache)",
+      resume
+        ? "RESUME (dynamic fallback shell prelude)"
+        : isResumed
+          ? "RESUME (dynamic fallback shell)"
+          : "MISS (dynamic fallback shell without resume data cache)",
       options.fallbackPathname,
     );
-    return null;
+    return resume;
   }
 
   return await serveAppPageCachedHtml(
