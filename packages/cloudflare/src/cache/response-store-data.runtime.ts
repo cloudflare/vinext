@@ -366,6 +366,12 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     CacheHandlerValue,
     { revision: number; tagExpiration?: { tags: string[]; expiration: number } }
   >();
+  /**
+   * The revision each read missed, by the `cacheRead` token its caller passes to that read
+   * and to the write filling it, and by key. A write whose own read missed is a fill; one
+   * without a token, e.g. after a revalidation skipped the read, is an ordinary write.
+   */
+  private readonly missRevisions = new WeakMap<object, Map<string, number>>();
 
   constructor(private readonly store: WorkersResponseStore = responseStore!) {
     if (!store) {
@@ -387,6 +393,19 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
           response.status === 404 &&
           response.headers.get("X-Workers-Response-Store") === "MISS"
         ) {
+          // The revision it missed, 0 for none, lets the Store drop a duplicate fill.
+          const revision = Number(response.headers.get("X-Workers-Response-Store-Revision"));
+          const cacheRead = context?.cacheRead;
+          if (
+            cacheRead &&
+            typeof cacheRead === "object" &&
+            response.headers.has("X-Workers-Response-Store-Revision") &&
+            revision >= 0
+          ) {
+            const misses = this.missRevisions.get(cacheRead) ?? new Map<string, number>();
+            misses.set(key, revision);
+            this.missRevisions.set(cacheRead, misses);
+          }
           return null;
         }
         throw new Error(`Workers Response Store returned ${response.status}`);
@@ -594,14 +613,23 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     }
     if (regeneration && !revalidator) return;
 
-    // Concurrent requests that read the entry stale each refresh it, passing it as
-    // `staleEntry`. Once one has replaced that revision, the Store drops the rest instead of
-    // replacing it again and spending an edge purge on each.
+    // Concurrent requests that read the entry stale, or missed it, each refresh or fill it.
+    // A refresh passes the stale entry as `staleEntry`, whose revision `staleRevisions` holds;
+    // a fill sends the revision its own read missed, from `missRevisions`. Once one has
+    // replaced that revision, the Store drops the rest instead of replacing it again and
+    // spending an edge purge on each.
     const staleEntry = context?.staleEntry;
+    const cacheRead = context?.cacheRead;
+    const missRevision =
+      cacheRead && typeof cacheRead === "object"
+        ? this.missRevisions.get(cacheRead)?.get(key)
+        : undefined;
     const replaces =
       staleEntry && typeof staleEntry === "object"
         ? this.staleRevisions.get(staleEntry as CacheHandlerValue)
-        : undefined;
+        : missRevision !== undefined
+          ? { revision: missRevision }
+          : undefined;
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),
       // A read that finds a page-replay entry expired must not wait for the replay: a page

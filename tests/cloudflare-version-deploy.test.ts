@@ -35,6 +35,27 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
   });
 
+  it("records the version message and tag on uploads", () => {
+    const annotations = { message: "Fix the header", tag: "abc123" };
+    expect(buildWranglerVersionUploadArgs(annotations)).toEqual({
+      args: ["versions", "upload", "--message=Fix the header", "--tag=abc123"],
+      env: undefined,
+    });
+    expect(buildCfVersionUploadArgs({ ...annotations, previewAlias: "warm-build" })).toEqual({
+      args: [
+        "workers",
+        "versions",
+        "create",
+        "--prebuilt",
+        "--preview-alias",
+        "warm-build",
+        "--message=Fix the header",
+        "--tag=abc123",
+      ],
+      mode: undefined,
+    });
+  });
+
   it("builds cf Build Output version upload args", () => {
     expect(buildCfVersionUploadArgs({})).toEqual({
       args: ["workers", "versions", "create", "--prebuilt"],

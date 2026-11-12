@@ -376,7 +376,7 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(requestedPaths).toContain("/docs");
@@ -442,7 +442,7 @@ describe("prerenderApp — RSC extraction", () => {
         ],
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(requestedPaths).toContain("/docs/robots.txt");
@@ -534,7 +534,7 @@ describe("prerenderApp — RSC extraction", () => {
           ],
           outDir,
           config,
-          _prodServer: { server, port },
+          _prodServer: { port },
         });
 
         for (const route of ["/manifest.webmanifest", "/icon"]) {
@@ -600,7 +600,7 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(findRoute(prerenderResult.routes, "/")).toMatchObject({
@@ -671,7 +671,7 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(findRoute(prerenderResult.routes, "/")).toMatchObject({
@@ -738,7 +738,7 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(findRoute(prerenderResult.routes, "/")).toMatchObject({
@@ -802,7 +802,7 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       const route = findRoute(prerenderResult.routes, "/");
@@ -855,7 +855,7 @@ describe("prerenderApp — special errors that escape the shell", () => {
         routes: await appRouter(appDir),
         outDir,
         config: await resolveNextConfig({}),
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
       const read = (file: string) =>
         fs.existsSync(path.join(outDir, file))
@@ -1010,7 +1010,7 @@ describe("prerenderPages — basePath export", () => {
         pagesDir,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(requestedPaths).toEqual(expect.arrayContaining(["/docs", "/docs/about"]));
@@ -1980,6 +1980,43 @@ describe("runPrerender — hybrid app+pages (app-basic)", () => {
   });
 });
 
+describe("prerenderApp — prerender server health", () => {
+  it("fails the build when the prerender server drops connections", async () => {
+    const outDir = tmpDir("vinext-prerender-server-health-");
+    // Stands in for a forked prerender server that died mid-build.
+    const server = createServer((req) => req.socket.destroy());
+    const port = await listen(server);
+    const transportErrors: unknown[] = [];
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const appDir = path.resolve(import.meta.dirname, "fixtures/app-prerender-open-handle/app");
+
+      await expect(
+        prerenderApp({
+          mode: "default",
+          rscBundlePath: path.join(outDir, "dist", "server", "index.js"),
+          routes: await appRouter(appDir),
+          outDir,
+          config: await resolveNextConfig({}),
+          _prodServer: {
+            port,
+            recordRenderError: (err) => transportErrors.push(err),
+            assertHealthy: () => {
+              if (transportErrors.length > 0) throw new Error("prerender server exited");
+            },
+          },
+        }),
+      ).rejects.toThrow("prerender server exited");
+      expect(transportErrors.length).toBeGreaterThan(0);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () => {
   // Ported from Next.js: test/production/app-dir/generate-static-params-errors/generate-static-params-errors.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/production/app-dir/generate-static-params-errors/generate-static-params-errors.test.ts
@@ -2035,7 +2072,7 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       const route = result.routes.find((r) => r.route.includes("slug"));
@@ -2095,7 +2132,7 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       const route = result.routes.find((r) => r.route.includes("slug"));
@@ -2142,7 +2179,7 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
         routes,
         outDir,
         config: await resolveNextConfig({}),
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(result.routes).toContainEqual({
@@ -2199,7 +2236,7 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
         pagesDir,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       const route = result.routes.find((r) => r.route.includes("posts"));
@@ -2382,7 +2419,7 @@ describe("prerenderApp — layout generateStaticParams", () => {
         routes: await appRouter(appDir),
         outDir,
         config: await resolveNextConfig({ output: "export" }),
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(findRoute(result.routes, "/en/news/details")).toMatchObject({
@@ -2450,7 +2487,7 @@ describe("prerenderApp — layout generateStaticParams", () => {
         routes: await appRouter(appDir),
         outDir,
         config: await resolveNextConfig({ output: "export" }),
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(result.routes.find((route) => route.route === "/:id/details")).toMatchObject({
@@ -2528,7 +2565,7 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
         routes: await appRouter(appDir),
         outDir: path.join(root, "out"),
         config: await resolveNextConfig({}),
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
       return { result, renderedPaths, staticParamRequests };
     } finally {
@@ -2872,7 +2909,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
           routes,
           outDir,
           config,
-          _prodServer: { server, port },
+          _prodServer: { port },
         });
       } finally {
         if (previousExperimentalFallbackShells === undefined) {

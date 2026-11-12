@@ -69,12 +69,16 @@ Scope notes for valid bugs:
 
 ## 6. The Reply to the Reporter
 
-Write a short reply:
+Write a short reply for the reporter and for anyone who finds the issue later. Open with the outcome in one sentence. Use the reporter's terms (their routes, config and commands), not Vinext internals, and leave out triage mechanics (probe dirs, fixture names, test commands, verdict names). When the reply mentions a Vinext issue or PR, reference it as `#N`.
 
-- **Valid bug:** the root cause (or the suspected area if it isn't confirmed), and that it's confirmed for a fix. Don't promise a timeline.
-- **Not a bug, documented, app-owned or upstream:** the evidence (probe results, a link to the Vinext docs page, the upstream issue).
-- **Already fixed or duplicate:** the release or PR that fixes it, or the canonical issue.
-- **Needs info:** the specific missing details. Never ask them to share a repository for us to run.
+- **Valid bug:** the exact conditions that trigger it (dev or prod, Node or Workers, router, config) and the root cause in a sentence or two (or the suspected area if it isn't confirmed). Don't promise a timeline.
+- **Parity / not a bug:** what Next.js does (the response or output they would see there), and how to get the behavior they wanted if Next supports it.
+- **Documented limitation:** reference the Vinext docs page.
+- **Upstream:** how Vinext is exposed, and the upstream issue (or where to report it if there isn't one yet).
+- **App-owned or misconfiguration:** which of their settings causes it and what to change.
+- **Already fixed:** the release to upgrade to, or the merged PR if it hasn't shipped yet.
+- **Duplicate:** the canonical issue.
+- **Needs info:** the specific missing details, as a list they can answer in one reply. Never ask them to share a repository for us to run.
 - **Inconclusive:** what couldn't be checked, and that a maintainer will follow up.
 
 For a private or security report, never cite the report in public text.
@@ -85,6 +89,7 @@ When the run is part of an automated triage workflow with no chat:
 
 - **Start from what you were given:** the issue's title, body and author, plus the checkout of the default branch's head. If the comments aren't included and `gh` is available, read them with `gh issue view <number> --comments`, and keep `gh` reads to this issue and what it links. Without `gh`, treat anything the body defers to a comment as missing.
 - Other workflow steps check for duplicates and post the result. Never post, label or close anything, and never wait for confirmation. **Put the reply in the report's `comment`.**
+- **The posted `comment` doesn't link URLs.** Write docs pages and other links without the scheme (`vinext.dev/docs/...`), so they stay readable and copyable.
 - If a step had to be skipped because a tool or network access was missing, name it in the `summary`.
 - **For `reproduced`, `reproduction.command` must be one command that exits non-zero while the bug is present,** and `reproduction.files` must list every file it needs. The command is re-run in a clean copy of the checkout, so put the reproduction inside the checkout (a fixture route plus a test), not in `/tmp`, and don't depend on network access beyond the package registries.
 - Put the root-cause hypothesis and its chokepoint files in `suspected_areas`, and the "Needs info" details in `questions`.
