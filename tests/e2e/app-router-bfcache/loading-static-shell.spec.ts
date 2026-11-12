@@ -61,3 +61,25 @@ for (const { link, shown, isComplete } of [
     expect(consoleErrors).toEqual([]);
   });
 }
+
+// Like Next.js (`MIN_PREFETCHABLE_STALE`), a static shell leaves out a
+// "use cache" function about to go stale, as a hole a navigation fills.
+test("leaves a soon-stale cache out of the prefetched static shell", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "app-router-bfcache-prod", "prefetching is production-only");
+  const target = "/loading-prefetch/soon-stale";
+  const shellPrefetch = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === target &&
+      response.request().headers()["x-vinext-rsc-render-mode"] === "prefetch-static-shell",
+  );
+  await page.goto("/loading-prefetch");
+  await waitForAppRouterHydration(page);
+  const body = await (await shellPrefetch).text();
+  expect(body).toContain("prefetchable cache value");
+  expect(body).not.toContain("soon-stale cache value");
+
+  await page.click("#link-soon-stale");
+  await expect(page).toHaveURL(target);
+  await expect(page.locator("#prefetchable-value")).toBeVisible();
+  await expect(page.locator("#soon-stale-value")).toHaveText("soon-stale cache value");
+});

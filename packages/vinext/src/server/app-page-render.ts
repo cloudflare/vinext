@@ -5,7 +5,7 @@ import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { _getResumeDataCacheCollector } from "vinext/shims/cache-request-state";
-import { isResumeDataCacheEmpty, stringifyResumeDataCache } from "vinext/shims/resume-data-cache";
+import { stringifyResumeDataCache } from "vinext/shims/resume-data-cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
@@ -1637,10 +1637,7 @@ async function renderAppPageLifecycleImpl(
     htmlStream = appendAppPprFallbackShellState(htmlStream, () => ({
       prelude: prelude !== undefined,
       postponed: prelude?.postponed ?? null,
-      resumeDataCache:
-        resumeDataCache && !isResumeDataCacheEmpty(resumeDataCache)
-          ? stringifyResumeDataCache(resumeDataCache)
-          : null,
+      resumeDataCache: resumeDataCache ? stringifyResumeDataCache(resumeDataCache) : null,
       // The build and shell production record the generated params themselves.
       generated: null,
     }));
