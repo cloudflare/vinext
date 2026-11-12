@@ -1115,6 +1115,28 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       expect(documentStates).toEqual([null, "fresh"]);
     });
 
+    it("serves another entry that carries a shell's marker", async () => {
+      dispatchWithIdentity(false, { isRscRequest: false, kind: "app-route-handler" });
+      stages.response.mockImplementation(
+        async () =>
+          new Response("route", {
+            headers: {
+              "Cache-Control": "public, max-age=60",
+              "X-Vinext-Response-Store-Page-Shell": "1",
+            },
+          }),
+      );
+      const { store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+
+      await fetchPage(handler, "https://example.com/route");
+      const second = await fetchPage(handler, "https://example.com/route");
+
+      expect(second.body).toBe("route");
+      expect(second.response.headers.get("X-Vinext-Cache")).toBe("HIT");
+      expect(stages.response).toHaveBeenCalledTimes(1);
+    });
+
     it("leaves a page stored under its page's key to the render", async () => {
       dispatchWithIdentity();
       const { entries, store } = createMemoryStore();

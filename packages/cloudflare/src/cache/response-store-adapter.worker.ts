@@ -802,25 +802,22 @@ const handler = {
       const key = await cacheRequest(invocation);
       let stored = await readStoredResponse(key);
       // A path's own shell, stored under its page's keys, isn't the page: the
-      // render reads it instead of the Store.
-      const foundShell = stored !== null && isResponseStorePageShell(stored);
+      // render reads it instead of the Store. Only an App page's keys hold one.
+      const foundShell =
+        otherPart !== undefined && stored !== null && isResponseStorePageShell(stored);
       // What the read found for the render, unless it found the page. A
       // shell that can't be read is left to the render's own read.
       let ownPartRead: Response | null | undefined = stored ? undefined : null;
       if (stored && foundShell) {
-        if (otherPart) {
-          try {
-            ownPartRead = new Response(await stored.text(), stored);
-          } catch (error) {
-            console.error(
-              JSON.stringify({
-                message: "Vinext response-store failed to read a path's own shell",
-                error: error instanceof Error ? error.message : String(error),
-              }),
-            );
-          }
-        } else {
-          void stored.body?.cancel().catch(() => {});
+        try {
+          ownPartRead = new Response(await stored.text(), stored);
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              message: "Vinext response-store failed to read a path's own shell",
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
         }
         stored = null;
       }
