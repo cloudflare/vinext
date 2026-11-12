@@ -331,6 +331,11 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isForceStatic: boolean,
     isForceDynamic: boolean,
   ): Promise<Response | null>;
+  /** Produce the missing shells of a generated path rendered for the cache. */
+  produceMissingShells(
+    options: DispatchAppPageOptions<TRoute>,
+    currentRevalidateSeconds: number | null,
+  ): Promise<void>;
   warm(options: WarmPprFallbackShellCachesOptions): Promise<void>;
 };
 
@@ -1198,6 +1203,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         options.renderedConcreteUrlPaths?.has(options.cleanPathname) !== true,
       renderFreshPageForCache: async ({ renderDocument }) => {
         const revalidationTarget = await resolveCacheRenderTarget();
+        if (options.pprRuntime && revalidationTarget.route === route) {
+          // A regeneration fills the path's missing shells, as a stored miss
+          // does, but a failure to find them doesn't fail the page.
+          await options.pprRuntime
+            .produceMissingShells(options, currentRevalidateSeconds)
+            .catch((error: unknown) => {
+              console.error("[vinext] ISR fallback shell discovery error:", error);
+            });
+        }
         // An interception regenerates as its own route, under its own config.
         const revalidationInterceptConfig = revalidationTarget.interceptOpts
           ? resolveAppPageInterceptSegmentConfig(
