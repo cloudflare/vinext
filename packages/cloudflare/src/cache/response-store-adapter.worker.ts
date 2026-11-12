@@ -52,6 +52,7 @@ import {
   captureResponseStoreDataRegeneration,
   DATA_REVALIDATOR_ID,
   isResponseStorePageShell,
+  PAGE_SHELL_HEADER,
   runWithResponseStoreInvocation,
   setResponseStore,
   trackResponseStoreRegenerationWork,
@@ -416,19 +417,21 @@ function parsePageReplay(value: unknown): {
  * holds the context.
  */
 function withoutRequestScopedHeaders(response: Response, responseStageProps: unknown): Response {
-  if (
-    responseStageProps === null ||
-    typeof responseStageProps !== "object" ||
-    Reflect.get(responseStageProps, "kind") !== "app-page" ||
-    Reflect.get(responseStageProps, "isRscRequest") !== true
-  ) {
-    return response;
-  }
+  const isAppPageRsc =
+    responseStageProps !== null &&
+    typeof responseStageProps === "object" &&
+    Reflect.get(responseStageProps, "kind") === "app-page" &&
+    Reflect.get(responseStageProps, "isRscRequest") === true;
+  // Only the data cache marks a path's own shell, which is never served.
+  if (!isAppPageRsc && !response.headers.has(PAGE_SHELL_HEADER)) return response;
   const headers = new Headers(response.headers);
-  if (Reflect.get(responseStageProps, "interceptionContext") == null) {
-    headers.delete(VINEXT_PARAMS_HEADER);
+  headers.delete(PAGE_SHELL_HEADER);
+  if (isAppPageRsc) {
+    if (Reflect.get(responseStageProps, "interceptionContext") == null) {
+      headers.delete(VINEXT_PARAMS_HEADER);
+    }
+    headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
   }
-  headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
   return new Response(response.body, {
     headers,
     status: response.status,

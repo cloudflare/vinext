@@ -1168,8 +1168,11 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       expect(documentStates).toEqual([null, "fresh"]);
     });
 
-    it("serves another entry that carries a shell's marker", async () => {
-      dispatchWithIdentity(false, { isRscRequest: false, kind: "app-route-handler" });
+    it.each([
+      ["a Route Handler", false, { isRscRequest: false, kind: "app-route-handler" }],
+      ["an App page", true, {}],
+    ])("serves %s that sets a shell's marker itself", async (_name, withIdentity, overrides) => {
+      dispatchWithIdentity(withIdentity, overrides);
       stages.response.mockImplementation(
         async () =>
           new Response("route", {

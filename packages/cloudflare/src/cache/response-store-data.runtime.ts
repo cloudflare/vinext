@@ -85,8 +85,12 @@ const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 /** How long past its revalidate a current Store's hit can still be marked fresh: write latency. */
 const STALE_FRESH_HIT_GRACE_MS = 5_000;
 const DATA_REVALIDATOR_ID = "vinext:data";
-/** Marks a path's own shell stored under its page's key, which is never served. */
-const PAGE_SHELL_HEADER = "X-Vinext-Response-Store-Page-Shell";
+/**
+ * Marks a path's own shell stored under its page's key, which is never served.
+ * Only the data cache writes it: the gateway removes it from every response it
+ * stores.
+ */
+export const PAGE_SHELL_HEADER = "X-Vinext-Response-Store-Page-Shell";
 const CACHE_FUNCTION_REVALIDATOR_ID = "vinext:cache-function";
 const invocationStorage = new AsyncLocalStorage<ResponseStoreInvocation>();
 const regenerationStorage = new AsyncLocalStorage<RegenerationScope>();
