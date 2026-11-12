@@ -4438,6 +4438,13 @@ describe("resolveVersionAnnotations", () => {
     });
   });
 
+  it("cuts a long commit subject to the 1000-byte message limit", () => {
+    const subject = "a".repeat(999) + "é".repeat(5);
+    const { message } = resolveVersionAnnotations("/app", { tag: "v2" }, {}, () => subject);
+    expect(message).toBe("a".repeat(999));
+    expect(Buffer.byteLength(message!)).toBeLessThanOrEqual(1000);
+  });
+
   it("prefers explicit values and omits explicitly empty ones", () => {
     expect(resolveVersionAnnotations("/app", { message: "Release 2", tag: "v2" }, {}, git)).toEqual(
       { message: "Release 2", tag: "v2" },
