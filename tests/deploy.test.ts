@@ -6,7 +6,9 @@ import Module from "node:module";
 import { execFileSync, type ChildProcess, type spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { resolveVersionAnnotations } from "../packages/cloudflare/src/version-annotations.js";
 import {
+  assertWranglerDeployAnnotations,
   deploy,
   buildCfDeployArgs,
   buildNodeCliInvocation,
@@ -28,6 +30,7 @@ import {
   validateWranglerEnvName,
   withCloudflareEnv,
   withCloudflarePreviewBuild,
+  wranglerSupportsVersionAnnotations,
 } from "../packages/cloudflare/src/deploy.js";
 import { parsePreviewsDeployArgs } from "../packages/cloudflare/src/previews-deploy.js";
 import {
@@ -223,6 +226,13 @@ describe("buildWranglerDeployArgs", () => {
     expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
   });
 
+  it("records the version message and tag", () => {
+    expect(buildWranglerDeployArgs({ message: "-Fix the header", tag: "abc123" })).toEqual({
+      args: ["deploy", "--message=-Fix the header", "--tag=abc123"],
+      env: undefined,
+    });
+  });
+
   it("preserves shell metacharacters as a literal environment argument", () => {
     const env = "preview & whoami > vinext-pwned.txt & rem";
     expect(buildWranglerDeployArgs({ env })).toEqual({
@@ -288,6 +298,29 @@ describe("deploy environment validation", () => {
     expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, "worker"))).toBe(false);
+  });
+
+  it("rejects explicit annotations on older Wrangler only when it runs wrangler deploy", async () => {
+    writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
+    writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
+    writeWranglerPackageForTest(tmpDir);
+    writeFile(
+      tmpDir,
+      "node_modules/wrangler/package.json",
+      JSON.stringify({ name: "wrangler", version: "4.65.0", bin: { wrangler: "bin/wrangler.js" } }),
+    );
+
+    await expect(deploy({ root: tmpDir, tag: "v2", dryRun: true })).rejects.toThrow(
+      "--message and --tag require Wrangler 4.66.0 or newer (found 4.65.0).",
+    );
+    // `versions upload` accepts annotations on older Wrangler releases.
+    await expect(
+      deploy({ root: tmpDir, tag: "v2", warmCdnPromote: false, dryRun: true }),
+    ).rejects.toThrow("Run `vinext init --platform=cloudflare` first.");
+    // Traffic-aware warming may still upload with `versions upload`, so it checks later.
+    await expect(
+      deploy({ root: tmpDir, tag: "v2", experimentalTPR: true, dryRun: true }),
+    ).rejects.toThrow("Run `vinext init --platform=cloudflare` first.");
   });
 
   it("does not require a custom Worker entry for App Router deployments", async () => {
@@ -442,6 +475,22 @@ describe("resolveWranglerBin", () => {
       args: [expectedWranglerBin(), "deploy", "--env", "preview-1"],
       env: "preview-1",
     });
+  });
+
+  it.each([
+    ["4.66.0", ["--message=Fix the header", "--tag=abc123"]],
+    ["4.65.0", []],
+  ])("only annotates wrangler deploy on Wrangler %s when supported", (version, annotations) => {
+    writeWranglerPackage();
+    const packageJsonPath = path.join(tmpDir, "node_modules/wrangler/package.json");
+    fs.writeFileSync(
+      packageJsonPath,
+      JSON.stringify({ ...JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")), version }),
+    );
+    expect(
+      buildWranglerInvocation(tmpDir, { message: "Fix the header", tag: "abc123" }, "node.exe")
+        .args,
+    ).toEqual([expectedWranglerBin(), "deploy", ...annotations]);
   });
 
   it("keeps Windows shell metacharacters in one literal argument", () => {
@@ -623,6 +672,16 @@ describe("cf Build Output deployment", () => {
       args: ["deploy", "--prebuilt", "--mode", "preview"],
       mode: "preview",
     });
+    expect(buildCfDeployArgs({ message: "Fix the header", tag: "abc123" })).toEqual({
+      args: ["deploy", "--prebuilt", "--message=Fix the header", "--tag=abc123"],
+      mode: undefined,
+    });
+  });
+
+  it("leaves Preview deploy annotations to cf", () => {
+    expect(
+      buildCfDeployArgs({ target: { type: "preview" }, message: "Fix the header", tag: "abc123" }),
+    ).toEqual({ args: ["previews", "deploy", "--prebuilt"], mode: undefined });
   });
 
   it.each([undefined, "pr-123"])("builds Preview deploy args (name: %s)", (name) => {
@@ -943,6 +1002,21 @@ describe("parseDeployArgs", () => {
     );
 
     expect(cliSource).toContain("verbose: parsed.verbose");
+  });
+
+  it("parses and forwards version message and tag flags", () => {
+    const parsed = parseDeployArgs(["--message", " Fix the header ", "--tag="]);
+    expect(parsed.message).toBe("Fix the header");
+    // An explicit empty value opts out of the commit default.
+    expect(parsed.tag).toBe("");
+    expect(parseDeployArgs([]).message).toBeUndefined();
+
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+    expect(cliSource).toContain("message: parsed.message");
+    expect(cliSource).toContain("tag: parsed.tag");
   });
 
   it("defaults to production deploy with no flags", () => {
@@ -4344,5 +4418,61 @@ describe("getZeroPercentStagingTraffic", () => {
         "22222222-2222-4222-8222-222222222222",
       ),
     ).toBeNull();
+  });
+});
+
+describe("resolveVersionAnnotations", () => {
+  const ci = { CI: "true" };
+  const git = (args: string[]) => {
+    if (args.join(" ") === "rev-parse --short HEAD") return "0123456\n";
+    if (args.join(" ") === "log -1 --format=%B")
+      return "Fix the header\n\nKeep the logo aligned.\n";
+    throw new Error(`unexpected git ${args.join(" ")}`);
+  };
+  const noGit = () => {
+    throw new Error("not a git repository");
+  };
+
+  it("defaults to the short HEAD SHA and commit message in CI, like cf previews deploy", () => {
+    expect(resolveVersionAnnotations("/app", {}, ci, git)).toEqual({
+      message: "Fix the header\n\nKeep the logo aligned.",
+      tag: "0123456",
+    });
+    expect(resolveVersionAnnotations("/app", {}, { CI: "1" }, git).tag).toBe("0123456");
+  });
+
+  it("adds no defaults outside CI or without a Git checkout", () => {
+    expect(resolveVersionAnnotations("/app", {}, {}, git)).toEqual({});
+    expect(resolveVersionAnnotations("/app", {}, { CI: "false" }, git)).toEqual({});
+    expect(resolveVersionAnnotations("/app", {}, ci, noGit)).toEqual({});
+  });
+
+  it("prefers explicit values and omits explicitly empty ones", () => {
+    expect(
+      resolveVersionAnnotations("/app", { message: "Release 2", tag: "v2" }, {}, noGit),
+    ).toEqual({ message: "Release 2", tag: "v2" });
+    expect(resolveVersionAnnotations("/app", { message: "", tag: "" }, ci, git)).toEqual({});
+  });
+});
+
+describe("Wrangler deploy annotations", () => {
+  it.each([
+    ["4.66.0", true],
+    ["4.153.0", true],
+    ["5.0.0", true],
+    ["4.65.9", false],
+    ["3.114.0", false],
+    [undefined, true],
+  ])("detects Wrangler %s annotation support", (version, supported) => {
+    expect(wranglerSupportsVersionAnnotations(version)).toBe(supported);
+  });
+
+  it("rejects explicit values only for older Wrangler versions", () => {
+    expect(() => assertWranglerDeployAnnotations({ tag: "v2" }, "4.65.0")).toThrow(
+      "--message and --tag require Wrangler 4.66.0 or newer (found 4.65.0).",
+    );
+    expect(() => assertWranglerDeployAnnotations({ message: "", tag: "" }, "4.65.0")).not.toThrow();
+    expect(() => assertWranglerDeployAnnotations({}, "4.65.0")).not.toThrow();
+    expect(() => assertWranglerDeployAnnotations({ tag: "v2" }, "4.66.0")).not.toThrow();
   });
 });

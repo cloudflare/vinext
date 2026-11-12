@@ -9,6 +9,7 @@ import {
   validateWranglerEnvName,
   type DeployOptions,
 } from "./deploy.js";
+import { buildVersionAnnotationArgs } from "./version-annotations.js";
 import { parseCdnWarmupDeploymentUrl } from "./worker-deployment-url.js";
 import { parseWorkersDevUrl } from "./workers-dev-url.js";
 
@@ -149,7 +150,10 @@ export function parseWranglerVersionUploadOutput(output: string): WranglerVersio
 }
 
 export function buildWranglerVersionUploadArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+  options: Pick<
+    DeployOptions,
+    "preview" | "env" | "name" | "config" | "verbose" | "message" | "tag"
+  > & {
     previewAlias?: string;
   },
 ): WranglerVersionArgs {
@@ -167,16 +171,18 @@ export function buildWranglerVersionUploadArgs(
   if (options.previewAlias) {
     args.push("--preview-alias", options.previewAlias);
   }
+  args.push(...buildVersionAnnotationArgs(options));
   return { args, env };
 }
 
 export function buildCfVersionUploadArgs(
-  options: Pick<DeployOptions, "preview" | "env"> & { previewAlias?: string },
+  options: Pick<DeployOptions, "preview" | "env" | "message" | "tag"> & { previewAlias?: string },
 ): CfVersionArgs {
   const mode = options.env || (options.preview ? "preview" : undefined);
   const args = ["workers", "versions", "create", "--prebuilt"];
   if (mode) args.push("--mode", validateWranglerEnvName(mode));
   if (options.previewAlias) args.push("--preview-alias", options.previewAlias);
+  args.push(...buildVersionAnnotationArgs(options));
   return { args, mode };
 }
 
@@ -452,7 +458,10 @@ export function runCfTriggersDeploy(
 
 export function runWranglerVersionUpload(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+  options: Pick<
+    DeployOptions,
+    "preview" | "env" | "name" | "config" | "verbose" | "message" | "tag"
+  > & {
     previewAlias?: string;
   },
   execute: typeof execFileSync = execFileSync,
@@ -479,7 +488,10 @@ export function runWranglerVersionUpload(
 
 export function runCfVersionUpload(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+  options: Pick<
+    DeployOptions,
+    "preview" | "env" | "name" | "config" | "verbose" | "message" | "tag"
+  > & {
     previewAlias?: string;
   },
   execute: typeof spawnSync = spawnSync,

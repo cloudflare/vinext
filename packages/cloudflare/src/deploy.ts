@@ -99,6 +99,7 @@ import {
   type WranglerVersionUploadResult,
   type WranglerVersionTraffic,
 } from "./version-deploy.js";
+import { buildVersionAnnotationArgs, resolveVersionAnnotations } from "./version-annotations.js";
 import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
@@ -129,6 +130,10 @@ export type DeployOptions = {
   name?: string;
   /** Wrangler config path, relative to root unless absolute */
   config?: string;
+  /** Message recorded on uploaded Worker versions (default in CI: the HEAD commit message; empty omits it) */
+  message?: string;
+  /** Tag recorded on uploaded Worker versions (default in CI: the short HEAD commit SHA; empty omits it) */
+  tag?: string;
   /** Vite config file used to build and read deploy metadata, relative to root unless absolute */
   viteConfig?: string;
   /** Skip the build step (assume already built) */
@@ -306,6 +311,8 @@ const deployArgOptions = {
   env: { type: "string" },
   name: { type: "string" },
   config: { type: "string" },
+  message: { type: "string" },
+  tag: { type: "string" },
   "vite-config": { type: "string" },
   "skip-build": { type: "boolean", default: false },
   "dry-run": { type: "boolean", default: false },
@@ -415,6 +422,8 @@ export function parseDeployArgs(args: string[]) {
     env: values.env?.trim() || undefined,
     name: values.name?.trim() || undefined,
     config: values.config?.trim() || undefined,
+    message: values.message?.trim(),
+    tag: values.tag?.trim(),
     viteConfig: values["vite-config"]?.trim() || undefined,
     skipBuild: values["skip-build"],
     dryRun: values["dry-run"],
@@ -684,7 +693,7 @@ export function validateWranglerEnvName(env: string): string {
 }
 
 export function buildWranglerDeployArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "message" | "tag">,
 ): WranglerDeployArgs {
   const args = ["deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
@@ -697,6 +706,7 @@ export function buildWranglerDeployArgs(
   if (env) {
     args.push("--env", validateWranglerEnvName(env));
   }
+  args.push(...buildVersionAnnotationArgs(options));
   return { args, env };
 }
 
@@ -718,7 +728,7 @@ export function isCfCliInstalled(
 }
 
 export function buildCfDeployArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "target">,
+  options: Pick<DeployOptions, "preview" | "env" | "target" | "message" | "tag">,
 ): CfDeployArgs {
   const mode = options.env || (options.preview ? "preview" : undefined);
   const isPreviewDeploy = options.target?.type === "preview";
@@ -726,6 +736,8 @@ export function buildCfDeployArgs(
   if (isPreviewDeploy && options.target?.name) args.push("--preview-name", options.target.name);
   args.push("--prebuilt");
   if (mode) args.push("--mode", validateWranglerEnvName(mode));
+  // `cf previews deploy` has no annotation flags; it records CI commit metadata itself.
+  if (!isPreviewDeploy) args.push(...buildVersionAnnotationArgs(options));
   return { args, mode };
 }
 
@@ -735,15 +747,17 @@ export function buildCfDeployArgs(
  * Invoking the JavaScript file through `process.execPath` avoids the `.cmd`
  * shim and command shell that package managers create on Windows.
  */
+function resolveWranglerPackageJson(root: string): string | null {
+  try {
+    return createRequire(path.join(root, "package.json")).resolve("wrangler/package.json");
+  } catch {
+    return findInNodeModules(root, "wrangler/package.json");
+  }
+}
+
 export function resolveWranglerBin(
   root: string,
-  resolvePackageJson: (root: string) => string | null = (projectRoot) => {
-    try {
-      return createRequire(path.join(projectRoot, "package.json")).resolve("wrangler/package.json");
-    } catch {
-      return findInNodeModules(projectRoot, "wrangler/package.json");
-    }
-  },
+  resolvePackageJson: (root: string) => string | null = resolveWranglerPackageJson,
 ): string {
   const packageJsonPath = resolvePackageJson(root);
   if (packageJsonPath) {
@@ -755,6 +769,49 @@ export function resolveWranglerBin(
   }
 
   return path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
+}
+
+/** `wrangler deploy` accepts `--message` and `--tag` since Wrangler 4.66.0. */
+const WRANGLER_VERSION_ANNOTATIONS_VERSION = [4, 66, 0] as const;
+
+export function wranglerSupportsVersionAnnotations(version: string | undefined): boolean {
+  const parts = version
+    ?.match(/^(\d+)\.(\d+)\.(\d+)/)
+    ?.slice(1)
+    .map(Number);
+  // Keep the annotations when the installed version cannot be read.
+  if (!parts) return true;
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i] !== WRANGLER_VERSION_ANNOTATIONS_VERSION[i]) {
+      return parts[i] > WRANGLER_VERSION_ANNOTATIONS_VERSION[i];
+    }
+  }
+  return true;
+}
+
+function readWranglerVersion(root: string): string | undefined {
+  const packageJsonPath = resolveWranglerPackageJson(root);
+  if (!packageJsonPath) return undefined;
+  try {
+    return (JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as { version?: string }).version;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Older Wrangler releases accept annotations on `versions upload` but not on
+ * `wrangler deploy`, so explicit values fail before a deploy that may run it.
+ */
+export function assertWranglerDeployAnnotations(
+  options: Pick<DeployOptions, "message" | "tag">,
+  wranglerVersion: string | undefined,
+): void {
+  if ((options.message || options.tag) && !wranglerSupportsVersionAnnotations(wranglerVersion)) {
+    throw new Error(
+      `--message and --tag require Wrangler 4.66.0 or newer (found ${wranglerVersion}). Upgrade wrangler or omit them.`,
+    );
+  }
 }
 
 export function resolveCfBin(
@@ -788,17 +845,25 @@ export function buildNodeCliInvocation(
 
 export function buildWranglerInvocation(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "message" | "tag">,
   nodeExecutable: string = process.execPath,
 ): { file: string; args: string[]; env: string | undefined } {
   const wranglerBin = resolveWranglerBin(root);
-  const { args, env } = buildWranglerDeployArgs(options);
+  // deploy() rejects explicit annotations for these versions, so only defaults are dropped.
+  const { args, env } = buildWranglerDeployArgs(
+    wranglerSupportsVersionAnnotations(readWranglerVersion(root))
+      ? options
+      : { ...options, message: undefined, tag: undefined },
+  );
   return { ...buildNodeCliInvocation(wranglerBin, args, nodeExecutable), env };
 }
 
 export async function runWranglerDeploy(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+  options: Pick<
+    DeployOptions,
+    "preview" | "env" | "name" | "config" | "verbose" | "message" | "tag"
+  > & {
     promote?: boolean;
   },
   execute: typeof spawn = spawn,
@@ -856,7 +921,7 @@ export async function runWranglerDeploy(
 
 export async function runCfDeploy(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "target">,
+  options: Pick<DeployOptions, "preview" | "env" | "target" | "message" | "tag">,
   execute: typeof spawn = spawn,
 ): Promise<string> {
   const { args, mode } = buildCfDeployArgs(options);
@@ -1005,6 +1070,8 @@ type CdnWarmDeployOptions = Pick<
   | "name"
   | "config"
   | "verbose"
+  | "message"
+  | "tag"
   | "warmCdnTarget"
   | "warmCdnConcurrency"
   | "warmCdnTimeout"
@@ -2179,6 +2246,8 @@ function assertPreviewDeployOptions(options: DeployOptions): void {
     preview: options.preview,
     name: options.name !== undefined,
     config: options.config !== undefined,
+    message: options.message !== undefined,
+    tag: options.tag !== undefined,
     warmCdnCache: options.warmCdnCache,
     warmCdnTarget: options.warmCdnTarget !== undefined,
     warmCdnCertify: options.warmCdnCertify,
@@ -2217,6 +2286,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
       "--config is not supported for cloudflare.config.ts projects. cf always uses cloudflare.config.ts in the project root; select a mode with --env instead.",
     );
   }
+  // Staged warming and --no-promote upload with `versions upload`, never `wrangler deploy`.
+  // Traffic-aware warming decides later and re-checks before falling back to `wrangler deploy`.
+  const mayRunWranglerDeploy =
+    deploymentTool === "wrangler" && !options.warmCdnCache && options.warmCdnPromote !== false;
+  if (mayRunWranglerDeploy && !options.experimentalTPR) {
+    assertWranglerDeployAnnotations(options, readWranglerVersion(root));
+  }
+  const versionAnnotations = isPreview ? {} : resolveVersionAnnotations(root, options);
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);
   // Undefined keeps Vite's default vite.config.* lookup in the root.
   const viteConfigFile = options.viteConfig ? path.resolve(root, options.viteConfig) : undefined;
@@ -2432,6 +2509,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     config: options.config,
     verbose: options.verbose,
     deploymentTool,
+    ...versionAnnotations,
   };
   let shouldWarmTpr = tprRoutes.length > 0;
   if (shouldWarmTpr && !options.warmCdnCache) {
@@ -2619,6 +2697,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
     } else if (deploymentTool === "cf") {
       url = await runCfDeploy(root, { ...wranglerOptions, target: options.target });
     } else {
+      if (mayRunWranglerDeploy) {
+        assertWranglerDeployAnnotations(options, readWranglerVersion(root));
+      }
       url = await runWranglerDeploy(root, {
         ...wranglerOptions,
         promote: options.warmCdnPromote,

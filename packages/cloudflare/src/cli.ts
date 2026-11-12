@@ -51,6 +51,8 @@ async function deployCommand(): Promise<void> {
     preview: parsed.preview,
     env: parsed.env,
     config: parsed.config,
+    message: parsed.message,
+    tag: parsed.tag,
     viteConfig: parsed.viteConfig,
     skipBuild: parsed.skipBuild,
     dryRun: parsed.dryRun,
