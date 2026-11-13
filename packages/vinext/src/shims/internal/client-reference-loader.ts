@@ -41,11 +41,28 @@ export const clientReferences: Record<string, () => Promise<ClientReferenceExpor
   },
 );
 
+// The resolved hrefs of the document's links, and of its stylesheets. Reading
+// every link's href for each chunk would make loading N chunks cost N * N
+// reads, as the server-rendered head modulepreloads each chunk. The sets are
+// rebuilt when the document's link count is not the one the loader last saw,
+// so links React or the app adds or removes are still seen.
+const linkedHrefs = new Set<string>();
+const linkedStylesheets = new Set<string>();
+let linkCount = -1;
+
 function isLinked(href: string, stylesheet: boolean): boolean {
-  for (const link of document.getElementsByTagName("link")) {
-    if (link.href === href && (!stylesheet || link.rel === "stylesheet")) return true;
+  const links = document.getElementsByTagName("link");
+  if (links.length !== linkCount) {
+    linkedHrefs.clear();
+    linkedStylesheets.clear();
+    for (const link of links) {
+      const linkHref = link.href;
+      linkedHrefs.add(linkHref);
+      if (link.rel === "stylesheet") linkedStylesheets.add(linkHref);
+    }
+    linkCount = links.length;
   }
-  return false;
+  return (stylesheet ? linkedStylesheets : linkedHrefs).has(href);
 }
 
 function appendLink(url: string, stylesheet: boolean): HTMLLinkElement | null {
@@ -60,6 +77,9 @@ function appendLink(url: string, stylesheet: boolean): HTMLLinkElement | null {
   const nonce = nonceMeta?.nonce || nonceMeta?.getAttribute("nonce");
   if (nonce) link.setAttribute("nonce", nonce);
   document.head.appendChild(link);
+  linkedHrefs.add(href);
+  if (stylesheet) linkedStylesheets.add(href);
+  linkCount++;
   return link;
 }
 

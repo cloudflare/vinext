@@ -115,6 +115,56 @@ describe("App Router client reference loader", () => {
     });
   });
 
+  // The server-rendered head modulepreloads each chunk, and the browser
+  // resolves a link's href on every read. Hydration loads every chunk, so
+  // reading each link's href per chunk would cost N * N reads.
+  it("reads each link's href once while loading the chunks the head already preloads", async () => {
+    const { loadChunk } = await loadLoader();
+    let reads = 0;
+    const chunks = Array.from({ length: 300 }, (_, i) => `/_next/static/chunks/c${i}.js`);
+    for (const chunk of chunks) {
+      const href = new URL(chunk, BASE).href;
+      links.push({
+        ...createLink(),
+        rel: "modulepreload",
+        get href() {
+          reads++;
+          return href;
+        },
+      });
+    }
+    await Promise.all(chunks.map((chunk) => loadChunk(`p${chunk}`)));
+    expect(links).toHaveLength(chunks.length);
+    expect(reads).toBe(chunks.length);
+  });
+
+  it("skips a link added to the document after the loader first checked it", async () => {
+    const { loadChunk } = await loadLoader();
+    await loadChunk("p/_next/static/chunks/a.js");
+    expect(links).toHaveLength(1);
+    // React inserts a server component's stylesheet and the app a preload.
+    const stylesheet = createLink();
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = "https://app.example/_next/static/css/a.css";
+    const preload = createLink();
+    preload.rel = "modulepreload";
+    preload.href = "https://app.example/_next/static/chunks/b.js";
+    links.push(stylesheet, preload);
+    const file = path.join(dir, "late-linked.mjs");
+    fs.writeFileSync(file, "export {};\n");
+    await loadChunk(`m${pathToFileURL(file).href}\n/_next/static/css/a.css`);
+    await loadChunk("p/_next/static/chunks/b.js");
+    expect(links).toHaveLength(3);
+    // A removed link is linked again.
+    links.splice(links.indexOf(preload), 1);
+    await loadChunk("p/_next/static/chunks/b.js");
+    expect(links).toHaveLength(3);
+    expect(links[2]).toMatchObject({
+      rel: "modulepreload",
+      href: "https://app.example/_next/static/chunks/b.js",
+    });
+  });
+
   it("imports a module chunk once its stylesheets load", async () => {
     const { loadChunk } = await loadLoader();
     const file = path.join(dir, "styled.mjs");
