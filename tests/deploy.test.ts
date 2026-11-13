@@ -640,6 +640,28 @@ describe("cf Build Output deployment", () => {
     );
   });
 
+  it("rejects unsupported or linked Build Output versions like cf", () => {
+    const configured = { clientOutDir: "dist/client", rscOutDir: "dist/server" };
+    writeFile(tmpDir, ".cloudflare/output/v2/workers/default/worker.config.json", "{}");
+    expect(() => resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toThrow(
+      "This Cloudflare Build Output uses format v2, but vinext supports v0 and v1.",
+    );
+
+    const outputDir = path.join(tmpDir, ".cloudflare", "output");
+    fs.rmSync(path.join(outputDir, "v2"), { recursive: true });
+    writeFile(tmpDir, "linked-output/workers/default/worker.config.json", "{}");
+    fs.symlinkSync(path.join(tmpDir, "linked-output"), path.join(outputDir, "v1"), "dir");
+    expect(() => resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toThrow(
+      `Cloudflare Build Output must not be linked, but ${path.join(outputDir, "v1")} is a symlink.`,
+    );
+
+    fs.rmSync(path.join(tmpDir, ".cloudflare"), { recursive: true });
+    fs.symlinkSync(path.join(tmpDir, "linked-output"), path.join(tmpDir, ".cloudflare"), "dir");
+    expect(() => resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toThrow(
+      `Cloudflare Build Output must not be linked, but ${path.join(tmpDir, ".cloudflare")} is a symlink.`,
+    );
+  });
+
   it("builds the selected Cloudflare mode before prebuilt deployment", () => {
     expect(resolveViteBuildMode("cf", undefined)).toBe("production");
     expect(resolveViteBuildMode("cf", "staging")).toBe("staging");
