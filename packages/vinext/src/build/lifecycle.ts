@@ -313,6 +313,17 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     });
   }
 
+  // A static export deploys the client output as is, with no server to keep
+  // Vite's build metadata (`.vite/`) private, and Next.js's `out/` has no
+  // such files. Nothing reads it once the build is done.
+  if (context.nextConfig.output === "export") {
+    const clientOutDir = buildOutput.clientOutDir ?? path.join("dist", "client");
+    fs.rmSync(path.resolve(context.root, clientOutDir, ".vite"), {
+      recursive: true,
+      force: true,
+    });
+  }
+
   // Next.js runs writeStandaloneDirectory after static generation and passes it
   // the collected staticPages, so the standalone tree contains the prerendered
   // output. Emit standalone after the prerender phase so dist/standalone ships
