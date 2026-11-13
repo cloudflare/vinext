@@ -261,6 +261,7 @@ export default defineConfig({
             "tests/static-export.test.ts",
             "tests/tsconfig-path-alias-resolution.test.ts",
             "tests/vite-hmr-websocket.test.ts",
+            "tests/websocket-upgrade-worker.test.ts",
             "tests/nextjs-compat/**/*.test.ts",
             // Flaky under parallelism due to 1 MiB buffer allocation pressure.
             "tests/kv-cache-handler.test.ts",
@@ -358,6 +359,7 @@ export default defineConfig({
             "tests/static-export.test.ts",
             "tests/tsconfig-path-alias-resolution.test.ts",
             "tests/vite-hmr-websocket.test.ts",
+            "tests/websocket-upgrade-worker.test.ts",
             "tests/nextjs-compat/**/*.test.ts",
           ],
           testTimeout: 30000,

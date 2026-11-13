@@ -4,6 +4,7 @@ import {
   PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER,
   type PagesResponseStagePolicyOwner,
 } from "./worker-stages.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 /** Apply request-stage cache policy before response-stage admission. */
 export function applyResponseStagePolicyHeaders(
@@ -29,6 +30,8 @@ export function stripInheritedResponseStageCookies(
   response: Response,
   stagedHeaders: Headers,
 ): Response {
+  // An upgrade inherits no staged cookies, so its cookies are the handler's.
+  if (isWebSocketUpgradeResponse(response)) return response;
   const stagedCookies = stagedHeaders.getSetCookie();
   if (stagedCookies.length === 0) return response;
 

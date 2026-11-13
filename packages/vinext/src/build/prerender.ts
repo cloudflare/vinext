@@ -852,7 +852,7 @@ export async function prerenderPages({
   const restorePrerenderPhase = enterPrerenderPhase();
   // ownedProdServerHandle: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
-  let ownedProdServerHandle: PrerenderProdServer | null = null;
+  let ownedProdServerHandle = null as PrerenderProdServer | null;
   // Forked render-server pool (declared out here so the finally can close it).
   let renderPool: PrerenderServerPool | null = null;
   const recordRenderError = (err: unknown): void => {
@@ -1461,7 +1461,7 @@ export async function prerenderApp({
   let staticParamsMap: StaticParamsMap = {};
   // ownedProdServer: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
-  let ownedProdServerHandle: PrerenderProdServer | null = null;
+  let ownedProdServerHandle = null as PrerenderProdServer | null;
   // Forked render-server pool (declared out here so the finally can close it).
   let renderPool: PrerenderServerPool | null = null;
   const recordRenderError = (err: unknown): void => {

@@ -223,6 +223,7 @@ import {
   setFrameworkRequestRoute,
   traceFrameworkRequest,
 } from "./request-tracing.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -1011,6 +1012,8 @@ function withNeverCacheControl(
   response: Response,
   cacheControl: string = NEVER_CACHE_CONTROL,
 ): Response {
+  // An upgrade is never cached, and rebuilding it drops its webSocket.
+  if (isWebSocketUpgradeResponse(response)) return response;
   const applyNoStore = (headers: Headers): void => {
     applyCdnResponseHeaders(headers, { cacheControl });
   };
