@@ -2063,8 +2063,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     pageTransformCanonicalPaths.set(modulePath, canonicalPath);
     return canonicalPath;
   };
-  // The page, layout and route files in app/ whose targets lie outside it, by
-  // target path. Rebuilt whenever the route scan is.
+  // The files symlinked into app/ whose targets lie outside it, by target
+  // path. Rebuilt whenever the route scan is, which skips symlinked
+  // directories, so the walk does too.
   let symlinkedAppEntryPaths: {
     routes: Awaited<ReturnType<typeof appRouter>>;
     paths: Map<string, string>;
@@ -2073,13 +2074,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
     if (symlinkedAppEntryPaths?.routes === routes) return symlinkedAppEntryPaths.paths;
     const paths = new Map<string, string>();
-    for (const route of routes) {
-      for (const file of [route.pagePath, route.routePath, ...route.layouts]) {
-        if (!file) continue;
-        const target = canonicalizePageTransformPath(file);
-        if (!isPathInside(canonicalAppDir, target)) paths.set(target, file);
+    const walk = (dir: string) => {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
       }
-    }
+      for (const entry of entries) {
+        const file = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(file);
+        } else if (entry.isSymbolicLink()) {
+          const target = canonicalizePageTransformPath(file);
+          if (!isPathInside(canonicalAppDir, target)) paths.set(target, file);
+        }
+      }
+    };
+    walk(appDir);
     symlinkedAppEntryPaths = { routes, paths };
     return paths;
   };
