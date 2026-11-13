@@ -100,6 +100,13 @@ async function warmDashboard(worker: Miniflare) {
   const page = await worker.dispatchFetch("https://app.test/", { redirect: "manual" });
   await page.arrayBuffer();
   const expectedBuildId = page.headers.get("x-vinext-build-id") ?? undefined;
+  const rsc = await worker.dispatchFetch("https://app.test/?_rsc", {
+    headers: { RSC: "1" },
+    redirect: "manual",
+  });
+  await rsc.arrayBuffer();
+  const expectedRscBuildId = rsc.headers.get("x-vinext-rsc-build-id") ?? undefined;
+  assert.ok(expectedBuildId && expectedRscBuildId);
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
     worker.dispatchFetch(String(input instanceof Request ? input.url : input), {
       ...(init as object),
@@ -108,8 +115,10 @@ async function warmDashboard(worker: Miniflare) {
   return warmCdnCache({
     targetUrl: "https://app.test",
     paths: ["/dashboard"],
+    rscPaths: ["/dashboard"],
     statusSource: "vinext",
     expectedBuildId,
+    expectedRscBuildId,
     retries: 0,
     fetchImpl,
   });
@@ -119,7 +128,7 @@ async function assertSkipped(worker: Miniflare, gate: "middleware" | "proxy") {
   const result = await warmDashboard(worker);
   assert.deepEqual(
     { failed: result.failed, failures: result.failures, skipped: result.skipped },
-    { failed: 0, failures: [], skipped: 1 },
+    { failed: 0, failures: [], skipped: 2 },
   );
   // The redirect itself is labelled BYPASS.
   const redirect = await worker.dispatchFetch("https://app.test/dashboard", {

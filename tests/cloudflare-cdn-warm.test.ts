@@ -1295,6 +1295,68 @@ describe("Cloudflare CDN warmup", () => {
     }
   });
 
+  // Issue #4702: middleware or proxy that answers an RSC request in the
+  // uncached request stage sends no RSC payload, so no RSC build identity.
+  describe("an RSC target that middleware answers in the request stage", () => {
+    const middlewareRedirect = (headers: Record<string, string>) =>
+      new Response(null, {
+        status: 307,
+        headers: {
+          location: "/login",
+          [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          ...headers,
+        },
+      });
+    const warmRsc = (response: () => Response, statusSource: "cloudflare" | "vinext") =>
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: vi.fn(async () => response()) as typeof fetch,
+        paths: [],
+        retries: 0,
+        rscPaths: ["/dashboard"],
+        statusSource,
+        targetUrl: "https://app.example.com",
+      });
+
+    it.each([
+      [
+        "Workers Cache",
+        "cloudflare",
+        { "cf-cache-status": "DYNAMIC", "cache-control": "no-store" },
+      ],
+      ["the Response Store", "vinext", {}],
+    ] as const)("is skipped with %s", async (_name, statusSource, headers) => {
+      const result = await warmRsc(
+        () => middlewareRedirect({ ...headers, "x-vinext-cache": "BYPASS" }),
+        statusSource,
+      );
+      expect(result).toMatchObject({ failed: 0, skipped: 1, warmed: 0 });
+    });
+
+    it("still fails without the request-stage BYPASS label", async () => {
+      const result = await warmRsc(() => middlewareRedirect({}), "vinext");
+      expect(result.failures).toEqual([
+        {
+          path: "/dashboard (RSC full)",
+          error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build rsc-build-a`,
+        },
+      ]);
+    });
+
+    it("still fails when the build identity is another build's", async () => {
+      const result = await warmRsc(
+        () =>
+          middlewareRedirect({
+            "x-vinext-cache": "BYPASS",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "old-build",
+          }),
+        "vinext",
+      );
+      expect(result.failed).toBe(1);
+    });
+  });
+
   it("does not skip a non-success response from a different build", async () => {
     const fetchImpl = vi.fn(
       async () =>
