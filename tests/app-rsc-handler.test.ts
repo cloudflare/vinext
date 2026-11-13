@@ -860,6 +860,38 @@ describe("createAppRscHandler", () => {
     expect(aborted).toBe(true);
   });
 
+  // Issue #4702: deploy warming reads X-Vinext-Cache, and a response that
+  // middleware answers in the request stage never reaches the shared cache.
+  it.each([
+    ["a redirect", false, () => Response.redirect("https://example.test/login", 307)],
+    ["an external rewrite", true, () => new Response("upstream", { status: 200 })],
+  ])("labels %s that middleware answers itself BYPASS", async (_name, externalRewrite, create) => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+      async () => new Response("unused"),
+    );
+    const runMiddleware = async () => ({
+      externalRewrite,
+      kind: "response" as const,
+      matched: true,
+      pathnameEligible: true,
+      response: create(),
+    });
+    const handler = createHandler({ runMiddleware });
+
+    const staged = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+    expect(dispatchResponseStage).not.toHaveBeenCalled();
+    expect(staged.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+
+    // A single-stage handler has no uncached request stage to label.
+    const local = await handler(new Request("https://example.test/docs/about"), null);
+    expect(local.headers.get("X-Vinext-Cache")).toBeNull();
+  });
+
   it("normalizes a direct contextual RSC request before shared response-stage dispatch", async () => {
     const route = createPageRoute();
     const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);

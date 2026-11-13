@@ -6,10 +6,17 @@ import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-ad
 import type { ResponseStoreLocationHint } from "@cloudflare/workers-response-store";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
-const selfContained = process.env.VINEXT_RESPONSE_STORE_MODE === "self-contained";
+// The proxy.ts variant serves src/app, whose proxy.ts protects /dashboard.
+const proxyVariant = process.env.VINEXT_RESPONSE_STORE_PROXY === "1";
+const selfContained =
+  proxyVariant || process.env.VINEXT_RESPONSE_STORE_MODE === "self-contained";
 const cacheBackend = process.env.VINEXT_CACHE_BACKEND;
 const kv = cacheBackend === "kv" || cacheBackend === "workers-cache";
-const outputRoot = selfContained ? ".vinext/response-store-self-contained" : "dist";
+const outputRoot = proxyVariant
+  ? ".vinext/response-store-proxy"
+  : selfContained
+    ? ".vinext/response-store-self-contained"
+    : "dist";
 const locationHint = process.env.VINEXT_RESPONSE_STORE_LOCATION_HINT as
   | ResponseStoreLocationHint
   | undefined;
@@ -17,6 +24,7 @@ const locationHint = process.env.VINEXT_RESPONSE_STORE_LOCATION_HINT as
 export default defineConfig({
   plugins: [
     vinext({
+      ...(proxyVariant ? { appDir: "src" } : {}),
       cache: kv
         ? {
             ...(cacheBackend === "workers-cache" ? { cdn: workersCacheCdnAdapter() } : {}),

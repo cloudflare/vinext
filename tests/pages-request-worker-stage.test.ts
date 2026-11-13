@@ -488,6 +488,103 @@ describe("Pages Worker request stage", () => {
     expect(state.forcedDynamicReason).toBeUndefined();
   });
 
+  // Issue #4702: deploy warming reads X-Vinext-Cache, and a response that
+  // middleware answers never reaches the response stage's shared cache.
+  it.each([
+    [
+      "a redirect",
+      { continue: false, redirectStatus: 307, redirectUrl: "https://example.com/login" },
+      307,
+    ],
+    ["its own response", { continue: false, response: new Response(null, { status: 403 }) }, 403],
+    [
+      "an immutable Response.redirect()",
+      { continue: false, response: Response.redirect("https://example.com/login", 307) },
+      307,
+    ],
+  ] satisfies Array<[string, MiddlewareResult, number]>)(
+    "labels %s that middleware answers itself BYPASS",
+    async (_name, result, status) => {
+      mocks.runMiddleware.mockResolvedValue({ ...result, pathnameEligible: true });
+      const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("unused"));
+
+      const response = await handleRequestStage(
+        new Request("https://example.com/page"),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(response.status).toBe(status);
+      expect(response.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+    },
+  );
+
+  it("labels a middleware external rewrite BYPASS", async () => {
+    mocks.runMiddleware.mockResolvedValue({
+      continue: true,
+      pathnameEligible: true,
+      rewriteUrl: "https://upstream.example/page",
+    });
+    const upstream = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("upstream", { headers: { "Cache-Control": "max-age=60" } }));
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("unused"));
+
+    try {
+      const response = await handleRequestStage(
+        new Request("https://example.com/page"),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(upstream).toHaveBeenCalledOnce();
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(await response.text()).toBe("upstream");
+      expect(response.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+    } finally {
+      upstream.mockRestore();
+    }
+  });
+
+  it("leaves the cache status of a page middleware lets through to the response stage", async () => {
+    mocks.runMiddleware.mockResolvedValue({ continue: true, pathnameEligible: true });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(
+      async () => new Response("remote", { headers: { "X-Vinext-Cache": "MISS" } }),
+    );
+
+    const response = await handleRequestStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+  });
+
+  it("sends no cache status on a middleware redirect from the single-entry Worker", async () => {
+    mocks.runMiddleware.mockResolvedValue({
+      continue: false,
+      pathnameEligible: true,
+      redirectStatus: 307,
+      redirectUrl: "https://example.com/login",
+    });
+
+    const response = await handleRequestStageLocally(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      mocks.renderResponse,
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("X-Vinext-Cache")).toBeNull();
+  });
+
   it("classifies a terminal middleware probe without dispatching the response stage", async () => {
     mocks.runMiddleware.mockResolvedValue({
       continue: false,

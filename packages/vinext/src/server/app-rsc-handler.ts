@@ -104,6 +104,7 @@ import {
   markStreamedActionRedirectResponse,
 } from "./app-rsc-response-finalizer.js";
 import type { RouteHandlerRuntime } from "./config-headers.js";
+import { withRequestStageBypassCacheState } from "./cache-headers.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { isAppRouteHandlerRoute } from "./app-rsc-route-matching.js";
 import {
@@ -1420,20 +1421,24 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           recordCacheability: dispatchResponseStage === undefined,
           requestContext: preMiddlewareRequestContext,
         });
+        const response = withExternalRewriteResponseHeaders(middlewareResult.response, headers, []);
         return markAppRscResponseConfigHeadersApplied(
-          withExternalRewriteResponseHeaders(middlewareResult.response, headers, []),
+          dispatchResponseStage ? withRequestStageBypassCacheState(response) : response,
         );
       }
       // Finalization applies config headers to a response middleware returned
       // directly. As in Next.js, they yield to that response's own headers.
       middlewareContext.headers ??= new Headers(middlewareResult.response.headers);
-      return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {
+      const response = await applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {
         basePathState,
         configHeaders: options.configHeaders,
         pathname: headerMatchPathname,
         recordCacheability: dispatchResponseStage === undefined,
         requestContext: preMiddlewareRequestContext,
       });
+      // Middleware answered in the uncached request stage, so the response
+      // stage and its shared cache never see this request.
+      return dispatchResponseStage ? withRequestStageBypassCacheState(response) : response;
     }
 
     cleanPathname = middlewareResult.cleanPathname;
