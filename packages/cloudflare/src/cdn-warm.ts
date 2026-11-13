@@ -921,8 +921,9 @@ function validateRscWarmResponse(
   // Middleware or proxy answered in the uncached request stage, so no RSC
   // render produced the response to carry an RSC build identity or payload.
   // The matching build identity above proves the uploaded build answered it.
-  // An RSC payload comes only from a render, so it must still prove its build.
-  // The Response Store labels an uncacheable render BYPASS too, so a server
+  // A Flight payload here comes from an external rewrite's upstream, whose
+  // RSC build identity the request stage drops. A render's payload carries its
+  // own, so one from another build still fails below. The Response Store labels an uncacheable render BYPASS too, so a server
   // error fails on its status, whichever stage sent it. The matching build
   // identity shows it is no deployment mismatch.
   const unexpectedStatus =
@@ -934,8 +935,7 @@ function validateRscWarmResponse(
     expectedBuildId !== undefined &&
     !response.redirected &&
     response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase() === "BYPASS" &&
-    !response.headers.has(VINEXT_RSC_BUILD_ID_HEADER) &&
-    !response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)
+    !response.headers.has(VINEXT_RSC_BUILD_ID_HEADER)
   ) {
     const admission = validateWarmAdmission(response, statusSource, requireCacheHit);
     if (admission.outcome !== "warmed") return admission;

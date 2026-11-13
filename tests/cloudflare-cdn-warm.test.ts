@@ -1352,8 +1352,28 @@ describe("Cloudflare CDN warmup", () => {
       },
     );
 
-    // Only a render produces an RSC payload, so it must prove its RSC build.
-    it("still fails when an RSC payload labelled BYPASS lacks the RSC build identity", async () => {
+    // An external rewrite to another App Router answers with its Flight
+    // payload, and the request stage drops the upstream's RSC build identity.
+    it.each(["cloudflare", "vinext"] as const)(
+      "is skipped when middleware rewrites to an upstream Flight payload (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(
+          () =>
+            new Response("0:null\n", {
+              headers: {
+                "content-type": "text/x-component",
+                "x-vinext-cache": "BYPASS",
+                [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              },
+            }),
+          statusSource,
+        );
+        expect(result).toMatchObject({ failed: 0, skipped: 1, warmed: 0 });
+      },
+    );
+
+    // A render's payload carries its RSC build identity, so it must match.
+    it("still fails when an RSC payload labelled BYPASS is another RSC build's", async () => {
       const result = await warmRsc(
         () =>
           new Response("0:null\n", {
@@ -1361,6 +1381,7 @@ describe("Cloudflare CDN warmup", () => {
               "content-type": "text/x-component",
               "x-vinext-cache": "BYPASS",
               [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-old",
             },
           }),
         "vinext",
