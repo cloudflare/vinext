@@ -83,6 +83,24 @@ describe("TPR route resolution", () => {
         expect.any(Object),
       );
 
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          domains: [
+            { hostname: "previews.example.net", production: false, previews: true },
+            { hostname: "shop.example.net", production: true, previews: false },
+          ],
+        }),
+      );
+      fetchMock.mockClear();
+      await expect(
+        resolveTPRRoutes({ root, typedConfig: true, window: 24 }),
+      ).resolves.toMatchObject({ skipped: "could not resolve zone for shop.example.net" });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.cloudflare.com/client/v4/zones?name=example.net",
+        expect.any(Object),
+      );
+
       fs.writeFileSync(configPath, JSON.stringify({ domains: [] }));
       fetchMock.mockClear();
       await expect(
