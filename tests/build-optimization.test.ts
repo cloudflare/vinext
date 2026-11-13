@@ -27,7 +27,10 @@ import {
   stripServerExports as _stripServerExportsImpl,
   validatePageExports as _validatePageExports,
 } from "../packages/vinext/src/plugins/strip-server-exports.js";
-import { blankServerExportSource } from "../packages/vinext/src/plugins/page-source-content.js";
+import {
+  blankServerExportSource,
+  withLineFeeds,
+} from "../packages/vinext/src/plugins/page-source-content.js";
 import {
   createClientManualChunks,
   getClientTreeshakeConfig,
@@ -6729,11 +6732,60 @@ export const getStaticProps = () => ({ props: { value: "STATIC_PROPS_BODY" } });
     expect(blanked).not.toMatch(/STATIC_PATHS_BODY|STATIC_PROPS_BODY/);
   });
 
+  // Oxc's maps end a line at a lone `\r`, U+2028 and U+2029 as well as `\n`.
+  it.each([
+    ["U+2028 in a string", `const label = "first\u2028second";\n`],
+    ["U+2029 in a comment", `/* first\u2029second */\n`],
+    [
+      "U+2028 in a template literal the compiled page keeps",
+      "const label = `first\u2028second`;\n",
+    ],
+  ])("places the blanked code after %s", async (_name, before) => {
+    const source = `${before}export default function Page({ value }) {
+  return <p>{label} {value}</p>;
+}
+export const getServerSideProps = withSecret("SECRET_TOKEN", async () => ({
+  props: { value: "DATA_EXPORT_BODY" },
+}));
+export function keepMe() {
+  return "KEPT_BODY";
+}
+`;
+    const blanked = await blankPage(source, "jsx");
+    expect(blanked).not.toMatch(/SECRET_TOKEN|DATA_EXPORT_BODY|getServerSideProps/);
+    expect(blanked).toContain(`${before}export default function Page({ value }) {`);
+    expect(blanked).toContain('export function keepMe() {\n  return "KEPT_BODY";\n}\n');
+  });
+
+  it("places the blanked code in a page with lone CR line endings", async () => {
+    const source = [
+      "export default function Page({ value }) {",
+      "  return <p>PAGE_BODY {value}</p>;",
+      "}",
+      "export async function getServerSideProps() {",
+      '  return { props: { value: "SECRET_TOKEN" } };',
+      "}",
+      "export function keepMe() {}",
+      "",
+    ].join("\r");
+    const blanked = await blankPage(source, "jsx");
+    expect(blanked).not.toMatch(/SECRET_TOKEN|getServerSideProps/);
+    expect(blanked).toContain("  return <p>PAGE_BODY {value}</p>;\r}\r");
+    expect(blanked).toContain("\rexport function keepMe() {}\r");
+    expect(blanked.length).toBe(source.length);
+  });
+
   it("blanks the whole page when the map places nothing", () => {
     const source = "export default function Page() {}\nexport function getStaticProps() {}\n";
     expect(blankServerExportSource(source, source, "")).toBe(
       " ".repeat(33) + "\n" + " ".repeat(35) + "\n",
     );
+  });
+});
+
+describe("withLineFeeds", () => {
+  it("turns each line break oxc counts but MagicString does not into a line feed", () => {
+    expect(withLineFeeds("a\rb\r\nc\u2028d\u2029e\n")).toBe("a\nb\r\nc\nd\ne\n");
   });
 });
 

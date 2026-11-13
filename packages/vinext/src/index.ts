@@ -374,7 +374,11 @@ import {
   stripServerExports,
   validatePageExports,
 } from "./plugins/strip-server-exports.js";
-import { blankServerExportSource } from "./plugins/page-source-content.js";
+import {
+  blankServerExportSource,
+  blankSource,
+  withLineFeeds,
+} from "./plugins/page-source-content.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import {
   createImportMetaUrlPlugin,
@@ -7985,9 +7989,13 @@ export const loadServerActionClient = ${
             );
           } catch {
             // The transform reports the error; never fall back to the source.
-            sourcesContent = source.replace(/[^\r\n]/g, " ");
+            sourcesContent = blankSource(source);
           }
-          const map = new MagicString(source).generateMap({ hires: "boundary", source: id });
+          // The page's compile maps back to this map by oxc's line numbers.
+          const map = new MagicString(withLineFeeds(source)).generateMap({
+            hires: "boundary",
+            source: id,
+          });
           map.sourcesContent = [sourcesContent];
           clientSourcemapPageIds.add(id);
           return { code: source, map };

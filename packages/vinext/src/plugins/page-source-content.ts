@@ -7,7 +7,7 @@ type Segment = { generated: number; original: number };
  * The source of a Pages Router page as a client sourcemap should show it, with
  * the code `stripServerExports` removes from the browser build blanked.
  * `compiled` is the page compiled to JavaScript and `mappings` its sourcemap
- * back to `source`. Blanking keeps every newline, so the original line and
+ * back to `source`. Blanking keeps every line break, so the original line and
  * column of every kept character stay the same.
  */
 export function blankServerExportSource(
@@ -20,7 +20,7 @@ export function blankServerExportSource(
 
   const segments = decodeSegments(mappings, lineStarts(compiled), lineStarts(source));
   // Blank the whole module if the map cannot place the code.
-  if (segments.length === 0) return blank(source, [{ start: 0, end: source.length }]);
+  if (segments.length === 0) return blankSource(source);
   const originals = [...new Set(segments.map((segment) => segment.original))].sort(
     (left, right) => left - right,
   );
@@ -81,6 +81,27 @@ export function blankServerExportSource(
   return blank(source, blanked);
 }
 
+// Oxc's sourcemaps count lines as ECMAScript does: `\r\n` is one break, and a
+// lone `\r`, U+2028 and U+2029 each end a line like `\n`, on both sides.
+const LINE_BREAK_RE = /\r\n?|[\n\u2028\u2029]/g;
+const NON_LINE_BREAK_RE = /[^\r\n\u2028\u2029]/g;
+// The breaks MagicString's maps do not count.
+const NON_LF_LINE_BREAK_RE = /\r(?!\n)|[\u2028\u2029]/g;
+
+/** `source` with everything but its line breaks blanked. */
+export function blankSource(source: string): string {
+  return source.replace(NON_LINE_BREAK_RE, " ");
+}
+
+/**
+ * `source` with each lone `\r`, U+2028 and U+2029 replaced by `\n`, so a
+ * MagicString map of it numbers lines as oxc's maps of `source` do. Every
+ * offset stays the same.
+ */
+export function withLineFeeds(source: string): string {
+  return source.replace(NON_LF_LINE_BREAK_RE, "\n");
+}
+
 function blank(source: string, ranges: Array<{ start: number; end: number }>): string {
   const sorted = [...ranges].sort((left, right) => left.start - right.start);
   let result = "";
@@ -88,7 +109,7 @@ function blank(source: string, ranges: Array<{ start: number; end: number }>): s
   for (const { start, end } of sorted) {
     if (end <= cursor) continue;
     const from = Math.max(start, cursor);
-    result += source.slice(cursor, from) + source.slice(from, end).replace(/[^\r\n]/g, " ");
+    result += source.slice(cursor, from) + blankSource(source.slice(from, end));
     cursor = end;
   }
   return result + source.slice(cursor);
@@ -96,8 +117,8 @@ function blank(source: string, ranges: Array<{ start: number; end: number }>): s
 
 function lineStarts(code: string): number[] {
   const starts = [0];
-  for (let index = code.indexOf("\n"); index !== -1; index = code.indexOf("\n", index + 1)) {
-    starts.push(index + 1);
+  for (const lineBreak of code.matchAll(LINE_BREAK_RE)) {
+    starts.push(lineBreak.index + lineBreak[0].length);
   }
   return starts;
 }
