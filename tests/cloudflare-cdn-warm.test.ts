@@ -1391,8 +1391,8 @@ describe("Cloudflare CDN warmup", () => {
             }),
           statusSource,
         );
-        expect(result.failed).toBe(1);
         expect(result.skipped).toBe(0);
+        expect(result.failures).toEqual([{ path: "/dashboard (RSC full)", error: "HTTP 500" }]);
       },
     );
 

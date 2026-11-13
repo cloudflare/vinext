@@ -923,12 +923,16 @@ function validateRscWarmResponse(
   // The matching build identity above proves the uploaded build answered it.
   // An RSC payload comes only from a render, so it must still prove its build.
   // The Response Store labels an uncacheable render BYPASS too, so a server
-  // error still fails on its status below, whichever stage sent it.
+  // error fails on its status, whichever stage sent it. The matching build
+  // identity shows it is no deployment mismatch.
+  const unexpectedStatus =
+    (response.status < 200 || response.status >= 300) && !isExpectedTerminalStatus(response.status);
+  if (expectedBuildId !== undefined && unexpectedStatus) {
+    return { outcome: "failed", error: `HTTP ${response.status}` };
+  }
   if (
     expectedBuildId !== undefined &&
     !response.redirected &&
-    ((response.status >= 200 && response.status < 300) ||
-      isExpectedTerminalStatus(response.status)) &&
     response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase() === "BYPASS" &&
     !response.headers.has(VINEXT_RSC_BUILD_ID_HEADER) &&
     !response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)
