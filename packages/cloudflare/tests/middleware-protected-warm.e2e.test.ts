@@ -116,6 +116,7 @@ async function warmDashboard(worker: Miniflare) {
     targetUrl: "https://app.test",
     paths: ["/dashboard"],
     rscPaths: ["/dashboard"],
+    routeHandlerPaths: ["/api/dashboard"],
     statusSource: "vinext",
     expectedBuildId,
     expectedRscBuildId,
@@ -128,20 +129,23 @@ async function assertSkipped(worker: Miniflare, gate: "middleware" | "proxy") {
   const result = await warmDashboard(worker);
   assert.deepEqual(
     { failed: result.failed, failures: result.failures, skipped: result.skipped },
-    { failed: 0, failures: [], skipped: 2 },
+    { failed: 0, failures: [], skipped: 3 },
   );
-  // The redirect itself is labelled BYPASS.
-  const redirect = await worker.dispatchFetch("https://app.test/dashboard", {
-    redirect: "manual",
-  });
-  await redirect.arrayBuffer();
-  assert.equal(redirect.status, 307);
-  // Each gate redirects to its own target, so this proves which one ran.
-  assert.equal(
-    new URL(redirect.headers.get("location")!, "https://app.test").search,
-    `?gate=${gate}`,
-  );
-  assert.equal(redirect.headers.get("x-vinext-cache"), "BYPASS");
+  for (const pathname of ["/dashboard", "/api/dashboard"]) {
+    // The redirect itself is labelled BYPASS.
+    const redirect = await worker.dispatchFetch(`https://app.test${pathname}`, {
+      headers: { Accept: "*/*" },
+      redirect: "manual",
+    });
+    await redirect.arrayBuffer();
+    assert.equal(redirect.status, 307);
+    // Each gate redirects to its own target, so this proves which one ran.
+    assert.equal(
+      new URL(redirect.headers.get("location")!, "https://app.test").search,
+      `?gate=${gate}`,
+    );
+    assert.equal(redirect.headers.get("x-vinext-cache"), "BYPASS");
+  }
   // A request middleware or proxy lets through still reaches the Response Store.
   const page = await worker.dispatchFetch("https://app.test/dashboard", {
     headers: { Cookie: "session=1" },

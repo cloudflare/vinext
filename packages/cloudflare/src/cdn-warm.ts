@@ -919,14 +919,20 @@ function validateRscWarmResponse(
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
   // Middleware or proxy answered in the uncached request stage, so no RSC
-  // render produced the response to carry an RSC build identity. The matching
-  // build identity above proves the uploaded build answered it.
-  const requestStageResponse =
-    expectedBuildId !== undefined &&
-    response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase() === "BYPASS" &&
-    !response.headers.has(VINEXT_RSC_BUILD_ID_HEADER);
+  // render produced the response to carry an RSC build identity or payload.
+  // The matching build identity above proves the uploaded build answered it.
+  // An RSC payload comes only from a render, so it must still prove its build.
   if (
-    !requestStageResponse &&
+    expectedBuildId !== undefined &&
+    !response.redirected &&
+    response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase() === "BYPASS" &&
+    !response.headers.has(VINEXT_RSC_BUILD_ID_HEADER) &&
+    !response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)
+  ) {
+    const admission = validateWarmAdmission(response, statusSource, requireCacheHit);
+    if (admission.outcome !== "warmed") return admission;
+  }
+  if (
     expectedRscBuildId !== undefined &&
     response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) !== expectedRscBuildId
   ) {

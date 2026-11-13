@@ -16,6 +16,7 @@ import {
 } from "../packages/vinext/src/server/headers.js";
 import { serializeWorkerCacheabilityProbeRoute } from "../packages/vinext/src/server/cacheability-request.js";
 import { VINEXT_CACHE_IDENTITY_ORIGIN } from "../packages/vinext/src/server/multi-stage.js";
+import { withRequestStageBypassCacheState } from "../packages/vinext/src/server/cache-headers.js";
 import type { DispatchWorkerResponseStage } from "../packages/vinext/src/server/worker-stages.js";
 import type { MiddlewareResult } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
@@ -520,6 +521,62 @@ describe("Pages Worker request stage", () => {
       expect(response.headers.get("X-Vinext-Cache")).toBe("BYPASS");
     },
   );
+
+  // A Route Handler warm request sends Accept: */*, so only this label can
+  // stamp the build identity deploy warming checks first.
+  it("stamps the build identity on a middleware answer for any representation", async () => {
+    setCdnCacheAdapter(
+      new (class extends DefaultCdnCacheAdapter {
+        override buildResponseIdentityHeaders() {
+          return { "X-Vinext-Build-Id": "build-a" };
+        }
+      })(),
+    );
+    mocks.runMiddleware.mockResolvedValue({
+      continue: false,
+      pathnameEligible: true,
+      response: Response.redirect("https://example.com/login", 307),
+    });
+
+    const response = await handleRequestStage(
+      new Request("https://example.com/api/dashboard", { headers: { Accept: "*/*" } }),
+      undefined,
+      undefined,
+      vi.fn<DispatchWorkerResponseStage>(async () => new Response("unused")),
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+    expect(response.headers.get("X-Vinext-Build-Id")).toBe("build-a");
+  });
+
+  it("rebuilds an immutable middleware answer from the response itself", () => {
+    const original = Response.redirect("https://example.com/login", 307);
+    // Workerd copies cf, webSocket and encodeBody only from a Response init.
+    const inits: unknown[] = [];
+    const NativeResponse = Response;
+    vi.stubGlobal(
+      "Response",
+      class extends NativeResponse {
+        constructor(body?: BodyInit | null, init?: ResponseInit) {
+          inits.push(init);
+          super(body, init);
+        }
+      },
+    );
+
+    try {
+      const labelled = withRequestStageBypassCacheState(original);
+
+      expect(inits).toHaveLength(1);
+      expect(inits[0]).toBe(original);
+      expect(labelled.status).toBe(307);
+      expect(labelled.headers.get("Location")).toBe("https://example.com/login");
+      expect(labelled.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("labels a middleware external rewrite BYPASS", async () => {
     mocks.runMiddleware.mockResolvedValue({

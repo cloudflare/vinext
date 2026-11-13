@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 export function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  if (pathname === "/dashboard" && !request.cookies.has("session")) {
+  if ((pathname === "/dashboard" || pathname === "/api/dashboard") && !request.cookies.has("session")) {
     return NextResponse.redirect(new URL("/?gate=middleware", request.url));
   }
   if (pathname === "/api/browser-cache-policy/bot-blocked") {
@@ -24,4 +24,4 @@ export function middleware(request: NextRequest) {
   return response;
 }
 
-export const config = { matcher: ["/dashboard", "/prewarm-target", "/pages-prewarm", "/api/browser-cache-policy/middleware", "/api/browser-cache-policy/bot-blocked", "/api/browser-cache-policy/proxy"] };
+export const config = { matcher: ["/dashboard", "/api/dashboard", "/prewarm-target", "/pages-prewarm", "/api/browser-cache-policy/middleware", "/api/browser-cache-policy/bot-blocked", "/api/browser-cache-policy/proxy"] };
