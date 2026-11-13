@@ -2063,6 +2063,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     pageTransformCanonicalPaths.set(modulePath, canonicalPath);
     return canonicalPath;
   };
+  // The page, layout and route files in app/ whose targets lie outside it, by
+  // target path. Rebuilt whenever the route scan is.
+  let symlinkedAppEntryPaths: {
+    routes: Awaited<ReturnType<typeof appRouter>>;
+    paths: Map<string, string>;
+  } | null = null;
+  const getSymlinkedAppEntryPaths = async (): Promise<Map<string, string>> => {
+    const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
+    if (symlinkedAppEntryPaths?.routes === routes) return symlinkedAppEntryPaths.paths;
+    const paths = new Map<string, string>();
+    for (const route of routes) {
+      for (const file of [route.pagePath, route.routePath, ...route.layouts]) {
+        if (!file) continue;
+        const target = canonicalizePageTransformPath(file);
+        if (!isPathInside(canonicalAppDir, target)) paths.set(target, file);
+      }
+    }
+    symlinkedAppEntryPaths = { routes, paths };
+    return paths;
+  };
   const isWithinPagesDirectory = (modulePath: string): boolean =>
     modulePath === pagesDir ||
     modulePath.startsWith(`${pagesDir}/`) ||
@@ -7928,15 +7948,20 @@ export const loadServerActionClient = ${
           id: { exclude: VIRTUAL_MODULE_ID_RE },
           code: /use client/,
         },
-        handler(code, id) {
+        async handler(code, id) {
           if (this.environment?.name !== "rsc" || !hasAppDir) return null;
           if (!APP_CLIENT_ENTRY_EXPORT_CANDIDATE_RE.test(code)) return null;
           const canonicalId = canonicalizePageTransformPath(stripViteModuleQuery(id));
-          if (!isPathInside(canonicalAppDir, canonicalId)) return null;
+          // A route file may be a symlink to a module outside app/, which Vite
+          // loads by its target path. Next.js checks it by its path in app/.
+          const entryPath = isPathInside(canonicalAppDir, canonicalId)
+            ? canonicalId
+            : (await getSymlinkedAppEntryPaths()).get(canonicalId);
+          if (!entryPath) return null;
           if (
-            fileMatcher.isAppRouterPage(canonicalId) ||
-            fileMatcher.isAppLayoutFile(canonicalId) ||
-            fileMatcher.isAppRouterRoute(canonicalId)
+            fileMatcher.isAppRouterPage(entryPath) ||
+            fileMatcher.isAppLayoutFile(entryPath) ||
+            fileMatcher.isAppRouterRoute(entryPath)
           ) {
             // Earlier transforms (JSX in `.js` files) may have reformatted the
             // code.
