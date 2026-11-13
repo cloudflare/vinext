@@ -393,6 +393,8 @@ type TransitionOptions = {
   scroll?: boolean;
   locale?: string | false;
   _vinextInterpolateDynamicRoute?: boolean;
+  /** Document href a hydration query update (`_h: 1`) started on, kept across its redirects. */
+  _vinextHydrationHref?: string;
 };
 
 type RouterEvents = {
@@ -435,6 +437,8 @@ type PagesRouterRuntimeState = {
   beforePopStateCb?: BeforePopStateCallback;
   lastPathnameAndSearch: string;
   lastHash: string;
+  /** The in-flight post-hydration query update (`_h: 1`), if any, and the href it started on. */
+  hydrationQueryUpdate: { navigationId: number; href: string } | null;
   isFirstPopStateEvent: boolean;
   routerDidNavigate: boolean;
   deprecatedEventBridgeInstalled: boolean;
@@ -464,6 +468,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     lastPathnameAndSearch:
       typeof window !== "undefined" ? window.location.pathname + window.location.search : "",
     lastHash: typeof window !== "undefined" ? window.location.hash : "",
+    hydrationQueryUpdate: null,
     isFirstPopStateEvent: true,
     routerDidNavigate: false,
     deprecatedEventBridgeInstalled: false,
@@ -1644,15 +1649,56 @@ class HardNavigationScheduledError extends Error {
   }
 }
 
+/**
+ * Next.js's "attempted to hard navigate to the same URL" invariant. It
+ * propagates without a fallback hard navigation, as in Next.js's change(),
+ * because any other reload target can redirect back to the same document.
+ */
+class SameUrlHardNavigationError extends Error {
+  constructor(url: string) {
+    super(`Invariant: attempted to hard navigate to the same URL ${url} ${window.location.href}`);
+    this.name = "SameUrlHardNavigationError";
+  }
+}
+
 function cancelPreviousRenderCommit(): void {
   routerRuntimeState.cancelPendingRenderCommit?.();
   routerRuntimeState.cancelPendingRenderCommit = null;
+}
+
+/**
+ * Whether a hard navigation to `url` would reload the document the
+ * post-hydration query update (`_h: 1`) started on.
+ *
+ * Next.js's handleHardNavigation() refuses to hard-navigate to the router's
+ * committed asPath, because the reloaded document would repeat the same
+ * failure forever. Vinext derives asPath from the live browser URL, which can
+ * move before a render commits, so the guard compares against the href the
+ * hydration query update started on and is limited to that navigation and the
+ * redirects it follows.
+ */
+function isHydrationQueryUpdateReload(url: string, hydrationHref: string | undefined): boolean {
+  if (typeof window === "undefined" || hydrationHref === undefined) return false;
+  try {
+    // Compare whole hrefs, as Next.js does: a hash-only change is a
+    // same-document navigation, not a reload.
+    return new URL(url, window.location.href).href === hydrationHref;
+  } catch {
+    return false;
+  }
 }
 
 function scheduleHardNavigationAndThrow(url: string, message: string): never {
   assertSafeNavigationUrl(url, HardNavigationScheduledError);
   if (typeof window === "undefined") {
     throw new HardNavigationScheduledError(message);
+  }
+  const hydrationQueryUpdate = routerRuntimeState.hydrationQueryUpdate;
+  if (
+    hydrationQueryUpdate?.navigationId === routerRuntimeState.navigationId &&
+    isHydrationQueryUpdateReload(url, hydrationQueryUpdate.href)
+  ) {
+    throw new SameUrlHardNavigationError(url);
   }
   window.location.href = url;
   throw new HardNavigationScheduledError(message);
@@ -1662,6 +1708,8 @@ type NavigateClientOptions = {
   allowNotFoundResponse?: boolean;
   locale?: string;
   isHydrationQueryUpdate?: boolean;
+  /** Document href the hydration query update started on (set only for `_h: 1`). */
+  hydrationHref?: string;
   /**
    * Route state to preserve while rendering an error-route component. A
    * getServerSideProps/getStaticProps notFound transition renders /404, but
@@ -2847,6 +2895,9 @@ async function navigateClient(
   routerRuntimeState.activeAbortController = controller;
 
   const navId = ++routerRuntimeState.navigationId;
+  if (options.hydrationHref !== undefined) {
+    routerRuntimeState.hydrationQueryUpdate = { navigationId: navId, href: options.hydrationHref };
+  }
   let middlewareDataCacheEvictHref: string | null = null;
 
   /** Check if this navigation is still the active one. If not, throw. */
@@ -3029,6 +3080,9 @@ async function navigateClient(
     if (navId === routerRuntimeState.navigationId) {
       routerRuntimeState.activeAbortController = null;
     }
+    if (routerRuntimeState.hydrationQueryUpdate?.navigationId === navId) {
+      routerRuntimeState.hydrationQueryUpdate = null;
+    }
     if (middlewareDataCacheEvictHref !== null) {
       evictPagesDataCache(middlewareDataCacheEvictHref);
     }
@@ -3080,8 +3134,14 @@ async function runNavigateClient(
     // navigation so the browser lands on the correct page. Known failure modes
     // throw HardNavigationScheduledError, and this guard skips those; only
     // unexpected failures (parse, import, render) need recovery here.
-    if (typeof window !== "undefined" && !(err instanceof HardNavigationScheduledError)) {
-      window.location.href = options.redirectBrowserHref ?? fullUrl;
+    const fallbackUrl = options.redirectBrowserHref ?? fullUrl;
+    if (
+      typeof window !== "undefined" &&
+      !(err instanceof HardNavigationScheduledError) &&
+      !(err instanceof SameUrlHardNavigationError) &&
+      !isHydrationQueryUpdateReload(fallbackUrl, options.hydrationHref)
+    ) {
+      window.location.href = fallbackUrl;
     }
     return "failed";
   }
@@ -3277,6 +3337,10 @@ async function performNavigation(
     throwNoRouterInstance();
   }
 
+  // The hydration query update starts on the committed document. A redirect
+  // it follows keeps that href, since history moves before the target commits.
+  const hydrationHref =
+    options?._h === 1 ? (options._vinextHydrationHref ?? window.location.href) : undefined;
   const inputHref = resolveUrl(url);
   const sameOriginPath = isAbsoluteUrl(inputHref) ? toSameOriginPath(inputHref) : null;
   const origin = getWindowOrigin();
@@ -3553,6 +3617,7 @@ async function performNavigation(
     scroll: scrollTarget,
     isHydrationQueryUpdate: options?._h === 1,
   };
+  if (hydrationHref !== undefined) navigateOptions.hydrationHref = hydrationHref;
   if (redirectBrowserHref !== undefined) {
     navigateOptions.redirectBrowserHref = redirectBrowserHref;
   }
@@ -3754,7 +3819,7 @@ async function performNavigation(
       return performNavigation(
         result.redirectDestination,
         undefined,
-        { ...options, locale: false },
+        { ...options, locale: false, _vinextHydrationHref: hydrationHref },
         mode,
         onStateUpdate,
         isAbsoluteOrProtocolRelativeUrl(result.redirectDestination)
