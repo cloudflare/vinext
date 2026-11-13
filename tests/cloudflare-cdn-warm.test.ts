@@ -1319,12 +1319,11 @@ describe("Cloudflare CDN warmup", () => {
         targetUrl: "https://app.example.com",
       });
 
+    // The Workers Cache gateway answers without a response-stage subrequest,
+    // so the response carries no CF-Cache-Status at all.
     it.each([
-      [
-        "Workers Cache",
-        "cloudflare",
-        { "cf-cache-status": "DYNAMIC", "cache-control": "no-store" },
-      ],
+      ["Workers Cache", "cloudflare", {}],
+      ["Workers Cache and a cookie", "cloudflare", { "set-cookie": "seen=1" }],
       ["the Response Store", "vinext", {}],
     ] as const)("is skipped with %s", async (_name, statusSource, headers) => {
       const result = await warmRsc(
@@ -1334,13 +1333,26 @@ describe("Cloudflare CDN warmup", () => {
       expect(result).toMatchObject({ failed: 0, skipped: 1, warmed: 0 });
     });
 
-    it("still fails without the request-stage BYPASS label", async () => {
-      const result = await warmRsc(() => middlewareRedirect({}), "vinext");
+    it.each(["cloudflare", "vinext"] as const)(
+      "still fails without the request-stage BYPASS label (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(() => middlewareRedirect({}), statusSource);
+        expect(result.failures).toEqual([
+          {
+            path: "/dashboard (RSC full)",
+            error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build rsc-build-a`,
+          },
+        ]);
+      },
+    );
+
+    it("still fails with Workers Cache when another stage reports the BYPASS label", async () => {
+      const result = await warmRsc(
+        () => middlewareRedirect({ "cf-cache-status": "DYNAMIC", "x-vinext-cache": "BYPASS" }),
+        "cloudflare",
+      );
       expect(result.failures).toEqual([
-        {
-          path: "/dashboard (RSC full)",
-          error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build rsc-build-a`,
-        },
+        { path: "/dashboard (RSC full)", error: "CF-Cache-Status is DYNAMIC" },
       ]);
     });
 

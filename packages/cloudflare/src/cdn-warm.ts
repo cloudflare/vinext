@@ -783,6 +783,15 @@ function validateCachePolicy(
     };
   }
 
+  // Middleware or proxy answered in the uncached request stage, so no
+  // Workers Cache subrequest ran to report a CF-Cache-Status.
+  if (
+    !cacheStatus &&
+    response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase() === "BYPASS"
+  ) {
+    return { outcome: "skipped", reason: `${VINEXT_CACHE_HEADER} is BYPASS` };
+  }
+
   // Cloudflare-CDN-Cache-Control is consumed at the edge and is deliberately
   // not forwarded to clients. A cacheable Cloudflare-specific policy can
   // therefore coexist with a downstream `no-store` policy or a Set-Cookie
