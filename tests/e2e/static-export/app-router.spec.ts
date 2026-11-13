@@ -254,7 +254,7 @@ test.describe("Static Export — App Router", () => {
     );
   });
 
-  // The export is deployed as is, so it carries only what the browser loads.
+  // The export is deployed as is, without a server to keep these private.
   test("leaves Vite build metadata out of the export", async ({ request }) => {
     for (const file of ["manifest.json", "ssr-manifest.json"]) {
       const response = await request.get(`${BASE}/.vite/${file}`);
