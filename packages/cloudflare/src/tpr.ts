@@ -310,9 +310,12 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
   const { root, config, window: windowHours } = options;
   const wranglerConfig =
     options.hostname || options.typedConfig ? null : parseWranglerConfig(root, config);
-  const buildOutputConfigPath = resolveBuildOutputDefaultWorkerConfigPath(root);
+  const buildOutputConfigPath =
+    options.typedConfig && !options.hostname
+      ? resolveBuildOutputDefaultWorkerConfigPath(root)
+      : null;
   const typedDomains: unknown =
-    options.typedConfig && !options.hostname && fs.existsSync(buildOutputConfigPath)
+    buildOutputConfigPath && fs.existsSync(buildOutputConfigPath)
       ? (JSON.parse(fs.readFileSync(buildOutputConfigPath, "utf8")) as { domains?: unknown })
           .domains
       : undefined;

@@ -484,8 +484,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
   });
 
-  it("writes the cacheability manifest into v1 Build Output next to a stale v0", () => {
-    writeBuildOutputWorkerArtifact("v0");
+  it("writes a cacheability manifest into v1 Build Output", () => {
     writeBuildOutputWorkerArtifact("v1");
 
     expect(
@@ -496,14 +495,20 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         "cf",
       ),
     ).toBe(".cloudflare/output/v1/workers/default/worker.config.json");
-    const manifestPath = (version: string) =>
-      path.join(
+  });
+
+  it("rejects cacheability output when Build Output has more than one version", () => {
+    writeBuildOutputWorkerArtifact("v0");
+    writeBuildOutputWorkerArtifact("v1");
+
+    expect(() =>
+      writeCacheabilityManifestArtifact(
         tmpDir,
-        `.cloudflare/output/${version}/workers/default/bundle`,
-        CACHEABILITY_MANIFEST_MODULE,
-      );
-    expect(fs.readFileSync(manifestPath("v1"), "utf8")).toContain("build-a");
-    expect(fs.readFileSync(manifestPath("v0"), "utf8")).toBe("export default null;\n");
+        "wrangler.jsonc",
+        { buildId: "build-a", routes: {}, version: 1 },
+        "cf",
+      ),
+    ).toThrow("Found Cloudflare Build Output in more than one format (v0, v1)");
   });
 
   it("stages and promotes a typed-config Worker using cf without Wrangler", async () => {
