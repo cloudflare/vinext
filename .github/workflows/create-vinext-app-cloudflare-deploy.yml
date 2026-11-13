@@ -115,7 +115,7 @@ jobs:
         run: |
           test -f cloudflare.config.ts
           OUTPUT_DIR=.cloudflare/output/v1
-          test -d "$OUTPUT_DIR" || OUTPUT_DIR=.cloudflare/output/v0
+          test -f "$OUTPUT_DIR/workers/default/worker.config.json" || OUTPUT_DIR=.cloudflare/output/v0
           test -f "$OUTPUT_DIR/config.json"
           test -f "$OUTPUT_DIR/workers/default/worker.config.json"
           test -f "$OUTPUT_DIR/workers/cva-cloudflare-response-store/worker.config.json"

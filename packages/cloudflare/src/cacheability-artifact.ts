@@ -7,6 +7,7 @@ import {
   projectCacheabilityManifestForRequestStage,
   type CacheabilityManifest,
 } from "vinext/internal/server/cacheability-manifest";
+import { resolveBuildOutputDefaultWorkerConfigPath } from "./build-output.js";
 import {
   cacheabilityManifestByteLimitError,
   MAX_CACHEABILITY_MANIFEST_BYTES,
@@ -187,22 +188,12 @@ function resolveGeneratedWranglerArtifact(
 }
 
 function resolveBuildOutputArtifact(root: string): GeneratedWorkerArtifact {
-  const outputDirectory = path.join(root, ".cloudflare", "output");
-  const configPaths = fs.existsSync(outputDirectory)
-    ? fs
-        .readdirSync(outputDirectory, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) =>
-          path.join(outputDirectory, entry.name, "workers", "default", "worker.config.json"),
-        )
-        .filter((candidate) => fs.existsSync(candidate) && fs.lstatSync(candidate).isFile())
-    : [];
-  if (configPaths.length !== 1) {
+  const configPath = resolveBuildOutputDefaultWorkerConfigPath(root);
+  if (!fs.existsSync(configPath) || !fs.lstatSync(configPath).isFile()) {
     throw new Error(
-      "Two-stage CDN warming requires one default Worker Build Output config under .cloudflare/output/. Rebuild the app before deploying.",
+      "Two-stage CDN warming requires a default Worker Build Output config under .cloudflare/output/. Rebuild the app before deploying.",
     );
   }
-  const configPath = configPaths[0]!;
   let config: unknown;
   try {
     config = JSON.parse(fs.readFileSync(configPath, "utf8"));
