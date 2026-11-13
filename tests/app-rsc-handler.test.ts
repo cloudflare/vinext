@@ -6361,6 +6361,52 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  // Issue #4702: the source's middleware response also ends in the uncached
+  // request stage, so a staged deployment labels it BYPASS.
+  it("labels an interception source response that middleware answers itself BYPASS", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+      async () => new Response("unused"),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed/secret" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/feed/secret") return { params: {}, route: sourceRoute };
+        return null;
+      },
+      async runMiddleware({ cleanPathname }) {
+        return cleanPathname.startsWith("/feed/secret")
+          ? {
+              kind: "response",
+              matched: true,
+              response: Response.redirect("https://example.test/login", 307),
+            }
+          : { kind: "continue", cleanPathname, matched: true, rewritten: false, search: null };
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const staged = await handler(
+      new Request(`https://example.test${rscUrl}`, { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage).not.toHaveBeenCalled();
+    expect(staged.status).toBe(307);
+    expect(staged.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+
+    const local = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+    expect(local.status).toBe(307);
+    expect(local.headers.get("X-Vinext-Cache")).toBeNull();
+  });
+
   // Next.js matches static segments against the raw path, so a direct request
   // to `/%66eed/secret` reaches only a route whose first segment is dynamic, and
   // middleware sees that raw pathname. The source pass must resolve the claimed

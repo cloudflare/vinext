@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 export function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   if (pathname === "/dashboard" && !request.cookies.has("session")) {
-    return NextResponse.redirect(new URL("/", request.url));
+    return NextResponse.redirect(new URL("/?gate=middleware", request.url));
   }
   if (pathname === "/api/browser-cache-policy/bot-blocked") {
     return request.headers.get("user-agent")?.toLowerCase().includes("gptbot")

@@ -2137,7 +2137,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           void request.body.cancel().catch(() => {});
         }
         options.clearRequestContext();
-        return sourceMiddlewareResult.response;
+        // As for the target's middleware, this ends in the uncached request stage.
+        return dispatchResponseStage
+          ? withRequestStageBypassCacheState(sourceMiddlewareResult.response)
+          : sourceMiddlewareResult.response;
       }
       // The source and target share one render context. Existing target headers
       // and all cookies are identity-bearing and may not be replaced/deleted by

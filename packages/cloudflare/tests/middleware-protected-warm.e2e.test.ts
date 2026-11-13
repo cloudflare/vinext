@@ -115,7 +115,7 @@ async function warmDashboard(worker: Miniflare) {
   });
 }
 
-async function assertSkipped(worker: Miniflare) {
+async function assertSkipped(worker: Miniflare, gate: "middleware" | "proxy") {
   const result = await warmDashboard(worker);
   assert.deepEqual(
     { failed: result.failed, failures: result.failures, skipped: result.skipped },
@@ -127,6 +127,11 @@ async function assertSkipped(worker: Miniflare) {
   });
   await redirect.arrayBuffer();
   assert.equal(redirect.status, 307);
+  // Each gate redirects to its own target, so this proves which one ran.
+  assert.equal(
+    new URL(redirect.headers.get("location")!, "https://app.test").search,
+    `?gate=${gate}`,
+  );
   assert.equal(redirect.headers.get("x-vinext-cache"), "BYPASS");
   // A request middleware or proxy lets through still reaches the Response Store.
   const page = await worker.dispatchFetch("https://app.test/dashboard", {
@@ -141,16 +146,16 @@ async function assertSkipped(worker: Miniflare) {
 describe("warming a route that middleware or proxy answers itself (#4702)", () => {
   test("middleware, Response Store service-binding mode", async () => {
     miniflare = await serviceBindingWorker();
-    await assertSkipped(miniflare);
+    await assertSkipped(miniflare, "middleware");
   });
 
   test("middleware, Response Store self-contained mode", async () => {
     miniflare = await selfContainedWorker(selfContainedOutput);
-    await assertSkipped(miniflare);
+    await assertSkipped(miniflare, "middleware");
   });
 
   test("proxy, Response Store self-contained mode", async () => {
     miniflare = await selfContainedWorker(proxyOutput);
-    await assertSkipped(miniflare);
+    await assertSkipped(miniflare, "proxy");
   });
 });
