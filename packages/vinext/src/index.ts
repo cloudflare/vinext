@@ -2063,17 +2063,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     pageTransformCanonicalPaths.set(modulePath, canonicalPath);
     return canonicalPath;
   };
-  // The files symlinked into app/ whose targets lie outside it, by target
-  // path. Rebuilt whenever the route scan is, which skips symlinked
-  // directories, so the walk does too.
+  // The files symlinked into app/, by target path. Rebuilt whenever the route
+  // scan is, which skips symlinked directories, so the walk does too.
   let symlinkedAppEntryPaths: {
     routes: Awaited<ReturnType<typeof appRouter>>;
-    paths: Map<string, string>;
+    paths: Map<string, string[]>;
   } | null = null;
-  const getSymlinkedAppEntryPaths = async (): Promise<Map<string, string>> => {
+  const getSymlinkedAppEntryPaths = async (): Promise<Map<string, string[]>> => {
     const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
     if (symlinkedAppEntryPaths?.routes === routes) return symlinkedAppEntryPaths.paths;
-    const paths = new Map<string, string>();
+    const paths = new Map<string, string[]>();
     const walk = (dir: string) => {
       let entries: fs.Dirent[];
       try {
@@ -2087,7 +2086,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           walk(file);
         } else if (entry.isSymbolicLink()) {
           const target = canonicalizePageTransformPath(file);
-          if (!isPathInside(canonicalAppDir, target)) paths.set(target, file);
+          if (target === toSlash(file)) continue;
+          const links = paths.get(target);
+          if (links) links.push(file);
+          else paths.set(target, [file]);
         }
       }
     };
@@ -7964,25 +7966,25 @@ export const loadServerActionClient = ${
           if (this.environment?.name !== "rsc" || !hasAppDir) return null;
           if (!APP_CLIENT_ENTRY_EXPORT_CANDIDATE_RE.test(code)) return null;
           const canonicalId = canonicalizePageTransformPath(stripViteModuleQuery(id));
-          // A route file may be a symlink to a module outside app/, which Vite
-          // loads by its target path. Next.js checks it by its path in app/.
-          const entryPath = isPathInside(canonicalAppDir, canonicalId)
-            ? canonicalId
-            : (await getSymlinkedAppEntryPaths()).get(canonicalId);
-          if (!entryPath) return null;
-          if (
-            fileMatcher.isAppRouterPage(entryPath) ||
-            fileMatcher.isAppLayoutFile(entryPath) ||
-            fileMatcher.isAppRouterRoute(entryPath)
-          ) {
-            // Earlier transforms (JSX in `.js` files) may have reformatted the
-            // code.
-            let source = code;
-            try {
-              source = fs.readFileSync(canonicalId, "utf8");
-            } catch {}
-            validateAppClientEntryExports(code, canonicalId, source);
-          }
+          const isEntryFile = (file: string) =>
+            fileMatcher.isAppRouterPage(file) ||
+            fileMatcher.isAppLayoutFile(file) ||
+            fileMatcher.isAppRouterRoute(file);
+          // Vite loads a file symlinked into app/ by its target path. Next.js
+          // reads its static info by its path in app/, but checks its metadata
+          // by the target's file name.
+          const links = (await getSymlinkedAppEntryPaths()).get(canonicalId) ?? [];
+          const inAppDir = isPathInside(canonicalAppDir, canonicalId);
+          const metadata = (inAppDir || links.length > 0) && isEntryFile(canonicalId);
+          const staticInfo = (inAppDir && isEntryFile(canonicalId)) || links.some(isEntryFile);
+          if (!metadata && !staticInfo) return null;
+          // Earlier transforms (JSX in `.js` files) may have reformatted the
+          // code.
+          let source = code;
+          try {
+            source = fs.readFileSync(canonicalId, "utf8");
+          } catch {}
+          validateAppClientEntryExports(code, canonicalId, source, { metadata, staticInfo });
           return null;
         },
       },

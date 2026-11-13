@@ -157,8 +157,16 @@ function getMetadataExports(body: ESTree.Program["body"]): Set<string> {
  * Next.js's static info checks, and a stricter segment config check of their
  * own (crates/next-core/src/segment_config.rs) that webpack builds lack.
  * `source` is the file as written, which Next.js's static info reads.
+ *
+ * Next.js reads static info for the route's file in app/, but checks metadata
+ * on the module it resolves, so a symlinked file can get only one of them.
  */
-export function validateAppClientEntryExports(code: string, id: string, source = code): void {
+export function validateAppClientEntryExports(
+  code: string,
+  id: string,
+  source = code,
+  checks: { metadata: boolean; staticInfo: boolean } = { metadata: true, staticInfo: true },
+): void {
   if (!code.includes("use client") || !APP_CLIENT_ENTRY_EXPORT_CANDIDATE_RE.test(code)) return;
   const lang = scriptParserLanguage(id);
   if (!lang) return;
@@ -170,8 +178,10 @@ export function validateAppClientEntryExports(code: string, id: string, source =
   }
   if (!hasUseClientDirective(ast.body)) return;
 
-  const messages = [...getMetadataExports(ast.body)].map(createClientMetadataExportMessage);
-  if (STATIC_INFO_PARSE_PATTERN.test(source)) {
+  const messages = checks.metadata
+    ? [...getMetadataExports(ast.body)].map(createClientMetadataExportMessage)
+    : [];
+  if (checks.staticInfo && STATIC_INFO_PARSE_PATTERN.test(source)) {
     if (exportsGenerateStaticParams(ast.body)) {
       messages.push(
         createClientSegmentConfigMessage(

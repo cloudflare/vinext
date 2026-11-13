@@ -216,6 +216,35 @@ export function generateSitemaps() { return []; }`,
     );
   });
 
+  it("runs only the requested checks", () => {
+    const metadata = '"use client";\nexport const metadata = {};';
+    const generateStaticParams = '"use client";\nexport function generateStaticParams() {}';
+    const staticInfoOnly = { metadata: false, staticInfo: true };
+    const metadataOnly = { metadata: true, staticInfo: false };
+    expect(() =>
+      validateAppClientEntryExports(metadata, "/shared/c.js", metadata, staticInfoOnly),
+    ).not.toThrow();
+    expect(() =>
+      validateAppClientEntryExports(metadata, "/shared/page.js", metadata, metadataOnly),
+    ).toThrow('You are attempting to export "metadata"');
+    expect(() =>
+      validateAppClientEntryExports(
+        generateStaticParams,
+        "/shared/page.js",
+        generateStaticParams,
+        metadataOnly,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateAppClientEntryExports(
+        generateStaticParams,
+        "/shared/c.js",
+        generateStaticParams,
+        staticInfoOnly,
+      ),
+    ).toThrow("generateStaticParams");
+  });
+
   it.each([
     [
       "a server page",
