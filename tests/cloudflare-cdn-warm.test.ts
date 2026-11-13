@@ -1373,6 +1373,29 @@ describe("Cloudflare CDN warmup", () => {
       ]);
     });
 
+    // The Response Store also labels an uncacheable render BYPASS, so a server
+    // error must still fail, whichever stage sent it.
+    it.each(["cloudflare", "vinext"] as const)(
+      "still fails on a server error labelled BYPASS (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(
+          () =>
+            new Response("Internal Server Error", {
+              status: 500,
+              headers: {
+                "cache-control": "no-store",
+                "content-type": "text/plain",
+                "x-vinext-cache": "BYPASS",
+                [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              },
+            }),
+          statusSource,
+        );
+        expect(result.failed).toBe(1);
+        expect(result.skipped).toBe(0);
+      },
+    );
+
     it.each(["cloudflare", "vinext"] as const)(
       "still fails without the request-stage BYPASS label (%s)",
       async (statusSource) => {
