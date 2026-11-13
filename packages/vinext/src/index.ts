@@ -2063,39 +2063,49 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     pageTransformCanonicalPaths.set(modulePath, canonicalPath);
     return canonicalPath;
   };
-  // The files symlinked into app/, by target path. Rebuilt whenever the route
-  // scan is, which skips symlinked directories, so the walk does too.
-  let symlinkedAppEntryPaths: {
+  // The target paths of the app/ files Next.js reads static info for: the
+  // pages and route handlers it discovers outside private folders, and the
+  // layouts above a page. Rebuilt whenever the route scan is, which skips
+  // symlinked directories, so the walk does too.
+  let appEntryTargets: {
     routes: Awaited<ReturnType<typeof appRouter>>;
-    paths: Map<string, string[]>;
+    targets: Set<string>;
   } | null = null;
-  const getSymlinkedAppEntryPaths = async (): Promise<Map<string, string[]>> => {
+  const getAppEntryTargets = async (): Promise<Set<string>> => {
     const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
-    if (symlinkedAppEntryPaths?.routes === routes) return symlinkedAppEntryPaths.paths;
-    const paths = new Map<string, string[]>();
-    const walk = (dir: string) => {
+    if (appEntryTargets?.routes === routes) return appEntryTargets.targets;
+    const targets = new Set<string>();
+    // Returns whether `dir` holds a page.
+    const walk = (dir: string): boolean => {
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(dir, { withFileTypes: true });
       } catch {
-        return;
+        return false;
       }
+      let hasPage = false;
+      const layouts: string[] = [];
       for (const entry of entries) {
         const file = path.join(dir, entry.name);
         if (entry.isDirectory()) {
-          walk(file);
-        } else if (entry.isSymbolicLink()) {
-          const target = canonicalizePageTransformPath(file);
-          if (target === toSlash(file)) continue;
-          const links = paths.get(target);
-          if (links) links.push(file);
-          else paths.set(target, [file]);
+          if (!entry.name.startsWith("_") && walk(file)) hasPage = true;
+        } else if (fileMatcher.isAppRouterRoute(file)) {
+          targets.add(canonicalizePageTransformPath(file));
+        } else if (fileMatcher.isAppRouterPage(file)) {
+          hasPage = true;
+          targets.add(canonicalizePageTransformPath(file));
+        } else if (fileMatcher.isAppLayoutFile(file)) {
+          layouts.push(file);
         }
       }
+      if (hasPage) {
+        for (const layout of layouts) targets.add(canonicalizePageTransformPath(layout));
+      }
+      return hasPage;
     };
     walk(appDir);
-    symlinkedAppEntryPaths = { routes, paths };
-    return paths;
+    appEntryTargets = { routes, targets };
+    return targets;
   };
   const isWithinPagesDirectory = (modulePath: string): boolean =>
     modulePath === pagesDir ||
@@ -7966,17 +7976,17 @@ export const loadServerActionClient = ${
           if (this.environment?.name !== "rsc" || !hasAppDir) return null;
           if (!APP_CLIENT_ENTRY_EXPORT_CANDIDATE_RE.test(code)) return null;
           const canonicalId = canonicalizePageTransformPath(stripViteModuleQuery(id));
-          const isEntryFile = (file: string) =>
-            fileMatcher.isAppRouterPage(file) ||
-            fileMatcher.isAppLayoutFile(file) ||
-            fileMatcher.isAppRouterRoute(file);
-          // Vite loads a file symlinked into app/ by its target path. Next.js
-          // reads its static info by its path in app/, but checks its metadata
-          // by the target's file name.
-          const links = (await getSymlinkedAppEntryPaths()).get(canonicalId) ?? [];
           const inAppDir = isPathInside(canonicalAppDir, canonicalId);
-          const metadata = (inAppDir || links.length > 0) && isEntryFile(canonicalId);
-          const staticInfo = (inAppDir && isEntryFile(canonicalId)) || links.some(isEntryFile);
+          if (!inAppDir && canonicalId.includes("/node_modules/")) return null;
+          // Vite loads a file symlinked into app/ by its target path. Next.js
+          // reads static info by the path in app/, for its route entries, but
+          // checks metadata in any page, layout or route module it compiles,
+          // by the target's file name. A page or route module in app/ compiles
+          // when imported, and a layout only above a page.
+          const staticInfo = (await getAppEntryTargets()).has(canonicalId);
+          const metadata = staticInfo
+            ? fileMatcher.isAppRouterPage(canonicalId) || fileMatcher.isAppLayoutFile(canonicalId)
+            : inAppDir && fileMatcher.isAppRouterPage(canonicalId);
           if (!metadata && !staticInfo) return null;
           // Earlier transforms (JSX in `.js` files) may have reformatted the
           // code.
