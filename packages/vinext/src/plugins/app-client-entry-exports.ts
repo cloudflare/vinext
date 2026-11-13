@@ -1,34 +1,31 @@
 import type { ESTree } from "vite";
 import { getAstName, parseProgram, scriptParserLanguage } from "./ast-utils.js";
 
-/**
- * Which checks Next.js applies to an App Router entry file: page, layout and
- * route files get both, a default file only the segment config check.
- */
-export type AppClientEntryKind = "entry" | "default";
-
 /** Cheap pre-parse gate: every rejected module mentions one of these names. */
 export const APP_CLIENT_ENTRY_EXPORT_CANDIDATE_RE =
   /[mM]etadata|generateStaticParams|unstable_instant/;
+
+// Next.js reads no static info from a file whose source matches none of these
+// (packages/next/src/build/analysis/get-page-static-info.ts PARSE_PATTERN).
+const STATIC_INFO_PARSE_PATTERN =
+  /(?<!(_jsx|jsx-))runtime|preferredRegion|getStaticProps|getServerSideProps|generateStaticParams|export const|generateImageMetadata|generateSitemaps|middleware|proxy/;
+
+// The function exports Next.js's static info reads. The last one a module
+// declares decides whether generateStaticParams counts.
+const STATIC_INFO_FUNCTION_EXPORTS = new Set([
+  "getStaticProps",
+  "getServerSideProps",
+  "generateImageMetadata",
+  "generateSitemaps",
+  "generateStaticParams",
+]);
 
 function createClientMetadataExportMessage(name: string): string {
   return `You are attempting to export "${name}" from a component marked with "use client", which is disallowed. "${name}" must be resolved on the server before the page component is rendered. Keep your page as a Server Component and move Client Component logic to a separate file. Read more: https://nextjs.org/docs/app/api-reference/functions/generate-metadata#why-generatemetadata-is-server-component-only`;
 }
 
-// Segment config exports Next.js rejects from a client entry, by exported name.
-const CLIENT_SEGMENT_CONFIG_ERRORS = new Map([
-  [
-    "generateStaticParams",
-    'App pages cannot use both "use client" and export function "generateStaticParams()".',
-  ],
-  [
-    "unstable_instant",
-    'App pages cannot export "unstable_instant" from a Client Component module. To use this API, convert this module to a Server Component by removing the "use client" directive.',
-  ],
-]);
-
-function createClientSegmentConfigMessage(name: string): string {
-  return `Next.js can't recognize the exported \`${name}\` field in route. ${CLIENT_SEGMENT_CONFIG_ERRORS.get(name)}`;
+function createClientSegmentConfigMessage(name: string, reason: string): string {
+  return `Next.js can't recognize the exported \`${name}\` field in route. ${reason}`;
 }
 
 function hasUseClientDirective(body: ESTree.Program["body"]): boolean {
@@ -39,21 +36,129 @@ function hasUseClientDirective(body: ESTree.Program["body"]): boolean {
   return false;
 }
 
+/** Ported from get-page-static-info.ts checkExports. */
+function exportsGenerateStaticParams(body: ESTree.Program["body"]): boolean {
+  let exported = false;
+  for (const statement of body) {
+    if (statement.type !== "ExportNamedDeclaration") continue;
+    const declaration = statement.declaration;
+    const name =
+      declaration?.type === "FunctionDeclaration" || declaration?.type === "TSDeclareFunction"
+        ? getAstName(declaration.id)
+        : declaration?.type === "VariableDeclaration" &&
+            declaration.declarations[0]?.id.type === "Identifier"
+          ? declaration.declarations[0].id.name
+          : null;
+    if (name && STATIC_INFO_FUNCTION_EXPORTS.has(name)) exported = name === "generateStaticParams";
+    for (const specifier of statement.specifiers) {
+      if (
+        specifier.local.type === "Identifier" &&
+        specifier.local.name === "generateStaticParams"
+      ) {
+        exported = true;
+      }
+    }
+  }
+  return exported;
+}
+
 /**
- * Reject the exports Next.js disallows in a `"use client"` App Router entry
- * file. Mirrors Next.js:
- * - crates/next-custom-transforms/src/transforms/react_server_components.rs
- *   (assert_invalid_api): `metadata` / `generateMetadata` in page, layout and
- *   route files, matched by declared or local specifier name.
- * - crates/next-core/src/segment_config.rs (parse_segment_config_from_source):
- *   `generateStaticParams` and `unstable_instant` in page, layout, default
- *   and route files, matched by exported name.
+ * Whether a module's segment config holds `unstable_instant`: Next.js reads it
+ * only from an initialized `export const` (get-page-static-info.ts
+ * getAppPageStaticInfo, extract-const-value.ts extractExportedConstValue).
  */
-export function validateAppClientEntryExports(
-  code: string,
-  id: string,
-  kind: AppClientEntryKind,
-): void {
+function exportsUnstableInstant(body: ESTree.Program["body"]): boolean {
+  return body.some(
+    (statement) =>
+      statement.type === "ExportNamedDeclaration" &&
+      statement.declaration?.type === "VariableDeclaration" &&
+      statement.declaration.kind === "const" &&
+      statement.declaration.declarations.some(
+        (declarator) =>
+          declarator.id.type === "Identifier" &&
+          declarator.id.name === "unstable_instant" &&
+          declarator.init,
+      ),
+  );
+}
+
+/**
+ * The top-level names a module binds only as types. TypeScript stripping
+ * drops their export specifiers before Next.js's webpack build checks the
+ * module.
+ */
+function getTypeOnlyNames(body: ESTree.Program["body"]): Set<string> {
+  const typeNames = new Set<string>();
+  const valueNames = new Set<string>();
+  for (const node of body) {
+    const statement =
+      node.type === "ExportNamedDeclaration" && node.declaration ? node.declaration : node;
+    if (statement.type === "ImportDeclaration") {
+      for (const specifier of statement.specifiers) {
+        const typeOnly =
+          statement.importKind === "type" ||
+          (specifier.type === "ImportSpecifier" && specifier.importKind === "type");
+        (typeOnly ? typeNames : valueNames).add(specifier.local.name);
+      }
+    } else if (
+      statement.type === "TSTypeAliasDeclaration" ||
+      statement.type === "TSInterfaceDeclaration"
+    ) {
+      typeNames.add(statement.id.name);
+    } else if (statement.type === "VariableDeclaration") {
+      for (const declarator of statement.declarations) {
+        if (declarator.id.type === "Identifier") valueNames.add(declarator.id.name);
+      }
+    } else if (
+      statement.type === "FunctionDeclaration" ||
+      statement.type === "ClassDeclaration" ||
+      statement.type === "TSEnumDeclaration"
+    ) {
+      const name = getAstName(statement.id);
+      if (name) valueNames.add(name);
+    }
+  }
+  for (const name of valueNames) typeNames.delete(name);
+  return typeNames;
+}
+
+/**
+ * The metadata exports Next.js rejects from a client entry
+ * (crates/next-custom-transforms/src/transforms/react_server_components.rs
+ * assert_invalid_api), by declared or local specifier name. Its webpack build
+ * checks a module once TypeScript is stripped, so type-only exports pass.
+ */
+function getMetadataExports(body: ESTree.Program["body"]): Set<string> {
+  const exported = new Set<string>();
+  const addName = (name: string | null) => {
+    if (name === "metadata" || name === "generateMetadata") exported.add(name);
+  };
+  const typeOnlyNames = getTypeOnlyNames(body);
+  for (const statement of body) {
+    if (statement.type !== "ExportNamedDeclaration" || statement.exportKind === "type") continue;
+    const declaration = statement.declaration;
+    if (declaration?.type === "FunctionDeclaration") {
+      addName(getAstName(declaration.id));
+    } else if (declaration?.type === "VariableDeclaration" && !declaration.declare) {
+      for (const declarator of declaration.declarations) addName(getAstName(declarator.id));
+    }
+    for (const specifier of statement.specifiers) {
+      if (specifier.exportKind === "type" || specifier.local.type !== "Identifier") continue;
+      if (!statement.source && typeOnlyNames.has(specifier.local.name)) continue;
+      addName(specifier.local.name);
+    }
+  }
+  return exported;
+}
+
+/**
+ * Reject the exports Next.js disallows in a `"use client"` App Router page,
+ * layout or route file, where both of its bundlers do. Turbopack builds run
+ * Next.js's static info checks, and a stricter segment config check of their
+ * own (crates/next-core/src/segment_config.rs) that webpack builds lack.
+ * `source` is the file as written, which Next.js's static info reads.
+ */
+export function validateAppClientEntryExports(code: string, id: string, source = code): void {
   if (!code.includes("use client") || !APP_CLIENT_ENTRY_EXPORT_CANDIDATE_RE.test(code)) return;
   const lang = scriptParserLanguage(id);
   if (!lang) return;
@@ -65,43 +170,24 @@ export function validateAppClientEntryExports(
   }
   if (!hasUseClientDirective(ast.body)) return;
 
-  const metadataExports = new Set<string>();
-  const segmentConfigExports = new Set<string>();
-  const addSegmentConfigName = (name: string | null) => {
-    if (name && CLIENT_SEGMENT_CONFIG_ERRORS.has(name)) segmentConfigExports.add(name);
-  };
-  const addDeclaredName = (name: string | null) => {
-    if (name === "metadata" || name === "generateMetadata") metadataExports.add(name);
-    addSegmentConfigName(name);
-  };
-
-  for (const statement of ast.body) {
-    if (statement.type !== "ExportNamedDeclaration" || statement.exportKind === "type") continue;
-    const declaration = statement.declaration;
-    if (declaration?.type === "FunctionDeclaration") {
-      addDeclaredName(getAstName(declaration.id));
-    } else if (declaration?.type === "VariableDeclaration" && !declaration.declare) {
-      for (const declarator of declaration.declarations) {
-        addDeclaredName(getAstName(declarator.id));
-      }
-    } else if (declaration?.type === "ClassDeclaration") {
-      // Only the segment config check sees class exports.
-      addSegmentConfigName(getAstName(declaration.id));
+  const messages = [...getMetadataExports(ast.body)].map(createClientMetadataExportMessage);
+  if (STATIC_INFO_PARSE_PATTERN.test(source)) {
+    if (exportsGenerateStaticParams(ast.body)) {
+      messages.push(
+        createClientSegmentConfigMessage(
+          "generateStaticParams",
+          'App pages cannot use both "use client" and export function "generateStaticParams()".',
+        ),
+      );
     }
-    for (const specifier of statement.specifiers) {
-      if (specifier.exportKind === "type") continue;
-      const localName = getAstName(specifier.local);
-      if (localName === "metadata" || localName === "generateMetadata") {
-        metadataExports.add(localName);
-      }
-      addSegmentConfigName(getAstName(specifier.exported));
+    if (exportsUnstableInstant(ast.body)) {
+      messages.push(
+        createClientSegmentConfigMessage(
+          "unstable_instant",
+          'App pages cannot export "unstable_instant" from a Client Component module. To use this API, convert this module to a Server Component by removing the "use client" directive.',
+        ),
+      );
     }
-  }
-
-  const messages =
-    kind === "entry" ? [...metadataExports].map(createClientMetadataExportMessage) : [];
-  for (const name of CLIENT_SEGMENT_CONFIG_ERRORS.keys()) {
-    if (segmentConfigExports.has(name)) messages.push(createClientSegmentConfigMessage(name));
   }
   if (messages.length > 0) throw new Error(messages.join("\n\n"));
 }

@@ -7916,10 +7916,10 @@ export const loadServerActionClient = ${
         },
       },
     },
-    // Next.js rejects metadata and generateStaticParams exports from App Router
-    // entry files marked "use client". Runs before @vitejs/plugin-rsc replaces
-    // such a module with client references in the rsc environment, which
-    // loads every page, layout, default and route file.
+    // Next.js rejects metadata, generateStaticParams and unstable_instant
+    // exports from App Router page, layout and route files marked "use client".
+    // Runs before @vitejs/plugin-rsc replaces such a module with client
+    // references in the rsc environment, which loads every one of them.
     {
       name: "vinext:validate-app-client-entry-exports",
       enforce: "pre",
@@ -7935,11 +7935,16 @@ export const loadServerActionClient = ${
           if (!isPathInside(canonicalAppDir, canonicalId)) return null;
           if (
             fileMatcher.isAppRouterPage(canonicalId) ||
-            fileMatcher.isAppLayoutFile(canonicalId)
+            fileMatcher.isAppLayoutFile(canonicalId) ||
+            fileMatcher.isAppRouterRoute(canonicalId)
           ) {
-            validateAppClientEntryExports(code, canonicalId, "entry");
-          } else if (fileMatcher.isAppDefaultFile(canonicalId)) {
-            validateAppClientEntryExports(code, canonicalId, "default");
+            // Earlier transforms (JSX in `.js` files) may have reformatted the
+            // code.
+            let source = code;
+            try {
+              source = fs.readFileSync(canonicalId, "utf8");
+            } catch {}
+            validateAppClientEntryExports(code, canonicalId, source);
           }
           return null;
         },

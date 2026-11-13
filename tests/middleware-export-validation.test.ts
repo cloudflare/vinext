@@ -62,12 +62,17 @@ describe("middleware/proxy static export validation", () => {
   });
 });
 
-// Messages and matching rules probed against next@16.2.7 (webpack and Turbopack).
+// Messages and matching rules probed against next@16.2.7: rejected where both
+// `next build --webpack` and `next build --turbopack` fail.
 describe('App Router "use client" entry export validation', () => {
   const metadataMessage = (name: string) =>
     `You are attempting to export "${name}" from a component marked with "use client", which is disallowed. "${name}" must be resolved on the server before the page component is rendered. Keep your page as a Server Component and move Client Component logic to a separate file. Read more: https://nextjs.org/docs/app/api-reference/functions/generate-metadata#why-generatemetadata-is-server-component-only`;
   const generateStaticParamsMessage =
     'Next.js can\'t recognize the exported `generateStaticParams` field in route. App pages cannot use both "use client" and export function "generateStaticParams()".';
+  const unstableInstantMessage =
+    'Next.js can\'t recognize the exported `unstable_instant` field in route. App pages cannot export "unstable_instant" from a Client Component module. To use this API, convert this module to a Server Component by removing the "use client" directive.';
+  const validate = (exports: string, id = "/app/page.tsx") =>
+    validateAppClientEntryExports(`"use client";\n${exports}`, id);
 
   it("rejects metadata exports from a client page with Next.js's messages", () => {
     const source = `'use client'
@@ -77,96 +82,141 @@ export function generateViewport() { return {}; }
 export const viewport = { themeColor: "red" };
 export default function Page() { return <p>cm</p>; }
 `;
-    expect(() => validateAppClientEntryExports(source, "/app/cm/page.js", "entry")).toThrow(
+    expect(() => validateAppClientEntryExports(source, "/app/cm/page.js")).toThrow(
       `${metadataMessage("generateMetadata")}\n\n${metadataMessage("metadata")}`,
     );
   });
 
-  it("rejects generateStaticParams from a client page or default file", () => {
-    const source = `"use client";
-export function generateStaticParams() { return []; }
-export default function Page() { return null; }
-`;
-    expect(() => validateAppClientEntryExports(source, "/app/cp/page.tsx", "entry")).toThrow(
-      generateStaticParamsMessage,
-    );
-    expect(() =>
-      validateAppClientEntryExports(source, "/app/@slot/default.tsx", "default"),
-    ).toThrow(generateStaticParamsMessage);
-  });
-
-  it("rejects unstable_instant from a client page or default file", () => {
-    const unstableInstantMessage =
-      'Next.js can\'t recognize the exported `unstable_instant` field in route. App pages cannot export "unstable_instant" from a Client Component module. To use this API, convert this module to a Server Component by removing the "use client" directive.';
-    const source = `"use client";
-export const unstable_instant = { prefetch: "static" };
-export default function Page() { return null; }
-`;
-    expect(() => validateAppClientEntryExports(source, "/app/page.tsx", "entry")).toThrow(
-      unstableInstantMessage,
-    );
-    expect(() =>
-      validateAppClientEntryExports(source, "/app/@slot/default.tsx", "default"),
-    ).toThrow(unstableInstantMessage);
-    expect(() =>
-      validateAppClientEntryExports(
-        `"use client";\nconst instant = {};\nexport { instant as unstable_instant };`,
-        "/app/layout.js",
-        "entry",
-      ),
-    ).toThrow(unstableInstantMessage);
-  });
-
-  it("checks metadata only in page, layout and route files", () => {
-    const source = `"use client";
-export const metadata = { title: "y" };
-export default function Default() { return null; }
-`;
-    expect(() =>
-      validateAppClientEntryExports(source, "/app/@slot/default.js", "default"),
-    ).not.toThrow();
-  });
-
   it.each([
+    ["a declared function", "export function generateStaticParams() { return []; }"],
+    ["an async function", "export async function generateStaticParams() { return []; }"],
+    ["a declared TypeScript function", "export declare function generateStaticParams(): [];"],
+    ["a variable", "export let generateStaticParams = () => [];"],
     [
-      "metadata from a local name",
-      "const metadata = {}; export { metadata as pageMetadata };",
-      "metadata",
+      "its local name",
+      "function generateStaticParams() { return []; }\nexport { generateStaticParams as gsp };",
+    ],
+    ["a re-export", 'export { generateStaticParams } from "./gsp";'],
+    [
+      "a type-only export",
+      "type generateStaticParams = () => [];\nexport type { generateStaticParams };",
     ],
     [
-      "metadata re-exported from another module",
-      'export { generateMetadata } from "./meta";',
-      "generateMetadata",
+      "a function before a later specifier",
+      "export function generateStaticParams() { return []; }\nconst x = 1;\nexport { x as getStaticProps };",
     ],
-  ])("rejects %s", (_name, exports, rejected) => {
-    expect(() =>
-      validateAppClientEntryExports(`"use client";\n${exports}`, "/app/layout.js", "entry"),
-    ).toThrow(metadataMessage(rejected));
-  });
-
-  it.each([
     [
-      "an aliased function",
-      "function gsp() { return []; } export { gsp as generateStaticParams };",
+      "a specifier after another static info function",
+      "function generateStaticParams() { return []; }\nexport function generateSitemaps() { return []; }\nexport { generateStaticParams as gsp };",
     ],
-    ["a class", "export class generateStaticParams {}"],
   ])("rejects generateStaticParams exported as %s", (_name, exports) => {
-    expect(() =>
-      validateAppClientEntryExports(`"use client";\n${exports}`, "/app/page.js", "entry"),
-    ).toThrow(generateStaticParamsMessage);
+    expect(() => validate(exports)).toThrow(generateStaticParamsMessage);
   });
 
+  it.each([
+    ["a static value", 'export const unstable_instant = { prefetch: "static" };'],
+    ["false", "export const unstable_instant = false;"],
+    ["undefined", "export const unstable_instant = undefined;"],
+    ["a value Next.js can't read", "const i = {};\nexport const unstable_instant = i;"],
+    ["a later declarator", 'export const a = 1, unstable_instant = { prefetch: "static" };'],
+  ])("rejects unstable_instant exported as %s", (_name, exports) => {
+    expect(() => validate(exports)).toThrow(unstableInstantMessage);
+  });
+
+  it("checks layout and route files", () => {
+    for (const id of ["/app/layout.js", "/app/api/route.ts"]) {
+      expect(() => validate("export const metadata = {};", id)).toThrow(
+        metadataMessage("metadata"),
+      );
+      expect(() => validate("export function generateStaticParams() { return []; }", id)).toThrow(
+        generateStaticParamsMessage,
+      );
+      expect(() => validate('export const unstable_instant = { prefetch: "static" };', id)).toThrow(
+        unstableInstantMessage,
+      );
+    }
+  });
+
+  it.each([
+    ["a local name", "const metadata = {};\nexport { metadata as pageMetadata };", "metadata"],
+    ["a re-export", 'export { generateMetadata } from "./meta";', "generateMetadata"],
+    ["a later declarator", "export const a = 1, metadata = {};", "metadata"],
+  ])("rejects metadata exported under %s", (_name, exports, rejected) => {
+    expect(() => validate(exports, "/app/layout.js")).toThrow(metadataMessage(rejected));
+  });
+
+  // Webpack builds accept each of these, so a Next.js app may ship them.
   it.each([
     [
       "viewport, segment config and other generator exports",
-      `"use client";
-export function generateViewport() { return {}; }
+      `export function generateViewport() { return {}; }
 export const viewport = { themeColor: "red" };
 export const revalidate = 60;
 export const dynamic = "force-static";
 export function generateImageMetadata() { return []; }
 export function generateSitemaps() { return []; }`,
     ],
+    ["metadata exported under a local alias", "const foo = {};\nexport { foo as metadata };"],
+    ["metadata from a class", "export class metadata {}"],
+    ["destructured metadata", "export const { metadata } = { metadata: {} };"],
+    ["a type-only metadata export", "type metadata = {};\nexport type { metadata };"],
+    [
+      "a type-only metadata specifier",
+      "type generateMetadata = {};\nexport { type generateMetadata };",
+    ],
+    ["a declared metadata variable", "export declare const metadata: {};"],
+    [
+      "imported metadata types",
+      'import type { Metadata as metadata } from "next";\nexport { metadata };',
+    ],
+    [
+      "an imported metadata type",
+      'import { type Metadata as metadata } from "next";\nexport { metadata };',
+    ],
+    [
+      "generateStaticParams exported from another name",
+      "function gsp() { return []; }\nexport { gsp as generateStaticParams };",
+    ],
+    ["generateStaticParams from a class", "export class generateStaticParams {}"],
+    [
+      "generateStaticParams as a later declarator",
+      "export const x = 1, generateStaticParams = () => [];",
+    ],
+    ["a destructured generateStaticParams", "export const [generateStaticParams] = [() => []];"],
+    [
+      "generateStaticParams followed by another static info function",
+      "export function generateStaticParams() { return []; }\nexport const generateSitemaps = () => [];",
+    ],
+    ["a namespace re-export", 'export * as generateStaticParams from "./gsp";'],
+    ["unstable_instant from a function", "export function unstable_instant() {}"],
+    ["unstable_instant from a let", 'export let unstable_instant = { prefetch: "static" };'],
+    [
+      "unstable_instant from another name",
+      'const i = { prefetch: "static" };\nexport { i as unstable_instant };',
+    ],
+    [
+      "unstable_instant in a file Next.js reads no static info from",
+      'export  const unstable_instant = { prefetch: "static" };',
+    ],
+  ])("allows %s", (_name, exports) => {
+    expect(() => validate(exports)).not.toThrow();
+  });
+
+  it("reads static info from the file as written", () => {
+    const code = '"use client";\nexport const unstable_instant = { prefetch: "static" };';
+    expect(() =>
+      validateAppClientEntryExports(
+        code,
+        "/app/page.js",
+        '"use client";\nexport  const unstable_instant = { prefetch: "static" };',
+      ),
+    ).not.toThrow();
+    expect(() => validateAppClientEntryExports(code, "/app/page.js")).toThrow(
+      unstableInstantMessage,
+    );
+  });
+
+  it.each([
     [
       "a server page",
       "export const metadata = {}; export function generateStaticParams() { return []; }",
@@ -175,25 +225,7 @@ export function generateSitemaps() { return []; }`,
       'a "use client" string after the directive prologue',
       'import "./x"; "use client"; export const metadata = {};',
     ],
-    [
-      "metadata exported under a local alias",
-      '"use client"; const foo = {}; export { foo as metadata };',
-    ],
-    [
-      "generateStaticParams exported under another name",
-      '"use client"; function generateStaticParams() { return []; } export { generateStaticParams as gsp };',
-    ],
-  ])("allows %s", (_name, source) => {
-    expect(() => validateAppClientEntryExports(source, "/app/page.js", "entry")).not.toThrow();
-  });
-
-  it("ignores type-only exports", () => {
-    const source = `"use client";
-type metadata = { title: string };
-export type { metadata };
-export declare const generateMetadata: () => void;
-export default function Page() { return null; }
-`;
-    expect(() => validateAppClientEntryExports(source, "/app/page.tsx", "entry")).not.toThrow();
+  ])("allows exports from %s", (_name, source) => {
+    expect(() => validateAppClientEntryExports(source, "/app/page.js")).not.toThrow();
   });
 });
