@@ -1699,6 +1699,69 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  // Next.js also invokes originFetch through a promise boundary:
+  // https://github.com/vercel/next.js/commit/58b942a3807fed6afb06e9af6af61231ef178407
+  it.each(["synchronous", "asynchronous"])(
+    "keeps stale data and permits retry after a %s background fetch failure",
+    async (failure) => {
+      const url = "https://api.example.com/background-throw";
+      const options = { next: { revalidate: 1 } };
+      await (await fetch(url, options)).text();
+      const handler = getCacheHandler();
+      const get = vi.spyOn(handler, "get");
+      const set = vi.spyOn(handler, "set");
+      get.mockImplementation(async () => ({
+        lastModified: Date.now() - 2000,
+        cacheState: "stale",
+        value: {
+          kind: "FETCH",
+          data: { headers: {}, body: Buffer.from("stale").toString("base64"), url, status: 200 },
+          revalidate: 1,
+        },
+      }));
+      const error = new TypeError("origin fetch failed");
+      fetchMock.mockImplementation(() => {
+        if (failure === "synchronous") throw error;
+        return Promise.reject(error);
+      });
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const pending: Promise<unknown>[] = [];
+      try {
+        startNewFetchCacheScope();
+        const response = await runWithExecutionContext(
+          { waitUntil: (promise) => pending.push(promise) },
+          () => fetch(url, options),
+        );
+        expect(await response.text()).toBe("stale");
+        expect(pending).toHaveLength(1);
+        await Promise.all(pending);
+        expect(log).toHaveBeenCalledWith(
+          expect.stringContaining("fetch cache background revalidation failed"),
+          error,
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(set).not.toHaveBeenCalled();
+
+        fetchMock.mockImplementation(defaultFetchMockImplementation);
+        pending.length = 0;
+        startNewFetchCacheScope();
+        const retry = await runWithExecutionContext(
+          { waitUntil: (promise) => pending.push(promise) },
+          () => fetch(url, options),
+        );
+        expect(await retry.text()).toBe("stale");
+        expect(pending).toHaveLength(1);
+        await Promise.all(pending);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(set).toHaveBeenCalledOnce();
+      } finally {
+        get.mockRestore();
+        set.mockRestore();
+        log.mockRestore();
+      }
+    },
+  );
+
   it("background revalidation does not cache error responses", async () => {
     // Populate cache with a good response
     const res1 = await fetch("https://api.example.com/revalidate-error-test", {
