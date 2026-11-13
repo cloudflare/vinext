@@ -44,15 +44,20 @@ export const clientReferences: Record<string, () => Promise<ClientReferenceExpor
 // A link with each resolved href in the document, and a stylesheet with each.
 // Reading every link's href for each chunk would make loading N chunks cost
 // N * N reads, as the server-rendered head modulepreloads each chunk. A cached
-// link only answers while it is still in the document with that href (and
-// rel), and any other check rescans, so links React or the app adds, removes
+// link only answers while it is still in this document's tree (not another
+// document or a shadow root) with that href (and rel), and any other check
+// rescans, so links React or the app adds, removes
 // or changes are seen as an exact scan sees them.
 let linksByHref = new Map<string, HTMLLinkElement>();
 let stylesheetsByHref = new Map<string, HTMLLinkElement>();
 
 function isLinked(href: string, stylesheet: boolean): boolean {
   const cached = (stylesheet ? stylesheetsByHref : linksByHref).get(href);
-  if (cached?.isConnected && cached.href === href && (!stylesheet || cached.rel === "stylesheet")) {
+  if (
+    cached?.getRootNode() === document &&
+    cached.href === href &&
+    (!stylesheet || cached.rel === "stylesheet")
+  ) {
     return true;
   }
   linksByHref = new Map();

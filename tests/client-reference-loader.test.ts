@@ -12,7 +12,10 @@ type FakeLink = {
   as?: string;
   crossOrigin?: string;
   href: string;
+  /** A connected shadow root the link was moved into. */
+  shadowRoot?: object;
   readonly isConnected: boolean;
+  getRootNode(): object;
   attributes: Record<string, string>;
   listeners: Record<string, () => void>;
   setAttribute(name: string, value: string): void;
@@ -30,7 +33,10 @@ function createLink(): FakeLink {
     rel: "",
     href: "",
     get isConnected() {
-      return links.includes(this);
+      return links.includes(this) || this.shadowRoot !== undefined;
+    },
+    getRootNode() {
+      return links.includes(this) ? document : (this.shadowRoot ?? this);
     },
     attributes: {},
     listeners: {},
@@ -206,6 +212,23 @@ describe("App Router client reference loader", () => {
     });
     links[4]!.listeners.load!();
     await load;
+  });
+
+  // A link moved into a connected shadow root is still connected, but no
+  // longer in the document's links.
+  it("links a chunk again once its cached link moves into a shadow root", async () => {
+    const { loadChunk } = await loadLoader();
+    await loadChunk("p/_next/static/chunks/a.js");
+    expect(links).toHaveLength(1);
+    const moved = links.pop()!;
+    moved.shadowRoot = {};
+    await loadChunk("p/_next/static/chunks/a.js");
+    expect(links).toHaveLength(1);
+    expect(links[0]).not.toBe(moved);
+    expect(links[0]).toMatchObject({
+      rel: "modulepreload",
+      href: "https://app.example/_next/static/chunks/a.js",
+    });
   });
 
   it("imports a module chunk once its stylesheets load", async () => {
