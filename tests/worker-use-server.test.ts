@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 async function createUseServerPlugin(
-  checkWorkerModule: (code: string, ast: unknown, id: string) => void = () => {},
+  checkWorkerModule: (ast: unknown, id: string) => void = () => {},
 ): Promise<Plugin> {
   const rscPluginPath = createRequire(
     path.resolve(import.meta.dirname, "../packages/vinext/package.json"),
@@ -101,7 +101,6 @@ describe("worker Server Function references", () => {
       ),
     ).rejects.toThrow("inline server function");
     expect(checkWorkerModule).toHaveBeenCalledWith(
-      expect.stringContaining('"use server"'),
       expect.objectContaining({ type: "Program" }),
       "/app/shared.ts",
     );

@@ -117,7 +117,7 @@ export async function createWorkerUseServerPlugins(options: {
         let ast = await parseProgramAsync(code);
         if (!transforms.hasDirective(ast.body, "use server")) {
           const api = useCacheApi;
-          if (api) await withPositionedError(this, () => api.checkWorkerModule(code, ast, id));
+          if (api) await withPositionedError(this, () => api.checkWorkerModule(ast, id));
           return null;
         }
         if (!manager) {

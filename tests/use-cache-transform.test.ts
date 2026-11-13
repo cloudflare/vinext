@@ -584,6 +584,68 @@ describe("plugin-rsc inline use-cache references", () => {
     ).resolves.toBeUndefined();
   });
 
+  // Next.js ignores these directives in object literal getters and setters and
+  // in class constructors, though not in functions nested inside them.
+  it.each(["use server", "use cache"])(
+    "rejects inline %s functions only where Next.js compiles the directive",
+    async (directive) => {
+      const plugins = await getPlugins();
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+      const environment = { name: "client", mode: "build" };
+      const ignored = [
+        `export const value = {`,
+        `  get x() { "${directive}"; return 1; },`,
+        `  set x(value) { "${directive}"; },`,
+        `};`,
+        `export class Value { constructor() { "${directive}"; } }`,
+      ].join("\n");
+
+      await expect(transform.call({ environment }, ignored, moduleId)).resolves.toBeUndefined();
+      await expect(
+        transform.call(
+          { environment },
+          `export const value = { get x() { return async () => { "${directive}"; }; } };`,
+          moduleId,
+        ),
+      ).rejects.toThrow(/It is not allowed to define inline/);
+      await expect(
+        transform.call(
+          { environment },
+          `${ignored}\nexport class Later { async x() { "${directive}"; } }`,
+          moduleId,
+        ),
+      ).rejects.toThrow(/It is not allowed to define inline/);
+    },
+  );
+
+  // Next.js's server function transform skips these modules.
+  it.each([".mts", ".cts"])(
+    "leaves inline server functions in %s modules outside the rsc graph",
+    async (extension) => {
+      const plugins = await getPlugins();
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+      const id = path.join(APP_FIXTURE_DIR, "lib", `unit-test-inline${extension}`);
+      const environment = { name: "client", mode: "build" };
+
+      await expect(
+        transform.call(
+          { environment },
+          `export async function action() {\n  "use server";\n}`,
+          `${id}?v=1`,
+        ),
+      ).resolves.toBeUndefined();
+      await expect(transform.call({ environment }, inlineCacheCode, id)).resolves.toBeUndefined();
+    },
+  );
+
   // In an app that also has a Pages Router, the browser and SSR graphs hold
   // Pages Router modules too, which Next.js compiles outside its App Router
   // layers and never rejects.
@@ -678,11 +740,11 @@ describe("plugin-rsc inline use-cache references", () => {
       (plugins.find((plugin) => plugin.name === "vinext:server-function-directives") as any).api;
     const code = `export async function action() {\n  "use server";\n}`;
 
+    expect(() => workerApi(appPlugins).checkWorkerModule(parseAst(code), "/app/worker.ts")).toThrow(
+      /inline "use server" annotated Server Actions in Client Components/,
+    );
     expect(() =>
-      workerApi(appPlugins).checkWorkerModule(code, parseAst(code), "/app/worker.ts"),
-    ).toThrow(/inline "use server" annotated Server Actions in Client Components/);
-    expect(() =>
-      workerApi(hybridPlugins).checkWorkerModule(code, parseAst(code), "/app/worker.ts"),
+      workerApi(hybridPlugins).checkWorkerModule(parseAst(code), "/app/worker.ts"),
     ).not.toThrow();
     await expect(
       workerApi(hybridPlugins).transformWorkerModule(inlineCacheCode, "/app/worker.ts", () => ""),

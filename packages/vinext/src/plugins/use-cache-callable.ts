@@ -12,7 +12,7 @@ import {
   getServerActionsKeyCacheFsDeny,
   loadOrGenerateServerActionsEncryptionKey,
 } from "../build/server-actions-encryption-key.js";
-import { parseProgramAsync } from "./ast-utils.js";
+import { parseProgramAsync, walkAst } from "./ast-utils.js";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { magicStringTransformResult, serverReferenceProxyResult } from "./transform-result.js";
 
@@ -63,7 +63,7 @@ export type UseCacheCallableApi = {
    * Reject a browser Web Worker module's inline server functions where
    * Next.js would.
    */
-  checkWorkerModule(code: string, ast: Program, id: string): void;
+  checkWorkerModule(ast: Program, id: string): void;
 };
 
 const PLUGIN_NAME = "vinext:server-function-directives";
@@ -80,6 +80,10 @@ const NODE_MODULES_SOURCE_MODULE_ID_RE = /[\\/]node_modules[\\/].*\.(?:m?[jt]s|[
 const RESOLVED_VIRTUAL_MODULE_ID_RE = new RegExp(`^${String.fromCharCode(0)}`);
 const USE_CACHE_DIRECTIVE = /^use cache(?:: ([^\s].*))?$/;
 const USE_CACHE_DIRECTIVE_CANDIDATE = /^use cache.*$/;
+const INLINE_SERVER_FUNCTION_DIRECTIVE = /^(?:use server|use cache.*)$/;
+// The modules whose inline server functions Next.js never rejects, since its
+// server function transform skips them (see SOURCE_MODULE_ID_RE).
+const NEXT_UNCOMPILED_MODULE_ID_RE = /\.[cm]ts(?:\?.*)?$/;
 
 function resolvePluginRscModule(projectRoot: string, specifier: string): string {
   try {
@@ -270,6 +274,49 @@ function getCacheWrapperOptions(
 }
 
 /**
+ * The first inline "use server" or "use cache" function directive Next.js
+ * compiles. It ignores those in object literal getters and setters and in
+ * class constructors, though not in functions nested inside them.
+ */
+function findInlineServerFunctionDirective(ast: Program): string | undefined {
+  const ignoredFunctions = new Set<ESTree.Node>();
+  let found: string | undefined;
+  walkAst(ast, (node) => {
+    if (found !== undefined) return false;
+    if (
+      (node.type === "Property" && node.kind !== "init") ||
+      (node.type === "MethodDefinition" && node.kind === "constructor")
+    ) {
+      ignoredFunctions.add(node.value);
+      return;
+    }
+    if (
+      (node.type !== "FunctionDeclaration" &&
+        node.type !== "FunctionExpression" &&
+        node.type !== "ArrowFunctionExpression") ||
+      node.body?.type !== "BlockStatement" ||
+      ignoredFunctions.has(node)
+    ) {
+      return;
+    }
+    for (const statement of node.body.body) {
+      if (
+        statement.type !== "ExpressionStatement" ||
+        !("directive" in statement) ||
+        typeof statement.directive !== "string"
+      ) {
+        break;
+      }
+      if (INLINE_SERVER_FUNCTION_DIRECTIVE.test(statement.directive)) {
+        found = statement.directive;
+        return false;
+      }
+    }
+  });
+  return found;
+}
+
+/**
  * The error Next.js raises for an inline "use server" or "use cache" function
  * in a module of the App Router's browser graph, if the module has one. A
  * module-level "use server" or "use cache" directive turns the module's
@@ -277,37 +324,27 @@ function getCacheWrapperOptions(
  */
 function findInlineServerFunctionError(
   transforms: RscTransforms,
-  code: string,
   ast: Program,
-  location: string,
+  id: string,
+  environmentName: string,
 ): Error | undefined {
+  if (NEXT_UNCOMPILED_MODULE_ID_RE.test(id)) return;
   if (transforms.hasDirective(ast.body, "use server") || findModuleUseCacheDirective(ast)) return;
+  const directive = findInlineServerFunctionDirective(ast);
+  if (directive === undefined) return;
+  if (directive === "use server") {
+    return new Error(
+      'It is not allowed to define inline "use server" annotated Server Actions in Client Components.\nTo use Server Actions in a Client Component, you can either export them from a separate file with "use server" at the top, or pass them down through props from a Server Component.\n\nRead more: https://nextjs.org/docs/app/api-reference/directives/use-server#using-server-functions-in-a-client-component',
+    );
+  }
   try {
-    if (code.includes("use server")) {
-      transforms.transformHoistInlineDirective(code, ast, {
-        directive: "use server",
-        runtime: () => {
-          throw new Error(
-            'It is not allowed to define inline "use server" annotated Server Actions in Client Components.\nTo use Server Actions in a Client Component, you can either export them from a separate file with "use server" at the top, or pass them down through props from a Server Component.\n\nRead more: https://nextjs.org/docs/app/api-reference/directives/use-server#using-server-functions-in-a-client-component',
-          );
-        },
-      });
-    }
-    if (code.includes("use cache")) {
-      transforms.transformHoistInlineDirective(code, ast, {
-        directive: USE_CACHE_DIRECTIVE_CANDIDATE,
-        rejectNonAsyncFunction: true,
-        runtime: (_value, _name, meta) => {
-          matchUseCacheDirective(meta.directiveMatch[0]);
-          throw new Error(
-            `It is not allowed to define inline "use cache" annotated functions in Client Components. Export them from a separate file with a module-level "use cache" or "use server" directive, or pass them down through props from a Server Component. (${location})`,
-          );
-        },
-      });
-    }
+    matchUseCacheDirective(directive);
   } catch (error) {
     return error instanceof Error ? error : new Error(String(error));
   }
+  return new Error(
+    `It is not allowed to define inline "use cache" annotated functions in Client Components. Export them from a separate file with a module-level "use cache" or "use server" directive, or pass them down through props from a Server Component. (${environmentName}: ${id})`,
+  );
 }
 
 /**
@@ -402,16 +439,10 @@ export async function createUseCacheCallablePlugin(
   function checkInlineServerFunctions(
     manager: RscPluginManager,
     environment: Environment,
-    code: string,
     ast: Program,
     id: string,
   ): void {
-    const error = findInlineServerFunctionError(
-      transforms,
-      code,
-      ast,
-      `${environment.name}: ${id}`,
-    );
+    const error = findInlineServerFunctionError(transforms, ast, id, environment.name);
     if (!options.hasPagesRouter?.()) {
       if (error) throw error;
       return;
@@ -454,12 +485,12 @@ export async function createUseCacheCallablePlugin(
     return { ast, moduleDirective, useServerBoundary, reference, secureExportName };
   }
 
-  function checkWorkerModule(code: string, ast: Program, id: string): void {
+  function checkWorkerModule(ast: Program, id: string): void {
     // A worker bundle doesn't show which graph started the worker, so only an
     // app without a Pages Router, whose browser modules all belong to the App
     // Router, has its worker modules checked.
     if (!manager || options.hasPagesRouter?.()) return;
-    const error = findInlineServerFunctionError(transforms, code, ast, `worker: ${id}`);
+    const error = findInlineServerFunctionError(transforms, ast, id, "worker");
     if (error) throw error;
   }
 
@@ -470,13 +501,7 @@ export async function createUseCacheCallablePlugin(
       manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
       // Outside rsc, @vitejs/plugin-rsc compiles only module-level "use server".
       if (this.environment.name !== "rsc" && code.includes("use server")) {
-        checkInlineServerFunctions(
-          manager,
-          this.environment,
-          code,
-          await parseProgramAsync(code),
-          id,
-        );
+        checkInlineServerFunctions(manager, this.environment, await parseProgramAsync(code), id);
       }
       return;
     }
@@ -488,7 +513,7 @@ export async function createUseCacheCallablePlugin(
     if (!isRsc) {
       if (useServerBoundary || !moduleDirective) {
         manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
-        if (!moduleDirective) checkInlineServerFunctions(manager, this.environment, code, ast, id);
+        if (!moduleDirective) checkInlineServerFunctions(manager, this.environment, ast, id);
         return;
       }
       const result = transformBrowserModule(transforms, code, ast, id, moduleDirective, {
@@ -633,7 +658,7 @@ export async function createUseCacheCallablePlugin(
           await analyzeModule(manager, secret, code, id);
         if (useServerBoundary) return;
         if (!moduleDirective) {
-          checkWorkerModule(code, ast, id);
+          checkWorkerModule(ast, id);
           return;
         }
         return transformBrowserModule(transforms, code, ast, id, moduleDirective, {
