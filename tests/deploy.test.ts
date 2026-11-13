@@ -621,6 +621,17 @@ describe("cf Build Output deployment", () => {
     expect(resolvePrerenderOutputDirs(tmpDir, "wrangler", configured)).toEqual(configured);
   });
 
+  it("prefers v1 Build Output over v0 for typed cf prerendering", () => {
+    const configured = { clientOutDir: "dist/client", rscOutDir: "dist/server" };
+    writeFile(tmpDir, ".cloudflare/output/v0/workers/default/worker.config.json", "{}");
+    writeFile(tmpDir, ".cloudflare/output/v1/workers/default/worker.config.json", "{}");
+    const workerDir = path.join(tmpDir, ".cloudflare", "output", "v1", "workers", "default");
+    expect(resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toEqual({
+      clientOutDir: path.join(workerDir, "assets"),
+      rscOutDir: path.join(workerDir, "bundle"),
+    });
+  });
+
   it("builds the selected Cloudflare mode before prebuilt deployment", () => {
     expect(resolveViteBuildMode("cf", undefined)).toBe("production");
     expect(resolveViteBuildMode("cf", "staging")).toBe("staging");

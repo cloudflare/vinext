@@ -61,6 +61,10 @@ import {
   getMissingDeps,
   type ProjectInfo,
 } from "vinext/internal/utils/project";
+import {
+  resolveBuildOutputDefaultWorkerConfigPath,
+  resolveBuildOutputDefaultWorkerDir,
+} from "./build-output.js";
 import { resolveTPRRoutes, selectRoutes, type TrafficEntry } from "./tpr.js";
 import { parseWranglerConfig } from "./wrangler-config.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
@@ -222,7 +226,7 @@ export function resolvePrerenderOutputDirs(
   configured: VinextRouteRootConfig | null,
 ): VinextRouteRootConfig | null {
   if (deploymentTool !== "cf") return configured;
-  const workerDir = path.join(root, ".cloudflare", "output", "v0", "workers", "default");
+  const workerDir = resolveBuildOutputDefaultWorkerDir(root);
   if (!fs.existsSync(path.join(workerDir, "worker.config.json"))) return configured;
   return {
     ...configured,
@@ -2531,10 +2535,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const candidatePathsOnly = shouldSelectTpr && !needsCacheabilityProbeManifest;
   if (shouldWarmCdnCache && cdnAdapterConfig) {
     if (deploymentTool === "cf") {
-      const configPath = path.join(
-        root,
-        ".cloudflare/output/v0/workers/default/worker.config.json",
-      );
+      const configPath = resolveBuildOutputDefaultWorkerConfigPath(root);
       const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
         env?: Record<string, { type?: string }>;
       };

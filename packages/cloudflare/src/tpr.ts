@@ -17,6 +17,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { resolveBuildOutputDefaultWorkerConfigPath } from "./build-output.js";
 import { parseWranglerConfig } from "./wrangler-config.js";
 
 export { parseWranglerConfig };
@@ -291,10 +292,7 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
   const { root, config, window: windowHours } = options;
   const wranglerConfig =
     options.hostname || options.typedConfig ? null : parseWranglerConfig(root, config);
-  const buildOutputConfigPath = path.join(
-    root,
-    ".cloudflare/output/v0/workers/default/worker.config.json",
-  );
+  const buildOutputConfigPath = resolveBuildOutputDefaultWorkerConfigPath(root);
   const typedDomains: unknown =
     options.typedConfig && !options.hostname && fs.existsSync(buildOutputConfigPath)
       ? (JSON.parse(fs.readFileSync(buildOutputConfigPath, "utf8")) as { domains?: unknown })
