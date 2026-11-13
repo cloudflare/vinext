@@ -864,7 +864,16 @@ describe("createAppRscHandler", () => {
   // middleware answers in the request stage never reaches the shared cache.
   it.each([
     ["a redirect", false, () => Response.redirect("https://example.test/login", 307)],
-    ["an external rewrite", true, () => new Response("upstream", { status: 200 })],
+    [
+      "an external rewrite",
+      true,
+      // Another deployment's cache status and RSC identity must not pass for this one's.
+      () =>
+        new Response("upstream", {
+          headers: { "CF-Cache-Status": "HIT", "X-Vinext-RSC-Build-Id": "upstream-rsc-build" },
+          status: 200,
+        }),
+    ],
   ])("labels %s that middleware answers itself BYPASS", async (_name, externalRewrite, create) => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
       async () => new Response("unused"),
@@ -886,10 +895,13 @@ describe("createAppRscHandler", () => {
     );
     expect(dispatchResponseStage).not.toHaveBeenCalled();
     expect(staged.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+    expect(staged.headers.get("CF-Cache-Status")).toBeNull();
+    expect(staged.headers.get("X-Vinext-RSC-Build-Id")).toBeNull();
 
     // A single-stage handler has no uncached request stage to label.
     const local = await handler(new Request("https://example.test/docs/about"), null);
     expect(local.headers.get("X-Vinext-Cache")).toBeNull();
+    if (externalRewrite) expect(local.headers.get("CF-Cache-Status")).toBe("HIT");
   });
 
   it("normalizes a direct contextual RSC request before shared response-stage dispatch", async () => {

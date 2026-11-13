@@ -584,9 +584,16 @@ describe("Pages Worker request stage", () => {
       pathnameEligible: true,
       rewriteUrl: "https://upstream.example/page",
     });
-    const upstream = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response("upstream", { headers: { "Cache-Control": "max-age=60" } }));
+    const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("upstream", {
+        headers: {
+          "Cache-Control": "max-age=60",
+          // Another deployment's cache status and RSC identity.
+          "CF-Cache-Status": "HIT",
+          "X-Vinext-RSC-Build-Id": "upstream-rsc-build",
+        },
+      }),
+    );
     const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("unused"));
 
     try {
@@ -601,6 +608,8 @@ describe("Pages Worker request stage", () => {
       expect(dispatch).not.toHaveBeenCalled();
       expect(await response.text()).toBe("upstream");
       expect(response.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+      expect(response.headers.get("CF-Cache-Status")).toBeNull();
+      expect(response.headers.get("X-Vinext-RSC-Build-Id")).toBeNull();
     } finally {
       upstream.mockRestore();
     }
