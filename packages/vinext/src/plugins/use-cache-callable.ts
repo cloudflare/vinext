@@ -7,7 +7,7 @@ import type {
   ModuleExportMeta,
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
-import type { ESTree, Plugin } from "vite";
+import type { DevEnvironment, Environment, ESTree, Plugin } from "vite";
 import {
   getServerActionsKeyCacheFsDeny,
   loadOrGenerateServerActionsEncryptionKey,
@@ -28,6 +28,8 @@ type Options = {
    * @vitejs/plugin-rsc, so reference names derive from the same key.
    */
   getEncryptionKey?: () => string | undefined;
+  /** Whether the app also has a Pages Router, read once config is resolved. */
+  hasPagesRouter?: () => boolean;
 };
 
 type CacheWrapperOptions = {
@@ -38,7 +40,6 @@ type CacheWrapperOptions = {
 };
 
 type BrowserTransformOptions = {
-  environmentName: string;
   reference: { referenceKey: string };
   secureExportName: (name: string) => string;
   createReference: (referenceId: string, name: string) => string;
@@ -58,6 +59,11 @@ export type UseCacheCallableApi = {
     id: string,
     createReference: BrowserTransformOptions["createReference"],
   ): Promise<BrowserTransformOutput["output"] | undefined>;
+  /**
+   * Reject a browser Web Worker module's inline server functions where
+   * Next.js would.
+   */
+  checkWorkerModule(code: string, ast: Program, id: string): void;
 };
 
 const PLUGIN_NAME = "vinext:server-function-directives";
@@ -264,61 +270,59 @@ function getCacheWrapperOptions(
 }
 
 /**
- * Reject inline "use server" functions in a module compiled for a browser
- * graph, as Next.js does in Client Components. A module-level "use server" or
- * "use cache" directive turns the module's exports into server references
- * instead.
+ * The error Next.js raises for an inline "use server" or "use cache" function
+ * in a module of the App Router's browser graph, if the module has one. A
+ * module-level "use server" or "use cache" directive turns the module's
+ * exports into server references instead.
  */
-export function rejectInlineServerFunctions(
+function findInlineServerFunctionError(
   transforms: RscTransforms,
   code: string,
   ast: Program,
-): void {
-  if (
-    !code.includes("use server") ||
-    transforms.hasDirective(ast.body, "use server") ||
-    findModuleUseCacheDirective(ast)
-  ) {
-    return;
+  location: string,
+): Error | undefined {
+  if (transforms.hasDirective(ast.body, "use server") || findModuleUseCacheDirective(ast)) return;
+  try {
+    if (code.includes("use server")) {
+      transforms.transformHoistInlineDirective(code, ast, {
+        directive: "use server",
+        runtime: () => {
+          throw new Error(
+            'It is not allowed to define inline "use server" annotated Server Actions in Client Components.\nTo use Server Actions in a Client Component, you can either export them from a separate file with "use server" at the top, or pass them down through props from a Server Component.\n\nRead more: https://nextjs.org/docs/app/api-reference/directives/use-server#using-server-functions-in-a-client-component',
+          );
+        },
+      });
+    }
+    if (code.includes("use cache")) {
+      transforms.transformHoistInlineDirective(code, ast, {
+        directive: USE_CACHE_DIRECTIVE_CANDIDATE,
+        rejectNonAsyncFunction: true,
+        runtime: (_value, _name, meta) => {
+          matchUseCacheDirective(meta.directiveMatch[0]);
+          throw new Error(
+            `It is not allowed to define inline "use cache" annotated functions in Client Components. Export them from a separate file with a module-level "use cache" or "use server" directive, or pass them down through props from a Server Component. (${location})`,
+          );
+        },
+      });
+    }
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
   }
-  transforms.transformHoistInlineDirective(code, ast, {
-    directive: "use server",
-    runtime: () => {
-      throw new Error(
-        'It is not allowed to define inline "use server" annotated Server Actions in Client Components.\nTo use Server Actions in a Client Component, you can either export them from a separate file with "use server" at the top, or pass them down through props from a Server Component.\n\nRead more: https://nextjs.org/docs/app/api-reference/directives/use-server#using-server-functions-in-a-client-component',
-      );
-    },
-  });
 }
 
 /**
- * Compile a module for a browser graph: module-level cache functions become
- * server references, and inline ones are rejected as in Next.js Client
- * Components. Returns undefined when the module is unchanged.
+ * Compile a module with a module-level cache directive for a browser graph:
+ * its cache functions become server references. Returns undefined when the
+ * module is unchanged.
  */
 function transformBrowserModule(
   transforms: RscTransforms,
   code: string,
   ast: Program,
   id: string,
-  moduleDirective: string | undefined,
+  moduleDirective: string,
   options: BrowserTransformOptions,
 ): { output: BrowserTransformOutput["output"]; referenceNames: string[] } | undefined {
-  if (!moduleDirective) {
-    rejectInlineServerFunctions(transforms, code, ast);
-    transforms.transformHoistInlineDirective(code, ast, {
-      directive: USE_CACHE_DIRECTIVE_CANDIDATE,
-      rejectNonAsyncFunction: true,
-      runtime: (_value, _name, meta) => {
-        matchUseCacheDirective(meta.directiveMatch[0]);
-        throw new Error(
-          `It is not allowed to define inline "use cache" annotated functions in Client Components. Export them from a separate file with a module-level "use cache" or "use server" directive, or pass them down through props from a Server Component. (${options.environmentName}: ${id})`,
-        );
-      },
-    });
-    return;
-  }
-
   const useServerExportNames = getFunctionDirectiveExportNames(transforms, ast, "use server");
   const referenceName = (name: string) =>
     useServerExportNames.has(name) ? name : options.secureExportName(name);
@@ -370,6 +374,59 @@ export async function createUseCacheCallablePlugin(
   // in one Vite build without making sibling exports derivable from each other.
   let referenceSecret: Buffer | undefined;
   let manager: RscPluginManager | undefined;
+  // Next.js rejects inline server functions only in the App Router's browser
+  // graph, and a Pages Router shares the client and SSR environments with it.
+  // So when both routers exist, a build records the modules that have them,
+  // by environment, and rejects those the App Router's graph reaches once it
+  // is complete.
+  const inlineServerFunctionErrors = new WeakMap<Environment, Map<string, Error>>();
+
+  function isInAppBrowserGraph(
+    manager: RscPluginManager,
+    environment: DevEnvironment,
+    id: string,
+  ): boolean {
+    const seen = new Set<string>();
+    const queue = [id];
+    for (let current = queue.pop(); current !== undefined; current = queue.pop()) {
+      if (seen.has(current)) continue;
+      seen.add(current);
+      if (Object.hasOwn(manager.clientReferenceMetaMap, current)) return true;
+      for (const importer of environment.moduleGraph.getModuleById(current)?.importers ?? []) {
+        if (importer.id) queue.push(importer.id);
+      }
+    }
+    return false;
+  }
+
+  function checkInlineServerFunctions(
+    manager: RscPluginManager,
+    environment: Environment,
+    code: string,
+    ast: Program,
+    id: string,
+  ): void {
+    const error = findInlineServerFunctionError(
+      transforms,
+      code,
+      ast,
+      `${environment.name}: ${id}`,
+    );
+    if (!options.hasPagesRouter?.()) {
+      if (error) throw error;
+      return;
+    }
+    if (environment.mode === "dev") {
+      // The importers known so far: a module the App Router's graph imports
+      // only later is left unchecked, never one it doesn't import rejected.
+      if (error && isInAppBrowserGraph(manager, environment as DevEnvironment, id)) throw error;
+      return;
+    }
+    let errors = inlineServerFunctionErrors.get(environment);
+    if (!errors) inlineServerFunctionErrors.set(environment, (errors = new Map()));
+    if (error) errors.set(id, error);
+    else errors.delete(id);
+  }
 
   async function analyzeModule(
     manager: RscPluginManager,
@@ -397,18 +454,29 @@ export async function createUseCacheCallablePlugin(
     return { ast, moduleDirective, useServerBoundary, reference, secureExportName };
   }
 
-  async function transformDirectives(
-    this: { environment: { name: string; mode: string } },
-    code: string,
-    id: string,
-  ) {
+  function checkWorkerModule(code: string, ast: Program, id: string): void {
+    // A worker bundle doesn't show which graph started the worker, so only an
+    // app without a Pages Router, whose browser modules all belong to the App
+    // Router, has its worker modules checked.
+    if (!manager || options.hasPagesRouter?.()) return;
+    const error = findInlineServerFunctionError(transforms, code, ast, `worker: ${id}`);
+    if (error) throw error;
+  }
+
+  async function transformDirectives(this: { environment: Environment }, code: string, id: string) {
     const secret = referenceSecret;
     if (!manager || !secret) return;
     if (!code.includes("use cache")) {
       manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
       // Outside rsc, @vitejs/plugin-rsc compiles only module-level "use server".
       if (this.environment.name !== "rsc" && code.includes("use server")) {
-        rejectInlineServerFunctions(transforms, code, await parseProgramAsync(code));
+        checkInlineServerFunctions(
+          manager,
+          this.environment,
+          code,
+          await parseProgramAsync(code),
+          id,
+        );
       }
       return;
     }
@@ -418,12 +486,12 @@ export async function createUseCacheCallablePlugin(
     const isRsc = this.environment.name === "rsc";
 
     if (!isRsc) {
-      if (useServerBoundary) {
+      if (useServerBoundary || !moduleDirective) {
         manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
+        if (!moduleDirective) checkInlineServerFunctions(manager, this.environment, code, ast, id);
         return;
       }
       const result = transformBrowserModule(transforms, code, ast, id, moduleDirective, {
-        environmentName: this.environment.name,
         reference,
         secureExportName,
         createReference: (referenceId, name) =>
@@ -564,13 +632,17 @@ export async function createUseCacheCallablePlugin(
         const { ast, moduleDirective, useServerBoundary, reference, secureExportName } =
           await analyzeModule(manager, secret, code, id);
         if (useServerBoundary) return;
+        if (!moduleDirective) {
+          checkWorkerModule(code, ast, id);
+          return;
+        }
         return transformBrowserModule(transforms, code, ast, id, moduleDirective, {
-          environmentName: "worker",
           reference,
           secureExportName,
           createReference,
         })?.output;
       },
+      checkWorkerModule,
     },
     config(config) {
       // mergeConfig appends this to a configured deny list.
@@ -603,6 +675,23 @@ export async function createUseCacheCallablePlugin(
         }
       }
       manager = pluginApi.manager;
+    },
+    buildEnd(error) {
+      const errors = inlineServerFunctionErrors.get(this.environment);
+      if (error || !manager || !errors?.size) return;
+      // The App Router's browser graph: its client references and everything
+      // they import.
+      const graph = new Set<string>();
+      const queue = Object.keys(manager.clientReferenceMetaMap);
+      for (let id = queue.pop(); id !== undefined; id = queue.pop()) {
+        if (graph.has(id)) continue;
+        graph.add(id);
+        const info = this.getModuleInfo(id);
+        if (info) queue.push(...info.importedIds, ...info.dynamicallyImportedIds);
+      }
+      for (const [id, inlineError] of errors) {
+        if (graph.has(id)) this.error({ message: inlineError.message, id });
+      }
     },
     transform: {
       filter: {

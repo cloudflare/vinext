@@ -7,11 +7,7 @@ import { isCSSRequest, transformWithOxc, type Plugin, type ResolvedConfig } from
 import { parseProgramAsync } from "./ast-utils.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { serverReferenceProxyResult } from "./transform-result.js";
-import {
-  rejectInlineServerFunctions,
-  USE_CACHE_PLUGIN_NAME,
-  type UseCacheCallableApi,
-} from "./use-cache-callable.js";
+import { USE_CACHE_PLUGIN_NAME, type UseCacheCallableApi } from "./use-cache-callable.js";
 
 type RscPluginModule = typeof import("@vitejs/plugin-rsc");
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
@@ -120,13 +116,8 @@ export async function createWorkerUseServerPlugins(options: {
       async handler(code, id) {
         let ast = await parseProgramAsync(code);
         if (!transforms.hasDirective(ast.body, "use server")) {
-          // Inline functions are rejected as in the client environment, which
-          // checks them only when @vitejs/plugin-rsc compiles an App Router.
-          if (manager) {
-            await withPositionedError(this, () =>
-              rejectInlineServerFunctions(transforms, code, ast),
-            );
-          }
+          const api = useCacheApi;
+          if (api) await withPositionedError(this, () => api.checkWorkerModule(code, ast, id));
           return null;
         }
         if (!manager) {

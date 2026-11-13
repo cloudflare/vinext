@@ -11,6 +11,7 @@ import { createHash, createHmac } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vite-plus/test";
 import { parseAst, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import { createUseCacheCallablePlugin } from "../packages/vinext/src/plugins/use-cache-callable.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES } from "./helpers.js";
 
 // oxlint-disable-next-line typescript/no-explicit-any
@@ -29,6 +30,17 @@ async function getPlugins(options: { manualRsc?: boolean } = {}): Promise<Plugin
   }
   const resolved = await Promise.all(rawPlugins.map((plugin) => Promise.resolve(plugin)));
   return resolved.flat(Infinity).filter(Boolean) as Plugin[];
+}
+
+/** The directive plugins of an app with both an App Router and a Pages Router. */
+async function getHybridAppPlugins(): Promise<Plugin[]> {
+  const rsc = (await import("@vitejs/plugin-rsc")).default;
+  const directivePlugins = await createUseCacheCallablePlugin({
+    projectRoot: APP_FIXTURE_DIR,
+    cacheRuntime: "virtual:vinext-cache-runtime",
+    hasPagesRouter: () => true,
+  });
+  return [...rsc({ entries: RSC_ENTRIES }), ...directivePlugins];
 }
 
 const moduleId = path.join(APP_FIXTURE_DIR, "app", "unit-test-inline-cache.tsx");
@@ -569,6 +581,111 @@ describe("plugin-rsc inline use-cache references", () => {
         `"use server";\n${inlineSource}`,
         moduleId,
       ),
+    ).resolves.toBeUndefined();
+  });
+
+  // In an app that also has a Pages Router, the browser and SSR graphs hold
+  // Pages Router modules too, which Next.js compiles outside its App Router
+  // layers and never rejects.
+  describe("with a Pages Router", () => {
+    const inlineServerCode = [`export async function action() {`, `  "use server";`, `}`].join(
+      "\n",
+    );
+    const clientReferenceId = path.join(APP_FIXTURE_DIR, "app", "unit-test-client.tsx");
+    const sharedId = path.join(APP_FIXTURE_DIR, "lib", "unit-test-shared.ts");
+    const pagesOnlyId = path.join(APP_FIXTURE_DIR, "lib", "unit-test-pages-only.ts");
+
+    async function setup() {
+      const plugins = await getHybridAppPlugins();
+      const manager = await configurePluginRsc(plugins);
+      manager.clientReferenceMetaMap[clientReferenceId] = {};
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      return { transform: unwrapHook(plugin.transform)!, buildEnd: unwrapHook(plugin.buildEnd)! };
+    }
+
+    it("rejects a build's inline server functions only in modules its App Router graph reaches", async () => {
+      const { transform, buildEnd } = await setup();
+      const environment = { name: "client", mode: "build" };
+      await transform.call({ environment }, inlineServerCode, sharedId);
+      await transform.call({ environment }, inlineCacheCode, pagesOnlyId);
+      const imports: Record<string, string[]> = {
+        [clientReferenceId]: [],
+        [sharedId]: [],
+        [pagesOnlyId]: [],
+      };
+      const context = {
+        environment,
+        getModuleInfo: (id: string) =>
+          imports[id] && { importedIds: imports[id], dynamicallyImportedIds: [] },
+        error: (error: { message: string; id: string }) => {
+          throw Object.assign(new Error(error.message), { id: error.id });
+        },
+      };
+
+      expect(() => buildEnd.call(context)).not.toThrow();
+      imports[clientReferenceId] = [sharedId];
+      expect(() => buildEnd.call(context)).toThrow(
+        expect.objectContaining({
+          id: sharedId,
+          message: expect.stringContaining(
+            'It is not allowed to define inline "use server" annotated Server Actions in Client Components.',
+          ),
+        }),
+      );
+      imports[clientReferenceId] = [pagesOnlyId];
+      expect(() => buildEnd.call(context)).toThrow(/inline "use cache".*Client Component/);
+      // Rebuilt without the inline function, the module is no longer rejected.
+      await transform.call({ environment }, `export const value = 1;\n"use cache";`, pagesOnlyId);
+      expect(() => buildEnd.call(context)).not.toThrow();
+    });
+
+    it("rejects inline server functions in dev once an App Router importer is known", async () => {
+      const { transform } = await setup();
+      const importers = new Map<string, string[]>([[sharedId, []]]);
+      const environment = {
+        name: "client",
+        mode: "dev",
+        moduleGraph: {
+          getModuleById: (id: string) => ({
+            importers: new Set((importers.get(id) ?? []).map((importer) => ({ id: importer }))),
+          }),
+        },
+      };
+
+      await expect(
+        transform.call({ environment }, inlineServerCode, sharedId),
+      ).resolves.toBeUndefined();
+      importers.set(sharedId, [pagesOnlyId]);
+      importers.set(pagesOnlyId, [clientReferenceId]);
+      await expect(transform.call({ environment }, inlineServerCode, sharedId)).rejects.toThrow(
+        /inline "use server" annotated Server Actions in Client Components/,
+      );
+      await expect(
+        transform.call({ environment }, inlineCacheCode, clientReferenceId),
+      ).rejects.toThrow(/inline "use cache".*Client Component/);
+    });
+  });
+
+  it("checks Web Worker modules only in an app without a Pages Router", async () => {
+    const appPlugins = await getPlugins();
+    await configurePluginRsc(appPlugins);
+    const hybridPlugins = await getHybridAppPlugins();
+    await configurePluginRsc(hybridPlugins);
+    const workerApi = (plugins: Plugin[]) =>
+      // oxlint-disable-next-line typescript/no-explicit-any
+      (plugins.find((plugin) => plugin.name === "vinext:server-function-directives") as any).api;
+    const code = `export async function action() {\n  "use server";\n}`;
+
+    expect(() =>
+      workerApi(appPlugins).checkWorkerModule(code, parseAst(code), "/app/worker.ts"),
+    ).toThrow(/inline "use server" annotated Server Actions in Client Components/);
+    expect(() =>
+      workerApi(hybridPlugins).checkWorkerModule(code, parseAst(code), "/app/worker.ts"),
+    ).not.toThrow();
+    await expect(
+      workerApi(hybridPlugins).transformWorkerModule(inlineCacheCode, "/app/worker.ts", () => ""),
     ).resolves.toBeUndefined();
   });
 
