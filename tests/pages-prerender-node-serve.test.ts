@@ -126,5 +126,25 @@ describe.each([
         hasMarker: html.includes(MARKER),
       }).toEqual({ cache: "STALE", hasMarker: true });
     });
+
+    // Regeneration replaces the stale build artifact; it is never served again,
+    // even when memory is too small to keep the regenerated page.
+    it("serves the regenerated page once a stale artifact has regenerated", async () => {
+      await expect
+        .poll(
+          async () => {
+            const response = await fetch(`${baseUrl}/stale`);
+            return (await response.text()).includes(MARKER);
+          },
+          { timeout: 10_000, interval: 100 },
+        )
+        .toBe(false);
+      const response = await fetch(`${baseUrl}/stale`);
+      const html = await response.text();
+      expect({
+        stale: response.headers.get("x-vinext-cache") === "STALE",
+        hasMarker: html.includes(MARKER),
+      }).toEqual({ stale: false, hasMarker: false });
+    });
   },
 );

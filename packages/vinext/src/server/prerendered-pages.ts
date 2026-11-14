@@ -17,6 +17,7 @@ import {
   type CacheControlMetadata,
   type CachedPagesValue,
   type CachedRedirectValue,
+  type PrerenderedCacheEntry,
 } from "vinext/shims/cache-handler";
 import { getOutputPath } from "../utils/prerender-output-paths.js";
 import { pagesIsrCacheKey } from "./isr-cache.js";
@@ -100,11 +101,35 @@ export function readPrerenderedPagesValue(
   };
 }
 
+async function readPrerenderedPagesEntry(
+  file: string,
+  route: PrerenderManifestRoute,
+): Promise<PrerenderedCacheEntry | null> {
+  try {
+    const [html, stat] = await Promise.all([
+      fs.promises.readFile(file, "utf-8"),
+      fs.promises.stat(file),
+    ]);
+    const prerendered = readPrerenderedPagesValue(route, html);
+    // A page rendered for another locale than its manifest entry names
+    // belongs under another key.
+    if (!prerendered || prerendered.locale !== route.locale) return null;
+    return {
+      value: prerendered.value,
+      cacheControl: prerenderedCacheControl(route),
+      lastModified: stat.mtimeMs,
+    };
+  } catch (error) {
+    console.warn(`[vinext] Failed to read prerendered page ${file}:`, error);
+    return null;
+  }
+}
+
 /**
  * Let the memory cache read prerendered Pages routes from `prerendered-routes`
  * on a miss. Only the manifest is read here; each page is read on its first
  * lookup, so a large build costs nothing at startup and an evicted entry is
- * simply read again.
+ * simply read again, until a regeneration or revalidation writes a newer one.
  *
  * `null` removes the reader, for a server that must render every page.
  *
@@ -131,29 +156,16 @@ export function installPrerenderedPagesReader(serverDir: string | null): number 
   setPrerenderedPagesReader(
     files.size === 0
       ? undefined
-      : (key) => {
-          const entry = files.get(key);
-          if (!entry) return null;
-          return (async () => {
-            try {
-              const [html, stat] = await Promise.all([
-                fs.promises.readFile(entry.file, "utf-8"),
-                fs.promises.stat(entry.file),
-              ]);
-              const prerendered = readPrerenderedPagesValue(entry.route, html);
-              // A page rendered for another locale than its manifest entry
-              // names belongs under another key.
-              if (!prerendered || prerendered.locale !== entry.route.locale) return null;
-              return {
-                value: prerendered.value,
-                cacheControl: prerenderedCacheControl(entry.route),
-                lastModified: stat.mtimeMs,
-              };
-            } catch (error) {
-              console.warn(`[vinext] Failed to read prerendered page ${entry.file}:`, error);
-              return null;
-            }
-          })();
+      : {
+          read(key) {
+            const entry = files.get(key);
+            if (!entry) return null;
+            return readPrerenderedPagesEntry(entry.file, entry.route);
+          },
+          has: (key) => files.has(key),
+          supersede(key) {
+            files.delete(key);
+          },
         },
   );
   return files.size;

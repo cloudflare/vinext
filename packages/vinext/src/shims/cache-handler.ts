@@ -220,8 +220,18 @@ export type PrerenderedCacheEntry = {
   lastModified: number;
 };
 
-/** Returns `null`, without a promise, when `key` has no prerendered artifact. */
-export type PrerenderedPagesReader = (key: string) => Promise<PrerenderedCacheEntry | null> | null;
+export type PrerenderedPagesReader = {
+  /** Returns `null`, without a promise, when `key` has no prerendered artifact. */
+  read(key: string): Promise<PrerenderedCacheEntry | null> | null;
+  /** Whether `key` still has a prerendered artifact to serve. */
+  has(key: string): boolean;
+  /**
+   * A newer value was written for `key`: never serve its build artifact again,
+   * even when memory keeps none of the newer value. Next.js rewrites the file
+   * instead; vinext leaves the build output alone.
+   */
+  supersede(key: string): void;
+};
 
 // Shared across module instances: the Node production server installs the
 // reader, and the server entry's copy of this module reads it.
@@ -298,19 +308,19 @@ export class MemoryCacheHandler implements CacheHandler {
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     let entry = this.store.get(key);
     if (!entry) {
-      const pending = getPrerenderedPagesReader()?.(key);
+      const reader = getPrerenderedPagesReader();
+      const pending = reader?.read(key);
       const prerendered = pending ? await pending : null;
-      // A render may have stored a newer entry while the artifact was read.
+      // A write while the artifact was read supersedes it.
       entry = this.store.get(key);
-      if (!entry && prerendered) {
-        const prerenderedCtx = {
+      if (!entry && prerendered && reader?.has(key)) {
+        entry = this.createEntry(prerendered.value, {
           cacheControl: prerendered.cacheControl,
           timestamp: prerendered.lastModified,
-        };
-        await this.set(key, prerendered.value, prerenderedCtx);
+        });
         // Like Next.js's FileSystemCache, serve what was read even when the
         // memory limit keeps none of it; the next miss reads it again.
-        entry = this.store.get(key) ?? this.createEntry(prerendered.value, prerenderedCtx);
+        this.storeEntry(key, entry);
       }
     }
     return entry ? this.readEntry(key, entry, ctx) : null;
@@ -434,7 +444,11 @@ export class MemoryCacheHandler implements CacheHandler {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
-    const entry = this.createEntry(data, ctx);
+    getPrerenderedPagesReader()?.supersede(key);
+    this.storeEntry(key, this.createEntry(data, ctx));
+  }
+
+  private storeEntry(key: string, entry: MemoryEntry | undefined): void {
     if (!entry || this.maxMemoryCacheSize === 0) return;
 
     const entrySize = this.estimateEntrySize(entry);
