@@ -11,6 +11,7 @@ import { buildAppStaticParamsTags } from "./implicit-tags.js";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import {
   loadAppInterceptLayouts,
   loadAppInterceptNotFound,
@@ -761,6 +762,9 @@ type ValidateAppPageRouteDynamicParamsOptions = {
   isDynamicRoute: boolean;
   isProduction: boolean;
   params: AppPageParams;
+  /** The request's route-match pathname, compared with the exported paths. */
+  pathname: string;
+  routePattern: string;
   routeSegments?: readonly string[];
 };
 
@@ -792,6 +796,20 @@ export function validateAppPageRouteDynamicParams(
   // resolves and exact-matches generateStaticParams for the same route.
   if (options.isProduction && options.dynamicConfig === "force-dynamic") {
     return Promise.resolve(null);
+  }
+  // A deployed export serves a dynamic page only at the paths its build wrote,
+  // whatever generateStaticParams returns now. The prerender that writes them
+  // still checks the generators.
+  if (
+    options.isDynamicRoute &&
+    options.isProduction &&
+    process.env.__NEXT_CONFIG_OUTPUT === "export" &&
+    process.env.VINEXT_PRERENDER !== "1"
+  ) {
+    const exported = getRenderedConcreteUrlPathsForRoute(options.routePattern)?.has(
+      options.pathname,
+    );
+    return Promise.resolve(exported === true ? null : notFoundResponse());
   }
   // Next.js runs generateStaticParams in a work store of its own: the route's
   // fetchCache and implicit tags, and no revalidate or force-dynamic default.

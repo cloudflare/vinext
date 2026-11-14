@@ -1489,7 +1489,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,
-  async isDynamicParamsMiss(route, params) {
+  async isDynamicParamsMiss(route, params, pathname) {
     if (!route.isDynamic) return false;
     const __segmentConfig = __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route));
     if (!__isAppPageStaticParamsOnly(__segmentConfig.dynamicParamsConfig, process.env.NODE_ENV === "production")) {
@@ -1503,6 +1503,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isDynamicRoute: route.isDynamic,
       isProduction: process.env.NODE_ENV === "production",
       params,
+      pathname,
+      routePattern: route.pattern,
       routeSegments: route.routeSegments,
     })) !== null;
   },

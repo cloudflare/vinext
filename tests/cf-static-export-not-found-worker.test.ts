@@ -5,6 +5,8 @@
  * lists (it rejects `dynamicParams: true` with `output: "export"`), so every
  * other URL is a 404 there. Here the Worker renders `[locale]/[slug]` for
  * unlisted params, and `notFound()` from `generateMetadata()` answers 200.
+ * The Worker admits only the paths the build exported, not what the
+ * generators return after the deploy.
  * Runs the built Worker in workerd (wrangler's unstable_startWorker).
  */
 import fs from "node:fs/promises";
@@ -94,6 +96,17 @@ describe("static export on Workers: unmatched URLs", () => {
     expect(await res.text()).toMatch(/Page (<!-- -->)?about/);
   });
 
+  it("serves the exported paths of a changed generator and an optional catch-all", async () => {
+    for (const [pathname, text] of [
+      ["/en/feed/old", /Feed (<!-- -->)?old/],
+      ["/en/docs/known", /Docs (<!-- -->)?known/],
+    ] as const) {
+      const res = await fetch(`${baseUrl}${pathname}`);
+      expect(res.status, pathname).toBe(200);
+      expect(await res.text(), pathname).toMatch(text);
+    }
+  });
+
   it("serves the exported route handler", async () => {
     const res = await fetch(`${baseUrl}/data/known`);
     expect(res.status).toBe(200);
@@ -108,6 +121,10 @@ describe("static export on Workers: unmatched URLs", () => {
     "/en/x",
     "/sr/x",
     "/wp-admin/install.php?step=1",
+    // Listed by the generator after the build, so never exported.
+    "/en/feed/new",
+    // An optional catch-all with no segments that the export doesn't list.
+    "/en/docs",
   ]) {
     it(`answers 404 for ${pathname}`, async () => {
       const res = await fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
