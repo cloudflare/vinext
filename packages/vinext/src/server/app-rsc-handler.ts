@@ -49,6 +49,7 @@ import {
   VINEXT_ROUTE_MISS_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
+import { isPrerenderNotFoundPathname, isPrerenderNotFoundRequest } from "./prerender-not-found.js";
 import type { ReactFormState } from "react-dom/client";
 import {
   getRequestExecutionContext,
@@ -1166,10 +1167,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const basePathState = { basePath: options.basePath, hadBasePath };
   let cleanPathnameIsRequestPathname = true;
+  // The prerender step's request for the 404 page is a route miss, as in
+  // Next.js, even where a top-level dynamic or catch-all route would match it.
+  // The path binds the marker to that request: a same-origin subrequest that
+  // forwards the incoming headers still matches its own route. A rewrite that
+  // keeps the path (a same-path or query-only one) leaves it a miss, while one
+  // to another path matches that path's route.
+  const isUnrewrittenPrerenderNotFound = () =>
+    isPrerenderNotFoundRequest(request) &&
+    isPrerenderNotFoundPathname(pathname) &&
+    isPrerenderNotFoundPathname(cleanPathname);
   const matchCleanPathname = () =>
-    cleanPathnameIsRequestPathname && options.matchRequestRoute
-      ? options.matchRequestRoute(requestPathname)
-      : options.matchRoute(cleanPathname);
+    isUnrewrittenPrerenderNotFound()
+      ? null
+      : cleanPathnameIsRequestPathname && options.matchRequestRoute
+        ? options.matchRequestRoute(requestPathname)
+        : options.matchRoute(cleanPathname);
 
   if (
     interceptionIdHeader !== null &&
@@ -2451,7 +2464,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const renderPagesForMatchKind = async (
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
-    if (!filesystemRouteEligible) return null;
+    if (!filesystemRouteEligible || isUnrewrittenPrerenderNotFound()) return null;
     // Pages routes match the raw request pathname, as in the Pages-only
     // pipeline and Next.js: static segments keep their encoded identity, so
     // `/%66r/...` is not the `fr` locale and `/%61bout` is not `/about`, and the

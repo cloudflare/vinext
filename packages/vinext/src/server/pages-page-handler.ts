@@ -58,6 +58,7 @@ import {
   parseNextDataPathname,
 } from "./pages-data-route.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import { isPrerenderNotFoundPathname, isPrerenderNotFoundRequest } from "./prerender-not-found.js";
 import {
   isrGet,
   isrSet,
@@ -622,7 +623,11 @@ export function createPagesPageHandler(
     let match =
       options && options.__forcedRoute
         ? { route: options.__forcedRoute, params: {} as Record<string, string | string[]> }
-        : matchRoute(routeUrl, pageRoutes);
+        : // The prerender step's request for the 404 page is a route miss, as
+          // in Next.js, even where a top-level dynamic route would match it.
+          isPrerenderNotFoundRequest(request) && isPrerenderNotFoundPathname(routeUrl.split("?")[0])
+          ? null
+          : matchRoute(routeUrl, pageRoutes);
     let isRouteMissErrorRender = false;
 
     let renderStatusCodeOverride = statusCode;

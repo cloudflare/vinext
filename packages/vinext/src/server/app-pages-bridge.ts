@@ -10,6 +10,8 @@ import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { isLocaleRedirect, markLocaleRedirect } from "./pages-i18n.js";
 import type { RuntimePagesDataKind } from "./pages-route-data-kind.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
+import { VINEXT_PRERENDER_NOT_FOUND_HEADER } from "./headers.js";
+import { hasPrerenderNotFoundMarker } from "./prerender-not-found.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
@@ -160,9 +162,17 @@ export async function renderPagesFallback(
 
   const pagesEntry = await loadPagesEntry();
 
-  const pagesRequestHeaders = middlewareContext.requestHeaders
+  let pagesRequestHeaders = middlewareContext.requestHeaders
     ? buildRequestHeaders(request.headers, middlewareContext.requestHeaders)
     : null;
+  // The App handler never hands the prerender step's 404 request to Pages,
+  // not even after a rewrite that keeps its path, so a 404 marker here was
+  // forwarded by a subrequest or set by middleware. Drop it, or the Pages
+  // handler would treat a rewrite to the 404 path as a miss.
+  if (hasPrerenderNotFoundMarker(pagesRequestHeaders ?? request.headers)) {
+    pagesRequestHeaders = new Headers(pagesRequestHeaders ?? request.headers);
+    pagesRequestHeaders.delete(VINEXT_PRERENDER_NOT_FOUND_HEADER);
+  }
 
   // Matching only reads headers. Moving the body into a header-overriding
   // clone before a Pages route claims the request would leave it unusable for

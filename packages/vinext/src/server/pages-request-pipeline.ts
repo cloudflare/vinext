@@ -30,7 +30,11 @@ import {
   proxyExternalRequest,
 } from "../config/config-matchers.js";
 import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
-import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
+import {
+  cloneRequestWithHeaders,
+  cloneRequestWithUrl,
+  normalizeTrailingSlash,
+} from "./request-pipeline.js";
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import {
@@ -47,6 +51,7 @@ import {
 } from "../utils/asset-prefix.js";
 import {
   detectPathnameLocale,
+  extractLocaleFromUrl,
   normalizeDefaultLocalePathname,
   stripI18nLocaleForApiRoute,
 } from "./pages-i18n.js";
@@ -67,7 +72,8 @@ import {
 import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
 import { setFrameworkRequestRoute } from "./request-tracing.js";
-import { VINEXT_PRERENDER_REWRITTEN_HEADER } from "./headers.js";
+import { VINEXT_PRERENDER_NOT_FOUND_HEADER, VINEXT_PRERENDER_REWRITTEN_HEADER } from "./headers.js";
+import { isPrerenderNotFoundPathname, isPrerenderNotFoundRequest } from "./prerender-not-found.js";
 
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
   return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
@@ -549,6 +555,17 @@ export async function runPagesRequest(
   }
 
   // Step 5: Middleware
+  // Read before middleware runs: its request-header override can drop the
+  // prerender step's 404 marker, which is Vinext's, not the app's.
+  const isPrerenderNotFound = isPrerenderNotFoundRequest(request);
+  // The path binds the marker to that request, as in the page handler: a
+  // same-origin subrequest that forwards the incoming headers still matches
+  // its own route.
+  const isPrerenderNotFoundPath =
+    isPrerenderNotFound &&
+    isPrerenderNotFoundPathname(
+      i18nConfig ? extractLocaleFromUrl(pathname, i18nConfig).url : pathname,
+    );
   const originalResolvedUrl = pathname + search;
   let resolvedUrl = originalResolvedUrl;
   let resolvedPathnameIsRequestPathname = true;
@@ -734,6 +751,16 @@ export async function runPagesRequest(
     request,
   );
   request = postMwReq;
+  if (isPrerenderNotFoundRequest(request) !== isPrerenderNotFoundPath) {
+    // The page handler reads the marker from this request, against the
+    // rewritten path. Keep it only on the 404 request itself, whatever a
+    // middleware request-header override did, so a subrequest that forwards
+    // the marker renders its rewrite destination.
+    const headers = new Headers(request.headers);
+    if (isPrerenderNotFoundPath) headers.set(VINEXT_PRERENDER_NOT_FOUND_HEADER, "1");
+    else headers.delete(VINEXT_PRERENDER_NOT_FOUND_HEADER);
+    request = cloneRequestWithHeaders(request, headers);
+  }
   const pathnameForResolvedUrl = (value: string): string => value.split("#", 1)[0].split("?", 1)[0];
   const rewriteRequestContext = (): RequestContext => ({
     ...postMwReqCtx,
@@ -940,8 +967,13 @@ export async function runPagesRequest(
   if (apiResult) return apiResult;
 
   // Step 12: afterFiles rewrites
+  // The prerender step's request for the 404 page is a route miss, as in
+  // Next.js, even where a top-level dynamic route would match it. The page
+  // handler agrees, so the miss defers to fallback rewrites like any other.
   let pageMatch =
-    !isOutsideBasePathUnclaimed() && deps.matchPageRoute
+    !isOutsideBasePathUnclaimed() &&
+    deps.matchPageRoute &&
+    !(resolvedPathnameIsRequestPathname && isPrerenderNotFoundPath)
       ? deps.matchPageRoute(resolvedPathname, request)
       : null;
   // matchPageRoute is a route-table scan; only re-run it below if afterFiles
