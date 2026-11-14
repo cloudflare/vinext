@@ -15,6 +15,14 @@ export const metadata = {
 
 Development, bundling, and production builds run on Vite 8 instead of the Next.js compiler toolchain. Vite plugins can extend the build, while webpack plugins and framework-specific build internals do not carry over automatically.
 
+Like Next.js, vinext resolves the `next-js` package export condition when `cacheComponents` is enabled. Next.js resolves it in the code it bundles for the browser and the Node.js runtime, except middleware, `proxy.ts`, and `instrumentation.ts`. vinext resolves it in everything its `client`, `rsc`, and `ssr` environments bundle, so:
+
+- middleware, `proxy.ts`, `instrumentation.ts`, and routes with `runtime = "edge"`, which share an environment with other routes, resolve it too;
+- packages that Next.js loads unbundled but vinext bundles resolve it, such as `serverExternalPackages` on Cloudflare Workers and Pages Router dependencies bundled into the `ssr` environment;
+- dependencies that vinext leaves to another bundler, environment, or runtime don't, such as the ones Nitro bundles with its own conditions, a Pages Router app's Cloudflare Worker when its environment isn't named `ssr`, or, in Pages Router Node builds, the dependencies of native ESM packages loaded unbundled (the development server bundles them, so it resolves `next-js` there).
+
+When the condition is on, a package that uses `next-js` anywhere in its root export isn't split by `optimizePackageImports`, even if the environment resolves another branch of it. In Pages Router Node builds, a native ESM package that uses `next-js` anywhere in its `exports` or `imports` is bundled rather than loaded unbundled, even for an entry that doesn't use it.
+
 ## Build output file names
 
 Production client JS, CSS, and Web Worker files use hash-only names, so component and source file names never appear in public asset URLs:

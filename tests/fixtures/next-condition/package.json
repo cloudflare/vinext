@@ -1,0 +1,21 @@
+{
+  "name": "fixture-next-condition",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@vitejs/plugin-rsc": "catalog:",
+    "my-barrel-package": "file:./__test_packages__/my-barrel-package",
+    "my-cjs-package": "file:./__test_packages__/my-cjs-package",
+    "my-esm-package": "file:./__test_packages__/my-esm-package",
+    "my-external-cjs-package": "file:./__test_packages__/my-external-cjs-package",
+    "my-external-esm-package": "file:./__test_packages__/my-external-esm-package",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:"
+  },
+  "devDependencies": {
+    "vite-plus": "catalog:"
+  }
+}
