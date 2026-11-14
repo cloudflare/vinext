@@ -918,6 +918,11 @@ export async function handleSsr(
               // the error, so no server component runs, or reports, again.
               // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx (getErrorRSCPayload)
               shellErrorRecovered = true;
+              // The error document shows none of the route's files, so it
+              // links none of their stylesheets, as Next.js's doesn't.
+              streamedReferences.unlinked = streamedReferences.unlinked.filter((id) =>
+                streamedReferences.streamed.has(id),
+              );
               if (options?.isServerComponentError?.(error) !== true) ssrOnlyShellError = error;
               htmlStream = renderSsrErrorDocumentShell(
                 bootstrapModuleUrl,

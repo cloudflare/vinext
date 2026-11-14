@@ -275,6 +275,18 @@ describe("App Router production SSR route client reference preloads", () => {
     }
   });
 
+  it("links no stylesheet of the route in the error document a shell error sends", async () => {
+    const href = cssHref("--shell-error-note");
+    for (const label of ["cold", "warm"]) {
+      const response = await fetch(`${baseUrl}/shell-error`);
+      expect(response.status, label).toBe(500);
+      const html = await response.text();
+      expect(html, label).toContain("__next_error__");
+      // The page imports the note, but doesn't render it here.
+      expect(html, label).not.toContain(`href="${href}"`);
+    }
+  });
+
   it("streams a client component that awaits at its top level, as Next.js does", async () => {
     const read = () => readStream(`${baseUrl}/streamed`);
 
