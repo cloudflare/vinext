@@ -589,6 +589,37 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
     }
   });
 
+  test("keeps paths outside getStaticPaths fallback: false 404 for conditional requests", async ({
+    request,
+  }) => {
+    const listed = await request.get(`${pagesBaseUrl}/posts/first`);
+    expect(listed.status()).toBe(200);
+    const buildId = /"buildId":"([^"]+)"/.exec(await listed.text())?.[1];
+    expect(buildId).toBeTruthy();
+
+    for (const headers of [
+      {} as Record<string, string>,
+      { "If-None-Match": '"unlisted"' },
+      { "If-Modified-Since": "Tue, 06 Oct 2026 00:00:00 GMT" },
+      { "If-Modified-Since": "not-a-date" },
+    ]) {
+      const label = JSON.stringify(headers);
+      const page = await request.get(`${pagesBaseUrl}/posts/unlisted`, { headers });
+      expect(page.status(), label).toBe(404);
+      expect(await page.text(), label).not.toContain("Post: unlisted");
+
+      const data = await request.get(`${pagesBaseUrl}/_next/data/${buildId}/posts/unlisted.json`, {
+        headers,
+      });
+      expect(data.status(), label).toBe(404);
+      expect(await data.text(), label).not.toContain("unlisted");
+
+      const listedPage = await request.get(`${pagesBaseUrl}/posts/second`, { headers });
+      expect(listedPage.status(), label).toBe(200);
+      expect(await listedPage.text(), label).toMatch(/Post: (<!-- -->)?second/);
+    }
+  });
+
   test("admits explicitly public Pages API responses", async ({ request }) => {
     const response = await request.get(`${pagesBaseUrl}/api/cdn-public`);
 
