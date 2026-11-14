@@ -68,6 +68,7 @@ import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classifi
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
 import { setFrameworkRequestRoute } from "./request-tracing.js";
 import { VINEXT_PRERENDER_REWRITTEN_HEADER } from "./headers.js";
+import { isPrerenderNotFoundRequest } from "./prerender-not-found.js";
 
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
   return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
@@ -940,8 +941,13 @@ export async function runPagesRequest(
   if (apiResult) return apiResult;
 
   // Step 12: afterFiles rewrites
+  // The prerender step's request for the 404 page is a route miss, as in
+  // Next.js, even where a top-level dynamic route would match it. The page
+  // handler agrees, so the miss defers to fallback rewrites like any other.
   let pageMatch =
-    !isOutsideBasePathUnclaimed() && deps.matchPageRoute
+    !isOutsideBasePathUnclaimed() &&
+    deps.matchPageRoute &&
+    !(resolvedPathnameIsRequestPathname && isPrerenderNotFoundRequest(request))
       ? deps.matchPageRoute(resolvedPathname, request)
       : null;
   // matchPageRoute is a route-table scan; only re-run it below if afterFiles

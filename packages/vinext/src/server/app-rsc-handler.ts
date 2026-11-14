@@ -49,7 +49,7 @@ import {
   VINEXT_ROUTE_MISS_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
-import { isPrerenderNotFoundPathname } from "./prerender-not-found.js";
+import { isPrerenderNotFoundRequest } from "./prerender-not-found.js";
 import type { ReactFormState } from "react-dom/client";
 import {
   getRequestExecutionContext,
@@ -1170,7 +1170,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // The prerender step's request for the 404 page is a route miss, as in
   // Next.js, even where a top-level dynamic or catch-all route would match it.
   const isUnrewrittenPrerenderNotFound = () =>
-    cleanPathnameIsRequestPathname && isPrerenderNotFoundPathname(pathname);
+    cleanPathnameIsRequestPathname && isPrerenderNotFoundRequest(request);
   const matchCleanPathname = () =>
     isUnrewrittenPrerenderNotFound()
       ? null
