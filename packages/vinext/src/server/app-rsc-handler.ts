@@ -138,9 +138,12 @@ import { parseNextHttpErrorDigest } from "./next-error-digest.js";
 import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
+  handleImageOptimizationFromSource,
   isImageOptimizationPath,
   markImageOptimizationSignal,
+  mergeImageMiddlewareResponseHeaders,
   resolveDevImageRedirect,
+  type ImageSourceFetch,
   type ImageConfig,
 } from "./image-optimization.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
@@ -802,6 +805,13 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   ) => Promise<Response | null>;
   i18nConfig: NextI18nConfig | null;
   imageConfig?: ImageConfig;
+  /**
+   * Resolves the host's in-process fetch for same-origin source images. When
+   * it returns a function in production, `/_next/image` answers directly (like
+   * Next.js) instead of redirecting to the source. Generated only for Nitro
+   * builds; Workers and the Node server serve images themselves.
+   */
+  resolveImageSourceFetch?: () => ImageSourceFetch | undefined;
   isMetadataRoute?: (pathname: string) => boolean;
   isDev: boolean;
   hasInterceptionId: (interceptionId: string) => boolean;
@@ -1843,20 +1853,46 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         headers: middlewareHeaders,
       });
     }
+    // Hosts replace the signal carrier with the image, and the finalizer skips
+    // redirects, so config headers travel with middleware's.
+    const imageResponseHeaders = new Headers(await loadPreHandlerResponseHeaders());
     const overrideHeaders = middlewareContext.requestHeaders ?? middlewareContext.headers;
-    return markImageOptimizationSignal(
-      Response.redirect(new URL(imageRedirect, url.origin).href, 302),
-      {
-        // Hosts replace this carrier with the image, and the finalizer skips
-        // redirects, so config headers travel in the signal under middleware's.
-        middlewareHeaders: new Headers(await loadPreHandlerResponseHeaders()),
-        // The context holds middleware's encoded overrides, not request headers.
-        requestHeaders: overrideHeaders
-          ? buildRequestHeadersFromMiddlewareResponse(request.headers, overrideHeaders)
-          : null,
-        search: imageUrl.search,
-      },
-    );
+    // The context holds middleware's encoded overrides, not request headers.
+    const imageRequestHeaders = overrideHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(request.headers, overrideHeaders)
+      : null;
+    const assetUrl = new URL(imageRedirect, url.origin);
+    const imageSourceFetch = options.isDev ? undefined : options.resolveImageSourceFetch?.();
+    if (imageSourceFetch && !isImageOptimizationPath(assetUrl.pathname)) {
+      // No host serves the image signal below here (Nitro), so answer now, as
+      // the Node and Worker hosts answer it: with the query middleware and
+      // rewrites selected, middleware's request header overrides for format
+      // negotiation, and middleware's response headers on the image.
+      const endpointUrl = new URL(request.url);
+      endpointUrl.search = imageUrl.search;
+      const endpointRequest = cloneRequestWithUrl(request, endpointUrl.href);
+      const imageResponse = await handleImageOptimizationFromSource(
+        imageRequestHeaders
+          ? cloneRequestWithHeaders(endpointRequest, imageRequestHeaders)
+          : endpointRequest,
+        imageSourceFetch,
+        {
+          allowedWidths: [
+            ...(options.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+            ...(options.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+          ],
+          imageConfig: options.imageConfig,
+          basePath: options.basePath,
+          assetPrefix: options.assetPrefix,
+        },
+      );
+      return mergeImageMiddlewareResponseHeaders(imageResponse, imageResponseHeaders);
+    }
+    return markImageOptimizationSignal(Response.redirect(assetUrl.href, 302), {
+      middlewareHeaders: imageResponseHeaders,
+      requestHeaders: imageRequestHeaders,
+      search: imageUrl.search,
+    });
   };
   const imageEndpointResponse = await serveImageEndpointIfMatched();
   if (imageEndpointResponse) return imageEndpointResponse;
