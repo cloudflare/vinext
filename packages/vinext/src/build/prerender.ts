@@ -86,6 +86,7 @@ import {
   markAppPprDynamicFallbackShellHtml,
 } from "../server/app-ppr-fallback-shell.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
+import { PRERENDER_NOT_FOUND_PATH } from "../server/prerender-not-found.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
@@ -329,9 +330,6 @@ type PrerenderAppOptionsInternal = PrerenderAppOptions & {
 };
 
 // ─── Concurrency helpers ──────────────────────────────────────────────────────
-
-/** Sentinel path used to trigger 404 rendering without a real route match. */
-const NOT_FOUND_SENTINEL_PATH = "/__vinext_nonexistent_for_404__";
 
 const DEFAULT_CONCURRENCY = Math.min(os.availableParallelism(), 8);
 
@@ -1348,7 +1346,7 @@ export async function prerenderPages({
       if (!hasCustom404 && !hasErrorPage) break;
       try {
         const notFoundRes = await renderPage(
-          localizePagesPath(hasCustom404 ? "/404" : NOT_FOUND_SENTINEL_PATH, locale, config.i18n),
+          localizePagesPath(hasCustom404 ? "/404" : PRERENDER_NOT_FOUND_PATH, locale, config.i18n),
         );
         // Same rule as the page loop: a conditional rewrite of the 404 path to
         // another file, API, or page must not become the deployment-wide 404.
@@ -2272,14 +2270,15 @@ export async function prerenderApp({
         : [];
 
     // ── Render 404 page ───────────────────────────────────────────────────────
-    // Fetch a known-nonexistent URL to get the App Router's not-found response.
-    // The RSC handler returns 404 with full HTML for the not-found.tsx page (or
-    // the default Next.js 404). Write it to 404.html for static deployment.
+    // Fetch the not-found path, which no route matches while prerendering, to
+    // get the App Router's not-found response. The RSC handler returns 404
+    // with full HTML for the not-found.tsx page (or the default Next.js 404).
+    // Write it to 404.html for static deployment.
     try {
       const notFoundPath =
-        config.trailingSlash && !NOT_FOUND_SENTINEL_PATH.endsWith("/")
-          ? `${NOT_FOUND_SENTINEL_PATH}/`
-          : NOT_FOUND_SENTINEL_PATH;
+        config.trailingSlash && !PRERENDER_NOT_FOUND_PATH.endsWith("/")
+          ? `${PRERENDER_NOT_FOUND_PATH}/`
+          : PRERENDER_NOT_FOUND_PATH;
       const notFoundRequest = new Request(
         `http://localhost${config.basePath ?? ""}${notFoundPath}`,
       );
