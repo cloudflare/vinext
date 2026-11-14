@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import type http from "node:http";
 import path from "node:path";
-import { createBuilder } from "vite-plus";
+import { createBuilder, preview, type PreviewServer } from "vite-plus";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { createIsolatedFixture } from "./helpers.js";
@@ -26,11 +26,24 @@ describe.each([
     hybrid: false,
     nextConfig: { cacheMaxMemorySize: 1 },
   },
+  {
+    name: "Pages Router under vite preview",
+    fixture: "pages-prerender-node-serve",
+    hybrid: false,
+    viaPreview: true,
+  },
+  {
+    name: "hybrid App and Pages Router under vite preview",
+    fixture: "pages-prerender-node-serve-hybrid",
+    hybrid: true,
+    viaPreview: true,
+  },
 ])(
   "$name: prerendered Pages routes on the Node production server",
-  ({ fixture, hybrid, nextConfig }) => {
+  ({ fixture, hybrid, nextConfig, viaPreview }) => {
     let root: string;
-    let server: http.Server;
+    let server: http.Server | undefined;
+    let previewServer: PreviewServer | undefined;
     let baseUrl: string;
 
     beforeAll(async () => {
@@ -82,22 +95,37 @@ describe.each([
       delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.cacheHandler")];
       configureMemoryCacheHandler({ cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize });
 
-      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const started = await startProdServer({
-        host: "127.0.0.1",
-        port: 0,
-        outDir: path.join(root, "dist"),
-        noCompression: true,
-      });
-      server = started.server;
-      const address = server.address();
+      let address: ReturnType<http.Server["address"]>;
+      if (viaPreview) {
+        previewServer = await preview({
+          root,
+          configFile: false,
+          logLevel: "silent",
+          plugins: [
+            vinext({ ...(hybrid ? { appDir: root } : { disableAppRouter: true }), nextConfig }),
+          ],
+          preview: { host: "127.0.0.1", port: 0 },
+        });
+        address = previewServer.httpServer.address();
+      } else {
+        const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+        const started = await startProdServer({
+          host: "127.0.0.1",
+          port: 0,
+          outDir: path.join(root, "dist"),
+          noCompression: true,
+        });
+        server = started.server;
+        address = server.address();
+      }
       if (!address || typeof address === "string")
         throw new Error("Production server did not bind");
       baseUrl = `http://127.0.0.1:${address.port}`;
     }, 120_000);
 
     afterAll(async () => {
-      if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+      await previewServer?.close();
       if (root) await fs.rm(root, { recursive: true, force: true });
     });
 

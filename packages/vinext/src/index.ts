@@ -8964,17 +8964,28 @@ export const loadServerActionClient = ${
       },
     },
     // `vite preview` for plain Node Pages Router builds. App Router builds use
-    // @vitejs/plugin-rsc's preview handler, and Cloudflare and Nitro builds
+    // @vitejs/plugin-rsc's preview handler (for hybrid builds this plugin only
+    // installs the prerendered Pages reader), and Cloudflare and Nitro builds
     // their own plugins. Like plugin-rsc's, this handler runs after Vite's
     // preview middleware (proxy, compression, `base`, static files), so it
     // only handles the requests Vite doesn't serve.
     {
       name: "vinext:preview-server",
       async configurePreviewServer(server) {
-        if (hasAppDir || hasCloudflarePlugin || hasNitroPlugin) return;
+        if (hasCloudflarePlugin || hasNitroPlugin) return;
         if (nextConfig?.output === "export") return;
-        const { createPagesPreviewHandler } = await import("./server/prod-server.js");
         const { environments, preview, root } = server.config;
+        if (hasAppDir) {
+          // plugin-rsc serves the hybrid build; let its memory cache read the
+          // prerendered Pages routes, as `vinext start` does.
+          if (!hasPagesDir) return;
+          const { installPrerenderedPagesReader } = await import("./server/prerendered-pages.js");
+          installPrerenderedPagesReader(
+            path.resolve(root, environments.rsc?.build.outDir ?? "dist/server"),
+          );
+          return;
+        }
+        const { createPagesPreviewHandler } = await import("./server/prod-server.js");
         const handler = await createPagesPreviewHandler({
           clientDir: path.resolve(root, environments.client?.build.outDir ?? "dist/client"),
           serverDir: path.resolve(root, environments.ssr?.build.outDir ?? "dist/server"),
