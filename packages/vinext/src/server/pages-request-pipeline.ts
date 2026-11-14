@@ -405,7 +405,9 @@ export type PagesPipelineResult =
   // passthrough responses (middleware short-circuits, external proxies, redirects),
   // which Node sends verbatim without injecting a Content-Type — matching the
   // pre-refactor behavior.
-  | { type: "response"; response: Response; defaultContentType?: string }
+  // `configAnswered`: a next.config redirect or external rewrite answered the
+  // request itself, so no page or API route ran.
+  | { type: "response"; response: Response; defaultContentType?: string; configAnswered?: true }
   // `handled`: an adapter-supplied callback (e.g. Node public-file serving) already
   // wrote the response to its own output; the adapter should just return.
   | { type: "handled" }
@@ -544,6 +546,7 @@ export async function runPagesRequest(
           status: redirect.statusCode,
           headers: { Location: location },
         }),
+        configAnswered: true,
       };
     }
   }
@@ -806,6 +809,7 @@ export async function runPagesRequest(
       new Headers(),
       middlewareCookies,
     ),
+    configAnswered: true,
   });
 
   // Step 8: External-URL proxy (post-mw rewrite target)

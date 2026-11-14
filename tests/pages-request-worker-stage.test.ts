@@ -42,6 +42,12 @@ import {
 const mocks = vi.hoisted(() => ({
   authorizeOnDemandRevalidate: vi.fn<(value: string | null) => boolean>(() => false),
   configHeaders: [] as Array<Record<string, unknown>>,
+  configRedirects: [] as Array<Record<string, unknown>>,
+  configRewrites: {
+    afterFiles: [] as Array<Record<string, unknown>>,
+    beforeFiles: [] as Array<Record<string, unknown>>,
+    fallback: [] as Array<Record<string, unknown>>,
+  },
   ensureInstrumentation: vi.fn(),
   i18n: { defaultLocale: "en", locales: ["en", "fr"] } as {
     defaultLocale: string;
@@ -120,6 +126,8 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   vinextConfig: {
     headers: mocks.configHeaders,
     i18n: mocks.i18n,
+    redirects: mocks.configRedirects,
+    rewrites: mocks.configRewrites,
   },
 }));
 
@@ -157,6 +165,10 @@ describe("Pages Worker request stage", () => {
       },
     }));
     mocks.configHeaders.length = 0;
+    mocks.configRedirects.length = 0;
+    mocks.configRewrites.afterFiles.length = 0;
+    mocks.configRewrites.beforeFiles.length = 0;
+    mocks.configRewrites.fallback.length = 0;
     mocks.matchApiRoute.mockImplementation((url: string) =>
       url === "/api/hello"
         ? { route: { dataKind: "dynamic", isDynamic: false, pattern: "/api/hello" } }
@@ -614,6 +626,87 @@ describe("Pages Worker request stage", () => {
       upstream.mockRestore();
     }
   });
+
+  // Issue #4705: a next.config redirect also answers in the request stage.
+  it("labels a next.config redirect BYPASS only in the staged request stage", async () => {
+    // The i18n config's default locale prefixes config sources.
+    mocks.configRedirects.push({ source: "/en/page", destination: "/login", permanent: false });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("unused"));
+
+    const staged = await handleRequestStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(staged.status).toBe(307);
+    expect(staged.headers.get("Location")).toBe("/login");
+    expect(staged.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+
+    const local = await handleRequestStageLocally(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      vi.fn(async () => new Response("unused")),
+    );
+    expect(local.status).toBe(307);
+    expect(local.headers.get("X-Vinext-Cache")).toBeNull();
+  });
+
+  // Issue #4705: each phase's external rewrite proxies in the request stage.
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "labels a next.config %s external rewrite BYPASS",
+    async (phase) => {
+      // afterFiles and fallback rules only apply to a path no page matches.
+      if (phase !== "beforeFiles") mocks.matchPageRoute.mockReturnValue(null);
+      mocks.configRewrites[phase].push({
+        source: "/en/page",
+        destination: "https://upstream.example/page",
+      });
+      const upstream = vi.spyOn(globalThis, "fetch").mockImplementation(
+        async () =>
+          new Response("upstream", {
+            headers: {
+              // Another deployment's cache status and RSC identity.
+              "CF-Cache-Status": "HIT",
+              "X-Vinext-RSC-Build-Id": "upstream-rsc-build",
+            },
+          }),
+      );
+      // A fallback rule applies once the response stage renders a miss.
+      const miss = () => new Response("missing", { status: 404 });
+      const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => miss());
+
+      try {
+        const response = await handleRequestStage(
+          new Request("https://example.com/page"),
+          undefined,
+          undefined,
+          dispatch,
+        );
+
+        expect(upstream).toHaveBeenCalledOnce();
+        expect(dispatch).toHaveBeenCalledTimes(phase === "fallback" ? 1 : 0);
+        expect(await response.text()).toBe("upstream");
+        expect(response.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+        expect(response.headers.get("CF-Cache-Status")).toBeNull();
+        expect(response.headers.get("X-Vinext-RSC-Build-Id")).toBeNull();
+
+        const local = await handleRequestStageLocally(
+          new Request("https://example.com/page"),
+          undefined,
+          undefined,
+          vi.fn(async () => miss()),
+        );
+        expect(await local.text()).toBe("upstream");
+        expect(local.headers.get("X-Vinext-Cache")).toBeNull();
+        expect(local.headers.get("CF-Cache-Status")).toBe("HIT");
+      } finally {
+        upstream.mockRestore();
+      }
+    },
+  );
 
   it("leaves the cache status of a page middleware lets through to the response stage", async () => {
     mocks.runMiddleware.mockResolvedValue({ continue: true, pathnameEligible: true });
