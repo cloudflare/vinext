@@ -1,5 +1,25 @@
 # vinext
 
+## 1.4.6
+
+### Bug Fixes
+
+- **Cloudflare:** skip warming routes that middleware or proxy answers itself (#4703)
+- **App Router:** check client reference chunk links in constant time (#4699)
+- **App Router:** return route handler WebSocket upgrade responses unchanged (#4682)
+- **Build:** return a sourcemap for the action owner manifest import rewrite (#4679)
+- **Pages Router:** stop the hydration query update from reloading the current URL (#4693)
+- **Prerender:** assign the owned prod server outside a closure (#4695)
+- **Prerender:** run the prerender server in a forked process (#4687)
+
+### Performance
+
+- let the Response Store drop duplicate fills of a data cache miss (#4642)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.4.5
 
 ### Bug Fixes
@@ -13,7 +33,7 @@
 
 #### Pages Router
 
-- render /500 as HTML for a _next/data request (#4629)
+- render /500 as HTML for a \_next/data request (#4629)
 - answer a direct /500 request with 500 (#4626)
 - answer a direct /404 request with 404 in dev (#4612)
 

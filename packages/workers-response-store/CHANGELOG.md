@@ -1,5 +1,27 @@
 # @cloudflare/workers-response-store
 
+## 1.2.0
+
+### Features
+
+- **Response Store:** opt-in purgeBatchWindow to batch edge purges (#4674)
+
+### Bug Fixes
+
+- **Response Store:** resend only refused edge requests (#4691)
+
+### Performance
+
+#### Response Store
+
+- drop a fill of a miss another fill already replaced (#4641)
+- skip the edge purge when a put replaces a tombstone whose edge purge completed (#4640)
+- skip the edge purge when a put replaces a stale entry with a revalidator (#4639)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.1.5
 
 ### Bug Fixes
