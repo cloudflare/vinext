@@ -83,17 +83,52 @@ type VinextLocaleGlobalTarget = {
   __VINEXT_DEFAULT_LOCALE__: string | undefined;
 };
 
+/**
+ * The opening `<script>` tags of `html`: the text between `<script` and the
+ * first `>`, and where the tag's content starts. Scanned with `indexOf`, so a
+ * document with many unterminated tags stays linear.
+ */
+function* scriptOpenTags(html: string): Generator<{ attributes: string; contentStart: number }> {
+  let from = 0;
+  for (;;) {
+    const tagStart = html.indexOf("<script", from);
+    if (tagStart === -1) return;
+    const nameEnd = tagStart + "<script".length;
+    if (/\w/.test(html[nameEnd] ?? "")) {
+      from = nameEnd;
+      continue;
+    }
+    const tagEnd = html.indexOf(">", nameEnd);
+    if (tagEnd === -1) return;
+    yield { attributes: html.slice(nameEnd, tagEnd), contentStart: tagEnd + 1 };
+    from = tagEnd + 1;
+  }
+}
+
 export function extractVinextNextDataJson(html: string): string | null {
-  const canonical =
-    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>([\s\S]*?)<\/script>/.exec(
-      html,
-    );
-  if (canonical) return canonical[1];
+  for (const { attributes, contentStart } of scriptOpenTags(html)) {
+    if (
+      !/\bid=["']__NEXT_DATA__["']/.test(attributes) ||
+      !/\btype=["']application\/json["']/.test(attributes)
+    ) {
+      continue;
+    }
+    const contentEnd = html.indexOf("</script>", contentStart);
+    if (contentEnd === -1) break;
+    return html.slice(contentStart, contentEnd);
+  }
 
-  const assignment = /<script(?:\s[^>]*)?>\s*window\.__NEXT_DATA__\s*=\s*/.exec(html);
-  if (!assignment || assignment.index === undefined) return null;
-
-  let start = assignment.index + assignment[0].length;
+  let start = -1;
+  const assignmentPattern = /\s*window\.__NEXT_DATA__\s*=\s*/y;
+  for (const { attributes, contentStart } of scriptOpenTags(html)) {
+    if (attributes !== "" && !/^\s/.test(attributes)) continue;
+    assignmentPattern.lastIndex = contentStart;
+    if (assignmentPattern.test(html)) {
+      start = assignmentPattern.lastIndex;
+      break;
+    }
+  }
+  if (start === -1) return null;
   while (
     html[start] === " " ||
     html[start] === "\n" ||
