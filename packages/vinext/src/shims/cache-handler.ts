@@ -212,7 +212,52 @@ type TagManifestEntry = {
   expired?: number;
 };
 
+/** A prerendered build artifact the memory cache stores on a miss. */
+export type PrerenderedCacheEntry = {
+  value: IncrementalCacheValue | null;
+  cacheControl?: CacheControlMetadata;
+  /** When the artifact was rendered: its file's mtime, as Next.js dates it. */
+  lastModified: number;
+};
+
+/** Returns `null`, without a promise, when `key` has no prerendered artifact. */
+export type PrerenderedPagesReader = (key: string) => Promise<PrerenderedCacheEntry | null> | null;
+
+// Shared across module instances: the Node production server installs the
+// reader, and the server entry's copy of this module reads it.
+const PRERENDERED_PAGES_READER_KEY = Symbol.for("vinext.prerenderedPagesReader");
+const MEMORY_CACHE_HANDLER_BRAND = Symbol.for("vinext.memoryCacheHandler");
+
+/**
+ * Install (or with `undefined`, remove) the reader the built-in memory cache
+ * falls back to on a miss, as Next.js's FileSystemCache reads the build output
+ * when its memory cache misses. A custom cache handler replaces it, as in
+ * Next.js.
+ */
+export function setPrerenderedPagesReader(reader: PrerenderedPagesReader | undefined): void {
+  const g = globalThis as unknown as Record<PropertyKey, unknown>;
+  if (reader) g[PRERENDERED_PAGES_READER_KEY] = reader;
+  else delete g[PRERENDERED_PAGES_READER_KEY];
+}
+
+function getPrerenderedPagesReader(): PrerenderedPagesReader | undefined {
+  return (globalThis as unknown as Record<PropertyKey, PrerenderedPagesReader | undefined>)[
+    PRERENDERED_PAGES_READER_KEY
+  ];
+}
+
+/** Whether the active data cache serves prerendered Pages Router output. */
+export function readsPrerenderedPages(): boolean {
+  if (!getPrerenderedPagesReader()) return false;
+  const handler = globalHandlers[HANDLER_KEY] as unknown as
+    | Record<PropertyKey, unknown>
+    | undefined;
+  return handler?.[MEMORY_CACHE_HANDLER_BRAND] === true;
+}
+
 export class MemoryCacheHandler implements CacheHandler {
+  // Identifies the built-in handler across duplicated module instances.
+  readonly [MEMORY_CACHE_HANDLER_BRAND] = true;
   private store = new Map<string, MemoryEntry>();
   private tagsManifest = new Map<string, TagManifestEntry>();
   private readonly maxMemoryCacheSize: number;
@@ -251,6 +296,21 @@ export class MemoryCacheHandler implements CacheHandler {
   }
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    if (!this.store.has(key)) {
+      const pending = getPrerenderedPagesReader()?.(key);
+      const prerendered = pending ? await pending : null;
+      // A render may have stored a newer entry while the artifact was read.
+      if (prerendered && !this.store.has(key)) {
+        await this.set(key, prerendered.value, {
+          cacheControl: prerendered.cacheControl,
+          timestamp: prerendered.lastModified,
+        });
+      }
+    }
+    return this.readEntry(key, ctx);
+  }
+
+  private readEntry(key: string, ctx?: Record<string, unknown>): CacheHandlerValue | null {
     const entry = this.store.get(key);
     if (!entry) return null;
 
