@@ -12,13 +12,18 @@ import { VINEXT_PRERENDER_NOT_FOUND_HEADER } from "./headers.js";
  */
 export const PRERENDER_NOT_FOUND_PATH = "/__vinext_nonexistent_for_404__";
 
-/** Whether `request` is the prerender step's request for the 404 page. */
-export function isPrerenderNotFoundRequest(request: Request): boolean {
+/** Whether `headers` carry the 404 marker, which counts only while prerendering. */
+export function hasPrerenderNotFoundMarker(headers: Headers): boolean {
   return (
     typeof process !== "undefined" &&
     process.env?.VINEXT_PRERENDER === "1" &&
-    request.headers.get(VINEXT_PRERENDER_NOT_FOUND_HEADER) === "1"
+    headers.get(VINEXT_PRERENDER_NOT_FOUND_HEADER) === "1"
   );
+}
+
+/** Whether `request` is the prerender step's request for the 404 page. */
+export function isPrerenderNotFoundRequest(request: Request): boolean {
+  return hasPrerenderNotFoundMarker(request.headers);
 }
 
 /** Whether `pathname` is the path of the prerender step's 404 request. */

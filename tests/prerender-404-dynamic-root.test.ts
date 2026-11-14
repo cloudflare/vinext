@@ -20,6 +20,7 @@ const PAGES_MIDDLEWARE_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/pages-dynamic-root-404-middleware",
 );
+const HYBRID_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/hybrid-dynamic-root-404");
 const NOT_FOUND_PATH_SLUG = "__vinext_nonexistent_for_404__";
 
 describe("static export 404 with a dynamic root layout", () => {
@@ -304,7 +305,7 @@ describe("Pages prerender server with the 404 marker on another path", () => {
     const pagesBundlePath = await buildPagesFixture(PAGES_FIXTURE_DIR, {
       async rewrites() {
         return {
-          beforeFiles: [],
+          beforeFiles: [{ source: "/alias", destination: `/${NOT_FOUND_PATH_SLUG}` }],
           // Skipped for the request to `/`, which matches the static index page.
           afterFiles: [{ source: "/", destination: "/hello" }],
           fallback: [],
@@ -335,5 +336,55 @@ describe("Pages prerender server with the 404 marker on another path", () => {
     const html = await res.text();
     expect(html).toContain("<p>home</p>");
     expect(html).not.toContain("slug page");
+  }, 60_000);
+
+  it("renders the destination of a forwarded-marker subrequest rewritten to the 404 path", async () => {
+    const res = await fetch(`http://127.0.0.1:${server!.port}/alias`, {
+      headers: { [VINEXT_PRERENDER_NOT_FOUND_HEADER]: "1" },
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain(`slug page: <!-- -->${NOT_FOUND_PATH_SLUG}`);
+    expect(html).not.toContain("Custom Pages error");
+  }, 60_000);
+});
+
+describe("hybrid prerender server with the 404 marker on another path", () => {
+  let server: { port: number; close: () => Promise<void> } | undefined;
+  let restorePrerenderPhase: (() => void) | undefined;
+
+  beforeAll(async () => {
+    const rscBundlePath = await buildAppFixture(HYBRID_FIXTURE_DIR, {
+      async rewrites() {
+        return {
+          beforeFiles: [{ source: "/alias", destination: `/${NOT_FOUND_PATH_SLUG}` }],
+          afterFiles: [],
+          fallback: [],
+        };
+      },
+    });
+    const { enterPrerenderPhase } = await import("../packages/vinext/src/build/prerender-phase.js");
+    const { startPrerenderProdServer } =
+      await import("../packages/vinext/src/build/prerender-server-pool.js");
+    restorePrerenderPhase = enterPrerenderPhase();
+    const serverDir = path.dirname(rscBundlePath);
+    server = await startPrerenderProdServer(path.dirname(serverDir), {
+      rscEntryPath: rscBundlePath,
+      serverDir,
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await server?.close();
+    restorePrerenderPhase?.();
+  });
+
+  it("renders the Pages destination of a forwarded-marker subrequest rewritten to the 404 path", async () => {
+    // As a middleware subrequest that forwards the 404 request's headers does.
+    const res = await fetch(`http://127.0.0.1:${server!.port}/alias`, {
+      headers: { [VINEXT_PRERENDER_NOT_FOUND_HEADER]: "1" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain(`slug page: <!-- -->${NOT_FOUND_PATH_SLUG}`);
   }, 60_000);
 });

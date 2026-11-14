@@ -30,7 +30,11 @@ import {
   proxyExternalRequest,
 } from "../config/config-matchers.js";
 import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
-import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
+import {
+  cloneRequestWithHeaders,
+  cloneRequestWithUrl,
+  normalizeTrailingSlash,
+} from "./request-pipeline.js";
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import {
@@ -747,12 +751,15 @@ export async function runPagesRequest(
     request,
   );
   request = postMwReq;
-  if (isPrerenderNotFoundRequest(request) !== isPrerenderNotFound) {
-    // Only a request-header override from middleware adds or drops the marker,
-    // and an override builds a new Request, whose headers are mutable. The page
-    // handler reads the marker from this request, so it must match the original.
-    if (isPrerenderNotFound) request.headers.set(VINEXT_PRERENDER_NOT_FOUND_HEADER, "1");
-    else request.headers.delete(VINEXT_PRERENDER_NOT_FOUND_HEADER);
+  if (isPrerenderNotFoundRequest(request) !== isPrerenderNotFoundPath) {
+    // The page handler reads the marker from this request, against the
+    // rewritten path. Keep it only on the 404 request itself, whatever a
+    // middleware request-header override did, so a subrequest that forwards
+    // the marker renders its rewrite destination.
+    const headers = new Headers(request.headers);
+    if (isPrerenderNotFoundPath) headers.set(VINEXT_PRERENDER_NOT_FOUND_HEADER, "1");
+    else headers.delete(VINEXT_PRERENDER_NOT_FOUND_HEADER);
+    request = cloneRequestWithHeaders(request, headers);
   }
   const pathnameForResolvedUrl = (value: string): string => value.split("#", 1)[0].split("?", 1)[0];
   const rewriteRequestContext = (): RequestContext => ({
