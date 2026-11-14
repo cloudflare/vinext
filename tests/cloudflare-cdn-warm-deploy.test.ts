@@ -154,9 +154,9 @@ function writeTwoStageWorkerArtifact({
   );
 }
 
-function writeBuildOutputWorkerArtifact(): void {
+function writeBuildOutputWorkerArtifact(version = "v0"): void {
   writeFile(
-    ".cloudflare/output/v0/workers/default/worker.config.json",
+    `.cloudflare/output/${version}/workers/default/worker.config.json`,
     JSON.stringify({
       manifest: { mainModule: "index.js", modules: {}, type: "partial" },
       name: "my-worker",
@@ -164,15 +164,15 @@ function writeBuildOutputWorkerArtifact(): void {
     }),
   );
   writeFile(
-    ".cloudflare/output/v0/workers/default/bundle/index.js",
+    `.cloudflare/output/${version}/workers/default/bundle/index.js`,
     'void import("./response-stage.js");\n',
   );
   writeFile(
-    ".cloudflare/output/v0/workers/default/bundle/response-stage.js",
+    `.cloudflare/output/${version}/workers/default/bundle/response-stage.js`,
     `import "./${CACHEABILITY_MANIFEST_MODULE}";\n`,
   );
   writeFile(
-    ".cloudflare/output/v0/workers/default/bundle/.vite/manifest.json",
+    `.cloudflare/output/${version}/workers/default/bundle/.vite/manifest.json`,
     JSON.stringify({
       "virtual:cloudflare/worker-entry": {
         dynamicImports: ["virtual:vinext-response-stage"],
@@ -182,7 +182,7 @@ function writeBuildOutputWorkerArtifact(): void {
     }),
   );
   writeFile(
-    `.cloudflare/output/v0/workers/default/bundle/${CACHEABILITY_MANIFEST_MODULE}`,
+    `.cloudflare/output/${version}/workers/default/bundle/${CACHEABILITY_MANIFEST_MODULE}`,
     "export default null;\n",
   );
 }
@@ -482,6 +482,33 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         "utf8",
       ),
     ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
+  });
+
+  it("writes a cacheability manifest into v1 Build Output", () => {
+    writeBuildOutputWorkerArtifact("v1");
+
+    expect(
+      writeCacheabilityManifestArtifact(
+        tmpDir,
+        "wrangler.jsonc",
+        { buildId: "build-a", routes: {}, version: 1 },
+        "cf",
+      ),
+    ).toBe(".cloudflare/output/v1/workers/default/worker.config.json");
+  });
+
+  it("rejects cacheability output when Build Output has more than one version", () => {
+    writeBuildOutputWorkerArtifact("v0");
+    writeBuildOutputWorkerArtifact("v1");
+
+    expect(() =>
+      writeCacheabilityManifestArtifact(
+        tmpDir,
+        "wrangler.jsonc",
+        { buildId: "build-a", routes: {}, version: 1 },
+        "cf",
+      ),
+    ).toThrow("Found Cloudflare Build Output in more than one format (v0, v1)");
   });
 
   it("stages and promotes a typed-config Worker using cf without Wrangler", async () => {

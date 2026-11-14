@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { resolveBuildOutputDir } from "../packages/cloudflare/src/build-output.js";
 import type { TPRRouteResult } from "../packages/cloudflare/src/tpr.js";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
@@ -455,7 +456,9 @@ describe("deploy prerender config wiring", () => {
         true,
       );
       expect(
-        JSON.parse(fs.readFileSync(path.join(tmpDir, ".cloudflare/output/v0/config.json"), "utf8")),
+        JSON.parse(
+          fs.readFileSync(path.join(resolveBuildOutputDir(tmpDir), "config.json"), "utf8"),
+        ),
       ).toMatchObject({ buildContext: { mode, isPreview: true } });
       expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe("false");
       expect(process.env.CLOUDFLARE_ENV).toBe("other");

@@ -458,9 +458,11 @@ jobs:
         working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
           test -f cloudflare.config.ts
-          test -f .cloudflare/output/v0/config.json
-          test -f .cloudflare/output/v0/workers/default/worker.config.json
-          test -f .cloudflare/output/v0/workers/cva-cloudflare-response-store/worker.config.json
+          OUTPUT_DIR=.cloudflare/output/v1
+          test -f "$OUTPUT_DIR/workers/default/worker.config.json" || OUTPUT_DIR=.cloudflare/output/v0
+          test -f "$OUTPUT_DIR/config.json"
+          test -f "$OUTPUT_DIR/workers/default/worker.config.json"
+          test -f "$OUTPUT_DIR/workers/cva-cloudflare-response-store/worker.config.json"
           test ! -f wrangler.jsonc
           test ! -f wrangler.response-store.jsonc
 
