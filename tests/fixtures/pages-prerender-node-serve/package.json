@@ -1,0 +1,5 @@
+{
+  "name": "pages-prerender-node-serve-fixture",
+  "private": true,
+  "type": "module"
+}

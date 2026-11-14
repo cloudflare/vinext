@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { appIsrCacheKey, appIsrFallbackShellKey } from "vinext/internal/server/isr-cache";
 import {
-  appIsrCacheKey,
-  appIsrFallbackShellKey,
-  pagesIsrCacheKey,
-} from "vinext/internal/server/isr-cache";
-import { extractVinextNextDataJson } from "vinext/internal/client/vinext-next-data";
+  prerenderedCacheControl,
+  prerenderedPagesCacheKey,
+  readPrerenderedPagesValue,
+} from "vinext/internal/server/prerendered-pages";
 import {
   isFallbackShellArtifactPath,
   readPrerenderManifest,
@@ -28,27 +28,6 @@ function cacheAssetId(key: string): string {
   return createHash("sha256").update(key).digest("hex");
 }
 
-function pagesCacheKey(pathname: string, locale: string | undefined, buildId: string): string {
-  // Strip the explicit prerender locale, just as the request handler does.
-  let pagesPathname = new URL(`https://vinext.invalid${pathname}`).pathname;
-  if (locale) {
-    const prefix = `/${locale}`;
-    if (pagesPathname === prefix) pagesPathname = "/";
-    else if (pagesPathname.startsWith(`${prefix}/`))
-      pagesPathname = pagesPathname.slice(prefix.length);
-  }
-  return pagesIsrCacheKey(pagesPathname, buildId, locale ? `locale:${locale}` : undefined);
-}
-
-function cacheControl(route: PrerenderManifestRoute) {
-  if (route.revalidate === undefined) return undefined;
-  return {
-    revalidate: route.revalidate,
-    ...(route.expire === undefined ? {} : { expire: route.expire }),
-    ...(route.stale === undefined ? {} : { stale: route.stale }),
-  };
-}
-
 function writeCacheAsset(
   outputDir: string,
   index: StaticAssetCacheIndex,
@@ -62,7 +41,7 @@ function writeCacheAsset(
 
   const id = cacheAssetId(key);
   const extension = kind;
-  const policy = cacheControl(route);
+  const policy = prerenderedCacheControl(route);
   // A page's special error that escaped the shell keeps its status on the RSC
   // entry too, and a redirect its location, as runtime ISR stores it.
   const headers =
@@ -141,62 +120,32 @@ export function finalizeStaticAssetsPrerenderOutput(
         getOutputPath(pathname, manifest.trailingSlash ?? false),
       );
       if (!fs.existsSync(sourcePath)) continue;
-      const html = fs.readFileSync(sourcePath, "utf8");
-      const key = pagesCacheKey(pathname, route.locale, manifest.buildId);
-      if (route.notFound) {
-        count += Number(
-          writeCacheAsset(outputDir, index, key, "not-found", sourcePath, route, "null"),
-        );
-        continue;
-      }
-      if (route.redirectProps) {
-        count += Number(
-          writeCacheAsset(
-            outputDir,
-            index,
-            key,
-            "redirect",
-            sourcePath,
-            route,
-            JSON.stringify(route.redirectProps),
-          ),
-        );
-        continue;
-      }
-      const json = extractVinextNextDataJson(html);
-      // Only GSP terminal results receive manifest metadata above. Redirects
-      // produced before page rendering must keep running at request time.
-      if (json === null) continue;
-      const nextData = JSON.parse(json) as {
-        props?: object;
-        gsp?: boolean;
-        autoExport?: boolean;
-        locale?: string;
-      };
-      // Do not freeze getInitialProps/SSR pages that a source-only prerender
-      // classification may have admitted (for example, custom _app props).
-      if (nextData.gsp !== true && nextData.autoExport !== true) continue;
-      if (!nextData.props || typeof nextData.props !== "object") {
-        throw new Error(`[vinext] Missing prerendered Pages props for ${pathname}`);
-      }
+      const prerendered = readPrerenderedPagesValue(route, fs.readFileSync(sourcePath, "utf8"));
+      if (prerendered === undefined) continue;
+      const key = prerenderedPagesCacheKey(pathname, prerendered.locale, manifest.buildId);
+      const { value } = prerendered;
       count += Number(
-        writeCacheAsset(
-          outputDir,
-          index,
-          pagesCacheKey(pathname, nextData.locale ?? route.locale, manifest.buildId),
-          "pages",
-          sourcePath,
-          {
-            ...route,
-            responseStatus:
-              route.route === "/404"
-                ? 404
-                : route.route === "/500"
-                  ? 500
-                  : (route.responseStatus ?? 200),
-          },
-          JSON.stringify({ html, pageData: nextData.props }),
-        ),
+        value === null
+          ? writeCacheAsset(outputDir, index, key, "not-found", sourcePath, route, "null")
+          : value.kind === "REDIRECT"
+            ? writeCacheAsset(
+                outputDir,
+                index,
+                key,
+                "redirect",
+                sourcePath,
+                route,
+                JSON.stringify(value.props),
+              )
+            : writeCacheAsset(
+                outputDir,
+                index,
+                key,
+                "pages",
+                sourcePath,
+                { ...route, responseStatus: value.status },
+                JSON.stringify({ html: value.html, pageData: value.pageData }),
+              ),
       );
     } else if (route.router === "metadata") {
       count += Number(

@@ -59,6 +59,35 @@ describe("vinext next data client helpers", () => {
       json,
     );
   });
+
+  it("finds the data script among other script tags, with attributes in any order", () => {
+    const json = '{"props":{},"page":"/","query":{}}';
+
+    expect(
+      extractVinextNextDataJson(
+        `<scripts id="__NEXT_DATA__" type="application/json">no</scripts>` +
+          `<script id="other" type="application/json">{}</script>` +
+          `<script type='application/json' nonce="n" id='__NEXT_DATA__'>${json}</script>`,
+      ),
+    ).toBe(json);
+    expect(
+      extractVinextNextDataJson(
+        `<script src="/a.js"></script><script nonce="n">window.__NEXT_DATA__=${json}</script>`,
+      ),
+    ).toBe(json);
+  });
+
+  it("stays linear on many unterminated script tags", () => {
+    const html = "<script ".repeat(20_000);
+    const started = performance.now();
+    expect(extractVinextNextDataJson(html)).toBeNull();
+    expect(extractVinextNextDataJson(`${html}<script id="__NEXT_DATA__"`)).toBeNull();
+    const spaces = " ".repeat(100_000);
+    expect(
+      extractVinextNextDataJson(`<script>${spaces}window.__NEXT_DATA__${spaces}${spaces}`),
+    ).toBeNull();
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
 });
 
 describe("dynamic route href interpolation", () => {
