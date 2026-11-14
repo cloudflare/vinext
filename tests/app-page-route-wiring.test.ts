@@ -16,6 +16,7 @@ import {
   APP_SKIPPED_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_HEAD_ID_PREFIX,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
   APP_STATIC_SIBLINGS_KEY,
   AppElementsWire,
@@ -204,7 +205,10 @@ function collectBfcacheSpine(node: unknown): string[] {
     const typeName = getElementTypeName(element.type);
     if (typeName === "BfcacheChildrenBoundary") {
       spine.push(`list ${String(element.props.stateKey ?? element.props.id)}`);
-    } else if (typeName === "Slot") {
+    } else if (
+      typeName === "Slot" &&
+      !String(element.props.id).startsWith(APP_ROUTE_HEAD_ID_PREFIX)
+    ) {
       spine.push(String(element.props.id));
     }
     return false;
@@ -724,6 +728,22 @@ describe("app page route wiring helpers", () => {
     expect(head).toContain("<title>generated page</title>");
     expect(head).toContain('rel="canonical" href="https://example.com/generated"');
     expect(body).not.toContain("<title>generated page</title>");
+  });
+
+  it("renders the route head as its own entry beside the layout tree", async () => {
+    const elements = await buildGeneratedMetadataRouteElements("Minibot", "Minibot");
+    const headId = `${APP_ROUTE_HEAD_ID_PREFIX}route:/generated`;
+    expect(Object.hasOwn(elements, headId)).toBe(true);
+
+    const html = await renderRouteDocument(elements, "route:/generated");
+    expect(readDocumentSection(html, "head")).toContain("<title>generated page</title>");
+
+    // The route entry only names the head, so a client can keep the head it
+    // holds while the layout tree beside it changes.
+    const { [headId]: _head, ...withoutHead } = elements;
+    const htmlWithoutHead = await renderRouteDocument(withoutHead, "route:/generated");
+    expect(htmlWithoutHead).not.toContain("<title>generated page</title>");
+    expect(htmlWithoutHead).toContain("Page");
   });
 
   it("streams generated metadata for bots outside the configured html-limited rule", async () => {
