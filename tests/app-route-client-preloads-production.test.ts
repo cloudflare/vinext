@@ -287,6 +287,33 @@ describe("App Router production SSR route client reference preloads", () => {
     }
   });
 
+  // Next.js 16 links a page's client components' CSS, rendered or not, but a
+  // not-found boundary's only when it renders. Client-reference grouping must
+  // not put the two in one stylesheet.
+  it("links no stylesheet of a route's not-found boundary with its page's client components", async () => {
+    const boundaryRule = "--loading-css-grouped-boundary";
+    const noteHref = cssHref("--loading-css-grouped-note");
+    // The boundary's rule is in the build, in whichever file.
+    cssHref(boundaryRule);
+    for (const [label, query] of [
+      ["cold", ""],
+      ["warm", ""],
+      ["rendered", "?note"],
+    ]) {
+      const response = await fetch(`${baseUrl}/loading-css/grouped${query}`);
+      expect(response.status, label).toBe(200);
+      const html = await response.text();
+      expect(html.includes('data-testid="loading-css-grouped-note"'), label).toBe(query !== "");
+      const hrefs = stylesheetHrefs(html);
+      expect(hrefs, label).toContain(noteHref);
+      const linkedCss = clientCssFiles().filter(({ href }) => hrefs.includes(href));
+      expect(
+        linkedCss.filter(({ css }) => css.includes(boundaryRule)).map(({ href }) => href),
+        label,
+      ).toEqual([]);
+    }
+  });
+
   it("streams a client component that awaits at its top level, as Next.js does", async () => {
     const read = () => readStream(`${baseUrl}/streamed`);
 
@@ -532,16 +559,19 @@ describe("App Router production SSR route client reference preloads", () => {
     }
 
     // The document's Flight data names the module chunk of each reference the
-    // page renders, which SSR modulepreloads.
+    // page renders, which SSR modulepreloads. It also names the root
+    // not-found boundary's, which doesn't render, in a chunk of its own.
+    const notFoundChunk = clientFileHref(".js", "not-found-note").slice(1);
     for (const route of ["/", "/streamed/also"]) {
       const html = await (await fetch(`${baseUrl}${route}`)).text();
       expect(html, route).not.toContain("__VINEXT_CLIENT_REFERENCE_REGISTRY__");
       const named = [...html.matchAll(/\\?"m\/([^"\\]+\.js)/g)].map((match) => match[1]!);
       expect(named.length, route).toBeGreaterThan(0);
+      expect(named, route).toContain(notFoundChunk);
       const preloads = modulepreloadHrefs(html);
       for (const file of named) {
         expect(moduleFiles, route).toContain(file);
-        expect(preloads, route).toContain(`/${file}`);
+        if (file !== notFoundChunk) expect(preloads, route).toContain(`/${file}`);
       }
     }
   });

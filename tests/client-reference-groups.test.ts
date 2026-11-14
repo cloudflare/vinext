@@ -78,6 +78,52 @@ describe("collectClientReferenceRouteSignatures", () => {
     });
   });
 
+  it("signs what only a route's boundaries reach apart from what its rendered files reach", () => {
+    const signatures = collectClientReferenceRouteSignatures({
+      clientReferenceIds: new Set([
+        "/chart.tsx",
+        "/missing.tsx",
+        "/spinner.tsx",
+        "/both.tsx",
+        "/slot-chrome.tsx",
+        "/slot-fallback.tsx",
+      ]),
+      getModuleInfo: moduleInfo({
+        "/app/page.tsx": ["/chart.tsx", "/both.tsx"],
+        "/app/not-found.tsx": ["/missing.tsx", "/both.tsx"],
+        "/app/loading.tsx": ["/spinner.tsx"],
+        "/app/@panel/layout.tsx": ["/slot-chrome.tsx"],
+        "/app/@panel/default.tsx": ["/slot-fallback.tsx"],
+      }),
+      root: "/",
+      routes: [
+        {
+          ...route("/", "/app/page.tsx"),
+          loadingPath: "/app/loading.tsx",
+          notFoundPath: "/app/not-found.tsx",
+          // A slot's layout wraps only its page, and this slot has none.
+          parallelSlots: [
+            {
+              defaultPath: "/app/@panel/default.tsx",
+              interceptingRoutes: [],
+              layoutPath: "/app/@panel/layout.tsx",
+              pagePath: null,
+            },
+          ],
+        } as never,
+      ],
+    });
+
+    expect(Object.fromEntries(signatures)).toEqual({
+      "/chart.tsx": "/",
+      "/both.tsx": "/\n/\0boundaries",
+      "/missing.tsx": "/\0boundaries",
+      "/spinner.tsx": "/\0boundaries",
+      "/slot-chrome.tsx": "/\0boundaries",
+      "/slot-fallback.tsx": "/",
+    });
+  });
+
   it("gives intercepts and shared roots their own file owners", () => {
     const signatures = collectClientReferenceRouteSignatures({
       clientReferenceIds: new Set([

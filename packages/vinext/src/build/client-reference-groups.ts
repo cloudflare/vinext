@@ -88,11 +88,13 @@ function interceptEntryIds(intercept: ClientReferenceGroupIntercept): string[] {
 
 /**
  * Map each client reference reachable from App Router route files to a
- * signature naming the owners that reach it. A route owns its page, layouts,
- * templates, boundaries and parallel slots, which render with it. Intercepting
- * routes (which only render on soft navigation), global-error and
- * global-not-found render on their own, so each is owned by its file, named by
- * its path relative to `root`. References with the same signature are needed
+ * signature naming the owners that reach it. A route owns the files it always
+ * renders (its page, layouts, templates and parallel slots). Its boundaries,
+ * which render only when triggered, have an owner of their own, so a group
+ * never shares their CSS with those files: Next.js links a boundary's CSS only
+ * when it renders. Intercepting routes (which only render on soft navigation),
+ * global-error and global-not-found render on their own, so each is owned by
+ * its file, named by its path relative to `root`. References with the same signature are needed
  * together, mirroring Next.js' per-route client entries. The map is in the
  * order a depth-first walk in import order first reaches each reference from
  * the route files in render order, which follows ES module evaluation order.
@@ -184,16 +186,20 @@ export function collectClientReferenceRouteSignatures(options: {
   };
   const fileOwner = (file: string) => path.relative(options.root, file);
   for (const route of options.routes) {
-    addOwner(
-      route.pattern,
-      inRenderOrder(
-        actionOwnerRouteEntryIds({
-          ...route,
-          parallelSlots: route.parallelSlots.map((slot) => ({ ...slot, interceptingRoutes: [] })),
-          siblingIntercepts: [],
-        }),
-      ),
-    );
+    // A render links the CSS of the references its rendered files import
+    // (`renderedRouteFiles`), and a group's members share their CSS, so a
+    // route's boundaries are a separate owner.
+    const rendered = new Set(renderedRouteFiles(route));
+    const boundaryOwner = `${route.pattern}\0boundaries`;
+    for (const file of inRenderOrder(
+      actionOwnerRouteEntryIds({
+        ...route,
+        parallelSlots: route.parallelSlots.map((slot) => ({ ...slot, interceptingRoutes: [] })),
+        siblingIntercepts: [],
+      }),
+    )) {
+      addOwner(rendered.has(file) ? route.pattern : boundaryOwner, [file]);
+    }
     const intercepts = [
       ...route.parallelSlots.flatMap((slot) => slot.interceptingRoutes),
       ...route.siblingIntercepts,
