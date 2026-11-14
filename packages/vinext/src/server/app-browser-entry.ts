@@ -122,6 +122,7 @@ import {
   resolvePersistedSourcePageRefreshes,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
+  supplyRetainedElements,
 } from "./app-browser-supplemental-refresh.js";
 import { createAppBrowserNavigationAbortCoordinator } from "./app-browser-navigation-abort.js";
 import {
@@ -227,6 +228,7 @@ import {
   type LearnedOptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
 import { createMountedLayoutsHeader, holdsSkippedLayouts } from "./app-mounted-layouts.js";
+import { resolveHeldRetainedElementIds } from "./app-retained-elements.js";
 import {
   VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -2864,7 +2866,12 @@ function bootstrapHydration(
           for (const persistedSourcePageRefresh of persistedSourcePageRefreshes) {
             supplemental.push((signal) =>
               fetchPersistedSourcePageRefresh({
-                mountedSlotsHeader,
+                // A traversal starts from another entry's state, whose mounted
+                // slots aren't the ones the intercepted payload leaves to it.
+                mountedSlotsHeader:
+                  navigationKind === "traverse" && requestInterceptionContext !== null
+                    ? null
+                    : mountedSlotsHeader,
                 signal,
                 targetPathname: persistedSourcePageRefresh,
               }),
@@ -2899,6 +2906,51 @@ function bootstrapHydration(
             continue;
           }
           rscPayload = Promise.resolve(elements);
+        }
+
+        // A payload for an intercepted route leaves the source page beneath it
+        // for the state showing that page to keep. One that reached another
+        // state, as a traversal back to it can, fetches that page from its own
+        // URL, as a refresh does.
+        if (!hasSupplementalRefresh && requestInterceptionContext !== null) {
+          const elements = await rscPayload;
+          if (!browserNavigationController.isCurrentNavigation(navId)) return;
+          rscPayload = Promise.resolve(elements);
+          const sourcePageRefreshes =
+            resolveHeldRetainedElementIds(
+              getBrowserRouterState(),
+              elements,
+              requestPreviousNextUrl,
+            ) === null
+              ? resolvePersistedSourcePageRefreshes({
+                  activeRoutePaths: [],
+                  basePath: __basePath,
+                  refreshUrl: url,
+                  state: { previousNextUrl: requestPreviousNextUrl, slotBindings: [] },
+                })
+              : [];
+          if (sourcePageRefreshes.length > 0) {
+            // The Flight response above is already React's, so this request
+            // takes its own handle, which a newer navigation aborts. The state
+            // this navigation started from is not the source's, so the request
+            // names no mounted slots for the server to leave out.
+            const sourcePageAbortHandle = navigationAbortCoordinator.begin();
+            rscPayload = resolveSupplementalRefreshes({
+              merge: supplyRetainedElements,
+              primary: rscPayload,
+              signal: sourcePageAbortHandle.signal,
+              supplemental: sourcePageRefreshes.map(
+                (targetPathname) => (signal: AbortSignal) =>
+                  fetchPersistedSourcePageRefresh({
+                    mountedSlotsHeader: null,
+                    signal,
+                    targetPathname,
+                  }),
+              ),
+            })
+              .finally(() => sourcePageAbortHandle.release())
+              .then(requireCompleteSupplementalRefresh);
+          }
         }
 
         // Static hosts cannot supply the compatibility response header used by
@@ -3049,6 +3101,7 @@ function bootstrapHydration(
             const committedElements = {
               ...state.elements,
               [AppElementsWire.keys.layoutIds]: state.layoutIds,
+              [AppElementsWire.keys.retainedElementIds]: [],
               [AppElementsWire.keys.skippedLayoutIds]: [],
               [AppElementsWire.keys.slotBindings]: state.slotBindings,
             } satisfies AppElements;
@@ -3064,7 +3117,8 @@ function bootstrapHydration(
               DYNAMIC_NAVIGATION_CACHE_TTL,
               mountedSlotsHeader,
               committedElements,
-              // A payload that left out layouts only fits the state it merged into.
+              // A payload that left out layouts or the elements beneath an
+              // intercepted route only fits the state it merged into.
               isCompleteAppPayloadMetadata(metadata),
               prefetchSnapshot,
               interceptionContext !== null || hasNavigationResponseHistoryLifetime(snapshot),

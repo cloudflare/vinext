@@ -4,6 +4,7 @@ import {
   APP_INTERCEPTION_KEY,
   APP_ROUTE_HEAD_ID_PREFIX,
   APP_SLOT_BINDINGS_KEY,
+  APP_STREAMING_METADATA_BODY_ID_PREFIX,
   AppElementsWire,
   normalizeAppElementsSlotBindings,
   type AppElements,
@@ -70,12 +71,20 @@ export function mergeRefreshedParallelSlot(
   const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
   const interception = refreshedMetadata.interception;
   if (interception === null) {
-    const refreshedBindings = refreshedMetadata.slotBindings.filter(
-      (binding) => binding.state === "active" && Object.hasOwn(refreshedElements, binding.slotId),
-    );
-    if (refreshedBindings.length === 0) return currentElements;
-
     const currentMetadata = AppElementsWire.readMetadata(currentElements);
+    // The slot an intercepted payload shows its intercept in stays its own,
+    // whatever the source matches there from its own URL.
+    const interceptedSlotId = currentMetadata.interception?.slotId ?? null;
+    const refreshedBindings = refreshedMetadata.slotBindings.filter(
+      (binding) =>
+        binding.state === "active" &&
+        binding.slotId !== interceptedSlotId &&
+        Object.hasOwn(refreshedElements, binding.slotId),
+    );
+    if (refreshedBindings.length === 0) {
+      return supplyRetainedElements(currentElements, refreshedElements);
+    }
+
     const suppliesSourceTree = refreshedBindings.some((binding) => {
       const parsedSlot = AppElementsWire.parseElementKey(binding.slotId);
       return parsedSlot?.kind === "slot" && parsedSlot.name === "children";
@@ -134,6 +143,7 @@ export function mergeRefreshedParallelSlot(
           : {
               [APP_INTERCEPTION_KEY]: currentMetadata.interception,
               [APP_INTERCEPTION_CONTEXT_KEY]: currentMetadata.interceptionContext,
+              [AppElementsWire.keys.retainedElementIds]: currentMetadata.retainedElementIds,
             }),
         [APP_SLOT_BINDINGS_KEY]: normalizeAppElementsSlotBindings(slotBindings, {
           layoutIds: refreshedMetadata.layoutIds,
@@ -151,7 +161,9 @@ export function mergeRefreshedParallelSlot(
       if (promotedBindings.length === 1) {
         merged[promotedBindings[0].slotId] = refreshedElements[refreshedChildrenBindings[0].slotId];
       }
-      copyRefreshedBranchElements(merged, currentElements, { overwrite: false });
+      copyRefreshedBranchElements(merged, currentElements, {
+        overwrite: currentMetadata.retainedElementIds.length > 0,
+      });
       return merged;
     }
 
@@ -175,8 +187,12 @@ export function mergeRefreshedParallelSlot(
       refreshedElements,
       refreshedBindings.map((binding) => binding.slotId),
     );
-    copyRefreshedBranchElements(merged, refreshedElements);
-    return merged;
+    // An intercepted payload's own entries stay its own: the source's render
+    // fills only the ones it left out.
+    copyRefreshedBranchElements(merged, refreshedElements, {
+      overwrite: currentMetadata.retainedElementIds.length === 0,
+    });
+    return supplyRetainedElements(merged, refreshedElements);
   }
 
   const refreshedSlot = refreshedElements[interception.slotId];
@@ -200,6 +216,50 @@ export function mergeRefreshedParallelSlot(
   };
   copySlotIdentities(merged, currentElements, refreshedElements, [interception.slotId]);
   copyRefreshedBranchElements(merged, refreshedElements);
+  return merged;
+}
+
+// A payload for an intercepted route can leave the source page beneath it for
+// the client to keep. A render of that page from its own URL supplies them,
+// and nothing else: the intercepted payload's own entries stay its own.
+export function supplyRetainedElements(
+  currentElements: AppElements,
+  refreshedElements: AppElements,
+): AppElements {
+  const currentMetadata = AppElementsWire.readMetadata(currentElements);
+  if (currentMetadata.retainedElementIds.length === 0) return currentElements;
+  const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
+  if (refreshedMetadata.routeId !== currentMetadata.routeId) return currentElements;
+  // A streamed metadata body belongs to the head its render placed it beside,
+  // so a payload that carries its own head takes no other render's body.
+  const carriesHead = Object.hasOwn(
+    currentElements,
+    APP_ROUTE_HEAD_ID_PREFIX + currentMetadata.routeId,
+  );
+  const metadataBodyId = APP_STREAMING_METADATA_BODY_ID_PREFIX + currentMetadata.routeId;
+  const suppliedIds = currentMetadata.retainedElementIds.filter(
+    (id) =>
+      !Object.hasOwn(currentElements, id) &&
+      Object.hasOwn(refreshedElements, id) &&
+      (id !== metadataBodyId || !carriesHead),
+  );
+  if (suppliedIds.length === 0) return currentElements;
+
+  const merged: Record<string, AppElements[keyof AppElements]> = { ...currentElements };
+  for (const id of suppliedIds) merged[id] = refreshedElements[id];
+  const suppliedSlotIds = new Set(suppliedIds.filter((id) => AppElementsWire.isSlotId(id)));
+  if (suppliedSlotIds.size > 0) {
+    const slotBindings = currentMetadata.slotBindings.filter(
+      (binding) => !suppliedSlotIds.has(binding.slotId),
+    );
+    slotBindings.push(
+      ...refreshedMetadata.slotBindings.filter((binding) => suppliedSlotIds.has(binding.slotId)),
+    );
+    merged[APP_SLOT_BINDINGS_KEY] = normalizeAppElementsSlotBindings(slotBindings, {
+      layoutIds: currentMetadata.layoutIds,
+    });
+  }
+  copySlotIdentities(merged, currentElements, refreshedElements, suppliedIds);
   return merged;
 }
 
@@ -246,13 +306,20 @@ function copyRefreshedBranchElements(
   for (const [elementId, element] of Object.entries(refreshedElements)) {
     const parsed = AppElementsWire.parseElementKey(elementId);
     // A route's head is its own entry, so it travels with the route.
+    const isHead = elementId.startsWith(APP_ROUTE_HEAD_ID_PREFIX);
     if (
-      (parsed?.kind === "page" ||
-        parsed?.kind === "route" ||
-        elementId.startsWith(APP_ROUTE_HEAD_ID_PREFIX)) &&
+      (parsed?.kind === "page" || parsed?.kind === "route" || isHead) &&
       (options.overwrite !== false || !Object.hasOwn(target, elementId))
     ) {
       target[elementId] = element;
+      // The head's streamed body goes with it, or none when its render
+      // placed none.
+      if (isHead) {
+        const bodyId =
+          APP_STREAMING_METADATA_BODY_ID_PREFIX + elementId.slice(APP_ROUTE_HEAD_ID_PREFIX.length);
+        if (Object.hasOwn(refreshedElements, bodyId)) target[bodyId] = refreshedElements[bodyId];
+        else delete target[bodyId];
+      }
     }
   }
 }

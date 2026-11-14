@@ -36,6 +36,7 @@ type VisibleCommitDecision = {
   preserveAbsentSlots: boolean;
   preserveElementIds: readonly string[];
   preservePreviousSlotIds: readonly string[];
+  retainedElementIds: readonly string[];
   trace: NavigationTrace;
 };
 type HardNavigateCommitDecision = {
@@ -219,15 +220,23 @@ function reduceApprovedVisibleCommitState(
                 .map((binding) => binding.slotId),
             )
           : new Set<string>();
-      const effectivePreservePreviousSlotIds = preservePreviousSlotIds.filter(
-        (slotId) => !suppliedActiveSlotIds.has(slotId),
+      // Elements the payload left for this state to keep stay whatever the
+      // lane: the commit gate checked the state holds each one unchanged.
+      const retainedElementIds = commit.decision.retainedElementIds;
+      const retainedSlotIds = retainedElementIds.filter(
+        (id) => AppElementsWire.isSlotId(id) && !preservePreviousSlotIds.includes(id),
       );
+      const effectivePreservePreviousSlotIds = [
+        ...preservePreviousSlotIds.filter((slotId) => !suppliedActiveSlotIds.has(slotId)),
+        ...retainedSlotIds,
+      ];
       const previousBfcacheIdentities = createBfcacheSegmentIdentityMap({
         elements: state.elements,
       });
-      const preservePreviousBfcacheIdIds = effectivePreservePreviousSlotIds.filter(
-        (id) => previousBfcacheIdentities[id] !== undefined,
-      );
+      const preservePreviousBfcacheIdIds = [
+        ...effectivePreservePreviousSlotIds,
+        ...retainedElementIds.filter((id) => !AppElementsWire.isSlotId(id)),
+      ].filter((id) => previousBfcacheIdentities[id] !== undefined);
       const hmrPreservedSlotOwnerLayoutIds =
         action.operation.lane === "hmr"
           ? bfcacheCompatiblePreserveElementIds.filter((id) =>
@@ -249,10 +258,14 @@ function reduceApprovedVisibleCommitState(
         hmrPreserveElementIds.length > 1
           ? [...new Set(hmrPreserveElementIds)]
           : hmrPreserveElementIds;
-      const preserveElementIds =
+      const lanePreserveElementIds =
         action.operation.lane === "hmr"
           ? hmrUniquePreserveElementIds
           : bfcacheCompatiblePreserveElementIds;
+      const preserveElementIds =
+        retainedElementIds.length === 0
+          ? lanePreserveElementIds
+          : [...new Set([...lanePreserveElementIds, ...retainedElementIds])];
       // Next stores a server template's rendered seed on the persistent layout
       // router. The template's child-segment state key may change to remount
       // client state without replacing that seed, so only the element is kept:
@@ -340,6 +353,7 @@ function resolvePendingNavigationCommitDecision(options: {
         decision.preserveElementIds,
         decision.preserveAbsentSlots,
         decision.preservePreviousSlotIds,
+        decision.retainedElementIds,
       );
     default: {
       const _exhaustive: never = decision;
@@ -353,12 +367,14 @@ function createVisibleCommitDecision(
   preserveElementIds: readonly string[] = [],
   preserveAbsentSlots: boolean = false,
   preservePreviousSlotIds: readonly string[] = [],
+  retainedElementIds: readonly string[] = [],
 ): VisibleCommitDecision {
   return {
     disposition: "commit",
     preserveAbsentSlots,
     preserveElementIds: [...preserveElementIds],
     preservePreviousSlotIds: [...preservePreviousSlotIds],
+    retainedElementIds: [...retainedElementIds],
     trace,
   };
 }
