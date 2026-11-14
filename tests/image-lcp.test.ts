@@ -49,6 +49,38 @@ describe("image LCP diagnostics", () => {
     expect(observe).toHaveBeenCalledWith({ type: "largest-contentful-paint", buffered: true });
   });
 
+  it("warns when an LCP candidate registers after its paint was delivered", async () => {
+    const { registerImageLcp } = await import("../packages/vinext/src/shims/image-lcp.js");
+    registerImageLcp(image("eager"), "/hero.png", "empty");
+    const hero = image("lazy");
+    paint(hero);
+    expect(warn).not.toHaveBeenCalled();
+    registerImageLcp(hero, "/hero.png", "empty");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Image with src "/hero.png"'));
+    registerImageLcp(hero, "/hero.png", "empty");
+    paint(hero);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["eager", "/hero.png", "empty"],
+    ["lazy", "/hero.png", "blur"],
+    ["lazy", "data:image/png;base64,abc", "empty"],
+    ["lazy", "blob:example", "empty"],
+  ])(
+    "excludes late registrations with loading=%s, src=%s, placeholder=%s",
+    async (loading, src, placeholder) => {
+      const { registerImageLcp } = await import("../packages/vinext/src/shims/image-lcp.js");
+      registerImageLcp(image("eager"), "/other.png", "empty");
+      const hero = image(loading);
+      paint(hero);
+      registerImageLcp(hero, src, placeholder);
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["eager", null])(
     "does not warn for loading=%s with a lazy duplicate",
     async (loading) => {
