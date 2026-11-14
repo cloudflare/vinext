@@ -41,6 +41,7 @@ import {
   validateRemoteUrl,
 } from "./image-props.js";
 import { useMergedRef } from "./use-merged-ref.js";
+import { registerImageLcp } from "./image-lcp.js";
 
 export type { ImageLoader, StaticImageData, StaticRequire };
 export type ImageLoaderProps = Parameters<ImageLoader>[0];
@@ -187,6 +188,12 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   const shouldPreload = preload === true || priority === true;
   const priorityFetchPriority = priority ? "high" : undefined;
   const imageLoading = priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy");
+
+  useEffect(() => {
+    if (__isDev && imgElementRef.current) {
+      registerImageLcp(imgElementRef.current, src, placeholder);
+    }
+  }, [src, placeholder]);
 
   const [completedBlurSrc, setCompletedBlurSrc] = useState<string | undefined>(undefined);
   const blurComplete = completedBlurSrc === src;
