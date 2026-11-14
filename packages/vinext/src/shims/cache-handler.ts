@@ -296,29 +296,37 @@ export class MemoryCacheHandler implements CacheHandler {
   }
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
-    if (!this.store.has(key)) {
+    let entry = this.store.get(key);
+    if (!entry) {
       const pending = getPrerenderedPagesReader()?.(key);
       const prerendered = pending ? await pending : null;
       // A render may have stored a newer entry while the artifact was read.
-      if (prerendered && !this.store.has(key)) {
-        await this.set(key, prerendered.value, {
+      entry = this.store.get(key);
+      if (!entry && prerendered) {
+        const prerenderedCtx = {
           cacheControl: prerendered.cacheControl,
           timestamp: prerendered.lastModified,
-        });
+        };
+        await this.set(key, prerendered.value, prerenderedCtx);
+        // Like Next.js's FileSystemCache, serve what was read even when the
+        // memory limit keeps none of it; the next miss reads it again.
+        entry = this.store.get(key) ?? this.createEntry(prerendered.value, prerenderedCtx);
       }
     }
-    return this.readEntry(key, ctx);
+    return entry ? this.readEntry(key, entry, ctx) : null;
   }
 
-  private readEntry(key: string, ctx?: Record<string, unknown>): CacheHandlerValue | null {
-    const entry = this.store.get(key);
-    if (!entry) return null;
-
+  private readEntry(
+    key: string,
+    entry: MemoryEntry,
+    ctx?: Record<string, unknown>,
+  ): CacheHandlerValue | null {
+    const isStored = this.store.get(key) === entry;
     const now = Date.now();
     let hasStaleTag = false;
     for (const tag of entry.tags) {
       if (this.isTagExpired(tag, entry.lastModified, now)) {
-        this.deleteEntry(key);
+        if (isStored) this.deleteEntry(key);
         return null;
       }
       hasStaleTag ||= this.isTagStale(tag, entry.lastModified);
@@ -329,7 +337,7 @@ export class MemoryCacheHandler implements CacheHandler {
       hasStaleTag ||= this.isTagStale(tag, entry.lastModified);
     }
 
-    this.touchEntry(key, entry);
+    if (isStored) this.touchEntry(key, entry);
 
     if (entry.expireAt !== null && now > entry.expireAt) {
       return {
@@ -364,11 +372,11 @@ export class MemoryCacheHandler implements CacheHandler {
     };
   }
 
-  async set(
-    key: string,
+  /** The entry `set()` stores, or `undefined` when its policy stores nothing. */
+  private createEntry(
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
-  ): Promise<void> {
+  ): MemoryEntry | undefined {
     const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
       for (const tag of data.tags) tagSet.add(tag);
@@ -388,7 +396,7 @@ export class MemoryCacheHandler implements CacheHandler {
       // but never let it override an explicit `ctx.revalidate: 0` no-store.
       effectiveRevalidate ??= false;
     }
-    if (effectiveRevalidate === 0) return;
+    if (effectiveRevalidate === 0) return undefined;
 
     const now = readCacheTimestamp(ctx, Date.now());
     const revalidateAt =
@@ -411,9 +419,7 @@ export class MemoryCacheHandler implements CacheHandler {
           }
         : undefined;
 
-    if (this.maxMemoryCacheSize === 0) return;
-
-    const entry = {
+    return {
       value: data,
       tags,
       lastModified: now,
@@ -421,6 +427,16 @@ export class MemoryCacheHandler implements CacheHandler {
       expireAt,
       cacheControl,
     };
+  }
+
+  async set(
+    key: string,
+    data: IncrementalCacheValue | null,
+    ctx?: Record<string, unknown>,
+  ): Promise<void> {
+    const entry = this.createEntry(data, ctx);
+    if (!entry || this.maxMemoryCacheSize === 0) return;
+
     const entrySize = this.estimateEntrySize(entry);
     if (entrySize > this.maxMemoryCacheSize) {
       this.deleteEntry(key);
