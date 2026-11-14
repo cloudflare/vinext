@@ -1,0 +1,8 @@
+.loading-css-grouped-boundary-note {
+  --loading-css-grouped-boundary: 1;
+}
+
+.loading-css-grouped {
+  --css-group-winner: boundary;
+  color: rgb(255, 0, 0);
+}

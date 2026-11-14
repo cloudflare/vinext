@@ -41,6 +41,16 @@ export type RouteClientReferences = {
   files: readonly (readonly number[])[];
   /** Each route pattern's files. */
   routes: Readonly<Record<string, readonly number[]>>;
+  /**
+   * Each route pattern's files that render whatever its render does: its
+   * page, layouts and templates and its slots', not its boundaries.
+   */
+  rendered: Readonly<Record<string, readonly number[]>>;
+  /**
+   * The references each file in `rendered` reaches through static imports
+   * alone, by its index in `files`; empty for the other files.
+   */
+  staticFiles: readonly (readonly number[])[];
   /** The files of a render without a route, such as a route-miss 404. */
   routeless: readonly number[];
   /**
@@ -58,6 +68,13 @@ export type RouteClientReferenceSet = {
    */
   references: string[];
   streamed: string[];
+  /**
+   * The references the route's rendered files import statically, in the
+   * order they render and import them, which may differ from `references`'.
+   * A render links their stylesheets whether or not it reaches them before its
+   * shell, as Next.js links each segment's CSS.
+   */
+  linked: string[];
 };
 
 /**
@@ -72,10 +89,12 @@ export function resolveRouteClientReferences(
 ): RouteClientReferenceSet | undefined {
   if (!plan || routePattern === undefined) return undefined;
   let files: readonly number[];
+  let renderedFiles: readonly number[] = [];
   if (routePattern === null) {
     files = plan.routeless;
   } else if (Object.hasOwn(plan.routes, routePattern)) {
     files = plan.routes[routePattern]!;
+    if (Object.hasOwn(plan.rendered, routePattern)) renderedFiles = plan.rendered[routePattern]!;
   } else {
     return undefined;
   }
@@ -91,7 +110,16 @@ export function resolveRouteClientReferences(
     references.push(id);
     if (asyncIndices.has(index)) streamed.push(id);
   }
-  return { references, streamed };
+  // In the rendered files' own import order, which a boundary preloading one
+  // of them first doesn't change.
+  const linkedIndices = new Set<number>();
+  for (const file of renderedFiles) {
+    for (const index of plan.staticFiles[file] ?? []) {
+      if (indices.has(index)) linkedIndices.add(index);
+    }
+  }
+  const linked = Array.from(linkedIndices, (index) => plan.references[index]!);
+  return { references, streamed, linked };
 }
 
 export function createClientReferencePreloader(

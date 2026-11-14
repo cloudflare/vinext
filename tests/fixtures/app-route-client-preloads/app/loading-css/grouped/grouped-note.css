@@ -1,0 +1,9 @@
+.loading-css-grouped-note {
+  --loading-css-grouped-note: 1;
+}
+
+/* Equal specificity with the boundary's rule: this one must win. */
+.loading-css-grouped {
+  --css-group-winner: page;
+  color: rgb(0, 128, 0);
+}
