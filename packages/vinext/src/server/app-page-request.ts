@@ -11,6 +11,7 @@ import { buildAppStaticParamsTags } from "./implicit-tags.js";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { removeTrailingSlash } from "../utils/base-path.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import {
   loadAppInterceptLayouts,
@@ -799,7 +800,8 @@ export function validateAppPageRouteDynamicParams(
   }
   // A deployed export serves a dynamic page only at the paths its build wrote,
   // whatever generateStaticParams returns now. The prerender that writes them
-  // still checks the generators.
+  // still checks the generators. It records `/about` for the `/about/` that
+  // trailingSlash routes, so compare without the trailing slash.
   if (
     options.isDynamicRoute &&
     options.isProduction &&
@@ -807,7 +809,7 @@ export function validateAppPageRouteDynamicParams(
     process.env.VINEXT_PRERENDER !== "1"
   ) {
     const exported = getRenderedConcreteUrlPathsForRoute(options.routePattern)?.has(
-      options.pathname,
+      removeTrailingSlash(options.pathname),
     );
     return Promise.resolve(exported === true ? null : notFoundResponse());
   }
