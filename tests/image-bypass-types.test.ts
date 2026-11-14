@@ -342,7 +342,7 @@ describe("handleImageOptimization source size limit", () => {
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {
         pulled += 1;
-        controller.enqueue(new Uint8Array(1));
+        controller.enqueue(STATIC_PNG);
       },
     });
     const response = await handleImageOptimization(imageRequest, {
@@ -355,7 +355,9 @@ describe("handleImageOptimization source size limit", () => {
     });
     expect(response.status).toBe(413);
     expect(await response.text()).toBe(TOO_LARGE);
-    expect(pulled).toBeLessThanOrEqual(1);
+    // Only the first chunk is read, to type the source; the stream refills
+    // its queue once.
+    expect(pulled).toBeLessThanOrEqual(2);
   });
 
   it("passes the whole source to the optimizer whatever its chunking and Content-Length", async () => {
@@ -653,9 +655,10 @@ describe("handleImageOptimization source without an image Content-Type", () => {
     expect(sniffImageContentType(bytes(0, 0, 1, 0))).toBe("image/x-icon");
     expect(sniffImageContentType(bytes(0x42, 0x4d))).toBe("image/bmp");
     expect(sniffImageContentType(bytes(0xff, 0x0a))).toBe("image/jxl");
-    expect(
-      sniffImageContentType(bytes(0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63)),
-    ).toBe("image/heic");
+    // An ISOBMFF `ftyp` box is HEIC only when the bytes hold its whole size.
+    const heic = [0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63];
+    expect(sniffImageContentType(bytes(...heic, ...Array(12).fill(0)))).toBe("image/heic");
+    expect(sniffImageContentType(bytes(...heic))).toBeNull();
     expect(sniffImageContentType(new TextEncoder().encode("<svg xmlns"))).toBe("image/svg+xml");
     expect(sniffImageContentType(new TextEncoder().encode("<!DOCTYPE html>"))).toBeNull();
     expect(sniffImageContentType(new Uint8Array())).toBeNull();
@@ -690,13 +693,243 @@ describe("handleImageOptimization source without an image Content-Type", () => {
   });
 
   it("still rejects a source whose bytes are not an allowed image", async () => {
-    for (const body of ["<!DOCTYPE html><p>page</p>", "<svg onload=alert(1)></svg>"]) {
+    for (const [body, message] of [
+      ["<!DOCTYPE html><p>page</p>", "The requested resource isn't a valid image."],
+      ["<svg onload=alert(1)></svg>", '"url" parameter is valid but image type is not allowed'],
+    ]) {
       const response = await handleImageOptimization(imageRequest("/page"), {
         fetchAsset: async () =>
           new Response(body, { status: 200, headers: { "Content-Type": "text/html" } }),
       });
       expect(response.status, body).toBe(400);
-      expect(await response.text()).toBe('"url" parameter is valid but image type is not allowed');
+      expect(await response.text(), body).toBe(message);
     }
+  });
+});
+
+// Next.js types a source by its bytes, whatever its name or Content-Type
+// (detectContentType in
+// packages/next/src/server/image-optimizer/detect-content-type.ts), so an SVG
+// is an SVG under any label. Observed with `next start` on next@16.4.5.
+describe("handleImageOptimization source typed by its bytes", () => {
+  const SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64"/></svg>';
+  const NOT_ALLOWED = '"url" parameter is valid but image type is not allowed';
+  const imageRequest = new Request("http://localhost/_next/image?url=%2Fimage&w=640&q=75", {
+    headers: { Accept: "image/webp" },
+  });
+
+  function source(body: BodyInit, contentType: string | null) {
+    const transformed: string[] = [];
+    return {
+      transformed,
+      fetchAsset: async () => {
+        const response = new Response(body, { status: 200 });
+        if (contentType === null) response.headers.delete("Content-Type");
+        else response.headers.set("Content-Type", contentType);
+        return response;
+      },
+      transformImage: async (input: ReadableStream, options: { format: string }) => {
+        transformed.push(new TextDecoder().decode(await new Response(input).arrayBuffer()));
+        return new Response("transformed", { headers: { "Content-Type": options.format } });
+      },
+    };
+  }
+
+  it("finds an SVG root element as Next.js' detector does", async () => {
+    const svgRoot = /<svg\s([^>"']|"[^"]*"|'[^']*')*>/;
+    for (const text of [
+      '<!-- c --><svg width="1">',
+      "<!-- c --><svg\n>",
+      "<!-- c --><svg a=\">\" b='>'>",
+      '<!-- c --><svg a=">"',
+      '<!-- c --><svg a="unclosed <svg b>',
+      "<!-- c --><svgx a>",
+      "<!-- c --><svg>",
+      "<!-- c --><svg ",
+    ]) {
+      const { fetchAsset } = source(text, "image/png");
+      const response = await handleImageOptimization(imageRequest, { fetchAsset }, undefined, {
+        dangerouslyAllowSVG: true,
+      });
+      expect(response.status === 200, text).toBe(svgRoot.test(text));
+    }
+  });
+
+  it("does not take text with `ftyp` at offset 4 for an ISOBMFF image", () => {
+    const encode = (text: string) => new TextEncoder().encode(text);
+    expect(sniffImageContentType(encode(`<!--ftypavif-->${SVG}`))).toBeNull();
+    expect(sniffImageContentType(encode(`<!--ftypheic-->${SVG}`))).toBeNull();
+    const avif = [0, 0, 0, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66];
+    expect(sniffImageContentType(new Uint8Array([...avif, ...Array(16).fill(0)]))).toBe(
+      "image/avif",
+    );
+  });
+
+  for (const [body, contentType] of [
+    [SVG, "image/png"],
+    [`<!--ftypavif-->${SVG}`, "image/avif"],
+    [`<!--ftypavif-->${SVG}`, "application/octet-stream"],
+    [`<!--ftypavif-->${SVG}`, null],
+    [`<!-- logo -->${SVG}`, "image/png"],
+    [`﻿\n  ${SVG}`, "image/webp"],
+  ] as const) {
+    for (const optimizer of [true, false]) {
+      it(`rejects ${JSON.stringify(body.slice(0, 16))} typed ${contentType} ${optimizer ? "before the optimizer" : "without an optimizer"}`, async () => {
+        const { transformed, fetchAsset, transformImage } = source(body, contentType);
+        const response = await handleImageOptimization(
+          imageRequest,
+          optimizer ? { fetchAsset, transformImage } : { fetchAsset },
+        );
+        expect(response.status).toBe(400);
+        expect(await response.text()).toBe(NOT_ALLOWED);
+        expect(transformed).toEqual([]);
+      });
+    }
+
+    it(`serves ${JSON.stringify(body.slice(0, 16))} typed ${contentType} as SVG with dangerouslyAllowSVG`, async () => {
+      const { transformed, fetchAsset, transformImage } = source(body, contentType);
+      const response = await handleImageOptimization(
+        imageRequest,
+        { fetchAsset, transformImage },
+        undefined,
+        { dangerouslyAllowSVG: true },
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("image/svg+xml");
+      // Compare bytes: text() would drop a byte order mark.
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(new TextEncoder().encode(body));
+      expect(transformed).toEqual([]);
+    });
+  }
+
+  it("rejects markup typed as an image even with dangerouslyAllowSVG", async () => {
+    const utf16Svg = new Uint8Array([
+      0xff,
+      0xfe,
+      ...Array.from(SVG, (char) => [char.charCodeAt(0), 0]).flat(),
+    ]);
+    for (const body of ["<!DOCTYPE html><p>page</p>", utf16Svg]) {
+      const { transformed, fetchAsset, transformImage } = source(body, "image/png");
+      const response = await handleImageOptimization(
+        imageRequest,
+        { fetchAsset, transformImage },
+        undefined,
+        { dangerouslyAllowSVG: true },
+      );
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe("The requested resource isn't a valid image.");
+      expect(transformed).toEqual([]);
+    }
+  });
+
+  it("reads a whole ftyp box past the first 1000 bytes to type the source", async () => {
+    const box = new Uint8Array(2_000);
+    box.set([0, 0, 0x07, 0xd0, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
+    for (const [bytes, status] of [
+      [box, 200],
+      [box.subarray(0, 1_500), 400],
+    ] as const) {
+      const transformed: number[] = [];
+      const response = await handleImageOptimization(imageRequest, {
+        fetchAsset: async () =>
+          new Response(chunkedSource(bytes, 100).body, {
+            headers: { "Content-Type": "application/octet-stream" },
+          }),
+        transformImage: async (input, options) => {
+          transformed.push((await new Response(input).arrayBuffer()).byteLength);
+          return new Response("transformed", { headers: { "Content-Type": options.format } });
+        },
+      });
+      expect(response.status).toBe(status);
+      expect(transformed).toEqual(status === 200 ? [bytes.byteLength] : []);
+    }
+  });
+
+  it("types a source by its label rather than an ftyp box past what is held", async () => {
+    const box = new Uint8Array(1_048_577);
+    box.set([0, 0x10, 0, 0x01, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
+    for (const [label, status, chunkSize] of [
+      ["application/octet-stream", 400, 64 * 1024],
+      ["application/octet-stream", 400, box.byteLength],
+      ["image/avif", 200, 64 * 1024],
+    ] as const) {
+      const source = chunkedSource(box, chunkSize);
+      const response = await handleImageOptimization(imageRequest, {
+        fetchAsset: async () => new Response(source.body, { headers: { "Content-Type": label } }),
+        transformImage: async (input, options) => {
+          await new Response(input).arrayBuffer();
+          return new Response("transformed", { headers: { "Content-Type": options.format } });
+        },
+      });
+      expect(response.status, `${label}, ${chunkSize}-byte chunks`).toBe(status);
+      // Rejected from its first chunk, not read on to the box's end.
+      if (status === 400) expect(source.pulled, label).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it("does not type a source by an ftyp box past images.maximumResponseBody", async () => {
+    const box = new Uint8Array(2_000);
+    box.set([0, 0, 0x07, 0xd0, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]);
+    for (const chunkSize of [100, 2_000]) {
+      const response = await handleImageOptimization(
+        imageRequest,
+        {
+          fetchAsset: async () =>
+            new Response(chunkedSource(box, chunkSize).body, {
+              headers: { "Content-Type": "application/octet-stream" },
+            }),
+          transformImage: async () => new Response("transformed"),
+        },
+        undefined,
+        { maximumResponseBody: 100 },
+      );
+      expect(response.status, `${chunkSize}-byte chunks`).toBe(400);
+    }
+  });
+
+  it("finds an SVG root element only within images.maximumResponseBody", async () => {
+    const body = new TextEncoder().encode(`${"x".repeat(50)}${SVG}`);
+    for (const chunkSize of [10, body.byteLength]) {
+      const response = await handleImageOptimization(
+        imageRequest,
+        { fetchAsset: async () => new Response(chunkedSource(body, chunkSize).body) },
+        undefined,
+        { maximumResponseBody: 40, dangerouslyAllowSVG: true },
+      );
+      expect(response.status, `${chunkSize}-byte chunks`).toBe(400);
+    }
+  });
+
+  it("cancels a source it rejects by its bytes", async () => {
+    for (const body of [SVG, "<!DOCTYPE html><p>page</p>"]) {
+      let cancelled = false;
+      const response = await handleImageOptimization(imageRequest, {
+        fetchAsset: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              // More than detection reads, and never closed.
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(body.padEnd(2_000)));
+              },
+              cancel() {
+                cancelled = true;
+              },
+            }),
+            { headers: { "Content-Type": "image/png" } },
+          ),
+      });
+      expect(response.status).toBe(400);
+      expect(cancelled, body).toBe(true);
+    }
+  });
+
+  it("labels an image by its bytes rather than its Content-Type", async () => {
+    const response = await handleImageOptimization(imageRequest, {
+      fetchAsset: source(STATIC_GIF, "image/jpeg").fetchAsset,
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("image/gif");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(STATIC_GIF);
   });
 });
