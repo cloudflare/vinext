@@ -825,7 +825,13 @@ export async function handleSsr(
           flightRoot = null;
           beforeInteractiveInlineScripts.length = 0;
           clearServerInsertedHTML();
-          resetStreamedClientReferences(streamedReferences, routeReferences);
+          // The caught boundaries replace their slots' files, which the
+          // route's linked stylesheets include. Next.js sends an error shell
+          // without stylesheets here, so link only what this render reads.
+          resetStreamedClientReferences(
+            streamedReferences,
+            routeReferences && { ...routeReferences, linked: [] },
+          );
           const boundaries: CaughtNotFoundBoundaries = {
             ids: new Set(caughtNotFoundBoundaries),
             rendered: new Set(),

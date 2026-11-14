@@ -260,6 +260,21 @@ describe("App Router production SSR route client reference preloads", () => {
     }
   });
 
+  it("links no stylesheet of a slot page its own not-found boundary replaces", async () => {
+    const mainHref = cssHref("--loading-css-slot-main");
+    const panelHref = cssHref("--loading-css-slot-panel");
+    expect(mainHref).not.toBe(panelHref);
+    for (const label of ["cold", "warm"]) {
+      const response = await fetch(`${baseUrl}/loading-css/slot`);
+      const html = await response.text();
+      expect(html, label).toContain('data-testid="slot-panel-not-found"');
+      expect(html, label).toContain('data-testid="slot-main-note"');
+      // The route's page still renders, and links its stylesheet.
+      expect(stylesheetHrefs(html), label).toContain(mainHref);
+      expect(html, label).not.toContain(`href="${panelHref}"`);
+    }
+  });
+
   it("streams a client component that awaits at its top level, as Next.js does", async () => {
     const read = () => readStream(`${baseUrl}/streamed`);
 

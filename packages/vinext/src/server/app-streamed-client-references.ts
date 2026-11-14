@@ -218,13 +218,14 @@ export function createStreamedClientReferences(
 
 /**
  * Forget the stylesheets a discarded render linked, so the render that
- * replaces it links them again.
+ * replaces it, from `route`'s references, links them again.
  */
 export function resetStreamedClientReferences(
   render: StreamedClientReferences | null,
   route: RouteClientReferenceSet | undefined,
 ): void {
   if (!render) return;
+  render.positions = new Map(stylesheetOrder(route).map((id, index) => [id, index]));
   render.unlinked = unlinkedReferences(route, render.streamed);
   render.linkedStylesheets.clear();
 }
