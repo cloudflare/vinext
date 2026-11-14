@@ -232,6 +232,23 @@ describe("App Router production SSR route client reference preloads", () => {
     },
   );
 
+  it("links a page's client component stylesheets in import order, under loading.js", async () => {
+    const firstHref = cssHref("--loading-css-cascade-first");
+    const secondHref = cssHref("--loading-css-cascade-second");
+    expect(firstHref).not.toBe(secondHref);
+    for (const label of ["cold", "warm"]) {
+      const { first, html } = await readStream(`${baseUrl}/loading-css/cascade`);
+      expect(first, label).toContain('data-testid="loading-css-cascade-fallback"');
+      expect(html, label).toContain('data-testid="loading-css-cascade-second"');
+      // The route's not-found boundary preloads Second first; the page
+      // imports it last, so its rule wins.
+      const hrefs = stylesheetHrefs(first);
+      expect(hrefs.indexOf(firstHref), label).toBeGreaterThanOrEqual(0);
+      expect(hrefs.indexOf(secondHref), label).toBeGreaterThan(hrefs.indexOf(firstHref));
+      expect(winningRule(first, ".loading-css-cascade"), label).toBe("second");
+    }
+  });
+
   it("streams a client component that awaits at its top level, as Next.js does", async () => {
     const read = () => readStream(`${baseUrl}/streamed`);
 

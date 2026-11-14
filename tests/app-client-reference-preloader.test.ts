@@ -183,9 +183,9 @@ describe("app client reference preloader", () => {
 });
 
 describe("resolveRouteClientReferences", () => {
-  // File 0 is a boundary of "/" (an error.tsx, say), file 1 its page, which
-  // imports "link", "nav" and "chart" statically and "lazy" through a dynamic
-  // import.
+  // File 0 is a boundary of "/" (a not-found.tsx, say), file 1 its page,
+  // which imports "link", "chart" and "nav" statically, in that order, and
+  // "lazy" through a dynamic import.
   const plan = {
     references: ["link", "nav", "chart", "search", "lazy"],
     always: [0],
@@ -201,9 +201,10 @@ describe("resolveRouteClientReferences", () => {
     expect(resolveRouteClientReferences(plan, "/")).toEqual({
       references: ["link", "nav", "chart", "lazy"],
       streamed: ["chart"],
-      // In import order. Not "lazy" (dynamically imported) or "search" (only
-      // a boundary imports it); "link" is every render's, and the page's too.
-      linked: ["link", "nav", "chart"],
+      // In the page's import order, though the boundary preloads "nav"
+      // first. Not "lazy" (dynamically imported) or "search" (only a
+      // boundary imports it); "link" is every render's, and the page's too.
+      linked: ["link", "chart", "nav"],
     });
   });
 

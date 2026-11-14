@@ -52,11 +52,11 @@ export type StreamedClientReferences = {
   /** next.config's crossOrigin for the assets it links; "" when unset. */
   crossOrigin: AssetCrossOrigin;
   streamed: ReadonlySet<string>;
-  /** Each of the route's references' position in import order. */
+  /** Each of the route's references' position in the order its stylesheets link. */
   positions: ReadonlyMap<string, number>;
   /**
    * Streamed and linked references (see `RouteClientReferenceSet`) whose
-   * stylesheets aren't linked yet, in import order.
+   * stylesheets aren't linked yet, in the order `positions` gives.
    */
   unlinked: string[];
   linkedStylesheets: Set<string>;
@@ -178,6 +178,18 @@ export function wrapClientReferenceRequire(
   globalThis.__vite_rsc_client_require__ = wrapped;
 }
 
+/**
+ * The route's references in the order their stylesheets link: import order,
+ * with the linked references in their own order (a boundary may preload one a
+ * page imports last first), each in a place one of them had.
+ */
+function stylesheetOrder(route: RouteClientReferenceSet | undefined): string[] {
+  if (!route) return [];
+  const linked = new Set(route.linked);
+  let next = 0;
+  return route.references.map((id) => (linked.has(id) ? route.linked[next++]! : id));
+}
+
 // The references whose stylesheets a render links, rendered or not.
 function unlinkedReferences(
   route: RouteClientReferenceSet | undefined,
@@ -185,7 +197,7 @@ function unlinkedReferences(
 ): string[] {
   if (!route) return [];
   const linked = new Set(route.linked);
-  return route.references.filter((id) => streamed.has(id) || linked.has(id));
+  return stylesheetOrder(route).filter((id) => streamed.has(id) || linked.has(id));
 }
 
 export function createStreamedClientReferences(
@@ -198,7 +210,7 @@ export function createStreamedClientReferences(
     nonce,
     crossOrigin,
     streamed,
-    positions: new Map(route?.references.map((id, index) => [id, index])),
+    positions: new Map(stylesheetOrder(route).map((id, index) => [id, index])),
     unlinked: unlinkedReferences(route, streamed),
     linkedStylesheets: new Set(),
   };

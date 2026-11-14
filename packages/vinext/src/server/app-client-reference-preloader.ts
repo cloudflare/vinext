@@ -69,9 +69,10 @@ export type RouteClientReferenceSet = {
   references: string[];
   streamed: string[];
   /**
-   * The references the route's rendered files import statically, in import
-   * order, whose stylesheets a render links whether or not it reaches them
-   * before its shell, as Next.js links each segment's CSS.
+   * The references the route's rendered files import statically, in the
+   * order they render and import them, which may differ from `references`'.
+   * A render links their stylesheets whether or not it reaches them before its
+   * shell, as Next.js links each segment's CSS.
    */
   linked: string[];
 };
@@ -101,20 +102,23 @@ export function resolveRouteClientReferences(
   for (const file of files) {
     for (const index of plan.files[file]!) indices.add(index);
   }
-  const linkedIndices = new Set<number>();
-  for (const file of renderedFiles) {
-    for (const index of plan.staticFiles[file] ?? []) linkedIndices.add(index);
-  }
   const asyncIndices = new Set(plan.async);
   const references: string[] = [];
   const streamed: string[] = [];
-  const linked: string[] = [];
   for (const index of indices) {
     const id = plan.references[index]!;
     references.push(id);
     if (asyncIndices.has(index)) streamed.push(id);
-    if (linkedIndices.has(index)) linked.push(id);
   }
+  // In the rendered files' own import order, which a boundary preloading one
+  // of them first doesn't change.
+  const linkedIndices = new Set<number>();
+  for (const file of renderedFiles) {
+    for (const index of plan.staticFiles[file] ?? []) {
+      if (indices.has(index)) linkedIndices.add(index);
+    }
+  }
+  const linked = Array.from(linkedIndices, (index) => plan.references[index]!);
   return { references, streamed, linked };
 }
 

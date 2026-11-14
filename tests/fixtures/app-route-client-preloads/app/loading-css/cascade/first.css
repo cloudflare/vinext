@@ -1,0 +1,4 @@
+.loading-css-cascade {
+  --loading-css-cascade-first: 1;
+  --css-group-winner: first;
+}

@@ -225,7 +225,7 @@ export type ClientReferencePreloadPlan = {
   routes: Map<string, number[]>;
   /**
    * Each route pattern's files that render whatever its render does (see
-   * `renderedRouteFiles`), as indices into `files`.
+   * `renderedRouteFiles`), in render order, as indices into `files`.
    */
   rendered: Map<string, number[]>;
   /**
@@ -331,7 +331,7 @@ export function collectClientReferencePreloadPlan(options: {
     rendered.set(route.pattern, [
       ...new Set([
         ...(rendered.get(route.pattern) ?? []),
-        ...renderedRouteFiles(route).map(fileIndex),
+        ...inRenderOrder(renderedRouteFiles(route)).map(fileIndex),
       ]),
     ]);
     for (const intercept of [

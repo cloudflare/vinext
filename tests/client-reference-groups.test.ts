@@ -454,16 +454,17 @@ describe("collectClientReferencePreloadPlan", () => {
       ],
     });
 
-    const reached = (indices: number[]) => indices.flatMap((file) => plan.files[file]!).sort();
+    const reached = (indices: number[]) => indices.flatMap((file) => plan.files[file]!);
     expect(reached(plan.routes.get("/dash")!)).toHaveLength(Object.keys(files).length);
-    // A slot's own layout wraps only its page, not its default.
+    // In render order, outer segments first. A slot's own layout wraps only
+    // its page, not its default.
     expect(reached(plan.rendered.get("/dash")!)).toEqual([
-      "/feedDefault-ref.tsx",
       "/layout-ref.tsx",
+      "/template-ref.tsx",
       "/page-ref.tsx",
       "/teamLayout-ref.tsx",
+      "/feedDefault-ref.tsx",
       "/teamPage-ref.tsx",
-      "/template-ref.tsx",
     ]);
   });
 
