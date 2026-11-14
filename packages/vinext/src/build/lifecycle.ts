@@ -243,6 +243,25 @@ export function prepareBuildOutput(
   });
 }
 
+/** Remove `dir` except files at the same path under `keepDir`. */
+function removeBuildMetadata(dir: string, keepDir: string | null): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const file = path.join(dir, entry.name);
+    const keepFile = keepDir && path.join(keepDir, entry.name);
+    if (entry.isDirectory()) removeBuildMetadata(file, keepFile);
+    else if (!keepFile || !fs.existsSync(keepFile)) fs.rmSync(file, { force: true });
+  }
+  try {
+    fs.rmdirSync(dir);
+  } catch {}
+}
+
 async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContext): Promise<void> {
   if (context.hasAppDir && context.hasPagesDir && !context.skipHybridPagesBundle) {
     await withEnvironment(
@@ -311,6 +330,19 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
         isConfiguredCdnResponsePolicyHeader(context.cacheConfig, name),
       routeRootConfig: buildOutput,
     });
+  }
+
+  // A static export deploys the client output as is, with no server to keep
+  // the build metadata in `.vite/` private, and Next.js's `out/` has no such
+  // files. Nothing reads them once the build is done. Files `public/.vite/`
+  // copied in stay, as Next.js copies all of public/.
+  if (context.nextConfig.output === "export") {
+    const clientOutDir = buildOutput.clientOutDir ?? path.join("dist", "client");
+    const publicDir = builder.environments.client?.config.publicDir;
+    removeBuildMetadata(
+      path.resolve(context.root, clientOutDir, ".vite"),
+      publicDir ? path.join(publicDir, ".vite") : null,
+    );
   }
 
   // Next.js runs writeStandaloneDirectory after static generation and passes it
