@@ -773,7 +773,11 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
    * Absent in the request-only stage, which has no route modules and sends
    * route tree prefetches to the full graph.
    */
-  isDynamicParamsMiss?: (route: TRoute, params: AppPageParams) => Promise<boolean>;
+  isDynamicParamsMiss?: (
+    route: TRoute,
+    params: AppPageParams,
+    pathname: string,
+  ) => Promise<boolean>;
   ensureInstrumentation?: (ctx: ExecutionContextLike | null) => Promise<void>;
   /**
    * Register cache adapters configured via the vinext() `cache` option. Wired
@@ -2994,7 +2998,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       canResumeRoutingAfterMiss() &&
       !isActiveDraftMode() &&
       options.isDynamicParamsMiss &&
-      (await runStaticParamsCheckDetached(() => options.isDynamicParamsMiss!(route, params)))
+      (await runStaticParamsCheckDetached(() =>
+        options.isDynamicParamsMiss!(route, params, cleanPathname),
+      ))
     ) {
       // The rejected match seeded its root params before routing finished.
       setRootParams(null);

@@ -5229,7 +5229,12 @@ describe("createAppRscHandler", () => {
         "private, no-cache, no-store, max-age=0, must-revalidate",
       );
       expect(renderNotFound).toHaveBeenCalledWith(expect.objectContaining({ route: null }));
-      expect(isDynamicParamsMiss).toHaveBeenCalledWith(route, { slug: "rejected" });
+      expect(isDynamicParamsMiss).toHaveBeenCalledWith(
+        route,
+        { slug: "rejected" },
+        // The pathname without the basePath, as the exported paths hold it.
+        "/products/rejected",
+      );
 
       const allowed = await handler(await treeRequest("/docs/products/allowed"), null);
       expect(allowed.status).toBe(200);

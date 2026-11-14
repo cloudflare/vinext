@@ -11,6 +11,8 @@ import { buildAppStaticParamsTags } from "./implicit-tags.js";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { removeTrailingSlash } from "../utils/base-path.js";
+import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import {
   loadAppInterceptLayouts,
   loadAppInterceptNotFound,
@@ -761,8 +763,26 @@ type ValidateAppPageRouteDynamicParamsOptions = {
   isDynamicRoute: boolean;
   isProduction: boolean;
   params: AppPageParams;
+  /** The request's route-match pathname, compared with the exported paths. */
+  pathname: string;
+  routePattern: string;
   routeSegments?: readonly string[];
 };
+
+/**
+ * Whether a dynamic page admits only the params its generateStaticParams
+ * lists. Under `output: "export"` Next.js writes only those params as files
+ * and rejects `dynamicParams: true`, so the host answers 404 for every other
+ * URL: a production export behaves as `dynamicParams = false`.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+ */
+export function isAppPageStaticParamsOnly(
+  dynamicParamsConfig: boolean | undefined,
+  isProduction: boolean,
+): boolean {
+  if (dynamicParamsConfig === false) return true;
+  return isProduction && process.env.__NEXT_CONFIG_OUTPUT === "export";
+}
 
 /**
  * Next.js rejects a `dynamicParams = false` miss while routing, before any of
@@ -778,6 +798,21 @@ export function validateAppPageRouteDynamicParams(
   if (options.isProduction && options.dynamicConfig === "force-dynamic") {
     return Promise.resolve(null);
   }
+  // A deployed export serves a dynamic page only at the paths its build wrote,
+  // whatever generateStaticParams returns now. The prerender that writes them
+  // still checks the generators. It records `/about` for the `/about/` that
+  // trailingSlash routes, so compare without the trailing slash.
+  if (
+    options.isDynamicRoute &&
+    options.isProduction &&
+    process.env.__NEXT_CONFIG_OUTPUT === "export" &&
+    process.env.VINEXT_PRERENDER !== "1"
+  ) {
+    const exported = getRenderedConcreteUrlPathsForRoute(options.routePattern)?.has(
+      removeTrailingSlash(options.pathname),
+    );
+    return Promise.resolve(exported === true ? null : notFoundResponse());
+  }
   // Next.js runs generateStaticParams in a work store of its own: the route's
   // fetchCache and implicit tags, and no revalidate or force-dynamic default.
   // Callers run this check apart from the request, so these stay out of it.
@@ -787,7 +822,10 @@ export function validateAppPageRouteDynamicParams(
   setCurrentFetchRevalidate(null);
   setCurrentForceDynamicFetchDefault(false);
   return validateAppPageDynamicParams({
-    enforceStaticParamsOnly: options.dynamicParamsConfig === false,
+    enforceStaticParamsOnly: isAppPageStaticParamsOnly(
+      options.dynamicParamsConfig,
+      options.isProduction,
+    ),
     generateStaticParams: options.generateStaticParams,
     isDynamicRoute: options.isDynamicRoute,
     params: options.params,

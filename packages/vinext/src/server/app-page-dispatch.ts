@@ -1260,6 +1260,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isDynamicRoute: route.isDynamic,
         isProduction: options.isProduction,
         params: options.staticParamsValidationParams ?? options.params,
+        pathname: options.cleanPathname,
+        routePattern: route.pattern,
       }),
     );
     if (dynamicParamsResponse) {
