@@ -260,6 +260,12 @@ function generateRouteClientReferencesExport(
     routes: Object.fromEntries(plan.preloads.routes),
     routeless: plan.preloads.routeless,
     async: asyncPlaceholder,
+    stylesheets: Object.fromEntries(
+      [...plan.preloads.stylesheets].map(([pattern, referenceIds]) => [
+        pattern,
+        toIndices(referenceIds),
+      ]),
+    ),
   };
   return {
     code: `export const routeClientReferences = ${JSON.stringify(manifest)};\n`,

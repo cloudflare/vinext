@@ -63,4 +63,24 @@ describe("App Router production SSR streamed client references with inline CSS",
     expect(head).toMatch(/<style data-vinext-inline-css[^>]*>[^<]*\.streamed-panel/);
     expect(html).not.toMatch(/<link\b[^>]*\brel="stylesheet"[^>]*>/);
   });
+
+  it("inlines the stylesheet of a client component rendering after the shell", async () => {
+    const response = await fetch(`${baseUrl}/late-css/loading`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+
+    expect(html).toContain('data-testid="late-loading-panel"');
+    const head = html.slice(0, html.indexOf("</head>"));
+    expect(head).toMatch(/<style data-vinext-inline-css[^>]*>[^<]*\.late-loading-panel/);
+    expect(html).not.toMatch(/<link\b[^>]*\bas="style"[^>]*>/);
+  });
+
+  it("inlines a stylesheet it shares with a Server Component once, where the server links it", async () => {
+    const html = await (await fetch(`${baseUrl}/late-css/shared`)).text();
+
+    expect(html.match(/<style data-vinext-inline-css[^>]*>[^<]*\.late-shared\{/g)).toHaveLength(1);
+    expect(html).toMatch(
+      /<style data-vinext-inline-css[^>]*data-precedence="vite-rsc\/importer-resources"[^>]*>[^<]*\.late-shared\{/,
+    );
+  });
 });

@@ -59,6 +59,7 @@ import {
   createNavigationRuntimeRscCompatibilityScript,
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
+  collectStylesheetHrefs,
   createTickBufferedTransform,
   rewriteInlineCssStylesheetLinks,
   waitAtLeastOneReactRenderTask,
@@ -86,6 +87,7 @@ import {
   resetStreamedClientReferences,
   renderStreamedStylesheets,
   runWithStreamedClientReferences,
+  takeStreamedStylesheets,
   wrapClientReferenceRequire,
 } from "./app-streamed-client-references.js";
 import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
@@ -219,15 +221,10 @@ function renderSsrErrorDocumentShell(
 
 // Client references load through a wrapped loader, which must see every load
 // from the first. It hints their scripts with the render's nonce, and streams
-// the references whose modules evaluate asynchronously. The build fills
-// `async` in as chunks render; should it ever not (a plugin rewrote the
-// placeholder first), nothing streams. Development hints no scripts.
+// the references whose modules evaluate asynchronously. Development hints no
+// scripts.
 if (process.env.NODE_ENV === "production") {
-  const async = routeClientReferences?.async;
   wrapClientReferenceRequire(
-    new Set(
-      Array.isArray(async) ? async.map((index) => routeClientReferences!.references[index]!) : [],
-    ),
     (id) => (clientReferences as Record<string, (() => Promise<unknown>) | undefined>)[id],
   );
 }
@@ -955,7 +952,7 @@ export async function handleSsr(
             options?.scriptNonce,
           );
         };
-        const getInsertedHTML = (): string => {
+        const getInsertedHTML = (headHtml: string): string => {
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
           const errorMetaHTML = errorMetaRenderer.flush();
           const initialDevServerErrorHTML = createInitialDevServerErrorScript(
@@ -994,7 +991,11 @@ export async function handleSsr(
               // The transform inlines Fizz's stylesheet links before it adds
               // this HTML, so inline the streamed ones here.
               rewriteInlineCssStylesheetLinks(
-                renderStreamedStylesheets(streamedReferences),
+                renderStreamedStylesheets(
+                  streamedReferences,
+                  streamedStylesheets,
+                  collectStylesheetHrefs(headHtml),
+                ),
                 inlineCssManifest,
                 "",
                 options?.scriptNonce,
@@ -1017,9 +1018,20 @@ export async function handleSsr(
         const getBeforeInteractiveHeadHTML = (): string =>
           renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
 
+        let stillRendering = false;
         if (shouldDelayInitialHtmlPull) {
+          let renderFinished = false;
+          const markRenderFinished = (): void => {
+            renderFinished = true;
+          };
+          void renderComplete.then(markRenderFinished, markRenderFinished);
           await waitAtLeastOneReactRenderTask();
+          stillRendering = !renderFinished;
         }
+
+        // React writes its shell as the stream below starts flowing, which a
+        // response body read later doesn't delay, so decide now.
+        const streamedStylesheets = takeStreamedStylesheets(streamedReferences, stillRendering);
 
         const finalStream = deferUntilStreamConsumed(
           htmlStream.pipeThrough(
