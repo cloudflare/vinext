@@ -848,9 +848,14 @@ async function handleRequestImpl(
       if (sharedResponseHeaders && sharedOuterPolicyHeaders) {
         reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedOuterPolicyHeaders);
       }
-      // Middleware answered in this uncached request stage, so a staged
-      // response stage and its shared cache never see this request.
-      if (!forceCacheBypass && middlewareAnswered && !responseStageDispatched) {
+      // Middleware or a next.config redirect or external rewrite answered in
+      // this uncached request stage, so a staged response stage and its
+      // shared cache never see this request. A fallback external rewrite
+      // answers after the response stage rendered a miss, and replaces it.
+      if (
+        !forceCacheBypass &&
+        ((middlewareAnswered && !responseStageDispatched) || result.configAnswered)
+      ) {
         response = withRequestStageBypassCacheState(response);
       }
       if (probeMode && probeRoute && !responseStageDispatched) {
