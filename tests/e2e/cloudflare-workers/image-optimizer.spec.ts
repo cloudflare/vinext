@@ -141,12 +141,23 @@ test.describe("Cloudflare Workers /_next/image images.maximumResponseBody", () =
   // next.config.mjs sets the limit to 2,000,000 bytes. Next.js's internal
   // image fetch answers 413 past it (`fetchInternalImage`); `next start` on
   // next@16.2.7 leaves the request hanging on an unhandled rejection instead.
-  test("answers 413 for a source past the limit", async ({ request }) => {
-    const response = await request.get(imagePath("/image-too-large.gif"), {
-      headers: { Accept: "image/webp,*/*" },
-      maxRedirects: 0,
+  // The limit holds for every type, and comes before the type check, so an
+  // SVG past it is a 413 even without dangerouslyAllowSVG.
+  for (const source of [
+    "/image-too-large.gif",
+    "/image-too-large.jpg",
+    "/image-too-large.svg",
+    "/image-too-large-svg.png",
+  ]) {
+    test(`answers 413 for ${source} past the limit`, async ({ request }) => {
+      const response = await request.get(imagePath(source), {
+        headers: { Accept: "image/webp,*/*" },
+        maxRedirects: 0,
+      });
+      expect(response.status()).toBe(413);
+      expect(await response.text()).toBe(
+        '"url" parameter is valid but internal response is invalid',
+      );
     });
-    expect(response.status()).toBe(413);
-    expect(await response.text()).toBe('"url" parameter is valid but internal response is invalid');
-  });
+  }
 });

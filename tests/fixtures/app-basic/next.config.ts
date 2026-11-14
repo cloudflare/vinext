@@ -56,6 +56,9 @@ const nextConfig: NextConfig = {
       { pathname: "/heart.png", search: "?v=listed" },
       { pathname: "/logo/logo.svg", search: "?.png" },
     ],
+    // Small enough for a checked-in source to pass it; logo/too-large-svg.png
+    // does. Coverage: tests/e2e/app-router-prod/image-middleware.spec.ts
+    maximumResponseBody: 2_000_000,
   },
 
   // Used by E2E: app-router/use-cache.spec.ts, app-router-prod/use-cache.spec.ts —
