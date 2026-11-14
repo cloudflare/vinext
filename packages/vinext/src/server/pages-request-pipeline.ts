@@ -47,6 +47,7 @@ import {
 } from "../utils/asset-prefix.js";
 import {
   detectPathnameLocale,
+  extractLocaleFromUrl,
   normalizeDefaultLocalePathname,
   stripI18nLocaleForApiRoute,
 } from "./pages-i18n.js";
@@ -68,7 +69,7 @@ import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classifi
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
 import { setFrameworkRequestRoute } from "./request-tracing.js";
 import { VINEXT_PRERENDER_NOT_FOUND_HEADER, VINEXT_PRERENDER_REWRITTEN_HEADER } from "./headers.js";
-import { isPrerenderNotFoundRequest } from "./prerender-not-found.js";
+import { isPrerenderNotFoundPathname, isPrerenderNotFoundRequest } from "./prerender-not-found.js";
 
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
   return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
@@ -553,6 +554,14 @@ export async function runPagesRequest(
   // Read before middleware runs: its request-header override can drop the
   // prerender step's 404 marker, which is Vinext's, not the app's.
   const isPrerenderNotFound = isPrerenderNotFoundRequest(request);
+  // The path binds the marker to that request, as in the page handler: a
+  // same-origin subrequest that forwards the incoming headers still matches
+  // its own route.
+  const isPrerenderNotFoundPath =
+    isPrerenderNotFound &&
+    isPrerenderNotFoundPathname(
+      i18nConfig ? extractLocaleFromUrl(pathname, i18nConfig).url : pathname,
+    );
   const originalResolvedUrl = pathname + search;
   let resolvedUrl = originalResolvedUrl;
   let resolvedPathnameIsRequestPathname = true;
@@ -957,7 +966,7 @@ export async function runPagesRequest(
   let pageMatch =
     !isOutsideBasePathUnclaimed() &&
     deps.matchPageRoute &&
-    !(resolvedPathnameIsRequestPathname && isPrerenderNotFound)
+    !(resolvedPathnameIsRequestPathname && isPrerenderNotFoundPath)
       ? deps.matchPageRoute(resolvedPathname, request)
       : null;
   // matchPageRoute is a route-table scan; only re-run it below if afterFiles
