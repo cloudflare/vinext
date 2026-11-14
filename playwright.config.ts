@@ -118,6 +118,7 @@ const projectServers = {
       "app-router-prod/rsc-miss-document.spec.ts",
       "app-router-prod/image-local-patterns.spec.ts",
       "app-router-prod/image-source-cache-control.spec.ts",
+      "app-router-prod/image-sizing-warning.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
       "app-router/tsconfig-exact-path.spec.ts",

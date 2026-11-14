@@ -25,6 +25,7 @@ import type {
   StaticImageData,
   StaticRequire,
 } from "@vinext/types/next/upstream/dist/shared/lib/get-img-props";
+import { warnIfImageAspectRatioDistorted } from "./image-aspect-ratio.js";
 import {
   __dangerouslyAllowSVG,
   __globallyUnoptimized,
@@ -228,6 +229,9 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
             currentOnLoadingComplete?.(img);
           }
         }
+        // Ported from Next.js handleLoading: packages/next/src/client/image-component.tsx
+        // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/image-component.tsx
+        if (__isDev) warnIfImageAspectRatioDistorted(img);
       }
       didInsertRef.current = true;
     }
@@ -235,28 +239,19 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
 
   // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
   // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
-  const handleLoad = onLoadingComplete
-    ? (e: React.SyntheticEvent<HTMLImageElement>) => {
-        if (lastLoadedSrcRef.current === src) return;
-        lastLoadedSrcRef.current = src;
-        markBlurComplete();
-        onLoad?.(e);
-        onLoadingComplete(e.currentTarget);
-      }
-    : onLoad
-      ? (e: React.SyntheticEvent<HTMLImageElement>) => {
-          if (lastLoadedSrcRef.current === src) return;
-          lastLoadedSrcRef.current = src;
-          markBlurComplete();
-          onLoad(e);
-        }
-      : placeholder === "blur"
-        ? () => {
-            if (lastLoadedSrcRef.current === src) return;
-            lastLoadedSrcRef.current = src;
-            markBlurComplete();
-          }
-        : undefined;
+  // Always attach onLoad so the aspect-ratio diagnostic runs even when the
+  // caller did not pass a handler (Next.js always calls handleLoading).
+  const handleLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    if (lastLoadedSrcRef.current !== src) {
+      lastLoadedSrcRef.current = src;
+      markBlurComplete();
+      onLoad?.(e);
+      onLoadingComplete?.(e.currentTarget);
+    }
+    // Ported from Next.js handleLoading: packages/next/src/client/image-component.tsx
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/image-component.tsx
+    if (__isDev) warnIfImageAspectRatioDistorted(e.currentTarget);
+  };
 
   const handleError = onError
     ? (e: React.SyntheticEvent<HTMLImageElement>) => {
