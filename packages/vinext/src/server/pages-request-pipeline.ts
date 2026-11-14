@@ -67,7 +67,7 @@ import {
 import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
 import { setFrameworkRequestRoute } from "./request-tracing.js";
-import { VINEXT_PRERENDER_REWRITTEN_HEADER } from "./headers.js";
+import { VINEXT_PRERENDER_NOT_FOUND_HEADER, VINEXT_PRERENDER_REWRITTEN_HEADER } from "./headers.js";
 import { isPrerenderNotFoundRequest } from "./prerender-not-found.js";
 
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
@@ -550,6 +550,9 @@ export async function runPagesRequest(
   }
 
   // Step 5: Middleware
+  // Read before middleware runs: its request-header override can drop the
+  // prerender step's 404 marker, which is Vinext's, not the app's.
+  const isPrerenderNotFound = isPrerenderNotFoundRequest(request);
   const originalResolvedUrl = pathname + search;
   let resolvedUrl = originalResolvedUrl;
   let resolvedPathnameIsRequestPathname = true;
@@ -735,6 +738,11 @@ export async function runPagesRequest(
     request,
   );
   request = postMwReq;
+  if (isPrerenderNotFound && !isPrerenderNotFoundRequest(request)) {
+    // Only an override drops it, and an override builds a new Request, whose
+    // headers are mutable. The page handler reads the marker from this request.
+    request.headers.set(VINEXT_PRERENDER_NOT_FOUND_HEADER, "1");
+  }
   const pathnameForResolvedUrl = (value: string): string => value.split("#", 1)[0].split("?", 1)[0];
   const rewriteRequestContext = (): RequestContext => ({
     ...postMwReqCtx,
@@ -947,7 +955,7 @@ export async function runPagesRequest(
   let pageMatch =
     !isOutsideBasePathUnclaimed() &&
     deps.matchPageRoute &&
-    !(resolvedPathnameIsRequestPathname && isPrerenderNotFoundRequest(request))
+    !(resolvedPathnameIsRequestPathname && isPrerenderNotFound)
       ? deps.matchPageRoute(resolvedPathname, request)
       : null;
   // matchPageRoute is a route-table scan; only re-run it below if afterFiles

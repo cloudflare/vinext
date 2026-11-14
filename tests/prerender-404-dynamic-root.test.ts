@@ -15,6 +15,10 @@ const APP_GENERATED_PATH_FIXTURE_DIR = path.resolve(
   "./fixtures/app-dynamic-root-404-path",
 );
 const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-dynamic-root-404");
+const PAGES_MIDDLEWARE_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/pages-dynamic-root-404-middleware",
+);
 const NOT_FOUND_PATH_SLUG = "__vinext_nonexistent_for_404__";
 
 describe("static export 404 with a dynamic root layout", () => {
@@ -199,5 +203,46 @@ describe("Pages Router 404 with a dynamic root page and a fallback rewrite", () 
     // The 404 request is a miss, so the fallback rewrite takes it, and a
     // rewritten render never becomes the deployment's 404 page.
     expect(routes.find((r) => r.route === "/404")).toBeUndefined();
+  }, 60_000);
+});
+
+describe("Pages Router 404 with a dynamic root page and request-header middleware", () => {
+  let pagesBundlePath: string;
+  let outDir: string;
+
+  beforeAll(async () => {
+    pagesBundlePath = await buildPagesFixture(PAGES_MIDDLEWARE_FIXTURE_DIR);
+    outDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-dynamic-root-404-pages-mw-"));
+  }, 120_000);
+
+  afterAll(() => {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it("keeps the 404 request a route miss when middleware replaces the request headers", async () => {
+    const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+    const { pagesRouter, apiRouter } =
+      await import("../packages/vinext/src/routing/pages-router.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    const pagesDir = path.join(PAGES_MIDDLEWARE_FIXTURE_DIR, "pages");
+    const { routes } = await prerenderPages({
+      mode: "default",
+      pagesBundlePath,
+      routes: await pagesRouter(pagesDir),
+      apiRoutes: await apiRouter(pagesDir),
+      pagesDir,
+      outDir,
+      config: await resolveNextConfig({}),
+    });
+
+    expect(routes.find((r) => r.route === "/404")).toMatchObject({
+      route: "/404",
+      status: "rendered",
+      router: "pages",
+    });
+    const html404 = fs.readFileSync(path.join(outDir, "404.html"), "utf-8");
+    expect(html404).toContain("Custom Pages error");
+    expect(html404).not.toContain("slug page");
   }, 60_000);
 });
