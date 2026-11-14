@@ -198,7 +198,7 @@ describe("app page request helpers", () => {
     expect(response?.status).toBe(404);
   });
 
-  it("allows matching static params, including nested parent params", async () => {
+  it("rejects generated params that omit a route param", async () => {
     const response = await validateAppPageDynamicParams({
       enforceStaticParamsOnly: true,
       async generateStaticParams() {
@@ -208,7 +208,7 @@ describe("app page request helpers", () => {
       params: { category: "fashion", item: "shoe" },
     });
 
-    expect(response).toBeNull();
+    expect(response?.status).toBe(404);
   });
 
   it("allows canonical encoded App Page params from generateStaticParams", async () => {
@@ -629,6 +629,86 @@ describe("app page request helpers", () => {
 
     await expect(validate("main")).resolves.toBeNull();
     await expect(validate("other")).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("rejects a parallel result that omits a param an empty ancestor generator owns", async () => {
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: () => [] }],
+      layoutTreePositions: [0, 1],
+      parallelBranches: [
+        {
+          page: { generateStaticParams: () => [{ slug: "public" }] },
+          paramNames: ["team", "slug"],
+          patternParts: [":team", ":slug"],
+          routeSegments: ["[slug]"],
+        },
+      ],
+      routePatternParts: [":team", ":slug"],
+      routeSegments: ["[team]", "[slug]"],
+    });
+
+    await expect(
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { team: "acme", slug: "public" },
+      }),
+    ).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("accepts parallel results that supply the params of an empty primary generator", async () => {
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: () => [] }],
+      layoutTreePositions: [0, 1],
+      parallelBranches: [
+        {
+          page: { generateStaticParams: () => [{ team: "acme", slug: "public" }] },
+          paramNames: ["team", "slug"],
+          patternParts: [":team", ":slug"],
+          routeSegments: ["[slug]"],
+        },
+      ],
+      routePatternParts: [":team", ":slug"],
+      routeSegments: ["[team]", "[slug]"],
+    });
+    const validate = (team: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { team, slug: "public" },
+      });
+
+    await expect(validate("acme")).resolves.toBeNull();
+    await expect(validate("other")).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("feeds each parallel branch's results to the next branch", async () => {
+    const slot = (generateStaticParams: () => Record<string, string>[]) => ({
+      page: { generateStaticParams },
+      paramNames: ["team", "slug"],
+      patternParts: [":team", ":slug"],
+      routeSegments: ["[slug]"],
+    });
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: () => [] }],
+      layoutTreePositions: [0, 1],
+      parallelBranches: [slot(() => [{ team: "acme", slug: "x" }]), slot(() => [{ slug: "x" }])],
+      routePatternParts: [":team", ":slug"],
+      routeSegments: ["[team]", "[slug]"],
+    });
+    const validate = (team: string, slug: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { team, slug },
+      });
+
+    await expect(validate("acme", "x")).resolves.toBeNull();
+    await expect(validate("other", "x")).resolves.toMatchObject({ status: 404 });
+    await expect(validate("acme", "y")).resolves.toMatchObject({ status: 404 });
   });
 
   it("chains multiple generators within one parallel branch", async () => {

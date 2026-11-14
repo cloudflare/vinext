@@ -414,7 +414,6 @@ export function resolveAppPageGenerateStaticParamsSources(
 function areStaticParamsAllowed(
   params: AppPageParams,
   staticParams: readonly Record<string, unknown>[],
-  allowMissingValues = false,
   paramKeys: readonly string[] = Object.keys(params),
   optionalCatchAllParamNames: readonly string[] = [],
 ): boolean {
@@ -432,8 +431,11 @@ function areStaticParamsAllowed(
       const value = params[key];
       const staticValue = staticParamSet[key];
 
+      // Next generates paths only from combinations that supply every route
+      // param, so a combination that is missing one never admits a request.
+      // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
       if (!Object.hasOwn(staticParamSet, key)) {
-        return allowMissingValues;
+        return false;
       }
 
       if (value === undefined) {
@@ -551,7 +553,7 @@ function isStaticParamsRowConsistentWithRequest(
   requestParams: AppPageParams,
 ): boolean {
   const sharedKeys = Object.keys(row).filter((key) => requestParams[key] !== undefined);
-  return areStaticParamsAllowed(requestParams, [row], false, sharedKeys);
+  return areStaticParamsAllowed(requestParams, [row], sharedKeys);
 }
 
 function rewritesParentParams(
@@ -713,26 +715,17 @@ export async function validateAppPageDynamicParams(
     independentChains.set(source.independentChain ?? source, chain);
   }
 
+  // Next merges each generated result into its parent combination, walking
+  // every parallel branch in the same pass, so one branch's results are the
+  // parent combinations of the next.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+  let staticParams = chainedStaticParams;
   let validatedIndependentResults = false;
   for (const sources of independentChains.values()) {
-    const result = await generateIndependentStaticParams(
-      sources,
-      chainedStaticParams,
-      options.params,
-    );
+    const result = await generateIndependentStaticParams(sources, staticParams, options.params);
     if (result.validated) {
       validatedIndependentResults = true;
-      if (
-        !areStaticParamsAllowed(
-          options.params,
-          result.staticParams,
-          options.requiredParamNames === undefined,
-          options.requiredParamNames,
-          options.optionalCatchAllParamNames,
-        )
-      ) {
-        return notFoundResponse();
-      }
+      staticParams = result.staticParams;
     }
   }
 
@@ -740,14 +733,16 @@ export async function validateAppPageDynamicParams(
     return notFoundResponse();
   }
 
-  if (chainedStaticParams && !validatedIndependentResults) {
-    // Next merges each generated result into its parent combination. Parallel
-    // results are validated against those combinations above; without a
-    // parallel result, the primary chain itself must match exactly.
-    // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
-    if (!areStaticParamsAllowed(options.params, chainedStaticParams)) {
-      return notFoundResponse();
-    }
+  if (
+    staticParams &&
+    !areStaticParamsAllowed(
+      options.params,
+      staticParams,
+      options.requiredParamNames,
+      options.optionalCatchAllParamNames,
+    )
+  ) {
+    return notFoundResponse();
   }
 
   return null;

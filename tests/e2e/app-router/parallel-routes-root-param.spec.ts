@@ -100,3 +100,28 @@ test.describe("parallel routes under a static root param", () => {
     expect(await response.text()).toContain("404 - Page Not Found");
   });
 });
+
+// Matches next@16.2.7: Next generates a path only from a combination that
+// supplies every route param, so a parallel generator that runs after an empty
+// primary generator admits only the params it returns itself.
+test.describe("parallel generators after an empty primary generator", () => {
+  test("rejects a route param no generator returned", async ({ request }) => {
+    for (const team of ["acme", "other"]) {
+      const response = await request.get(`/parallel-slot-params/slot-omits-team/${team}/public`);
+      expect(response.status(), team).toBe(404);
+    }
+  });
+
+  test("admits only the combinations the parallel generator returned", async ({ request }) => {
+    const response = await request.get("/parallel-slot-params/slot-owns-team/acme/public");
+    expect(response.status()).toBe(200);
+    expect(await response.text()).toContain("parallel-slot-breadcrumb");
+
+    for (const pathname of [
+      "/parallel-slot-params/slot-owns-team/other/public",
+      "/parallel-slot-params/slot-owns-team/acme/private",
+    ]) {
+      expect((await request.get(pathname)).status(), pathname).toBe(404);
+    }
+  });
+});
