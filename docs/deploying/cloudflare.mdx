@@ -177,6 +177,52 @@ export default async function Page() {
 
 See Cloudflare's [bindings documentation](https://developers.cloudflare.com/workers/runtime-apis/bindings/) for product-specific configuration, and the [Workers Vite plugin documentation](https://developers.cloudflare.com/workers/vite-plugin/) for the underlying development environment.
 
+## Environment variables and secrets
+
+`NEXT_PUBLIC_*` variables and `next.config` `env` entries are inlined into the bundle at build time, as in Next.js.
+
+Server code runs in the Worker, not in the process that started the build or dev server, so it only sees variables declared on the Worker. vinext doesn't copy `.env` values or shell variables into the Worker. Declare each server-only variable in the Worker's `env` object, with `bindings.text()` for a plain value and `bindings.secret()` for a secret:
+
+```ts
+import { bindings, defineConfig, defineWorker } from "cf/config";
+
+export default defineConfig({
+  worker: defineWorker({
+    // ...name, entrypoint, compatibilityDate, and the bindings init generated
+    env: {
+      ASSETS: bindings.assets(),
+      API_BASE_URL: bindings.text("https://api.example.com"),
+      TURNSTILE_SECRET_KEY: bindings.secret(),
+    },
+  }),
+});
+```
+
+Read them from `env` in `cloudflare:workers`:
+
+```ts
+"use server";
+
+import { env } from "cloudflare:workers";
+
+export async function verifyTurnstile(token: string) {
+  const body = new URLSearchParams({ secret: env.TURNSTILE_SECRET_KEY, response: token });
+  const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    body,
+  });
+  return ((await res.json()) as { success: boolean }).success;
+}
+```
+
+Workers also expose string bindings on `process.env` with Node.js compatibility and a compatibility date of 2025-04-01 or later, which configs `vinext init` generates have, so code that reads `process.env.TURNSTILE_SECRET_KEY` keeps working.
+
+- **Development:** the Cloudflare Vite plugin gives each declared secret its value from `.dev.vars.<mode>` or `.dev.vars` when one exists, and otherwise from `.env` files and shell variables. A `.dev.vars*` file replaces `.env` files and shell variables entirely, so either put every secret in it, or delete it to load secrets from `.env` or from a tool that sets shell variables, such as a secrets manager's `run` command. The plugin warns about declared secrets with no local value.
+- **Production:** set each secret on the deployed Worker, in the Cloudflare dashboard or with `npx cf workers secrets update <NAME> --worker <worker-name> --type secret_text`. Secrets stay attached across deploys. Plain-text variables don't: each deploy removes variables that `cloudflare.config.ts` doesn't declare, so a variable added in the dashboard or synced by another tool must either be declared with `bindings.text()` or be stored as a secret.
+- **First deploy:** a deploy fails while a `bindings.secret()` has no value, and a secret can't be set on a Worker that doesn't exist yet. Build the app, then run `npx cf deploy --prebuilt --mode production --secrets-file <file>` with the values in a JSON or `.env` file.
+
+Pages that vinext prerenders at build time, with the `prerender` option, the Static Assets cache, or a static export, render on the build machine. Reading `env` there throws, and `process.env` holds the build machine's variables, so a value read during prerendering is baked into the page.
+
 ## Middleware and static files
 
 In Next.js, middleware runs for every path its `matcher` matches, including files in `public/`. Workers Static Assets can serve a file before the Worker runs, and then middleware does not run for it. The config that `vinext init` generates routes every request except the build output through the Worker:
