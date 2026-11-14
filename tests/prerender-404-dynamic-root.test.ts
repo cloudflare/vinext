@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { VINEXT_PRERENDER_NOT_FOUND_HEADER } from "../packages/vinext/src/server/headers.js";
 import { buildAppFixture, buildPagesFixture } from "./helpers.js";
 
 const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-root-params-export");
@@ -100,6 +101,38 @@ describe("static export 404 with a dynamic root route that generates the 404 pat
     const html404 = fs.readFileSync(path.join(outDir, "404.html"), "utf-8");
     expect(html404).toContain("This page could not be found.");
     expect(html404).not.toContain("slug page");
+  }, 60_000);
+});
+
+describe("prerender server with the 404 marker on another path", () => {
+  let server: { port: number; close: () => Promise<void> } | undefined;
+  let restorePrerenderPhase: (() => void) | undefined;
+
+  beforeAll(async () => {
+    const rscBundlePath = await buildAppFixture(APP_GENERATED_PATH_FIXTURE_DIR);
+    const { enterPrerenderPhase } = await import("../packages/vinext/src/build/prerender-phase.js");
+    const { startPrerenderProdServer } =
+      await import("../packages/vinext/src/build/prerender-server-pool.js");
+    restorePrerenderPhase = enterPrerenderPhase();
+    const serverDir = path.dirname(rscBundlePath);
+    server = await startPrerenderProdServer(path.dirname(serverDir), {
+      rscEntryPath: rscBundlePath,
+      serverDir,
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await server?.close();
+    restorePrerenderPhase?.();
+  });
+
+  it("matches the route of a subrequest that forwards the marker", async () => {
+    // As a middleware subrequest that forwards the 404 request's headers does.
+    const res = await fetch(`http://127.0.0.1:${server!.port}/hello`, {
+      headers: { [VINEXT_PRERENDER_NOT_FOUND_HEADER]: "1" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("slug page: <!-- -->hello");
   }, 60_000);
 });
 
