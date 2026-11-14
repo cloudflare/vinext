@@ -219,7 +219,7 @@ describe("Pages Router 404 with a dynamic root page and request-header middlewar
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
-  it("keeps the 404 request a route miss when middleware replaces the request headers", async () => {
+  it("ignores a middleware request-header override for the 404 marker", async () => {
     const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
     const { pagesRouter, apiRouter } =
       await import("../packages/vinext/src/routing/pages-router.js");
@@ -236,6 +236,22 @@ describe("Pages Router 404 with a dynamic root page and request-header middlewar
       config: await resolveNextConfig({}),
     });
 
+    // Middleware adds the marker to the generated page's request: it still
+    // renders as the [slug] page.
+    expect(
+      routes.find(
+        (r) =>
+          r.route === "/:slug" && r.status === "rendered" && r.path === `/${NOT_FOUND_PATH_SLUG}`,
+      ),
+    ).toBeDefined();
+    const generatedHtml = fs.readFileSync(
+      path.join(outDir, `${NOT_FOUND_PATH_SLUG}.html`),
+      "utf-8",
+    );
+    expect(generatedHtml).toContain("slug page");
+    expect(generatedHtml).not.toContain("Custom Pages error");
+
+    // Middleware drops the marker from the 404 request: it is still a miss.
     expect(routes.find((r) => r.route === "/404")).toMatchObject({
       route: "/404",
       status: "rendered",

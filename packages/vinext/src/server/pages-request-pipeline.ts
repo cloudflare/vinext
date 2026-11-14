@@ -738,10 +738,12 @@ export async function runPagesRequest(
     request,
   );
   request = postMwReq;
-  if (isPrerenderNotFound && !isPrerenderNotFoundRequest(request)) {
-    // Only an override drops it, and an override builds a new Request, whose
-    // headers are mutable. The page handler reads the marker from this request.
-    request.headers.set(VINEXT_PRERENDER_NOT_FOUND_HEADER, "1");
+  if (isPrerenderNotFoundRequest(request) !== isPrerenderNotFound) {
+    // Only a request-header override from middleware adds or drops the marker,
+    // and an override builds a new Request, whose headers are mutable. The page
+    // handler reads the marker from this request, so it must match the original.
+    if (isPrerenderNotFound) request.headers.set(VINEXT_PRERENDER_NOT_FOUND_HEADER, "1");
+    else request.headers.delete(VINEXT_PRERENDER_NOT_FOUND_HEADER);
   }
   const pathnameForResolvedUrl = (value: string): string => value.split("#", 1)[0].split("?", 1)[0];
   const rewriteRequestContext = (): RequestContext => ({
