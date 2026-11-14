@@ -105,6 +105,12 @@ function* scriptOpenTags(html: string): Generator<{ attributes: string; contentS
   }
 }
 
+/** The index of the first non-whitespace character of `html` at or after `index`. */
+function skipWhitespace(html: string, index: number): number {
+  while (index < html.length && /\s/.test(html[index])) index++;
+  return index;
+}
+
 export function extractVinextNextDataJson(html: string): string | null {
   for (const { attributes, contentStart } of scriptOpenTags(html)) {
     if (
@@ -119,24 +125,17 @@ export function extractVinextNextDataJson(html: string): string | null {
   }
 
   let start = -1;
-  const assignmentPattern = /\s*window\.__NEXT_DATA__\s*=\s*/y;
+  const assignee = "window.__NEXT_DATA__";
   for (const { attributes, contentStart } of scriptOpenTags(html)) {
     if (attributes !== "" && !/^\s/.test(attributes)) continue;
-    assignmentPattern.lastIndex = contentStart;
-    if (assignmentPattern.test(html)) {
-      start = assignmentPattern.lastIndex;
-      break;
-    }
+    let index = skipWhitespace(html, contentStart);
+    if (!html.startsWith(assignee, index)) continue;
+    index = skipWhitespace(html, index + assignee.length);
+    if (html[index] !== "=") continue;
+    start = skipWhitespace(html, index + 1);
+    break;
   }
   if (start === -1) return null;
-  while (
-    html[start] === " " ||
-    html[start] === "\n" ||
-    html[start] === "\t" ||
-    html[start] === "\r"
-  ) {
-    start++;
-  }
   if (html[start] !== "{") return null;
 
   let depth = 0;

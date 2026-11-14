@@ -82,6 +82,10 @@ describe("vinext next data client helpers", () => {
     const started = performance.now();
     expect(extractVinextNextDataJson(html)).toBeNull();
     expect(extractVinextNextDataJson(`${html}<script id="__NEXT_DATA__"`)).toBeNull();
+    const spaces = " ".repeat(100_000);
+    expect(
+      extractVinextNextDataJson(`<script>${spaces}window.__NEXT_DATA__${spaces}${spaces}`),
+    ).toBeNull();
     expect(performance.now() - started).toBeLessThan(1_000);
   });
 });
