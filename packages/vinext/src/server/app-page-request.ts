@@ -765,6 +765,21 @@ type ValidateAppPageRouteDynamicParamsOptions = {
 };
 
 /**
+ * Whether a dynamic page admits only the params its generateStaticParams
+ * lists. Under `output: "export"` Next.js writes only those params as files
+ * and rejects `dynamicParams: true`, so the host answers 404 for every other
+ * URL: a production export behaves as `dynamicParams = false`.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+ */
+export function isAppPageStaticParamsOnly(
+  dynamicParamsConfig: boolean | undefined,
+  isProduction: boolean,
+): boolean {
+  if (dynamicParamsConfig === false) return true;
+  return isProduction && process.env.__NEXT_CONFIG_OUTPUT === "export";
+}
+
+/**
  * Next.js rejects a `dynamicParams = false` miss while routing, before any of
  * the route's segments render: it serves `/_not-found` instead.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/base-server.ts
@@ -787,7 +802,10 @@ export function validateAppPageRouteDynamicParams(
   setCurrentFetchRevalidate(null);
   setCurrentForceDynamicFetchDefault(false);
   return validateAppPageDynamicParams({
-    enforceStaticParamsOnly: options.dynamicParamsConfig === false,
+    enforceStaticParamsOnly: isAppPageStaticParamsOnly(
+      options.dynamicParamsConfig,
+      options.isProduction,
+    ),
     generateStaticParams: options.generateStaticParams,
     isDynamicRoute: options.isDynamicRoute,
     params: options.params,

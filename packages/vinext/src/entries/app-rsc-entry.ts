@@ -1027,6 +1027,7 @@ ${
     : ""
 }
 import {
+  isAppPageStaticParamsOnly as __isAppPageStaticParamsOnly,
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
   validateAppPageRouteDynamicParams as __validateAppPageRouteDynamicParams,
 } from ${JSON.stringify(appPageRequestPath)};
@@ -1491,7 +1492,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   async isDynamicParamsMiss(route, params) {
     if (!route.isDynamic) return false;
     const __segmentConfig = __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route));
-    if (__segmentConfig.dynamicParamsConfig !== false) return false;
+    if (!__isAppPageStaticParamsOnly(__segmentConfig.dynamicParamsConfig, process.env.NODE_ENV === "production")) {
+      return false;
+    }
     return (await __validateAppPageRouteDynamicParams({
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
