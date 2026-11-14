@@ -9,6 +9,7 @@ import { createBuilder, createServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { createPagesNodeExternalsPlugin } from "../packages/vinext/src/plugins/pages-node-externals.js";
 import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
+import { packageNameFromSpecifier } from "../packages/vinext/src/utils/package-name.js";
 
 const FIXTURE_ROOT = path.resolve(import.meta.dirname, "fixtures/esm-externals");
 
@@ -168,9 +169,12 @@ describe("ESM externals", () => {
     expect(clientCode).not.toContain("process.browser");
     expect(clientCode).not.toContain("Browser only");
 
-    const externals = JSON.parse(
-      fs.readFileSync(path.join(root, "dist", "server", "vinext-externals.json"), "utf8"),
-    ) as string[];
+    // The manifest records full specifiers such as "esm-package1/entry".
+    const externals = (
+      JSON.parse(
+        fs.readFileSync(path.join(root, "dist", "server", "vinext-externals.json"), "utf8"),
+      ) as string[]
+    ).map(packageNameFromSpecifier);
     expect(externals).toEqual(
       expect.arrayContaining([
         "esm-package1",

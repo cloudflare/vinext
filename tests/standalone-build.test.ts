@@ -211,6 +211,350 @@ describe("emitStandaloneOutput", () => {
     ).toBe(true);
   });
 
+  it("copies dot-named packages that a manifest package requires", () => {
+    // Prisma's default generator writes node_modules/.prisma/client, and
+    // @prisma/client requires ".prisma/client/default". Node resolves names
+    // that start with a dot but are not relative paths through node_modules.
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["db-client"]));
+
+    writePackage(appRoot, "db-client");
+    writeFile(
+      appRoot,
+      "node_modules/db-client/index.js",
+      'module.exports = require(".db/client/default");\n',
+    );
+    writeFile(
+      appRoot,
+      "node_modules/.db/client/package.json",
+      JSON.stringify({
+        name: "db-client-generated",
+        exports: { "./package.json": "./package.json", "./default": "./default.js" },
+      }),
+    );
+    writeFile(appRoot, "node_modules/.db/client/default.js", "module.exports = {};\n");
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify({ name: "vinext", type: "module" }, null, 2),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+
+    const result = emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    expect(result.copiedPackages).toContain(".db/client");
+    expect(
+      fs.existsSync(path.join(appRoot, "dist/standalone/node_modules/.db/client/default.js")),
+    ).toBe(true);
+  });
+
+  it("traces export branches selected only by older Node default conditions", () => {
+    // Node 22.0-22.11 lack the `module-sync` default condition, so they load
+    // cond-lib's `default` branch, which imports a peer the other branch does not.
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["cond-lib"]));
+
+    writeFile(
+      appRoot,
+      "node_modules/cond-lib/package.json",
+      JSON.stringify({
+        name: "cond-lib",
+        type: "module",
+        exports: { ".": { "module-sync": "./sync.js", default: "./legacy.js" } },
+      }),
+    );
+    writeFile(appRoot, "node_modules/cond-lib/sync.js", "export const value = 1;\n");
+    writeFile(appRoot, "node_modules/cond-lib/legacy.js", 'export { value } from "legacy-peer";\n');
+    writePackage(appRoot, "legacy-peer");
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify({ name: "vinext", type: "module" }, null, 2),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+
+    const result = emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    expect(result.copiedPackages).toContain("legacy-peer");
+  });
+
+  it.each([
+    {
+      // Node 22.12+ loads valid.js; older runtimes load other.js.
+      name: "past an invalid exports array target",
+      packageJson: {
+        name: "lib",
+        exports: { ".": { "module-sync": ["../invalid.js", "./valid.js"], default: "./other.js" } },
+      },
+      entry: "valid.js",
+    },
+    {
+      // Node's CommonJS loader runs an exactly resolved extensionless main as JavaScript.
+      name: "into an extensionless CommonJS main",
+      packageJson: { name: "lib", main: "server" },
+      entry: "server",
+    },
+    {
+      // Export targets are URLs: Node 22.12+ loads "legacy file.js".
+      name: "a percent-encoded exports target",
+      packageJson: {
+        name: "lib",
+        exports: { ".": { "module-sync": "./legacy%20file.js", default: "./other.js" } },
+      },
+      entry: "legacy file.js",
+    },
+    {
+      name: "module.require() calls",
+      packageJson: { name: "lib", main: "index.js" },
+      entry: "index.js",
+      code: 'module.exports = module.require("lib-peer");\n',
+    },
+    {
+      name: "optional require?.() calls",
+      packageJson: { name: "lib", main: "index.js" },
+      entry: "index.js",
+      code: 'module.exports = require?.("lib-peer");\n',
+    },
+    {
+      // Node's implicit lookup never appends .cjs: main "entry" falls back to index.js.
+      name: "the index.js an extensionless main falls back to",
+      packageJson: { name: "lib", main: "entry" },
+      entry: "index.js",
+      extraFiles: { "entry.cjs": "module.exports = {};\n" },
+    },
+    {
+      // Node resolves a main directory by its index only, never as a nested package.
+      name: "the package index when main names a directory with its own package.json",
+      packageJson: { name: "lib", main: "dir" },
+      entry: "index.js",
+      extraFiles: {
+        "dir/package.json": JSON.stringify({ main: "nested.js" }),
+        "dir/nested.js": "module.exports = {};\n",
+      },
+    },
+    {
+      name: "optional require?.resolve() calls",
+      packageJson: { name: "lib", main: "index.js" },
+      entry: "index.js",
+      code: 'module.exports = require?.resolve("lib-peer");\n',
+    },
+    {
+      name: "calls on a createRequire() binding",
+      packageJson: { name: "lib", type: "module", main: "index.js" },
+      entry: "index.js",
+      code: [
+        'import { createRequire } from "node:module";',
+        "const load = createRequire(import.meta.url);",
+        'export default load("lib-peer");',
+        "",
+      ].join("\n"),
+    },
+    {
+      // oxc's module record omits empty re-exports, but Node still loads the source.
+      name: "empty re-exports",
+      packageJson: { name: "lib", type: "module", main: "index.js" },
+      entry: "index.js",
+      code: 'export {} from "lib-peer";\n',
+    },
+    {
+      // A trailing slash names the directory, never the sibling feature.js.
+      name: "a directory require with a trailing slash",
+      packageJson: { name: "lib", main: "index.js" },
+      entry: "index.js",
+      code: 'module.exports = require("./feature/");\n',
+      extraFiles: {
+        "feature.js": "module.exports = {};\n",
+        "feature/index.js": 'module.exports = require("lib-peer");\n',
+      },
+    },
+  ])("traces $name", ({ packageJson, entry, code, extraFiles }) => {
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["lib"]));
+
+    writeFile(appRoot, "node_modules/lib/package.json", JSON.stringify(packageJson));
+    for (const [file, content] of Object.entries({
+      "other.js": "module.exports = {};\n",
+      ...extraFiles,
+    })) {
+      writeFile(appRoot, `node_modules/lib/${file}`, content);
+    }
+    writeFile(
+      appRoot,
+      `node_modules/lib/${entry}`,
+      code ?? 'module.exports = require("lib-peer");\n',
+    );
+    writePackage(appRoot, "lib-peer");
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify({ name: "vinext", type: "module" }, null, 2),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+
+    const result = emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    expect(result.copiedPackages).toContain("lib-peer");
+  });
+
+  it("resolves a bare #imports target from the package scope", () => {
+    // lib/lib/node_modules/dep would shadow the top-level dep if "dep" were
+    // resolved from the importing file; Node resolves it from lib's package.json.
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["lib"]));
+
+    writeFile(
+      appRoot,
+      "node_modules/lib/package.json",
+      JSON.stringify({ name: "lib", main: "lib/index.js", imports: { "#dep": "dep" } }),
+    );
+    writeFile(appRoot, "node_modules/lib/lib/index.js", 'module.exports = require("#dep");\n');
+    for (const [dir, version] of [
+      ["node_modules/lib/lib/node_modules/dep", "1.0.0"],
+      ["node_modules/dep", "2.0.0"],
+    ]) {
+      writeFile(
+        appRoot,
+        `${dir}/package.json`,
+        JSON.stringify({ name: "dep", version, main: "index.js" }),
+      );
+      writeFile(appRoot, `${dir}/index.js`, "module.exports = {};\n");
+    }
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify({ name: "vinext", type: "module" }, null, 2),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      "export async function startProdServer() {}\n",
+    );
+
+    emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    const dep = JSON.parse(
+      fs.readFileSync(path.join(appRoot, "dist/standalone/node_modules/dep/package.json"), "utf-8"),
+    ) as { version: string };
+    expect(dep.version).toBe("2.0.0");
+  });
+
+  it("ships the copy of a package that vinext's prod server loads over an external's copy", () => {
+    // The app bundles react, so the manifest omits it. An external resolves its
+    // own nested react, while vinext's prod server resolves a different one.
+    const appRoot = path.join(tmpDir, "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+
+    writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["ui-lib"]));
+
+    writePackage(appRoot, "ui-lib");
+    writeFile(appRoot, "node_modules/ui-lib/index.js", 'module.exports = require("react");\n');
+    writeFile(
+      appRoot,
+      "node_modules/ui-lib/node_modules/react/package.json",
+      JSON.stringify({ name: "react", version: "1.0.0", main: "index.js" }),
+    );
+    writeFile(appRoot, "node_modules/ui-lib/node_modules/react/index.js", "module.exports = {};\n");
+
+    const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
+    writeFile(
+      fakeVinextRoot,
+      "package.json",
+      JSON.stringify(
+        {
+          name: "vinext",
+          type: "module",
+          exports: { "./server/prod-server": "./dist/server/prod-server.js" },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFile(
+      fakeVinextRoot,
+      "dist/server/prod-server.js",
+      'import "react";\nexport async function startProdServer() {}\n',
+    );
+    writeFile(
+      fakeVinextRoot,
+      "node_modules/react/package.json",
+      JSON.stringify({ name: "react", version: "2.0.0", main: "index.js" }),
+    );
+    writeFile(fakeVinextRoot, "node_modules/react/index.js", "module.exports = {};\n");
+
+    emitStandaloneOutput({
+      root: appRoot,
+      outDir: path.join(appRoot, "dist"),
+      vinextPackageRoot: fakeVinextRoot,
+    });
+
+    const react = JSON.parse(
+      fs.readFileSync(
+        path.join(appRoot, "dist/standalone/node_modules/react/package.json"),
+        "utf-8",
+      ),
+    ) as { version: string };
+    expect(react.version).toBe("2.0.0");
+  });
+
   it("falls back gracefully when vinext-externals.json is missing (no manifest)", () => {
     const appRoot = path.join(tmpDir, "app");
     fs.mkdirSync(appRoot, { recursive: true });

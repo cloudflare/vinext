@@ -25,7 +25,7 @@ import {
   isTypeOnlyImport,
   parseModuleRecord,
   parseProgram,
-  TRIVIA_PATTERN,
+  EMPTY_EXPORT_PRESCAN,
   type ModuleRecord,
 } from "./plugins/ast-utils.js";
 import {
@@ -811,12 +811,6 @@ function commonjsTransformFilter(
   }
   return undefined;
 }
-
-// Matches `export {}`, which may be an `export {} from "x"` re-export. oxc's
-// module record omits those, but they still load `x`.
-const EMPTY_EXPORT_PRESCAN = new RegExp(
-  String.raw`\bexport${TRIVIA_PATTERN}*\{${TRIVIA_PATTERN}*\}`,
-);
 
 /**
  * Sources of a module's static imports and re-exports, in source order.
