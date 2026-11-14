@@ -46,8 +46,11 @@ export type RouteClientReferences = {
    * page, layouts and templates and its slots', not its boundaries.
    */
   rendered: Readonly<Record<string, readonly number[]>>;
-  /** References route files reach only through static imports, outside `always`. */
-  staticOnly: readonly number[];
+  /**
+   * The references each file in `rendered` reaches through static imports
+   * alone, by its index in `files`; empty for the other files.
+   */
+  staticFiles: readonly (readonly number[])[];
   /** The files of a render without a route, such as a route-miss 404. */
   routeless: readonly number[];
   /**
@@ -98,12 +101,9 @@ export function resolveRouteClientReferences(
   for (const file of files) {
     for (const index of plan.files[file]!) indices.add(index);
   }
-  const staticIndices = new Set(plan.staticOnly);
   const linkedIndices = new Set<number>();
   for (const file of renderedFiles) {
-    for (const index of plan.files[file]!) {
-      if (staticIndices.has(index)) linkedIndices.add(index);
-    }
+    for (const index of plan.staticFiles[file] ?? []) linkedIndices.add(index);
   }
   const asyncIndices = new Set(plan.async);
   const references: string[] = [];

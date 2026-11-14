@@ -54,9 +54,10 @@ function inRenderOrder(files: readonly string[]): string[] {
 
 /**
  * The files a route renders whatever its render does: its page, layouts and
- * templates, and each slot's layouts and page, or its default without one.
- * Boundaries (loading, error, not-found and the like) render only when
- * something triggers them.
+ * templates, and each slot's page with its layouts, or its default without
+ * one. A slot's own layout wraps only its page (see
+ * `app-page-route-wiring.tsx`). Boundaries (loading, error, not-found and the
+ * like) render only when something triggers them.
  */
 function renderedRouteFiles(route: ClientReferenceGroupRoute): string[] {
   return [
@@ -64,8 +65,7 @@ function renderedRouteFiles(route: ClientReferenceGroupRoute): string[] {
     ...route.layouts,
     ...route.templates,
     ...route.parallelSlots.flatMap((slot) => [
-      slot.pagePath ?? slot.defaultPath,
-      slot.layoutPath,
+      ...(slot.pagePath ? [slot.pagePath, slot.layoutPath] : [slot.defaultPath]),
       ...(slot.configLayoutPaths ?? []),
     ]),
   ].filter((value): value is string => typeof value === "string");
@@ -228,6 +228,11 @@ export type ClientReferencePreloadPlan = {
    * `renderedRouteFiles`), as indices into `files`.
    */
   rendered: Map<string, number[]>;
+  /**
+   * The client references each file in `rendered` reaches through static
+   * imports alone, by its index in `files`; empty for the other files.
+   */
+  staticFiles: string[][];
   /** The files of a render without a route, as indices into `files`. */
   routeless: number[];
   /**
@@ -268,7 +273,11 @@ export function collectClientReferencePreloadPlan(options: {
     return info;
   };
   const reached = new Set<string>();
-  const referencesReachedFrom = (roots: readonly string[], stopAt?: ReadonlySet<string>) => {
+  const referencesReachedFrom = (
+    roots: readonly string[],
+    stopAt?: ReadonlySet<string>,
+    staticOnly = false,
+  ) => {
     const references: string[] = [];
     const visited = new Set<string>();
     const stack = roots.map(canonicalize).reverse();
@@ -286,7 +295,9 @@ export function collectClientReferencePreloadPlan(options: {
       }
       const info = getModuleInfo(id);
       if (!info) continue;
-      const imports = [...info.importedIds, ...info.dynamicallyImportedIds];
+      const imports = staticOnly
+        ? info.importedIds
+        : [...info.importedIds, ...info.dynamicallyImportedIds];
       for (let index = imports.length - 1; index >= 0; index--) stack.push(imports[index]!);
     }
     return references;
@@ -331,6 +342,11 @@ export function collectClientReferencePreloadPlan(options: {
     }
   }
   const routeless = [...new Set((options.routelessFiles ?? []).map(fileIndex))];
+  const fileIds = [...fileIndices.keys()];
+  const staticFiles = files.map((): string[] => []);
+  for (const index of new Set([...rendered.values()].flat())) {
+    staticFiles[index] = referencesReachedFrom([fileIds[index]!], undefined, true);
+  }
   // Only for `reached`: an intercept's references load during its render.
   referencesReachedFrom(interceptFiles);
 
@@ -373,7 +389,7 @@ export function collectClientReferencePreloadPlan(options: {
   const staticOnly = [...new Set(files.flat())].filter(
     (id) => !always.has(id) && !dynamicallyReached.has(id),
   );
-  return { always: [...always], files, routes, rendered, routeless, staticOnly };
+  return { always: [...always], files, routes, rendered, staticFiles, routeless, staticOnly };
 }
 
 /** Export names an importer uses from a module, or `"*"` for all of them. */

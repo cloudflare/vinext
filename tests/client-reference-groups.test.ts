@@ -414,6 +414,7 @@ describe("collectClientReferencePreloadPlan", () => {
       feedLoading: "/app/dash/@feed/loading.tsx",
       teamPage: "/app/dash/@team/page.tsx",
       teamDefault: "/app/dash/@team/default.tsx",
+      teamLayout: "/app/dash/@team/layout.tsx",
     };
     // Each file imports a client reference of its own, named after it.
     const plan = collectClientReferencePreloadPlan({
@@ -443,7 +444,7 @@ describe("collectClientReferencePreloadPlan", () => {
             {
               pagePath: files.teamPage,
               defaultPath: files.teamDefault,
-              layoutPath: null,
+              layoutPath: files.teamLayout,
               loadingPath: null,
               errorPath: null,
               interceptingRoutes: [],
@@ -455,14 +456,48 @@ describe("collectClientReferencePreloadPlan", () => {
 
     const reached = (indices: number[]) => indices.flatMap((file) => plan.files[file]!).sort();
     expect(reached(plan.routes.get("/dash")!)).toHaveLength(Object.keys(files).length);
+    // A slot's own layout wraps only its page, not its default.
     expect(reached(plan.rendered.get("/dash")!)).toEqual([
       "/feedDefault-ref.tsx",
-      "/feedLayout-ref.tsx",
       "/layout-ref.tsx",
       "/page-ref.tsx",
+      "/teamLayout-ref.tsx",
       "/teamPage-ref.tsx",
       "/template-ref.tsx",
     ]);
+  });
+
+  it("lists what each rendered file reaches through static imports alone", () => {
+    const plan = collectClientReferencePreloadPlan({
+      alwaysRoots: ["/app/global-error.tsx"],
+      clientReferenceIds: new Set(["/link.tsx", "/shared.tsx", "/lazy.tsx", "/boundary.tsx"]),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo(
+        {
+          "/app/page.tsx": ["/app/view.tsx", "/link.tsx"],
+          "/app/view.tsx": ["/shared.tsx"],
+          "/app/error.tsx": ["/boundary.tsx"],
+          "/app/global-error.tsx": ["/link.tsx"],
+        },
+        {
+          "\0entry": ["/app/page.tsx", "/app/about/page.tsx"],
+          "/app/page.tsx": ["/lazy.tsx"],
+          "/app/about/page.tsx": ["/shared.tsx"],
+        },
+      ),
+      routes: [
+        { ...route("/", "/app/page.tsx"), errorPath: "/app/error.tsx" } as never,
+        route("/about", "/app/about/page.tsx"),
+      ],
+    });
+
+    // Neither "/link.tsx" (global-error reaches it too) nor "/shared.tsx"
+    // (another page imports it dynamically) is left out.
+    const [page] = plan.rendered.get("/")!;
+    expect(plan.staticFiles[page!]).toEqual(["/shared.tsx", "/link.tsx"]);
+    expect(plan.staticFiles.flat()).not.toContain("/boundary.tsx");
+    expect(plan.staticOnly).not.toContain("/shared.tsx");
+    expect(plan.always).toContain("/link.tsx");
   });
 
   it("canonicalizes route files and entry stops", () => {

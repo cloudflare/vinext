@@ -184,15 +184,16 @@ describe("app client reference preloader", () => {
 
 describe("resolveRouteClientReferences", () => {
   // File 0 is a boundary of "/" (an error.tsx, say), file 1 its page, which
-  // imports "lazy" through a dynamic import.
+  // imports "link", "nav" and "chart" statically and "lazy" through a dynamic
+  // import.
   const plan = {
     references: ["link", "nav", "chart", "search", "lazy"],
     always: [0],
-    files: [[1], [2, 1, 4], [3]],
+    files: [[1], [0, 2, 1, 4], [3]],
     routes: { "/": [0, 1] },
     rendered: { "/": [1] },
+    staticFiles: [[], [0, 2, 1], []],
     routeless: [0, 2],
-    staticOnly: [1, 2, 3],
     async: [2],
   };
 
@@ -200,9 +201,9 @@ describe("resolveRouteClientReferences", () => {
     expect(resolveRouteClientReferences(plan, "/")).toEqual({
       references: ["link", "nav", "chart", "lazy"],
       streamed: ["chart"],
-      // Not "link" (every render's), "lazy" (dynamically imported), or a
-      // reference only a boundary imports. "nav" is the page's too.
-      linked: ["nav", "chart"],
+      // In import order. Not "lazy" (dynamically imported) or "search" (only
+      // a boundary imports it); "link" is every render's, and the page's too.
+      linked: ["link", "nav", "chart"],
     });
   });
 
@@ -212,12 +213,6 @@ describe("resolveRouteClientReferences", () => {
       streamed: [],
       linked: [],
     });
-  });
-
-  it("links no reference only a route's boundaries import", () => {
-    expect(
-      resolveRouteClientReferences({ ...plan, files: [[1], [2, 4], [3]] }, "/")?.linked,
-    ).toEqual(["chart"]);
   });
 
   it("preloads everything without a plan, a route, or for an unknown pattern", () => {

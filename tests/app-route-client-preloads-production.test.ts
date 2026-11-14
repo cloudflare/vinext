@@ -206,7 +206,8 @@ describe("App Router production SSR route client reference preloads", () => {
   });
 
   // Issue #3728. Next.js 16 (webpack and Turbopack) links the page's CSS, its
-  // Client Components' included, in the shell of both routes.
+  // Client Components' included, in the shell of both routes. Another route
+  // (/loading-css/lazy-viewer) imports the viewer through next/dynamic.
   it.each([
     ["/loading-css/async-page", false],
     ["/loading-css/async-loading", true],
