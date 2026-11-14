@@ -138,7 +138,10 @@ async function startHoistedScrollFixture(): Promise<{
 
 test.setTimeout(60_000);
 
-test("does not scroll to top when React hoists the route's first DOM node", async ({ page }) => {
+// Next.js 16.3 made the new scroll handler the default. It resolves the route's
+// scroll target from the Fragment's children, which never include the hoisted
+// resource, so the page still scrolls to the top.
+test("scrolls to top when React hoists the route's first DOM node", async ({ page }) => {
   const app = await startHoistedScrollFixture();
 
   try {
@@ -150,7 +153,7 @@ test("does not scroll to top when React hoists the route's first DOM node", asyn
 
     await page.locator("#to-hoisted").evaluate((element: HTMLElement) => element.click());
     await expect(page.locator("#hoisted-page")).toBeVisible();
-    await expect.poll(() => page.evaluate(() => window.scrollY)).not.toBe(0);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   } finally {
     try {
       await stopChildProductionServer(app.server);
