@@ -29,6 +29,8 @@ import {
   withRequestHeaders,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
+import { withRequestStageBypassCacheState } from "./cache-headers.js";
+import { isExternalUrl } from "../utils/external-url.js";
 import { applyMiddlewareResponseHeadersToRequest } from "../utils/middleware-request-headers.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
@@ -508,6 +510,9 @@ async function handleRequestImpl(
     let speculativeRenderRequest: Request | null = null;
     // The middleware response alone, before next.config headers are staged.
     let middlewareResponseHeaders: Headers | undefined;
+    // Whether middleware answered the request itself, by a redirect, its own
+    // response or an external rewrite.
+    let middlewareAnswered = false;
 
     const deps: PagesPipelineDeps = {
       assetPrefix: vinextConfig?.assetPrefix,
@@ -541,6 +546,9 @@ async function handleRequestImpl(
                 middlewareOptions,
               );
               middlewareResponseHeaders = undefined;
+              middlewareAnswered =
+                !result.continue ||
+                (result.rewriteUrl !== undefined && isExternalUrl(result.rewriteUrl));
               if (result.responseHeaders) {
                 middlewareResponseHeaders = new Headers();
                 for (const [key, value] of result.responseHeaders) {
@@ -839,6 +847,11 @@ async function handleRequestImpl(
       let response = result.response;
       if (sharedResponseHeaders && sharedOuterPolicyHeaders) {
         reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedOuterPolicyHeaders);
+      }
+      // Middleware answered in this uncached request stage, so a staged
+      // response stage and its shared cache never see this request.
+      if (!forceCacheBypass && middlewareAnswered && !responseStageDispatched) {
+        response = withRequestStageBypassCacheState(response);
       }
       if (probeMode && probeRoute && !responseStageDispatched) {
         const { finalizeRequestStageCacheabilityProbe } = await import("./cacheability-request.js");
