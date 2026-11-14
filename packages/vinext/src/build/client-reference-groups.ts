@@ -52,6 +52,25 @@ function inRenderOrder(files: readonly string[]): string[] {
     .map(({ file }) => file);
 }
 
+/**
+ * The files a route renders whatever its render does: its page, layouts and
+ * templates, and each slot's layouts and page, or its default without one.
+ * Boundaries (loading, error, not-found and the like) render only when
+ * something triggers them.
+ */
+function renderedRouteFiles(route: ClientReferenceGroupRoute): string[] {
+  return [
+    route.pagePath,
+    ...route.layouts,
+    ...route.templates,
+    ...route.parallelSlots.flatMap((slot) => [
+      slot.pagePath ?? slot.defaultPath,
+      slot.layoutPath,
+      ...(slot.configLayoutPaths ?? []),
+    ]),
+  ].filter((value): value is string => typeof value === "string");
+}
+
 function interceptEntryIds(intercept: ClientReferenceGroupIntercept): string[] {
   return [
     intercept.pagePath,
@@ -204,6 +223,11 @@ export type ClientReferencePreloadPlan = {
   files: string[][];
   /** Each route pattern's files, as indices into `files`. */
   routes: Map<string, number[]>;
+  /**
+   * Each route pattern's files that render whatever its render does (see
+   * `renderedRouteFiles`), as indices into `files`.
+   */
+  rendered: Map<string, number[]>;
   /** The files of a render without a route, as indices into `files`. */
   routeless: number[];
   /**
@@ -281,6 +305,7 @@ export function collectClientReferencePreloadPlan(options: {
     return index;
   };
   const routes = new Map<string, number[]>();
+  const rendered = new Map<string, number[]>();
   const interceptFiles: string[] = [];
   for (const route of options.routes) {
     const indices = inRenderOrder(
@@ -292,6 +317,12 @@ export function collectClientReferencePreloadPlan(options: {
     ).map(fileIndex);
     // Patterns are unique, but a duplicate must still preload both routes.
     routes.set(route.pattern, [...new Set([...(routes.get(route.pattern) ?? []), ...indices])]);
+    rendered.set(route.pattern, [
+      ...new Set([
+        ...(rendered.get(route.pattern) ?? []),
+        ...renderedRouteFiles(route).map(fileIndex),
+      ]),
+    ]);
     for (const intercept of [
       ...route.parallelSlots.flatMap((slot) => slot.interceptingRoutes),
       ...route.siblingIntercepts,
@@ -342,7 +373,7 @@ export function collectClientReferencePreloadPlan(options: {
   const staticOnly = [...new Set(files.flat())].filter(
     (id) => !always.has(id) && !dynamicallyReached.has(id),
   );
-  return { always: [...always], files, routes, routeless, staticOnly };
+  return { always: [...always], files, routes, rendered, routeless, staticOnly };
 }
 
 /** Export names an importer uses from a module, or `"*"` for all of them. */

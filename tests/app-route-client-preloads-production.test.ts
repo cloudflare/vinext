@@ -205,6 +205,32 @@ describe("App Router production SSR route client reference preloads", () => {
     expect(warmStylesheets).toEqual(stylesheets);
   });
 
+  // Issue #3728. Next.js 16 (webpack and Turbopack) links the page's CSS, its
+  // Client Components' included, in the shell of both routes.
+  it.each([
+    ["/loading-css/async-page", false],
+    ["/loading-css/async-loading", true],
+  ])(
+    "links the stylesheet of a page's client component in the shell, under loading.js or not (%s)",
+    async (route, showsFallback) => {
+      const href = cssHref("--loading-css-viewer");
+      for (const label of ["cold", "warm"]) {
+        const { first, html } = await readStream(`${baseUrl}${route}`);
+        expect(html, label).toContain('data-testid="loading-css-viewer"');
+        // Under loading.js the shell flushes before the page renders.
+        expect(first.includes('data-testid="loading-css-fallback"'), label).toBe(showsFallback);
+        expect(first.includes('data-testid="loading-css-viewer"'), label).toBe(!showsFallback);
+        // Not only a late preload, which reveals the content unstyled.
+        const stylesheets = (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).filter(
+          (tag) => tag.includes(`href="${href}"`),
+        );
+        expect(stylesheets, label).toHaveLength(1);
+        expect(stylesheets[0], label).toContain('crossorigin=""');
+        expect(first, label).toContain(stylesheets[0]);
+      }
+    },
+  );
+
   it("streams a client component that awaits at its top level, as Next.js does", async () => {
     const read = () => readStream(`${baseUrl}/streamed`);
 

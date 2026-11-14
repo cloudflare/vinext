@@ -41,6 +41,13 @@ export type RouteClientReferences = {
   files: readonly (readonly number[])[];
   /** Each route pattern's files. */
   routes: Readonly<Record<string, readonly number[]>>;
+  /**
+   * Each route pattern's files that render whatever its render does: its
+   * page, layouts and templates and its slots', not its boundaries.
+   */
+  rendered: Readonly<Record<string, readonly number[]>>;
+  /** References route files reach only through static imports, outside `always`. */
+  staticOnly: readonly number[];
   /** The files of a render without a route, such as a route-miss 404. */
   routeless: readonly number[];
   /**
@@ -58,6 +65,12 @@ export type RouteClientReferenceSet = {
    */
   references: string[];
   streamed: string[];
+  /**
+   * The references the route's rendered files import statically, in import
+   * order, whose stylesheets a render links whether or not it reaches them
+   * before its shell, as Next.js links each segment's CSS.
+   */
+  linked: string[];
 };
 
 /**
@@ -72,10 +85,12 @@ export function resolveRouteClientReferences(
 ): RouteClientReferenceSet | undefined {
   if (!plan || routePattern === undefined) return undefined;
   let files: readonly number[];
+  let renderedFiles: readonly number[] = [];
   if (routePattern === null) {
     files = plan.routeless;
   } else if (Object.hasOwn(plan.routes, routePattern)) {
     files = plan.routes[routePattern]!;
+    if (Object.hasOwn(plan.rendered, routePattern)) renderedFiles = plan.rendered[routePattern]!;
   } else {
     return undefined;
   }
@@ -83,15 +98,24 @@ export function resolveRouteClientReferences(
   for (const file of files) {
     for (const index of plan.files[file]!) indices.add(index);
   }
+  const staticIndices = new Set(plan.staticOnly);
+  const linkedIndices = new Set<number>();
+  for (const file of renderedFiles) {
+    for (const index of plan.files[file]!) {
+      if (staticIndices.has(index)) linkedIndices.add(index);
+    }
+  }
   const asyncIndices = new Set(plan.async);
   const references: string[] = [];
   const streamed: string[] = [];
+  const linked: string[] = [];
   for (const index of indices) {
     const id = plan.references[index]!;
     references.push(id);
     if (asyncIndices.has(index)) streamed.push(id);
+    if (linkedIndices.has(index)) linked.push(id);
   }
-  return { references, streamed };
+  return { references, streamed, linked };
 }
 
 export function createClientReferencePreloader(

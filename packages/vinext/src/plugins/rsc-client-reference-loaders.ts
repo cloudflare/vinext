@@ -258,6 +258,8 @@ function generateRouteClientReferencesExport(
     always,
     files,
     routes: Object.fromEntries(plan.preloads.routes),
+    rendered: Object.fromEntries(plan.preloads.rendered),
+    staticOnly: asyncCandidates.map(({ index }) => index),
     routeless: plan.preloads.routeless,
     async: asyncPlaceholder,
   };

@@ -401,6 +401,70 @@ describe("collectClientReferencePreloadPlan", () => {
     expect(preloads(plan, plan.routes.get("/client")!)).toEqual(["/app/client/page.tsx"]);
   });
 
+  it("lists the files a route renders whatever happens, not its boundaries", () => {
+    const files = {
+      layout: "/app/layout.tsx",
+      template: "/app/dash/template.tsx",
+      page: "/app/dash/page.tsx",
+      loading: "/app/dash/loading.tsx",
+      error: "/app/dash/error.tsx",
+      notFound: "/app/not-found.tsx",
+      feedDefault: "/app/dash/@feed/default.tsx",
+      feedLayout: "/app/dash/@feed/layout.tsx",
+      feedLoading: "/app/dash/@feed/loading.tsx",
+      teamPage: "/app/dash/@team/page.tsx",
+      teamDefault: "/app/dash/@team/default.tsx",
+    };
+    // Each file imports a client reference of its own, named after it.
+    const plan = collectClientReferencePreloadPlan({
+      clientReferenceIds: new Set(Object.keys(files).map((name) => `/${name}-ref.tsx`)),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo(
+        Object.fromEntries(
+          Object.entries(files).map(([name, file]) => [file, [`/${name}-ref.tsx`]]),
+        ),
+      ),
+      routes: [
+        {
+          ...route("/dash", files.page, [files.layout]),
+          templates: [files.template],
+          loadingPath: files.loading,
+          errorPath: files.error,
+          notFoundPath: files.notFound,
+          parallelSlots: [
+            {
+              pagePath: null,
+              defaultPath: files.feedDefault,
+              layoutPath: files.feedLayout,
+              loadingPath: files.feedLoading,
+              errorPath: null,
+              interceptingRoutes: [],
+            },
+            {
+              pagePath: files.teamPage,
+              defaultPath: files.teamDefault,
+              layoutPath: null,
+              loadingPath: null,
+              errorPath: null,
+              interceptingRoutes: [],
+            },
+          ],
+        } as never,
+      ],
+    });
+
+    const reached = (indices: number[]) => indices.flatMap((file) => plan.files[file]!).sort();
+    expect(reached(plan.routes.get("/dash")!)).toHaveLength(Object.keys(files).length);
+    expect(reached(plan.rendered.get("/dash")!)).toEqual([
+      "/feedDefault-ref.tsx",
+      "/feedLayout-ref.tsx",
+      "/layout-ref.tsx",
+      "/page-ref.tsx",
+      "/teamPage-ref.tsx",
+      "/template-ref.tsx",
+    ]);
+  });
+
   it("canonicalizes route files and entry stops", () => {
     const plan = collectClientReferencePreloadPlan({
       canonicalizeModuleId: (id) => id.replace("/link/", "/real/"),
