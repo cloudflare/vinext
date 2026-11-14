@@ -2087,8 +2087,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const relativePath = fileMatcher.stripExtension(canonicalId.slice(canonicalPagesDir.length));
     return relativePath === "/api" || relativePath.startsWith("/api/");
   };
-  // Pages whose data exports are stripped from the client build: every page
-  // except API routes, _app, _document and _error.
+  // Pages whose data exports are stripped from the client build: every file
+  // under pages/ but API routes, like Next.js (which includes _app and _error).
   const isClientPageWithDataExports = (id: string): boolean => {
     if (!hasPagesDir) return false;
     const modulePath = stripViteModuleQuery(id);
@@ -2096,9 +2096,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const canonicalId = canonicalizePageTransformPath(modulePath);
     if (!isWithinPagesDirectory(canonicalId)) return false;
     if (!fileMatcher.isPageFile(canonicalId)) return false;
-    if (isApiPage(canonicalId)) return false;
-    const relativePath = canonicalId.slice(canonicalPagesDir.length);
-    return !/^\/(?:_app|_document|_error)(?:\.[^/]*)?$/.test(relativePath);
+    return !isApiPage(canonicalId);
   };
   // Client build pages loaded by vinext:page-source-content.
   const clientSourcemapPageIds = new Set<string>();
