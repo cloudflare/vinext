@@ -8979,10 +8979,10 @@ export const loadServerActionClient = ${
           // plugin-rsc serves the hybrid build; let its memory cache read the
           // prerendered Pages routes, as `vinext start` does.
           if (!hasPagesDir) return;
+          // The prerender writes its manifest and pages to dist/server
+          // whatever `rscOutDir` says (build/run-prerender.ts).
           const { installPrerenderedPagesReader } = await import("./server/prerendered-pages.js");
-          installPrerenderedPagesReader(
-            path.resolve(root, environments.rsc?.build.outDir ?? "dist/server"),
-          );
+          installPrerenderedPagesReader(path.resolve(root, "dist", "server"));
           return;
         }
         const { createPagesPreviewHandler } = await import("./server/prod-server.js");

@@ -38,9 +38,17 @@ describe.each([
     hybrid: true,
     viaPreview: true,
   },
+  // The prerender still writes its manifest and pages to dist/server.
+  {
+    name: "hybrid App and Pages Router with a custom rscOutDir under vite preview",
+    fixture: "pages-prerender-node-serve-hybrid",
+    hybrid: true,
+    viaPreview: true,
+    rscOutDir: "dist/rsc",
+  },
 ])(
   "$name: prerendered Pages routes on the Node production server",
-  ({ fixture, hybrid, nextConfig, viaPreview }) => {
+  ({ fixture, hybrid, nextConfig, viaPreview, rscOutDir }) => {
     let root: string;
     let server: http.Server | undefined;
     let previewServer: PreviewServer | undefined;
@@ -56,7 +64,11 @@ describe.each([
         configFile: false,
         logLevel: "silent",
         plugins: [
-          vinext({ ...(hybrid ? { appDir: root } : { disableAppRouter: true }), nextConfig }),
+          vinext({
+            ...(hybrid ? { appDir: root } : { disableAppRouter: true }),
+            nextConfig,
+            rscOutDir,
+          }),
         ],
       });
       await builder.buildApp();
@@ -65,6 +77,7 @@ describe.each([
       await runPrerender({
         root,
         ...(hybrid ? {} : { pagesBundlePath: path.join(root, "dist", "server", "entry.js") }),
+        ...(rscOutDir ? { routeRootConfig: { rscOutDir } } : {}),
         concurrency: 1,
       });
 
@@ -102,7 +115,11 @@ describe.each([
           configFile: false,
           logLevel: "silent",
           plugins: [
-            vinext({ ...(hybrid ? { appDir: root } : { disableAppRouter: true }), nextConfig }),
+            vinext({
+              ...(hybrid ? { appDir: root } : { disableAppRouter: true }),
+              nextConfig,
+              rscOutDir,
+            }),
           ],
           preview: { host: "127.0.0.1", port: 0 },
         });
