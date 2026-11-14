@@ -287,14 +287,33 @@ describe("App Router production SSR route client reference preloads", () => {
     }
   });
 
-  // Next.js 16 links a page's client components' CSS, rendered or not, but a
-  // not-found boundary's only when it renders. Client-reference grouping must
-  // not put the two in one stylesheet.
-  it("links no stylesheet of a route's not-found boundary with its page's client components", async () => {
-    const boundaryRule = "--loading-css-grouped-boundary";
-    const noteHref = cssHref("--loading-css-grouped-note");
-    // The boundary's rule is in the build, in whichever file.
-    cssHref(boundaryRule);
+  // The stylesheets a document ends with once hydrated: its own, then those of
+  // each module chunk its Flight data names, which the client reference loader
+  // appends to <head> as React loads the chunk, whether the reference renders
+  // or not (an unrendered boundary's row is in the data too).
+  const hydratedStylesheetHrefs = (html: string): string[] => {
+    const { appClientReferenceChunks } = JSON.parse(
+      fs.readFileSync(
+        path.join(fixtureDir, "dist", "client", "vinext-client-entry-manifest.json"),
+        "utf8",
+      ),
+    ) as { appClientReferenceChunks: { modules: { file: string; css: string[] }[] } };
+    const cssByFile = new Map(appClientReferenceChunks.modules.map(({ file, css }) => [file, css]));
+    const hrefs = stylesheetHrefs(html);
+    for (const match of html.matchAll(/\\?"m\/([^"\\]+\.js)/g)) {
+      for (const css of cssByFile.get(match[1]!) ?? []) {
+        const href = css.startsWith("/") ? css : `/${css}`;
+        if (!hrefs.includes(href)) hrefs.push(href);
+      }
+    }
+    return hrefs;
+  };
+
+  // The page imports a client component it renders only with `?note`; its
+  // not-found boundary renders another, whose global rule has the same
+  // specificity. The page's rule must win once the document hydrates.
+  it("keeps a page's client component rule ahead of its unrendered not-found boundary's", async () => {
+    const files = new Map(clientCssFiles().map(({ href, css }) => [href, css]));
     for (const [label, query] of [
       ["cold", ""],
       ["warm", ""],
@@ -304,13 +323,15 @@ describe("App Router production SSR route client reference preloads", () => {
       expect(response.status, label).toBe(200);
       const html = await response.text();
       expect(html.includes('data-testid="loading-css-grouped-note"'), label).toBe(query !== "");
-      const hrefs = stylesheetHrefs(html);
-      expect(hrefs, label).toContain(noteHref);
-      const linkedCss = clientCssFiles().filter(({ href }) => hrefs.includes(href));
-      expect(
-        linkedCss.filter(({ css }) => css.includes(boundaryRule)).map(({ href }) => href),
-        label,
-      ).toEqual([]);
+      let winner: string | undefined;
+      for (const href of hydratedStylesheetHrefs(html)) {
+        for (const match of (files.get(href) ?? "").matchAll(
+          /\.loading-css-grouped\s*\{[^}]*--css-group-winner:\s*(\w+)/g,
+        )) {
+          winner = match[1];
+        }
+      }
+      expect(winner, label).toBe("page");
     }
   });
 
@@ -559,19 +580,16 @@ describe("App Router production SSR route client reference preloads", () => {
     }
 
     // The document's Flight data names the module chunk of each reference the
-    // page renders, which SSR modulepreloads. It also names the root
-    // not-found boundary's, which doesn't render, in a chunk of its own.
-    const notFoundChunk = clientFileHref(".js", "not-found-note").slice(1);
+    // page renders, which SSR modulepreloads.
     for (const route of ["/", "/streamed/also"]) {
       const html = await (await fetch(`${baseUrl}${route}`)).text();
       expect(html, route).not.toContain("__VINEXT_CLIENT_REFERENCE_REGISTRY__");
       const named = [...html.matchAll(/\\?"m\/([^"\\]+\.js)/g)].map((match) => match[1]!);
       expect(named.length, route).toBeGreaterThan(0);
-      expect(named, route).toContain(notFoundChunk);
       const preloads = modulepreloadHrefs(html);
       for (const file of named) {
         expect(moduleFiles, route).toContain(file);
-        if (file !== notFoundChunk) expect(preloads, route).toContain(`/${file}`);
+        expect(preloads, route).toContain(`/${file}`);
       }
     }
   });
