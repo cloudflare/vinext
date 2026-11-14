@@ -163,7 +163,6 @@ async function assertEncodedDelimiterAuthGuard(baseUrl: string): Promise<void> {
     { body: "protected order page", pathname: "/orders/42%3F" },
     { body: "protected order page", pathname: "/orders/42%23" },
     { body: "protected localized admin page", pathname: "/xx/admin/dash%2Fboard" },
-    { body: "protected localized admin page", pathname: "/xx/admin/dash%2Fboard.rsc" },
     {
       body: "protected invoice route handler",
       pathname: "/billing/invoices/current%2Fq3",
@@ -203,22 +202,18 @@ async function assertEncodedDelimiterAuthGuard(baseUrl: string): Promise<void> {
   }
 }
 
-async function assertRscDotSegmentAuthGuard(baseUrl: string): Promise<void> {
+async function assertRscSuffixAuthGuard(baseUrl: string): Promise<void> {
   const headers = { "x-rsc-dot-segment-auth": "1" };
-  // `....rsc` strips to the ordinary segment `...`, which the matcher covers.
+  // As in Next.js, a `.rsc` suffix is an ordinary part of the last segment, so
+  // none of these can leave a `.` or `..` segment the matcher does not cover.
   const guardedPaths = [
     "/xx/admin/dashboard.rsc",
     "/xx/admin/....rsc",
-    "/billing/invoices/current.rsc",
-  ];
-  // These strip to a trailing `.` / `..` segment. The router would bind it as a
-  // param value while middleware sees the URL-resolved parent, which the
-  // matcher does not cover.
-  const dotSegmentPaths = [
     "/xx/admin/...rsc",
     "/xx/admin/..rsc",
     "/xx/admin/%2E%2E.rsc",
     "/xx/admin/.%2e.rsc",
+    "/billing/invoices/current.rsc",
     "/billing/invoices/...rsc",
   ];
 
@@ -229,12 +224,51 @@ async function assertRscDotSegmentAuthGuard(baseUrl: string): Promise<void> {
     expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
     expect(body, pathname).toBe("blocked by middleware");
   }
-  for (const pathname of dotSegmentPaths) {
+}
+
+async function assertMetadataRouteSuffixAuthGuard(baseUrl: string): Promise<void> {
+  // Next.js runs middleware for every spelling of an exact metadata route
+  // matcher. A `.rsc` suffix, encoded or not, never selects the metadata route,
+  // so the suffixed spellings 404 instead of serving it.
+  const targets = [
+    { body: "protected-sitemap-entry", pathname: "/sitemap.xml" },
+    { body: "protected-robots-entry", pathname: "/robots.txt" },
+  ];
+  const suffixes = [".rsc", "%2Ersc", "%2ersc", ".rs%63"];
+
+  for (const target of targets) {
+    const response = await fetch(`${baseUrl}${target.pathname}`);
+    const body = await response.text();
+    expect(response.status, target.pathname).toBe(200);
+    expect(response.headers.get("x-auth-guard"), target.pathname).toBeNull();
+    expect(body, target.pathname).toContain(target.body);
+  }
+  for (const target of targets) {
+    for (const suffix of suffixes) {
+      const pathname = `${target.pathname}${suffix}`;
+      const response = await fetch(`${baseUrl}${pathname}`);
+      const body = await response.text();
+      expect(response.status, pathname).toBe(404);
+      expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
+      expect(body, pathname).not.toContain(target.body);
+    }
+  }
+
+  const headers = { "x-metadata-route-auth": "1" };
+  const guardedPaths = [
+    ...targets.flatMap(({ pathname }) => [
+      pathname,
+      ...suffixes.map((suffix) => `${pathname}${suffix}`),
+    ]),
+    "/sitemap.xm%6C",
+    "/robots.tx%74",
+  ];
+  for (const pathname of guardedPaths) {
     const response = await fetch(`${baseUrl}${pathname}`, { headers });
     const body = await response.text();
-    expect(response.status, pathname).toBe(404);
-    expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
-    expect(body, pathname).not.toMatch(/protected (localized admin page|invoice route handler)/);
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
   }
 }
 
@@ -302,6 +336,48 @@ async function assertHybridPagesEncodedAliasAuthGuard(baseUrl: string): Promise<
     expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
     expect(body, pathname).not.toContain("protected pages staff");
   }
+}
+
+async function assertHybridPagesEncodedDataAliasAuthGuard(baseUrl: string): Promise<void> {
+  // `_next/data` requests reach the same hybrid Pages routing, so a `%25xx`
+  // alias must not decode twice into the page's props.
+  const page = await fetch(`${baseUrl}/staff/panel`);
+  const html = await page.text();
+  expect(page.status, html).toBe(200);
+  const buildId = /"buildId":"([^"]+)"/.exec(html)?.[1];
+  expect(buildId).toBeTruthy();
+  const dataHeaders = { "x-nextjs-data": "1" };
+  const guardHeaders = { "x-hybrid-pages-auth": "1" };
+  const dataPath = (pathname: string) => `/_next/data/${buildId}${pathname}.json`;
+
+  const data = await fetch(`${baseUrl}${dataPath("/staff/panel")}`, { headers: dataHeaders });
+  const dataBody = await data.text();
+  expect(data.status, dataBody).toBe(200);
+  expect(data.headers.get("x-auth-guard")).toBeNull();
+  expect(dataBody).toContain("protected pages staff props");
+
+  const guarded = [
+    { headers: { ...guardHeaders, ...dataHeaders }, pathname: dataPath("/staff/panel") },
+    { headers: { ...guardHeaders, ...dataHeaders }, pathname: dataPath("/%73taff/panel") },
+  ];
+  for (const { headers, pathname } of guarded) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+
+  // Next.js answers 404 here. vinext answers an unmatched hybrid `_next/data`
+  // URL with `200 {}`, so only the missing page props and middleware header
+  // are asserted.
+  const aliasPath = dataPath("/%2573taff/panel");
+  const alias = await fetch(`${baseUrl}${aliasPath}`, {
+    headers: { ...guardHeaders, ...dataHeaders },
+  });
+  const aliasBody = await alias.text();
+  expect(alias.headers.get("x-auth-guard"), aliasPath).toBeNull();
+  expect(aliasBody, aliasPath).not.toContain("protected pages staff");
 }
 
 async function assertCaseSensitiveMatcherAuthGuard(baseUrl: string): Promise<void> {
@@ -387,12 +463,20 @@ describe("valid middleware matcher auth guards", () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
     }, 30_000);
 
-    it("does not route `.rsc` requests that strip to a dot segment", async () => {
-      await assertRscDotSegmentAuthGuard(baseUrl);
+    it("treats a `.rsc` suffix as an ordinary path segment", async () => {
+      await assertRscSuffixAuthGuard(baseUrl);
+    }, 30_000);
+
+    it("runs middleware for encoded `.rsc` spellings of metadata routes", async () => {
+      await assertMetadataRouteSuffixAuthGuard(baseUrl);
     }, 30_000);
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
+    }, 30_000);
+
+    it("keeps double-encoded aliases out of hybrid Pages data requests", async () => {
+      await assertHybridPagesEncodedDataAliasAuthGuard(baseUrl);
     }, 30_000);
 
     it("matches middleware paths case-sensitively", async () => {
@@ -455,12 +539,20 @@ describe("valid middleware matcher auth guards", () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
     });
 
-    it("does not route `.rsc` requests that strip to a dot segment", async () => {
-      await assertRscDotSegmentAuthGuard(baseUrl);
+    it("treats a `.rsc` suffix as an ordinary path segment", async () => {
+      await assertRscSuffixAuthGuard(baseUrl);
+    });
+
+    it("runs middleware for encoded `.rsc` spellings of metadata routes", async () => {
+      await assertMetadataRouteSuffixAuthGuard(baseUrl);
     });
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
+    });
+
+    it("keeps double-encoded aliases out of hybrid Pages data requests", async () => {
+      await assertHybridPagesEncodedDataAliasAuthGuard(baseUrl);
     });
 
     it("matches middleware paths case-sensitively", async () => {
@@ -509,7 +601,7 @@ describe("valid middleware matcher auth guards", () => {
             persist: false;
             logLevel: "none";
             watch: false;
-            server: { port: 0 };
+            server: { hostname: string; port: 0 };
           };
         }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
       };
@@ -520,7 +612,7 @@ describe("valid middleware matcher auth guards", () => {
           persist: false,
           logLevel: "none",
           watch: false,
-          server: { port: 0 },
+          server: { hostname: "127.0.0.1", port: 0 },
         },
       });
       await worker.url;
@@ -548,12 +640,20 @@ describe("valid middleware matcher auth guards", () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
     });
 
-    it("does not route `.rsc` requests that strip to a dot segment", async () => {
-      await assertRscDotSegmentAuthGuard(baseUrl);
+    it("treats a `.rsc` suffix as an ordinary path segment", async () => {
+      await assertRscSuffixAuthGuard(baseUrl);
+    });
+
+    it("runs middleware for encoded `.rsc` spellings of metadata routes", async () => {
+      await assertMetadataRouteSuffixAuthGuard(baseUrl);
     });
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
+    });
+
+    it("keeps double-encoded aliases out of hybrid Pages data requests", async () => {
+      await assertHybridPagesEncodedDataAliasAuthGuard(baseUrl);
     });
 
     it("matches middleware paths case-sensitively", async () => {

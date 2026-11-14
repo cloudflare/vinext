@@ -32,6 +32,7 @@ import { NextRequest } from "vinext/shims/server";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
 import { hasCdnResponsePolicy } from "./cache-control.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 type PagesApiRouteConfig = {
   runtime?: string;
@@ -154,6 +155,8 @@ function withInitialResponseHeaders(
   initialResponseHeaders: Headers | undefined,
 ): Response {
   if (!initialResponseHeaders || !initialResponseHeaders.keys().next().value) return response;
+  // An edge handler's WebSocket upgrade cannot be rebuilt with headers.
+  if (isWebSocketUpgradeResponse(response)) return response;
   const headers = new Headers(initialResponseHeaders);
   for (const [name, value] of response.headers) {
     if (name !== "set-cookie") headers.set(name, value);
@@ -327,7 +330,15 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       // this also covers hybrid App/Pages requests, where the context is
       // inherited from the surrounding App Router handler rather than passed
       // through options.ctx.
-      getRequestExecutionContext()?.waitUntil(handlerLifecycle);
+      //
+      // The Node production server keeps the handler running without help.
+      // There, waitUntil holds a graceful shutdown open, which Next.js never
+      // does for API handlers, and a handler waiting for an event that never
+      // comes would hang it.
+      const executionContext = getRequestExecutionContext();
+      if (!executionContext?.skipsPagesApiHandlerWaitUntil) {
+        executionContext?.waitUntil(handlerLifecycle);
+      }
       return finalizeResponse(firstSettled.response);
     }
 

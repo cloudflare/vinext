@@ -23,6 +23,7 @@ import {
 } from "../packages/vinext/src/server/headers.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
+const spawnSyncMock = vi.hoisted(() => vi.fn());
 const delayMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -30,6 +31,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return {
     ...actual,
     execFileSync: execFileSyncMock,
+    spawnSync: spawnSyncMock,
   };
 });
 
@@ -152,9 +154,9 @@ function writeTwoStageWorkerArtifact({
   );
 }
 
-function writeBuildOutputWorkerArtifact(): void {
+function writeBuildOutputWorkerArtifact(version = "v0"): void {
   writeFile(
-    ".cloudflare/output/v0/workers/default/worker.config.json",
+    `.cloudflare/output/${version}/workers/default/worker.config.json`,
     JSON.stringify({
       manifest: { mainModule: "index.js", modules: {}, type: "partial" },
       name: "my-worker",
@@ -162,15 +164,15 @@ function writeBuildOutputWorkerArtifact(): void {
     }),
   );
   writeFile(
-    ".cloudflare/output/v0/workers/default/bundle/index.js",
+    `.cloudflare/output/${version}/workers/default/bundle/index.js`,
     'void import("./response-stage.js");\n',
   );
   writeFile(
-    ".cloudflare/output/v0/workers/default/bundle/response-stage.js",
+    `.cloudflare/output/${version}/workers/default/bundle/response-stage.js`,
     `import "./${CACHEABILITY_MANIFEST_MODULE}";\n`,
   );
   writeFile(
-    ".cloudflare/output/v0/workers/default/bundle/.vite/manifest.json",
+    `.cloudflare/output/${version}/workers/default/bundle/.vite/manifest.json`,
     JSON.stringify({
       "virtual:cloudflare/worker-entry": {
         dynamicImports: ["virtual:vinext-response-stage"],
@@ -180,7 +182,7 @@ function writeBuildOutputWorkerArtifact(): void {
     }),
   );
   writeFile(
-    `.cloudflare/output/v0/workers/default/bundle/${CACHEABILITY_MANIFEST_MODULE}`,
+    `.cloudflare/output/${version}/workers/default/bundle/${CACHEABILITY_MANIFEST_MODULE}`,
     "export default null;\n",
   );
 }
@@ -321,6 +323,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-warm-deploy-test-"));
     execFileSyncMock.mockReset();
+    spawnSyncMock.mockReset();
     delayMock.mockReset();
     vi.stubGlobal(
       "fetch",
@@ -481,6 +484,33 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
   });
 
+  it("writes a cacheability manifest into v1 Build Output", () => {
+    writeBuildOutputWorkerArtifact("v1");
+
+    expect(
+      writeCacheabilityManifestArtifact(
+        tmpDir,
+        "wrangler.jsonc",
+        { buildId: "build-a", routes: {}, version: 1 },
+        "cf",
+      ),
+    ).toBe(".cloudflare/output/v1/workers/default/worker.config.json");
+  });
+
+  it("rejects cacheability output when Build Output has more than one version", () => {
+    writeBuildOutputWorkerArtifact("v0");
+    writeBuildOutputWorkerArtifact("v1");
+
+    expect(() =>
+      writeCacheabilityManifestArtifact(
+        tmpDir,
+        "wrangler.jsonc",
+        { buildId: "build-a", routes: {}, version: 1 },
+        "cf",
+      ),
+    ).toThrow("Found Cloudflare Build Output in more than one format (v0, v1)");
+  });
+
   it("stages and promotes a typed-config Worker using cf without Wrangler", async () => {
     writeBuildOutputWorkerArtifact();
     writeFile(
@@ -489,31 +519,41 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     writeFile("node_modules/cf/bin/cf", "#!/usr/bin/env node\n");
     const events: string[] = [];
-    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+    // cf writes its log to stderr and only JSON results to stdout.
+    spawnSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("create") && args.includes("versions")) {
         events.push("upload");
-        return JSON.stringify({
-          id: PROBE_VERSION,
-          preview_url: "https://preview.example.workers.dev",
-        });
+        return {
+          status: 0,
+          stdout: "",
+          stderr: `│  Worker Version ID: ${PROBE_VERSION}\n│  Version Preview URL: https://preview.example.workers.dev\n`,
+        };
       }
       if (args.includes("list")) {
         events.push("status");
-        return JSON.stringify({
-          deployments: [
-            { id: "active", versions: [{ version_id: OLD_VERSION, percentage: 100 }] },
-            { id: "older", versions: [{ version_id: FINAL_VERSION, percentage: 100 }] },
-          ],
-        });
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            deployments: [
+              { id: "active", versions: [{ version_id: OLD_VERSION, percentage: 100 }] },
+              { id: "older", versions: [{ version_id: FINAL_VERSION, percentage: 100 }] },
+            ],
+          }),
+          stderr: "",
+        };
       }
       if (args.includes("create") && args.includes("deployments")) {
         const versions = JSON.parse(args[args.indexOf("--versions") + 1]!);
         events.push(versions.length === 2 ? "stage" : "promote");
-        return "https://app.example.workers.dev";
+        return { status: 0, stdout: "", stderr: "https://app.example.workers.dev\n" };
       }
       if (args.includes("triggers")) {
         events.push("triggers");
-        return "Deployed my-worker triggers\n  https://app.example.workers.dev\n";
+        return {
+          status: 0,
+          stdout: "",
+          stderr: "Deployed my-worker triggers\n  https://app.example.workers.dev\n",
+        };
       }
       throw new Error(`Unexpected cf args: ${args.join(" ")}`);
     });
@@ -531,9 +571,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }),
     ).resolves.toBe("https://app.example.workers.dev");
     expect(events).toEqual(["upload", "status", "stage", "triggers", "discover", "promote"]);
-    const args = (execFileSyncMock.mock.calls as Array<[string, string[]]>).map(
-      ([, value]) => value,
-    );
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    const args = (spawnSyncMock.mock.calls as Array<[string, string[]]>).map(([, value]) => value);
     expect(args).toContainEqual(
       expect.arrayContaining(["workers", "deployments", "create", "--strategy", "percentage"]),
     );

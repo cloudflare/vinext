@@ -2,10 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import Module from "node:module";
 import { execFileSync, type ChildProcess, type spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { resolveVersionAnnotations } from "../packages/cloudflare/src/version-annotations.js";
 import {
+  assertWranglerDeployAnnotations,
   deploy,
   buildCfDeployArgs,
   buildNodeCliInvocation,
@@ -27,6 +30,7 @@ import {
   validateWranglerEnvName,
   withCloudflareEnv,
   withCloudflarePreviewBuild,
+  wranglerSupportsVersionAnnotations,
 } from "../packages/cloudflare/src/deploy.js";
 import { parsePreviewsDeployArgs } from "../packages/cloudflare/src/previews-deploy.js";
 import {
@@ -67,7 +71,11 @@ import {
   buildPagesClientAssetsModule,
   writePagesClientAssetsModuleIfMissing,
 } from "../packages/vinext/src/build/pages-client-assets-module.js";
-import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-request-pipeline.js";
+import {
+  fetchWorkerFilesystemRoute,
+  isServableFilesystemRoute,
+} from "../packages/vinext/src/server/pages-request-pipeline.js";
+import { publicFileRouteKey } from "../packages/vinext/src/utils/public-file-path.js";
 import {
   createStaticAssetRequest,
   finalizeMissingStaticAssetResponse,
@@ -218,6 +226,13 @@ describe("buildWranglerDeployArgs", () => {
     expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
   });
 
+  it("records the version message and tag", () => {
+    expect(buildWranglerDeployArgs({ message: "-Fix the header", tag: "abc123" })).toEqual({
+      args: ["deploy", "--message=-Fix the header", "--tag=abc123"],
+      env: undefined,
+    });
+  });
+
   it("preserves shell metacharacters as a literal environment argument", () => {
     const env = "preview & whoami > vinext-pwned.txt & rem";
     expect(buildWranglerDeployArgs({ env })).toEqual({
@@ -248,6 +263,16 @@ describe("deploy environment validation", () => {
     );
   });
 
+  it("rejects a Wrangler config path for typed Cloudflare config projects", async () => {
+    await expect(
+      deploy({
+        root: path.resolve("examples/static-assets-cache"),
+        config: "wrangler.jsonc",
+        dryRun: true,
+      }),
+    ).rejects.toThrow("--config is not supported for cloudflare.config.ts projects.");
+  });
+
   it("rejects invalid environment names before project side effects", async () => {
     writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
     const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
@@ -273,6 +298,29 @@ describe("deploy environment validation", () => {
     expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, "worker"))).toBe(false);
+  });
+
+  it("rejects explicit annotations on older Wrangler only when it runs wrangler deploy", async () => {
+    writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
+    writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
+    writeWranglerPackageForTest(tmpDir);
+    writeFile(
+      tmpDir,
+      "node_modules/wrangler/package.json",
+      JSON.stringify({ name: "wrangler", version: "4.65.0", bin: { wrangler: "bin/wrangler.js" } }),
+    );
+
+    await expect(deploy({ root: tmpDir, tag: "v2", dryRun: true })).rejects.toThrow(
+      "--message and --tag require Wrangler 4.66.0 or newer (found 4.65.0).",
+    );
+    // `versions upload` accepts annotations on older Wrangler releases.
+    await expect(
+      deploy({ root: tmpDir, tag: "v2", warmCdnPromote: false, dryRun: true }),
+    ).rejects.toThrow("Run `vinext init --platform=cloudflare` first.");
+    // Traffic-aware warming may still upload with `versions upload`, so it checks later.
+    await expect(
+      deploy({ root: tmpDir, tag: "v2", experimentalTPR: true, dryRun: true }),
+    ).rejects.toThrow("Run `vinext init --platform=cloudflare` first.");
   });
 
   it("does not require a custom Worker entry for App Router deployments", async () => {
@@ -429,6 +477,22 @@ describe("resolveWranglerBin", () => {
     });
   });
 
+  it.each([
+    ["4.66.0", ["--message=Fix the header", "--tag=abc123"]],
+    ["4.65.0", []],
+  ])("only annotates wrangler deploy on Wrangler %s when supported", (version, annotations) => {
+    writeWranglerPackage();
+    const packageJsonPath = path.join(tmpDir, "node_modules/wrangler/package.json");
+    fs.writeFileSync(
+      packageJsonPath,
+      JSON.stringify({ ...JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")), version }),
+    );
+    expect(
+      buildWranglerInvocation(tmpDir, { message: "Fix the header", tag: "abc123" }, "node.exe")
+        .args,
+    ).toEqual([expectedWranglerBin(), "deploy", ...annotations]);
+  });
+
   it("keeps Windows shell metacharacters in one literal argument", () => {
     const payload = "preview & whoami > vinext-pwned.txt & rem";
     expect(buildNodeCliInvocation("wrangler.js", ["deploy", "--env", payload], "node.exe")).toEqual(
@@ -557,6 +621,47 @@ describe("cf Build Output deployment", () => {
     expect(resolvePrerenderOutputDirs(tmpDir, "wrangler", configured)).toEqual(configured);
   });
 
+  it("uses v1 Build Output for typed cf prerendering", () => {
+    const configured = { clientOutDir: "dist/client", rscOutDir: "dist/server" };
+    writeFile(tmpDir, ".cloudflare/output/v1/workers/default/worker.config.json", "{}");
+    const workerDir = path.join(tmpDir, ".cloudflare", "output", "v1", "workers", "default");
+    expect(resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toEqual({
+      clientOutDir: path.join(workerDir, "assets"),
+      rscOutDir: path.join(workerDir, "bundle"),
+    });
+  });
+
+  it("rejects Build Output in more than one version like cf", () => {
+    const configured = { clientOutDir: "dist/client", rscOutDir: "dist/server" };
+    writeFile(tmpDir, ".cloudflare/output/v0/workers/default/worker.config.json", "{}");
+    writeFile(tmpDir, ".cloudflare/output/v1/workers/default/worker.config.json", "{}");
+    expect(() => resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toThrow(
+      "Found Cloudflare Build Output in more than one format (v0, v1)",
+    );
+  });
+
+  it("rejects unsupported or linked Build Output versions like cf", () => {
+    const configured = { clientOutDir: "dist/client", rscOutDir: "dist/server" };
+    writeFile(tmpDir, ".cloudflare/output/v2/workers/default/worker.config.json", "{}");
+    expect(() => resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toThrow(
+      "This Cloudflare Build Output uses format v2, but vinext supports v0 and v1.",
+    );
+
+    const outputDir = path.join(tmpDir, ".cloudflare", "output");
+    fs.rmSync(path.join(outputDir, "v2"), { recursive: true });
+    writeFile(tmpDir, "linked-output/workers/default/worker.config.json", "{}");
+    fs.symlinkSync(path.join(tmpDir, "linked-output"), path.join(outputDir, "v1"), "dir");
+    expect(() => resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toThrow(
+      `Cloudflare Build Output must not be linked, but ${path.join(outputDir, "v1")} is a symlink.`,
+    );
+
+    fs.rmSync(path.join(tmpDir, ".cloudflare"), { recursive: true });
+    fs.symlinkSync(path.join(tmpDir, "linked-output"), path.join(tmpDir, ".cloudflare"), "dir");
+    expect(() => resolvePrerenderOutputDirs(tmpDir, "cf", configured)).toThrow(
+      `Cloudflare Build Output must not be linked, but ${path.join(tmpDir, ".cloudflare")} is a symlink.`,
+    );
+  });
+
   it("builds the selected Cloudflare mode before prebuilt deployment", () => {
     expect(resolveViteBuildMode("cf", undefined)).toBe("production");
     expect(resolveViteBuildMode("cf", "staging")).toBe("staging");
@@ -608,11 +713,28 @@ describe("cf Build Output deployment", () => {
       args: ["deploy", "--prebuilt", "--mode", "preview"],
       mode: "preview",
     });
+    expect(buildCfDeployArgs({ message: "Fix the header", tag: "abc123" })).toEqual({
+      args: ["deploy", "--prebuilt", "--message=Fix the header", "--tag=abc123"],
+      mode: undefined,
+    });
+  });
+
+  it("leaves Preview deploy annotations to cf", () => {
+    expect(
+      buildCfDeployArgs({ target: { type: "preview" }, message: "Fix the header", tag: "abc123" }),
+    ).toEqual({ args: ["previews", "deploy", "--prebuilt"], mode: undefined });
   });
 
   it.each([undefined, "pr-123"])("builds Preview deploy args (name: %s)", (name) => {
     expect(buildCfDeployArgs({ env: "preview", target: { type: "preview", name } })).toEqual({
-      args: ["previews", "deploy", ...(name ? [name] : []), "--prebuilt", "--mode", "preview"],
+      args: [
+        "previews",
+        "deploy",
+        ...(name ? ["--preview-name", name] : []),
+        "--prebuilt",
+        "--mode",
+        "preview",
+      ],
       mode: "preview",
     });
   });
@@ -642,7 +764,16 @@ describe("cf Build Output deployment", () => {
     expect(invocations).toEqual([
       [
         process.execPath,
-        [resolveCfBin(tmpDir), "previews", "deploy", "main", "--prebuilt", "--mode", "preview"],
+        [
+          resolveCfBin(tmpDir),
+          "previews",
+          "deploy",
+          "--preview-name",
+          "main",
+          "--prebuilt",
+          "--mode",
+          "preview",
+        ],
         { cwd: tmpDir, stdio: ["inherit", "pipe", "pipe"], shell: false },
       ],
     ]);
@@ -802,14 +933,16 @@ describe("parseWorkerDeploymentUrl", () => {
 // ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
 
 describe("parsePreviewsDeployArgs", () => {
-  it("accepts an optional name, mode, skip-build, and help", () => {
+  it("accepts an optional Preview name, mode, skip-build, and help", () => {
     expect(parsePreviewsDeployArgs([])).toEqual({
       name: undefined,
       mode: undefined,
       skipBuild: false,
       help: false,
     });
-    expect(parsePreviewsDeployArgs(["pr-123", "--mode", "staging", "--skip-build"])).toEqual({
+    expect(
+      parsePreviewsDeployArgs(["--preview-name", "pr-123", "--mode", "staging", "--skip-build"]),
+    ).toEqual({
       name: "pr-123",
       mode: "staging",
       skipBuild: true,
@@ -833,10 +966,15 @@ describe("parsePreviewsDeployArgs", () => {
     expect(() => parsePreviewsDeployArgs([option])).toThrow();
   });
 
-  it("rejects multiple or invalid Preview names", () => {
-    expect(() => parsePreviewsDeployArgs(["one", "two"])).toThrow("at most one");
-    expect(() => parsePreviewsDeployArgs([" "])).toThrow("must not be empty");
-    expect(() => parsePreviewsDeployArgs(["pr\0name"])).toThrow("null bytes");
+  it("rejects a positional Preview name", () => {
+    expect(() => parsePreviewsDeployArgs(["pr-123"])).toThrow(
+      "Unexpected argument: pr-123. Pass the Preview name with --preview-name <name>.",
+    );
+  });
+
+  it("rejects invalid Preview names", () => {
+    expect(() => parsePreviewsDeployArgs(["--preview-name", " "])).toThrow("must not be empty");
+    expect(() => parsePreviewsDeployArgs(["--preview-name", "pr\0name"])).toThrow("null bytes");
   });
 
   it.each([["--mode="], ["--mode", " "]])("rejects an empty mode: %j", (...args) => {
@@ -905,6 +1043,21 @@ describe("parseDeployArgs", () => {
     );
 
     expect(cliSource).toContain("verbose: parsed.verbose");
+  });
+
+  it("parses and forwards version message and tag flags", () => {
+    const parsed = parseDeployArgs(["--message", " Fix the header ", "--tag="]);
+    expect(parsed.message).toBe("Fix the header");
+    // An explicit empty value opts out of the commit default.
+    expect(parsed.tag).toBe("");
+    expect(parseDeployArgs([]).message).toBeUndefined();
+
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+    expect(cliSource).toContain("message: parsed.message");
+    expect(cliSource).toContain("tag: parsed.tag");
   });
 
   it("defaults to production deploy with no flags", () => {
@@ -1002,8 +1155,20 @@ describe("parseDeployArgs", () => {
     expect(parsed.verbose).toBe(true);
   });
 
+  it("offers the Wrangler-only --name and --config flags only for Wrangler config projects", () => {
+    const wranglerHelp = formatDeployHelp("wrangler");
+    expect(wranglerHelp).toContain("--name <name>");
+    expect(wranglerHelp).toContain("--config <path>");
+    expect(wranglerHelp).toContain("deploy --name my-app");
+
+    const cfHelp = formatDeployHelp("cf");
+    expect(cfHelp).toContain("--vite-config <path>");
+    expect(cfHelp).not.toMatch(/\s--name\b/);
+    expect(cfHelp).not.toMatch(/\s--config\b/);
+  });
+
   it("documents verbose Wrangler output and no-progress probe timeouts", () => {
-    const help = formatDeployHelp();
+    const help = formatDeployHelp("cf");
     expect(help).toContain("--verbose");
     expect(help).toContain("Abort when cacheability probing makes no progress");
     expect(help).toContain("--traffic-aware-warm-cache");
@@ -1175,7 +1340,7 @@ describe("parseDeployArgs", () => {
         expect(warn).toHaveBeenCalledWith(
           "[vinext] --warm-cache-include-fallbacks is deprecated and has no effect.",
         );
-        expect(formatDeployHelp()).not.toContain("include-fallbacks");
+        expect(formatDeployHelp("cf")).not.toContain("include-fallbacks");
       } finally {
         warn.mockRestore();
       }
@@ -1202,7 +1367,7 @@ describe("parseDeployArgs", () => {
   it("parses the general no-promote flag and keeps the warmup-specific alias", () => {
     expect(parseDeployArgs(["--no-promote"]).warmCdnPromote).toBe(false);
     expect(parseDeployArgs(["--warm-cache-no-promote"]).warmCdnPromote).toBe(false);
-    expect(formatDeployHelp()).toContain("--no-promote");
+    expect(formatDeployHelp("cf")).toContain("--no-promote");
   });
 
   it("allows the CDN warmup promotion delay to be set to zero", () => {
@@ -1362,6 +1527,28 @@ describe("detectProject", () => {
     expect(detectProject(tmpDir).hasWrangler).toBe(false);
   });
 
+  it("ignores a Wrangler the project only reaches through NODE_PATH", () => {
+    // pnpm's bin shims put node_modules/.pnpm/node_modules on NODE_PATH. Node
+    // reads NODE_PATH once at startup; re-run its path setup so this test
+    // controls it.
+    const hoisted = path.join(tmpDir, "hoisted");
+    const project = path.join(tmpDir, "project");
+    writeWranglerPackageForTest(hoisted);
+    mkdir(project, "app");
+    const originalNodePath = process.env.NODE_PATH;
+    const setNodePath = (value: string | undefined) => {
+      if (value === undefined) delete process.env.NODE_PATH;
+      else process.env.NODE_PATH = value;
+      (Module as unknown as { _initPaths(): void })._initPaths();
+    };
+    try {
+      setNodePath(path.join(hoisted, "node_modules"));
+      expect(detectProject(project).hasWrangler).toBe(false);
+    } finally {
+      setNodePath(originalNodePath);
+    }
+  });
+
   it("detects cloudflare.config.ts", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "cloudflare.config.ts", "export default {};");
@@ -1494,7 +1681,7 @@ describe("generateWranglerConfig", () => {
     const parsed = JSON.parse(config);
 
     expect(parsed.name).toBe(info.projectName);
-    expect(parsed.compatibility_flags).toContain("nodejs_compat");
+    expect(parsed.compatibility_flags).toBeUndefined();
     expect(parsed.main).toBe("vinext/server/fetch-handler");
     expect(parsed.assets).toEqual({
       directory: "dist/client",
@@ -2453,6 +2640,35 @@ describe("readPagesRouterEntrySource", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain("let response = result.response;");
     expect(content).not.toContain("finalizeMissingStaticAssetResponse");
+  });
+});
+
+describe("isServableFilesystemRoute", () => {
+  it("serves only public files directly and build assets through rewrites", () => {
+    const publicFiles = new Set(["/visible.txt", "/api/schema.json"]);
+    expect(isServableFilesystemRoute("/visible.txt", "direct", "GET", publicFiles)).toBe(true);
+    expect(isServableFilesystemRoute("/api/schema.json", "direct", "GET", publicFiles)).toBe(true);
+    expect(
+      isServableFilesystemRoute("/vinext-client-entry-manifest.json", "direct", "GET", publicFiles),
+    ).toBe(false);
+    expect(isServableFilesystemRoute("/_next/static/a.js", "direct", "GET", publicFiles)).toBe(
+      false,
+    );
+    expect(isServableFilesystemRoute("/_next/static/a.js", "afterFiles", "GET", publicFiles)).toBe(
+      true,
+    );
+  });
+
+  // The pathname is authorized as the file a server serves when it decodes it
+  // once, not only as the URL resolves it.
+  it("rejects encoded separators that name a different file once decoded", () => {
+    expect(
+      isServableFilesystemRoute("/_next%5Cstatic%5Cprivate.json", "afterFiles", "GET", new Set()),
+    ).toBe(false);
+
+    const publicFiles = new Set([publicFileRouteKey("/a%2Fb.txt")]);
+    expect(isServableFilesystemRoute("/a%2Fb.txt", "direct", "GET", publicFiles)).toBe(false);
+    expect(isServableFilesystemRoute("/a%252Fb.txt", "direct", "GET", publicFiles)).toBe(true);
   });
 });
 
@@ -4243,5 +4459,61 @@ describe("getZeroPercentStagingTraffic", () => {
         "22222222-2222-4222-8222-222222222222",
       ),
     ).toBeNull();
+  });
+});
+
+describe("resolveVersionAnnotations", () => {
+  const ci = { CI: "true" };
+  const git = (args: string[]) => {
+    if (args.join(" ") === "rev-parse --short HEAD") return "0123456\n";
+    if (args.join(" ") === "log -1 --format=%B")
+      return "Fix the header\n\nKeep the logo aligned.\n";
+    throw new Error(`unexpected git ${args.join(" ")}`);
+  };
+  const noGit = () => {
+    throw new Error("not a git repository");
+  };
+
+  it("defaults to the short HEAD SHA and commit message in CI, like cf previews deploy", () => {
+    expect(resolveVersionAnnotations("/app", {}, ci, git)).toEqual({
+      message: "Fix the header\n\nKeep the logo aligned.",
+      tag: "0123456",
+    });
+    expect(resolveVersionAnnotations("/app", {}, { CI: "1" }, git).tag).toBe("0123456");
+  });
+
+  it("adds no defaults outside CI or without a Git checkout", () => {
+    expect(resolveVersionAnnotations("/app", {}, {}, git)).toEqual({});
+    expect(resolveVersionAnnotations("/app", {}, { CI: "false" }, git)).toEqual({});
+    expect(resolveVersionAnnotations("/app", {}, ci, noGit)).toEqual({});
+  });
+
+  it("prefers explicit values and omits explicitly empty ones", () => {
+    expect(
+      resolveVersionAnnotations("/app", { message: "Release 2", tag: "v2" }, {}, noGit),
+    ).toEqual({ message: "Release 2", tag: "v2" });
+    expect(resolveVersionAnnotations("/app", { message: "", tag: "" }, ci, git)).toEqual({});
+  });
+});
+
+describe("Wrangler deploy annotations", () => {
+  it.each([
+    ["4.66.0", true],
+    ["4.153.0", true],
+    ["5.0.0", true],
+    ["4.65.9", false],
+    ["3.114.0", false],
+    [undefined, true],
+  ])("detects Wrangler %s annotation support", (version, supported) => {
+    expect(wranglerSupportsVersionAnnotations(version)).toBe(supported);
+  });
+
+  it("rejects explicit values only for older Wrangler versions", () => {
+    expect(() => assertWranglerDeployAnnotations({ tag: "v2" }, "4.65.0")).toThrow(
+      "--message and --tag require Wrangler 4.66.0 or newer (found 4.65.0).",
+    );
+    expect(() => assertWranglerDeployAnnotations({ message: "", tag: "" }, "4.65.0")).not.toThrow();
+    expect(() => assertWranglerDeployAnnotations({}, "4.65.0")).not.toThrow();
+    expect(() => assertWranglerDeployAnnotations({ tag: "v2" }, "4.66.0")).not.toThrow();
   });
 });

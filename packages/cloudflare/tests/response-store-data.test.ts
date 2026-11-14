@@ -9,6 +9,7 @@ import {
   captureResponseStoreRscData,
   deferResponseStoreAdmission,
   runWithResponseStoreInvocation,
+  trackResponseStoreRegenerationWork,
   WorkersResponseStoreCacheHandler,
   type ResponseStoreInvocationCapture,
 } from "../src/cache/response-store-data.runtime";
@@ -205,6 +206,24 @@ test("stores the other entries a regeneration recomputes before returning its ta
     ),
   ).rejects.toThrow("render failed");
   expect(stored).toEqual(["sibling", "failed-sibling"]);
+});
+
+test("captures a target that a delegating handler writes after the regeneration returns", async () => {
+  const handler = new WorkersResponseStoreCacheHandler(new TestStore());
+  const cacheControl = { revalidate: 1, expire: 2 };
+
+  const captured = await captureResponseStoreDataRegeneration("target", () =>
+    runWithResponseStoreInvocation("page", true, async () => {
+      // A miss in a render hands its write to waitUntil, and a wrapping handler
+      // reaches the Store's handler later.
+      const write = new Promise((resolve) => setTimeout(resolve, 20)).then(() =>
+        handler.set("target", null, { cacheControl }),
+      );
+      trackResponseStoreRegenerationWork(write);
+    }),
+  );
+
+  expect(captured.headers.get("X-Vinext-Response-Store-Replayable")).toBe("1");
 });
 
 test("skips a regenerated entry the Store could not regenerate itself", async () => {
@@ -763,6 +782,79 @@ test("refreshes the revision behind the stale entry a write passes as staleEntry
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("fills the revision its own read missed", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  const missAs = (revision: string | null) => {
+    vi.spyOn(store, "fetch").mockResolvedValueOnce(
+      new Response("miss", {
+        status: 404,
+        headers: {
+          "X-Workers-Response-Store": "MISS",
+          ...(revision === null ? {} : { "X-Workers-Response-Store-Revision": revision }),
+        },
+      }),
+    );
+  };
+  const write = async (cacheRead?: object, key = "key") => {
+    store.options = undefined;
+    await handler.set(key, null, { revalidate: 60, ...(cacheRead ? { cacheRead } : {}) });
+    expect(store.options).toBeDefined();
+    return store.options;
+  };
+
+  // Concurrent requests that miss a key each fill it: the Store drops all but the first.
+  for (const revision of ["0", "4"]) {
+    const cacheRead = {};
+    missAs(revision);
+    await expect(handler.get("key", { cacheRead })).resolves.toBeNull();
+    expect(await write(cacheRead)).toMatchObject({ replacesRevision: Number(revision) });
+  }
+
+  // Each operation fills only what its own read missed: overlapping reads keep their own
+  // revisions, and a write without a read (e.g. once a revalidation skipped it), or whose
+  // read found the entry, is an ordinary write.
+  const first = {};
+  const second = {};
+  const hit = {};
+  missAs("4");
+  missAs("2");
+  await expect(handler.get("key", { cacheRead: first })).resolves.toBeNull();
+  await expect(handler.get("key", { cacheRead: second })).resolves.toBeNull();
+  await expect(handler.get("key", { cacheRead: hit })).resolves.not.toBeNull();
+  expect(await write()).not.toHaveProperty("replacesRevision");
+  expect(await write(hit)).not.toHaveProperty("replacesRevision");
+  expect(await write(second)).toMatchObject({ replacesRevision: 2 });
+  expect(await write(first)).toMatchObject({ replacesRevision: 4 });
+  // Nor is a write of another key a fill.
+  expect(await write(first, "other")).not.toHaveProperty("replacesRevision");
+
+  // A miss without a revision leaves an ordinary write.
+  const unrevisioned = {};
+  missAs(null);
+  await expect(handler.get("key", { cacheRead: unrevisioned })).resolves.toBeNull();
+  expect(await write(unrevisioned)).not.toHaveProperty("replacesRevision");
+
+  // Nor is a null that isn't a Store miss one: a soft-tag expiration found the entry, and a
+  // regeneration's read of its own key never reaches the Store.
+  const softExpired = {};
+  store.tagExpiration = Number.MAX_SAFE_INTEGER;
+  await expect(
+    handler.get("key", { softTags: ["_N_T_/a"], cacheRead: softExpired }),
+  ).resolves.toBeNull();
+  store.tagExpiration = 0;
+  expect(await write(softExpired)).not.toHaveProperty("replacesRevision");
+  const regenerating = {};
+  const fetch = vi.spyOn(store, "fetch");
+  const reads = fetch.mock.calls.length;
+  await captureResponseStoreDataRegeneration("key", async () => {
+    await expect(handler.get("key", { cacheRead: regenerating })).resolves.toBeNull();
+    await handler.set("key", null, { revalidate: 60, cacheRead: regenerating });
+  });
+  expect(fetch.mock.calls.length).toBe(reads);
+  expect(await write(regenerating)).not.toHaveProperty("replacesRevision");
 });
 
 test("honors a shorter revalidate requested by a later read", async () => {

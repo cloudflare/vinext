@@ -13,6 +13,7 @@ import type {
   ResponseStoreRefreshOptions,
   SerializableValue,
 } from "../src/index.js";
+import { edgeCacheControl } from "../src/cache-policy.js";
 import { IsolateNegativeCache } from "../src/isolate-negative-cache.js";
 import { mapSettledWithR2Concurrency } from "../src/r2-concurrency.js";
 
@@ -36,6 +37,7 @@ type PutOptions = {
   largeHeaderBytes?: number;
   lastModified?: string;
   noRevalidator?: boolean;
+  purgeBatchWindow?: boolean;
   purgeExisting?: boolean;
   replacesRevision?: string | null;
   replacesTagExpiration?: { tags: string[]; expiration: number };
@@ -66,13 +68,58 @@ beforeEach(async () => {
             type: "ESModule",
             path: "edge-purge-fixture.js",
             contents: `
-              import worker, { ResponseStoreBinding as BaseBinding } from "./worker.js";
-              export { CacheMetadata, ResponseStoreRevalidator } from "./worker.js";
+              import worker, {
+                CacheMetadata as BaseMetadata,
+                ResponseStoreBinding as BaseBinding,
+              } from "./worker.js";
+              export { ResponseStoreRevalidator } from "./worker.js";
               let purgeMode;
+              let metadataR2DelayMs = 0;
+              let failMetadataR2Write = false;
+              let failAlarm = false;
+              export class CacheMetadata extends BaseMetadata {
+                constructor(ctx, env) {
+                  super(ctx, {
+                    ...env,
+                    CACHE_BODIES: new Proxy(env.CACHE_BODIES, {
+                      get(bucket, key) {
+                        const value = Reflect.get(bucket, key);
+                        if (key === "put" && failMetadataR2Write) {
+                          return () => Promise.reject(new Error("R2 rewrite failed"));
+                        }
+                        if (["get", "head", "put"].includes(key) && metadataR2DelayMs) {
+                          return async (...args) => {
+                            await new Promise((resolve) => setTimeout(resolve, metadataR2DelayMs));
+                            return value.apply(bucket, args);
+                          };
+                        }
+                        return typeof value === "function" ? value.bind(bucket) : value;
+                      },
+                    }),
+                  });
+                }
+                scheduleCleanupAlarm(scheduledTime) {
+                  if (failAlarm) return Promise.reject(new Error("Alarm unavailable"));
+                  return super.scheduleCleanupAlarm(scheduledTime);
+                }
+                getAlarmForTest() {
+                  return this.ctx.storage.getAlarm();
+                }
+                deleteAlarmForTest() {
+                  return this.ctx.storage.deleteAlarm();
+                }
+                runAlarmForTest() {
+                  return this.alarm();
+                }
+                setAlarmForTest(scheduledTime) {
+                  return this.ctx.storage.setAlarm(scheduledTime);
+                }
+              }
               let exposeInvalidate = false;
               let edgeCalls = [];
               let failR2Write = false;
               let delayFirstPurgeMs = 0;
+              let acceptFirst = 0;
               export class ResponseStoreBinding extends BaseBinding {
                 constructor(ctx, env) {
                   super(ctx, {
@@ -99,7 +146,7 @@ beforeEach(async () => {
                       if (purgeMode === "throw") throw new Error("Purge unavailable");
                       if (purgeMode === "reject") return Promise.reject(new Error("Purge unavailable"));
                       return Promise.resolve({
-                        success: purgeMode === "success",
+                        success: purgeMode === "success" || edgeCalls.length <= acceptFirst,
                         errors: [{ code: 1134, message: "Rate limited" }],
                       });
                     };
@@ -116,6 +163,12 @@ beforeEach(async () => {
                     purgeMode = new URL(request.url).searchParams.get("mode");
                     exposeInvalidate = new URL(request.url).searchParams.has("invalidate");
                     failR2Write = new URL(request.url).searchParams.has("fail-r2");
+                    failAlarm = new URL(request.url).searchParams.has("fail-alarm");
+                    failMetadataR2Write = new URL(request.url).searchParams.has("fail-metadata-r2");
+                    metadataR2DelayMs = Number(
+                      new URL(request.url).searchParams.get("metadata-r2-delay-ms") ?? 0,
+                    );
+                    acceptFirst = Number(new URL(request.url).searchParams.get("accept-first") ?? 0);
                     delayFirstPurgeMs = Number(
                       new URL(request.url).searchParams.get("delay-first-ms") ?? 0,
                     );
@@ -180,6 +233,7 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   }
   if (options.noRevalidator) headers.set("X-No-Revalidator", "1");
   if (options.purgeExisting) headers.set("X-Purge-Existing", "1");
+  if (options.purgeBatchWindow) headers.set("X-Response-Store-Purge-Batch-Window", "1");
   if (options.coalesce) headers.set("X-Coalesce", "1");
   if (options.replacesRevision) headers.set("X-Replaces-Revision", options.replacesRevision);
   if (options.replacesTagExpiration) {
@@ -349,6 +403,17 @@ test("bounded concurrency preserves settled results", async () => {
   assert.deepEqual(settled[12], { status: "fulfilled", value: 24 });
 });
 
+test("an edge copy never goes stale later than its entry", () => {
+  // 1.9 seconds of freshness left: rounding up would keep the edge copy fresh past the
+  // entry, and a put replacing the stale entry skips the edge purge.
+  assert.equal(edgeCacheControl(11_900, 71_900, 10_000), "max-age=1, stale-while-revalidate=60");
+  assert.equal(edgeCacheControl(10_900, 70_900, 10_000), "max-age=0, stale-while-revalidate=60");
+  assert.equal(
+    edgeCacheControl(11_900, 71_900, 10_000, false),
+    "max-age=1, stale-while-revalidate=0, stale-if-error=0",
+  );
+});
+
 test("isolate miss caching expires and evicts least-recently-used keys", () => {
   vi.useFakeTimers();
   vi.setSystemTime(0);
@@ -376,7 +441,7 @@ test("a put after a miss is visible to the next read", async () => {
   assert.equal(await stored.text(), "stored-after-miss");
 });
 
-test("purgeExisting skips first writes but still purges replacements and tombstones", async () => {
+test("purgeExisting skips first writes but still purges replacements and tombstones whose edge purge is queued", async () => {
   const first = await put("/conditional-edge-purge", "first", { purgeExisting: true });
   assert.deepEqual(first.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
 
@@ -396,6 +461,381 @@ test("purgeExisting skips first writes but still purges replacements and tombsto
     backingStoreUpdated: true,
     edgePurgeAccepted: false,
   });
+});
+
+test("purgeExisting skips replacing a tombstone once its edge purge completed", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  const edgeCalls = async () =>
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[];
+  await put("/purged-edge-copy", "first", { tags: ["purged-edge-copy"] });
+  const purged = await purge({ tags: ["purged-edge-copy"] });
+  assert.deepEqual(purged.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal((await edgeCalls()).length, 1);
+
+  // The edge holds no copy of the key any more, so its refill needs no purge.
+  const refill = await put("/purged-edge-copy", "refill", {
+    purgeExisting: true,
+    tags: ["purged-edge-copy"],
+  });
+  assert.deepEqual(refill.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal((await edgeCalls()).length, 1);
+  assert.equal(await (await read("/purged-edge-copy")).text(), "refill");
+
+  // Replacing that refill while it is fresh still purges it.
+  const replacement = await put("/purged-edge-copy", "replacement", {
+    purgeExisting: true,
+    tags: ["purged-edge-copy"],
+  });
+  assert.deepEqual(replacement.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal((await edgeCalls()).length, 2);
+});
+
+async function batchedMutation(operation: "invalidate" | "purge", options: object) {
+  const response = await worker.fetch(`https://user.test/admin/${operation}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Response-Store-Purge-Batch-Window": "1",
+    },
+    body: JSON.stringify(options),
+  });
+  return response.json();
+}
+
+async function edgeCallTags() {
+  const calls = (await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as {
+    operation: string;
+    options: { tags: string[] };
+  }[];
+  return calls.map(({ operation, options }) => ({ operation, tags: [...options.tags].sort() }));
+}
+
+async function edgeTags(...paths: string[]) {
+  return (
+    await Promise.all(paths.map(async (path) => `runtime-cache-${await cacheKeyHash(path)}`))
+  ).sort();
+}
+
+test("purgeBatchWindow sends a window's edge purges and invalidations together", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  for (const path of ["/batched-a", "/batched-b", "/batched-c", "/batched-d"]) {
+    await put(path, "first", { tags: [path.slice(1)] });
+  }
+
+  // Each reports its edge update queued, and sends none yet.
+  const queued = { backingStoreUpdated: true, edgePurgeAccepted: true };
+  assert.deepEqual(
+    await batchedMutation("invalidate", { tags: ["batched-a", "batched-b"] }),
+    queued,
+  );
+  assert.deepEqual(await batchedMutation("purge", { tags: ["batched-c"] }), queued);
+  const replaced = await put("/batched-d", "second", {
+    purgeBatchWindow: true,
+    purgeExisting: true,
+    tags: ["batched-d"],
+  });
+  assert.deepEqual(replaced.json, queued);
+  // A refill of an entry whose invalidation is queued joins it, as a purge.
+  const refill = await put("/batched-b", "second", {
+    purgeBatchWindow: true,
+    purgeExisting: true,
+    tags: ["batched-b"],
+  });
+  assert.deepEqual(refill.json, queued);
+  assert.deepEqual(await edgeCallTags(), []);
+  assert.equal(await (await read("/batched-d")).text(), "second");
+
+  // The metadata DO sends them once the window ends.
+  await vi.waitFor(async () => assert.notDeepEqual(await edgeCallTags(), []), {
+    interval: 100,
+    timeout: 10_000,
+  });
+  assert.deepEqual(await edgeCallTags(), [
+    { operation: "purge", tags: await edgeTags("/batched-b", "/batched-c", "/batched-d") },
+    { operation: "invalidate", tags: await edgeTags("/batched-a") },
+  ]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+});
+
+test("purgeBatchWindow sends the edge update itself when the alarm can't be scheduled", async () => {
+  await put("/batched-unscheduled", "first", { tags: ["batched-unscheduled"] });
+  await put("/batched-unscheduled-put", "first", { tags: ["batched-unscheduled-put"] });
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate&fail-alarm");
+  assert.deepEqual(await batchedMutation("invalidate", { tags: ["batched-unscheduled"] }), {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+  assert.deepEqual(await edgeCallTags(), [
+    { operation: "invalidate", tags: await edgeTags("/batched-unscheduled") },
+  ]);
+  const replaced = await put("/batched-unscheduled-put", "second", {
+    purgeBatchWindow: true,
+    purgeExisting: true,
+    tags: ["batched-unscheduled-put"],
+  });
+  assert.deepEqual(replaced.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.deepEqual((await edgeCallTags()).slice(1), [
+    { operation: "purge", tags: await edgeTags("/batched-unscheduled-put") },
+  ]);
+  // The row it queued is settled, so no later flush sends it again.
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+});
+
+test("a running flush leaves edge work queued since it started for that work's own flush", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/batched-running", "first", { tags: ["batched-running"] });
+  await put("/batched-later", "first", { tags: ["batched-later"] });
+  await batchedMutation("invalidate", { tags: ["batched-running"] });
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  // Leave the invalidation's R2 rewrite for the flush to redo, slowly.
+  await storage.exec("UPDATE pending_r2_tombstones SET r2_complete = 0");
+  await worker.fetch(
+    "https://user.test/admin/edge-purge?mode=success&invalidate&metadata-r2-delay-ms=500",
+  );
+  const stub = await metadataStub();
+  const flushed = stub.retryPendingTombstones();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await stub.queueEdgePurge(await cacheKeyHash("/batched-later"), 10, Date.now() + 60_000);
+  assert.equal(await flushed, true);
+  assert.deepEqual(await edgeCallTags(), [
+    { operation: "invalidate", tags: await edgeTags("/batched-running") },
+  ]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+});
+
+test("a flush keeps the later flush that work queued while it ran scheduled", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/longer-running", "first", { tags: ["longer-running"] });
+  await put("/longer-later", "first", { tags: ["longer-later"] });
+  await batchedMutation("invalidate", { tags: ["longer-running"] });
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  const stub = await metadataStub();
+  await stub.deleteAlarmForTest();
+  await storage.exec("UPDATE pending_r2_tombstones SET r2_complete = 0");
+  await worker.fetch(
+    "https://user.test/admin/edge-purge?mode=success&invalidate&metadata-r2-delay-ms=500",
+  );
+  const flushed = stub.runAlarmForTest();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  // A window longer than the alarm's one-minute retry.
+  const flushAt = Date.now() + 120_000;
+  await stub.queueEdgePurge(await cacheKeyHash("/longer-later"), 10, flushAt);
+  await flushed;
+  assert.equal(await stub.getAlarmForTest(), flushAt);
+});
+
+test("a batched invalidation whose R2 rewrite fails is retried within the minute", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/batched-r2-retry", "first", { tags: ["batched-r2-retry"] });
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate&fail-metadata-r2");
+  const stub = await metadataStub();
+  await stub.deleteAlarmForTest();
+  const reservation = await stub.invalidateMatching(
+    { tags: ["batched-r2-retry"] },
+    Date.now(),
+    undefined,
+    Date.now() + 120_000,
+  );
+  assert.equal(reservation.edgeFlushScheduled, true);
+  const drained = await stub.drainPendingTombstones(
+    400,
+    undefined,
+    undefined,
+    reservation.tombstoneSequence,
+  );
+  assert.equal(drained.failures.length, 1);
+  assert.ok((await stub.getAlarmForTest()) <= Date.now() + 60_000);
+});
+
+test("a flush that leaves R2 work queued retries it within the minute", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await put("/r2-left-running", "first", { tags: ["r2-left-running"] });
+  await batchedMutation("invalidate", { tags: ["r2-left-running"] });
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  const stub = await metadataStub();
+  await stub.deleteAlarmForTest();
+  await storage.exec("UPDATE pending_r2_tombstones SET r2_complete = 0");
+  await worker.fetch(
+    "https://user.test/admin/edge-purge?mode=success&invalidate&metadata-r2-delay-ms=500",
+  );
+  const flushed = stub.runAlarmForTest();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  // An invalidation whose R2 rewrite failed while the flush ran, with a longer window.
+  await storage.exec(`
+    INSERT INTO pending_r2_tombstones
+      (key_hash, cache_key, object_key, revision, r2_complete, edge_invalidate, tombstone_sequence)
+    VALUES ('r2-left-later', '/r2-left-later', '', 1, 0, 1, 1000)
+  `);
+  await stub.setAlarmForTest(Date.now() + 120_000);
+  await flushed;
+  assert.ok((await stub.getAlarmForTest()) <= Date.now() + 60_000);
+});
+
+async function queueEdgeRows(count: number, prefix: string, edgeInvalidate = 0) {
+  const stub = await metadataStub();
+  await stub.inspect();
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  await storage.exec(`
+    WITH RECURSIVE numbers(value) AS (
+      VALUES(1)
+      UNION ALL
+      SELECT value + 1 FROM numbers WHERE value < ${count}
+    )
+    INSERT INTO pending_r2_tombstones
+      (key_hash, cache_key, object_key, revision, r2_complete, edge_invalidate, tombstone_sequence)
+    SELECT printf('${prefix}-%03d', value), printf('/${prefix}/%d', value), '', 1, 1,
+      ${edgeInvalidate}, 0
+    FROM numbers
+  `);
+  return stub;
+}
+
+async function edgeCallSizes() {
+  return (await edgeCallTags()).map(({ operation, tags }) => `${operation} ${tags.length}`);
+}
+
+test("a flush sends each kind of edge update in full requests", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&invalidate");
+  await queueEdgeRows(300, "full-purge");
+  const stub = await queueEdgeRows(150, "full-invalidate", 1);
+  assert.equal(await stub.retryPendingTombstones(), false);
+  assert.deepEqual((await edgeCallSizes()).sort(), [
+    "invalidate 100",
+    "invalidate 50",
+    "purge 100",
+    "purge 100",
+    "purge 100",
+  ]);
+});
+
+test("a flush retries only the edge requests that were refused", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit&accept-first=1");
+  const stub = await queueEdgeRows(250, "partial");
+  await assert.rejects(stub.retryPendingTombstones());
+  const first = await edgeCallTags();
+  assert.deepEqual(await edgeCallSizes(), ["purge 100", "purge 100", "purge 50"]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 150);
+
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  assert.equal(await stub.retryPendingTombstones(), false);
+  const retried = await edgeCallTags();
+  assert.deepEqual(await edgeCallSizes(), ["purge 100", "purge 50"]);
+  assert.deepEqual(
+    retried.flatMap(({ tags }) => tags).sort(),
+    first
+      .slice(1)
+      .flatMap(({ tags }) => tags)
+      .sort(),
+  );
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+});
+
+test("a purge marks the edge requests that were accepted before one was refused", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  const paths = Array.from({ length: 101 }, (_, index) => `/partial-purge/${index}`);
+  for (const path of paths) await put(path, "first", { tags: ["partial-purge"] });
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit&accept-first=1");
+  assert.deepEqual((await purge({ tags: ["partial-purge"] })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.deepEqual(await edgeCallSizes(), ["purge 100", "purge 1"]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+});
+
+test("a backlog's later flush runs leave edge work queued during it for its own flush", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  await put("/backlog-later", "first", { tags: ["backlog-later"] });
+  const stub = await queueEdgeRows(450, "backlog");
+  assert.equal(await stub.retryPendingTombstones(), true);
+  assert.deepEqual(await edgeCallSizes(), ["purge 100", "purge 100", "purge 100", "purge 100"]);
+
+  await stub.queueEdgePurge(await cacheKeyHash("/backlog-later"), 10, Date.now() + 60_000);
+  assert.equal(await stub.retryPendingTombstones(), true);
+  assert.deepEqual((await edgeCallSizes()).slice(4), ["purge 50"]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+
+  // Once the backlog is sent, a flush sends the work queued during it.
+  assert.equal(await stub.retryPendingTombstones(), false);
+  assert.deepEqual((await edgeCallTags()).slice(5), [
+    { operation: "purge", tags: await edgeTags("/backlog-later") },
+  ]);
+});
+
+test("work queued between a backlog's flush runs keeps its own flush", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  await put("/backlog-gap", "first", { tags: ["backlog-gap"] });
+  const stub = await queueEdgeRows(450, "backlog-gap");
+  assert.equal(await stub.retryPendingTombstones(), true);
+  // The backlog's rerun is due before the work's window ends, and is cleared once it starts.
+  await stub.setAlarmForTest(Date.now() + 60_000);
+  const flushAt = Date.now() + 120_000;
+  await stub.queueEdgePurge(await cacheKeyHash("/backlog-gap"), 10, flushAt);
+  await stub.deleteAlarmForTest();
+  await stub.runAlarmForTest();
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+  assert.equal(await stub.getAlarmForTest(), flushAt);
+});
+
+test("a failed backlog flush run keeps the flush work queued during the backlog recorded", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  await put("/backlog-failed", "first", { tags: ["backlog-failed"] });
+  const stub = await queueEdgeRows(450, "backlog-failed");
+  assert.equal(await stub.retryPendingTombstones(), true);
+  const flushAt = Date.now() + 30_000;
+  await stub.queueEdgePurge(await cacheKeyHash("/backlog-failed"), 10, flushAt);
+  await stub.deleteAlarmForTest();
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+  await stub.runAlarmForTest();
+  assert.equal(await stub.getAlarmForTest(), flushAt);
+});
+
+test("a purge queued while an invalidation's R2 rewrite runs stays a purge", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&metadata-r2-delay-ms=500");
+  await put("/batched-merge", "first", { tags: ["batched-merge"] });
+  const invalidated = batchedMutation("invalidate", { tags: ["batched-merge"] });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await (
+    await metadataStub()
+  ).queueEdgePurge(await cacheKeyHash("/batched-merge"), 10, Date.now() + 60_000);
+  await invalidated;
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  assert.deepEqual(
+    await storage.exec("SELECT r2_complete, edge_invalidate FROM pending_r2_tombstones"),
+    [{ r2_complete: 1, edge_invalidate: 0 }],
+  );
+});
+
+test("purgeBatchWindow retries a refused batch", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+  await put("/batched-retry", "first");
+  const replaced = await put("/batched-retry", "second", {
+    purgeBatchWindow: true,
+    purgeExisting: true,
+  });
+  assert.deepEqual(replaced.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  await vi.waitFor(async () => assert.equal((await edgeCallTags()).length, 1), {
+    interval: 100,
+    timeout: 10_000,
+  });
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  assert.equal(await (await metadataStub()).retryPendingTombstones(), false);
+  assert.deepEqual(await edgeCallTags(), [
+    { operation: "purge", tags: await edgeTags("/batched-retry") },
+  ]);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
 });
 
 test("purgeExisting skips replacing an entry without a revalidator once its edge copy expired", async () => {
@@ -446,6 +886,39 @@ test("purgeExisting skips replacing an entry without a revalidator once its edge
   assert.equal(await (await read("/expired-edge-copy")).text(), "third");
 });
 
+test("purgeExisting skips replacing an entry with a revalidator once its edge copy went stale", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+  const options = { cacheControl: "public, max-age=2, stale-while-revalidate=60" };
+  // Long-lived, so it is still fresh when it is replaced.
+  await put("/stale-edge-copy", "first", {
+    cacheControl: "public, max-age=60, stale-while-revalidate=60",
+  });
+  const fresh = await read("/stale-edge-copy");
+  // Rounded down, so the edge copy goes stale no later than the entry.
+  assert.match(
+    fresh.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=(59|60), stale-while-revalidate=60$/,
+  );
+  await fresh.arrayBuffer();
+
+  // A replacement of a fresh entry still purges its edge copy.
+  const replacement = await put("/stale-edge-copy", "second", { ...options, purgeExisting: true });
+  assert.deepEqual(replacement.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+  const edgeCalls = async () =>
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[];
+  assert.equal((await edgeCalls()).length, 1);
+
+  await new Promise((resolve) => setTimeout(resolve, 2100));
+  // Workers Cache revalidates a stale edge copy, and gets the replacement that a later put
+  // stores, so that put needs no purge.
+  const refill = await put("/stale-edge-copy", "third", { ...options, purgeExisting: true });
+  assert.deepEqual(refill.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal((await edgeCalls()).length, 1);
+  const revalidation = await conditionalRead("/stale-edge-copy");
+  assert.equal(revalidation.status, 200);
+  assert.equal(await revalidation.text(), "third");
+});
+
 test("replacesRevision drops a refresh of a revision another refresh already replaced", async () => {
   const options = {
     cacheControl: "public, max-age=1, stale-while-revalidate=60",
@@ -471,7 +944,7 @@ test("replacesRevision drops a refresh of a revision another refresh already rep
   assert.deepEqual(await (await worker.fetch("https://user.test/admin/edge-calls")).json(), []);
   assert.equal(await (await read("/refresh-race")).text(), "second");
   // A value that isn't a revision, or a revision not reached yet, leaves a plain write.
-  for (const value of ["0", "-1", "abc", "1000000"]) {
+  for (const value of ["1.5", "-1", "abc", "1000000"]) {
     const write = await put("/refresh-race", value, { ...refresh, replacesRevision: value });
     assert.equal(write.json.backingStoreUpdated, true, value);
     assert.equal(await (await read("/refresh-race")).text(), value);
@@ -519,6 +992,87 @@ test("replacesRevision drops a refresh of a revision another refresh already rep
   const duplicate = await put("/refresh-race-invalidated-twice", "third", duplicates);
   assert.deepEqual(duplicate.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
   assert.equal(await (await read("/refresh-race-invalidated-twice")).text(), "second");
+});
+
+test("replacesRevision drops a fill of a miss another fill already replaced", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  const edgeCalls = async () =>
+    (await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[];
+  const options = { purgeExisting: true, tags: ["cold-fill"] };
+  const missRevision = async (path: string) => {
+    const miss = await read(path);
+    assert.equal(miss.status, 404, path);
+    assert.equal(miss.headers.get("X-Workers-Response-Store"), "MISS", path);
+    await miss.arrayBuffer();
+    const revision = miss.headers.get("X-Workers-Response-Store-Revision");
+    assert.ok(revision, path);
+    return revision;
+  };
+
+  // Two readers miss a key never written, and both fill it.
+  const none = await missRevision("/cold-fill");
+  assert.equal(none, "0");
+  const first = await put("/cold-fill", "first", { ...options, replacesRevision: none });
+  assert.deepEqual(first.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  // The later fill would replace the fresh first one and purge it: drop it instead.
+  const second = await put("/cold-fill", "second", { ...options, replacesRevision: none });
+  assert.deepEqual(second.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
+  assert.equal(await (await read("/cold-fill")).text(), "first");
+  assert.equal((await edgeCalls()).length, 0);
+
+  // A miss of a purged key carries its tombstone's revision; a fill read before the purge
+  // still lands.
+  await purge({ tags: ["cold-fill"] });
+  assert.equal((await edgeCalls()).length, 1);
+  const tombstone = await missRevision("/cold-fill");
+  assert.ok(Number(tombstone) > 1);
+  const late = await put("/cold-fill", "late", { ...options, replacesRevision: none });
+  assert.deepEqual(late.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal(await (await read("/cold-fill")).text(), "late");
+  await purge({ tags: ["cold-fill"] });
+  const refilled = await missRevision("/cold-fill");
+  const refill = await put("/cold-fill", "refill", { ...options, replacesRevision: refilled });
+  assert.deepEqual(refill.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  const duplicate = await put("/cold-fill", "duplicate", {
+    ...options,
+    replacesRevision: refilled,
+  });
+  assert.deepEqual(duplicate.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
+  assert.equal(await (await read("/cold-fill")).text(), "refill");
+  assert.equal((await edgeCalls()).length, 2);
+
+  // Fills of a miss read before a path invalidate() of a key whose first write was still in
+  // flight straddle it, so both land.
+  const pending = put("/cold-fill-pending", "pending", { bodyDelayMs: 300 });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects")) > 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(await metadataRowCount("pending_objects"), 1);
+  await invalidate({ pathPrefixes: ["/cold-fill-pending"] });
+  assert.equal((await pending).json.backingStoreUpdated, false);
+  for (const body of ["straddling", "also-straddling"]) {
+    const fill = await put("/cold-fill-pending", body, { ...options, replacesRevision: none });
+    assert.equal(fill.json.backingStoreUpdated, true, body);
+    assert.equal(await (await read("/cold-fill-pending")).text(), body);
+  }
+
+  // A miss of an expired entry carries its revision.
+  const expiring = {
+    cacheControl: "public, max-age=1, stale-while-revalidate=0",
+    expiryBehavior: "miss" as const,
+    purgeExisting: true,
+  };
+  await put("/cold-fill-expired", "expired", expiring);
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const expired = await missRevision("/cold-fill-expired");
+  assert.equal(expired, "1");
+  const fresh = { ...expiring, cacheControl: "public, max-age=60, stale-while-revalidate=0" };
+  const winner = await put("/cold-fill-expired", "winner", { ...fresh, replacesRevision: expired });
+  assert.equal(winner.json.backingStoreUpdated, true);
+  const loser = await put("/cold-fill-expired", "loser", { ...fresh, replacesRevision: expired });
+  assert.deepEqual(loser.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
+  assert.equal(await (await read("/cold-fill-expired")).text(), "winner");
 });
 
 test("replacesRevision lets a refresh of any other revision, or after another write, land", async () => {
@@ -1199,31 +1753,29 @@ test("an entry without a revalidator keeps its edge policy with response metadat
   assert.equal(await stale.text(), "body");
 });
 
-test("purgeExisting still purges a stale entry whose edge copy may still be served", async () => {
-  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
-  // Workers Cache keeps serving an entry with a revalidator through its SWR window.
-  await put("/stale-with-revalidator", "first", {
-    cacheControl: "public, max-age=0, stale-while-revalidate=60",
-  });
-  const replacement = await put("/stale-with-revalidator", "second", { purgeExisting: true });
-  assert.deepEqual(replacement.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
-
-  // invalidate() made this one stale early; its refused purge of the earlier copies is queued.
-  await put("/stale-invalidated", "first", { noRevalidator: true, tags: ["stale-invalidated"] });
-  assert.deepEqual((await invalidate({ tags: ["stale-invalidated"] })).json, {
-    backingStoreUpdated: true,
-    edgePurgeAccepted: false,
-  });
-  const afterInvalidate = await put("/stale-invalidated", "second", {
-    noRevalidator: true,
-    purgeExisting: true,
-  });
-  assert.deepEqual(afterInvalidate.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
-  assert.equal(
-    ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[]).length,
-    3,
-  );
-});
+test.each([
+  ["without", true],
+  ["with", false],
+])(
+  "purgeExisting still purges an entry %s a revalidator while its invalidate() edge update is queued",
+  async (_, noRevalidator) => {
+    await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+    // invalidate() made it stale early; its refused update of the earlier copies is queued.
+    const path = `/stale-invalidated-${String(noRevalidator)}`;
+    await put(path, "first", { noRevalidator, tags: [path] });
+    assert.deepEqual((await invalidate({ tags: [path] })).json, {
+      backingStoreUpdated: true,
+      edgePurgeAccepted: false,
+    });
+    const afterInvalidate = await put(path, "second", { noRevalidator, purgeExisting: true });
+    assert.deepEqual(afterInvalidate.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+    assert.equal(
+      ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[])
+        .length,
+      2,
+    );
+  },
+);
 
 test("put clears a miss cached while the write is in flight", async () => {
   const write = put("/miss-during-put", "stored-after-delayed-put", { bodyDelayMs: 200 });
@@ -1987,9 +2539,10 @@ test("a cold refill preserves downstream headers, representation age, and remain
     first.headers.get("Cache-Control"),
     "public, max-age=100, stale-while-revalidate=100",
   );
-  assert.equal(
-    first.headers.get("Cloudflare-CDN-Cache-Control"),
-    "max-age=2, stale-while-revalidate=4",
+  // Rounded down, so the edge copy goes stale no later than the entry.
+  assert.match(
+    first.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=[12], stale-while-revalidate=4$/,
   );
   assert.equal(first.headers.get("Age"), "1");
   const ageBasis = first.headers.get("X-Workers-Response-Store-Age-Basis");
@@ -2015,9 +2568,9 @@ test("cache policy disables SWR when Workers Cache forbids stale serving", async
   ]) {
     await put(path, "policy", { cacheControl });
     const response = await read(path);
-    assert.equal(
-      response.headers.get("Cloudflare-CDN-Cache-Control"),
-      "max-age=60, stale-while-revalidate=0",
+    assert.match(
+      response.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+      /^max-age=(59|60), stale-while-revalidate=0$/,
     );
   }
 
@@ -3494,13 +4047,14 @@ test("the previous metadata schema is upgraded in place", async () => {
       // The purge above recorded the revision it tombstoned.
       [{ expiry_behavior: null, invalidated_revision: 2, replaced_revision: null }],
     );
-    // Invalidations before the upgrade weren't recorded, so the active revision counts as one.
+    // Invalidations before the upgrade weren't recorded: the entry is marked for its next publish
+    // to count the active revision as one.
     assert.deepEqual(
       await storage.exec(
         "SELECT replaced_revision, invalidated_revision FROM entries WHERE key_hash = ?",
         "legacy-kept",
       ),
-      [{ invalidated_revision: 3, replaced_revision: null }],
+      [{ invalidated_revision: Number.MAX_SAFE_INTEGER, replaced_revision: null }],
     );
     assert.deepEqual(await storage.exec("SELECT tag, key_hash FROM entry_tags"), []);
     assert.deepEqual(
@@ -3545,6 +4099,177 @@ test("the previous metadata schema is upgraded in place", async () => {
         { name: "pending_r2_tombstones_r2_pending" },
         { name: "pending_r2_tombstones_r2_sequence" },
       ],
+    );
+  } finally {
+    await legacy?.dispose();
+    await upgraded?.dispose();
+    await rm(persistencePath, { force: true, recursive: true });
+  }
+});
+
+test("upgrading from schema 8 leaves existing entries untouched", async () => {
+  const persistencePath = await mkdtemp(path.join(tmpdir(), "response-store-migration-9-"));
+  let legacy;
+  let upgraded;
+
+  try {
+    legacy = new Miniflare({
+      compatibilityDate: "2026-04-08",
+      resourcePersistencePath: persistencePath,
+      unsafeEphemeralDurableObjects: true,
+      workers: [
+        {
+          name: "migration-worker",
+          modules: true,
+          script: `
+            import { DurableObject } from "cloudflare:workers";
+            export class CacheMetadata extends DurableObject {
+              seed() {
+                this.ctx.storage.sql.exec(\`
+                  CREATE TABLE entries (
+                    key_hash TEXT PRIMARY KEY,
+                    cache_key TEXT NOT NULL,
+                    active_revision INTEGER,
+                    latest_revision INTEGER NOT NULL,
+                    object_key TEXT,
+                    status_text TEXT,
+                    response_headers TEXT,
+                    fresh_until INTEGER,
+                    swr_until INTEGER,
+                    revalidator_id TEXT,
+                    revalidator_args TEXT,
+                    expiry_behavior TEXT,
+                    cache_tags TEXT,
+                    tombstoned INTEGER NOT NULL DEFAULT 0
+                  );
+                  CREATE TABLE metadata_schema_migrations (version INTEGER PRIMARY KEY);
+                  INSERT INTO metadata_schema_migrations (version)
+                    VALUES (1), (2), (3), (4), (5), (6), (7), (8);
+                  WITH RECURSIVE bulk(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM bulk WHERE n < 1000)
+                  INSERT INTO entries (key_hash, cache_key, active_revision, latest_revision, object_key, status_text, response_headers, fresh_until, swr_until, cache_tags, tombstoned)
+                    SELECT 'bulk-' || n, '/bulk/' || n, 1, 1, 'bulk-object-' || n, '', '[]', 1, 1, '[]', 0 FROM bulk;
+                  INSERT INTO entries (key_hash, cache_key, active_revision, latest_revision, object_key, status_text, response_headers, fresh_until, swr_until, cache_tags, tombstoned)
+                    VALUES ('legacy-kept', '/legacy-kept', 3, 3, 'legacy-kept-object', '', '[]', 1, 1, '[]', 0);
+                  CREATE TABLE bulk_entry_updates (count INTEGER NOT NULL);
+                  INSERT INTO bulk_entry_updates (count) VALUES (0);
+                  CREATE TRIGGER count_bulk_entry_updates AFTER UPDATE ON entries
+                    WHEN OLD.cache_key LIKE '/bulk/%'
+                    BEGIN UPDATE bulk_entry_updates SET count = count + 1; END;
+                \`);
+              }
+            }
+            export default { fetch() { return new Response("ok"); } };
+          `,
+          durableObjects: {
+            CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+          },
+        },
+      ],
+    });
+    const legacyNamespace = await legacy.getDurableObjectNamespace(
+      "CACHE_METADATA",
+      "migration-worker",
+    );
+    await (legacyNamespace.getByName(metadataName) as any).seed();
+    await legacy.dispose();
+    legacy = undefined;
+
+    upgraded = new Miniflare({
+      compatibilityDate: "2026-04-08",
+      compatibilityFlags: ["nodejs_compat"],
+      resourcePersistencePath: persistencePath,
+      unsafeEphemeralDurableObjects: true,
+      unsafeInspectDurableObjects: true,
+      workers: [
+        {
+          name: "migration-worker",
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat"],
+          modules: true,
+          scriptPath: workerScript,
+          durableObjects: {
+            CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+          },
+          r2Buckets: { CACHE_BODIES: "migration-test" },
+          bindings: {
+            CF_VERSION_METADATA: {
+              id: versionId,
+              tag: "test",
+              timestamp: "2026-09-04T00:00:00Z",
+            },
+          },
+        },
+      ],
+    });
+    const namespace = await upgraded.getDurableObjectNamespace(
+      "CACHE_METADATA",
+      "migration-worker",
+    );
+    const stub = namespace.getByName(metadataName) as any;
+    const refresh = async (replaces: number) => {
+      const reservation = await stub.reserveWrite(
+        "legacy-kept",
+        "/legacy-kept",
+        "runtime-cache/poc-v2/legacy-kept",
+        Date.now(),
+      );
+      const publication = await stub.publish(
+        "legacy-kept",
+        reservation.revision,
+        {
+          objectKey: reservation.objectKey,
+          statusText: "",
+          responseHeaders: [],
+          freshUntil: Date.now() + 60_000,
+          swrUntil: Date.now() + 60_000,
+          revalidator: null,
+          cacheTags: [],
+          fenceTags: [],
+        },
+        undefined,
+        undefined,
+        { revision: replaces },
+      );
+      return publication.published;
+    };
+
+    // Invalidations before the upgrade weren't recorded, so the revision active at the upgrade
+    // counts as one: refreshes of an older revision all land, duplicate ones of it don't.
+    assert.equal(await refresh(2), true);
+    assert.equal(await refresh(2), true);
+    assert.equal(await refresh(3), true);
+    assert.equal(await refresh(3), false);
+
+    const storage = await upgraded.unsafeGetDurableObjectStorage(
+      "migration-worker",
+      "CacheMetadata",
+      { name: metadataName },
+    );
+    assert.deepEqual(
+      await storage.exec("SELECT version FROM metadata_schema_migrations WHERE version >= 8"),
+      [{ version: 8 }, { version: 9 }, { version: 10 }],
+    );
+    // The migration runs in the constructor's transaction, so it must not scale with the table.
+    assert.deepEqual(await storage.exec("SELECT count FROM bulk_entry_updates"), [{ count: 0 }]);
+    // The previous release drops a refresh when `invalidated_revision <= replaces.revision`. Marked
+    // entries never match that, so after a rollback to it their refreshes still land.
+    assert.deepEqual(
+      await storage.exec("SELECT invalidated_revision FROM entries WHERE key_hash = 'bulk-1'"),
+      [{ invalidated_revision: Number.MAX_SAFE_INTEGER }],
+    );
+    // An entry created after the upgrade has no unrecorded invalidations: it isn't marked.
+    await stub.reserveWrite(
+      "post-upgrade",
+      "/post-upgrade",
+      "runtime-cache/poc-v2/post-upgrade",
+      Date.now(),
+    );
+    assert.deepEqual(
+      await storage.exec(
+        "SELECT invalidated_revision FROM entries WHERE key_hash = ?",
+        "post-upgrade",
+      ),
+      [{ invalidated_revision: null }],
     );
   } finally {
     await legacy?.dispose();

@@ -48,6 +48,8 @@ const CACHE_METADATA_BINDING = "CACHE_METADATA";
 const CACHE_METADATA_CLASS = "CacheMetadata";
 const CACHE_METADATA_EXPORT = { type: "durable-object", storage: "sqlite" } as const;
 const CTX_EXPORTS_DEFAULT_DATE = "2025-11-17";
+// Workers enables nodejs_compat by default from this compatibility date.
+const NODEJS_COMPAT_DEFAULT_DATE = "2026-08-04";
 
 export type CloudflarePlatformSetupContext = {
   root: string;
@@ -321,7 +323,11 @@ export function setupCloudflarePlatform(
       );
     }
   }
-  const nextSteps: string[] = [];
+  // Warn only when this run chose the entry: an existing `main` is the app's own.
+  const wroteWorkerEntry = !wranglerCode || !findTopLevelJsonProperty(wranglerCode, "main");
+  const nextSteps: string[] = wroteWorkerEntry
+    ? workerEntryWarning(context.root, context.isStaticExport)
+    : [];
   if (
     cloudflare.cdnCache === "response-store" &&
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding"
@@ -416,6 +422,7 @@ function setupCfPlatform(
 
   const configPath = path.join(context.root, "cloudflare.config.ts");
   const generatedPlatformFiles: string[] = [];
+  const nextSteps: string[] = [];
   if (!fs.existsSync(configPath)) {
     fs.writeFileSync(
       configPath,
@@ -426,8 +433,8 @@ function setupCfPlatform(
       ),
     );
     generatedPlatformFiles.push("cloudflare.config.ts");
+    nextSteps.push(...workerEntryWarning(context.root, context.isStaticExport));
   }
-  const nextSteps: string[] = [];
   if (serviceBinding) {
     nextSteps.push(
       "After `vinext build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
@@ -484,7 +491,6 @@ function generateTypedCloudflareConfig(
   worker: {
     name: ${JSON.stringify(responseStoreName)},
     compatibilityDate: ${JSON.stringify(today)},
-    compatibilityFlags: ["nodejs_compat"],
   },
   bucket: ${JSON.stringify(bucket)},
 });
@@ -530,7 +536,6 @@ ${shared}export default defineConfig({
     ${cacheSpread ? `...${cacheSpread},\n    ` : ""}name: ${JSON.stringify(info.projectName)},
     entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
     compatibilityDate: ${JSON.stringify(today)},
-    compatibilityFlags: ["nodejs_compat"],
     assets: {
       ${assetLines.join(",\n      ")},
     },
@@ -552,6 +557,24 @@ function resolveWorkerEntry(root: string): string {
   if (fs.existsSync(path.join(root, "worker", "index.ts"))) return "./worker/index.ts";
   if (fs.existsSync(path.join(root, "worker", "index.js"))) return "./worker/index.js";
   return "vinext/server/fetch-handler";
+}
+
+/**
+ * A `worker/index.*` that never reaches vinext's handler (say, a migrated Vite
+ * SPA's API Worker) answers every page route itself, so each one 404s (#4460).
+ */
+function workerEntryWarning(root: string, isStaticExport: boolean | undefined): string[] {
+  // A static export serves its pages asset-first, so the Worker never sees them.
+  if (isStaticExport) return [];
+  const entry = resolveWorkerEntry(root);
+  if (entry === "vinext/server/fetch-handler") return [];
+  const source = fs.readFileSync(path.join(root, entry), "utf-8");
+  if (source.includes("vinext/server/fetch-handler")) return [];
+  return [
+    `Warning: ${entry.slice(2)} does not import vinext/server/fetch-handler. As the Worker entry`,
+    "   it must hand requests to vinext, or every page 404s. Otherwise point the Worker entry",
+    "   (entrypoint in cloudflare.config.ts, or main in wrangler.jsonc) at vinext/server/fetch-handler.",
+  ];
 }
 
 /**
@@ -584,7 +607,6 @@ export function generateWranglerConfig(
     $schema: "node_modules/wrangler/config-schema.json",
     name: info.projectName,
     compatibility_date: today,
-    compatibility_flags: ["nodejs_compat"],
     main: workerEntry,
     assets: {
       directory: "dist/client",
@@ -1197,7 +1219,10 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
     typeof appConfig.compatibility_date === "string"
       ? appConfig.compatibility_date
       : new Date().toISOString().split("T")[0];
-  const compatibilityFlags = ["nodejs_compat"];
+  const compatibilityFlags: string[] = [];
+  if (compatibilityDate < NODEJS_COMPAT_DEFAULT_DATE) {
+    compatibilityFlags.push("nodejs_compat");
+  }
   if (compatibilityDate < CTX_EXPORTS_DEFAULT_DATE) {
     compatibilityFlags.push("enable_ctx_exports");
   }
@@ -1207,7 +1232,7 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
       name: serviceName,
       main: RESPONSE_STORE_MAIN,
       compatibility_date: compatibilityDate,
-      compatibility_flags: compatibilityFlags,
+      ...(compatibilityFlags.length > 0 ? { compatibility_flags: compatibilityFlags } : {}),
       workers_dev: false,
       preview_urls: false,
       cache: { enabled: false },

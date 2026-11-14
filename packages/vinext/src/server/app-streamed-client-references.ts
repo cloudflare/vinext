@@ -37,6 +37,7 @@ import { setOnClientReference } from "@vitejs/plugin-rsc/ssr";
 import { getOrCreateAls } from "vinext/shims/internal/als-registry";
 import type { RouteClientReferenceSet } from "./app-client-reference-preloader.js";
 import { escapeHtmlAttr } from "./html.js";
+import { tagPromiseWithRequest } from "./isolate-shared-promise.js";
 import type { AssetCrossOrigin } from "./pages-client-assets.js";
 
 type AssetDeps = { js: string[]; css: string[] };
@@ -122,7 +123,8 @@ export function wrapClientReferenceRequire(
     referenceDeps.set(id, deps);
   });
   // One promise per reference, which React's Flight client tracks the
-  // module's load state on.
+  // module's load state on. Every render in the isolate awaits it, so it
+  // carries the tag of the request that starts the load.
   const loads = new Map<string, Promise<unknown>>();
   const wrapped: ClientReferenceRequire = (id) => {
     // The Flight client asks for a module as it reads the row naming it.
@@ -133,37 +135,39 @@ export function wrapClientReferenceRequire(
     }
     let loading = loads.get(id);
     if (!loading) {
-      loading = Promise.all([load(id), getLoader(id)?.()]).then(
-        ([mod, exports]) =>
-          new Proxy(mod as object, {
-            get(target, key, receiver) {
-              const render = renderStorage.getStore();
-              if (render) {
-                // A streamed reference reads its exports past plugin-rsc's
-                // module proxy, which would link its stylesheets here.
-                if (exports !== undefined && render.streamed.has(id)) {
-                  return Reflect.get(exports as object, key);
+      loading = tagPromiseWithRequest(
+        Promise.all([load(id), getLoader(id)?.()]).then(
+          ([mod, exports]) =>
+            new Proxy(mod as object, {
+              get(target, key, receiver) {
+                const render = renderStorage.getStore();
+                if (render) {
+                  // A streamed reference reads its exports past plugin-rsc's
+                  // module proxy, which would link its stylesheets here.
+                  if (exports !== undefined && render.streamed.has(id)) {
+                    return Reflect.get(exports as object, key);
+                  }
+                  const deps = referenceDeps.get(id);
+                  // Likewise one already in `<head>`, which React would preload.
+                  if (
+                    exports !== undefined &&
+                    deps?.css.length &&
+                    deps.css.every((href) => render.headStylesheets.has(href))
+                  ) {
+                    if (key in target) linkScripts(deps, render);
+                    return Reflect.get(exports as object, key);
+                  }
+                  linkStreamedStylesheetsBefore(render, id);
+                  // plugin-rsc links the module's assets as it's read, after this.
+                  if (deps && key in target) {
+                    linkStylesheets(deps.css, render);
+                    if (hintsScripts(render)) linkScripts(deps, render);
+                  }
                 }
-                const deps = referenceDeps.get(id);
-                // Likewise one already in `<head>`, which React would preload.
-                if (
-                  exports !== undefined &&
-                  deps?.css.length &&
-                  deps.css.every((href) => render.headStylesheets.has(href))
-                ) {
-                  if (key in target) linkScripts(deps, render);
-                  return Reflect.get(exports as object, key);
-                }
-                linkStreamedStylesheetsBefore(render, id);
-                // plugin-rsc links the module's assets as it's read, after this.
-                if (deps && key in target) {
-                  linkStylesheets(deps.css, render);
-                  if (hintsScripts(render)) linkScripts(deps, render);
-                }
-              }
-              return Reflect.get(target, key, receiver);
-            },
-          }),
+                return Reflect.get(target, key, receiver);
+              },
+            }),
+        ),
       );
       loads.set(id, loading);
     }

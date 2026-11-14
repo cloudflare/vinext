@@ -47,6 +47,17 @@ export function canonicalizeRequestUrlPathname(url: string): string {
 }
 
 /**
+ * Whether the pathname has a segment the URL parser resolves as `.` or `..`,
+ * literally or percent-encoded. Such a pathname changes when it becomes a URL.
+ */
+export function hasUrlParserDotSegment(pathname: string): boolean {
+  return pathname.split("/").some((segment) => {
+    const decodedDots = segment.replaceAll(/%2e/gi, ".");
+    return decodedDots === "." || decodedDots === "..";
+  });
+}
+
+/**
  * Shared request pipeline utilities.
  *
  * Extracted from generated entries and server hot paths to keep codegen focused
@@ -124,7 +135,6 @@ type ResolvePublicFileRouteOptions = {
   cleanPathname: string;
   /** `requestHeaders` holds middleware's request-header override instructions. */
   middlewareContext: StaticFileSignalContext & { requestHeaders?: Headers | null };
-  pathname: string;
   publicFiles: ReadonlySet<string>;
   request: Request;
 };
@@ -144,11 +154,10 @@ function isWellKnownPathname(pathname: string): boolean {
  *
  * Public files are checked after middleware and before afterFiles/fallback
  * rewrites. The generated App Router entry provides the public-file set; this
- * helper owns the RSC exclusion, existence-first method enforcement, and
+ * helper owns existence-first method enforcement and
  * static-file signaling. Missing mutation targets continue through routing.
  */
 export function resolvePublicFileRoute(options: ResolvePublicFileRouteOptions): Response | null {
-  if (options.pathname.endsWith(".rsc")) return null;
   if (!options.publicFiles.has(options.cleanPathname)) return null;
   if (options.request.method !== "GET" && options.request.method !== "HEAD") {
     return methodNotAllowedResponse("GET, HEAD", {
@@ -688,4 +697,20 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
     cloned = new Request(url, init);
   }
   return attachRequestCfMetadata(cloned, request);
+}
+
+/**
+ * Drop a `#fragment` the host kept from the request line. Next.js rebuilds
+ * request URLs from pathname + search, so neither middleware nor handlers
+ * ever observe one, and pathname-keyed cache entries must not either.
+ */
+export function stripRequestUrlFragment(request: Request): Request {
+  const hashIndex = request.url.indexOf("#");
+  if (hashIndex === -1) return request;
+  // Read before cloning: srvx returns its own connection signal only until a
+  // clone materializes its native Request, whose signal merely follows it and
+  // stops following once nothing retains the original request.
+  const signal = request.signal;
+  const stripped = cloneRequestWithUrl(request, request.url.slice(0, hashIndex));
+  return attachRequestCfMetadata(new Request(stripped, { signal }), request);
 }

@@ -226,7 +226,7 @@ describe("app fallback renderer factory", () => {
       { headers: null, status: null },
     );
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(500);
     expect(sanitizer).toHaveBeenCalledTimes(1);
     expect(ssrLoader).toHaveBeenCalledTimes(1);
 

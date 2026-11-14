@@ -24,7 +24,8 @@ import { isPageNotModified } from "vinext/internal/server/http-conditional";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
-import { hasDocumentPart, isCanonicalAppPage } from "./app-page-parts.js";
+import { isWebSocketUpgradeResponse } from "vinext/internal/server/websocket-upgrade-response";
+import { isCanonicalAppPage } from "./app-page-parts.js";
 import {
   finalizeGatewayResponse,
   SHARED_RESPONSE_STAGE_HEADER,
@@ -53,6 +54,7 @@ import {
   DATA_REVALIDATOR_ID,
   runWithResponseStoreInvocation,
   setResponseStore,
+  trackResponseStoreRegenerationWork,
   type ResponseStoreInvocationCapture,
 } from "./response-store-data.runtime.js";
 
@@ -105,7 +107,10 @@ function stageContext(ctx: WorkerExecutionContext, env: VinextResponseStoreEnv):
     hostRuntime: "worker" as const,
     passThroughOnException: () => ctx.passThroughOnException(),
     ...(ctx.props === undefined ? {} : { props: ctx.props }),
-    waitUntil: (promise: Promise<unknown>) => ctx.waitUntil(promise),
+    waitUntil: (promise: Promise<unknown>) => {
+      trackResponseStoreRegenerationWork(promise);
+      ctx.waitUntil(promise);
+    },
   });
 }
 
@@ -245,10 +250,15 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
   if (shards !== undefined && typeof shards !== "number") {
     throw new TypeError("Workers Response Store shards must be a number");
   }
+  const purgeBatchWindow = configuration?.purgeBatchWindow;
+  if (purgeBatchWindow !== undefined && typeof purgeBatchWindow !== "number") {
+    throw new TypeError("Workers Response Store purgeBatchWindow must be a number");
+  }
   return {
     ...(locationHint === undefined
       ? {}
       : { locationHint: locationHint as ResponseStoreLocationHint }),
+    ...(purgeBatchWindow === undefined ? {} : { purgeBatchWindow }),
     ...(shards === undefined ? {} : { shards }),
     async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
       if (input.id === ROUTE_REVALIDATOR_ID) {
@@ -273,7 +283,7 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
           { cache: "shared", regeneratesStoredEntry: true, renderWholeDocument: true },
           capture,
         );
-        if (!isCacheable(response)) {
+        if (!isCacheable(response, request)) {
           await response.body?.cancel().catch(() => {});
           void capture.rscData?.catch(() => {});
           throw new Error("Vinext response-stage regeneration was not cacheable");
@@ -374,6 +384,9 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
  * RSC response, HITs included, so such an entry shared across queries must not
  * carry the values of the request that filled it. Every other response kind
  * (route handlers, metadata routes, HTML, Pages) keeps its headers as rendered.
+ * Under an interception context the params stay: an intercepted response's
+ * include its target's, which the request stage doesn't match, and the key
+ * holds the context.
  */
 function withoutRequestScopedHeaders(response: Response, responseStageProps: unknown): Response {
   if (
@@ -385,7 +398,9 @@ function withoutRequestScopedHeaders(response: Response, responseStageProps: unk
     return response;
   }
   const headers = new Headers(response.headers);
-  headers.delete(VINEXT_PARAMS_HEADER);
+  if (Reflect.get(responseStageProps, "interceptionContext") == null) {
+    headers.delete(VINEXT_PARAMS_HEADER);
+  }
   headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
   return new Response(response.body, {
     headers,
@@ -487,7 +502,7 @@ function otherPagePart(identityRequest: Request, identityProps: unknown): PagePa
   if (isCanonicalAppPage(identityProps, false)) {
     return { invocation: rscPartInvocation(identityRequest, identityProps), kind: "rsc" };
   }
-  if (isCanonicalAppPage(identityProps, true) && hasDocumentPart(identityRequest.url)) {
+  if (isCanonicalAppPage(identityProps, true)) {
     return { invocation: documentPartInvocation(identityRequest, identityProps), kind: "document" };
   }
   return undefined;
@@ -541,7 +556,7 @@ function isStoredErrorStatus(status: number): boolean {
   return status === 401 || status === 403 || status === 404;
 }
 
-function isCacheable(response: Response): boolean {
+function isCacheable(response: Response, request: Request): boolean {
   const policy =
     response.headers.get("Cloudflare-CDN-Cache-Control") ??
     response.headers.get("CDN-Cache-Control") ??
@@ -550,6 +565,9 @@ function isCacheable(response: Response): boolean {
     response.status >= 200 &&
     // A 304 answers one request's precondition; it is not the page.
     response.status !== 304 &&
+    // A 206 for a Range request holds only the part that request selected.
+    // Next.js still stores a static route handler's 206, which no Range selects.
+    !(response.status === 206 && request.headers.has("Range")) &&
     (response.status < 400 || isStoredErrorStatus(response.status)) &&
     policy !== null &&
     !isNonCacheableCacheControl(policy)
@@ -655,6 +673,9 @@ function publicResponse(
   responseStageProps: unknown,
   pendingAdmission = false,
 ): Response {
+  // Rebuilding an upgrade drops its `webSocket`, and workerd then rejects the
+  // status 101. The stage bypasses the store for it, so return it as is.
+  if (isWebSocketUpgradeResponse(response)) return response;
   const headers = new Headers(response.headers);
   const publicCacheStatus =
     cacheStatus === "HIT" && headers.get("CF-Cache-Status") === "UPDATING"
@@ -731,7 +752,8 @@ const handler = {
       }
 
       // Core supplies a host-free identity for shared App Router dispatches
-      // and static Pages pages, query-free for App pages, behind
+      // and static Pages pages, query-free for App pages, Route Handlers and
+      // metadata routes, behind
       // completed-response admission. The render still receives the real
       // request; the key and RSC seed use the identity, and route replay
       // does unless the identity asks to regenerate from the dispatch.
@@ -805,7 +827,7 @@ const handler = {
         ctx.waitUntil(
           capture.admittedResponse
             .then(async (admitted) => {
-              if (!isCacheable(admitted)) {
+              if (!isCacheable(admitted, stageRequest)) {
                 await admitted.body?.cancel().catch(() => {});
                 void capture.rscData?.catch(() => {});
                 return;
@@ -846,7 +868,7 @@ const handler = {
             )
           : publicResponse(notModified, "MISS", props, true);
       }
-      if (!isCacheable(rendered)) {
+      if (!isCacheable(rendered, stageRequest)) {
         void capture.rscData?.catch(() => {});
         return publicResponse(foreground(rendered), "BYPASS", props);
       }

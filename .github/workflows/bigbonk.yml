@@ -12,13 +12,23 @@ concurrency:
 
 jobs:
   bonk:
+    # The alcora-dev GitHub App is allowed by exact login: it is a Bot with no
+    # author association, so it would fail the human checks below. Its comments
+    # must start with /bigbonk so a triage reply that echoes reporter text can't
+    # trigger a run.
     if: >-
-      github.event.sender.type != 'Bot' &&
-      contains(github.event.comment.body, '/bigbonk') &&
       (
-        github.event.comment.author_association == 'MEMBER' ||
-        github.event.comment.author_association == 'COLLABORATOR' ||
-        github.event.comment.author_association == 'OWNER'
+        github.event.comment.user.login == 'alcora-dev[bot]' &&
+        startsWith(github.event.comment.body, '/bigbonk')
+      ) ||
+      (
+        github.event.sender.type != 'Bot' &&
+        contains(github.event.comment.body, '/bigbonk') &&
+        (
+          github.event.comment.author_association == 'MEMBER' ||
+          github.event.comment.author_association == 'COLLABORATOR' ||
+          github.event.comment.author_association == 'OWNER'
+        )
       )
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -37,7 +47,9 @@ jobs:
       - uses: ./.github/actions/setup
 
       - name: Run Bonk
-        uses: Cloudflare-Studio/ask-bonk/github@2c20fe37255d2e0e186fb0e16dd2c5704e4116cf # main
+        # Fork of Cloudflare-Studio/ask-bonk@2c20fe3 whose turn runner skips
+        # `opencode github run`'s collaborator check, which refuses every GitHub App.
+        uses: james-elicx/ask-bonk/github@8b31f5a4d57319184bac710b65c6d1128d763ec3 # app-actors
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
@@ -50,7 +62,9 @@ jobs:
           model: "cloudflare-ai-gateway/openai/gpt-5.6-sol"
           mentions: "/bigbonk"
           variant: "high"
-          permissions: write
+          # ask-bonk checks the commenter's repo collaborator permission, which is
+          # "none" for GitHub Apps; alcora-dev[bot] is already gated by login above.
+          permissions: ${{ github.event.comment.user.login == 'alcora-dev[bot]' && 'any' || 'write' }}
           opencode_dev: true
           opencode_version: latest
           agent: viguy

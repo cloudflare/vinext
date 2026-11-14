@@ -56,6 +56,10 @@ export async function middleware(request: NextRequest) {
     response.headers.set("x-cdn-stage-visitor", visitorId);
     return response;
   }
+  // A pathname comparison, as in the Next.js authentication guide.
+  if (request.nextUrl.pathname === "/encoded-parity/sibling/guarded") {
+    return new NextResponse("blocked by middleware", { status: 403 });
+  }
   if (request.nextUrl.pathname === "/%61dmin") {
     return NextResponse.rewrite(new URL("/admin", request.url));
   }
@@ -91,6 +95,14 @@ export async function middleware(request: NextRequest) {
     request.nextUrl.pathname.startsWith("/cdn-stage-pages/")
   ) {
     response.headers.set("x-cdn-stage-visitor", visitorId);
+  }
+  // Middleware response headers cannot be added to a WebSocket upgrade (#4661).
+  if (request.nextUrl.pathname.startsWith("/api/websocket-upgrade")) {
+    response.headers.set("x-websocket-middleware", "applied");
+    // The edge API route on `?cookie` returns this same cookie.
+    if (request.nextUrl.searchParams.has("cookie")) {
+      response.headers.append("Set-Cookie", "websocket-upgrade=1; Path=/");
+    }
   }
   if (
     request.nextUrl.pathname.startsWith("/api/draft-isr/") &&

@@ -5,6 +5,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   AppElementsWire,
+  readOptimisticStateKeyRebinder,
   UNMATCHED_SLOT,
   type AppElementValue,
   type AppElements,
@@ -102,12 +103,63 @@ const MAX_BFCACHE_SLOT_ENTRIES_WITH_CACHE_COMPONENTS = 3;
 // branch is a contract bound for the helper, not live render code.
 const MAX_BFCACHE_SLOT_ENTRIES_WITHOUT_CACHE_COMPONENTS = 1;
 
+// What a list reports: its entry keys, the keys retained under its hidden
+// entries, and the reports of the lists inside its shown entry.
+type BfcacheRetainedKeysReport = {
+  activeReports: BfcacheRetainedKeysReports;
+  hiddenKeys: readonly string[];
+  keys: readonly string[];
+};
+// Keyed by each list's segment id, so a list that remounts replaces its report.
+type BfcacheRetainedKeysReports = Map<string, BfcacheRetainedKeysReport>;
+
+// The reports of the lists outside any BFCache entry.
+const rootBfcacheRetainedKeysReports: BfcacheRetainedKeysReports = new Map();
+
+// Whether a BFCache list holds an entry for a key, so a navigation can tell
+// when its target is retained. Callers exempt the entries on screen. A list
+// counts its own entries and the keys its hidden entries snapshotted, from the
+// root down through the shown entries, and a disconnected list still holds
+// the entry it last showed.
+export function isBfcacheIdentityRetained(identity: string): boolean {
+  return hasBfcacheRetainedKey(rootBfcacheRetainedKeysReports, identity);
+}
+
+function hasBfcacheRetainedKey(reports: BfcacheRetainedKeysReports, identity: string): boolean {
+  for (const report of reports.values()) {
+    if (report.keys.includes(identity) || report.hiddenKeys.includes(identity)) return true;
+    if (hasBfcacheRetainedKey(report.activeReports, identity)) return true;
+  }
+  return false;
+}
+
+// A hidden entry runs no effects, so the lists inside it stop reporting, and
+// its list snapshots their last reports as it hides the entry. A list keeps
+// its last report while its effects are disconnected, by a hidden ancestor
+// entry, a Suspense fallback or a user Activity. React cleans up an unmounted
+// list's effects the same way, so its report stays too, until it remounts or
+// its entry is evicted. Its keys then count as retained a while longer, which
+// only skips learned shells.
+const BfcacheRetainedKeysContext = React.createContext<BfcacheRetainedKeysReports>(
+  rootBfcacheRetainedKeysReports,
+);
+
+function collectBfcacheRetainedKeys(reports: BfcacheRetainedKeysReports, keys: Set<string>): void {
+  for (const report of reports.values()) {
+    for (const key of report.keys) keys.add(key);
+    for (const key of report.hiddenKeys) keys.add(key);
+    collectBfcacheRetainedKeys(report.activeReports, keys);
+  }
+}
+
 export const BfcacheIdentityMapContext =
   React.createContext<Readonly<Record<string, string>>>(EMPTY_BFCACHE_STATE_KEYS);
 
 export type BfcacheSlotEntry = {
   content: React.ReactNode;
   elements?: AppElements;
+  /** Every entry key inside a hidden entry, its own included. */
+  retainedKeys?: readonly string[];
   segmentId?: string;
   stateKey: string;
   stateKeyMap?: Readonly<Record<string, string>>;
@@ -121,6 +173,7 @@ type MergeElementsOptions = {
   clearAbsentSlots?: boolean;
   preserveAbsentSlots?: boolean;
   preserveElementIds?: readonly string[];
+  preserveElementSeedIds?: readonly string[];
   preservePreviousSlotIds?: readonly string[];
 };
 
@@ -309,19 +362,23 @@ function BfcacheEntryProviders({
   fallbackElements,
   fallbackSegmentId,
   fallbackStateKeyMap,
+  retainedKeysReports,
   SegmentContext,
 }: {
   entry: BfcacheSlotEntry;
   fallbackElements: AppElements;
   fallbackSegmentId: string;
   fallbackStateKeyMap: Readonly<Record<string, string>>;
+  retainedKeysReports: BfcacheRetainedKeysReports;
   SegmentContext: React.Context<string | null>;
 }) {
   return (
     <BfcacheIdentityMapContext.Provider value={entry.stateKeyMap ?? fallbackStateKeyMap}>
       <ElementsContext.Provider value={entry.elements ?? fallbackElements}>
         <SegmentContext.Provider value={entry.segmentId ?? fallbackSegmentId}>
-          {entry.content}
+          <BfcacheRetainedKeysContext.Provider value={retainedKeysReports}>
+            {entry.content}
+          </BfcacheRetainedKeysContext.Provider>
         </SegmentContext.Provider>
       </ElementsContext.Provider>
     </BfcacheIdentityMapContext.Provider>
@@ -334,15 +391,43 @@ function BfcacheEntryProviders({
 // render that observes the committed active state key; the long-term model
 // should let navigation commits update retained slot entries and keep Slot as a
 // pure Activity renderer.
-function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[] {
+function useBfcacheSlotEntries(
+  listId: string,
+  activeEntry: BfcacheSlotEntry,
+): {
+  entries: BfcacheSlotEntry[];
+  getRetainedKeysReports: (stateKey: string) => BfcacheRetainedKeysReports;
+} {
   const snapshotsByStateKey = React.useRef(new Map<string, BfcacheSlotEntry>());
   const [entryOrder, setEntryOrder] = React.useState<string[]>(() => [activeEntry.stateKey]);
+  // One report map per entry key, kept until the entry is evicted.
+  const [retainedKeysReportsByStateKey] = React.useState(
+    () => new Map<string, BfcacheRetainedKeysReports>(),
+  );
+  const getRetainedKeysReports = (stateKey: string): BfcacheRetainedKeysReports => {
+    let reports = retainedKeysReportsByStateKey.get(stateKey);
+    if (!reports) {
+      reports = new Map();
+      retainedKeysReportsByStateKey.set(stateKey, reports);
+    }
+    return reports;
+  };
 
   // The cache contains only committed snapshots. Reading it here lets a new
   // Activity render preserve entries without publishing speculative writes.
   // oxlint-disable-next-line react/refs -- this read is the committed input to a staged render
   const committedSnapshots = snapshotsByStateKey.current;
   const staged = stageBfcacheSlotEntryForRender(committedSnapshots, entryOrder, activeEntry);
+  // An entry hidden by this render snapshots the keys its lists last reported,
+  // before they clean up.
+  for (const [index, entry] of staged.entries.entries()) {
+    if (entry.stateKey === activeEntry.stateKey || entry.retainedKeys) continue;
+    const retainedKeys = new Set([entry.stateKey]);
+    collectBfcacheRetainedKeys(getRetainedKeysReports(entry.stateKey), retainedKeys);
+    const hiddenEntry = { ...entry, retainedKeys: [...retainedKeys] };
+    staged.entries[index] = hiddenEntry;
+    staged.snapshots.set(entry.stateKey, hiddenEntry);
+  }
   const nextOrder = staged.order;
   const orderChanged = !haveSameBfcacheSlotEntryOrder(entryOrder, nextOrder);
 
@@ -351,7 +436,24 @@ function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[
   // cannot mutate the previous committed entries.
   React.useLayoutEffect(() => {
     snapshotsByStateKey.current = staged.snapshots;
-  }, [staged.snapshots]);
+    for (const stateKey of retainedKeysReportsByStateKey.keys()) {
+      if (!staged.snapshots.has(stateKey)) retainedKeysReportsByStateKey.delete(stateKey);
+    }
+  }, [retainedKeysReportsByStateKey, staged.snapshots]);
+
+  const hiddenKeys = [...new Set(staged.entries.flatMap((entry) => entry.retainedKeys ?? []))];
+  // Report to the entry this list is in, so hiding that entry retains these
+  // too, or to the root outside any entry.
+  const enclosingReports = React.useContext(BfcacheRetainedKeysContext);
+  const activeReports = getRetainedKeysReports(activeEntry.stateKey);
+  const report: BfcacheRetainedKeysReport = {
+    activeReports,
+    hiddenKeys,
+    keys: staged.entries.map((entry) => entry.stateKey),
+  };
+  React.useLayoutEffect(() => {
+    enclosingReports.set(listId, report);
+  });
 
   // Future retention-policy changes must keep the active key in renderOrder.
   if (process.env.NODE_ENV !== "production" && !staged.snapshots.has(activeEntry.stateKey)) {
@@ -362,7 +464,7 @@ function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[
     setEntryOrder(nextOrder);
   }
 
-  return staged.entries;
+  return { entries: staged.entries, getRetainedKeysReports };
 }
 
 function BfcacheActivitySlotBoundary({
@@ -387,7 +489,10 @@ function BfcacheActivitySlotBoundary({
     stateKey: activeStateKey,
     stateKeyMap,
   };
-  const renderEntries = useBfcacheSlotEntries(latestActiveEntry);
+  const { entries: renderEntries, getRetainedKeysReports } = useBfcacheSlotEntries(
+    id,
+    latestActiveEntry,
+  );
 
   return (
     <>
@@ -404,6 +509,7 @@ function BfcacheActivitySlotBoundary({
             fallbackElements={elements}
             fallbackSegmentId={id}
             fallbackStateKeyMap={stateKeyMap}
+            retainedKeysReports={getRetainedKeysReports(entry.stateKey)}
             SegmentContext={SegmentContext}
           />
         </React.Activity>
@@ -466,9 +572,13 @@ export function BfcacheSegmentBoundary({
 export function BfcacheChildrenBoundary({
   children,
   id,
+  stateKey,
 }: {
   children: React.ReactNode;
-  id: string;
+  /** The child element whose identity keys the entries. */
+  id?: string;
+  /** A fixed key, for a segment level with no element of its own. */
+  stateKey?: string;
 }) {
   if (!BfcacheIdMapContext || !BfcacheSegmentIdContext || !isCacheComponentsEnabled()) {
     return <>{children}</>;
@@ -478,6 +588,7 @@ export function BfcacheChildrenBoundary({
       id={id}
       IdMapContext={BfcacheIdMapContext}
       SegmentContext={BfcacheSegmentIdContext}
+      stateKey={stateKey}
     >
       {children}
     </BfcacheChildrenActivityBoundary>
@@ -489,18 +600,28 @@ function BfcacheChildrenActivityBoundary({
   id,
   IdMapContext,
   SegmentContext,
+  stateKey,
 }: {
   children: React.ReactNode;
-  id: string;
+  id: string | undefined;
   IdMapContext: React.Context<Readonly<Record<string, string>> | null>;
   SegmentContext: React.Context<string | null>;
+  stateKey: string | undefined;
 }) {
   const elements = React.useContext(ElementsContext);
   const identityMap = React.useContext(BfcacheIdentityMapContext);
   const bfcacheIdMap = React.useContext(IdMapContext);
   // The children keep the segment id of the layout that renders them.
   const segmentId = React.useContext(SegmentContext);
-  const activeStateKey = resolveBfcacheSegmentStateKey(id, identityMap, bfcacheIdMap);
+  // A fixed key is baked into the tree an optimistic shell reuses, so it names
+  // the URL the shell was learned from until the shell rebinds it.
+  const rebindStateKey = readOptimisticStateKeyRebinder(elements);
+  const activeStateKey =
+    stateKey !== undefined
+      ? (rebindStateKey?.(stateKey) ?? stateKey)
+      : id === undefined
+        ? undefined
+        : resolveBfcacheSegmentStateKey(id, identityMap, bfcacheIdMap);
   if (segmentId === null || activeStateKey === undefined) {
     return <>{children}</>;
   }
@@ -581,6 +702,8 @@ export function mergeElements(
   const preserveAbsentSlots =
     typeof options === "boolean" ? !options : (options.preserveAbsentSlots ?? true);
   const preserveElementIds = typeof options === "boolean" ? [] : (options.preserveElementIds ?? []);
+  const preserveElementSeedIds =
+    typeof options === "boolean" ? [] : (options.preserveElementSeedIds ?? []);
   const preservePreviousSlotIds =
     typeof options === "boolean" ? [] : (options.preservePreviousSlotIds ?? []);
   const merged: Record<string, AppElementValue> = { ...next };
@@ -594,6 +717,16 @@ export function mergeElements(
         preservedIdentityIds.add(id);
       }
     }
+  }
+
+  // A seed keeps only the previous server output, which holds no client state.
+  // Its identity stays the destination's, because that identity names the
+  // segment state the seed now mounts under and the bfcache id the destination
+  // assigned to it.
+  for (const id of preserveElementSeedIds) {
+    if (preservedIdentityIds.has(id) || !Object.hasOwn(prev, id)) continue;
+    const value = prev[id];
+    if (value !== undefined) merged[id] = value;
   }
 
   const slotKeys = new Set(
@@ -679,10 +812,11 @@ export function mergeElements(
       }
     }
 
-    // An element and its identity are one preservation unit. Keeping previous
-    // content beside the destination's identity would falsely prove that stale
-    // client state belongs to the destination graph. If the previous payload
-    // had no proof, remove any destination proof and let BFCache remint.
+    // Outside seeds, an element and its identity are one preservation unit.
+    // Keeping previous content beside the destination's identity would falsely
+    // prove that stale client state belongs to the destination graph. If the
+    // previous payload had no proof, remove any destination proof and let
+    // BFCache remint.
     for (const id of preservedIdentityIds) {
       const previousIdentity = previousIdentities[id];
       if (previousIdentity === undefined) {

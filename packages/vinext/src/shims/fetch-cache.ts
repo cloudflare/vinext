@@ -1462,6 +1462,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // A stale entry this fetch refreshes, kept for the miss path below if the
     // refresh fails.
     let staleEntry: CacheHandlerValue | undefined;
+    // Passed to this fetch's read and its write, so a handler can tell a write
+    // filling what that read missed.
+    const cacheRead = {};
 
     // Try cache first. Like Next.js's patch-fetch, an on-demand revalidation
     // skips the read but still fetches and stores the fresh response.
@@ -1474,6 +1477,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
               tags,
               softTags,
               revalidate: revalidateSeconds,
+              cacheRead,
             });
       if (
         cached?.value?.kind === "FETCH" &&
@@ -1483,13 +1487,17 @@ function createPatchedFetch(): typeof globalThis.fetch {
         cached = null;
       }
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
+        // Awaited so the rewrite of this old body can't land after a later write
+        // of the key. A failed rewrite keeps the hit.
         await lowerFetchCacheRevalidateIfNeeded(
           handler,
           cacheKey,
           cached.value,
           tags,
           revalidateSeconds,
-        );
+        ).catch((err) => {
+          console.error("[vinext] fetch cache write error:", err);
+        });
         const cachedData = cached.value.data;
         return recordFetchOutcome(buildCachedFetchResponse(cachedData, input), "hit", cacheReason);
       }
@@ -1501,8 +1509,11 @@ function createPatchedFetch(): typeof globalThis.fetch {
         staleEntry = cached;
         if (shouldRefreshStaleFetchInForeground()) {
           const freshResponse = await dedupeFetch(input, fetchInit);
+          // A failed write keeps the fresh response rather than fetching again.
           await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds, {
             staleEntry: cached,
+          }).catch((err) => {
+            console.error("[vinext] fetch cache write error:", err);
           });
           return recordFetchOutcome(freshResponse, "miss", cacheReason);
         }
@@ -1574,6 +1585,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           fetchCache: true,
           tags,
           revalidate: revalidateSeconds,
+          cacheRead,
           ...(staleEntry ? { staleEntry } : {}),
         })
         .catch((err) => {

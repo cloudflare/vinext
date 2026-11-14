@@ -23,6 +23,7 @@ const _pagesI18nPath = resolveEntryPath("../server/pages-i18n.js", import.meta.u
 const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
 const _pagesDefault404Path = resolveEntryPath("../server/pages-default-404.js", import.meta.url);
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
+const _requestErrorLogPath = resolveEntryPath("../server/request-error-log.js", import.meta.url);
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
@@ -150,10 +151,13 @@ export async function generatePagesRequestEntry(
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
       qualities: nextConfig?.images?.qualities,
+      localPatterns: nextConfig?.images?.localPatterns,
       dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
       dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
       contentDispositionType: nextConfig?.images?.contentDispositionType,
       contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+      minimumCacheTTL: nextConfig?.images?.minimumCacheTTL,
+      maximumResponseBody: nextConfig?.images?.maximumResponseBody,
     },
   });
   const instrumentationImportCode = instrumentationPath
@@ -189,6 +193,7 @@ export function __ensureInstrumentation(ctx) {
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
+    restoreLocaleRootTrailingSlash: options?.restoreLocaleRootTrailingSlash === true,
     skipTrailingSlashRedirect: vinextConfig.skipTrailingSlashRedirect,
     trailingSlash: vinextConfig.trailingSlash,
   });
@@ -221,11 +226,14 @@ export const vinextConfig = ${vinextConfigJson};
 export const publicFiles = new Set(${JSON.stringify(publicFiles)});
 export const clientBuildFiles = new Set(__pagesClientAssets.clientBuildFiles ?? []);
 
+// The Worker request stage strips basePath before calling this, so the data
+// path must not lose it again: with basePath "/docs", "/docs/docs/_next/data/..."
+// is the page path "/docs/_next/data/...", not a data request.
 export function normalizeDataRequest(request) {
   return __normalizePagesDataRequest(
     request,
     buildId,
-    vinextConfig.basePath,
+    "",
     __shouldAddTrailingSlashToPagesDataPath(
       hasMiddleware,
       vinextConfig.trailingSlash,
@@ -427,10 +435,13 @@ export async function generateServerEntry(
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
       qualities: nextConfig?.images?.qualities,
+      localPatterns: nextConfig?.images?.localPatterns,
       dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
       dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
       contentDispositionType: nextConfig?.images?.contentDispositionType,
       contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+      minimumCacheTTL: nextConfig?.images?.minimumCacheTTL,
+      maximumResponseBody: nextConfig?.images?.maximumResponseBody,
     },
   });
 
@@ -515,6 +526,7 @@ export async function runMiddleware(request, ctx, options) {
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
+    restoreLocaleRootTrailingSlash: options?.restoreLocaleRootTrailingSlash === true,
     skipTrailingSlashRedirect: vinextConfig.skipTrailingSlashRedirect,
     trailingSlash: vinextConfig.trailingSlash,
   });
@@ -560,6 +572,7 @@ import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSO
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_pagesApiRoutePath)};
+import { logRequestError as __logRequestError } from ${JSON.stringify(_requestErrorLogPath)};
 import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
@@ -586,11 +599,14 @@ export const buildId = ${buildIdJson};
 // Per-build capability used by Worker entries to authorize remote path
 // discovery. It is never included in responses or exposed to user modules.
 export const prerenderSecret = ${JSON.stringify(prerenderSecret ?? null)};
+// The Worker request stage strips basePath before calling this, so the data
+// path must not lose it again: with basePath "/docs", "/docs/docs/_next/data/..."
+// is the page path "/docs/_next/data/...", not a data request.
 export function normalizeDataRequest(request) {
   return __normalizePagesDataRequest(
     request,
     buildId,
-    vinextConfig.basePath,
+    "",
     __shouldAddTrailingSlashToPagesDataPath(
       hasMiddleware,
       vinextConfig.trailingSlash,
@@ -625,6 +641,7 @@ export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 export const publicFiles = new Set(${JSON.stringify(publicFiles)});
+export const clientBuildFiles = new Set(__pagesClientAssets.clientBuildFiles ?? []);
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
 const _errorPageRoute = {
   pattern: "/_error",
@@ -808,7 +825,7 @@ export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin,
     trustedRevalidateOrigin,
     url,
     reportRequestError(error, routePattern) {
-      console.error("[vinext] API error:", error);
+      __logRequestError("[vinext] API error:", error);
       return _reportRequestError(
         error,
         { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },

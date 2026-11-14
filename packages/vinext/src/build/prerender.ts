@@ -19,7 +19,6 @@
 import path from "pathslash";
 import fs from "node:fs";
 import os from "node:os";
-import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { appRouteLayoutStaticParamsGroups, type AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
@@ -36,7 +35,11 @@ import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "vinext/shims
 import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
-import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
+import {
+  normalizeStaticPathname,
+  normalizeStaticPathsEntry,
+  type StaticPathsEntry,
+} from "../routing/route-pattern.js";
 import { extractLocaleFromUrl } from "../server/pages-i18n.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
@@ -59,18 +62,21 @@ import {
   serializePrerenderRouteParamsHeader,
   type PrerenderRouteParamsPayload,
 } from "../server/prerender-route-params.js";
-import { startProdServer } from "../server/prod-server.js";
 import {
   prerenderPoolAvailable,
   resolvePrerenderPoolSize,
+  startPrerenderProdServer,
   startPrerenderServerPool,
+  type PrerenderProdServer,
   type PrerenderServerPool,
 } from "./prerender-server-pool.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import {
+  assertNormalizedPagePath,
   getAppRouteOutputPath,
   getOutputPath,
   getRscOutputPath,
+  PagePathMismatchError,
 } from "../utils/prerender-output-paths.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
@@ -109,10 +115,10 @@ async function startOptionalPrerenderServerPool(
     return await startPrerenderServerPool(outDir, poolSize, { rscEntryPath, serverDir });
   } catch (e) {
     // The pool is a performance optimization layered over the already-running
-    // in-process prerender server. Startup failure is still before any route has
+    // single prerender server. Startup failure is still before any route has
     // rendered, so degrade; render-time worker failures remain fatal later.
     console.warn(
-      `[vinext] prerender render pool failed to start; falling back to single-process render: ${
+      `[vinext] prerender render pool failed to start; falling back to single-server render: ${
         e instanceof Error ? e.message : String(e)
       }`,
     );
@@ -304,8 +310,12 @@ type PrerenderAppOptions = {
 // field used by `runPrerender` to share a single prod server across both prerender
 // phases in a hybrid build.
 
+/** Health checks are optional so tests can pass a plain in-process server. */
+type SharedPrerenderProdServer = Pick<PrerenderProdServer, "port"> &
+  Partial<Pick<PrerenderProdServer, "assertHealthy" | "recordRenderError">>;
+
 type PrerenderPagesOptionsInternal = PrerenderPagesOptions & {
-  _prodServer?: { server: HttpServer; port: number };
+  _prodServer?: SharedPrerenderProdServer;
   /**
    * Prerender secret to use when `_prodServer` is provided and `pagesBundlePath`
    * is absent (hybrid builds). Read from `vinext-server.json` by `runPrerender`
@@ -315,7 +325,7 @@ type PrerenderPagesOptionsInternal = PrerenderPagesOptions & {
 };
 
 type PrerenderAppOptionsInternal = PrerenderAppOptions & {
-  _prodServer?: { server: HttpServer; port: number };
+  _prodServer?: SharedPrerenderProdServer;
 };
 
 // ─── Concurrency helpers ──────────────────────────────────────────────────────
@@ -842,9 +852,17 @@ export async function prerenderPages({
   const restorePrerenderPhase = enterPrerenderPhase();
   // ownedProdServerHandle: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
-  let ownedProdServerHandle: { server: HttpServer; port: number } | null = null;
+  let ownedProdServerHandle = null as PrerenderProdServer | null;
   // Forked render-server pool (declared out here so the finally can close it).
   let renderPool: PrerenderServerPool | null = null;
+  const recordRenderError = (err: unknown): void => {
+    renderPool?.recordRenderError(err);
+    (ownedProdServerHandle ?? options._prodServer)?.recordRenderError?.(err);
+  };
+  const assertRenderServersHealthy = (): void => {
+    renderPool?.assertHealthy();
+    (ownedProdServerHandle ?? options._prodServer)?.assertHealthy?.();
+  };
   try {
     // Read the prerender secret written at build time by vinext:server-manifest.
     // When _prerenderSecret is provided by the caller (hybrid builds where
@@ -863,23 +881,23 @@ export async function prerenderPages({
     }
 
     // Use caller-provided prod server if available; otherwise start our own.
-    const prodServer: { server: HttpServer; port: number } = options._prodServer
-      ? options._prodServer
-      : await (async () => {
-          const srv = await startProdServer({
-            port: 0,
-            host: "127.0.0.1",
-            // pagesBundlePath is guaranteed non-null: the guard above ensures
-            // either _prodServer or pagesBundlePath is provided.
-            outDir: path.dirname(path.dirname(pagesBundlePath!)),
-            serverDir: path.dirname(pagesBundlePath!),
-            serverEntryPath: pagesBundlePath,
-            noCompression: true,
-            purpose: "prerender",
-          });
-          ownedProdServerHandle = srv;
-          return srv;
-        })();
+    // Assigned in this function body (not a nested closure) so the finally
+    // sees ownedProdServerHandle as possibly set rather than narrowed to null.
+    let prodServer: SharedPrerenderProdServer;
+    if (options._prodServer) {
+      prodServer = options._prodServer;
+    } else {
+      // pagesBundlePath is guaranteed non-null: the guard above ensures
+      // either _prodServer or pagesBundlePath is provided.
+      ownedProdServerHandle = await startPrerenderProdServer(
+        path.dirname(path.dirname(pagesBundlePath!)),
+        {
+          serverDir: path.dirname(pagesBundlePath!),
+          serverEntryPath: pagesBundlePath,
+        },
+      );
+      prodServer = ownedProdServerHandle;
+    }
 
     const baseUrl = `http://127.0.0.1:${prodServer.port}`;
     const secretHeaders: Record<string, string> = prerenderSecret
@@ -906,12 +924,12 @@ export async function prerenderPages({
     };
 
     // Render servers the per-route fetches are load-balanced across. Starts as
-    // the single in-process server (`baseUrl`); when there are enough routes
+    // the single prerender server (`baseUrl`); when there are enough routes
     // (and we started our own server, i.e. not a hybrid shared server) we fork
     // a pool of production servers below and repoint these ports at them so
     // rendering — which is CPU-bound and otherwise serialized on one core —
     // spreads across cores. getStaticPaths/secret endpoints keep using
-    // `baseUrl` (the in-process server).
+    // `baseUrl` (the single prerender server).
     let renderPorts: number[] = [prodServer.port];
     let renderRoundRobin = 0;
     const renderPage = (urlPath: string) => {
@@ -1050,6 +1068,7 @@ export async function prerenderPages({
             defaultLocale: config.i18n?.defaultLocale ?? "",
           });
         } catch (e) {
+          recordRenderError(e);
           results.push({
             route: route.pattern,
             status: "error",
@@ -1077,6 +1096,7 @@ export async function prerenderPages({
         // the whole prerender.
         const paths: Array<StaticPathsEntry> = pathsResult?.paths ?? [];
         let entryError: string | null = null;
+        let entryFatal = false;
         const seenPaths = new Set<string>();
         for (const item of paths) {
           let locale = config.i18n?.defaultLocale;
@@ -1088,33 +1108,58 @@ export async function prerenderPages({
           } else if (item && typeof item === "object" && item.locale !== undefined) {
             locale = item.locale;
           }
-          const normalized = normalizeStaticPathsEntry(pathEntry, route.pattern);
-          if ("error" in normalized) {
-            entryError = normalized.error;
-            break;
-          }
-          if (locale !== undefined && !config.i18n?.locales.includes(locale)) {
-            entryError = `Invalid locale returned from getStaticPaths for ${route.pattern}: ${locale}`;
-            break;
-          }
-          const { params } = normalized;
           try {
+            // A string path is already encoded, so `%2E%2E` is a `..` segment
+            // too. Next.js fails the build on one even when it matches no route.
+            // Like its escapePathDelimiters, a decoded `/` stays in its segment.
+            if (typeof pathEntry === "string") {
+              assertNormalizedPagePath(
+                normalizeStaticPathname(pathEntry)
+                  .split("/")
+                  .map((segment) => {
+                    try {
+                      return decodeURIComponent(segment).replaceAll("/", "%2F");
+                    } catch {
+                      return segment;
+                    }
+                  })
+                  .join("/"),
+              );
+            }
+            const normalized = normalizeStaticPathsEntry(pathEntry, route.pattern);
+            if ("error" in normalized) throw new Error(normalized.error);
+            if (locale !== undefined && !config.i18n?.locales.includes(locale)) {
+              throw new Error(
+                `Invalid locale returned from getStaticPaths for ${route.pattern}: ${locale}`,
+              );
+            }
+            const { params } = normalized;
             const urlPath = localizePagesPath(
               buildUrlFromParams(route.pattern, params),
               locale,
               config.i18n,
             );
+            // A `.` or `..` param resolves this page to another path, and `..`
+            // can climb out of the output directory. Next.js's normalizePagePath
+            // fails the build on it.
+            assertNormalizedPagePath(urlPath);
             if (!seenPaths.has(urlPath)) {
               seenPaths.add(urlPath);
               pagesToRender.push({ route, urlPath, params, revalidate, hasStaticProps, locale });
             }
           } catch (e) {
             entryError = (e as Error).message;
+            entryFatal = e instanceof PagePathMismatchError;
             break;
           }
         }
         if (entryError) {
-          results.push({ route: route.pattern, status: "error", error: entryError });
+          results.push({
+            route: route.pattern,
+            status: "error",
+            error: entryError,
+            ...(entryFatal ? { fatal: true as const } : {}),
+          });
           continue;
         }
       } else {
@@ -1190,6 +1235,13 @@ export async function prerenderPages({
           const notFound = isStaticPropsResponse && response.status === 404;
           const redirect =
             isStaticPropsResponse && [301, 302, 303, 307, 308].includes(response.status);
+          // A custom `/500` answers with status 500, like Next.js, but is still
+          // a rendered page. A marked render error means `/500` itself failed.
+          const renderedOk =
+            response.ok ||
+            (route.pattern === "/500" &&
+              response.status === 500 &&
+              response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) !== "1");
           let redirectProps: object | undefined;
           if (redirect) {
             const props: unknown = await response.json();
@@ -1227,7 +1279,7 @@ export async function prerenderPages({
             fs.writeFileSync(htmlFullPath, html, "utf-8");
             outputFiles.push(htmlOutputPath);
           } else {
-            if (!response.ok && !notFound) {
+            if (!renderedOk && !notFound) {
               throw new Error(`renderPage returned ${response.status} for ${urlPath}`);
             }
             const html = await response.text();
@@ -1236,19 +1288,25 @@ export async function prerenderPages({
             outputFiles.push(htmlOutputPath);
           }
 
+          // A getStaticProps render reports the revalidate it returned; no
+          // report means `false`. Other responses keep the source classification.
+          const renderedRevalidate = isStaticPropsResponse
+            ? (readPrerenderCacheLifeHeader(response.headers)?.revalidate ?? false)
+            : revalidate;
+
           result = {
             route: route.pattern,
             status: "rendered",
             outputFiles,
-            revalidate,
+            revalidate: renderedRevalidate,
             // Pages Router cache metadata comes only from getStaticProps.revalidate;
             // Next.js applies expireTime as the fallback when no route expire exists.
-            ...(typeof revalidate === "number" ? { expire: config.expireTime } : {}),
+            ...(typeof renderedRevalidate === "number" ? { expire: config.expireTime } : {}),
             router: "pages",
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
             ...(locale ? { locale } : {}),
-            ...(response.ok ? { responseStatus: response.status } : {}),
-            ...(response.ok && contentType ? { headers: { "content-type": contentType } } : {}),
+            ...(renderedOk ? { responseStatus: response.status } : {}),
+            ...(renderedOk && contentType ? { headers: { "content-type": contentType } } : {}),
             ...(notFound ? { notFound: true, responseStatus: 404 } : {}),
             ...(redirect
               ? {
@@ -1259,7 +1317,7 @@ export async function prerenderPages({
               : {}),
           };
         } catch (e) {
-          renderPool?.recordRenderError(e);
+          recordRenderError(e);
           const err = e as Error;
           result = {
             route: route.pattern,
@@ -1281,7 +1339,7 @@ export async function prerenderPages({
     // A worker that crashed mid-render makes its routes fail with connection
     // errors that are otherwise recorded as non-fatal — fail the build loudly
     // instead of shipping partial output.
-    renderPool?.assertHealthy();
+    assertRenderServersHealthy();
 
     // ── Render 404 page ───────────────────────────────────────────────────
     const hasCustom404 = findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher);
@@ -1330,10 +1388,10 @@ export async function prerenderPages({
         // No custom 404. When the render-worker pool is active, a transport
         // failure here is still captured by assertHealthy() below so a crashed
         // worker cannot silently skip an existing custom 404.
-        renderPool?.recordRenderError(e);
+        recordRenderError(e);
       }
     }
-    renderPool?.assertHealthy();
+    assertRenderServersHealthy();
 
     // ── Write vinext-prerender.json ───────────────────────────────────────────
     if (!skipManifest)
@@ -1347,9 +1405,7 @@ export async function prerenderPages({
     try {
       if (renderPool) await renderPool.close();
       setCacheHandler(previousHandler);
-      if (ownedProdServerHandle) {
-        await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
-      }
+      if (ownedProdServerHandle) await ownedProdServerHandle.close();
     } finally {
       restorePrerenderPhase();
     }
@@ -1405,11 +1461,19 @@ export async function prerenderApp({
   let staticParamsMap: StaticParamsMap = {};
   // ownedProdServer: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
-  let ownedProdServerHandle: { server: HttpServer; port: number } | null = null;
+  let ownedProdServerHandle = null as PrerenderProdServer | null;
   // Forked render-server pool (declared out here so the finally can close it).
   let renderPool: PrerenderServerPool | null = null;
+  const recordRenderError = (err: unknown): void => {
+    renderPool?.recordRenderError(err);
+    (ownedProdServerHandle ?? options._prodServer)?.recordRenderError?.(err);
+  };
+  const assertRenderServersHealthy = (): void => {
+    renderPool?.assertHealthy();
+    (ownedProdServerHandle ?? options._prodServer)?.assertHealthy?.();
+  };
   // Render servers the per-route fetches are load-balanced across. Starts as the
-  // single in-process server; repointed at the forked pool below for large apps.
+  // single prerender server; repointed at the forked pool below for large apps.
   let renderPorts: number[] = [];
   let renderRoundRobin = 0;
 
@@ -1430,21 +1494,18 @@ export async function prerenderApp({
     }
 
     // Use caller-provided prod server if available; otherwise start our own.
-    const prodServer: { server: HttpServer; port: number } = options._prodServer
-      ? options._prodServer
-      : await (async () => {
-          const srv = await startProdServer({
-            port: 0,
-            host: "127.0.0.1",
-            outDir: buildOutDir,
-            rscEntryPath: rscBundlePath,
-            serverDir,
-            noCompression: true,
-            purpose: "prerender",
-          });
-          ownedProdServerHandle = srv;
-          return srv;
-        })();
+    // Assigned in this function body (not a nested closure) so the finally
+    // sees ownedProdServerHandle as possibly set rather than narrowed to null.
+    let prodServer: SharedPrerenderProdServer;
+    if (options._prodServer) {
+      prodServer = options._prodServer;
+    } else {
+      ownedProdServerHandle = await startPrerenderProdServer(buildOutDir, {
+        rscEntryPath: rscBundlePath,
+        serverDir,
+      });
+      prodServer = ownedProdServerHandle;
+    }
 
     const baseUrl = `http://127.0.0.1:${prodServer.port}`;
     renderPorts = [prodServer.port];
@@ -1454,7 +1515,7 @@ export async function prerenderApp({
 
     rscHandler = (req: Request) => {
       // Forward the request to a prod server (round-robin across the render
-      // pool when one was forked; otherwise the single in-process server).
+      // pool when one was forked; otherwise the single prerender server).
       // `redirect: "manual"` ensures pages that call `redirect()` surface as
       // their original 3xx response — otherwise fetch follows the Location
       // header server-side, the prerender harness sees a 200 for the
@@ -1771,6 +1832,7 @@ export async function prerenderApp({
             }
           }
         } catch (e) {
+          recordRenderError(e);
           const err = e as Error;
           const detail = config.enablePrerenderSourceMaps
             ? getErrorMessageWithStack(err)
@@ -2158,7 +2220,7 @@ export async function prerenderApp({
           ...(isFallback ? { fallback: true } : {}),
         };
       } catch (e) {
-        renderPool?.recordRenderError(e);
+        recordRenderError(e);
         if (isSpeculative) {
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
@@ -2202,7 +2264,7 @@ export async function prerenderApp({
 
     // Fail loudly if a render worker crashed mid-build (otherwise its routes
     // fail with connection errors recorded as non-fatal → partial output).
-    renderPool?.assertHealthy();
+    assertRenderServersHealthy();
 
     const outputFiles =
       mode === "export" && metadataRoutes.length > 0
@@ -2240,9 +2302,9 @@ export async function prerenderApp({
       // failure here is still captured by assertHealthy() below so a crashed
       // worker cannot silently skip an existing custom 404 (mirrors the
       // Pages Router 404 path).
-      renderPool?.recordRenderError(e);
+      recordRenderError(e);
     }
-    renderPool?.assertHealthy();
+    assertRenderServersHealthy();
 
     // ── Write vinext-prerender.json ───────────────────────────────────────────
     if (!skipManifest)
@@ -2259,9 +2321,7 @@ export async function prerenderApp({
     try {
       if (renderPool) await renderPool.close();
       setCacheHandler(previousHandler);
-      if (ownedProdServerHandle) {
-        await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
-      }
+      if (ownedProdServerHandle) await ownedProdServerHandle.close();
     } finally {
       restorePrerenderPhase();
     }

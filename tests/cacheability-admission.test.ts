@@ -681,6 +681,32 @@ describe("single-request cacheability admission", () => {
     });
   });
 
+  it("answers a probe of a Route Handler that returns a WebSocket upgrade with its envelope", async () => {
+    const context = createWorkerCacheabilityContext(
+      { waitUntil() {} },
+      new Request("https://example.com/api/socket", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": "1",
+          "X-Vinext-Prerender-Secret": "probe-secret",
+        },
+      }),
+      "probe-secret",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-route", pattern: "/api/socket" };
+    // Node cannot construct a status 101 Response; workerd can.
+    const upgrade = new Response(null);
+    Object.defineProperty(upgrade, "status", { value: 101 });
+
+    const response = await finalizeWorkerCacheabilityResponse(upgrade, context);
+    expect(response).not.toBe(upgrade);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-route",
+      pattern: "/api/socket",
+      status: 101,
+    });
+  });
+
   it("drains a probe response larger than 4 MiB without retaining its body", async () => {
     const context = createWorkerCacheabilityContext(
       { waitUntil() {} },
@@ -1874,7 +1900,7 @@ describe("single-request cacheability admission", () => {
 
     const rscContext = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },
-      new Request("https://example.com/posts/static.rsc", {
+      new Request("https://example.com/posts/static?_rsc", {
         headers: { Accept: "text/x-component", RSC: "1" },
       }),
       raw,

@@ -1,5 +1,199 @@
 # vinext
 
+## 1.4.5
+
+### Bug Fixes
+
+#### App Router
+
+- prefetch loading shells for search-param hrefs without Cache Components (#4660)
+- enforce dynamicParams = false for route handlers (#4125)
+- render dynamicParams misses as a routing-level not-found (#4122)
+- let the latest navigation commit over a superseded one's render (#4633)
+
+#### Pages Router
+
+- render /500 as HTML for a _next/data request (#4629)
+- answer a direct /500 request with 500 (#4626)
+- answer a direct /404 request with 404 in dev (#4612)
+
+#### Misc
+
+- align Server Function proxy transforms with @vitejs/plugin-rsc (#4630)
+- **Styled Jsx:** load Next's prebundled styled-jsx in the dev client (#4621)
+- **Use Cache:** compile .mts cache modules like other source files (#4627)
+- keep the App Router navigation runtime out of Pages Router bundles (#4617)
+- **Cloudflare:** stop dev answering 500 for paths that parse as an invalid host (#4616)
+- **Pages:** drop the default viewport when next/head sets one (#4614)
+- **Dev:** scan pages/ for client and ssr deps when app/ also exists (#4613)
+- **Head:** ignore next/head in the App Router like Next.js (#4610)
+- **Server:** shut down the production server gracefully on SIGTERM and SIGINT (#4611)
+- **Deploy:** detect Wrangler only in the project's node_modules (#4607)
+- **Prerender:** fail the build on getStaticPaths paths with dot segments (#4608)
+- tag isolate-shared promises with the request that creates them (#4567)
+- **Init:** stop adding nodejs_compat now that compat dates enable it (#4580)
+- **Nitro:** wait for server dep optimization before Nitro dev imports entries (#4577)
+
+### Performance
+
+- **App Router:** run a dynamicParams = false route's generators only on a cache miss (#4634)
+
+### Contributors
+
+- @james-elicx
+
+## 1.4.4
+
+### Bug Fixes
+
+#### App Router
+
+- drop framing headers from route handler responses like Next.js (#4547)
+- hard-navigate when a payload renders another root layout (#4559)
+- keep the page mounted on same-pathname navigations after a loading-shell prefetch (#4535)
+
+#### Misc
+
+- **Dev:** remove internal request headers from rawHeaders before Pages routing (#4562)
+- **Pages Router:** keep middleware cookies on edge API responses in dev (#4550)
+- resolve a symlinked project root like Vite and Next.js (#4553)
+- **Pages Router:** drop x-middleware-set-cookie from edge API responses (#4545)
+- **Cache:** reject root params read inside unstable_cache (#4546)
+
+### Contributors
+
+- @james-elicx
+
+## 1.4.3
+
+### Bug Fixes
+
+#### App Router
+
+- skip the dev replay of HTML render errors after a root-level catch (#4473)
+- resolve next.config header collisions with Route Handler headers like Next.js (#4528)
+- apply next.config headers to redirects returned by application code (#4447)
+- render hybrid Pages without the basePath in req.url and asPath (#4524)
+- stop rendering uncached prefetch shells of static routes (#4501)
+- don't preinitialize the chunk that starts hydration (#4507)
+
+#### Middleware
+
+- run middleware for slash-ending matchers under trailingSlash (#4531)
+- test the matcher on the as-requested pathname like Next.js (#4446)
+- drop message framing headers from middleware responses like Next.js (#4442)
+
+#### Misc
+
+- **Pages:** serve only public files and build output from the client directory on vinext start (#4526)
+- **Dev:** run middleware for file-looking Pages paths that match no route (#4527)
+- **Image:** serve App Router Worker images without an optimizer (#4510)
+- **Image:** serve formats Next.js does not optimize as-is (#4509)
+- **Pages API:** end nullish res.send() without a body and send scalars as JSON (#4367)
+- **Server:** serve public .html files only at their own pathname on vinext start (#4436)
+- keep a route segment that repeats the basePath in client refreshes and Worker data requests (#4499)
+- **Nitro:** run middleware against the server's own origin on Nitro's Node server (#4433)
+- **Rewrites:** forward headers named in Connection to external rewrite targets like Next.js (#4444)
+- **Init:** accept --warm-cache with every Cloudflare cache (#4522)
+- **Metadata:** store dynamic-segment metadata routes only when Next.js does (#4452)
+- **Metadata:** serve rewritten metadata routes like their decoded destination (#4450)
+- **Nitro:** 404 absolute-form request targets on Nitro's Node server (#4458)
+- **Init:** show the old and new versions of dependencies init upgrades (#4513)
+
+### Contributors
+
+- @james-elicx
+
+## 1.4.2
+
+### Bug Fixes
+
+#### App Router
+
+- take a same-route interception's config from its own loader tree (#4500)
+- take an interception's segment config from its own loader tree (#4493)
+- render the dynamic sibling for an encoded request-time page (#4430)
+- match encoded paths like Next.js after rewrites, for metadata routes and the image endpoint (#4420)
+- send next.config headers with /\_next/image responses (#4454)
+- keep a route's slot params above a staged response stage (#4492)
+- send Next.js's Cache-Control on every Server Action response (#4428)
+- never cache early and intercepted page responses (#4427)
+- rebind an optimistic shell's layout-less level keys (#4490)
+- send an intercepted response's params to useParams() (#4489)
+- catch errors in a named slot's nested error boundaries (#4488)
+- don't render a learned shell over a retained BFCache entry (#4487)
+- keep a BFCache list for a named slot's page level (#4486)
+- keep BFCache segment lists under layouts with named slots (#4485)
+- render a restored history entry with its own URL (#4484)
+- key optimistic route shells by their target params (#4482)
+- render a sibling intercept's own route from deeper sources (#4481)
+- keep Next's BFCache segment lists for sibling intercepts (#4477)
+
+#### Misc
+
+- **Build:** apply the pinned cssTarget only when the app does not set one (#4415)
+- **Config:** keep RegExp lookbehinds out of client chunks (#4495)
+- **Nitro:** keep asset fetches on the file the caller named (#4438)
+- **Pages Router:** 404 \_next/data requests whose .json strip leaves a dot segment (#4439)
+- **Pages Router:** restore a stripped basePath when a route's first segment repeats it (#4434)
+- **Image:** round the quality prop to a configured images.qualities like Next.js (#4449)
+- **Cloudflare:** keep middleware and headers() Cache-Control on Worker-served public files (#4457)
+- **Image:** enforce images.localPatterns on the image endpoint like Next.js (#4455)
+- **Init:** warn when worker/index.\* does not import vinext's fetch handler (#4479)
+
+### Contributors
+
+- @haruki860
+- @james-elicx
+
+## 1.4.1
+
+### Bug Fixes
+
+#### App Router
+
+- reject route handler request reads inside unstable_cache() like Next.js (#4456)
+- report SSR-only shell errors in the dev overlay and answer error boundary documents with 500 (#4466)
+- accept \_rsc values only for the headers they were computed from (#4448)
+- answer shell errors with the error document, and add VINEXT_QUIET (#4411)
+- keep a reused template seed under its destination identity (#4392)
+- apply afterFiles rewrites to a dynamic interception source (#4432)
+- keep a BFCache Activity list at layout-less segment levels (#4401)
+- keep redirect() targets whose pathname starts with // on the app origin (#4424)
+- 404 .rsc requests whose suffix strip leaves a dot segment (#4417)
+- decide RSC cacheability after a disconnected client's render finishes (#4419)
+
+#### Cache
+
+- stop stripping .rsc from route handler cache identities (#4472)
+- key Response Store route handlers and metadata routes by path like Next.js (#4445)
+- support custom cacheLife profiles from next.config (#4398)
+- return unstable_cache and "use cache" misses without waiting for the write (#4465)
+- keep the unstable_cache result when the data cache write fails (#3742)
+- resolve cacheLife like Next.js across repeated calls and nested caches (#4399)
+
+#### Misc
+
+- **Link:** settle useLinkStatus for links hidden in a BFCache Activity (#4476)
+- **Rewrites:** send the inbound Host as X-Forwarded-Host on external rewrites (#4443)
+- **Server:** drop request-line URL fragments like Next.js (#4451)
+- **Middleware:** copy middleware response headers onto the downstream request (#4441)
+- **Rewrites:** keep has captures inside a rewrite destination path like Next.js (#4440)
+- **Pages:** keep class field keys from retaining data-export-only helpers in client builds (#4435)
+- **Headers:** keep a request's draft mode after its headers context is cleared (#4437)
+- **Prerender:** skip a generateStaticParams path whose dynamic render throws a special error (#4386)
+- **Prerender:** record the revalidate getStaticProps returned for Pages routes (#4388)
+- **Dev:** run the dev origin check before vinext's pre-middlewares (#4425)
+- **Pages:** send the default Cache-Control for getInitialProps renders (#4422)
+- **Prod Server:** serve public files with Next.js's revalidating Cache-Control (#4421)
+- **Server:** apply trailing-slash redirects to /api routes like Next.js (#4418)
+
+### Contributors
+
+- @ash1day
+- @Godsenal
+- @james-elicx
+
 ## 1.4.0
 
 Read the [Vinext 1.4 release post](https://vinext.dev/blog/vinext-1-4) for the highlights.

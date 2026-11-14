@@ -4,6 +4,7 @@ import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolveBuildOutputDir } from "../packages/cloudflare/src/build-output.js";
 import { init } from "../packages/vinext/src/init.js";
 
 const webRoot = path.resolve(import.meta.dirname, "../apps/web");
@@ -96,7 +97,7 @@ describe("default cf init build", () => {
     expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
     expect(fs.existsSync(path.join(root, ".cloudflare/types/index.d.ts"))).toBe(true);
     expect(fs.existsSync(path.join(root, "wrangler.jsonc"))).toBe(false);
-    const outputDir = path.join(root, ".cloudflare/output/v0");
+    const outputDir = resolveBuildOutputDir(root);
     expect(JSON.parse(fs.readFileSync(path.join(outputDir, "config.json"), "utf8"))).toMatchObject({
       accountId,
     });
@@ -249,7 +250,7 @@ describe("default cf init build", () => {
       expect(fs.existsSync(path.join(root, ".cloudflare/types/index.d.ts"))).toBe(!legacyWrangler);
       expect(fs.existsSync(path.join(root, "worker-configuration.d.ts"))).toBe(false);
       if (responseStoreMode === "service-binding") typecheckProject(root);
-      const workersDir = path.join(root, ".cloudflare", "output", "v0", "workers");
+      const workersDir = path.join(resolveBuildOutputDir(root), "workers");
       const workerConfigs: WorkerCacheConfig[] = legacyWrangler
         ? [JSON.parse(fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"))]
         : fs

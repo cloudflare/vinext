@@ -531,6 +531,20 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       },
     });
     expect(service.migrations).toBeUndefined();
+    expect(service.compatibility_flags).toBeUndefined();
+  });
+
+  it("enables Node.js compatibility on Response Store Workers with older compatibility dates", () => {
+    const flagsFor = (date: string) =>
+      JSON.parse(
+        generateResponseStoreWranglerConfig(
+          JSON.stringify({ name: "my-app", compatibility_date: date }),
+          "/tmp/vinext-missing-response-store-config",
+        ),
+      ).compatibility_flags;
+    expect(flagsFor("2026-08-04")).toBeUndefined();
+    expect(flagsFor("2026-08-03")).toEqual(["nodejs_compat"]);
+    expect(flagsFor("2025-11-16")).toEqual(["nodejs_compat", "enable_ctx_exports"]);
   });
 
   it("puts Response Store resources on the application only in self-contained mode", () => {

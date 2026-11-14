@@ -1,6 +1,5 @@
-import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
+import { execFileSync, spawnSync, type ExecFileSyncOptions } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import {
   buildNodeCliInvocation,
@@ -9,6 +8,8 @@ import {
   validateWranglerEnvName,
   type DeployOptions,
 } from "./deploy.js";
+import { resolveBuildOutputDefaultWorkerConfigPath } from "./build-output.js";
+import { buildVersionAnnotationArgs } from "./version-annotations.js";
 import { parseCdnWarmupDeploymentUrl } from "./worker-deployment-url.js";
 import { parseWorkersDevUrl } from "./workers-dev-url.js";
 
@@ -54,15 +55,7 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 export function readBuildOutputWorkerName(root: string): string {
-  const configPath = path.join(
-    root,
-    ".cloudflare",
-    "output",
-    "v0",
-    "workers",
-    "default",
-    "worker.config.json",
-  );
+  const configPath = resolveBuildOutputDefaultWorkerConfigPath(root);
   let config: unknown;
   try {
     config = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -149,7 +142,10 @@ export function parseWranglerVersionUploadOutput(output: string): WranglerVersio
 }
 
 export function buildWranglerVersionUploadArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+  options: Pick<
+    DeployOptions,
+    "preview" | "env" | "name" | "config" | "verbose" | "message" | "tag"
+  > & {
     previewAlias?: string;
   },
 ): WranglerVersionArgs {
@@ -167,16 +163,18 @@ export function buildWranglerVersionUploadArgs(
   if (options.previewAlias) {
     args.push("--preview-alias", options.previewAlias);
   }
+  args.push(...buildVersionAnnotationArgs(options));
   return { args, env };
 }
 
 export function buildCfVersionUploadArgs(
-  options: Pick<DeployOptions, "preview" | "env"> & { previewAlias?: string },
+  options: Pick<DeployOptions, "preview" | "env" | "message" | "tag"> & { previewAlias?: string },
 ): CfVersionArgs {
   const mode = options.env || (options.preview ? "preview" : undefined);
   const args = ["workers", "versions", "create", "--prebuilt"];
   if (mode) args.push("--mode", validateWranglerEnvName(mode));
   if (options.previewAlias) args.push("--preview-alias", options.previewAlias);
+  args.push(...buildVersionAnnotationArgs(options));
   return { args, mode };
 }
 
@@ -260,23 +258,44 @@ function runWranglerCommand(
   return output;
 }
 
+/**
+ * cf writes its log, including `Worker Version ID:` and deployed URLs, to stderr and only JSON
+ * results to stdout, so `output` holds both streams and `stdout` stays parseable as JSON.
+ */
 function runCfCommand(
   root: string,
   args: string[],
-  execute: typeof execFileSync = execFileSync,
+  execute: typeof spawnSync = spawnSync,
   verbose = false,
-): string {
+): { stdout: string; output: string } {
   const invocation = buildNodeCliInvocation(resolveCfBin(root), args);
-  const output = execute(invocation.file, invocation.args, {
+  const result = execute(invocation.file, invocation.args, {
     cwd: root,
     stdio: "pipe",
     encoding: "utf-8",
     shell: false,
-  }) as string;
+  });
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  if (result.error) {
+    throw Object.assign(result.error, {
+      status: result.status,
+      signal: result.signal,
+      stdout,
+      stderr,
+    });
+  }
+  if (result.status !== 0) {
+    throw Object.assign(
+      new Error(`Command failed: ${[invocation.file, ...invocation.args].join(" ")}\n${stderr}`),
+      { status: result.status, signal: result.signal, stdout, stderr },
+    );
+  }
+  const output = [stdout, stderr].filter(Boolean).join("\n");
   if (verbose && output.trim()) {
     for (const line of output.trim().split("\n")) console.log(`  ${line}`);
   }
-  return output;
+  return { stdout, output };
 }
 
 function errorText(error: unknown): string {
@@ -360,23 +379,22 @@ export function parseCfDeploymentStatusOutput(output: string): WranglerDeploymen
 export function runCfDeploymentStatus(
   root: string,
   options: { name: string; env?: string; verbose?: boolean },
-  execute: typeof execFileSync = execFileSync,
+  execute: typeof spawnSync = spawnSync,
 ): WranglerDeploymentStatus {
-  return parseCfDeploymentStatusOutput(
-    runCfCommand(
-      root,
-      [
-        "workers",
-        "deployments",
-        "list",
-        "--worker",
-        options.name,
-        ...(options.env ? ["--mode", validateWranglerEnvName(options.env)] : []),
-      ],
-      execute,
-      options.verbose,
-    ),
+  const { stdout } = runCfCommand(
+    root,
+    [
+      "workers",
+      "deployments",
+      "list",
+      "--worker",
+      options.name,
+      ...(options.env ? ["--mode", validateWranglerEnvName(options.env)] : []),
+    ],
+    execute,
+    options.verbose,
   );
+  return parseCfDeploymentStatusOutput(stdout);
 }
 
 export function runCfVersionDeploy(
@@ -384,13 +402,13 @@ export function runCfVersionDeploy(
   versionTraffic: readonly WranglerVersionTraffic[],
   options: { name: string; env?: string; verbose?: boolean },
   _phase: "stage" | "promote-warmed" | "promote-uploaded" = "promote-uploaded",
-  execute: typeof execFileSync = execFileSync,
+  execute: typeof spawnSync = spawnSync,
 ): WranglerVersionDeployResult {
   const versions = versionTraffic.map(({ versionId, percentage }) => ({
     version_id: versionId,
     percentage,
   }));
-  const output = runCfCommand(
+  const { output } = runCfCommand(
     root,
     [
       "workers",
@@ -413,9 +431,9 @@ export function runCfVersionDeploy(
 export function runCfTriggersDeploy(
   root: string,
   options: { env?: string; verbose?: boolean },
-  execute: typeof execFileSync = execFileSync,
+  execute: typeof spawnSync = spawnSync,
 ): WranglerVersionDeployResult {
-  const output = runCfCommand(
+  const { output } = runCfCommand(
     root,
     [
       "workers",
@@ -432,7 +450,10 @@ export function runCfTriggersDeploy(
 
 export function runWranglerVersionUpload(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+  options: Pick<
+    DeployOptions,
+    "preview" | "env" | "name" | "config" | "verbose" | "message" | "tag"
+  > & {
     previewAlias?: string;
   },
   execute: typeof execFileSync = execFileSync,
@@ -459,10 +480,13 @@ export function runWranglerVersionUpload(
 
 export function runCfVersionUpload(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+  options: Pick<
+    DeployOptions,
+    "preview" | "env" | "name" | "config" | "verbose" | "message" | "tag"
+  > & {
     previewAlias?: string;
   },
-  execute: typeof execFileSync = execFileSync,
+  execute: typeof spawnSync = spawnSync,
 ): WranglerVersionUploadResult {
   const workerName = readBuildOutputWorkerName(root);
   const { args, mode } = buildCfVersionUploadArgs(options);
@@ -473,7 +497,7 @@ export function runCfVersionUpload(
   );
   try {
     const result = parseWranglerVersionUploadOutput(
-      runCfCommand(root, args, execute, options.verbose === true),
+      runCfCommand(root, args, execute, options.verbose === true).output,
     );
     return { ...result, workerName };
   } catch (error) {

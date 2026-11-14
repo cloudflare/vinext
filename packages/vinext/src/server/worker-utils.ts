@@ -6,6 +6,7 @@
  */
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 /**
  * Merge middleware/config headers into a response.
@@ -67,6 +68,8 @@ export function mergeHeaders(
   extraHeaders: Record<string, string | string[]>,
   statusOverride?: number,
 ): Response {
+  // A Workers WebSocket upgrade cannot be rebuilt with merged headers.
+  if (isWebSocketUpgradeResponse(response)) return response;
   // As in Next.js, which sets a 304 after middleware's status, a 304 answers
   // the request's own validator.
   const status = response.status === 304 ? 304 : (statusOverride ?? response.status);
@@ -123,6 +126,30 @@ export function mergeHeaders(
   });
 }
 
+/**
+ * Merge middleware/config headers into a file served from the asset layer.
+ * Its Cache-Control is only the layer's default (Workers Static Assets sends
+ * `public, max-age=0, must-revalidate` with every file), so one set by
+ * middleware or `headers()` wins, as Next.js's static file server sets its
+ * own only when the response has none.
+ */
+export function mergeStaticFileHeaders(
+  response: Response,
+  extraHeaders: Record<string, string | string[]>,
+  statusOverride?: number,
+): Response {
+  const merged = mergeHeaders(response, extraHeaders, statusOverride);
+  for (const [name, value] of Object.entries(extraHeaders)) {
+    if (name.toLowerCase() !== "cache-control") continue;
+    const cacheControl = (Array.isArray(value) ? value.join(", ") : value).trim();
+    // Like Next.js, an empty value leaves the default in place.
+    if (!cacheControl) continue;
+    // mergeHeaders built a new, mutable Response, since extraHeaders is non-empty.
+    merged.headers.set(name, cacheControl);
+  }
+  return merged;
+}
+
 export async function resolveStaticAssetSignal(
   signalResponse: Response,
   options: {
@@ -158,7 +185,7 @@ export async function resolveStaticAssetSignal(
     assetResponse.ok && assetResponse.status !== 206 && signalResponse.status !== 200
       ? signalResponse.status
       : undefined;
-  return mergeHeaders(assetResponse, extraHeaders, statusOverride);
+  return mergeStaticFileHeaders(assetResponse, extraHeaders, statusOverride);
 }
 
 /**
