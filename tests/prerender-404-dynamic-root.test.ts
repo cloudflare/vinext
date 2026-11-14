@@ -357,7 +357,14 @@ describe("hybrid prerender server with the 404 marker on another path", () => {
     const rscBundlePath = await buildAppFixture(HYBRID_FIXTURE_DIR, {
       async rewrites() {
         return {
-          beforeFiles: [{ source: "/alias", destination: `/${NOT_FOUND_PATH_SLUG}` }],
+          beforeFiles: [
+            { source: "/alias", destination: `/${NOT_FOUND_PATH_SLUG}` },
+            // A query-only rewrite keeps the 404 request's path.
+            {
+              source: `/${NOT_FOUND_PATH_SLUG}`,
+              destination: `/${NOT_FOUND_PATH_SLUG}?via=rewrite`,
+            },
+          ],
           afterFiles: [],
           fallback: [],
         };
@@ -386,5 +393,15 @@ describe("hybrid prerender server with the 404 marker on another path", () => {
     });
     expect(res.status).toBe(200);
     expect(await res.text()).toContain(`slug page: <!-- -->${NOT_FOUND_PATH_SLUG}`);
+  }, 60_000);
+
+  it("keeps the 404 request a route miss after a rewrite that keeps its path", async () => {
+    const res = await fetch(`http://127.0.0.1:${server!.port}/${NOT_FOUND_PATH_SLUG}`, {
+      headers: { [VINEXT_PRERENDER_NOT_FOUND_HEADER]: "1" },
+    });
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain("This page could not be found.");
+    expect(html).not.toContain("slug page");
   }, 60_000);
 });

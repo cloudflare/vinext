@@ -165,9 +165,10 @@ export async function renderPagesFallback(
   let pagesRequestHeaders = middlewareContext.requestHeaders
     ? buildRequestHeaders(request.headers, middlewareContext.requestHeaders)
     : null;
-  // The App handler never hands the prerender step's 404 request to Pages, so
-  // a 404 marker here was forwarded by a subrequest or set by middleware. Drop
-  // it, or the Pages handler would treat a rewrite to the 404 path as a miss.
+  // The App handler never hands the prerender step's 404 request to Pages,
+  // not even after a rewrite that keeps its path, so a 404 marker here was
+  // forwarded by a subrequest or set by middleware. Drop it, or the Pages
+  // handler would treat a rewrite to the 404 path as a miss.
   if (hasPrerenderNotFoundMarker(pagesRequestHeaders ?? request.headers)) {
     pagesRequestHeaders = new Headers(pagesRequestHeaders ?? request.headers);
     pagesRequestHeaders.delete(VINEXT_PRERENDER_NOT_FOUND_HEADER);

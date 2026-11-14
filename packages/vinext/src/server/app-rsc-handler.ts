@@ -1170,11 +1170,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // The prerender step's request for the 404 page is a route miss, as in
   // Next.js, even where a top-level dynamic or catch-all route would match it.
   // The path binds the marker to that request: a same-origin subrequest that
-  // forwards the incoming headers still matches its own route.
+  // forwards the incoming headers still matches its own route. A rewrite that
+  // keeps the path (a same-path or query-only one) leaves it a miss, while one
+  // to another path matches that path's route.
   const isUnrewrittenPrerenderNotFound = () =>
-    cleanPathnameIsRequestPathname &&
     isPrerenderNotFoundRequest(request) &&
-    isPrerenderNotFoundPathname(pathname);
+    isPrerenderNotFoundPathname(pathname) &&
+    isPrerenderNotFoundPathname(cleanPathname);
   const matchCleanPathname = () =>
     isUnrewrittenPrerenderNotFound()
       ? null
