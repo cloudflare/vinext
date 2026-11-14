@@ -115,7 +115,11 @@ export async function createWorkerUseServerPlugins(options: {
       filter: { code: "use server" },
       async handler(code, id) {
         let ast = await parseProgramAsync(code);
-        if (!transforms.hasDirective(ast.body, "use server")) return null;
+        if (!transforms.hasDirective(ast.body, "use server")) {
+          const api = useCacheApi;
+          if (api) await withPositionedError(this, () => api.checkWorkerModule(ast, id));
+          return null;
+        }
         if (!manager) {
           throw new Error(
             'vinext: cannot compile a "use server" module in a Web Worker without @vitejs/plugin-rsc.',

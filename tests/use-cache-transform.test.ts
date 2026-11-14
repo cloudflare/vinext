@@ -11,6 +11,7 @@ import { createHash, createHmac } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vite-plus/test";
 import { parseAst, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import { createUseCacheCallablePlugin } from "../packages/vinext/src/plugins/use-cache-callable.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES } from "./helpers.js";
 
 // oxlint-disable-next-line typescript/no-explicit-any
@@ -29,6 +30,17 @@ async function getPlugins(options: { manualRsc?: boolean } = {}): Promise<Plugin
   }
   const resolved = await Promise.all(rawPlugins.map((plugin) => Promise.resolve(plugin)));
   return resolved.flat(Infinity).filter(Boolean) as Plugin[];
+}
+
+/** The directive plugins of an app with both an App Router and a Pages Router. */
+async function getHybridAppPlugins(): Promise<Plugin[]> {
+  const rsc = (await import("@vitejs/plugin-rsc")).default;
+  const directivePlugins = await createUseCacheCallablePlugin({
+    projectRoot: APP_FIXTURE_DIR,
+    cacheRuntime: "virtual:vinext-cache-runtime",
+    hasPagesRouter: () => true,
+  });
+  return [...rsc({ entries: RSC_ENTRIES }), ...directivePlugins];
 }
 
 const moduleId = path.join(APP_FIXTURE_DIR, "app", "unit-test-inline-cache.tsx");
@@ -524,6 +536,221 @@ describe("plugin-rsc inline use-cache references", () => {
     },
   );
 
+  // Next.js fails the build with this error for a Client Component or any
+  // module it imports, including modules without a directive of their own.
+  it.each(["ssr", "client"])(
+    "rejects inline use-server functions in the %s graph",
+    async (environmentName) => {
+      const plugins = await getPlugins();
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+      const source = [
+        `export async function action(value) {`,
+        `  "use server";`,
+        `  return value;`,
+        `}`,
+        `export const label = "label";`,
+      ].join("\n");
+
+      await expect(
+        transform.call({ environment: { name: environmentName, mode: "build" } }, source, moduleId),
+      ).rejects.toThrow(
+        'It is not allowed to define inline "use server" annotated Server Actions in Client Components.\nTo use Server Actions in a Client Component, you can either export them from a separate file with "use server" at the top, or pass them down through props from a Server Component.',
+      );
+    },
+  );
+
+  it("leaves use-server functions to plugin-rsc in the rsc graph and in use-server modules", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const transform = unwrapHook(plugin.transform)!;
+    const inlineSource = [`export async function action() {`, `  "use server";`, `}`].join("\n");
+
+    await expect(
+      transform.call({ environment: { name: "rsc", mode: "build" } }, inlineSource, moduleId),
+    ).resolves.toBeUndefined();
+    await expect(
+      transform.call(
+        { environment: { name: "client", mode: "build" } },
+        `"use server";\n${inlineSource}`,
+        moduleId,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  // Next.js ignores these directives in object literal getters and setters and
+  // in class constructors, though not in functions nested inside them.
+  it.each(["use server", "use cache"])(
+    "rejects inline %s functions only where Next.js compiles the directive",
+    async (directive) => {
+      const plugins = await getPlugins();
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+      const environment = { name: "client", mode: "build" };
+      const ignored = [
+        `export const value = {`,
+        `  get x() { "${directive}"; return 1; },`,
+        `  set x(value) { "${directive}"; },`,
+        `};`,
+        `export class Value { constructor() { "${directive}"; } }`,
+      ].join("\n");
+
+      await expect(transform.call({ environment }, ignored, moduleId)).resolves.toBeUndefined();
+      await expect(
+        transform.call(
+          { environment },
+          `export const value = { get x() { return async () => { "${directive}"; }; } };`,
+          moduleId,
+        ),
+      ).rejects.toThrow(/It is not allowed to define inline/);
+      await expect(
+        transform.call(
+          { environment },
+          `${ignored}\nexport class Later { async x() { "${directive}"; } }`,
+          moduleId,
+        ),
+      ).rejects.toThrow(/It is not allowed to define inline/);
+    },
+  );
+
+  // Next.js's server function transform skips these modules.
+  it.each([".mts", ".cts"])(
+    "leaves inline server functions in %s modules outside the rsc graph",
+    async (extension) => {
+      const plugins = await getPlugins();
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+      const id = path.join(APP_FIXTURE_DIR, "lib", `unit-test-inline${extension}`);
+      const environment = { name: "client", mode: "build" };
+
+      await expect(
+        transform.call(
+          { environment },
+          `export async function action() {\n  "use server";\n}`,
+          `${id}?v=1`,
+        ),
+      ).resolves.toBeUndefined();
+      await expect(transform.call({ environment }, inlineCacheCode, id)).resolves.toBeUndefined();
+    },
+  );
+
+  // In an app that also has a Pages Router, the browser and SSR graphs hold
+  // Pages Router modules too, which Next.js compiles outside its App Router
+  // layers and never rejects.
+  describe("with a Pages Router", () => {
+    const inlineServerCode = [`export async function action() {`, `  "use server";`, `}`].join(
+      "\n",
+    );
+    const clientReferenceId = path.join(APP_FIXTURE_DIR, "app", "unit-test-client.tsx");
+    const sharedId = path.join(APP_FIXTURE_DIR, "lib", "unit-test-shared.ts");
+    const pagesOnlyId = path.join(APP_FIXTURE_DIR, "lib", "unit-test-pages-only.ts");
+
+    async function setup() {
+      const plugins = await getHybridAppPlugins();
+      const manager = await configurePluginRsc(plugins);
+      manager.clientReferenceMetaMap[clientReferenceId] = {};
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      return { transform: unwrapHook(plugin.transform)!, buildEnd: unwrapHook(plugin.buildEnd)! };
+    }
+
+    it("rejects a build's inline server functions only in modules its App Router graph reaches", async () => {
+      const { transform, buildEnd } = await setup();
+      const environment = { name: "client", mode: "build" };
+      await transform.call({ environment }, inlineServerCode, sharedId);
+      await transform.call({ environment }, inlineCacheCode, pagesOnlyId);
+      const imports: Record<string, string[]> = {
+        [clientReferenceId]: [],
+        [sharedId]: [],
+        [pagesOnlyId]: [],
+      };
+      const context = {
+        environment,
+        getModuleInfo: (id: string) =>
+          imports[id] && { importedIds: imports[id], dynamicallyImportedIds: [] },
+        error: (error: { message: string; id: string }) => {
+          throw Object.assign(new Error(error.message), { id: error.id });
+        },
+      };
+
+      expect(() => buildEnd.call(context)).not.toThrow();
+      imports[clientReferenceId] = [sharedId];
+      expect(() => buildEnd.call(context)).toThrow(
+        expect.objectContaining({
+          id: sharedId,
+          message: expect.stringContaining(
+            'It is not allowed to define inline "use server" annotated Server Actions in Client Components.',
+          ),
+        }),
+      );
+      imports[clientReferenceId] = [pagesOnlyId];
+      expect(() => buildEnd.call(context)).toThrow(/inline "use cache".*Client Component/);
+      // Rebuilt without the inline function, the module is no longer rejected.
+      await transform.call({ environment }, `export const value = 1;\n"use cache";`, pagesOnlyId);
+      expect(() => buildEnd.call(context)).not.toThrow();
+    });
+
+    it("rejects inline server functions in dev once an App Router importer is known", async () => {
+      const { transform } = await setup();
+      const importers = new Map<string, string[]>([[sharedId, []]]);
+      const environment = {
+        name: "client",
+        mode: "dev",
+        moduleGraph: {
+          getModuleById: (id: string) => ({
+            importers: new Set((importers.get(id) ?? []).map((importer) => ({ id: importer }))),
+          }),
+        },
+      };
+
+      await expect(
+        transform.call({ environment }, inlineServerCode, sharedId),
+      ).resolves.toBeUndefined();
+      importers.set(sharedId, [pagesOnlyId]);
+      importers.set(pagesOnlyId, [clientReferenceId]);
+      await expect(transform.call({ environment }, inlineServerCode, sharedId)).rejects.toThrow(
+        /inline "use server" annotated Server Actions in Client Components/,
+      );
+      await expect(
+        transform.call({ environment }, inlineCacheCode, clientReferenceId),
+      ).rejects.toThrow(/inline "use cache".*Client Component/);
+    });
+  });
+
+  it("checks Web Worker modules only in an app without a Pages Router", async () => {
+    const appPlugins = await getPlugins();
+    await configurePluginRsc(appPlugins);
+    const hybridPlugins = await getHybridAppPlugins();
+    await configurePluginRsc(hybridPlugins);
+    const workerApi = (plugins: Plugin[]) =>
+      // oxlint-disable-next-line typescript/no-explicit-any
+      (plugins.find((plugin) => plugin.name === "vinext:server-function-directives") as any).api;
+    const code = `export async function action() {\n  "use server";\n}`;
+
+    expect(() => workerApi(appPlugins).checkWorkerModule(parseAst(code), "/app/worker.ts")).toThrow(
+      /inline "use server" annotated Server Actions in Client Components/,
+    );
+    expect(() =>
+      workerApi(hybridPlugins).checkWorkerModule(parseAst(code), "/app/worker.ts"),
+    ).not.toThrow();
+    await expect(
+      workerApi(hybridPlugins).transformWorkerModule(inlineCacheCode, "/app/worker.ts", () => ""),
+    ).resolves.toBeUndefined();
+  });
+
   it("supports destructured file-level exports", async () => {
     const plugins = await getPlugins();
     await configurePluginRsc(plugins);
@@ -562,7 +789,7 @@ describe("plugin-rsc inline use-cache references", () => {
     )!;
     const packageId = path.join(APP_FIXTURE_DIR, "node_modules", "my-pkg", "index.js");
     const { filter } = plugin.transform as {
-      filter: { id: { include: RegExp; exclude: RegExp }; code: string };
+      filter: { id: { include: RegExp; exclude: RegExp }; code: RegExp };
     };
     expect(filter.id.include.test(packageId)).toBe(true);
     for (const extension of [".mjs", ".mts", ".jsx", ".ts", ".tsx"]) {
@@ -574,13 +801,34 @@ describe("plugin-rsc inline use-cache references", () => {
     }
     expect(filter.id.include.test(moduleId)).toBe(false);
     expect(filter.id.exclude.test(packageId)).toBe(false);
-    expect(filter.code).toBe("use cache");
+    expect(filter.code.test(fileCacheCode)).toBe(true);
+    expect(filter.code.test(`export const value = 1;`)).toBe(false);
     const result = await unwrapHook(plugin.transform)!.call(
       { environment: { name: "rsc", mode: "build" } },
       fileCacheCode,
       packageId,
     );
     expect(result!.code).toContain("registerCachedFunction(getData");
+  });
+
+  it("rejects inline use-server functions shipped inside node_modules outside the rsc graph", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives:node-modules",
+    )!;
+    const packageId = path.join(APP_FIXTURE_DIR, "node_modules", "my-pkg", "index.js");
+    const source = [`export async function action() {`, `  "use server";`, `}`].join("\n");
+    const { filter } = plugin.transform as { filter: { code: RegExp } };
+    expect(filter.code.test(source)).toBe(true);
+    const transform = unwrapHook(plugin.transform)!;
+
+    await expect(
+      transform.call({ environment: { name: "client", mode: "build" } }, source, packageId),
+    ).rejects.toThrow(/inline "use server" annotated Server Actions in Client Components/);
+    await expect(
+      transform.call({ environment: { name: "rsc", mode: "build" } }, source, packageId),
+    ).resolves.toBeUndefined();
   });
 
   it("compiles app source modules of every ES module extension", async () => {
