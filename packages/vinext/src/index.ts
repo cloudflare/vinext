@@ -389,6 +389,7 @@ import {
   commonJsEsmFacadeOptimizeDepsPlugin,
   stripEsmCommonJsExportFacade,
 } from "./plugins/commonjs-esm-facade.js";
+import { blankDefineDeadRequires, literalDefines } from "./plugins/commonjs-dead-requires.js";
 import { COMMONJS_SYNTAX_CODE_FILTER } from "./plugins/commonjs-syntax.js";
 import {
   createRequireConditionResolutionPlugin,
@@ -420,7 +421,10 @@ import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
-import { omitUnusedBuildSourcemap } from "./plugins/transform-result.js";
+import {
+  magicStringTransformResult,
+  omitUnusedBuildSourcemap,
+} from "./plugins/transform-result.js";
 import { isServerEnvironment } from "./plugins/environment.js";
 import {
   claimViteCliBuildInvocation,
@@ -2521,6 +2525,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       );
       if (userCondition === false) return null;
       if (userCondition !== true && id.includes("node_modules")) return null;
+      // Keep require() calls that this environment's defines make unreachable
+      // out of the static imports vite-plugin-commonjs hoists.
+      const deadRequires = blankDefineDeadRequires(
+        code,
+        id,
+        literalDefines(this.environment.config.define),
+        this.environment.config.isBundled || this.environment.config.consumer === "client",
+      );
       const previousProjectLocal = transformProjectLocalCommonJs;
       const previous = transformBundledCommonJsDependencies;
       transformProjectLocalCommonJs = projectLocal && isDev;
@@ -2530,14 +2542,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Do not await here: the filter is consulted synchronously while this
         // environment-scoped flag is set. The remaining async transform work
         // does not read it, so concurrent module transforms cannot cross-talk.
-        result = commonJsTransform.call(this, code, id, ...args);
+        result = commonJsTransform.call(this, deadRequires?.toString() ?? code, id, ...args);
       } finally {
         transformProjectLocalCommonJs = previousProjectLocal;
         transformBundledCommonJsDependencies = previous;
       }
       return Promise.resolve(result).then((transformed) => {
         if (typeof transformed !== "object" || typeof transformed?.code !== "string") {
-          return transformed;
+          return deadRequires
+            ? omitUnusedBuildSourcemap(this.environment, magicStringTransformResult(deadRequires))
+            : transformed;
         }
         const stripped = stripEsmCommonJsExportFacade(transformed.code);
         return stripped === undefined ? transformed : { ...transformed, code: stripped };
