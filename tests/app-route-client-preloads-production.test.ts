@@ -249,6 +249,17 @@ describe("App Router production SSR route client reference preloads", () => {
     }
   });
 
+  it("links no stylesheet of the page or layouts a parent not-found boundary replaces", async () => {
+    const hrefs = [cssHref("--loading-css-missing-layout"), cssHref("--loading-css-missing-page")];
+    for (const label of ["cold", "warm"]) {
+      const response = await fetch(`${baseUrl}/loading-css/missing`);
+      expect(response.status, label).toBe(404);
+      const html = await response.text();
+      expect(html, label).toContain('data-testid="not-found-note"');
+      for (const href of hrefs) expect(html, label).not.toContain(`href="${href}"`);
+    }
+  });
+
   it("streams a client component that awaits at its top level, as Next.js does", async () => {
     const read = () => readStream(`${baseUrl}/streamed`);
 

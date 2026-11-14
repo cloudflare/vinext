@@ -417,6 +417,12 @@ export async function handleSsr(
      * 404). Omitted, every client reference loads first.
      */
     preloadRoutePattern?: string | null;
+    /**
+     * A boundary's document, which replaces the route's page and the layouts
+     * below the boundary, so it doesn't link the stylesheets of the route's
+     * rendered files (`RouteClientReferenceSet.linked`), as Next.js doesn't.
+     */
+    isBoundaryRender?: boolean;
     formState?: ReactFormState | null;
     basePath?: string;
     /**
@@ -511,9 +517,13 @@ export async function handleSsr(
     // shows the same document as a warm one, except for those whose modules
     // evaluate asynchronously, which it streams like Next.js. A PPR fallback
     // shell aborts on the next tick, so it loads every reference first.
-    const routeReferences = options?.pprFallbackShellSignal
+    const resolvedReferences = options?.pprFallbackShellSignal
       ? undefined
       : resolveRouteClientReferences(routeClientReferences, options?.preloadRoutePattern);
+    const routeReferences =
+      resolvedReferences && options?.isBoundaryRender
+        ? { ...resolvedReferences, linked: [] }
+        : resolvedReferences;
     const streamedReferences = createStreamedClientReferences(
       routeReferences,
       options?.scriptNonce,
