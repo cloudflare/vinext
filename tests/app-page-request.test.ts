@@ -872,6 +872,8 @@ describe("app page request helpers", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        // The source route renders only the intercepting tree.
+        rendersInterceptionSource: true,
       },
       new URLSearchParams("from=feed"),
     );
@@ -930,6 +932,7 @@ describe("app page request helpers", () => {
       interceptPage: { default: "modal-page" },
       interceptParams: { id: "123" },
       interceptSlotKey: "modal@app/feed/@modal",
+      rendersInterceptionSource: true,
     });
   });
 
@@ -1012,7 +1015,10 @@ describe("resolveAppPageInterceptionRerenderTarget intercept loading", () => {
     // sourceParams keeps only the params declared by the source route.
     // /feed has no dynamic params, so the slice is empty.
     expect(result.params).toEqual({});
-    expect(result.interceptOpts).toEqual(toInterceptOpts(intercept));
+    expect(result.interceptOpts).toEqual({
+      ...toInterceptOpts(intercept),
+      rendersInterceptionSource: true,
+    });
   });
 
   it("deduplicates concurrent intercept page and layout loads", async () => {
@@ -1216,12 +1222,78 @@ describe("resolveAppPageActionRerenderTarget", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
       },
       navigationParams: { id: "123" },
       params: { id: "123" },
       route: currentRoute,
     });
     expect(findIntercept).toHaveBeenCalledTimes(1);
+  });
+
+  // `/photos/1` to `/photos/2` beside `@modal/(.)[id]`: Next.js keeps the
+  // `/photos/1` page beneath the modal, while the client reads the target's
+  // params.
+  it("renders a current-route interception beneath the source's params", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/2",
+      currentParams: { id: "2" },
+      currentRoute,
+      findIntercept: () => ({
+        matchedParams: { id: "2" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceMatchedParams: { id: "1" },
+        sourceRouteIndex: 0,
+      }),
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => currentRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: {
+        interceptPage: { default: "modal-page" },
+        interceptParams: { id: "2" },
+        interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
+      },
+      navigationParams: { id: "2" },
+      params: { id: "1" },
+      route: currentRoute,
+    });
+  });
+
+  it("renders a current-route interception whole when its source names no route", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/2",
+      currentParams: { id: "2" },
+      currentRoute,
+      findIntercept: () => ({
+        matchedParams: { id: "2" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceMatchedParams: {},
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: false,
+      }),
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => currentRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: {
+        interceptPage: { default: "modal-page" },
+        interceptParams: { id: "2" },
+        interceptSlotKey: "modal@app/feed/@modal",
+      },
+      navigationParams: { id: "2" },
+      params: { id: "2" },
+      route: currentRoute,
+    });
   });
 
   it("preserves current-route intercept opts when action rerender stays on the direct route", async () => {
@@ -1246,6 +1318,7 @@ describe("resolveAppPageActionRerenderTarget", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
       },
       navigationParams: { id: "123" },
       params: { id: "123" },
@@ -1280,6 +1353,7 @@ describe("resolveAppPageActionRerenderTarget", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
       },
       navigationParams: { locale: "en", tab: "recent", id: "123" },
       params: { locale: "en", tab: "recent" },

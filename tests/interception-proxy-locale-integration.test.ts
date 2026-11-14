@@ -77,11 +77,14 @@ async function fetchSoftNavigation(baseUrl: string, source: string) {
     status: response.status,
     modal: body.includes(MODAL_MARKER),
     fullPage: body.includes(FULL_PAGE_MARKER),
-    // The source page rendered under the modal. It must be the page the
-    // client navigated from, so the client can keep it mounted.
+    // Source pages rendered beside the modal. Like Next.js, the server
+    // renders none: the client keeps the one it shows.
     source: Object.entries(SOURCE_MARKERS)
       .filter(([, marker]) => body.includes(marker))
       .map(([name]) => name),
+    retainedPages: (
+      JSON.parse(/"__retainedElementIds":(\[[^\]]*\])/.exec(body)?.[1] ?? "[]") as string[]
+    ).filter((id) => id.startsWith("page:")),
     body,
   };
 }
@@ -138,14 +141,20 @@ describe.each([
         status: 200,
         modal: true,
         fullPage: false,
-        source: [sourcePage],
+        source: [],
+        retainedPages: [`page:${sourceMatchedUrl}`],
       });
       // The client accepts an intercepted payload only when its proof names
       // the source it is showing: the matched (rewritten) source pathname.
       expect(body).toContain(`"sourceMatchedUrl":"${sourceMatchedUrl}"`);
       if (sourcePage === "tag") {
-        // The source renders with the params a direct request to it gets.
-        expect(body).toContain(`tag=${tag};`);
+        // The client keeps the source only while it shows it with the params a
+        // direct request to it gets, which the page's identity names.
+        const identities = JSON.parse(
+          /"__bfcacheSegmentIdentities":(\{[^}]*\})/.exec(body)?.[1] ?? "{}",
+        ) as Record<string, string>;
+        const identity = JSON.parse(identities[`page:${sourceMatchedUrl}`] ?? "[]") as string[];
+        expect(JSON.parse(identity.at(-1) ?? "[]")).toContain(`tag|${tag}|d`);
       }
     },
     30_000,
@@ -157,6 +166,12 @@ describe.each([
   it("does not intercept from an encoded alias of a static source", async () => {
     if (!server) throw new Error("Interception fixture server did not start");
     const { body: _body, ...result } = await fetchSoftNavigation(server.baseUrl, "/caf%C3%A9");
-    expect(result).toEqual({ status: 404, modal: false, fullPage: false, source: [] });
+    expect(result).toEqual({
+      status: 404,
+      modal: false,
+      fullPage: false,
+      source: [],
+      retainedPages: [],
+    });
   });
 });

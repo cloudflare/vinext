@@ -78,6 +78,8 @@ test.describe("intercept segment config", () => {
         `${area} intercept 2 cookie=${cookie}`,
       );
       await expect(page).toHaveURL(`${ROOT}/${area}/2`);
+      // As in Next.js, the page beneath the modal stays the one it intercepted.
+      await expect(page.locator("#intercept-config-full")).toHaveText(`${area} full 1`);
     });
   }
 });

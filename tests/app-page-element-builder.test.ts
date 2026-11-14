@@ -28,6 +28,7 @@ import {
 import { resolveAppPageRouteStateKey } from "../packages/vinext/src/server/app-page-segment-state.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
+import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 
 // Import the function under test AFTER mocking dependencies.
 // eslint-disable-next-line import/first
@@ -3740,6 +3741,433 @@ describe("buildPageElements", () => {
       );
       expect(slotErrors).toContainEqual(expect.objectContaining({ digest }));
     }
+  });
+
+  describe("the source route beneath a slot intercept", () => {
+    // Next.js renders the intercepting route's tree for an intercepted
+    // navigation: the layouts down to the slot's owner and the intercepting
+    // branch. Its client keeps the source page and the other slots it shows
+    // (reuseActiveSegmentInDefaultSlot in
+    // client/components/router-reducer/ppr-navigations.ts), and its title stays
+    // the source page's.
+    function createSourceFixture(options: {
+      interceptPage?: Partial<AppPageModule>;
+      interceptSlotId?: string;
+      modalSlot?: { layoutIndex: number; ownerTreePosition: number };
+      sidebarSlot?: { layoutIndex: number; ownerTreePosition: number };
+      route?: Partial<AppPageBuildRoute>;
+      sourcePageFirst: boolean;
+    }) {
+      const calls: string[] = [];
+      const component =
+        (name: string) =>
+        ({ children }: { children?: React.ReactNode }) => {
+          calls.push(name);
+          return React.createElement("div", null, name, children);
+        };
+      const metadata = (name: string, title: string) =>
+        vi.fn(() => {
+          calls.push(`${name} metadata`);
+          return { title };
+        });
+      const route = createSyntheticRoute({
+        layouts: [
+          { default: component("root layout") } as AppPageModule,
+          {
+            default: component("members layout"),
+            generateMetadata: metadata("members layout", "Members"),
+          } as AppPageModule,
+          {
+            default: component("member layout"),
+            generateMetadata: metadata("member layout", "Member layout"),
+          } as AppPageModule,
+        ],
+        layoutTreePositions: [0, 1, 2],
+        page: options.sourcePageFirst
+          ? ({
+              default: component("member page"),
+              generateMetadata: metadata("member page", "Member 7"),
+            } as AppPageModule)
+          : null,
+        pattern: "/members/:id",
+        params: ["id"],
+        routeSegments: ["members", "[id]"],
+        templates: [
+          { default: component("members template") } as AppPageModule,
+          { default: component("member template") } as AppPageModule,
+        ],
+        templateTreePositions: [1, 2],
+        ...options.route,
+        slots: {
+          modal: {
+            name: "modal",
+            default: createSyntheticPageModule(() => null),
+            layoutIndex: 1,
+            routeSegments: [],
+            ...options.modalSlot,
+          },
+          sidebar: {
+            name: "sidebar",
+            page: {
+              default: component("sidebar page"),
+              generateMetadata: metadata("sidebar page", "Sidebar"),
+            } as AppPageModule,
+            layoutIndex: 1,
+            routeSegments: ["[id]"],
+            ...options.sidebarSlot,
+          },
+        },
+      });
+      const interceptPage = {
+        default: component("photo modal"),
+        generateMetadata: metadata("photo modal", "Photo 1"),
+        ...options.interceptPage,
+      } as AppPageModule;
+      return {
+        calls,
+        options: createBaseOptions({
+          route,
+          params: { id: "7" },
+          routePath: "/photos/1",
+          opts: {
+            interceptionContext: "/members/7",
+            interceptPage,
+            interceptParams: { id: "1" },
+            interceptSlotId: options.interceptSlotId ?? "slot:modal:/members",
+            interceptSlotKey: "modal",
+            interceptSourceMatchedUrl: "/members/7",
+            interceptSourcePageSegments: ["members", "@modal", "(...)photos", "[id]"],
+            rendersInterceptionSource: true,
+          },
+        }),
+      };
+    }
+
+    it("leaves the source page and what lies beside it for the client to keep", async () => {
+      const { calls, options } = createSourceFixture({ sourcePageFirst: true });
+      const elements = await buildPageElements(options);
+      const metadata = AppElementsWire.readMetadata(elements);
+      const retained = [
+        "page:/members/7",
+        "layout:/members/[id]",
+        // The slot owner's template wraps only its children, not the slot.
+        "template:/members",
+        "template:/members/[id]",
+        "slot:sidebar:/members",
+        "__vinext_route_head:route:/members/7",
+        "__vinext_streaming_metadata_body:route:/members/7",
+      ];
+
+      expect([...metadata.retainedElementIds].sort()).toEqual([...retained].sort());
+      for (const id of retained) expect(Object.hasOwn(elements, id)).toBe(false);
+      expect(metadata.interception).toMatchObject({ slotId: "slot:modal:/members" });
+      expect(Object.keys(elements)).toEqual(
+        expect.arrayContaining(["layout:/", "layout:/members", "slot:modal:/members"]),
+      );
+
+      // Flight renders every entry at once, so the layouts release the slot.
+      const record = elements as Record<string, React.ReactNode>;
+      await renderNode(
+        React.createElement(
+          React.Fragment,
+          null,
+          record["layout:/"],
+          record["layout:/members"],
+          record["slot:modal:/members"],
+        ),
+      );
+      // The outlet beside the route still settles every head the server runs.
+      await expect(
+        resolveEntryHead(elements, "__vinext_streaming_metadata_outlet:").outlet,
+      ).resolves.toBeNull();
+      expect(calls).toContain("photo modal");
+      expect(calls).toContain("photo modal metadata");
+      expect(calls).toContain("members layout metadata");
+      for (const name of [
+        "member page",
+        "member page metadata",
+        "member layout",
+        "member layout metadata",
+        "members template",
+        "member template",
+        "sidebar page",
+        "sidebar page metadata",
+      ]) {
+        expect(calls).not.toContain(name);
+      }
+    });
+
+    // The boundaries of the segments the client keeps aren't the intercepting
+    // tree's, so their fallbacks don't render: a signal passes up to the
+    // owner's.
+    it("renders no fallback of the segments beneath the slot owner", async () => {
+      const fallback = (name: string) => ({ default: () => name }) as AppPageModule;
+      const membersNotFound = fallback("members not-found");
+      const memberNotFound = fallback("member not-found");
+      const memberForbidden = fallback("member forbidden");
+      const memberLoading = fallback("member loading");
+      const pageLoading = fallback("page loading");
+      const pageUnauthorized = fallback("page unauthorized");
+      const { options } = createSourceFixture({
+        route: {
+          loading: pageLoading,
+          loadings: [memberLoading],
+          loadingTreePositions: [2],
+          segmentForbiddens: [memberForbidden],
+          segmentForbiddenTreePositions: [2],
+          segmentNotFounds: [membersNotFound, memberNotFound],
+          segmentNotFoundTreePositions: [1, 2],
+          unauthorized: pageUnauthorized,
+        },
+        sourcePageFirst: true,
+      });
+      const elements = await buildPageElements(options);
+      const fallbackTypes = new Set<unknown>();
+      const visit = (node: unknown) => {
+        if (Array.isArray(node)) {
+          for (const child of node) visit(child);
+          return;
+        }
+        if (!React.isValidElement(node)) return;
+        const props = node.props as Record<string, unknown>;
+        if (React.isValidElement(props.fallback)) fallbackTypes.add(props.fallback.type);
+        for (const value of Object.values(props)) visit(value);
+      };
+      visit((elements as Record<string, unknown>)["route:/members/7"]);
+
+      expect(fallbackTypes).toContain(membersNotFound.default);
+      for (const module of [
+        memberNotFound,
+        memberForbidden,
+        memberLoading,
+        pageLoading,
+        pageUnauthorized,
+      ]) {
+        expect(fallbackTypes).not.toContain(module.default);
+      }
+    });
+
+    it("recovers the intercepting head through the not-found files down to the slot owner", async () => {
+      const notFoundModule = (title: string) =>
+        ({ default: () => null, metadata: { title } }) as AppPageModule;
+      const { options } = createSourceFixture({
+        interceptPage: { generateMetadata: () => notFound() },
+        route: {
+          notFound: notFoundModule("Member page not found"),
+          notFoundTreePosition: 2,
+          notFounds: [
+            null,
+            notFoundModule("Members not found"),
+            notFoundModule("Member not found"),
+          ] as AppPageModule[],
+        },
+        sourcePageFirst: false,
+      });
+      const elements = await buildPageElements(options);
+
+      await expect(
+        resolveEntryHead(elements, "__vinext_streaming_metadata_body:").metadata,
+      ).resolves.toMatchObject({ title: "Members not found" });
+    });
+
+    it("recovers the intercepting head through a not-found above the owner without a layout", async () => {
+      const notFoundModule = (title: string) =>
+        ({ default: () => null, metadata: { title } }) as AppPageModule;
+      const pageNotFound = notFoundModule("Member page not found");
+      const { options } = createSourceFixture({
+        interceptPage: { generateMetadata: () => notFound() },
+        interceptSlotId: "slot:modal:/(shell)/members",
+        route: {
+          // app/(shell)/not-found.tsx sits above the members layout that owns
+          // the slot, on a segment without a layout of its own.
+          layoutTreePositions: [0, 2, 3],
+          notFound: pageNotFound,
+          notFoundTreePosition: 3,
+          routeSegments: ["(shell)", "members", "[id]"],
+          segmentNotFounds: [notFoundModule("Shell not found"), pageNotFound],
+          segmentNotFoundTreePositions: [1, 3],
+          templateTreePositions: [2, 3],
+        },
+        sourcePageFirst: false,
+      });
+      const elements = await buildPageElements(options);
+
+      await expect(
+        resolveEntryHead(elements, "__vinext_streaming_metadata_body:").metadata,
+      ).resolves.toMatchObject({ title: "Shell not found" });
+    });
+
+    // app/(shell)/@modal sits in a folder without a layout, beneath the root
+    // layout that renders it. That folder's segment is the intercepting tree's.
+    it("renders the segment of a slot owner without a layout", async () => {
+      const notFoundModule = (title: string) =>
+        ({ default: () => title, metadata: { title } }) as AppPageModule;
+      const shellNotFound = notFoundModule("Shell not found");
+      const pageNotFound = notFoundModule("Member page not found");
+      const shellFile: MetadataFileRoute = {
+        contentType: "image/png",
+        filePath: "/app/(shell)/opengraph-image.png",
+        isDynamic: false,
+        routePrefix: "/",
+        routeSegments: ["(shell)"],
+        servedUrl: "/opengraph-image.png",
+        type: "opengraph-image",
+      };
+      const applyFileBasedMetadata = vi.fn(
+        async (
+          metadata: unknown,
+          _routePath: string,
+          _params: unknown,
+          _metadataRoutes: readonly MetadataFileRoute[],
+        ) => metadata,
+      );
+      const { options } = createSourceFixture({
+        interceptPage: { generateMetadata: () => notFound() },
+        interceptSlotId: "slot:modal:/",
+        modalSlot: { layoutIndex: 0, ownerTreePosition: 1 },
+        // Beside the root layout, the sidebar leaves the modal heading the route.
+        sidebarSlot: { layoutIndex: 0, ownerTreePosition: 0 },
+        route: {
+          layoutTreePositions: [0, 2, 3],
+          notFound: pageNotFound,
+          notFoundTreePosition: 3,
+          routeSegments: ["(shell)", "members", "[id]"],
+          segmentNotFounds: [shellNotFound, pageNotFound],
+          segmentNotFoundTreePositions: [1, 3],
+          templateTreePositions: [2, 3],
+        },
+        sourcePageFirst: false,
+      });
+      const elements = await buildPageElements({
+        ...options,
+        applyFileBasedMetadata,
+        metadataRoutes: [shellFile],
+      } as Parameters<typeof buildPageElements>[0]);
+      const fallbackTypes = new Set<unknown>();
+      const visit = (node: unknown) => {
+        if (Array.isArray(node)) {
+          for (const child of node) visit(child);
+          return;
+        }
+        if (!React.isValidElement(node)) return;
+        const props = node.props as Record<string, unknown>;
+        if (React.isValidElement(props.fallback)) fallbackTypes.add(props.fallback.type);
+        for (const value of Object.values(props)) visit(value);
+      };
+      visit((elements as Record<string, unknown>)["route:/members/7"]);
+
+      expect(fallbackTypes).toContain(shellNotFound.default);
+      expect(fallbackTypes).not.toContain(pageNotFound.default);
+      await expect(
+        resolveEntryHead(elements, "__vinext_streaming_metadata_body:").metadata,
+      ).resolves.toMatchObject({ title: "Shell not found" });
+      expect(applyFileBasedMetadata).toHaveBeenCalled();
+      for (const call of applyFileBasedMetadata.mock.calls) {
+        expect(call[3]).toEqual([shellFile]);
+      }
+    });
+
+    it("reads only the metadata files of the segments down to the slot owner and of its slot", async () => {
+      const metadataFile = (routeSegments: string[]): MetadataFileRoute => ({
+        contentType: "image/png",
+        filePath: `/app/${routeSegments.join("/")}/opengraph-image.png`,
+        isDynamic: false,
+        routePrefix: `/${routeSegments.join("/")}`,
+        routeSegments,
+        servedUrl: `/${routeSegments.join("/")}/opengraph-image.png`,
+        type: "opengraph-image",
+      });
+      const membersFile = metadataFile(["members"]);
+      const modalFile = metadataFile(["members", "@modal"]);
+      const memberFile = metadataFile(["members", "[id]"]);
+      const sidebarFile = metadataFile(["members", "@sidebar"]);
+      const applyFileBasedMetadata = vi.fn(
+        async (
+          metadata: unknown,
+          _routePath: string,
+          _params: unknown,
+          _metadataRoutes: readonly MetadataFileRoute[],
+        ) => metadata,
+      );
+      const { options } = createSourceFixture({ sourcePageFirst: false });
+      const elements = await buildPageElements({
+        ...options,
+        applyFileBasedMetadata,
+        metadataRoutes: [membersFile, modalFile, memberFile, sidebarFile],
+      } as Parameters<typeof buildPageElements>[0]);
+      await resolveEntryHead(elements, "__vinext_streaming_metadata_body:").metadata;
+
+      expect(applyFileBasedMetadata).toHaveBeenCalled();
+      for (const call of applyFileBasedMetadata.mock.calls) {
+        expect(call[3]).toEqual([membersFile, modalFile]);
+      }
+    });
+
+    // Only the kept head's own render knew where it placed its streamed tags,
+    // as a prerender of the source page puts them in the head.
+    it("leaves the head's streamed body to the client whatever this render places", async () => {
+      const { options } = createSourceFixture({ sourcePageFirst: true });
+      const elements = await buildPageElements({
+        ...options,
+        pageRequest: { ...options.pageRequest, placeStreamedMetadataInHead: true },
+      });
+      const bodyId = "__vinext_streaming_metadata_body:route:/members/7";
+
+      expect(AppElementsWire.readMetadata(elements).retainedElementIds).toContain(bodyId);
+      expect(Object.hasOwn(elements, bodyId)).toBe(false);
+    });
+
+    // The client reads an empty page carrier it holds as a loading shell's, so
+    // a source without a page gets it again rather than keeping it.
+    it("sends the empty page carrier of a source without a page", async () => {
+      const { options } = createSourceFixture({ sourcePageFirst: false });
+      const elements = await buildPageElements(options);
+
+      expect(AppElementsWire.readMetadata(elements).retainedElementIds).not.toContain(
+        "page:/members/7",
+      );
+      expect(Object.hasOwn(elements, "page:/members/7")).toBe(true);
+    });
+
+    it("heads the route by the intercepting tree alone when no source page comes first", async () => {
+      const { calls, options } = createSourceFixture({ sourcePageFirst: false });
+      const elements = await buildPageElements(options);
+      const metadata = AppElementsWire.readMetadata(elements);
+
+      expect(metadata.retainedElementIds).not.toContain("__vinext_route_head:route:/members/7");
+      expect(Object.hasOwn(elements, "__vinext_route_head:route:/members/7")).toBe(true);
+      await expect(
+        resolveEntryHead(elements, "__vinext_streaming_metadata_body:").metadata,
+      ).resolves.toMatchObject({ title: "Photo 1" });
+      expect(calls).not.toContain("member layout metadata");
+      expect(calls).not.toContain("sidebar page metadata");
+    });
+
+    it("renders the source route whole without the mark", async () => {
+      const { calls, options } = createSourceFixture({ sourcePageFirst: true });
+      const { rendersInterceptionSource: _mark, ...opts } = options.pageRequest.opts as Record<
+        string,
+        unknown
+      >;
+      const elements = await buildPageElements({
+        ...options,
+        pageRequest: { ...options.pageRequest, opts },
+      });
+
+      expect(AppElementsWire.readMetadata(elements).retainedElementIds).toEqual([]);
+      for (const id of [
+        "page:/members/7",
+        "layout:/members/[id]",
+        "template:/members",
+        "template:/members/[id]",
+        "slot:sidebar:/members",
+        "__vinext_route_head:route:/members/7",
+      ]) {
+        expect(Object.hasOwn(elements, id)).toBe(true);
+      }
+      await resolveEntryHead(elements, "__vinext_streaming_metadata_body:").metadata;
+      expect(calls).toContain("member page metadata");
+    });
   });
 
   it("makeThenableParams wraps params as a proxy supporting both Promise and property access", () => {

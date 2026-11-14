@@ -124,6 +124,8 @@ type AppPageInterceptMatch<TPage = unknown> = {
   slotKey: string;
   sourceRouteIndex: number;
   sourcePageSegments?: readonly string[] | null;
+  /** False when the source URL resolved to no route of its own. */
+  sourceRouteIsConcrete?: boolean;
   targetPatternParts?: readonly string[];
   targetRouteGraphId?: string | null;
 };
@@ -213,6 +215,9 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
 
 type ResolveAppPageInterceptResult<TInterceptOpts> = {
   interceptOpts: TInterceptOpts | undefined;
+  /** The params a current-route interception renders with, when it differs. */
+  navigationParams?: AppPageParams;
+  params?: AppPageParams;
   response: Response | null;
 };
 
@@ -832,6 +837,17 @@ export async function resolveAppPageInterceptState<TRoute, TPage>(
   return { kind: "source-route", intercept, sourceRoute };
 }
 
+/**
+ * Marks the opts of a render of the source route beneath its intercepted
+ * target, which renders only the intercepting route's tree (see
+ * app-page-element-builder.ts).
+ */
+function markInterceptionSourceRender<TInterceptOpts>(opts: TInterceptOpts): TInterceptOpts {
+  return typeof opts === "object" && opts !== null
+    ? { ...opts, rendersInterceptionSource: true }
+    : opts;
+}
+
 export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TInterceptOpts>(
   options: ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts>,
 ): Promise<ResolveAppPageInterceptionRerenderTargetResult<TRoute, TInterceptOpts>> {
@@ -848,7 +864,9 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     const sourceMatchedParams =
       interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams;
     return {
-      interceptOpts: options.toInterceptOpts(interceptState.intercept),
+      interceptOpts: markInterceptionSourceRender(
+        options.toInterceptOpts(interceptState.intercept),
+      ),
       navigationParams: {
         ...sourceMatchedParams,
         ...interceptState.intercept.matchedParams,
@@ -861,6 +879,22 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     };
   }
 
+  if (
+    interceptState.kind === "current-route" &&
+    rendersCurrentRouteAsSource(interceptState.intercept)
+  ) {
+    return {
+      ...resolveAppPageCurrentRouteSourceParams(
+        interceptState.intercept,
+        options.getRouteParamNames(options.currentRoute),
+      ),
+      interceptOpts: markInterceptionSourceRender(
+        options.toInterceptOpts(interceptState.intercept),
+      ),
+      route: options.currentRoute,
+    };
+  }
+
   return {
     interceptOpts:
       interceptState.kind === "current-route"
@@ -869,6 +903,32 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     navigationParams: options.currentParams,
     params: options.currentParams,
     route: options.currentRoute,
+  };
+}
+
+/**
+ * A source URL that resolved to no route of its own (`/shots` beside
+ * `shots/@modal/(.)[id]` with no `shots/page`) names no page beneath the
+ * modal, so the matched route renders whole with the target's params.
+ */
+function rendersCurrentRouteAsSource<TPage>(intercept: AppPageInterceptMatch<TPage>): boolean {
+  return intercept.sourceRouteIsConcrete !== false;
+}
+
+/**
+ * An interception whose source is the matched route itself (`/shots/1` to
+ * `/shots/2` beside `@modal/(.)[id]`) still renders beneath the source's
+ * params, as Next.js keeps the source page under the modal. The client reads
+ * the target's from the navigation params.
+ */
+function resolveAppPageCurrentRouteSourceParams<TPage>(
+  intercept: AppPageInterceptMatch<TPage>,
+  routeParamNames: readonly string[],
+): { navigationParams: AppPageParams; params: AppPageParams } {
+  const sourceMatchedParams = intercept.sourceMatchedParams ?? intercept.matchedParams;
+  return {
+    navigationParams: { ...sourceMatchedParams, ...intercept.matchedParams },
+    params: pickRouteParams(sourceMatchedParams, routeParamNames),
   };
 }
 
@@ -892,7 +952,9 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
 
   if (interceptState.kind === "source-route") {
     const renderRoute = interceptState.sourceRoute;
-    const interceptOpts = options.toInterceptOpts(interceptState.intercept);
+    const interceptOpts = markInterceptionSourceRender(
+      options.toInterceptOpts(interceptState.intercept),
+    );
     const sourceMatchedParams =
       interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams;
     const navigationParams = {
@@ -935,8 +997,23 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
     };
   }
 
-  // Reproduce the current-route-is-source branch where we still need the opts
-  // bag even though we did not render a separate intercepted response.
+  // The current route is the source: it renders as itself, with the opts bag
+  // and the source's params, rather than as a separate intercepted response.
+  if (
+    interceptState.kind === "current-route" &&
+    rendersCurrentRouteAsSource(interceptState.intercept)
+  ) {
+    return {
+      ...resolveAppPageCurrentRouteSourceParams(
+        interceptState.intercept,
+        options.getRouteParamNames(options.currentRoute),
+      ),
+      interceptOpts: markInterceptionSourceRender(
+        options.toInterceptOpts(interceptState.intercept),
+      ),
+      response: null,
+    };
+  }
   return {
     interceptOpts:
       interceptState.kind === "current-route"

@@ -1744,7 +1744,7 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
     expect(buildPageElement).toHaveBeenCalledWith(
       expect.objectContaining({
-        interceptOpts: { slot: "modal" },
+        interceptOpts: { rendersInterceptionSource: true, slot: "modal" },
         params: sourceParams,
         route: sourceRoute,
       }),
