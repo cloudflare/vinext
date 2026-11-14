@@ -314,10 +314,14 @@ export class MemoryCacheHandler implements CacheHandler {
       // A write while the artifact was read supersedes it.
       entry = this.store.get(key);
       if (!entry && prerendered && reader?.has(key)) {
-        entry = this.createEntry(prerendered.value, {
-          cacheControl: prerendered.cacheControl,
-          timestamp: prerendered.lastModified,
-        });
+        // Dated with the file's mtime, even one ahead of this clock; an epoch
+        // mtime counts from now. Next.js's IncrementalCache.get uses
+        // `lastModified || now` (server/lib/incremental-cache/index.ts).
+        entry = this.createEntry(
+          prerendered.value,
+          { cacheControl: prerendered.cacheControl },
+          prerendered.lastModified || Date.now(),
+        );
         // Like Next.js's FileSystemCache, serve what was read even when the
         // memory limit keeps none of it; the next miss reads it again.
         this.storeEntry(key, entry);
@@ -386,6 +390,7 @@ export class MemoryCacheHandler implements CacheHandler {
   private createEntry(
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
+    lastModified?: number,
   ): MemoryEntry | undefined {
     const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
@@ -408,7 +413,7 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return undefined;
 
-    const now = readCacheTimestamp(ctx, Date.now());
+    const now = lastModified ?? readCacheTimestamp(ctx, Date.now());
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
