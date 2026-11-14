@@ -280,6 +280,10 @@ import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-on
 import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
 import { createCloudflareDevModuleUrlsPlugin } from "./plugins/cloudflare-dev-module-urls.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
+import {
+  APP_CLIENT_ENTRY_EXPORT_CANDIDATE_RE,
+  validateAppClientEntryExports,
+} from "./plugins/app-client-entry-exports.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
@@ -1892,6 +1896,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesDir: string;
   let canonicalPagesDir: string;
   let appDir: string;
+  let canonicalAppDir: string;
   let hasAppDir = false;
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
@@ -2057,6 +2062,50 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const canonicalPath = canonicalize(modulePath);
     pageTransformCanonicalPaths.set(modulePath, canonicalPath);
     return canonicalPath;
+  };
+  // The target paths of the app/ files Next.js reads static info for: the
+  // pages and route handlers it discovers outside private folders, and the
+  // layouts above a page. Rebuilt whenever the route scan is, which skips
+  // symlinked directories, so the walk does too.
+  let appEntryTargets: {
+    routes: Awaited<ReturnType<typeof appRouter>>;
+    targets: Set<string>;
+  } | null = null;
+  const getAppEntryTargets = async (): Promise<Set<string>> => {
+    const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
+    if (appEntryTargets?.routes === routes) return appEntryTargets.targets;
+    const targets = new Set<string>();
+    // Returns whether `dir` holds a page.
+    const walk = (dir: string): boolean => {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return false;
+      }
+      let hasPage = false;
+      const layouts: string[] = [];
+      for (const entry of entries) {
+        const file = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (!entry.name.startsWith("_") && walk(file)) hasPage = true;
+        } else if (fileMatcher.isAppRouterRoute(file)) {
+          targets.add(canonicalizePageTransformPath(file));
+        } else if (fileMatcher.isAppRouterPage(file)) {
+          hasPage = true;
+          targets.add(canonicalizePageTransformPath(file));
+        } else if (fileMatcher.isAppLayoutFile(file)) {
+          layouts.push(file);
+        }
+      }
+      if (hasPage) {
+        for (const layout of layouts) targets.add(canonicalizePageTransformPath(layout));
+      }
+      return hasPage;
+    };
+    walk(appDir);
+    appEntryTargets = { routes, targets };
+    return targets;
   };
   const isWithinPagesDirectory = (modulePath: string): boolean =>
     modulePath === pagesDir ||
@@ -2979,6 +3028,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         pagesDir = path.join(baseDir, "pages");
         canonicalPagesDir = canonicalize(pagesDir);
         appDir = path.join(baseDir, "app");
+        canonicalAppDir = canonicalize(appDir);
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
 
@@ -7906,6 +7956,45 @@ export const loadServerActionClient = ${
           if (!fileMatcher.isPageFile(canonicalId)) return null;
           if (isApiPage(canonicalId)) return null;
           validatePageExports(code);
+          return null;
+        },
+      },
+    },
+    // Next.js rejects metadata, generateStaticParams and unstable_instant
+    // exports from App Router page, layout and route files marked "use client".
+    // Runs before @vitejs/plugin-rsc replaces such a module with client
+    // references in the rsc environment, which loads every one of them.
+    {
+      name: "vinext:validate-app-client-entry-exports",
+      enforce: "pre",
+      transform: {
+        filter: {
+          id: { exclude: VIRTUAL_MODULE_ID_RE },
+          code: /use client/,
+        },
+        async handler(code, id) {
+          if (this.environment?.name !== "rsc" || !hasAppDir) return null;
+          if (!APP_CLIENT_ENTRY_EXPORT_CANDIDATE_RE.test(code)) return null;
+          const canonicalId = canonicalizePageTransformPath(stripViteModuleQuery(id));
+          const inAppDir = isPathInside(canonicalAppDir, canonicalId);
+          if (!inAppDir && canonicalId.includes("/node_modules/")) return null;
+          // Vite loads a file symlinked into app/ by its target path. Next.js
+          // reads static info by the path in app/, for its route entries, but
+          // checks metadata in any page, layout or route module it compiles,
+          // by the target's file name. A page or route module in app/ compiles
+          // when imported, and a layout only above a page.
+          const staticInfo = (await getAppEntryTargets()).has(canonicalId);
+          const metadata = staticInfo
+            ? fileMatcher.isAppRouterPage(canonicalId) || fileMatcher.isAppLayoutFile(canonicalId)
+            : inAppDir && fileMatcher.isAppRouterPage(canonicalId);
+          if (!metadata && !staticInfo) return null;
+          // Earlier transforms (JSX in `.js` files) may have reformatted the
+          // code.
+          let source = code;
+          try {
+            source = fs.readFileSync(canonicalId, "utf8");
+          } catch {}
+          validateAppClientEntryExports(code, canonicalId, source, { metadata, staticInfo });
           return null;
         },
       },
