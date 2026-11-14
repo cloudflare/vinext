@@ -9,7 +9,8 @@
  * codemod when upgrading from Next.js 12.
  */
 import React from "react";
-import Image from "./image.js";
+import ModernImage from "./image.js";
+import type { LegacyLayoutProp } from "./image-props.js";
 import type {
   ImageLoader,
   ImageLoaderProps,
@@ -17,6 +18,11 @@ import type {
 } from "@vinext/types/next/upstream/dist/client/legacy/image";
 
 export type { ImageLoader, ImageLoaderProps, ImageProps };
+
+// The shared shim, plus the internal prop that selects legacy srcSet rules.
+const Image = ModernImage as React.ComponentType<
+  React.ComponentProps<typeof ModernImage> & LegacyLayoutProp
+>;
 
 function LegacyImage(props: ImageProps): React.ReactElement {
   const {
@@ -66,7 +72,15 @@ function LegacyImage(props: ImageProps): React.ReactElement {
   const h = typeof height === "string" ? parseInt(height, 10) : height;
 
   return (
-    <Image alt={alt ?? ""} width={w} height={h} style={modernStyle} onLoad={handleLoad} {...rest} />
+    <Image
+      alt={alt ?? ""}
+      width={w}
+      height={h}
+      style={modernStyle}
+      onLoad={handleLoad}
+      {...rest}
+      __vinextLegacyLayout={layout}
+    />
   );
 }
 
