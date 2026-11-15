@@ -89,7 +89,7 @@ const serverReferences: Scenario = {
 // --- Client references (app-streamed-client-references.ts) ------------------
 
 globalThis.__vite_rsc_client_require__ = loadSource;
-wrapClientReferenceRequire(new Set(), () => undefined);
+wrapClientReferenceRequire(() => undefined);
 const clientRequire = globalThis.__vite_rsc_client_require__!;
 
 const clientReferences: Scenario = {
