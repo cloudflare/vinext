@@ -1462,6 +1462,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // A stale entry this fetch refreshes, kept for the miss path below if the
     // refresh fails.
     let staleEntry: CacheHandlerValue | undefined;
+    // Passed to this fetch's read and its write, so a handler can tell a write
+    // filling what that read missed.
+    const cacheRead = {};
 
     // Try cache first. Like Next.js's patch-fetch, an on-demand revalidation
     // skips the read but still fetches and stores the fresh response.
@@ -1474,6 +1477,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
               tags,
               softTags,
               revalidate: revalidateSeconds,
+              cacheRead,
             });
       if (
         cached?.value?.kind === "FETCH" &&
@@ -1581,6 +1585,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           fetchCache: true,
           tags,
           revalidate: revalidateSeconds,
+          cacheRead,
           ...(staleEntry ? { staleEntry } : {}),
         })
         .catch((err) => {

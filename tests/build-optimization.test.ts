@@ -61,6 +61,7 @@ const _stripServerExports = (code: string): string | null =>
 // shims-chunk tests would need a real path.
 const clientManualChunks = createClientManualChunks("/vinext/shims/");
 const appClientManualChunks = createClientManualChunks("/vinext/shims/", true);
+const appOnlyClientManualChunks = createClientManualChunks("/vinext/shims/", true, false);
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
 // Next.js behavior). Save/restore globally so tests that call config() don't
@@ -200,10 +201,33 @@ describe("clientManualChunks", () => {
     expect(clientManualChunks("/vinext/shims/head.ts")).toBe("vinext");
   });
 
-  it("gives the App Router runtime its own chunk in Pages Router builds", () => {
+  it("gives the App Router navigation runtime its own chunk when there are Pages Router pages", () => {
     for (const shim of [
+      "app-router-navigation.ts",
       "app-router-scroll-state.ts",
       "internal/app-prefetch-rsc-request.ts",
+    ]) {
+      expect(clientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext-app-router");
+      expect(appClientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext-app-router");
+      // Every App-only page loads the runtime, so it stays in "vinext".
+      expect(appOnlyClientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext");
+    }
+    // next/link, next/router and the config matchers import these too, so
+    // they stay out of the runtime chunk.
+    for (const id of [
+      "client/navigation-runtime.js",
+      "server/headers.js",
+      "utils/external-url.js",
+      "utils/html-limited-bots.js",
+    ]) {
+      expect(clientManualChunks(`/vinext/${id}`)).toBe("vinext");
+      expect(appClientManualChunks(`/vinext/${id}`)).toBe("vinext");
+    }
+    expect(appClientManualChunks("/vinext/server/navigation-planner.js")).toBeUndefined();
+  });
+
+  it("gives the next/navigation hooks their own chunk in Pages Router builds", () => {
+    for (const shim of [
       "internal/navigation-untracked.ts",
       "internal/pages-router-accessor.ts",
       "navigation.ts",
@@ -213,7 +237,7 @@ describe("clientManualChunks", () => {
       "readonly-url-search-params.ts",
       "unrecognized-action-error.ts",
     ]) {
-      expect(clientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext-app-router");
+      expect(clientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext-navigation");
       expect(appClientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext");
     }
     // next/error imports next/navigation, so it loads only with the pages that use it.
@@ -257,6 +281,31 @@ describe("clientManualChunks", () => {
   it("handles scoped package names correctly", () => {
     // Scoped packages should not be grouped into framework
     expect(clientManualChunks("/node_modules/@tanstack/react-query/index.js")).toBeUndefined();
+  });
+});
+
+describe("App Router client build chunks", () => {
+  it.each([
+    // Every App-only page loads the runtime, so it stays in "vinext".
+    ["app-layout-error", "vinext"],
+    ["app-basic", "vinext-app-router"],
+  ])("puts the navigation runtime of %s in %s", async (fixture, chunkName) => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const mainPlugin = vinext().find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    const result = await (mainPlugin as any).config(
+      { root: path.resolve(import.meta.dirname, "fixtures", fixture), build: {}, plugins: [] },
+      { command: "build" },
+    );
+    const { groups } = result.environments.client.build.rolldownOptions.output.codeSplitting as {
+      groups: { name(id: string): string | null }[];
+    };
+    const runtimeId = path.resolve(
+      import.meta.dirname,
+      "../packages/vinext/src/shims/app-router-navigation.ts",
+    );
+    expect(groups.map((group) => group.name(runtimeId)).filter(Boolean)).toEqual([chunkName]);
   });
 });
 

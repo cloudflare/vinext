@@ -1662,7 +1662,7 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       expect(config).not.toMatch(/,\n\s*\n    },/);
       if (mode === "service-binding") {
         expect(config).toContain(
-          '  worker: {\n    name: "test-project-response-store",\n    compatibilityDate: "2026-09-23",\n    compatibilityFlags: ["nodejs_compat"],\n  },',
+          '  worker: {\n    name: "test-project-response-store",\n    compatibilityDate: "2026-09-23",\n  },',
         );
         expect(config).toContain(
           "export const responseStoreServiceBinding = responseStore.serviceBindingWorker;\n\nexport default",
@@ -2094,7 +2094,7 @@ describe("init — generated project snapshots", () => {
   it("snapshots a fresh Cloudflare App Router init", async () => {
     setupProject(tmpDir, { router: "app" });
 
-    await runInit(tmpDir, { platform: "cloudflare", _today: "2026-06-23" });
+    await runInit(tmpDir, { platform: "cloudflare", _today: "2026-09-23" });
 
     expect(snapshotProject(tmpDir)).toMatchSnapshot();
   });
@@ -2123,7 +2123,7 @@ export default defineConfig({
 `,
     );
 
-    await runInit(tmpDir, { platform: "cloudflare", _today: "2026-06-23" });
+    await runInit(tmpDir, { platform: "cloudflare", _today: "2026-09-23" });
 
     expect(snapshotProject(tmpDir)).toMatchSnapshot();
   });

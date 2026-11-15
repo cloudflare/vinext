@@ -783,6 +783,15 @@ function validateCachePolicy(
     };
   }
 
+  // Middleware or proxy answered in the uncached request stage, so no
+  // Workers Cache subrequest ran to report a CF-Cache-Status.
+  if (
+    !cacheStatus &&
+    response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase() === "BYPASS"
+  ) {
+    return { outcome: "skipped", reason: `${VINEXT_CACHE_HEADER} is BYPASS` };
+  }
+
   // Cloudflare-CDN-Cache-Control is consumed at the edge and is deliberately
   // not forwarded to clients. A cacheable Cloudflare-specific policy can
   // therefore coexist with a downstream `no-store` policy or a Set-Cookie
@@ -909,6 +918,28 @@ function validateRscWarmResponse(
 ): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
+  // Middleware or proxy answered in the uncached request stage, so no RSC
+  // render produced the response to carry an RSC build identity or payload.
+  // The matching build identity above proves the uploaded build answered it.
+  // A Flight payload here comes from an external rewrite's upstream, whose
+  // RSC build identity the request stage drops. A render's payload carries its
+  // own, so one from another build still fails below. The Response Store labels an uncacheable render BYPASS too, so a server
+  // error fails on its status, whichever stage sent it. The matching build
+  // identity shows it is no deployment mismatch.
+  const unexpectedStatus =
+    (response.status < 200 || response.status >= 300) && !isExpectedTerminalStatus(response.status);
+  if (expectedBuildId !== undefined && unexpectedStatus) {
+    return { outcome: "failed", error: `HTTP ${response.status}` };
+  }
+  if (
+    expectedBuildId !== undefined &&
+    !response.redirected &&
+    response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase() === "BYPASS" &&
+    !response.headers.has(VINEXT_RSC_BUILD_ID_HEADER)
+  ) {
+    const admission = validateWarmAdmission(response, statusSource, requireCacheHit);
+    if (admission.outcome !== "warmed") return admission;
+  }
   if (
     expectedRscBuildId !== undefined &&
     response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) !== expectedRscBuildId

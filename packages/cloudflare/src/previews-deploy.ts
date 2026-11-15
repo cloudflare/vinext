@@ -24,18 +24,23 @@ export function parsePreviewsDeployArgs(args: string[]) {
     options: {
       help: { type: "boolean", short: "h", default: false },
       mode: { type: "string" },
+      "preview-name": { type: "string" },
       "skip-build": { type: "boolean", default: false },
       "vite-config": { type: "string" },
     },
   });
 
-  if (positionals.length > 1) {
-    throw new Error("Expected at most one Preview name: previews deploy [preview-name].");
+  // Like `cf previews deploy`, the Preview name is a flag, not a positional argument.
+  if (positionals.length > 0) {
+    throw new Error(
+      `Unexpected argument: ${positionals[0]}. Pass the Preview name with --preview-name <name>.`,
+    );
   }
 
+  const previewName = values["preview-name"];
   return {
     help: values.help,
-    name: positionals[0] === undefined ? undefined : validatePreviewName(positionals[0]),
+    name: previewName === undefined ? undefined : validatePreviewName(previewName),
     mode: values.mode === undefined ? undefined : validateMode(values.mode),
     skipBuild: values["skip-build"],
     viteConfig: values["vite-config"]?.trim() || undefined,

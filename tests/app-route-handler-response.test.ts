@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "vite-plus/test";
+import { describe, expect, it, afterEach, vi } from "vite-plus/test";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import {
   applyRouteHandlerMiddlewareContext,
@@ -8,7 +8,9 @@ import {
   buildRouteHandlerCachedResponse,
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
+  stripAppRouteHandlerRouteMissMarker,
 } from "../packages/vinext/src/server/app-route-handler-response.js";
+import { VINEXT_ROUTE_MISS_HEADER } from "../packages/vinext/src/server/headers.js";
 import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import {
   CloudflareCdnCacheAdapter,
@@ -181,6 +183,30 @@ describe("app route handler response helpers", () => {
     await expect(staleHead.text()).resolves.toBe("");
   });
 
+  // Next.js's sendResponse drops these from every route handler Response, so a
+  // stored entry whose body fetch() decoded replays without them too.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-response.ts
+  it("replays a cached route response without its stored framing headers", async () => {
+    const cachedValue = buildCachedRouteValue("decoded body", {
+      "content-type": "text/plain",
+      "content-encoding": "gzip",
+      "content-length": "4",
+      "transfer-encoding": "chunked",
+    });
+
+    const response = buildRouteHandlerCachedResponse(cachedValue, {
+      cacheState: "HIT",
+      isHead: false,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.headers.get("content-type")).toBe("text/plain");
+    expect(response.headers.has("content-encoding")).toBe(false);
+    expect(response.headers.has("content-length")).toBe(false);
+    expect(response.headers.has("transfer-encoding")).toBe(false);
+    await expect(response.text()).resolves.toBe("decoded body");
+  });
+
   it.each([204, 205, 304])("replays cached status %s without a body", async (status) => {
     const cachedValue = { ...buildCachedRouteValue(""), status };
     const response = buildRouteHandlerCachedResponse(cachedValue, {
@@ -330,6 +356,57 @@ describe("app route handler response helpers", () => {
     await expect(result.text()).resolves.toBe("");
   });
 
+  it("drops a returned response's framing headers", async () => {
+    // Node's fetch() decodes a gzip body but keeps the upstream framing headers.
+    const response = new Response("decoded body", {
+      status: 201,
+      statusText: "Created",
+      headers: {
+        "content-type": "text/plain",
+        "content-encoding": "gzip",
+        "content-length": "4",
+      },
+    });
+
+    const result = finalizeRouteHandlerResponse(response, {
+      pendingCookies: [],
+      draftCookie: null,
+      isHead: false,
+    });
+
+    expect(result.status).toBe(201);
+    expect(result.statusText).toBe("Created");
+    expect(result.headers.get("content-type")).toBe("text/plain");
+    expect(result.headers.has("content-encoding")).toBe(false);
+    expect(result.headers.has("content-length")).toBe(false);
+    await expect(result.text()).resolves.toBe("decoded body");
+  });
+
+  it("keeps a returned response's framing headers on Workers", async () => {
+    // workerd passes a fetched body through still encoded while its
+    // Content-Encoding is kept, and frames the body itself.
+    vi.stubGlobal("WebSocketPair", class WebSocketPair {});
+    try {
+      const response = new Response("encoded body", {
+        headers: { "content-encoding": "gzip", "content-length": "4" },
+      });
+      const finalized = finalizeRouteHandlerResponse(response, {
+        pendingCookies: [],
+        draftCookie: null,
+        isHead: false,
+      });
+      expect(finalized).toBe(response);
+
+      const replayed = buildRouteHandlerCachedResponse(
+        buildCachedRouteValue("decoded body", { "content-encoding": "gzip" }),
+        { cacheState: "HIT", isHead: false, revalidateSeconds: 60 },
+      );
+      expect(replayed.headers.get("content-encoding")).toBe("gzip");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("uses mutable cookies as fallbacks and keeps returned response cookies final", async () => {
     // Matches Next.js appendMutableCookies:
     // packages/next/src/server/web/spec-extension/adapters/request-cookies.ts
@@ -457,6 +534,44 @@ describe("app route handler response helpers", () => {
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
+  });
+});
+
+describe("stripAppRouteHandlerRouteMissMarker", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("rebuilds an immutable response from the response itself", async () => {
+    const original = new Response("proxied", {
+      headers: { [VINEXT_ROUTE_MISS_HEADER]: "1", link: "</a.css>; rel=preload" },
+      status: 203,
+      statusText: "Proxied",
+    });
+    original.headers.delete = () => {
+      throw new TypeError("immutable");
+    };
+    // Workerd copies cf, webSocket and encodeBody only from a Response init.
+    const inits: unknown[] = [];
+    const NativeResponse = Response;
+    vi.stubGlobal(
+      "Response",
+      class extends NativeResponse {
+        constructor(body?: BodyInit | null, init?: ResponseInit) {
+          inits.push(init);
+          super(body, init);
+        }
+      },
+    );
+
+    const stripped = stripAppRouteHandlerRouteMissMarker(original);
+
+    expect(inits).toEqual([original]);
+    expect(stripped.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+    expect(stripped.headers.get("link")).toBe("</a.css>; rel=preload");
+    expect(stripped.status).toBe(203);
+    expect(stripped.statusText).toBe("Proxied");
+    await expect(stripped.text()).resolves.toBe("proxied");
   });
 });
 

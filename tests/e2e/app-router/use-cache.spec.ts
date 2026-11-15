@@ -212,6 +212,25 @@ test.describe('"use cache" direct client imports', () => {
     }).toPass({ timeout: 15_000 });
   });
 
+  test("cached exports of an .mts module become callable server references", async ({ page }) => {
+    // The call is a server action request, not the module body run in the
+    // browser (dev bypasses the shared cache, so results are not compared).
+    const serverActionRequests: string[] = [];
+    page.on("request", (request) => {
+      const actionId = request.headers()["x-rsc-action"];
+      if (request.method() === "POST" && actionId) serverActionRequests.push(actionId);
+    });
+    await page.goto(`${BASE}/use-cache-client-import`);
+    await expect(async () => {
+      await page.locator("#call-client-imported-mts-cache").click();
+      await expect(page.getByTestId("client-imported-cache-result")).toHaveText(
+        /^client-mts-cache:direct:mts-cache-server-marker:[0-9.e+-]+$/,
+        { timeout: 2000 },
+      );
+    }).toPass({ timeout: 15_000 });
+    expect(serverActionRequests).not.toHaveLength(0);
+  });
+
   test("default-exported server actions remain callable from cached modules", async ({ page }) => {
     await page.goto(`${BASE}/use-cache-client-import`);
     await expect(async () => {

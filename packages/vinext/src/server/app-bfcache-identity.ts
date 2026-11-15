@@ -1,10 +1,20 @@
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import { INITIAL_BFCACHE_ID, isBfcacheSegmentId } from "./app-bfcache-id.js";
+import { INITIAL_BFCACHE_ID } from "./app-bfcache-id.js";
 import type { BfcacheIdMap } from "./app-history-state.js";
 import {
   isNestedBfcacheSlotSegmentIdFor,
   type BfcacheSegmentIdentity,
 } from "./bfcache-identity.js";
+
+export function isBfcacheSegmentId(id: string): boolean {
+  const parsed = AppElementsWire.parseElementKey(id);
+  return (
+    parsed?.kind === "layout" ||
+    parsed?.kind === "page" ||
+    parsed?.kind === "slot" ||
+    parsed?.kind === "template"
+  );
+}
 
 export type BfcacheSegmentIdentityMap = Readonly<Record<string, BfcacheSegmentIdentity>>;
 

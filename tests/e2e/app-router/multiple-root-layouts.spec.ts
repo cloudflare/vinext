@@ -61,3 +61,53 @@ for (const entry of ["/pin", "/"] as const) {
     ).toEqual(["header", "main", "footer"]);
   });
 }
+
+// Without app/layout, Next.js' /_not-found page renders app/not-found with no
+// layout, for an unmatched URL and for a dynamicParams = false miss alike.
+for (const pathname of ["/no/such/route", "/closed/unlisted"] as const) {
+  test(`${pathname} renders app/not-found without a route group's root layout`, async ({
+    request,
+  }) => {
+    const response = await request.get(`${baseUrl}${pathname}`);
+    expect(response.status()).toBe(404);
+    const html = await response.text();
+    expect(html).toContain('id="app-not-found"');
+    // The default layout supplies the document.
+    expect(html.match(/<html/g)).toHaveLength(1);
+    expect(html.match(/<body/g)).toHaveLength(1);
+    expect(html).not.toContain('id="site-root"');
+    expect(html).not.toContain('id="pin-root"');
+  });
+}
+
+// Next.js' default layout is /_not-found's root layout, so navigating from
+// it to a route group's root layout loads a new document.
+for (const pathname of ["/no/such/route", "/closed/unlisted"] as const) {
+  test(`a link from ${pathname}'s app/not-found to a route group loads a new document`, async ({
+    page,
+  }) => {
+    await page.goto(`${baseUrl}${pathname}`);
+    await expect(page.locator("#app-not-found")).toBeVisible();
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      Reflect.set(window, "__notFoundDocument", true);
+    });
+
+    await page.click("#to-site");
+
+    await expect(page.locator("body#site-root")).toContainText("closed page listed", {
+      timeout: 10_000,
+    });
+    expect(new URL(page.url()).pathname).toBe("/closed/listed");
+    expect(await page.evaluate(() => Reflect.get(window, "__notFoundDocument"))).toBeUndefined();
+    await expect(page.locator("#app-not-found")).toHaveCount(0);
+  });
+}
+
+test("a listed param renders inside its root layout", async ({ request }) => {
+  const response = await request.get(`${baseUrl}/closed/listed`);
+  expect(response.status()).toBe(200);
+  const html = await response.text();
+  expect(html).toContain("closed page listed");
+  expect(html).toContain('id="site-root"');
+});

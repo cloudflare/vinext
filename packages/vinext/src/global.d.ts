@@ -19,7 +19,7 @@
 import type { Root } from "react-dom/client";
 import type { OnRequestErrorHandler } from "./server/instrumentation";
 import type { InitialDevServerErrorPayload } from "./server/dev-initial-server-error";
-import type { CachedRscResponse, PrefetchCacheEntry } from "vinext/shims/navigation";
+import type { CachedRscResponse, PrefetchCacheEntry } from "vinext/shims/app-router-navigation";
 import type { ClientRedirect } from "./client/client-redirects";
 import type { ClientRewrites } from "./client/client-rewrites";
 
@@ -180,7 +180,7 @@ declare global {
      * A Promise that resolves when the current in-flight popstate RSC navigation
      * finishes rendering.
      * Set by the popstate handler in the browser RSC entry; read by
-     * `shims/navigation.ts` to defer scroll restoration until after new content
+     * `shims/app-router-navigation.ts` to defer scroll restoration until after new content
      * has painted.
      * `null` when no navigation is in flight.
      */
@@ -188,7 +188,7 @@ declare global {
 
     /**
      * In-memory cache of prefetched RSC responses, keyed by RSC request URL.
-     * Lazily initialised on `window` by `shims/navigation.ts` so the same Map
+     * Lazily initialised on `window` by `shims/app-router-navigation.ts` so the same Map
      * instance is shared between the navigation shim and the Link component.
      */
     __VINEXT_RSC_PREFETCH_CACHE__: Map<string, PrefetchCacheEntry> | undefined;

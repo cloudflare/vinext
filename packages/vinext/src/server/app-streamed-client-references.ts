@@ -32,6 +32,7 @@ import { setOnClientReference } from "@vitejs/plugin-rsc/ssr";
 import { getOrCreateAls } from "vinext/shims/internal/als-registry";
 import type { RouteClientReferenceSet } from "./app-client-reference-preloader.js";
 import { escapeHtmlAttr } from "./html.js";
+import { tagPromiseWithRequest } from "./isolate-shared-promise.js";
 import type { AssetCrossOrigin } from "./pages-client-assets.js";
 
 type AssetDeps = { js: string[]; css: string[] };
@@ -122,7 +123,8 @@ export function wrapClientReferenceRequire(
     }
   });
   // One promise per reference, which React's Flight client tracks the
-  // module's load state on.
+  // module's load state on. Every render in the isolate awaits it, so it
+  // carries the tag of the request that starts the load.
   const loads = new Map<string, Promise<unknown>>();
   const wrapped: ClientReferenceRequire = (id) => {
     // The Flight client asks for a module as it reads the row naming it.
@@ -134,28 +136,30 @@ export function wrapClientReferenceRequire(
     let loading = loads.get(id);
     if (!loading) {
       const loader = asyncIds.has(id) ? getLoader(id) : undefined;
-      loading = Promise.all([load(id), loader?.()]).then(
-        ([mod, exports]) =>
-          new Proxy(mod as object, {
-            get(target, key, receiver) {
-              const render = renderStorage.getStore();
-              if (render) {
-                // A streamed reference reads its exports past plugin-rsc's
-                // module proxy, which would link its stylesheets here.
-                if (exports !== undefined && render.streamed.has(id)) {
-                  return Reflect.get(exports as object, key);
+      loading = tagPromiseWithRequest(
+        Promise.all([load(id), loader?.()]).then(
+          ([mod, exports]) =>
+            new Proxy(mod as object, {
+              get(target, key, receiver) {
+                const render = renderStorage.getStore();
+                if (render) {
+                  // A streamed reference reads its exports past plugin-rsc's
+                  // module proxy, which would link its stylesheets here.
+                  if (exports !== undefined && render.streamed.has(id)) {
+                    return Reflect.get(exports as object, key);
+                  }
+                  linkStreamedStylesheetsBefore(render, id);
+                  // plugin-rsc links the module's assets as it's read, after this.
+                  const deps = referenceDeps.get(id);
+                  if (deps && key in target) {
+                    linkStylesheets(deps.css, render);
+                    if (hintsScripts(render)) linkScripts(deps, render);
+                  }
                 }
-                linkStreamedStylesheetsBefore(render, id);
-                // plugin-rsc links the module's assets as it's read, after this.
-                const deps = referenceDeps.get(id);
-                if (deps && key in target) {
-                  linkStylesheets(deps.css, render);
-                  if (hintsScripts(render)) linkScripts(deps, render);
-                }
-              }
-              return Reflect.get(target, key, receiver);
-            },
-          }),
+                return Reflect.get(target, key, receiver);
+              },
+            }),
+        ),
       );
       loads.set(id, loading);
     }

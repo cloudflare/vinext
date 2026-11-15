@@ -493,6 +493,62 @@ test.describe("App Router ISR", () => {
     expect(await privateImage.text()).not.toContain("UNLISTED_METADATA");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/nsec-105-opengraph-image-dynamicparams/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/nsec-105-opengraph-image-dynamicparams/index.test.ts
+  test("route handlers honor dynamicParams=false", async ({ request }) => {
+    const listed = await request.get(`${baseUrl()}/metadata-static-params/public-post/data`);
+    expect(listed.status()).toBe(200);
+    expect(await listed.text()).toBe("data:PUBLIC");
+
+    for (const [segment, body] of [
+      ["public%20post", "data:PUBLIC ENCODED"],
+      ["public%2520post", "data:PUBLIC ESCAPED"],
+      ["public%252Fpost", "data:PUBLIC ESCAPED SLASH"],
+    ]) {
+      const encoded = await request.get(`${baseUrl()}/metadata-static-params/${segment}/data`);
+      expect(encoded.status()).toBe(200);
+      expect(await encoded.text()).toBe(body);
+    }
+    const unlistedEncoding = await request.get(
+      `${baseUrl()}/metadata-static-params/public%252520post/data`,
+    );
+    expect(unlistedEncoding.status()).toBe(404);
+
+    const unlisted = await request.get(`${baseUrl()}/metadata-static-params/unlisted-draft/data`);
+    const unlistedBody = await unlisted.text();
+    expect(unlisted.status()).toBe(404);
+    expect(unlistedBody).not.toContain("DRAFT DATA");
+    // Next.js serves the same never-cached not-found page as an unmatched URL.
+    expect(unlistedBody).toContain("404 - Page Not Found");
+    expect(unlisted.headers()["cache-control"]).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const unlistedOptions = await request.fetch(
+      `${baseUrl()}/metadata-static-params/unlisted-draft/data`,
+      { method: "OPTIONS" },
+    );
+    expect(unlistedOptions.status()).toBe(404);
+
+    // Next.js production builds leave force-dynamic handlers out of the
+    // prerender manifest, so their params are not checked.
+    const unlistedDynamic = await request.get(
+      `${baseUrl()}/metadata-static-params/unlisted-draft/dynamic-data`,
+    );
+    expect(unlistedDynamic.status()).toBe(200);
+    expect(await unlistedDynamic.text()).toBe("data:DRAFT DYNAMIC DATA");
+
+    // Draft mode skips the check, as in Next.js.
+    const draftEnable = await request.get(`${baseUrl()}/nextjs-compat/api/draft-enable`);
+    const draftCookie = draftEnable.headers()["set-cookie"]?.split(";")[0];
+    expect(draftCookie).toMatch(/^__prerender_bypass=/);
+    const draft = await request.get(`${baseUrl()}/metadata-static-params/unlisted-draft/data`, {
+      headers: { cookie: draftCookie! },
+    });
+    expect(draft.status()).toBe(200);
+    expect(await draft.text()).toBe("data:DRAFT DATA");
+  });
+
   test("cached dynamicParams=false metadata images skip generateStaticParams", async ({
     request,
   }) => {

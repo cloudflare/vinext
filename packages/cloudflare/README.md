@@ -128,7 +128,6 @@ const responseStore = await createWorkersResponseStoreServiceBindingConfig({
   worker: {
     name: "example-response-store",
     compatibilityDate: "2026-09-15",
-    compatibilityFlags: ["nodejs_compat"],
   },
   bucket: "example-response-store-cache-bodies",
 });
@@ -189,6 +188,17 @@ The hint works in both deployment modes, is best-effort, and only affects each
 Durable Object's first creation. Changing it does not relocate existing
 objects; treat the change as a cache-cold deployment and align it with the R2
 bucket's location.
+
+Edge purges and invalidations share the account's Free-tier
+[purge rate limits](https://developers.cloudflare.com/workers/cache/purge/#rate-limits).
+An app that revalidates often can queue them and send each window's updates together:
+
+```ts
+vinext({ cache: responseStoreAdapter({ purgeBatchWindow: 60 }) });
+```
+
+Edge responses then update up to the window (plus retries of a refused batch)
+after the revalidation.
 
 To deploy storage and cache entrypoints with the application instead, select
 self-contained mode:

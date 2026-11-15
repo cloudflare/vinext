@@ -12,6 +12,7 @@ import type { RuntimePagesDataKind } from "./pages-route-data-kind.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 export type PagesEntry = {
   getRuntimePageDataKind?: (url: string, request: Request) => RuntimePagesDataKind;
@@ -212,6 +213,8 @@ export async function renderPagesFallback(
     const pagesApiResponse = await (initialResponseHeaders
       ? pagesEntry.handleApiRoute(...apiArgs, initialResponseHeaders)
       : pagesEntry.handleApiRoute(...apiArgs));
+    // An edge API route's WebSocket upgrade cannot be rebuilt with headers.
+    if (isWebSocketUpgradeResponse(pagesApiResponse)) return pagesApiResponse;
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(
       // A Node-runtime Pages API handler in Next.js writes to the response that

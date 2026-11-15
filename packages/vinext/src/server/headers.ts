@@ -110,6 +110,13 @@ export const VINEXT_RSC_COMPLETION_METADATA_HEADER = "X-Vinext-Rsc-Completion-Me
  */
 export const VINEXT_SPECIAL_ERROR_STATUS_HEADER = "x-vinext-special-error-status";
 
+/**
+ * Marks an App page response that rendered a routing-level not-found (a
+ * `dynamicParams = false` miss). The request stage strips it and sends the
+ * unmatched route's never-cache 404 policy.
+ */
+export const VINEXT_ROUTE_MISS_HEADER = "x-vinext-route-miss";
+
 /** URL-encoded rendered path and search after middleware/config rewrites. */
 export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-And-Search";
 

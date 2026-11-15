@@ -565,6 +565,13 @@ describe("plugin-rsc inline use-cache references", () => {
       filter: { id: { include: RegExp; exclude: RegExp }; code: string };
     };
     expect(filter.id.include.test(packageId)).toBe(true);
+    for (const extension of [".mjs", ".mts", ".jsx", ".ts", ".tsx"]) {
+      expect(filter.id.include.test(packageId.replace(/\.js$/, extension))).toBe(true);
+    }
+    // CommonJS modules: the transform emits ES module syntax.
+    for (const extension of [".cjs", ".cts"]) {
+      expect(filter.id.include.test(packageId.replace(/\.js$/, extension))).toBe(false);
+    }
     expect(filter.id.include.test(moduleId)).toBe(false);
     expect(filter.id.exclude.test(packageId)).toBe(false);
     expect(filter.code).toBe("use cache");
@@ -574,6 +581,21 @@ describe("plugin-rsc inline use-cache references", () => {
       packageId,
     );
     expect(result!.code).toContain("registerCachedFunction(getData");
+  });
+
+  it("compiles app source modules of every ES module extension", async () => {
+    const plugins = await getPlugins();
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const { filter } = plugin.transform as { filter: { id: { include: RegExp } } };
+    for (const extension of [".js", ".mjs", ".mts", ".jsx", ".ts", ".tsx"]) {
+      expect(filter.id.include.test(moduleId.replace(/\.tsx$/, extension))).toBe(true);
+    }
+    // CommonJS modules: the transform emits ES module syntax.
+    for (const extension of [".cjs", ".cts"]) {
+      expect(filter.id.include.test(moduleId.replace(/\.tsx$/, extension))).toBe(false);
+    }
   });
 
   it("accepts configured cache kinds containing punctuation", async () => {

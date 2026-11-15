@@ -3714,7 +3714,7 @@ describe("resolveNextConfig staleTimes (#1490)", () => {
   it("falls back to defaults when staleTimes contains negative values", async () => {
     // Negative values are rejected at resolution time so we don't pass them
     // downstream to `resolvePrefetchCacheTtl`, where they'd be re-validated.
-    // Matches the `seconds < 0` guard in `shims/navigation.ts`.
+    // Matches the `seconds < 0` guard in `shims/app-router-navigation.ts`.
     const resolved = await resolveNextConfig({
       experimental: { staleTimes: { dynamic: -5, static: -1 } },
     });

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import getDefaultMessage from "./actions";
 import { getCachedMessage, getUncachedMessage } from "./actions";
+import { getMtsCachedMessage } from "./module-actions.mjs";
 
 export function ClientCacheCaller() {
   const [message, setMessage] = useState("");
@@ -10,6 +11,18 @@ export function ClientCacheCaller() {
 
   function callCachedMessage(value: string) {
     void getCachedMessage(value).then(
+      (result) => {
+        setMessage(result);
+        setCompletedCalls((count) => count + 1);
+      },
+      (error) => {
+        setMessage(`error:${error instanceof Error ? error.message : String(error)}`);
+      },
+    );
+  }
+
+  function callMtsCachedMessage(value: string) {
+    void getMtsCachedMessage(value).then(
       (result) => {
         setMessage(result);
         setCompletedCalls((count) => count + 1);
@@ -51,6 +64,9 @@ export function ClientCacheCaller() {
       </button>
       <button id="call-client-imported-cache-other" onClick={() => callCachedMessage("other")}>
         Call cached function with another argument
+      </button>
+      <button id="call-client-imported-mts-cache" onClick={() => callMtsCachedMessage("direct")}>
+        Call cached function from an .mts module
       </button>
       <button id="call-client-imported-server" onClick={() => callUncachedMessage("direct")}>
         Call server function

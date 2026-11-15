@@ -160,6 +160,24 @@ test.describe('production "use cache" server function references', () => {
     expect(await genuine.text()).toContain("ACME_PRIVATE_ORDER");
   });
 
+  test("invokes cached exports of an .mts module imported by a Client Component", async ({
+    page,
+  }) => {
+    await page.goto("/use-cache-client-import");
+    await waitForAppRouterHydration(page);
+
+    await page.locator("#call-client-imported-mts-cache").click();
+    await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("1");
+    await expect(page.getByTestId("client-imported-cache-result")).toHaveText(
+      /^client-mts-cache:direct:mts-cache-server-marker:[0-9.e+-]+$/,
+    );
+    const firstResult = await page.getByTestId("client-imported-cache-result").innerText();
+
+    await page.locator("#call-client-imported-mts-cache").click();
+    await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("2");
+    await expect(page.getByTestId("client-imported-cache-result")).toHaveText(firstResult);
+  });
+
   test("invokes default-exported server actions from cached modules", async ({ page }) => {
     await page.goto("/use-cache-client-import");
     await waitForAppRouterHydration(page);

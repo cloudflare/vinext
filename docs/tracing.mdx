@@ -180,7 +180,7 @@ env: {
 },
 ```
 
-Workers expose these as `process.env` with the `nodejs_compat` flag and a compatibility date of 2025-04-01 or later, which configs `vinext init` generates already have.
+Workers expose these as `process.env` with Node.js compatibility and a compatibility date of 2025-04-01 or later. Node.js compatibility is on by default from compatibility date 2026-08-04 (older dates need the `nodejs_compat` flag), so configs `vinext init` generates already have both.
 
 ## Cloudflare Workers traces
 

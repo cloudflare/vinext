@@ -764,9 +764,10 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(await prefetch.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
   });
 
-  // A Link's search-param prefetch of a static route renders the page with an
-  // empty query, as Next.js's static prefetch of a page segment never varies on
-  // search params (vary-path.ts). So every query shares the page's own entry.
+  // With Cache Components, a Link's search-param prefetch of a static route
+  // renders the page with an empty query, as Next.js's static prefetch of a
+  // page segment never varies on search params (vary-path.ts). So every query
+  // shares the page's own entry.
   test("serves a static page's dynamic-shell prefetch from its navigation entry", async () => {
     const pathname = "/static-default";
     const prefetch = async (search: string, nextUrl: string) => {
@@ -1725,6 +1726,38 @@ describe("Cloudflare Workers Response Store adapter", () => {
 
     const serialized = JSON.stringify((await metadataEntries()).flat());
     assert.doesNotMatch(serialized, /first-secret|second-secret/);
+  });
+
+  // A 206 holds the part one request's Range selected, and Range is not part
+  // of the key. Next.js never stores a Pages API response at all.
+  test("never stores a Pages API's partial response to a Range request", async () => {
+    const pathname = "/api/byte-range";
+    for (const [range, contentRange, body] of [
+      ["bytes=2-4", "bytes 2-4/10", "234"],
+      ["bytes=5-7", "bytes 5-7/10", "567"],
+    ]) {
+      const partial = await request(pathname, { headers: { range } });
+      assert.equal(partial.status, 206);
+      assert.notEqual(partial.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(partial.headers.get("content-range"), contentRange);
+      assert.equal(await partial.text(), body);
+    }
+    await assertNeverStored(pathname);
+
+    // The same route is stored for a request without Range, so the ranged
+    // requests above were rejected for their partial responses alone.
+    const whole = await request(pathname);
+    assert.equal(whole.status, 200);
+    assert.equal(whole.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(await whole.text(), "0123456789");
+    await waitForResponseEntries(pathname, 1);
+    // A stored response answers a Range request whole, as Next.js answers a
+    // cached page or route handler.
+    const hit = await request(pathname, { headers: { range: "bytes=2-4" } });
+    assert.equal(hit.status, 200);
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(hit.headers.get("content-range"), null);
+    assert.equal(await hit.text(), "0123456789");
   });
 
   test.each(["authorization", "cookie", "proxy-authorization", "x-api-key"])(

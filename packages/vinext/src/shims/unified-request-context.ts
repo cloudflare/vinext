@@ -88,6 +88,12 @@ export type AfterRequestContext = {
   pendingPromises: number;
   completion: Promise<void> | null;
   resolveCompletion: (() => void) | null;
+  /** Where promise-form `after()` work goes instead of the request's `waitUntil`. */
+  waitUntil?: (promise: Promise<unknown>) => void;
+  /** Reports a failed `after()` task, besides logging it. */
+  onTaskError?: (error: unknown) => void;
+  /** Discards `after()` callbacks registered from now on. */
+  cancelled?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -209,6 +215,7 @@ function startAfterCallback(ctx: UnifiedRequestContext, callback: () => unknown)
     .then(callback)
     .catch((error) => {
       console.error("[vinext] after() task failed:", error);
+      state.onTaskError?.(error);
     })
     .finally(() => {
       state.pendingCallbacks -= 1;
@@ -218,6 +225,7 @@ function startAfterCallback(ctx: UnifiedRequestContext, callback: () => unknown)
 
 /** Queue a callback until response close, or start it immediately once closed. */
 export function queueAfterCallback(ctx: UnifiedRequestContext, callback: () => unknown): void {
+  if (ctx.afterContext.cancelled) return;
   ensureAfterCompletion(ctx);
   if (ctx.afterContext.responseClosed) {
     startAfterCallback(ctx, callback);

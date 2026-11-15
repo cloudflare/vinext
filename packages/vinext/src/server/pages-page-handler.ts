@@ -26,6 +26,7 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import {
+  markPagesPrerenderRenderError,
   mergePagesNotFoundSourceHeaders,
   resolvePagesPageData,
   resolvePagesStatusPageRenderPath,
@@ -292,6 +293,12 @@ type VinextConfigSubset = {
   disableOptimizedLoading: boolean;
   crossOrigin?: string;
 };
+
+function renderErrorResponse(body: string): Response {
+  const headers = new Headers();
+  markPagesPrerenderRenderError(headers);
+  return new Response(body, { headers, status: 500 });
+}
 
 export function shouldEmitPagesClientTraceMetadata(
   pageModule: PagesPageModule,
@@ -739,8 +746,11 @@ export function createPagesPageHandler(
       );
     }
     const routePattern = patternToNextFormat(route.pattern);
+    // A direct request for a status page answers with that status, as in
+    // Next.js base-server.ts.
     const renderStatusCode =
-      renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
+      renderStatusCodeOverride ??
+      (routePattern === "/404" ? 404 : routePattern === "/500" ? 500 : undefined);
     // Error pages have their own ISR identity rather than the request URL's.
     // Otherwise a cached notFound marker for the source page can short-circuit
     // the recursive /404 render before the custom 404 module (and its
@@ -910,7 +920,7 @@ export function createPagesPageHandler(
 
         const PageComponent = pageModule.default as ComponentType | undefined;
         if (!PageComponent) {
-          return new Response("Page has no default export", { status: 500 });
+          return renderErrorResponse("Page has no default export");
         }
 
         // Reject non-GET/HEAD on static (no getServerSideProps) routes with
@@ -1111,7 +1121,12 @@ export function createPagesPageHandler(
             initialStylesheetHrefs,
             crossOrigin: vinextConfig.crossOrigin,
             disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
-            statusCode: renderStatusCode,
+            // The status-page default only seeds the page's res, so a status
+            // `_app` writes there wins, like Next.js. getStaticProps and
+            // auto-export renders have no res status to read and keep it.
+            statusCode:
+              renderStatusCodeOverride ??
+              (isStaticPropsRoute || !render.documentReqRes ? renderStatusCode : undefined),
             nextData: serializedPagesNextData,
           };
         };
@@ -1353,7 +1368,8 @@ export function createPagesPageHandler(
         // For client-side navigations Next.js fetches /_next/data/<buildId>/<page>.json
         // and expects the full props envelope (pageProps plus any app-level
         // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
-        if (isDataReq) {
+        // `/500` answers its HTML document instead, as in Next.js.
+        if (isDataReq && routePattern !== "/500") {
           const headers = new Headers();
           let resHasCacheControl = false;
           if (gsspRes && typeof gsspRes.getHeaders === "function") {
@@ -1402,9 +1418,9 @@ export function createPagesPageHandler(
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
-          // protection). Next.js skips the success path for /_error and /500
-          // (`!isErrorPage && !is500Page`). Fixes #1829.
-          if (routePattern !== "/_error" && routePattern !== "/500") {
+          // protection). Next.js skips the success path for /_error, and
+          // renders /500 as HTML (`!isErrorPage && !is500Page`). Fixes #1829.
+          if (routePattern !== "/_error") {
             const deploymentId =
               process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
             if (deploymentId) {
@@ -1459,10 +1475,11 @@ export function createPagesPageHandler(
         // getStaticProps page and only reports the error.
         if (sendsEarly && pageResponseSent()) return sentResponse;
 
-        // Data requests can't render HTML; avoid recursion if already rendering
-        // the error page. Mirrors Next.js base-server.ts: render /500 or _error
-        // when SSR throws. Fixes #1458.
-        if (!isInternalErrorRender && !isDataReq) {
+        // Data requests can't render HTML, except `/500`, which renders its
+        // HTML document; avoid recursion if already rendering the error page.
+        // Mirrors Next.js base-server.ts: render /500 or _error when SSR
+        // throws. Fixes #1458.
+        if (!isInternalErrorRender && (!isDataReq || routePattern === "/500")) {
           let errorRoute: PageRoute | null = null;
           for (let i = 0; i < pageRoutes.length; i++) {
             if (pageRoutes[i].pattern === "/500") {
@@ -1496,7 +1513,7 @@ export function createPagesPageHandler(
             }
           }
         }
-        return new Response("Internal Server Error", { status: 500 });
+        return renderErrorResponse("Internal Server Error");
       }
     });
     if (!sendsEarly) return closeAfterResponseWithBody(await rendering, uCtx);

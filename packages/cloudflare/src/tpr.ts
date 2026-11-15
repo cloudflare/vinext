@@ -17,6 +17,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { resolveBuildOutputDefaultWorkerConfigPath } from "./build-output.js";
 import { parseWranglerConfig } from "./wrangler-config.js";
 
 export { parseWranglerConfig };
@@ -284,6 +285,24 @@ export function selectRoutes(
 // ─── Route resolution ─────────────────────────────────────────────────────────
 
 /**
+ * Build Output `domains` entries are a hostname string or
+ * `{ hostname, production, previews }`; only production domains serve live traffic.
+ */
+function findProductionDomain(domains: unknown[]): string | undefined {
+  for (const domain of domains) {
+    if (typeof domain === "string") {
+      if (domain.length > 0) return domain;
+    } else if (domain && typeof domain === "object") {
+      const { hostname, production } = domain as { hostname?: unknown; production?: unknown };
+      if (production === true && typeof hostname === "string" && hostname.length > 0) {
+        return hostname;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
  * Resolve ranked traffic paths. The standard CDN pre-warming flow owns route
  * matching, coverage selection, rendering, and cache admission.
  */
@@ -291,22 +310,18 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
   const { root, config, window: windowHours } = options;
   const wranglerConfig =
     options.hostname || options.typedConfig ? null : parseWranglerConfig(root, config);
-  const buildOutputConfigPath = path.join(
-    root,
-    ".cloudflare/output/v0/workers/default/worker.config.json",
-  );
+  const buildOutputConfigPath =
+    options.typedConfig && !options.hostname
+      ? resolveBuildOutputDefaultWorkerConfigPath(root)
+      : null;
   const typedDomains: unknown =
-    options.typedConfig && !options.hostname && fs.existsSync(buildOutputConfigPath)
+    buildOutputConfigPath && fs.existsSync(buildOutputConfigPath)
       ? (JSON.parse(fs.readFileSync(buildOutputConfigPath, "utf8")) as { domains?: unknown })
           .domains
       : undefined;
   const hostname =
     options.hostname ??
-    (Array.isArray(typedDomains)
-      ? typedDomains.find(
-          (domain): domain is string => typeof domain === "string" && domain.length > 0,
-        )
-      : undefined) ??
+    (Array.isArray(typedDomains) ? findProductionDomain(typedDomains) : undefined) ??
     wranglerConfig?.env?.[options.env ?? ""]?.customDomain ??
     wranglerConfig?.customDomain;
   // Wrangler's analytics domain may be zone_name rather than the route host.

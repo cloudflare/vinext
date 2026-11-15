@@ -54,6 +54,7 @@ describe("worker Server Function references", () => {
     const result = await transform.call(
       {
         addWatchFile,
+        environment: { mode: "build" },
         error: (message: string) => {
           throw new Error(message);
         },

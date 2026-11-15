@@ -505,6 +505,16 @@ describe("app elements payload helpers", () => {
     expect(AppElementsWire.encodeCacheKey("/photos/42.rsc", "/feed")).toBe("/photos/42.rsc\0/feed");
   });
 
+  it("decodes the cache keys it encodes", () => {
+    for (const interceptionContext of [null, "/feed", ""]) {
+      const cacheKey = AppElementsWire.encodeCacheKey("/photos/42.rsc?_rsc=1", interceptionContext);
+      expect(AppElementsWire.decodeCacheKey(cacheKey)).toEqual({
+        interceptionContext,
+        rscUrl: "/photos/42.rsc?_rsc=1",
+      });
+    }
+  });
+
   it("preserves the request cache context when a direct-route payload omits it", () => {
     expect(resolveVisitedResponseInterceptionContext("/feed", null)).toBe("/feed");
     expect(resolveVisitedResponseInterceptionContext("/feed", "/feed")).toBe("/feed");

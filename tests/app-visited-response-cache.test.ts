@@ -12,7 +12,7 @@ import {
   revokeHistoryRestoreNavigationReuse,
 } from "../packages/vinext/src/server/app-visited-response-cache.js";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
-import type { CachedRscResponse } from "../packages/vinext/src/shims/navigation.js";
+import type { CachedRscResponse } from "../packages/vinext/src/shims/app-router-navigation.js";
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 
 function createCachedResponse(overrides: Partial<CachedRscResponse> = {}): CachedRscResponse {

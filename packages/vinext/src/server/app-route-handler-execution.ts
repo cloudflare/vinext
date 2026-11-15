@@ -39,6 +39,7 @@ import {
   buildAppRouteCacheValue,
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
+  stripAppRouteHandlerRouteMissMarker,
   type RouteHandlerMiddlewareContext,
 } from "./app-route-handler-response.js";
 import {
@@ -60,6 +61,7 @@ import {
 import { frameworkTracer } from "./tracer.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
 import { logRequestError } from "./request-error-log.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
@@ -408,6 +410,15 @@ async function executeAppRouteHandlerImpl(
     const handlerResult = tracedResult.handlerResult;
     let { dynamicUsedInHandler, response } = handlerResult;
     assertSupportedAppRouteHandlerResponse(response);
+    // Rebuilding an upgrade would throw on its 101 status and drop its
+    // webSocket, and no cache or header policy applies to it.
+    if (isWebSocketUpgradeResponse(response)) {
+      if (dynamicUsedInHandler) markKnownDynamicAppRoute(options.routePattern);
+      recordRouteCacheability({ cacheable: false, dynamicUsage: true });
+      options.clearRequestContext();
+      // The marker is reserved for routing; this rebuild keeps the webSocket.
+      return stripAppRouteHandlerRouteMissMarker(response);
+    }
     const draftModeBeforeCompletion =
       options.getActiveDraftModeState?.() ?? options.isDraftMode === true;
     const handlerDraftCookieBeforeCompletion =
@@ -451,6 +462,7 @@ async function executeAppRouteHandlerImpl(
 
     // Stream producers may add, replace, or remove headers while completing.
     // Snapshot user policy only after EOF and before framework ISR headers.
+    response = stripAppRouteHandlerRouteMissMarker(response);
     const browserCacheControl = response.headers.get("Cache-Control") ?? undefined;
     const handlerSetCachePolicy = hasCdnResponsePolicy(response.headers);
     if (handlerSetCachePolicy) markRouteCacheabilityExplicitResponsePolicy();

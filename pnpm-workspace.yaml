@@ -58,9 +58,8 @@ catalog:
   remark-frontmatter: ^5.0.0
   remark-mdx-frontmatter: ^6.0.0
   "@vitejs/plugin-rsc": ^0.5.38
-  "@vitest/coverage-istanbul": 5.0.5
+  "@vitest/coverage-istanbul": 5.1.0
   better-auth: ^1.5.6
-  better-sqlite3: ^12.0.0
   class-variance-authority: ^0.7.1
   clsx: ^2.1.1
   codehike: 1.0.7
@@ -105,10 +104,10 @@ catalog:
   ua-parser-js: 1.0.35
   use-count-up: 3.0.1
   validator: ^13.15.26
-  vite: npm:@voidzero-dev/vite-plus-core@1.3.0
+  vite: npm:@voidzero-dev/vite-plus-core@1.5.1
   vite-plugin-commonjs: ^0.10.4
-  vite-plus: 1.3.0
-  vitest: 5.0.5
+  vite-plus: 1.5.1
+  vitest: 5.1.0
   web-vitals: ^4.2.4
   wrangler: ^4.153.0
   zod: 3.24.3
@@ -116,7 +115,7 @@ catalog:
 catalogs:
   cloudflare-vite-v2:
     "@cloudflare/vite-plugin": 2.0.0-beta.sha-805ec1ff3
-    cf: 1.0.0-beta.1
+    cf: 1.0.0-beta.29
     vite: 8.3.0
   sentry-nextjs-16-static:
     "@sentry/core": 11.0.0-beta.2
@@ -157,7 +156,6 @@ packageExtensions:
       zod: 3.24.3
 
 allowBuilds:
-  better-sqlite3: true
   esbuild: true
   sharp: true
   workerd: true

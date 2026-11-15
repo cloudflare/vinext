@@ -1287,6 +1287,42 @@ describe("pages api route", () => {
     expect(lifecycleSettled).toBe(true);
   });
 
+  it("registers a handler that outlives its response unless the context opts out", async () => {
+    async function respondThenFinish(ctx: {
+      hostRuntime: "node";
+      skipsPagesApiHandlerWaitUntil?: boolean;
+    }) {
+      let finishHandler!: () => void;
+      const handlerFinished = new Promise<void>((resolve) => {
+        finishHandler = resolve;
+      });
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const response = await handlePagesApiRoute({
+        ctx: {
+          ...ctx,
+          waitUntil(promise) {
+            waitUntilPromises.push(promise);
+          },
+        },
+        match: createMatch(async (_req, res) => {
+          res.end("done");
+          await handlerFinished;
+        }),
+        request: new Request("https://example.com/api/cleanup"),
+        url: "/api/cleanup",
+      });
+      expect(await response.text()).toBe("done");
+      finishHandler();
+      return waitUntilPromises;
+    }
+
+    // Nitro's Node presets run on Node but await waitUntil when they close.
+    expect(await respondThenFinish({ hostRuntime: "node" })).toHaveLength(1);
+    expect(
+      await respondThenFinish({ hostRuntime: "node", skipsPagesApiHandlerWaitUntil: true }),
+    ).toHaveLength(0);
+  });
+
   it("passes cancellation errors to a parked write callback", async () => {
     const cancellation = new Error("client cancelled");
     let writeError: Error | null | undefined;

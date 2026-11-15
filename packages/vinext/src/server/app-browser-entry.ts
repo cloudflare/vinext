@@ -23,19 +23,29 @@ import { notifyAppRouterTransitionStart } from "../client/instrumentation-client
 import {
   __basePath,
   activateNavigationSnapshot,
-  appRouterInstance,
   commitClientNavigationState,
+  createClientNavigationRenderSnapshot,
+  getClientNavigationRenderContext,
+  getBfcacheIdMapContext,
+  getNavigationContext,
+  decodeRedirectError,
+  isRedirectError,
+  replaceClientParamsWithoutNotify,
+  setClientParams,
+  setPendingPathname,
+  setNavigationContext,
+  useRouter,
+  type ClientNavigationRenderSnapshot,
+} from "vinext/shims/navigation";
+import {
+  appRouterInstance,
   consumePrefetchResponse,
   consumePrefetchResponseForNavigation,
   createCachedRscResponseSnapshot,
-  createClientNavigationRenderSnapshot,
   deletePrefetchResponseSnapshot,
   disableNavigationResponsePrefetchCacheReuse,
   DYNAMIC_NAVIGATION_CACHE_TTL,
   PREFETCH_CACHE_TTL,
-  getClientNavigationRenderContext,
-  getBfcacheIdMapContext,
-  getNavigationContext,
   getMountedSlotsHeader,
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
@@ -45,26 +55,18 @@ import {
   parseRenderedPathAndSearchHeader,
   preloadHybridClientRouteOwner,
   seedPrefetchResponseSnapshot,
-  decodeRedirectError,
-  isRedirectError,
   pushHistoryStateWithoutNotify,
-  replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
   resolveLoadedHybridClientRewriteHref,
   resolvePrefetchCacheEntryMountedSlotsHeader,
   restoreRscResponse,
   saveScrollPosition,
-  setClientParams,
-  setPendingPathname,
   setMountedSlotsHeader,
-  setNavigationContext,
   trackAppRouterNavigationInFlight,
-  useRouter,
   type CachedRscResponse,
-  type ClientNavigationRenderSnapshot,
   type InvalidatePrefetchCacheOptions,
   type PrefetchCacheEntry,
-} from "vinext/shims/navigation";
+} from "vinext/shims/app-router-navigation";
 import {
   createNavigationRuntimeRouteManifestLoader,
   getNavigationRuntime,
@@ -697,20 +699,6 @@ function isSettledPrefetchCacheEntry(
   );
 }
 
-function parsePrefetchCacheKey(cacheKey: string): {
-  interceptionContext: string | null;
-  rscUrl: string;
-} {
-  const separatorIndex = cacheKey.indexOf("\0");
-  if (separatorIndex === -1) {
-    return { interceptionContext: null, rscUrl: cacheKey };
-  }
-  return {
-    interceptionContext: cacheKey.slice(separatorIndex + 1),
-    rscUrl: cacheKey.slice(0, separatorIndex),
-  };
-}
-
 async function learnOptimisticRouteTemplateFromPrefetch(options: {
   cacheKey: string;
   entry: PrefetchCacheEntry & { snapshot: CachedRscResponse };
@@ -718,7 +706,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   mountedSlotsHeader: string | null;
   routeManifest: BrowserRouteManifest;
 }): Promise<LearnedOptimisticRouteTemplate | null> {
-  const source = parsePrefetchCacheKey(options.cacheKey);
+  const source = AppElementsWire.decodeCacheKey(options.cacheKey);
   if (source.interceptionContext !== options.interceptionContext) return null;
   if (resolvePrefetchCacheEntryMountedSlotsHeader(options.entry) !== options.mountedSlotsHeader) {
     return null;
@@ -3170,8 +3158,7 @@ function bootstrapHydration(
 
   // Note: This popstate handler runs for App Router (RSC navigation available).
   // It coordinates scroll restoration with the pending RSC navigation.
-  // Pages Router scroll restoration is handled in shims/navigation.ts:1289 with
-  // microtask-based deferral for compatibility with non-RSC navigation.
+  // Pages Router scroll restoration is handled in shims/router.ts.
   // See: https://github.com/vercel/next.js/discussions/41934#discussioncomment-4602607
   const handlePopstate = createPopstateRestoreHandler({
     getActiveNavigationId: browserNavigationController.getActiveNavigationId.bind(

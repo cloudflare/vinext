@@ -14,6 +14,7 @@ import { isCdnResponsePolicyHeader, isNonCacheableCdnResponsePolicy } from "./ca
 import {
   NEXTJS_CACHE_HEADER,
   VINEXT_CACHE_HEADER,
+  VINEXT_ROUTE_MISS_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
@@ -209,8 +210,13 @@ export function applyConfigHeadersToResponse(
   const configVary: string[] = [];
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
-    // vinext's own marker, which a config header can't forge.
-    if (lowerName === VINEXT_SPECIAL_ERROR_STATUS_HEADER) continue;
+    // vinext's own markers, which a config header can't forge.
+    if (
+      lowerName === VINEXT_SPECIAL_ERROR_STATUS_HEADER ||
+      lowerName === VINEXT_ROUTE_MISS_HEADER
+    ) {
+      continue;
+    }
     if (lowerName === "set-cookie") {
       configCookies.push(header.value);
     } else if (lowerName === "link") {

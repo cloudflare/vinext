@@ -6,7 +6,7 @@ import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import { isCSSRequest, transformWithOxc, type Plugin, type ResolvedConfig } from "vite";
 import { parseProgramAsync } from "./ast-utils.js";
 import { escapeRegExp } from "../utils/regex.js";
-import { magicStringTransformResult } from "./transform-result.js";
+import { serverReferenceProxyResult } from "./transform-result.js";
 import { USE_CACHE_PLUGIN_NAME, type UseCacheCallableApi } from "./use-cache-callable.js";
 
 type RscPluginModule = typeof import("@vitejs/plugin-rsc");
@@ -168,7 +168,7 @@ export async function createWorkerUseServerPlugins(options: {
         result.output.prepend(
           `import { createWorkerServerReference as ${runtime} } from ${JSON.stringify(WORKER_REFERENCE_RUNTIME_ID)};\n`,
         );
-        return magicStringTransformResult(result.output);
+        return serverReferenceProxyResult(this.environment, result.output);
       },
     },
   };
@@ -203,7 +203,7 @@ export async function createWorkerUseServerPlugins(options: {
         output.prepend(
           `import { createWorkerServerReference as ${runtime} } from ${JSON.stringify(WORKER_REFERENCE_RUNTIME_ID)};\n`,
         );
-        return magicStringTransformResult(output);
+        return serverReferenceProxyResult(this.environment, output);
       },
     },
   };

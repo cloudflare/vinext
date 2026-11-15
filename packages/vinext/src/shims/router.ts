@@ -393,6 +393,8 @@ type TransitionOptions = {
   scroll?: boolean;
   locale?: string | false;
   _vinextInterpolateDynamicRoute?: boolean;
+  /** Document href a hydration query update (`_h: 1`) started on, kept across its redirects. */
+  _vinextHydrationHref?: string;
 };
 
 type RouterEvents = {
@@ -435,6 +437,8 @@ type PagesRouterRuntimeState = {
   beforePopStateCb?: BeforePopStateCallback;
   lastPathnameAndSearch: string;
   lastHash: string;
+  /** The in-flight post-hydration query update (`_h: 1`), if any, and the href it started on. */
+  hydrationQueryUpdate: { navigationId: number; href: string } | null;
   isFirstPopStateEvent: boolean;
   routerDidNavigate: boolean;
   deprecatedEventBridgeInstalled: boolean;
@@ -464,6 +468,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     lastPathnameAndSearch:
       typeof window !== "undefined" ? window.location.pathname + window.location.search : "",
     lastHash: typeof window !== "undefined" ? window.location.hash : "",
+    hydrationQueryUpdate: null,
     isFirstPopStateEvent: true,
     routerDidNavigate: false,
     deprecatedEventBridgeInstalled: false,
@@ -1644,15 +1649,56 @@ class HardNavigationScheduledError extends Error {
   }
 }
 
+/**
+ * Next.js's "attempted to hard navigate to the same URL" invariant. It
+ * propagates without a fallback hard navigation, as in Next.js's change(),
+ * because any other reload target can redirect back to the same document.
+ */
+class SameUrlHardNavigationError extends Error {
+  constructor(url: string) {
+    super(`Invariant: attempted to hard navigate to the same URL ${url} ${window.location.href}`);
+    this.name = "SameUrlHardNavigationError";
+  }
+}
+
 function cancelPreviousRenderCommit(): void {
   routerRuntimeState.cancelPendingRenderCommit?.();
   routerRuntimeState.cancelPendingRenderCommit = null;
+}
+
+/**
+ * Whether a hard navigation to `url` would reload the document the
+ * post-hydration query update (`_h: 1`) started on.
+ *
+ * Next.js's handleHardNavigation() refuses to hard-navigate to the router's
+ * committed asPath, because the reloaded document would repeat the same
+ * failure forever. Vinext derives asPath from the live browser URL, which can
+ * move before a render commits, so the guard compares against the href the
+ * hydration query update started on and is limited to that navigation and the
+ * redirects it follows.
+ */
+function isHydrationQueryUpdateReload(url: string, hydrationHref: string | undefined): boolean {
+  if (typeof window === "undefined" || hydrationHref === undefined) return false;
+  try {
+    // Compare whole hrefs, as Next.js does: a hash-only change is a
+    // same-document navigation, not a reload.
+    return new URL(url, window.location.href).href === hydrationHref;
+  } catch {
+    return false;
+  }
 }
 
 function scheduleHardNavigationAndThrow(url: string, message: string): never {
   assertSafeNavigationUrl(url, HardNavigationScheduledError);
   if (typeof window === "undefined") {
     throw new HardNavigationScheduledError(message);
+  }
+  const hydrationQueryUpdate = routerRuntimeState.hydrationQueryUpdate;
+  if (
+    hydrationQueryUpdate?.navigationId === routerRuntimeState.navigationId &&
+    isHydrationQueryUpdateReload(url, hydrationQueryUpdate.href)
+  ) {
+    throw new SameUrlHardNavigationError(url);
   }
   window.location.href = url;
   throw new HardNavigationScheduledError(message);
@@ -1662,6 +1708,8 @@ type NavigateClientOptions = {
   allowNotFoundResponse?: boolean;
   locale?: string;
   isHydrationQueryUpdate?: boolean;
+  /** Document href the hydration query update started on (set only for `_h: 1`). */
+  hydrationHref?: string;
   /**
    * Route state to preserve while rendering an error-route component. A
    * getServerSideProps/getStaticProps notFound transition renders /404, but
@@ -1783,11 +1831,6 @@ function hasClientRewriteRules(): boolean {
   );
 }
 
-function hasClientRedirectRules(): boolean {
-  const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
-  return Array.isArray(redirects) && redirects.length > 0;
-}
-
 function hasClientAppRouteManifest(): boolean {
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   const routeHandlers = window.__VINEXT_APP_ROUTE_HANDLERS__;
@@ -1797,12 +1840,14 @@ function hasClientAppRouteManifest(): boolean {
   );
 }
 
-function getClientConfigRouteContext(href: string): {
+type ClientConfigRouteContext = {
   basePathState: { basePath: string; hadBasePath: boolean };
   context: RequestContext;
   pathname: string;
   search: string;
-} | null {
+};
+
+function getClientConfigRouteContext(href: string): ClientConfigRouteContext | null {
   let parsed: URL;
   try {
     parsed = new URL(href, window.location.href);
@@ -1839,12 +1884,11 @@ function configRedirectLeavesBasePath(location: string): boolean {
   return !hasBasePath(new URL(location, "http://vinext.local").pathname, __basePath);
 }
 
-async function resolveClientConfigRedirect(href: string): Promise<string | null> {
+async function resolveClientConfigRedirect(
+  routeContext: ClientConfigRouteContext,
+): Promise<string | null> {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
   if (!redirects || redirects.length === 0) return null;
-
-  const routeContext = getClientConfigRouteContext(href);
-  if (!routeContext) return null;
 
   const [{ matchClientRedirect }, { encodeRedirectLocation, preserveRedirectDestinationQuery }] =
     await Promise.all([
@@ -1871,14 +1915,14 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   );
 }
 
-async function applyClientConfigRewrite(
+function applyClientConfigRewrite(
   href: string,
   rewrite: ClientRewrite,
-): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
+  matchClientRewrite: typeof import("../client/client-rewrite-matcher.js").matchClientRewrite,
+): { href: string; kind: "rewrite" } | { kind: "document" } | null {
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
-  const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
   const result = matchClientRewrite(
     routeContext.pathname,
     rewrite,
@@ -1918,21 +1962,26 @@ function isExternalClientConfigUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
-function clientConfigRedirectCouldMatch(href: string): boolean {
+/**
+ * The route context of `href` when some config redirect source matches it, so
+ * resolveClientConfigRedirect can reuse it instead of parsing the URL and
+ * cookies again. Null when no redirect can match.
+ */
+function getClientConfigRedirectRouteContext(href: string): ClientConfigRouteContext | null {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
-  if (!redirects || redirects.length === 0) return false;
+  if (!redirects || redirects.length === 0) return null;
 
   const routeContext = getClientConfigRouteContext(href);
-  if (!routeContext) return false;
+  if (!routeContext) return null;
 
   for (const redirect of redirects) {
     if (!shouldEvaluateClientConfigRule(redirect.basePath, routeContext.basePathState)) {
       continue;
     }
-    if (execConfigSource(routeContext.pathname, redirect.source) !== null) return true;
+    if (execConfigSource(routeContext.pathname, redirect.source) !== null) return routeContext;
   }
 
-  return false;
+  return null;
 }
 
 function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolution {
@@ -1991,7 +2040,7 @@ function reusesMountedConfigRewritePage(href: string): boolean {
 
   if (target.origin !== current.origin || target.pathname !== current.pathname) return false;
   if (target.search === current.search) return false;
-  if (clientConfigRedirectCouldMatch(href)) return false;
+  if (getClientConfigRedirectRouteContext(href)) return false;
 
   const rewrite = resolveClientConfigRewriteSync(href);
   if (rewrite?.kind !== "rewrite") return false;
@@ -2016,12 +2065,13 @@ async function resolveClientConfigRewrite(
   href: string,
 ): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
-  if (!rewrites) return null;
+  if (!rewrites || rewrites.beforeFiles.length === 0) return null;
 
+  const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
-    const result = await applyClientConfigRewrite(currentHref, rewrite);
+    const result = applyClientConfigRewrite(currentHref, rewrite, matchClientRewrite);
     if (result?.kind === "document") return result;
     if (result?.kind !== "rewrite") continue;
     currentHref = result.href;
@@ -2845,6 +2895,9 @@ async function navigateClient(
   routerRuntimeState.activeAbortController = controller;
 
   const navId = ++routerRuntimeState.navigationId;
+  if (options.hydrationHref !== undefined) {
+    routerRuntimeState.hydrationQueryUpdate = { navigationId: navId, href: options.hydrationHref };
+  }
   let middlewareDataCacheEvictHref: string | null = null;
 
   /** Check if this navigation is still the active one. If not, throw. */
@@ -2866,10 +2919,10 @@ async function navigateClient(
       let browserUrl = url;
       let htmlFetchUrl = fetchUrl;
       const routeMasked = options.routeMasked ?? routeUrl !== url;
-      const configRedirect =
-        hasClientRedirectRules() && clientConfigRedirectCouldMatch(browserUrl)
-          ? await resolveClientConfigRedirect(browserUrl)
-          : null;
+      const redirectRouteContext = getClientConfigRedirectRouteContext(browserUrl);
+      const configRedirect = redirectRouteContext
+        ? await resolveClientConfigRedirect(redirectRouteContext)
+        : null;
       if (configRedirect) {
         const redirectedUrl = configRedirectLeavesBasePath(configRedirect)
           ? null
@@ -3027,6 +3080,9 @@ async function navigateClient(
     if (navId === routerRuntimeState.navigationId) {
       routerRuntimeState.activeAbortController = null;
     }
+    if (routerRuntimeState.hydrationQueryUpdate?.navigationId === navId) {
+      routerRuntimeState.hydrationQueryUpdate = null;
+    }
     if (middlewareDataCacheEvictHref !== null) {
       evictPagesDataCache(middlewareDataCacheEvictHref);
     }
@@ -3078,8 +3134,14 @@ async function runNavigateClient(
     // navigation so the browser lands on the correct page. Known failure modes
     // throw HardNavigationScheduledError, and this guard skips those; only
     // unexpected failures (parse, import, render) need recovery here.
-    if (typeof window !== "undefined" && !(err instanceof HardNavigationScheduledError)) {
-      window.location.href = options.redirectBrowserHref ?? fullUrl;
+    const fallbackUrl = options.redirectBrowserHref ?? fullUrl;
+    if (
+      typeof window !== "undefined" &&
+      !(err instanceof HardNavigationScheduledError) &&
+      !(err instanceof SameUrlHardNavigationError) &&
+      !isHydrationQueryUpdateReload(fallbackUrl, options.hydrationHref)
+    ) {
+      window.location.href = fallbackUrl;
     }
     return "failed";
   }
@@ -3275,6 +3337,10 @@ async function performNavigation(
     throwNoRouterInstance();
   }
 
+  // The hydration query update starts on the committed document. A redirect
+  // it follows keeps that href, since history moves before the target commits.
+  const hydrationHref =
+    options?._h === 1 ? (options._vinextHydrationHref ?? window.location.href) : undefined;
   const inputHref = resolveUrl(url);
   const sameOriginPath = isAbsoluteUrl(inputHref) ? toSameOriginPath(inputHref) : null;
   const origin = getWindowOrigin();
@@ -3551,6 +3617,7 @@ async function performNavigation(
     scroll: scrollTarget,
     isHydrationQueryUpdate: options?._h === 1,
   };
+  if (hydrationHref !== undefined) navigateOptions.hydrationHref = hydrationHref;
   if (redirectBrowserHref !== undefined) {
     navigateOptions.redirectBrowserHref = redirectBrowserHref;
   }
@@ -3752,7 +3819,7 @@ async function performNavigation(
       return performNavigation(
         result.redirectDestination,
         undefined,
-        { ...options, locale: false },
+        { ...options, locale: false, _vinextHydrationHref: hydrationHref },
         mode,
         onStateUpdate,
         isAbsoluteOrProtocolRelativeUrl(result.redirectDestination)
@@ -4649,8 +4716,7 @@ if (typeof window !== "undefined") {
 // Register the Pages Router compat shim source for `next/navigation` hooks
 // (useParams / useSearchParams / usePathname). The accessor is exposed
 // through a well-known Symbol.for so navigation.ts can read it without
-// importing this module — that avoids triggering navigation.ts's
-// `window.history.pushState` patch in tests that only need next/router.
+// importing this module, and pages that use those hooks don't load it.
 //
 // Mirrors Next.js's behavior where the pages-router server (render.tsx) and
 // client (client/index.tsx) wrap pages with SearchParamsContext /

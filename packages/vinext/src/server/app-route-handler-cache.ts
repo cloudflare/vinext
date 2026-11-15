@@ -7,6 +7,7 @@ import {
   assertSupportedAppRouteHandlerResponse,
   buildAppRouteCacheValue,
   buildRouteHandlerCachedResponse,
+  stripAppRouteHandlerRouteMissMarker,
 } from "./app-route-handler-response.js";
 import { markKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
 import { resolveAppRouteHandlerSpecialError } from "./app-route-handler-policy.js";
@@ -171,8 +172,9 @@ export async function readAppRouteHandlerCacheResponse(
             options.cleanPathname,
             options.getCollectedFetchTags(),
           );
+          // The body's producer may have set headers while completing.
           const routeCacheValue = await buildAppRouteCacheValue(
-            completed.response,
+            stripAppRouteHandlerRouteMissMarker(completed.response),
             response.headers.get("Cache-Control") ?? undefined,
           );
           await options.isrSet(routeKey, routeCacheValue, {

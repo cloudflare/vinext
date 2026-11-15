@@ -28,6 +28,10 @@ export function formatDeployHelp(deploymentTool: DeploymentTool): string {
     --preview                Deploy to preview environment (same as --env preview)
     --env <name>             Cloudflare mode for typed config; Wrangler environment otherwise
 ${wranglerOptions}    --vite-config <path>     Vite config file to build with (default: vite.config.*)
+    --message <text>         Message for the uploaded Worker version (default in CI:
+                             the latest commit message; pass "" to omit)
+    --tag <text>             Tag for the uploaded Worker version (default in CI:
+                             the short latest commit SHA; pass "" to omit)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying
     --verbose                Print raw output from internal Cloudflare CLI commands
@@ -132,15 +136,13 @@ export function formatPreviewsDeployHelp(): string {
   return `
   vinext-cloudflare previews deploy - Deploy a Cloudflare Worker Preview
 
-  Usage: vinext-cloudflare previews deploy [preview-name] [options]
+  Usage: vinext-cloudflare previews deploy [options]
 
   Builds the app with isPreview=true, then deploys its Preview Build Output
   using cf previews deploy. Requires cloudflare.config.ts and the cf CLI.
 
-  Arguments:
-    preview-name    Optional Preview name (cf uses the CI or Git branch if omitted)
-
   Options:
+    --preview-name <name>  Preview name (default: the current CI or Git branch)
     --mode <mode>          Vite mode to build and deploy in (default: production)
     --skip-build           Deploy existing Preview Build Output without rebuilding
     --vite-config <path>   Vite config file to build with (default: vite.config.*)
@@ -148,9 +150,9 @@ export function formatPreviewsDeployHelp(): string {
 
   Examples:
     vinext-cloudflare previews deploy
-    vinext-cloudflare previews deploy pr-123
-    vinext-cloudflare previews deploy pr-123 --mode staging
-    vinext-cloudflare previews deploy pr-123 --skip-build
+    vinext-cloudflare previews deploy --preview-name pr-123
+    vinext-cloudflare previews deploy --preview-name pr-123 --mode staging
+    vinext-cloudflare previews deploy --preview-name pr-123 --skip-build
 `;
 }
 

@@ -13,6 +13,8 @@ import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager"
 
 > Migration is non-destructive. `vinext init` leaves your Next.js scripts and source files in place, then adds parallel `*:vinext` scripts for evaluation.
 
+If the app is deployed to Cloudflare Workers with OpenNext, follow [Migrate from OpenNext](/docs/getting-started/migrating-from-opennext) instead of the check and init steps below. It covers initializing vinext next to OpenNext's Wrangler config, which `vinext init --platform=cloudflare` otherwise refuses to replace, and moving the config, bindings, caching, and images.
+
 ## Migrate with an AI agent
 
 To have an AI agent investigate compatibility issues and guide the migration, install the optional vinext Agent Skill. It works with Claude Code, OpenCode, Cursor, Codex, and other AI coding tools:

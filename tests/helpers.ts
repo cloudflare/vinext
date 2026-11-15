@@ -8,6 +8,7 @@
  */
 
 import http, { type IncomingHttpHeaders } from "node:http";
+import zlib from "node:zlib";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -640,6 +641,40 @@ export async function requestExternalRewriteHeaders(
     upstream.closeAllConnections();
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
   }
+}
+
+/**
+ * Start an upstream that answers every request with a gzip-encoded text body,
+ * framed by its compressed Content-Length.
+ */
+export async function startGzipUpstream(): Promise<{
+  port: number;
+  body: string;
+  hits: (pathAndQuery: string) => number;
+  close: () => Promise<void>;
+}> {
+  const body = "gzip upstream body ".repeat(64);
+  const compressed = zlib.gzipSync(body);
+  const hits = new Map<string, number>();
+  const upstream = http.createServer((req, res) => {
+    hits.set(req.url ?? "", (hits.get(req.url ?? "") ?? 0) + 1);
+    res.writeHead(200, {
+      "Content-Type": "text/plain",
+      "Content-Encoding": "gzip",
+      "Content-Length": compressed.length,
+    });
+    res.end(compressed);
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  return {
+    port: (upstream.address() as { port: number }).port,
+    body,
+    hits: (pathAndQuery) => hits.get(pathAndQuery) ?? 0,
+    close: async () => {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    },
+  };
 }
 
 // next.config's three rewrite phases and a middleware rewrite.

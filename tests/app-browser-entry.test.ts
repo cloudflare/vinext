@@ -100,6 +100,7 @@ import {
   getPendingAppRouterScrollIntent,
   isLatestAppRouterScrollIntent,
 } from "../packages/vinext/src/shims/app-router-scroll-state.js";
+import * as appRouterNavigationShim from "../packages/vinext/src/shims/app-router-navigation.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createBfcacheSegmentIdentityMap,
@@ -493,9 +494,12 @@ function createRootChangeRouteManifest(
 
 type TestPendingDispositionOptions = {
   activeNavigationId: number;
+  currentActiveOperation?: AppRouterState["activeOperation"];
   currentRootLayoutTreePath: string | null;
   currentVisibleCommitVersion: number;
   nextRootLayoutTreePath: string | null;
+  // Omitted for an HMR-shaped operation, which carries no navigation id.
+  pendingNavigationId?: number | null;
   renderId?: number;
   startedNavigationId: number;
   startedVisibleCommitVersion: number;
@@ -509,6 +513,7 @@ async function resolveTestPendingNavigationCommitDispositionDecision(
     visibleCommitVersion: options.startedVisibleCommitVersion,
   });
   const currentState = createState({
+    activeOperation: options.currentActiveOperation ?? null,
     rootLayoutTreePath: options.currentRootLayoutTreePath,
     visibleCommitVersion: options.currentVisibleCommitVersion,
   });
@@ -518,6 +523,10 @@ async function resolveTestPendingNavigationCommitDispositionDecision(
     nextElements: Promise.resolve(
       createResolvedElements("route:/dashboard", options.nextRootLayoutTreePath),
     ),
+    navigationId:
+      options.pendingNavigationId === null
+        ? undefined
+        : (options.pendingNavigationId ?? options.startedNavigationId),
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
     operationLane: "navigation",
     renderId: options.renderId ?? options.startedNavigationId,
@@ -1161,7 +1170,7 @@ describe("app browser entry navigation scheduling", () => {
     stubWindow("https://example.com/current");
 
     const responseUrl = "https://example.com/target?_rsc=fresh";
-    const snapshot = navigationShim.createCachedRscResponseSnapshot(
+    const snapshot = appRouterNavigationShim.createCachedRscResponseSnapshot(
       new Response("unused", {
         headers: {
           "content-type": "text/x-component",
@@ -1186,7 +1195,7 @@ describe("app browser entry navigation scheduling", () => {
       }),
     ).toEqual({ kind: "compatible" });
 
-    const replayed = navigationShim.restoreRscResponse(snapshot);
+    const replayed = appRouterNavigationShim.restoreRscResponse(snapshot);
     expect(replayed.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
     expect(replayed.headers.get(VINEXT_MOUNTED_SLOTS_HEADER)).toBe("children");
     expect(replayed.headers.get(VINEXT_PARAMS_HEADER)).toBe("%7B%22slug%22%3A%22target%22%7D");
@@ -2206,6 +2215,78 @@ describe("app browser entry state helpers", () => {
       currentVisibleCommitVersion: 1,
       currentRootLayoutTreePath: "/",
       nextRootLayoutTreePath: "/",
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision.disposition).toBe("skip");
+    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.staleOperation);
+  });
+
+  it("commits over a visible commit from a navigation it superseded", async () => {
+    // Rapid same-route clicks: the first navigation's render advances the
+    // version after the second one started. The latest navigation still wins.
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentActiveOperation: {
+        id: 1,
+        lane: "navigation",
+        navigationId: 1,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision.disposition).toBe("dispatch");
+  });
+
+  it("stays stale after a refresh commit that started under an older navigation", async () => {
+    // A server action revalidation commits on the refresh lane under the
+    // navigation id it started with; it is not a superseded navigation.
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentActiveOperation: {
+        id: 1,
+        lane: "refresh",
+        navigationId: 1,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision.disposition).toBe("skip");
+    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.staleOperation);
+  });
+
+  it("stays stale for an operation without a navigation id that compares a render id", async () => {
+    // HMR approval passes its render id as startedNavigationId, so an id
+    // ahead of a committed navigation's must not read as superseding it.
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentActiveOperation: {
+        id: 1,
+        lane: "navigation",
+        navigationId: 1,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      pendingNavigationId: null,
       startedNavigationId: 2,
       startedVisibleCommitVersion: 0,
     });

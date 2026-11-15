@@ -42,6 +42,12 @@ export type ExecutionContextLike = {
   /** Host runtime executing the current request. */
   hostRuntime?: "node" | "worker";
   /**
+   * Set by the Node production server. A Pages API handler that outlives its
+   * response is not registered with waitUntil, so, as in `next start`, a
+   * graceful shutdown does not wait for it.
+   */
+  skipsPagesApiHandlerWaitUntil?: boolean;
+  /**
    * Optional host-provided cache handle that some runtimes expose on the
    * execution context. Typed as `unknown` to keep this module runtime-agnostic;
    * CDN cache adapters that know the concrete shape narrow it themselves.

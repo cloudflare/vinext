@@ -1295,6 +1295,164 @@ describe("Cloudflare CDN warmup", () => {
     }
   });
 
+  // Issue #4702: middleware or proxy that answers an RSC request in the
+  // uncached request stage sends no RSC payload, so no RSC build identity.
+  describe("an RSC target that middleware answers in the request stage", () => {
+    const middlewareRedirect = (headers: Record<string, string>) =>
+      new Response(null, {
+        status: 307,
+        headers: {
+          location: "/login",
+          [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          ...headers,
+        },
+      });
+    const warmRsc = (response: () => Response, statusSource: "cloudflare" | "vinext") =>
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: vi.fn(async () => response()) as typeof fetch,
+        paths: [],
+        retries: 0,
+        rscPaths: ["/dashboard"],
+        statusSource,
+        targetUrl: "https://app.example.com",
+      });
+
+    // The Workers Cache gateway answers without a response-stage subrequest,
+    // so the response carries no CF-Cache-Status at all.
+    it.each([
+      ["Workers Cache", "cloudflare", {}],
+      ["Workers Cache and a cookie", "cloudflare", { "set-cookie": "seen=1" }],
+      ["the Response Store", "vinext", {}],
+    ] as const)("is skipped with %s", async (_name, statusSource, headers) => {
+      const result = await warmRsc(
+        () => middlewareRedirect({ ...headers, "x-vinext-cache": "BYPASS" }),
+        statusSource,
+      );
+      expect(result).toMatchObject({ failed: 0, skipped: 1, warmed: 0 });
+    });
+
+    // Middleware's own 200 response or an external rewrite is no RSC payload.
+    it.each(["cloudflare", "vinext"] as const)(
+      "is skipped when middleware answers with its own 200 response (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(
+          () =>
+            new Response("<p>Sign in</p>", {
+              headers: {
+                "content-type": "text/html",
+                "x-vinext-cache": "BYPASS",
+                [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              },
+            }),
+          statusSource,
+        );
+        expect(result).toMatchObject({ failed: 0, skipped: 1, warmed: 0 });
+      },
+    );
+
+    // An external rewrite to another App Router answers with its Flight
+    // payload, and the request stage drops the upstream's RSC build identity.
+    it.each(["cloudflare", "vinext"] as const)(
+      "is skipped when middleware rewrites to an upstream Flight payload (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(
+          () =>
+            new Response("0:null\n", {
+              headers: {
+                "content-type": "text/x-component",
+                "x-vinext-cache": "BYPASS",
+                [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              },
+            }),
+          statusSource,
+        );
+        expect(result).toMatchObject({ failed: 0, skipped: 1, warmed: 0 });
+      },
+    );
+
+    // A render's payload carries its RSC build identity, so it must match.
+    it("still fails when an RSC payload labelled BYPASS is another RSC build's", async () => {
+      const result = await warmRsc(
+        () =>
+          new Response("0:null\n", {
+            headers: {
+              "content-type": "text/x-component",
+              "x-vinext-cache": "BYPASS",
+              [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-old",
+            },
+          }),
+        "vinext",
+      );
+      expect(result.failures).toEqual([
+        {
+          path: "/dashboard (RSC full)",
+          error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build rsc-build-a`,
+        },
+      ]);
+    });
+
+    // The Response Store also labels an uncacheable render BYPASS, so a server
+    // error must still fail, whichever stage sent it.
+    it.each(["cloudflare", "vinext"] as const)(
+      "still fails on a server error labelled BYPASS (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(
+          () =>
+            new Response("Internal Server Error", {
+              status: 500,
+              headers: {
+                "cache-control": "no-store",
+                "content-type": "text/plain",
+                "x-vinext-cache": "BYPASS",
+                [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              },
+            }),
+          statusSource,
+        );
+        expect(result.skipped).toBe(0);
+        expect(result.failures).toEqual([{ path: "/dashboard (RSC full)", error: "HTTP 500" }]);
+      },
+    );
+
+    it.each(["cloudflare", "vinext"] as const)(
+      "still fails without the request-stage BYPASS label (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(() => middlewareRedirect({}), statusSource);
+        expect(result.failures).toEqual([
+          {
+            path: "/dashboard (RSC full)",
+            error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build rsc-build-a`,
+          },
+        ]);
+      },
+    );
+
+    it("still fails with Workers Cache when another stage reports the BYPASS label", async () => {
+      const result = await warmRsc(
+        () => middlewareRedirect({ "cf-cache-status": "DYNAMIC", "x-vinext-cache": "BYPASS" }),
+        "cloudflare",
+      );
+      expect(result.failures).toEqual([
+        { path: "/dashboard (RSC full)", error: "CF-Cache-Status is DYNAMIC" },
+      ]);
+    });
+
+    it("still fails when the build identity is another build's", async () => {
+      const result = await warmRsc(
+        () =>
+          middlewareRedirect({
+            "x-vinext-cache": "BYPASS",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "old-build",
+          }),
+        "vinext",
+      );
+      expect(result.failed).toBe(1);
+    });
+  });
+
   it("does not skip a non-success response from a different build", async () => {
     const fetchImpl = vi.fn(
       async () =>

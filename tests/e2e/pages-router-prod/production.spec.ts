@@ -112,11 +112,12 @@ test.describe("Pages Router Production Build", () => {
     );
   });
 
-  test("only pages that use next/navigation load the App Router runtime", async ({
+  test("pages that use next/navigation don't load the App Router runtime", async ({
     page,
     request,
   }) => {
-    // A string literal that ships only with the App Router navigation runtime.
+    // A string literal that ships only with the App Router navigation runtime's
+    // chunk (from its navigation planner).
     const appRouterMarker = "Unknown requested navigation work";
     const loadsAppRouterRuntime = async (path: string): Promise<boolean> => {
       await page.goto(`${BASE}${path}`);
@@ -132,8 +133,11 @@ test.describe("Pages Router Production Build", () => {
     };
 
     expect(await loadsAppRouterRuntime("/about")).toBe(false);
-    expect(await loadsAppRouterRuntime("/nav-compat/hello?q=1")).toBe(true);
+    // Like Next.js, next/navigation's hooks ship without the App Router runtime.
+    expect(await loadsAppRouterRuntime("/nav-compat/hello?q=1")).toBe(false);
     await expect(page.locator("#use-params")).toHaveText('{"slug":"hello"}');
+    // next/form still imports the runtime.
+    expect(await loadsAppRouterRuntime("/form-test")).toBe(true);
   });
 
   test("SSR page renders with getServerSideProps data", async ({ page }) => {
