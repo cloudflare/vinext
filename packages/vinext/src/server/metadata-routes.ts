@@ -546,7 +546,7 @@ export function matchMetadataRoutePattern(
   return matchRoutePattern(urlParts, patternParts);
 }
 
-function metadataRouteSuffix(parentSegments: string[], metaType: string): string {
+export function metadataRouteSuffix(parentSegments: string[], metaType: string): string {
   if (metaType === "sitemap") {
     // Sitemap is exempt per Next.js (robots/manifest are root-only, so
     // invisible parents never apply — but we keep the exemption list
