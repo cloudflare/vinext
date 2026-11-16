@@ -208,10 +208,10 @@ export async function invokeClientServerAction(
   // navigation that superseded the action, or was pending when it was posted,
   // owns what loads next: as in Next.js, it discards the action's state, and
   // its own request runs into the same mismatch.
-  if (
+  const discardedIncompatibleResponse =
     actionResultDecision.kind === "hardNavigate" &&
-    !deps.ownsRouterForServerAction(actionInitiation)
-  ) {
+    !deps.ownsRouterForServerAction(actionInitiation);
+  if (discardedIncompatibleResponse) {
     if (actionRedirectTarget !== null) {
       // The action still ran, so data it revalidated is refreshed afterwards.
       const discardedRevalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
@@ -221,7 +221,8 @@ export async function invokeClientServerAction(
     }
     // Without a redirect, the caller still gets the action's value or error,
     // as in Next.js. Its tree goes to the commit below, whose ownership check
-    // discards it and refreshes what it revalidated.
+    // discards it and refreshes what it revalidated; a result without a tree
+    // is refreshed where it returns.
   } else if (
     applyServerActionResultDecision(
       actionResultDecision,
@@ -305,6 +306,8 @@ export async function invokeClientServerAction(
         renderedPathAndSearch,
       );
     }
+    // A forwarded action revalidates without rendering the page.
+    if (discardedIncompatibleResponse) deps.notifyDiscardedServerActionRevalidation(revalidation);
     if (result.returnValue) {
       if (!result.returnValue.ok) {
         throw await normalizeServerActionThrownValue(result.returnValue.data, fetchResponse.status);

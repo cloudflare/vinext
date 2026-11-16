@@ -411,7 +411,9 @@ describe("app browser server action client", () => {
     });
 
     it("rejects with a discarded action's error", async () => {
-      const { actionInitiation, deps } = setUpIncompatibleResponse();
+      const { actionInitiation, deps } = setUpIncompatibleResponse({
+        [ACTION_REVALIDATED_HEADER]: "2",
+      });
       const thrown = new Error("action failed");
       vi.mocked(createFromFetch).mockResolvedValueOnce({
         returnValue: { ok: false, data: thrown },
@@ -422,6 +424,26 @@ describe("app browser server action client", () => {
       );
       expect(deps.performHardNavigation).not.toHaveBeenCalled();
       expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
+    });
+
+    it("refreshes what a discarded forwarded action revalidated without a tree", async () => {
+      // A forwarded action revalidates but skips page rendering: the response
+      // carries only its value.
+      const { actionInitiation, deps } = setUpIncompatibleResponse({
+        [ACTION_REVALIDATED_HEADER]: "1",
+      });
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok: true, data: "saved" },
+      });
+
+      await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
+        "saved",
+      );
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(deps.clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("staticAndDynamic");
     });
 
     it("discards an incompatible redirect and refreshes what the action revalidated", async () => {
