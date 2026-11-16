@@ -50,12 +50,18 @@ test("does not show a rewritten prefetch's loading shell for another route", asy
   const navigationGate = new Promise<void>((resolve) => {
     releaseNavigation = resolve;
   });
+  let navigationRequested = false;
   await page.route(`**${ROOT}/accounts/a/activity?_rsc*`, async (route) => {
+    navigationRequested = true;
     await navigationGate;
     await route.continue();
   });
 
   await page.click("#activity-link");
+  // The router starts rendering any optimistic shell before it sends the
+  // navigation request, so once the request is held, a shell would be on its
+  // way. The observer above records it if it shows up before the release.
+  await expect.poll(() => navigationRequested).toBe(true);
   await page.waitForTimeout(500);
   await expect(page.locator("#dataset-loading")).toHaveCount(0);
   await expect(page.locator("#dataset-header")).toHaveCount(0);
