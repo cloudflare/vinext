@@ -2246,9 +2246,10 @@ describe("app browser entry state helpers", () => {
     expect(decision.disposition).toBe("dispatch");
   });
 
-  it("stays stale after a refresh commit that started under an older navigation", async () => {
-    // A server action revalidation commits on the refresh lane under the
-    // navigation id it started with; it is not a superseded navigation.
+  it("commits over a refresh commit that started under an older navigation", async () => {
+    // A server action revalidates, then its caller runs router.back(). React
+    // renders the action's refresh-lane commit after the traversal started;
+    // the traversal still wins.
     const decision = await resolveTestPendingNavigationCommitDispositionDecision({
       activeNavigationId: 2,
       currentActiveOperation: {
@@ -2266,8 +2267,7 @@ describe("app browser entry state helpers", () => {
       startedVisibleCommitVersion: 0,
     });
 
-    expect(decision.disposition).toBe("skip");
-    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.staleOperation);
+    expect(decision.disposition).toBe("dispatch");
   });
 
   it("stays stale for an operation without a navigation id that compares a render id", async () => {
