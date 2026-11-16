@@ -162,6 +162,15 @@ export function isRemoteUrl(src: string): boolean {
   return src.startsWith("http://") || src.startsWith("https://") || src.startsWith("//");
 }
 
+/**
+ * `data:` and `blob:` sources are served as-is and never lazy, matching
+ * Next.js `get-img-props.js`:
+ * `if (!src || src.startsWith('data:') || src.startsWith('blob:')) { unoptimized = true; isLazy = false; }`
+ */
+export function isDataOrBlobUrl(src: string): boolean {
+  return src.startsWith("data:") || src.startsWith("blob:");
+}
+
 export function isSvgUrl(src: string): boolean {
   try {
     return new URL(src, "http://vinext.local").pathname.toLowerCase().endsWith(".svg");
@@ -381,8 +390,9 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
     blurDataURL: imgBlurDataURL,
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL: blurDataURLProp });
   const shouldPreload = _preload === true || priority === true;
+  const isInlineSrc = isDataOrBlobUrl(src);
 
-  if (_unoptimized === true || __globallyUnoptimized) {
+  if (_unoptimized === true || __globallyUnoptimized || isInlineSrc) {
     // As in the component path, unoptimized images never reach the server-side
     // optimizer, so remote URL validation is intentionally unnecessary.
     const renderedSrc = overrideSrc || src;
@@ -401,7 +411,7 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
       alt,
       width: fill ? undefined : imgWidth,
       height: fill ? undefined : imgHeight,
-      loading: priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy"),
+      loading: priority ? "eager" : shouldPreload || isInlineSrc ? loading : (loading ?? "lazy"),
       fetchPriority: priority ? ("high" as const) : undefined,
       decoding: "async" as const,
       className,
