@@ -356,6 +356,9 @@ export function createAppBrowserNavigationController(
   // started committing. An older navigation's render can still commit after
   // it began, but does not make its destination visible.
   let pendingUserNavigationOwnCommitStarted = false;
+  // The render a history-snapshot restore dispatched for the pending user
+  // navigation. It is not in pendingNavigationCommits, but is its own commit.
+  let pendingUserNavigationRestoreRenderId: number | null = null;
   let latestHmrUpdateId = 0;
   const pendingNavigationCommits = new Map<
     number,
@@ -431,6 +434,7 @@ export function createAppBrowserNavigationController(
     pendingUserNavigationLane = null;
     pendingUserNavigationCommitStarted = false;
     pendingUserNavigationOwnCommitStarted = false;
+    pendingUserNavigationRestoreRenderId = null;
     pendingUserNavigationShellHref = null;
     retiredNavigationUrl = null;
     return activeNavigationId;
@@ -715,8 +719,10 @@ export function createAppBrowserNavigationController(
     } else {
       pendingUserNavigationCommitStarted = true;
       if (
-        committingOperation?.navigationId !== undefined &&
-        committingOperation.navigationId === pendingUserNavigationId
+        (committingOperation?.navigationId !== undefined &&
+          committingOperation.navigationId === pendingUserNavigationId) ||
+        (pendingUserNavigationRestoreRenderId !== null &&
+          renderId === pendingUserNavigationRestoreRenderId)
       ) {
         pendingUserNavigationOwnCommitStarted = true;
       }
@@ -985,9 +991,10 @@ export function createAppBrowserNavigationController(
       : options.targetHref;
 
     const currentState = getBrowserRouterState();
+    const renderId = allocateRenderId();
     const pending = createRestoredHistorySnapshotCommit({
       currentState,
-      renderId: allocateRenderId(),
+      renderId,
       restoredState: options.state,
     });
     const approval = approvePendingNavigationCommit({
@@ -1004,6 +1011,9 @@ export function createAppBrowserNavigationController(
     }
 
     options.beforeCommit?.();
+    if (options.navId === pendingUserNavigationId) {
+      pendingUserNavigationRestoreRenderId = renderId;
+    }
     dispatchVisibleCommit(approval.approvedCommit);
     return true;
   }

@@ -101,6 +101,7 @@ describe("app browser server action client", () => {
             clientRscCompatibilityId: null,
             commitSameUrlNavigatePayload: vi.fn(),
             navigationPlanner,
+            notifyDiscardedServerActionRevalidation: vi.fn(),
             ownsRouterForServerAction: () => true,
             performHardNavigation,
             renderRedirectPayload,
@@ -179,6 +180,7 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
       ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
@@ -256,6 +258,7 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
       ownsRouterForServerAction: () => true,
       performHardNavigation,
       renderRedirectPayload,
@@ -311,6 +314,7 @@ describe("app browser server action client", () => {
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
         ownsRouterForServerAction: () => true,
         performHardNavigation: vi.fn(),
         renderRedirectPayload: vi.fn(),
@@ -323,7 +327,7 @@ describe("app browser server action client", () => {
     expect(clearClientNavigationCaches).not.toHaveBeenCalled();
   });
 
-  it("only reloads for an incompatible action response while the action owns the router", async () => {
+  it("only reloads for an incompatible action response while the action owns the router, and refreshes its revalidation otherwise", async () => {
     const actionInitiation = createServerActionInitiationSnapshot({
       href: "https://example.com/source?tab=profile",
       navigationId: 1,
@@ -341,6 +345,7 @@ describe("app browser server action client", () => {
             status: 200,
             headers: {
               "content-type": "text/x-component",
+              [ACTION_REVALIDATED_HEADER]: "1",
               [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "next-deployment",
             },
           }),
@@ -349,13 +354,16 @@ describe("app browser server action client", () => {
     const commitSameUrlNavigatePayload = vi.fn();
     const performHardNavigation = vi.fn();
     const ownsRouterForServerAction = vi.fn(() => false);
+    const clearClientNavigationCaches = vi.fn();
+    const notifyDiscardedServerActionRevalidation = vi.fn();
     const deps = {
       basePath: "",
-      clearClientNavigationCaches: vi.fn(),
+      clearClientNavigationCaches,
       clearDynamicClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: "current-deployment",
       commitSameUrlNavigatePayload,
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation,
       ownsRouterForServerAction,
       performHardNavigation,
       renderRedirectPayload: vi.fn(),
@@ -372,6 +380,9 @@ describe("app browser server action client", () => {
     expect(performHardNavigation).not.toHaveBeenCalled();
     expect(commitSameUrlNavigatePayload).not.toHaveBeenCalled();
     expect(createFromFetch).not.toHaveBeenCalled();
+    // The action still ran: its revalidation is evicted and refreshed later.
+    expect(clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+    expect(notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("staticAndDynamic");
 
     ownsRouterForServerAction.mockReturnValue(true);
     await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
@@ -381,6 +392,7 @@ describe("app browser server action client", () => {
       "https://example.com/source?tab=profile",
       undefined,
     );
+    expect(notifyDiscardedServerActionRevalidation).toHaveBeenCalledTimes(1);
   });
 
   it("throws the action error without committing when the action failed", async () => {
@@ -415,6 +427,7 @@ describe("app browser server action client", () => {
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
         ownsRouterForServerAction: () => true,
         performHardNavigation: vi.fn(),
         renderRedirectPayload: vi.fn(),
@@ -475,6 +488,7 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
       ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
@@ -537,6 +551,7 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
       ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
@@ -605,6 +620,7 @@ describe("app browser server action client", () => {
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
         ownsRouterForServerAction: () => true,
         performHardNavigation: vi.fn(),
         renderRedirectPayload: vi.fn(),
@@ -660,6 +676,7 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
       ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),

@@ -67,6 +67,8 @@ export type ClientServerActionDeps = {
   navigationPlanner: typeof import("./navigation-planner.js").navigationPlanner;
   /** Whether the action may still change what is visible (see the controller). */
   ownsRouterForServerAction(actionInitiation: ClientServerActionInitiation): boolean;
+  /** Refreshes the current URL once navigations settle, for a discarded action that revalidated. */
+  notifyDiscardedServerActionRevalidation(revalidation: ServerActionRevalidationKind): void;
   performHardNavigation(url: string, historyMode?: "assign" | "replace"): void;
   renderRedirectPayload(
     elements: AppElements,
@@ -142,6 +144,15 @@ class ServerActionRedirectError extends Error {
   }
 }
 
+function evictClientNavigationCachesForRevalidation(
+  revalidation: ServerActionRevalidationKind,
+  deps: ClientServerActionDeps,
+): void {
+  // Like Next.js, `refresh()` alone keeps the static prefetches.
+  if (revalidation === "staticAndDynamic") deps.clearClientNavigationCaches();
+  else if (revalidation === "dynamicOnly") deps.clearDynamicClientNavigationCaches();
+}
+
 export async function invokeClientServerAction(
   id: string,
   args: unknown[],
@@ -201,6 +212,10 @@ export async function invokeClientServerAction(
     actionResultDecision.kind === "hardNavigate" &&
     !deps.ownsRouterForServerAction(actionInitiation)
   ) {
+    // The action still ran, so data it revalidated is refreshed afterwards.
+    const discardedRevalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
+    evictClientNavigationCachesForRevalidation(discardedRevalidation, deps);
+    deps.notifyDiscardedServerActionRevalidation(discardedRevalidation);
     return undefined;
   }
   if (
@@ -214,9 +229,7 @@ export async function invokeClientServerAction(
   }
 
   const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-  // Like Next.js, `refresh()` alone keeps the static prefetches.
-  if (revalidation === "staticAndDynamic") deps.clearClientNavigationCaches();
-  else if (revalidation === "dynamicOnly") deps.clearDynamicClientNavigationCaches();
+  evictClientNavigationCachesForRevalidation(revalidation, deps);
   const invalidResponseError = await readInvalidServerActionResponseError(
     fetchResponse.clone(),
     actionRedirectTarget !== null,

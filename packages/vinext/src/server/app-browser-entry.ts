@@ -110,6 +110,7 @@ import {
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
+  shouldScheduleRefreshForDiscardedServerAction,
   resolveServerActionOperationLane,
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
@@ -1895,6 +1896,11 @@ function registerServerActionCallback(): void {
           clientRscCompatibilityId,
           commitSameUrlNavigatePayload,
           navigationPlanner,
+          notifyDiscardedServerActionRevalidation(revalidation) {
+            if (shouldScheduleRefreshForDiscardedServerAction(revalidation)) {
+              discardedServerActionRefreshScheduler.schedule();
+            }
+          },
           ownsRouterForServerAction: (initiation) =>
             browserNavigationController.ownsRouterForServerAction(
               initiation.navigationId,

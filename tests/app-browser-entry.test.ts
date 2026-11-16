@@ -1655,6 +1655,62 @@ describe("app browser entry navigation scheduling", () => {
     });
   });
 
+  it("lets a server action posted while a restored history snapshot commits own the router", async () => {
+    const currentState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/other", {}),
+      routeId: "route:/other",
+      visibleCommitVersion: 7,
+    });
+    const snapshotState = createState({
+      elements: createResolvedElements("route:/restored", "/"),
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/restored", {}),
+      routeId: "route:/restored",
+      visibleCommitVersion: 2,
+    });
+    const { controller, detach, stateRef } = createControllerHarness(currentState);
+    stubWindow("https://example.com/restored");
+    const onDiscardedRevalidation = vi.fn();
+
+    try {
+      const navId = controller.beginNavigation();
+      expect(
+        controller.restoreHistorySnapshotVisibleState({
+          navId,
+          state: snapshotState,
+          targetHref: "https://example.com/restored",
+        }),
+      ).toBe(true);
+      // React commits the restored tree inside the popstate handler's flushSync,
+      // before it reaches finalizeNavigation(); the restored page's layout
+      // effects can post an action from there.
+      controller.beginNavigationRenderCommit(stateRef.current.renderId);
+      expect(controller.isUserNavigationUncommitted()).toBe(false);
+
+      await expect(
+        controller.commitSameUrlNavigatePayload(
+          Promise.resolve(createResolvedElements("route:/restored/action", "/")),
+          stateRef.current.navigationSnapshot,
+          { data: "saved", ok: true },
+          stateRef.current,
+          {
+            onDiscardedRevalidation,
+            revalidation: "dynamicOnly",
+            startedDuringUserNavigation: controller.isUserNavigationUncommitted(),
+            startedNavigationId: controller.getActiveNavigationId(),
+            targetHref: "https://example.com/restored",
+          },
+        ),
+      ).resolves.toBe("saved");
+
+      expect(stateRef.current.routeId).toBe("route:/restored/action");
+      expect(onDiscardedRevalidation).not.toHaveBeenCalled();
+      controller.commitNavigationRender(stateRef.current.renderId);
+      controller.finalizeNavigation(navId, null);
+    } finally {
+      detach();
+    }
+  });
+
   it("matches visible history snapshot targets after stripping basePath and canonicalizing search", () => {
     const currentState = createState({
       elements: createResolvedElements("route:/scroll-restoration/other", "/"),
