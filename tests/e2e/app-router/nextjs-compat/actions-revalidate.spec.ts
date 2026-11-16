@@ -171,6 +171,54 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     expect(sourceDocumentLoads).toEqual([]);
   });
 
+  // A document load answered with 204 leaves this document alive without any
+  // event. Discarded actions after it must still refresh what they revalidated.
+  test("discarded server action refreshes after a document load that left the page alive", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const destinationPath = "/nextjs-compat/action-discarding/destination";
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+
+    let destinationRscReads = 0;
+    let destinationDocumentLoads = 0;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.pathname !== destinationPath) return route.continue();
+      if (url.searchParams.has("_rsc")) {
+        destinationRscReads += 1;
+        // The first navigation falls back to a document load.
+        if (destinationRscReads === 1) return route.abort("failed");
+        return route.continue();
+      }
+      if (request.isNavigationRequest()) {
+        destinationDocumentLoads += 1;
+        return route.fulfill({ status: 204, body: "" });
+      }
+      return route.continue();
+    });
+
+    await page.click("#navigate-discard-destination");
+    await expect.poll(() => destinationDocumentLoads).toBe(1);
+    expect(new URL(page.url()).pathname).toBe(sourcePath);
+
+    const initialValue = await page.locator("#discarded-action-value").textContent();
+    if (!initialValue) {
+      throw new Error("Expected initial discarded action value");
+    }
+    const actionResponse = waitForActionDiscardingResponse(page);
+    await page.click("#slow-action-refresh");
+    await page.click("#navigate-discard-destination");
+    await expect(page.locator("#discard-destination")).toBeVisible();
+    await actionResponse;
+
+    await expect(page.locator("#discarded-action-value")).not.toHaveText(initialValue, {
+      timeout: 10_000,
+    });
+  });
+
   // Ported from Next.js: test/e2e/app-dir/actions-revalidate-remount/actions-revalidate-remount.test.ts
   test("revalidating server actions preserve client state under loading.tsx", async ({ page }) => {
     const loadingLogs: string[] = [];

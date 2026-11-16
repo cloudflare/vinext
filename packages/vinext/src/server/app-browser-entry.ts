@@ -414,6 +414,19 @@ const discardedServerActionRefreshScheduler = hasServerActions
       markNavigationStart() {},
       schedule() {},
     };
+// Scheduler settlements of navigations whose document load is pending.
+const heldMpaNavigationRefreshSettlements = new Set<() => void>();
+function holdMpaNavigationRefreshSettlement(): () => void {
+  const release = () => {
+    if (!heldMpaNavigationRefreshSettlements.delete(release)) return;
+    discardedServerActionRefreshScheduler.markNavigationSettled();
+  };
+  heldMpaNavigationRefreshSettlements.add(release);
+  return release;
+}
+function releaseHeldMpaNavigationRefreshSettlements(): void {
+  for (const release of heldMpaNavigationRefreshSettlements) release();
+}
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 const NavigationHistoryCommit = browserNavigationController.NavigationHistoryCommit;
@@ -2183,6 +2196,9 @@ function bootstrapHydration(
       navigationKind === "refresh" ? "refresh" : "navigation",
     );
     const navigationCacheGeneration = clientNavigationCacheGeneration;
+    // A document load that left this document alive (a cancelled unload, a
+    // 204 response) has no event, so a new navigation ends its hold.
+    releaseHeldMpaNavigationRefreshSettlements();
     discardedServerActionRefreshScheduler.markNavigationStart();
 
     // Loop variables for inline redirect following. On a redirect, these are
@@ -3119,10 +3135,12 @@ function bootstrapHydration(
       if (!startedHardNavigation) discardedServerActionRefreshScheduler.markNavigationSettled();
       releaseNavigationInFlight();
       if (startedHardNavigation) {
-        await waitForMpaNavigationRestore();
         // A discarded action's refresh would reload the old URL over the
-        // pending document load, so it waits until bfcache restores this one.
-        discardedServerActionRefreshScheduler.markNavigationSettled();
+        // pending document load, so it waits until bfcache restores this
+        // document, or until a later navigation shows the load was abandoned.
+        const release = holdMpaNavigationRefreshSettlement();
+        await waitForMpaNavigationRestore();
+        release();
       }
     }
   };
