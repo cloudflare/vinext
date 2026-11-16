@@ -21,6 +21,9 @@ type ServerActionInitiationSnapshot<TRouterState> = {
   navigationId: number;
   path: string;
   routerState: TRouterState;
+  // Whether a user navigation was pending when the action was posted. The
+  // action then shares that navigation's id but never owns the router.
+  startedDuringUserNavigation: boolean;
 };
 
 /**
@@ -175,6 +178,7 @@ export function createServerActionInitiationSnapshot<TRouterState>(options: {
   navigationId: number;
   origin?: string;
   routerState: TRouterState;
+  startedDuringUserNavigation?: boolean;
 }): ServerActionInitiationSnapshot<TRouterState> {
   const url =
     options.origin === undefined ? new URL(options.href) : new URL(options.href, options.origin);
@@ -183,6 +187,7 @@ export function createServerActionInitiationSnapshot<TRouterState>(options: {
     navigationId: options.navigationId,
     path: url.pathname + url.search,
     routerState: options.routerState,
+    startedDuringUserNavigation: options.startedDuringUserNavigation ?? false,
   };
 }
 

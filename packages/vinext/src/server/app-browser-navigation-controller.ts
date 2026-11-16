@@ -104,6 +104,8 @@ type BrowserRouterStateRef = {
 type SameUrlServerActionLifecycleOptions = {
   onDiscardedRevalidation?: () => void;
   revalidation?: ServerActionRevalidationKind;
+  // Captured when the action was posted; defaults to the state at call time.
+  startedDuringUserNavigation?: boolean;
   startedNavigationId?: number;
   targetHref?: string;
 };
@@ -153,7 +155,11 @@ type BrowserNavigationController = {
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
   isCurrentNavigation(navId: number): boolean;
-  ownsRouterForServerAction(startedNavigationId: number): boolean;
+  isUserNavigationPending(): boolean;
+  ownsRouterForServerAction(
+    startedNavigationId: number,
+    startedDuringUserNavigation: boolean,
+  ): boolean;
   performHardNavigation(href: string, mode?: HardNavigationMode): boolean;
   waitForBrowserRouterStateReady(): Promise<void>;
   attachBrowserRouterState(
@@ -442,14 +448,22 @@ export function createAppBrowserNavigationController(
     return navId === activeNavigationId;
   }
 
+  function isUserNavigationPending(): boolean {
+    return pendingUserNavigationId !== null;
+  }
+
   /**
-   * Whether a server action that started under `startedNavigationId` may still
-   * change what is visible. A user navigation still pending owns the next
-   * visible result, even when the action was posted after it started and so
-   * shares its id: as in Next.js, the navigation discards the action's state.
+   * Whether a server action may still change what is visible, decided from
+   * what held when it was posted. A user navigation pending then owns the
+   * next visible result, even though the action shares its id, and keeps it
+   * after it settles: as in Next.js, the navigation discards the action's
+   * state. A later navigation supersedes the id itself.
    */
-  function ownsRouterForServerAction(startedNavigationId: number): boolean {
-    return isCurrentNavigation(startedNavigationId) && pendingUserNavigationId === null;
+  function ownsRouterForServerAction(
+    startedNavigationId: number,
+    startedDuringUserNavigation: boolean,
+  ): boolean {
+    return isCurrentNavigation(startedNavigationId) && !startedDuringUserNavigation;
   }
 
   function beginPendingBrowserRouterState(): PendingBrowserRouterState {
@@ -1215,13 +1229,15 @@ export function createAppBrowserNavigationController(
   ): Promise<unknown> {
     const currentState = actionInitiationState ?? getBrowserRouterState();
     const startedNavigationId = lifecycleOptions?.startedNavigationId ?? activeNavigationId;
+    const startedDuringUserNavigation =
+      lifecycleOptions?.startedDuringUserNavigation ?? isUserNavigationPending();
     const targetHref = lifecycleOptions?.targetHref ?? window.location.href;
     const routeManifestLoad = loadRouteManifest();
     if (routeManifestLoad !== null && !(await routeManifestLoad)) {
       // The commit cannot be classified without the RouteManifest. An action
       // that still owns the router reloads, like a hard-navigate decision
       // below; a superseded one is discarded like a no-commit decision.
-      if (ownsRouterForServerAction(startedNavigationId)) {
+      if (ownsRouterForServerAction(startedNavigationId, startedDuringUserNavigation)) {
         performHardNavigation(targetHref);
         return undefined;
       }
@@ -1255,7 +1271,7 @@ export function createAppBrowserNavigationController(
     // Approval reads the committed state, which does not move while a pending
     // navigation's tree waits for React to commit it, so check ownership here.
     // A discarded revalidation is refreshed once navigations settle.
-    if (!ownsRouterForServerAction(startedNavigationId)) {
+    if (!ownsRouterForServerAction(startedNavigationId, startedDuringUserNavigation)) {
       notifyDiscardedServerActionRevalidation(lifecycleOptions);
       return resolveSameUrlActionReturnValue(returnValue);
     }
@@ -1349,6 +1365,7 @@ export function createAppBrowserNavigationController(
     hasBrowserRouterState,
     getBrowserRouterState,
     isCurrentNavigation,
+    isUserNavigationPending,
     ownsRouterForServerAction,
     performHardNavigation,
     waitForBrowserRouterStateReady,

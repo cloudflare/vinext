@@ -780,6 +780,7 @@ function createActionInitiationSnapshot() {
     href: window.location.href,
     navigationId: browserNavigationController.getActiveNavigationId(),
     routerState,
+    startedDuringUserNavigation: browserNavigationController.isUserNavigationPending(),
   });
 }
 
@@ -917,7 +918,10 @@ async function commitSameUrlNavigatePayload(
     // goes on to the commit below, which discards it.
     if (
       !routeManifestLoaded &&
-      browserNavigationController.ownsRouterForServerAction(actionInitiation.navigationId)
+      browserNavigationController.ownsRouterForServerAction(
+        actionInitiation.navigationId,
+        actionInitiation.startedDuringUserNavigation,
+      )
     ) {
       browserNavigationController.performHardNavigation(actionInitiation.href);
       return undefined;
@@ -1013,6 +1017,7 @@ async function commitSameUrlNavigatePayload(
           discardedServerActionRefreshScheduler.schedule();
         },
         revalidation,
+        startedDuringUserNavigation: actionInitiation.startedDuringUserNavigation,
         startedNavigationId: actionInitiation.navigationId,
         targetHref: actionInitiation.href,
       },

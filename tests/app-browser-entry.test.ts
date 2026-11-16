@@ -5101,15 +5101,58 @@ describe("app browser navigation controller", () => {
       // pending navigation still owns the router: it must not reload the old URL.
       const pendingNavigationId = controller.beginNavigation();
       await expect(commitAction(pendingNavigationId)).resolves.toBe("action-result");
-      expect(controller.ownsRouterForServerAction(pendingNavigationId)).toBe(false);
       expect(onDiscardedRevalidation).toHaveBeenCalledTimes(2);
       expect(assign).not.toHaveBeenCalled();
 
+      // Once that navigation settles, an action posted afterwards owns it again.
       controller.finalizeNavigation(pendingNavigationId, null);
-      expect(controller.ownsRouterForServerAction(pendingNavigationId)).toBe(true);
       await expect(commitAction(pendingNavigationId)).resolves.toBeUndefined();
       expect(assign).toHaveBeenCalledWith("https://example.com/settings");
       expect(stateRef.current.routeId).toBe("route:/settings");
+    } finally {
+      detach();
+    }
+  });
+
+  it("keeps a same-URL server action posted during a navigation discarded after that navigation settles", async () => {
+    const initialState = createState({
+      rootLayoutTreePath: "/",
+      routeId: "route:/settings",
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+    });
+    let failRouteManifestLoad!: () => void;
+    const routeManifestLoad = new Promise<boolean>((resolve) => {
+      failRouteManifestLoad = () => resolve(false);
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState, {
+      loadRouteManifest: () => routeManifestLoad,
+    });
+    const { assign } = stubWindow("https://example.com/settings");
+    const onDiscardedRevalidation = vi.fn();
+
+    try {
+      const navId = controller.beginNavigation();
+      const result = controller.commitSameUrlNavigatePayload(
+        Promise.resolve(createResolvedElements("route:/settings/account", "/", null)),
+        stateRef.current.navigationSnapshot,
+        { data: "action-result", ok: true },
+        stateRef.current,
+        {
+          onDiscardedRevalidation,
+          revalidation: "staticAndDynamic",
+          startedDuringUserNavigation: controller.isUserNavigationPending(),
+          startedNavigationId: controller.getActiveNavigationId(),
+          targetHref: "https://example.com/settings",
+        },
+      );
+
+      // The navigation handles the failed load itself and settles first.
+      controller.finalizeNavigation(navId, null);
+      failRouteManifestLoad();
+
+      await expect(result).resolves.toBe("action-result");
+      expect(assign).not.toHaveBeenCalled();
+      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
     } finally {
       detach();
     }
