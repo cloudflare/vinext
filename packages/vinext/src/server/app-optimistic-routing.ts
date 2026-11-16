@@ -136,6 +136,19 @@ export function matchOptimisticRouteManifestRoute(options: {
   return match;
 }
 
+/**
+ * The manifest route that rendered a payload, read from its route id, which
+ * holds the pathname the server matched (after rewrites, without basePath).
+ */
+function matchRenderedRouteId(routeId: string, routeManifest: BrowserRouteManifest): string | null {
+  const parsed = AppElementsWire.parseElementKey(routeId);
+  if (parsed?.kind !== "route") return null;
+  return (
+    matchOptimisticRouteTrie(getRouteTrie(routeManifest), splitPathnameForRouteMatch(parsed.path))
+      ?.route.id ?? null
+  );
+}
+
 function mergeParams(
   target: Record<string, string | string[]>,
   source: Record<string, string | string[]>,
@@ -391,6 +404,13 @@ export function createOptimisticRouteTemplate(options: {
 
   const metadata = AppElementsWire.readMetadata(options.elements);
   if (metadata.interception !== null || metadata.interceptionContext !== null) return null;
+  // A payload rendered by another route than the one the URL matches came
+  // through a rewrite (middleware, or a config rewrite), so it says nothing
+  // about the URL's route. Like Next.js's discoverKnownRoutePart, learn
+  // nothing from it.
+  if (matchRenderedRouteId(metadata.routeId, options.routeManifest) !== match.route.id) {
+    return null;
+  }
 
   const routeElement = options.elements[metadata.routeId];
   // Full-prefetch learning is intentionally heuristic: legacy full prefetches
