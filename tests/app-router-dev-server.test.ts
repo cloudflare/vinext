@@ -130,6 +130,34 @@ describe("App Router integration", () => {
     },
   );
 
+  it.each(["file", "promise", "form-file", "captured-file"])(
+    "preserves %s names and MIME types across dev requests",
+    async (kind) => {
+      async function request(change: Record<string, string> = {}) {
+        const response = await fetch(
+          `${baseUrl}/api/use-cache-arguments?${new URLSearchParams({
+            kind,
+            partition: `dev-metadata-${kind}`,
+            ...change,
+          })}`,
+        );
+        expect(response.status).toBe(200);
+        return response.json();
+      }
+      const first = await request();
+      for (const change of [{ name: "public.txt" }, { type: "application/pdf" }] as Record<
+        string,
+        string
+      >[]) {
+        const second = await request(change);
+        expect(second.value).not.toEqual(first.value);
+        // Dev executes cached functions afresh, but keeps their argument values.
+        expect((await request(change)).value).toEqual(second.value);
+      }
+      expect((await request()).value).toEqual(first.value);
+    },
+  );
+
   // Next.js 308s any raw path containing a backslash or a repeated slash to
   // the collapsed path (base-server.ts / resolve-routes.ts).
   it("redirects repeated slashes and backslashes like Next.js", async () => {

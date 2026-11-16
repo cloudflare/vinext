@@ -145,13 +145,13 @@ describe("use cache argument identity", () => {
     const fn = vi.fn(async (_value: unknown) => crypto.randomUUID());
     const cached = registerCachedFunction(fn, "test:binary-path");
     const first = await cached(wrap(file("blob", "X", 111)));
-    expect(await cached(wrap(file("other", "X", 222)))).toBe(first);
-    expect(await cached(wrap(new Blob(["X"])))).toBe(first);
+    expect(await cached(wrap(file("other", "X", 222)))).not.toBe(first);
+    expect(await cached(wrap(new Blob(["X"], { type: "text/plain" })))).toBe(first);
     const blob = await cached(wrap(new Blob(["Y"])));
     expect(blob).not.toBe(first);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(await cached(wrap(new Blob(["Y"])))).toBe(blob);
-    expect(fn).toHaveBeenCalledTimes(2);
+    expect(fn).toHaveBeenCalledTimes(3);
   });
 
   const describeFile = async (value: File) => ({
@@ -170,17 +170,28 @@ describe("use cache argument identity", () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
-  // Like Next.js (use-cache-wrapper.ts, `encodeFormData`), only a File's bytes
-  // are keyed, so a File differing only in metadata reuses the entry.
+  // Adapted from Next.js: test/e2e/app-dir/use-cache-binary-args/use-cache-binary-args.test.ts
+  // https://github.com/vercel/next.js/commit/5fcb2617f0edb7b836930a2f89dc5a6112efe50a
   it.each([
     ["name", () => file("public.txt")],
-    ["timestamp", () => file("private.txt", "", 333)],
     ["type", () => file("private.txt", "", 111, "application/pdf")],
-  ])("reuses the entry for a File differing only in %s", async (_label, different) => {
+  ])("distinguishes a File differing only in %s", async (_label, different) => {
     const fn = vi.fn(describeFile);
     const cached = registerCachedFunction(fn, "test:file-metadata");
     const first = await cached(file());
-    expect(await cached(different())).toEqual(first);
+    const second = await cached(different());
+    expect(second).toEqual(await describeFile(different()));
+    expect(second).not.toEqual(first);
+    expect(await cached(file())).toEqual(first);
+    expect(await cached(different())).toEqual(second);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses a File entry when only its construction timestamp differs", async () => {
+    const fn = vi.fn(describeFile);
+    const cached = registerCachedFunction(fn, "test:file-timestamp");
+    const first = await cached(file());
+    expect(await cached(file("private.txt", "", 333))).toEqual(first);
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
@@ -197,13 +208,16 @@ describe("use cache argument identity", () => {
         return form;
       },
     ],
-  ])("keys File bytes, not metadata, inside a %s", async (_label, wrap) => {
+  ])("keys File bytes and stable metadata inside a %s", async (_label, wrap) => {
     const fn = vi.fn(async (_value: unknown) => crypto.randomUUID());
     const cached = registerCachedFunction(fn, "test:nested-file");
     const first = await cached(wrap(file()));
     expect(await cached(wrap(file("private.txt", "X")))).not.toBe(first);
     expect(await cached(wrap(file("private.txt", "", 333)))).toBe(first);
-    expect(fn).toHaveBeenCalledTimes(2);
+    expect(await cached(wrap(file("public.txt")))).not.toBe(first);
+    expect(await cached(wrap(file("private.txt", "", 111, "image/png")))).not.toBe(first);
+    expect(await cached(wrap(file()))).toBe(first);
+    expect(fn).toHaveBeenCalledTimes(4);
   });
 
   // Adapted from Next.js's "should cache complex args" regression:

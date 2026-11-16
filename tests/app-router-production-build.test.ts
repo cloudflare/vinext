@@ -1689,7 +1689,7 @@ export default async function OpenGraphImage() {
   }, 120000);
 });
 
-// File metadata is deliberately stricter than Next.js's encodeFormData key.
+// File names and MIME types participate in cache identity, like Next.js.
 // Next.js covers binary contents in test/e2e/app-dir/use-cache/use-cache.test.ts.
 describe("use cache production argument isolation", () => {
   let root: string;
@@ -1792,17 +1792,26 @@ describe("use cache production argument isolation", () => {
     );
   }
 
-  // Like Next.js (use-cache-wrapper.ts, `encodeFormData`), only a File's bytes
-  // are keyed, so a File differing only in metadata reuses the entry.
-  it.each([
-    ["filename", { name: "public.txt" }],
-    ["timestamp", { time: "333" }],
-    ["mime", { type: "application/pdf" }],
-  ] as const)("reuses the entry for a File differing only in %s", async (label, change) => {
-    const base = { kind: "file", partition: `metadata-${label}` };
-    const first = await request(base);
-    expect(await request({ ...base, ...change })).toEqual(first);
-  });
+  // Ported from Next.js: test/e2e/app-dir/use-cache-binary-args/use-cache-binary-args.test.ts
+  // https://github.com/vercel/next.js/commit/5fcb2617f0edb7b836930a2f89dc5a6112efe50a
+  it.each(["file", "nested", "promise", "form-file", "captured-file"])(
+    "separates %s names and MIME types while reusing identical inputs",
+    async (kind) => {
+      const base = { kind, partition: `metadata-${kind}` };
+      const first = await request(base);
+      for (const change of [{ name: "public.txt" }, { type: "application/pdf" }] as Record<
+        string,
+        string
+      >[]) {
+        const second = await request({ ...base, ...change });
+        expect(second.value).not.toEqual(first.value);
+        expect(second.execution).not.toBe(first.execution);
+        expect(await request({ ...base, ...change })).toEqual(second);
+      }
+      expect(await request(base)).toEqual(first);
+      expect(await request({ ...base, time: "333" })).toEqual(first);
+    },
+  );
 
   it("separates equal-size file contents with identical metadata", async () => {
     const base = { kind: "file", partition: "same-size" };

@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vite-plus/test";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import { KVCacheHandler } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
 import {
   revalidatePath,
@@ -22,6 +23,13 @@ import {
   _drainPendingRevalidations,
   _runWithCacheState,
 } from "../packages/vinext/src/shims/cache-request-state.js";
+
+// This suite runs without react-server conditions. Use the real vendored
+// Flight codec, as the unit project's setup does, for callable cache arguments.
+vi.mock("@vitejs/plugin-rsc/react/rsc", async () => {
+  const { loadCacheFlightCodec } = await import("./helpers/cache-flight-codec.js");
+  return loadCacheFlightCodec();
+});
 
 // ---------------------------------------------------------------------------
 // Mock KV namespace
@@ -181,6 +189,32 @@ describe("KVCacheHandler", () => {
   // -------------------------------------------------------------------------
   // Basic round-trip
   // -------------------------------------------------------------------------
+
+  it("keeps File metadata distinct across persisted use-cache entries", async () => {
+    const fn = vi.fn(async (value: File) => ({ name: value.name, type: value.type }));
+    const cached = registerCachedFunction(fn, "test:kv-file-metadata");
+    setCacheHandler(handler);
+    try {
+      const values = [
+        new File(["X"], "a.txt", { type: "text/plain", lastModified: 111 }),
+        new File(["X"], "b.txt", { type: "text/plain", lastModified: 111 }),
+        new File(["X"], "a.txt", { type: "image/png", lastModified: 111 }),
+      ];
+      for (const value of values) {
+        expect(await cached(value)).toEqual({ name: value.name, type: value.type });
+      }
+      expect(fn).toHaveBeenCalledTimes(3);
+      // Recreate the adapter so hits must come from the serialized KV store.
+      setCacheHandler(new KVCacheHandler(kv as any));
+      for (const value of values) {
+        const fresh = new File(["X"], value.name, { type: value.type, lastModified: 222 });
+        expect(await cached(fresh)).toEqual({ name: value.name, type: value.type });
+      }
+      expect(fn).toHaveBeenCalledTimes(3);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
 
   it("returns null for missing key", async () => {
     const result = await handler.get("nonexistent");
