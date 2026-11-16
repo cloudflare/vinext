@@ -596,22 +596,27 @@ describe("vinext:google-fonts plugin", () => {
     expect(plugin.enforce).toBe("pre");
   });
 
-  it("rewrites named font imports in dev mode", async () => {
-    // Verifies the import-rewrite path runs in `command: "serve"` (it gates
-    // on the transform filter, not on the build mode). The constructor-call
-    // self-hosting branch also runs in dev now — covered separately by the
-    // Playwright spec under tests/e2e/font-google/ — so this unit test
-    // intentionally omits a constructor call to keep the assertion focused
-    // on the import shape and avoid coupling to a network fetch.
-    const plugin = getGoogleFontsPlugin();
-    initPlugin(plugin, { command: "serve" });
-    const transform = unwrapHook(plugin.transform);
-    const code = `import { Inter } from 'next/font/google';`;
-    const result = await transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain("virtual:vinext-google-fonts?");
-    expect(result.code).not.toContain("selfHostedCSS");
-  });
+  it.each(["/app/layout.tsx", "/app/layout.tsx?test=1"])(
+    "rewrites named font imports in %s",
+    async (id) => {
+      // Verifies the import-rewrite path runs in `command: "serve"` (it gates
+      // on the transform filter, not on the build mode). The constructor-call
+      // self-hosting branch also runs in dev now — covered separately by the
+      // Playwright spec under tests/e2e/font-google/ — so this unit test
+      // intentionally omits a constructor call to keep the assertion focused
+      // on the import shape and avoid coupling to a network fetch.
+      const plugin = getGoogleFontsPlugin();
+      initPlugin(plugin, { command: "serve" });
+      const transform = unwrapHook(plugin.transform);
+      const { filter } = plugin.transform as { filter: { id: { include: RegExp } } };
+      expect(filter.id.include.test(id)).toBe(true);
+      const code = `import { Inter } from 'next/font/google';`;
+      const result = await transform.call(plugin, code, id);
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("virtual:vinext-google-fonts?");
+      expect(result.code).not.toContain("selfHostedCSS");
+    },
+  );
 
   it("returns null for files without next/font/google imports", async () => {
     const plugin = getGoogleFontsPlugin();

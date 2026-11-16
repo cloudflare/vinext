@@ -148,18 +148,23 @@ describe("vinext:local-fonts plugin", () => {
 
   // ── Simple string src ────────────────────────────────────────
 
-  it("transforms a simple string src path", () => {
-    const plugin = getLocalFontsPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import localFont from 'next/font/local';`,
-      `const myFont = localFont({ src: "./my-font.woff2" });`,
-    ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expectImported(result.code, "./my-font.woff2");
-    expect(result.map).toBeDefined();
-  });
+  it.each(["/app/layout.tsx", "/app/layout.tsx?test=1"])(
+    "transforms a simple string src path in %s",
+    (id) => {
+      const plugin = getLocalFontsPlugin();
+      const transform = unwrapHook(plugin.transform);
+      const { filter } = plugin.transform as { filter: { id: { include: RegExp } } };
+      expect(filter.id.include.test(id)).toBe(true);
+      const code = [
+        `import localFont from 'next/font/local';`,
+        `const myFont = localFont({ src: "./my-font.woff2" });`,
+      ].join("\n");
+      const result = transform.call(plugin, code, id);
+      expect(result).not.toBeNull();
+      expectImported(result.code, "./my-font.woff2");
+      expect(result.map).toBeDefined();
+    },
+  );
 
   it("passes the local binding name through to the runtime font payload", () => {
     // Ported from Next.js: test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
