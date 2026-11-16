@@ -780,7 +780,7 @@ function createActionInitiationSnapshot() {
     href: window.location.href,
     navigationId: browserNavigationController.getActiveNavigationId(),
     routerState,
-    startedDuringUserNavigation: browserNavigationController.isUserNavigationPending(),
+    startedDuringUserNavigation: browserNavigationController.isUserNavigationUncommitted(),
   });
 }
 

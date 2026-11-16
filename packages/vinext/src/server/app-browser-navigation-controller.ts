@@ -155,7 +155,7 @@ type BrowserNavigationController = {
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
   isCurrentNavigation(navId: number): boolean;
-  isUserNavigationPending(): boolean;
+  isUserNavigationUncommitted(): boolean;
   ownsRouterForServerAction(
     startedNavigationId: number,
     startedDuringUserNavigation: boolean,
@@ -448,15 +448,20 @@ export function createAppBrowserNavigationController(
     return navId === activeNavigationId;
   }
 
-  function isUserNavigationPending(): boolean {
-    return pendingUserNavigationId !== null;
+  /**
+   * Whether a user navigation is pending and none of its authoritative renders
+   * has started committing. Once one has, its destination is visible and owns
+   * the actions posted from it, even while the navigation still streams.
+   */
+  function isUserNavigationUncommitted(): boolean {
+    return pendingUserNavigationId !== null && !pendingUserNavigationCommitStarted;
   }
 
   /**
    * Whether a server action may still change what is visible, decided from
-   * what held when it was posted. A user navigation pending then owns the
-   * next visible result, even though the action shares its id, and keeps it
-   * after it settles: as in Next.js, the navigation discards the action's
+   * what held when it was posted. A user navigation that had not committed
+   * then owns the next visible result, even though the action shares its id,
+   * and keeps it after it settles: as in Next.js, the navigation discards the action's
    * state. A later navigation supersedes the id itself.
    */
   function ownsRouterForServerAction(
@@ -1230,7 +1235,7 @@ export function createAppBrowserNavigationController(
     const currentState = actionInitiationState ?? getBrowserRouterState();
     const startedNavigationId = lifecycleOptions?.startedNavigationId ?? activeNavigationId;
     const startedDuringUserNavigation =
-      lifecycleOptions?.startedDuringUserNavigation ?? isUserNavigationPending();
+      lifecycleOptions?.startedDuringUserNavigation ?? isUserNavigationUncommitted();
     const targetHref = lifecycleOptions?.targetHref ?? window.location.href;
     const routeManifestLoad = loadRouteManifest();
     if (routeManifestLoad !== null && !(await routeManifestLoad)) {
@@ -1365,7 +1370,7 @@ export function createAppBrowserNavigationController(
     hasBrowserRouterState,
     getBrowserRouterState,
     isCurrentNavigation,
-    isUserNavigationPending,
+    isUserNavigationUncommitted,
     ownsRouterForServerAction,
     performHardNavigation,
     waitForBrowserRouterStateReady,

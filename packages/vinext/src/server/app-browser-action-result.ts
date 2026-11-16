@@ -21,8 +21,9 @@ type ServerActionInitiationSnapshot<TRouterState> = {
   navigationId: number;
   path: string;
   routerState: TRouterState;
-  // Whether a user navigation was pending when the action was posted. The
-  // action then shares that navigation's id but never owns the router.
+  // Whether a user navigation was pending, and had not started committing,
+  // when the action was posted. The action then shares that navigation's id
+  // but never owns the router.
   startedDuringUserNavigation: boolean;
 };
 

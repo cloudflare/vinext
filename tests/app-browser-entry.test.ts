@@ -5140,7 +5140,7 @@ describe("app browser navigation controller", () => {
         {
           onDiscardedRevalidation,
           revalidation: "staticAndDynamic",
-          startedDuringUserNavigation: controller.isUserNavigationPending(),
+          startedDuringUserNavigation: controller.isUserNavigationUncommitted(),
           startedNavigationId: controller.getActiveNavigationId(),
           targetHref: "https://example.com/settings",
         },
@@ -5408,6 +5408,70 @@ describe("app browser navigation controller", () => {
       await vi.waitFor(() => expect(stateRef.current.routeId).toBe("route:/settings/billing"));
       controller.commitNavigationRender(stateRef.current.renderId);
       await expect(committed).resolves.toBe("committed");
+    } finally {
+      detach();
+    }
+  });
+
+  it("applies a same-URL server action posted after a navigation committed but before it settles", async () => {
+    const initialState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/settings?tab=profile",
+        {},
+      ),
+      routeId: "route:/settings",
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/settings?tab=profile");
+    const onDiscardedRevalidation = vi.fn();
+
+    try {
+      const navId = controller.beginNavigation();
+      const committed = renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: noopCommitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/settings?tab=billing",
+          {},
+        ),
+        navId,
+        nextElements: Promise.resolve(createResolvedElements("route:/settings/billing", "/")),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/settings?tab=billing",
+      });
+      await vi.waitFor(() => expect(stateRef.current.routeId).toBe("route:/settings/billing"));
+      const renderId = stateRef.current.renderId;
+      controller.beginNavigationRenderCommit(renderId);
+      controller.commitNavigationRender(renderId);
+      await expect(committed).resolves.toBe("committed");
+
+      // The navigation is still pending (its stream has not finished), but its
+      // destination is visible: an action posted from it owns the router.
+      expect(controller.isUserNavigationUncommitted()).toBe(false);
+      await expect(
+        controller.commitSameUrlNavigatePayload(
+          Promise.resolve(createResolvedElements("route:/settings/action", "/")),
+          stateRef.current.navigationSnapshot,
+          { data: "saved", ok: true },
+          stateRef.current,
+          {
+            onDiscardedRevalidation,
+            revalidation: "dynamicOnly",
+            startedDuringUserNavigation: controller.isUserNavigationUncommitted(),
+            startedNavigationId: controller.getActiveNavigationId(),
+            targetHref: "https://example.com/settings?tab=billing",
+          },
+        ),
+      ).resolves.toBe("saved");
+
+      expect(stateRef.current.routeId).toBe("route:/settings/action");
+      expect(onDiscardedRevalidation).not.toHaveBeenCalled();
+      controller.finalizeNavigation(navId, null);
     } finally {
       detach();
     }
