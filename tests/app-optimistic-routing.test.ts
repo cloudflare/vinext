@@ -678,6 +678,51 @@ describe("App Router optimistic routing", () => {
     expect(template?.params).toEqual({ slug: "post-1" });
   });
 
+  it("matches a rewritten payload's route like the server, past a static dead end", () => {
+    // The server renders `/dashboard/settings/profile` with the catch-all, as
+    // it falls back from the static `settings` branch.
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: createBlogLoadingShellElements("/dashboard/settings/profile"),
+      href: "/dashboard/foo",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: dashboardManifestWithoutProfile(),
+    });
+
+    expect(template?.routeId).toBe("route:/dashboard/:catchall+");
+    expect(template?.params).toEqual({ catchall: ["foo"] });
+  });
+
+  it("does not decode a rewritten payload's route path again", () => {
+    const routeManifest = manifest([
+      route({ id: "route:/a", isDynamic: false, pattern: "/a", patternParts: ["a"] }),
+      route({
+        id: "route:/:slug",
+        isDynamic: true,
+        paramNames: ["slug"],
+        pattern: "/:slug",
+        patternParts: [":slug"],
+      }),
+    ]);
+    // `/[slug]` serves `/%2561`, whose route path the server decoded once to
+    // `/%61`. That is not the static `/a`.
+    const learn = (href: string) =>
+      createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: createBlogLoadingShellElements("/%61"),
+        href,
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      });
+
+    expect(learn("/b")?.routeId).toBe("route:/:slug");
+    expect(learn("/a")?.routeId ?? null).toBeNull();
+  });
+
   it("does not learn routes without a loading boundary", () => {
     const routeManifest = blogManifest();
     const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);

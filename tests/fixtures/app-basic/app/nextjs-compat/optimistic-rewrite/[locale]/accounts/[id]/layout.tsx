@@ -15,11 +15,11 @@ export default async function AccountLayout({
           Overview
         </Link>
         <Link
-          href={`/nextjs-compat/optimistic-rewrite/accounts/${id}/reports`}
+          href={`/nextjs-compat/optimistic-rewrite/accounts/${id}/activity`}
           prefetch={false}
-          id="reports-link"
+          id="activity-link"
         >
-          Reports
+          Activity
         </Link>
       </nav>
       {children}

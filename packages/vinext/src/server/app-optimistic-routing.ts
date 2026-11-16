@@ -1,7 +1,16 @@
 import { createElement, isValidElement, Suspense, type ReactNode } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
+import {
+  decodeMatchedParams,
+  splitPathnameForRouteMatch,
+  splitPathSegments,
+} from "../routing/utils.js";
+import {
+  buildRouteTrie as buildRequestRouteTrie,
+  trieMatchRaw,
+  type TrieNode as RequestRouteTrieNode,
+} from "../routing/route-trie.js";
 import {
   buildOptimisticRouteTrie,
   matchOptimisticRouteTrie,
@@ -60,6 +69,10 @@ type OptimisticNavigationPayload = {
 };
 
 const routeTrieCache = new WeakMap<BrowserRouteManifest, OptimisticRouteTrieNode>();
+const renderedRouteTrieCache = new WeakMap<
+  BrowserRouteManifest,
+  RequestRouteTrieNode<BrowserRouteManifestRoute>
+>();
 // Shared never-settling thenable used to suspend optimistic page segments until
 // the real RSC payload replaces them.
 const OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER = new Promise<never>(() => {});
@@ -138,15 +151,21 @@ export function matchOptimisticRouteManifestRoute(options: {
 
 /**
  * The manifest route that rendered a payload, read from its route id, which
- * holds the pathname the server matched (after rewrites, without basePath).
+ * holds the pathname the server matched (after rewrites, without basePath),
+ * already decoded once. It is matched like the server matches a request: the
+ * manifest keeps the server's route order, and the server's trie falls back
+ * from a static dead end to a dynamic or catch-all sibling, which the
+ * optimistic trie deliberately doesn't.
  */
 function matchRenderedRouteId(routeId: string, routeManifest: BrowserRouteManifest): string | null {
   const parsed = AppElementsWire.parseElementKey(routeId);
   if (parsed?.kind !== "route") return null;
-  return (
-    matchOptimisticRouteTrie(getRouteTrie(routeManifest), splitPathnameForRouteMatch(parsed.path))
-      ?.route.id ?? null
-  );
+  let trie = renderedRouteTrieCache.get(routeManifest);
+  if (trie === undefined) {
+    trie = buildRequestRouteTrie(Array.from(routeManifest.segmentGraph.routes.values()));
+    renderedRouteTrieCache.set(routeManifest, trie);
+  }
+  return trieMatchRaw(trie, splitPathSegments(parsed.path))?.route.id ?? null;
 }
 
 function mergeParams(

@@ -3,7 +3,7 @@ import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
 // Middleware rewrites `${ROOT}/<path>` to `${ROOT}/ja/<path>`, so the browser
-// URLs `${ROOT}/datasets/x` and `${ROOT}/accounts/a/reports` both read as
+// URLs `${ROOT}/datasets/x` and `${ROOT}/accounts/a/activity` both read as
 // `[locale]` + `[...rest]`. The catch-all's loading.tsx makes the browser
 // prefetch the first as a loading shell, which the server renders for
 // `[locale]/datasets/[id]`.
@@ -18,16 +18,24 @@ test("does not show a rewritten prefetch's loading shell for another route", asy
 
   // A loading-shell prefetch of the dataset page, which the server renders as
   // `${ROOT}/ja/datasets/x`. Dev links do not prefetch on viewport entry.
-  const prefetchResponse = page.waitForResponse(
-    (response) => response.url().includes(`${ROOT}/datasets/x`) && response.url().includes("_rsc"),
-  );
   await page.evaluate((href) => {
     const router = Reflect.get(window, "next") as { router: { prefetch(href: string): void } };
     router.router.prefetch(href);
   }, `${ROOT}/datasets/x`);
-  await (await prefetchResponse).finished();
-  // A template would be learned once the prefetch cache entry settles.
-  await page.waitForTimeout(500);
+  // A navigation learns templates only from settled prefetch cache entries.
+  await expect
+    .poll(() =>
+      page.evaluate((href) => {
+        const cache = Reflect.get(window, "__VINEXT_RSC_PREFETCH_CACHE__") as
+          | Map<string, { outcome?: string; pending?: Promise<void> }>
+          | undefined;
+        return Array.from(cache?.entries() ?? []).some(
+          ([key, entry]) =>
+            key.includes(href) && entry.outcome === "cache-seeded" && entry.pending === undefined,
+        );
+      }, `${ROOT}/datasets/x`),
+    )
+    .toBe(true);
 
   await page.evaluate(() => {
     new MutationObserver(() => {
@@ -42,18 +50,18 @@ test("does not show a rewritten prefetch's loading shell for another route", asy
   const navigationGate = new Promise<void>((resolve) => {
     releaseNavigation = resolve;
   });
-  await page.route(`**${ROOT}/accounts/a/reports?_rsc*`, async (route) => {
+  await page.route(`**${ROOT}/accounts/a/activity?_rsc*`, async (route) => {
     await navigationGate;
     await route.continue();
   });
 
-  await page.click("#reports-link");
+  await page.click("#activity-link");
   await page.waitForTimeout(500);
   await expect(page.locator("#dataset-loading")).toHaveCount(0);
   await expect(page.locator("#dataset-header")).toHaveCount(0);
 
   releaseNavigation();
-  await expect(page.locator("#account-reports-page")).toHaveText("Reports for a");
+  await expect(page.locator("#account-activity-page")).toHaveText("Activity for a");
   await expect(page.locator("#account-tabs")).toBeVisible();
   expect(await page.evaluate(() => Reflect.get(window, "__datasetShellSeen") === true)).toBe(false);
 });
