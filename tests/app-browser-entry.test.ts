@@ -5216,6 +5216,150 @@ describe("app browser navigation controller", () => {
     }
   });
 
+  it("does not let a same-URL server action replace a navigation React has not committed yet", async () => {
+    // A server action posted from /settings?tab=profile after a navigation to
+    // ?tab=billing started. Its revalidated tree arrives after the navigation's
+    // tree was handed to React, but before React committed it.
+    stubWindow("https://example.com/settings?tab=profile");
+    const initialState = createState({
+      elements: createResolvedElements("route:/settings", "/", null, {
+        "page:/settings": React.createElement("main", null, "profile (initial)"),
+      }),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/settings?tab=profile",
+        {},
+      ),
+      routeId: "route:/settings",
+    });
+    const controller = createAppBrowserNavigationController();
+    // Like React's state ref, this only moves on commit, which never happens here.
+    const stateRef = { current: initialState };
+    const dispatched: AppRouterState[] = [];
+    const detach = controller.attachBrowserRouterState((value) => {
+      if (!(value instanceof Promise)) dispatched.push(value);
+    }, stateRef);
+    const onDiscardedRevalidation = vi.fn();
+    const pageText = (state: AppRouterState | undefined) => {
+      const page = state?.elements["page:/settings"] as
+        | React.ReactElement<{ children: unknown }>
+        | undefined;
+      return page?.props.children;
+    };
+
+    try {
+      const navId = controller.beginNavigation();
+      const actionInitiationState = controller.getBrowserRouterState();
+      const actionNavigationId = controller.getActiveNavigationId();
+
+      void controller.renderNavigationPayload({
+        actionType: "navigate",
+        createNavigationCommitEffect: noopCommitEffect,
+        historyUpdateMode: "push",
+        navigationInitiationState: initialState,
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/settings?tab=billing",
+          {},
+        ),
+        navId,
+        nextElements: createResolvedElements("route:/settings", "/", null, {
+          "page:/settings": React.createElement("main", null, "billing (navigation)"),
+        }),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/settings?tab=billing",
+      });
+      await vi.waitFor(() => expect(dispatched).toHaveLength(1));
+      expect(pageText(dispatched[0])).toBe("billing (navigation)");
+
+      await expect(
+        controller.commitSameUrlNavigatePayload(
+          Promise.resolve(
+            createResolvedElements("route:/settings", "/", null, {
+              "page:/settings": React.createElement("main", null, "profile (action)"),
+            }),
+          ),
+          initialState.navigationSnapshot,
+          { data: "saved", ok: true },
+          actionInitiationState,
+          {
+            onDiscardedRevalidation,
+            revalidation: "dynamicOnly",
+            startedNavigationId: actionNavigationId,
+            targetHref: "https://example.com/settings?tab=profile",
+          },
+        ),
+      ).resolves.toBe("saved");
+
+      // The navigation stays the last tree handed to React; the action's
+      // revalidation is refreshed once navigations settle instead.
+      expect(dispatched).toHaveLength(1);
+      expect(pageText(dispatched.at(-1))).toBe("billing (navigation)");
+      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
+  it("discards a same-URL server action revalidation that lands before a pending navigation's payload", async () => {
+    const initialState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/settings?tab=profile",
+        {},
+      ),
+      routeId: "route:/settings",
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/settings?tab=profile");
+    const onDiscardedRevalidation = vi.fn();
+
+    try {
+      const navId = controller.beginNavigation();
+      // The action posts and its revalidation arrives before the navigation's.
+      await expect(
+        controller.commitSameUrlNavigatePayload(
+          Promise.resolve(createResolvedElements("route:/settings/action", "/")),
+          initialState.navigationSnapshot,
+          { data: "saved", ok: true },
+          stateRef.current,
+          {
+            onDiscardedRevalidation,
+            revalidation: "dynamicOnly",
+            startedNavigationId: controller.getActiveNavigationId(),
+            targetHref: "https://example.com/settings?tab=profile",
+          },
+        ),
+      ).resolves.toBe("saved");
+      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
+
+      const committed = renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: noopCommitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/settings?tab=billing",
+          {},
+        ),
+        navId,
+        nextElements: Promise.resolve(createResolvedElements("route:/settings/billing", "/")),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/settings?tab=billing",
+      });
+
+      await vi.waitFor(() => expect(stateRef.current.routeId).toBe("route:/settings/billing"));
+      controller.commitNavigationRender(stateRef.current.renderId);
+      await expect(committed).resolves.toBe("committed");
+    } finally {
+      detach();
+    }
+  });
+
   it("revalidates same-URL server action commits immediately before dispatch", async () => {
     const controller = createAppBrowserNavigationController();
     const initialState = createState({

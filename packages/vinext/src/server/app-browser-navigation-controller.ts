@@ -1241,6 +1241,17 @@ export function createAppBrowserNavigationController(
       type: "navigate",
     });
 
+    // A user navigation still pending owns the next visible result. Approval
+    // reads the committed state, which does not move while the navigation's
+    // tree waits for React to commit it, and an action posted after the
+    // navigation started shares its id. As in Next.js, where a navigation
+    // discards a pending server action's state, drop this revalidation; the
+    // refresh for a discarded action runs once navigations settle.
+    if (pendingUserNavigationId !== null) {
+      notifyDiscardedServerActionRevalidation(lifecycleOptions);
+      return resolveSameUrlActionReturnValue(returnValue);
+    }
+
     if (decision.disposition === "hard-navigate") {
       // Same-URL action hard navigations do not expose a navigation outcome to
       // callers. If the loop guard blocks, the degraded state is still the
