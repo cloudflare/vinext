@@ -69,6 +69,22 @@ describe.each([
     expect(props.loading).toBeUndefined();
   });
 
+  it("getImageProps() drops sizes, including the fill default and an explicit value", () => {
+    expect(getImageProps({ src, alt: "", fill: true }).props.sizes).toBeUndefined();
+    expect(
+      getImageProps({ src, alt: "", width: 64, height: 64, sizes: "50vw" }).props.sizes,
+    ).toBeUndefined();
+    expect(getImageProps({ src, alt: "", fill: true, sizes: "50vw" }).props.sizes).toBeUndefined();
+  });
+
+  it("<Image> renders no sizes, with fill or an explicit value", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, { src, alt: "", fill: true, sizes: "50vw" }),
+    );
+    expect(renderedSrc(html)).toBe(src);
+    expect(html).not.toContain("sizes=");
+  });
+
   it("getImageProps() keeps an explicit loading prop", () => {
     const { props } = getImageProps({ src, alt: "", width: 64, height: 64, loading: "lazy" });
     expect(props.loading).toBe("lazy");

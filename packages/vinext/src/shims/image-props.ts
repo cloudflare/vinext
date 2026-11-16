@@ -417,7 +417,8 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
       className,
       style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
       ...rest,
-      sizes: sizes ?? (fill ? "100vw" : undefined),
+      // Next.js generateImgAttrs() returns `sizes: undefined` for inline sources.
+      sizes: isInlineSrc ? undefined : (sizes ?? (fill ? "100vw" : undefined)),
       srcSet: undefined,
     };
     return { props: Object.assign(imageProps, { "data-nimg": fill ? "fill" : "1" }) };
