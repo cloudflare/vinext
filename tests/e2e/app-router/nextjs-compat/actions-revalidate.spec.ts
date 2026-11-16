@@ -103,6 +103,74 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     });
   });
 
+  // A navigation that falls back to a document load owns what loads next. A
+  // discarded action's refresh must wait for that load, not reload the page
+  // it was posted from over it.
+  test("discarded server action with revalidation does not cancel a pending document load", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const destinationPath = "/nextjs-compat/action-discarding/destination";
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+
+    let releaseAction = () => {};
+    const actionGate = new Promise<void>((resolve) => {
+      releaseAction = resolve;
+    });
+    let releaseDestinationDocument = () => {};
+    const destinationDocumentGate = new Promise<void>((resolve) => {
+      releaseDestinationDocument = resolve;
+    });
+    let destinationDocumentRequested = () => {};
+    const destinationDocumentRequest = new Promise<void>((resolve) => {
+      destinationDocumentRequested = resolve;
+    });
+    const sourceDocumentLoads: string[] = [];
+
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (isAppRouterServerActionRequestForPath(request, sourcePath)) {
+        const response = await route.fetch();
+        await actionGate;
+        return route.fulfill({ response });
+      }
+      // Every RSC fetch fails, so navigations fall back to document loads.
+      if (url.searchParams.has("_rsc")) return route.abort("failed");
+      if (request.isNavigationRequest() && url.pathname === destinationPath) {
+        destinationDocumentRequested();
+        await destinationDocumentGate;
+        return route.continue();
+      }
+      if (request.isNavigationRequest() && url.pathname === sourcePath) {
+        sourceDocumentLoads.push(url.href);
+      }
+      return route.continue();
+    });
+
+    const actionRequest = page.waitForRequest((request) =>
+      isAppRouterServerActionRequestForPath(request, sourcePath),
+    );
+    await page.click("#slow-action-refresh");
+    await actionRequest;
+    await page.click("#navigate-discard-destination");
+    await destinationDocumentRequest;
+
+    // The action's revalidation lands while the destination document loads.
+    const actionResponse = page.waitForResponse((response) =>
+      isAppRouterServerActionRequestForPath(response.request(), sourcePath),
+    );
+    releaseAction();
+    await actionResponse;
+    await page.waitForTimeout(500);
+    releaseDestinationDocument();
+
+    await expect(page.locator("#discard-destination")).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe(destinationPath);
+    expect(sourceDocumentLoads).toEqual([]);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/actions-revalidate-remount/actions-revalidate-remount.test.ts
   test("revalidating server actions preserve client state under loading.tsx", async ({ page }) => {
     const loadingLogs: string[] = [];

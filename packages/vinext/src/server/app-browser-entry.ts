@@ -3114,10 +3114,13 @@ function bootstrapHydration(
       // checks, and error paths. The finally runs even when the catch returns.
       // settlePendingBrowserRouterState is idempotent via the settled flag.
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
-      discardedServerActionRefreshScheduler.markNavigationSettled();
+      if (!startedHardNavigation) discardedServerActionRefreshScheduler.markNavigationSettled();
       releaseNavigationInFlight();
       if (startedHardNavigation) {
         await waitForMpaNavigationRestore();
+        // A discarded action's refresh would reload the old URL over the
+        // pending document load, so it waits until bfcache restores this one.
+        discardedServerActionRefreshScheduler.markNavigationSettled();
       }
     }
   };
