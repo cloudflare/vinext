@@ -5097,7 +5097,17 @@ describe("app browser navigation controller", () => {
       expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
       expect(assign).not.toHaveBeenCalled();
 
-      await expect(commitAction(controller.beginNavigation())).resolves.toBeUndefined();
+      // An action posted after a navigation started shares its id, but the
+      // pending navigation still owns the router: it must not reload the old URL.
+      const pendingNavigationId = controller.beginNavigation();
+      await expect(commitAction(pendingNavigationId)).resolves.toBe("action-result");
+      expect(controller.ownsRouterForServerAction(pendingNavigationId)).toBe(false);
+      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(2);
+      expect(assign).not.toHaveBeenCalled();
+
+      controller.finalizeNavigation(pendingNavigationId, null);
+      expect(controller.ownsRouterForServerAction(pendingNavigationId)).toBe(true);
+      await expect(commitAction(pendingNavigationId)).resolves.toBeUndefined();
       expect(assign).toHaveBeenCalledWith("https://example.com/settings");
       expect(stateRef.current.routeId).toBe("route:/settings");
     } finally {

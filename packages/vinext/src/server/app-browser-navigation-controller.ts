@@ -153,6 +153,7 @@ type BrowserNavigationController = {
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
   isCurrentNavigation(navId: number): boolean;
+  ownsRouterForServerAction(startedNavigationId: number): boolean;
   performHardNavigation(href: string, mode?: HardNavigationMode): boolean;
   waitForBrowserRouterStateReady(): Promise<void>;
   attachBrowserRouterState(
@@ -439,6 +440,16 @@ export function createAppBrowserNavigationController(
 
   function isCurrentNavigation(navId: number): boolean {
     return navId === activeNavigationId;
+  }
+
+  /**
+   * Whether a server action that started under `startedNavigationId` may still
+   * change what is visible. A user navigation still pending owns the next
+   * visible result, even when the action was posted after it started and so
+   * shares its id: as in Next.js, the navigation discards the action's state.
+   */
+  function ownsRouterForServerAction(startedNavigationId: number): boolean {
+    return isCurrentNavigation(startedNavigationId) && pendingUserNavigationId === null;
   }
 
   function beginPendingBrowserRouterState(): PendingBrowserRouterState {
@@ -1210,7 +1221,7 @@ export function createAppBrowserNavigationController(
       // The commit cannot be classified without the RouteManifest. An action
       // that still owns the router reloads, like a hard-navigate decision
       // below; a superseded one is discarded like a no-commit decision.
-      if (isCurrentNavigation(startedNavigationId)) {
+      if (ownsRouterForServerAction(startedNavigationId)) {
         performHardNavigation(targetHref);
         return undefined;
       }
@@ -1241,13 +1252,10 @@ export function createAppBrowserNavigationController(
       type: "navigate",
     });
 
-    // A user navigation still pending owns the next visible result. Approval
-    // reads the committed state, which does not move while the navigation's
-    // tree waits for React to commit it, and an action posted after the
-    // navigation started shares its id. As in Next.js, where a navigation
-    // discards a pending server action's state, drop this revalidation; the
-    // refresh for a discarded action runs once navigations settle.
-    if (pendingUserNavigationId !== null) {
+    // Approval reads the committed state, which does not move while a pending
+    // navigation's tree waits for React to commit it, so check ownership here.
+    // A discarded revalidation is refreshed once navigations settle.
+    if (!ownsRouterForServerAction(startedNavigationId)) {
       notifyDiscardedServerActionRevalidation(lifecycleOptions);
       return resolveSameUrlActionReturnValue(returnValue);
     }
@@ -1341,6 +1349,7 @@ export function createAppBrowserNavigationController(
     hasBrowserRouterState,
     getBrowserRouterState,
     isCurrentNavigation,
+    ownsRouterForServerAction,
     performHardNavigation,
     waitForBrowserRouterStateReady,
     attachBrowserRouterState,

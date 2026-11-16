@@ -913,10 +913,11 @@ async function commitSameUrlNavigatePayload(
     if (routeManifestLoad !== null) routeManifestLoaded = await routeManifestLoad;
     // Persisted interceptions and commit approval need the manifest. An action
     // that still owns the router reloads its page, like a hard-navigate commit
-    // decision. A superseded one goes on to the commit below, which discards it.
+    // decision. A superseded one, or one a pending navigation has overtaken,
+    // goes on to the commit below, which discards it.
     if (
       !routeManifestLoaded &&
-      browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)
+      browserNavigationController.ownsRouterForServerAction(actionInitiation.navigationId)
     ) {
       browserNavigationController.performHardNavigation(actionInitiation.href);
       return undefined;
