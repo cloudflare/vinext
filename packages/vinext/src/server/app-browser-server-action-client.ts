@@ -306,8 +306,12 @@ export async function invokeClientServerAction(
         renderedPathAndSearch,
       );
     }
-    // A forwarded action revalidates without rendering the page.
-    if (discardedIncompatibleResponse) deps.notifyDiscardedServerActionRevalidation(revalidation);
+    // A forwarded action revalidates without rendering the page. If a
+    // navigation discarded it, or was pending when it was posted, refresh what
+    // it revalidated once navigations settle, as with a discarded tree.
+    if (!deps.ownsRouterForServerAction(actionInitiation)) {
+      deps.notifyDiscardedServerActionRevalidation(revalidation);
+    }
     if (result.returnValue) {
       if (!result.returnValue.ok) {
         throw await normalizeServerActionThrownValue(result.returnValue.data, fetchResponse.status);

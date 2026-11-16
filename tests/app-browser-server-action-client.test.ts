@@ -327,6 +327,76 @@ describe("app browser server action client", () => {
     expect(clearClientNavigationCaches).not.toHaveBeenCalled();
   });
 
+  describe("compatible revalidating action responses without a tree", () => {
+    function setUpForwardedResponse(ownsRouter: boolean) {
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source?tab=billing", origin: "https://example.com" },
+      });
+      // A forwarded action revalidates but skips page rendering: the response
+      // carries only its value, with the client's own compatibility id.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response("flight", {
+              status: 200,
+              headers: {
+                "content-type": "text/x-component",
+                [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "current-deployment",
+                [ACTION_REVALIDATED_HEADER]: "2",
+              },
+            }),
+        ),
+      );
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok: true, data: "saved" },
+      });
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: "https://example.com/source?tab=profile",
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+        startedDuringUserNavigation: !ownsRouter,
+      });
+      const deps = {
+        basePath: "",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: "current-deployment",
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
+        ownsRouterForServerAction: vi.fn(() => ownsRouter),
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      };
+      return { actionInitiation, deps };
+    }
+
+    it("refreshes what the action revalidated when a navigation owns the router", async () => {
+      const { actionInitiation, deps } = setUpForwardedResponse(false);
+
+      await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
+        "saved",
+      );
+      expect(deps.ownsRouterForServerAction).toHaveBeenCalledWith(actionInitiation);
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(deps.clearDynamicClientNavigationCaches).toHaveBeenCalledTimes(1);
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
+    });
+
+    it("schedules no refresh while the action owns the router", async () => {
+      const { actionInitiation, deps } = setUpForwardedResponse(true);
+
+      await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
+        "saved",
+      );
+      expect(deps.notifyDiscardedServerActionRevalidation).not.toHaveBeenCalled();
+    });
+  });
+
   describe("incompatible action responses", () => {
     const sourceHref = "https://example.com/source?tab=profile";
 
