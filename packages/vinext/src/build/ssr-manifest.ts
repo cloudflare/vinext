@@ -148,22 +148,29 @@ export function augmentSsrManifestFromBundle(
   const getStaticImportCss = (fileName: string): string[] => {
     let css = staticImportCss.get(fileName);
     if (css) return css;
+
     const files = new Set<string>();
     const visited = new Set([fileName]);
     const visit = (importer: string) => {
       const chunk = bundle[importer];
       if (chunk?.type !== "chunk") return;
+
       for (const importedFile of (chunk as BundleBackfillChunk).imports ?? []) {
         if (visited.has(importedFile)) continue;
         visited.add(importedFile);
+
+        // A chunk's imports evaluate first, so their stylesheets come first.
         visit(importedFile);
+
         const imported = bundle[importedFile];
         if (imported?.type !== "chunk") continue;
+
         for (const cssFile of (imported as BundleBackfillChunk).viteMetadata?.importedCss ?? []) {
           files.add(cssFile);
         }
       }
     };
+
     visit(fileName);
     css = [...files];
     staticImportCss.set(fileName, css);

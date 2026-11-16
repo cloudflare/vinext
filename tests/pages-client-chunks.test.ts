@@ -22,6 +22,7 @@ async function buildChunks(
     environments: { client: { build: { write: false } }, ssr: { build: { write: false } } },
     logLevel: "silent",
   });
+
   const builds: Rolldown.OutputChunk[][] = [];
   for (const name of environmentNames) {
     const result = await builder.build(builder.environments[name]!);
@@ -31,6 +32,7 @@ async function buildChunks(
         .filter((item): item is Rolldown.OutputChunk => item.type === "chunk"),
     );
   }
+
   return builds;
 }
 
@@ -57,18 +59,22 @@ describe("Pages Router client chunks", () => {
     // Pages manifests look up by source path.
     const appChunks = chunksWith(chunks, "/pages/_app.tsx");
     expect(appChunks.map(facadeOf)).toEqual(["pages/_app.tsx"]);
+
     // A module `_app` shares with a page loads in one chunk `_app` imports.
     const brandChunks = chunksWith(chunks, "/lib/brand.ts");
     expect(brandChunks).toHaveLength(1);
     expect(facadeOf(brandChunks[0]!)).toBeUndefined();
     expect(appChunks[0]!.imports).toContain(brandChunks[0]!.fileName);
+
     // An import that uses next/link joins it too.
     expect(chunksWith(chunks, "/lib/home-link.tsx")).toEqual(brandChunks);
+
     // The client entry, which loads instrumentation-client before `_app`,
     // doesn't load that chunk with it.
     const entryChunk = chunks.find((chunk) => chunk.isEntry)!;
     expect(chunksWith([entryChunk], "/lib/telemetry.ts")).toHaveLength(1);
     expect(entryChunk.imports).not.toContain(brandChunks[0]!.fileName);
+
     // Only what `_app` uses from a side-effect-free barrel joins it.
     const badgeChunks = chunksWith(chunks, "/lib/kit/kit-badge.ts");
     expect(badgeChunks.length).toBeGreaterThan(0);
@@ -81,6 +87,7 @@ describe("Pages Router client chunks", () => {
     expect(panelChunks).toHaveLength(1);
     expect(facadeOf(panelChunks[0]!)).toBeUndefined();
 
+    // A small module that pages share is copied into each of them.
     const labelChunks = chunksWith(chunks, "/lib/shared-label.ts").map(
       (chunk) => facadeOf(chunk) ?? "",
     );
@@ -102,6 +109,7 @@ describe("Pages Router client chunks", () => {
 
   it("leaves Pages Router chunking to the bundler with disableNextLikeChunking", async () => {
     const chunks = await buildClientChunks({ disableNextLikeChunking: true });
+
     const brandChunks = chunksWith(chunks, "/lib/brand.ts");
     expect(brandChunks).toHaveLength(1);
     expect(chunksWith(brandChunks, "/pages/_app.tsx")).toEqual([]);
@@ -121,6 +129,7 @@ describe("collectPagesAppChunkRoots", () => {
     graph: Record<string, { entry?: boolean; imports?: string[]; dynamicImports?: string[] }>,
   ) {
     const ids = Object.keys(graph);
+
     const info = (id: string) =>
       graph[id]
         ? {
@@ -130,6 +139,7 @@ describe("collectPagesAppChunkRoots", () => {
             dynamicImporters: ids.filter((other) => graph[other]!.dynamicImports?.includes(id)),
           }
         : null;
+
     return [...collectPagesAppChunkRoots("/app/pages/_app.tsx", ids, info, (id) => chunkNames[id])];
   }
 
@@ -226,6 +236,7 @@ describe("withInlineCommonChunks", () => {
     const inline = (
       codeSplitting as { experimentalInlineCommonChunks: { maxSize: number; exclude: RegExp } }
     ).experimentalInlineCommonChunks;
+
     expect(inline.maxSize).toBe(PAGES_INLINE_COMMON_CHUNK_MAX_SIZE);
     expect(inline.exclude.test("/app/lib/panel.module.css")).toBe(true);
     expect(inline.exclude.test("/app/lib/theme.scss?inline")).toBe(true);

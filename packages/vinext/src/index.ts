@@ -1914,6 +1914,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Filled in from the client module graph; see vinext:pages-client-chunks.
   const pagesAppChunkRoots = new Set<string>();
   let pagesClientPreserveEntrySignatures: unknown;
+
   const pagesClientChunks = createPagesClientCodeSplittingConfig(
     clientCodeSplittingConfig,
     pagesAppChunkRoots,
@@ -9323,11 +9324,14 @@ export const loadServerActionClient = ${
     },
     buildEnd() {
       if (this.environment?.name !== "client" || !hasPagesDir) return;
+
       const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
       if (!appFilePath) return;
+
       const appIds = new Set([toSlash(appFilePath), canonicalize(appFilePath)]);
       const appId = [...this.getModuleIds()].find((id) => appIds.has(toSlash(id)));
       if (!appId) return;
+
       for (const id of collectPagesAppChunkRoots(
         appId,
         this.getModuleIds(),
@@ -9343,6 +9347,8 @@ export const loadServerActionClient = ${
       handler(output) {
         const environment = this.environment;
         if (environment?.name !== "client") return;
+
+        // Only outputs that still use vinext's Pages Router groups.
         const codeSplitting = output.codeSplitting;
         if (
           !codeSplitting ||
@@ -9351,6 +9357,7 @@ export const loadServerActionClient = ${
         ) {
           return;
         }
+
         const rolldownOptions = environment.config.build.rolldownOptions;
         return withInlineCommonChunks(output, {
           preserveEntrySignatures: pagesClientPreserveEntrySignatures,

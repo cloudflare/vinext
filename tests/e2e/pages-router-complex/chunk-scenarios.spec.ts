@@ -17,8 +17,10 @@ test.describe("workbench chunk scenarios", () => {
     test(`${desk} desk hydrates its shared panels`, async ({ page }) => {
       await page.goto(`/workbench/${desk}`);
       await expect(page.locator(`[data-desk="${desk}"]`)).toHaveAttribute("data-hydrated", "true");
+
       const pill = page.getByTestId(`status-pill-${desk}`);
       await expect(pill).toHaveAttribute("data-tone", "idle");
+
       await pill.click();
       await expect(pill).toHaveAttribute("data-tone", "busy");
     });
@@ -27,6 +29,7 @@ test.describe("workbench chunk scenarios", () => {
   test("shared filter bar drives roster and dispatch", async ({ page }) => {
     await page.goto("/workbench/roster");
     await expect(page.locator('[data-desk="roster"]')).toHaveAttribute("data-hydrated", "true");
+
     await page.getByTestId("filter-select").selectOption("south");
     await expect(page.getByTestId("roster-shifts")).toHaveAttribute("data-crew", "south");
     await expect(page.getByTestId("roster-shifts").locator("li")).toHaveCount(1);
@@ -34,6 +37,7 @@ test.describe("workbench chunk scenarios", () => {
 
     await page.goto("/workbench/dispatch");
     await expect(page.locator('[data-desk="dispatch"]')).toHaveAttribute("data-hydrated", "true");
+
     await page.getByTestId("filter-select").selectOption("Harbor Gate");
     await expect(page.getByTestId("dispatch-regions")).toHaveAttribute("data-hub", "Harbor Gate");
   });
@@ -42,6 +46,7 @@ test.describe("workbench chunk scenarios", () => {
     await page.goto("/workbench/inventory");
     await expect(page.locator('[data-desk="inventory"]')).toHaveAttribute("data-hydrated", "true");
     await expect(page.getByTestId("inventory-table").locator("tbody tr")).toHaveCount(4);
+
     await page.getByTestId("export-csv").click();
     await expect(page.getByTestId("export-output")).toContainText("R001,40 units");
   });
@@ -51,6 +56,7 @@ test.describe("workbench chunk scenarios", () => {
   }) => {
     const response = await page.request.get("/workbench/reports");
     const html = await response.text();
+
     // next/dynamic with SSR and React.lazy both render on the server.
     expect(html).toContain('data-testid="trend-chart"');
     expect(html).toContain('data-testid="breakdown-table"');
@@ -60,6 +66,7 @@ test.describe("workbench chunk scenarios", () => {
     await expect(page.locator('[data-desk="reports"]')).toHaveAttribute("data-hydrated", "true");
     await expect(page.getByTestId("live-ticker")).toBeVisible();
     await expect(page.getByTestId("trend-legend").locator("li")).toHaveCount(5);
+
     const pill = page.getByTestId("status-pill-breakdown");
     await pill.click();
     await expect(pill).toHaveAttribute("data-tone", "busy");
@@ -69,8 +76,10 @@ test.describe("workbench chunk scenarios", () => {
     await page.goto("/workbench/tools");
     await expect(page.locator('[data-desk="tools"]')).toHaveAttribute("data-hydrated", "true");
     await expect(page.getByTestId("tools-csv")).toContainText("diff,ready");
+
     await page.getByTestId("load-presets").click();
     await expect(page.getByTestId("presets").locator("li")).toHaveCount(3);
+
     await page.getByTestId("run-diff").click();
     await expect(page.getByTestId("diff-output")).toHaveText("+20m -30m");
   });
@@ -79,6 +88,7 @@ test.describe("workbench chunk scenarios", () => {
     await page.goto("/workbench/media");
     await expect(page.locator('[data-desk="media"]')).toHaveAttribute("data-hydrated", "true");
     await expect(page.getByTestId("media-swatch")).toBeVisible();
+
     await expect
       .poll(() => page.evaluate(() => (window as MediaWindow).__ATLAS_MEDIA_INLINE__))
       .toBe(true);
@@ -88,6 +98,7 @@ test.describe("workbench chunk scenarios", () => {
     await page.goto("/workbench/search?q=amber");
     await expect(page.locator('[data-desk="search"]')).toHaveAttribute("data-hydrated", "true");
     await expect(page.getByTestId("search-term")).toHaveText("amber");
+
     await page.getByTestId("search-input").fill("cedar");
     await page.getByTestId("search-input").press("Enter");
     await page.waitForURL("**/workbench/search?q=cedar");
@@ -99,9 +110,11 @@ test.describe("workbench chunk scenarios", () => {
   }) => {
     const evaluations = () =>
       page.evaluate(() => (window as EvaluationWindow).__WORKBENCH_EVALUATIONS__ ?? []);
+
     await page.goto("/workbench");
     await expect(page.locator('[data-desk="hub"]')).toHaveAttribute("data-hydrated", "true");
     expect(await evaluations()).toEqual([]);
+
     for (const desk of ["ledger", "roster", "inventory"]) {
       await page.getByTestId(`desk-link-${desk}`).click();
       await expect(page.locator(`[data-desk="${desk}"]`)).toHaveAttribute("data-hydrated", "true");
@@ -112,9 +125,11 @@ test.describe("workbench chunk scenarios", () => {
   test("client navigation visits every desk without a document load", async ({ page }) => {
     await page.goto("/workbench");
     await expect(page.locator('[data-desk="hub"]')).toHaveAttribute("data-hydrated", "true");
+
     await page.evaluate(() => {
       (window as Window & { __workbench_marker__?: boolean }).__workbench_marker__ = true;
     });
+
     for (const desk of [
       "ledger",
       "roster",
@@ -128,6 +143,7 @@ test.describe("workbench chunk scenarios", () => {
       await page.getByTestId(`desk-link-${desk}`).click();
       await expect(page.locator(`[data-desk="${desk}"]`)).toHaveAttribute("data-hydrated", "true");
     }
+
     expect(
       await page.evaluate(
         () => (window as Window & { __workbench_marker__?: boolean }).__workbench_marker__,

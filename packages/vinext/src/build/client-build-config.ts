@@ -478,6 +478,7 @@ export function collectPagesAppChunkRoots(
   } | null,
   clientManualChunks: (id: string) => string | undefined,
 ): Set<string> {
+  // Modules the first group doesn't name may join the "pages-app" chunk.
   const joinsGroup = (id: string) => {
     const chunkName = clientManualChunks(id);
     return (
@@ -486,41 +487,57 @@ export function collectPagesAppChunkRoots(
       chunkName === "vinext-app-router"
     );
   };
+
+  // Every module that `ids` load statically, `ids` included.
   const closure = (ids: string[]) => {
     const modules = new Set<string>();
+
     while (ids.length > 0) {
       const id = ids.pop()!;
       if (modules.has(id)) continue;
+
       modules.add(id);
       ids.push(...(getModuleInfo(id)?.importedIds ?? []));
     }
+
     return modules;
   };
+
+  // Seed the modules that must stay out: `_app`, `import()` targets, and what
+  // the client entry loads beyond the first group's own modules.
   const leadsToEntry = new Set([appId]);
   const entries: string[] = [];
   const firstGroupModules: string[] = [];
+
   for (const id of moduleIds) {
     const info = getModuleInfo(id);
     if (info?.isEntry) entries.push(id);
+
     if (!joinsGroup(id)) firstGroupModules.push(id);
     else if (info?.dynamicImporters.length) leadsToEntry.add(id);
   }
+
   const firstGroupTakes = closure(firstGroupModules);
   for (const id of closure(entries)) {
     if (joinsGroup(id) && !firstGroupTakes.has(id)) leadsToEntry.add(id);
   }
+
+  // Anything that statically imports one of those leads to it too.
   const pending = [...leadsToEntry];
   while (pending.length > 0) {
     for (const importer of getModuleInfo(pending.pop()!)?.importers ?? []) {
       if (leadsToEntry.has(importer)) continue;
+
       leadsToEntry.add(importer);
       pending.push(importer);
     }
   }
+
   const roots = new Set<string>();
   for (const id of getModuleInfo(appId)?.importedIds ?? []) {
     if (joinsGroup(id) && !leadsToEntry.has(id)) roots.add(id);
   }
+
   return roots;
 }
 
@@ -535,6 +552,7 @@ export function createPagesClientCodeSplittingConfig(
   appRoots: ReadonlySet<string>,
 ) {
   const [first, ...rest] = base.groups;
+
   const pagesAppGroup = {
     name(moduleId: string) {
       return appRoots.has(moduleId) ? "pages-app" : null;
@@ -542,6 +560,7 @@ export function createPagesClientCodeSplittingConfig(
     // `_app` may import less than the default `minSize`.
     minSize: 0,
   };
+
   return { pagesAppGroup, codeSplitting: { ...base, groups: [first!, pagesAppGroup, ...rest] } };
 }
 
@@ -558,6 +577,7 @@ const STYLESHEET_MODULE_RE = /\.(?:css|less|sass|scss|styl|stylus|pcss|postcss|s
 export function supportsInlineCommonChunks(rolldownVersion: string): boolean {
   const [release = "", prerelease] = rolldownVersion.split("-", 2);
   const [major = 0, minor = 0, patch = 0] = release.split(".").map(Number);
+
   if (major !== 1) return major > 1;
   if (minor !== 2) return minor > 2;
   return patch > 18 || (patch === 18 && prerelease === undefined);
@@ -592,22 +612,29 @@ export function withInlineCommonChunks<Output extends InlineCommonChunksOutput>(
   },
 ): Output | undefined {
   const codeSplitting = output.codeSplitting;
+
+  const isEsmOutput =
+    output.format === undefined ||
+    output.format === "es" ||
+    output.format === "esm" ||
+    output.format === "module";
+  const keepsEntrySignatures =
+    options.preserveEntrySignatures !== undefined && options.preserveEntrySignatures !== false;
+
   if (
     !supportsInlineCommonChunks(options.rolldownVersion) ||
     !codeSplitting ||
     typeof codeSplitting !== "object" ||
     "experimentalInlineCommonChunks" in codeSplitting ||
-    (output.format !== undefined &&
-      output.format !== "es" &&
-      output.format !== "esm" &&
-      output.format !== "module") ||
+    !isEsmOutput ||
     output.preserveModules === true ||
     output.strictExecutionOrder === false ||
-    (options.preserveEntrySignatures !== undefined && options.preserveEntrySignatures !== false) ||
+    keepsEntrySignatures ||
     options.onDemandWrapping === true
   ) {
     return undefined;
   }
+
   return {
     ...output,
     codeSplitting: {
