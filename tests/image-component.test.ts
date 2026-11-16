@@ -218,6 +218,26 @@ describe("images.loader config validation", () => {
     }
   });
 
+  // Next.js's client/legacy/image.tsx never imports the aliased image-loader
+  // module, so a legacy-only page never evaluates images.loaderFile: its side
+  // effects and top-level errors cannot reach that page. next/image does.
+  it("evaluates images.loaderFile for next/image only, never for next/legacy/image", async () => {
+    const evaluated = vi.fn();
+    vi.resetModules();
+    vi.doMock("vinext/shims/image-loader-file", () => {
+      evaluated();
+      return { default: undefined };
+    });
+    try {
+      await import("../packages/vinext/src/shims/legacy-image.js");
+      expect(evaluated).not.toHaveBeenCalled();
+      await import("../packages/vinext/src/shims/image.js");
+      expect(evaluated).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock("vinext/shims/image-loader-file");
+    }
+  });
+
   // Next.js's legacy image marks data: and blob: sources unoptimized before
   // it builds a URL, so its "custom" loader neither throws nor runs for them.
   it("renders inline next/legacy/image sources as-is when images.loader is custom", async () => {

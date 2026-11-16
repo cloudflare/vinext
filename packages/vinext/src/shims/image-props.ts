@@ -1,8 +1,9 @@
 /**
  * Server-safe next/image helpers.
  *
- * Holds the image config, URL builders, and `getImageProps`. This module has
- * no "use client" directive so `getImageProps` can run in Server Components,
+ * Holds the image config, URL builders, and `buildImageProps` (getImageProps
+ * without `images.loaderFile`; next/image adds it in shims/image-loader.ts).
+ * This module has no "use client" directive so getImageProps can run in Server Components,
  * matching Next.js where `next/image` (shared/lib/image-external.tsx) is
  * server-safe and only the Image component is a client reference.
  *
@@ -17,10 +18,6 @@ import type {
   ImgProps,
   StaticImport,
 } from "@vinext/types/next/upstream/dist/shared/lib/get-img-props";
-// The vinext plugin aliases this specifier to the user's `images.loaderFile`.
-// A namespace import, so a file without a default export reaches the
-// diagnostic in withConfiguredLoader instead of failing module linking.
-import * as imageLoaderFileModule from "vinext/shims/image-loader-file";
 import { getDeploymentId } from "../utils/deployment-id.js";
 import { hasRemoteMatch, isPrivateIp, type RemotePattern } from "./image-config.js";
 
@@ -400,37 +397,12 @@ export function generateLoaderAttributes(
  */
 export type LegacyLayoutProp = { __vinextLegacyLayout?: string };
 
-/** Internal: also thrown by shims/image-external.tsx for next/image. */
+/** Internal: also thrown by shims/image-loader.ts for next/image. */
 export function missingLoaderError(src: string): Error {
   return new Error(
     `Image with src "${src}" is missing "loader" prop.` +
       "\nRead more: https://nextjs.org/docs/messages/next-image-missing-loader",
   );
-}
-
-const configuredImageLoader: ImageLoader | undefined = imageLoaderFileModule.default;
-/** `images.loaderFile` is set, so `configuredImageLoader` must be its default export. */
-const __hasImageLoaderFile = process.env.__VINEXT_IMAGE_LOADER_FILE === "true";
-
-/**
- * next/image only (next/legacy/image never evaluates `images.loaderFile`):
- * fall back to the configured loader file when no `loader` prop is given.
- * Ported from the loader checks at the top of Next.js's getImgProps.
- */
-export function withConfiguredLoader(props: ImageProps): ImageProps {
-  if (__hasImageLoaderFile && typeof configuredImageLoader === "undefined") {
-    throw new Error(
-      "images.loaderFile detected but the file is missing default export.\nRead more: https://nextjs.org/docs/messages/invalid-images-config",
-    );
-  }
-  const loader = props.loader || configuredImageLoader;
-  if (!loader && __customImageLoader) {
-    const { src } = props;
-    throw missingLoaderError(
-      typeof src === "string" ? src : ("default" in src ? src.default : src).src,
-    );
-  }
-  return loader === props.loader ? props : { ...props, loader };
 }
 
 /** Sources Next.js always treats as unoptimized (empty, data: and blob:). */
@@ -439,11 +411,11 @@ export function isInlineSrc(src: string): boolean {
 }
 
 /**
- * getImageProps — for advanced use cases (picture elements, background images).
+ * getImageProps without `images.loaderFile`. next/image's getImageProps
+ * (shims/image-loader.ts) applies the loader file and then calls this.
  * Returns the props that would be passed to the underlying <img> element.
  */
-export function getImageProps(imagePropsInput: ImageProps): { props: ImgProps } {
-  const props = withConfiguredLoader(imagePropsInput);
+export function buildImageProps(props: ImageProps): { props: ImgProps } {
   const {
     src: srcProp,
     alt,

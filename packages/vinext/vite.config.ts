@@ -68,7 +68,7 @@ const externalizeBareThirdPartySpecifiers = (
   isResolved: boolean,
 ) => {
   if (isResolved) return false;
-  // shims/image-props.ts imports the `images.loaderFile` slot by this bare
+  // shims/image-loader.ts imports the `images.loaderFile` slot by this bare
   // specifier so the vinext plugin can alias it to the user's loader file.
   // Keep it bare in `dist` instead of rewriting it to a relative import.
   if (id === "vinext/shims/image-loader-file") return true;

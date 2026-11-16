@@ -9,7 +9,7 @@
  * codemod when upgrading from Next.js 12.
  */
 import React from "react";
-import ModernImage from "./image.js";
+import ModernImage from "./image-base.js";
 import type { LegacyLayoutProp } from "./image-props.js";
 import type {
   ImageLoader,

@@ -3737,7 +3737,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...nextConfig.aliases,
           ...nextShimMap,
           "vinext/server/pages-client-assets": _pagesClientAssetsPath,
-          // shims/image-props.ts imports this slot for `images.loaderFile`.
+          // shims/image-loader.ts imports this slot for `images.loaderFile`.
           // Like Next.js (which aliases next/dist/shared/lib/image-loader
           // to the file), point it at the user's file, resolved against
           // the project root; otherwise keep vinext's `undefined` default.
@@ -5566,7 +5566,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // gives plugin-rsc a package client reference, like vinext's other
             // client shims.
             return [
-              `export { getImageProps, imageOptimizationUrl } from "vinext/shims/image-props";`,
+              `export { getImageProps } from "vinext/shims/image-loader";`,
+              `export { imageOptimizationUrl } from "vinext/shims/image-props";`,
               `export { default } from "vinext/shims/image";`,
               "",
             ].join("\n");
