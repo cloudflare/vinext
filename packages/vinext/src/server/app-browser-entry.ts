@@ -1895,6 +1895,11 @@ function registerServerActionCallback(): void {
           clientRscCompatibilityId,
           commitSameUrlNavigatePayload,
           navigationPlanner,
+          ownsRouterForServerAction: (initiation) =>
+            browserNavigationController.ownsRouterForServerAction(
+              initiation.navigationId,
+              initiation.startedDuringUserNavigation,
+            ),
           performHardNavigation: (url, historyMode) =>
             browserNavigationController.performHardNavigation(url, historyMode),
           renderRedirectPayload(elements, target, actionInitiation, revalidation) {

@@ -40,6 +40,7 @@ export type ClientServerActionInitiation = {
   navigationId: number;
   path: string;
   routerState: AppRouterState;
+  startedDuringUserNavigation: boolean;
 };
 
 type ActionRedirectTarget = {
@@ -64,6 +65,8 @@ export type ClientServerActionDeps = {
     renderedPathAndSearch: string | null,
   ): Promise<unknown>;
   navigationPlanner: typeof import("./navigation-planner.js").navigationPlanner;
+  /** Whether the action may still change what is visible (see the controller). */
+  ownsRouterForServerAction(actionInitiation: ClientServerActionInitiation): boolean;
   performHardNavigation(url: string, historyMode?: "assign" | "replace"): void;
   renderRedirectPayload(
     elements: AppElements,
@@ -190,6 +193,16 @@ export async function invokeClientServerAction(
   });
   const fetchResponseIsRsc = actionResultFacts.isRscContentType;
   const actionResultDecision = deps.navigationPlanner.classifyServerActionResult(actionResultFacts);
+  // An incompatible response reloads the page the action was posted from. A
+  // navigation that superseded the action, or was pending when it was posted,
+  // owns what loads next: as in Next.js, it discards the action's state, and
+  // its own request runs into the same mismatch.
+  if (
+    actionResultDecision.kind === "hardNavigate" &&
+    !deps.ownsRouterForServerAction(actionInitiation)
+  ) {
+    return undefined;
+  }
   if (
     applyServerActionResultDecision(
       actionResultDecision,

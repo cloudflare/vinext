@@ -352,6 +352,10 @@ export function createAppBrowserNavigationController(
   // Whether a render has started committing since the pending user navigation
   // began. From then on it is visible and can no longer be discarded.
   let pendingUserNavigationCommitStarted = false;
+  // Whether a non-detached render of the pending user navigation itself has
+  // started committing. An older navigation's render can still commit after
+  // it began, but does not make its destination visible.
+  let pendingUserNavigationOwnCommitStarted = false;
   let latestHmrUpdateId = 0;
   const pendingNavigationCommits = new Map<
     number,
@@ -426,6 +430,7 @@ export function createAppBrowserNavigationController(
     pendingUserNavigationId = activeNavigationId;
     pendingUserNavigationLane = null;
     pendingUserNavigationCommitStarted = false;
+    pendingUserNavigationOwnCommitStarted = false;
     pendingUserNavigationShellHref = null;
     retiredNavigationUrl = null;
     return activeNavigationId;
@@ -449,12 +454,12 @@ export function createAppBrowserNavigationController(
   }
 
   /**
-   * Whether a user navigation is pending and none of its authoritative renders
-   * has started committing. Once one has, its destination is visible and owns
-   * the actions posted from it, even while the navigation still streams.
+   * Whether a user navigation is pending and none of its own authoritative
+   * renders has started committing. Once one has, its destination is visible
+   * and owns the actions posted from it, even while the navigation streams.
    */
   function isUserNavigationUncommitted(): boolean {
-    return pendingUserNavigationId !== null && !pendingUserNavigationCommitStarted;
+    return pendingUserNavigationId !== null && !pendingUserNavigationOwnCommitStarted;
   }
 
   /**
@@ -709,6 +714,12 @@ export function createAppBrowserNavigationController(
       pendingUserNavigationShellHref = normalizeBrowserHref(committingCommit.targetHref);
     } else {
       pendingUserNavigationCommitStarted = true;
+      if (
+        committingOperation?.navigationId !== undefined &&
+        committingOperation.navigationId === pendingUserNavigationId
+      ) {
+        pendingUserNavigationOwnCommitStarted = true;
+      }
     }
     clearCommittedNavigationFailureTargets(renderId);
     writeNavigationRenderHistory(renderId);

@@ -5477,6 +5477,67 @@ describe("app browser navigation controller", () => {
     }
   });
 
+  it("does not let an older navigation's commit end a newer navigation's ownership of server actions", async () => {
+    const initialState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/a", {}),
+      routeId: "route:/a",
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/a");
+    const onDiscardedRevalidation = vi.fn();
+    const renderNavigation = (navId: number, href: string, routeId: string) =>
+      renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: noopCommitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(href, {}),
+        navId,
+        nextElements: Promise.resolve(createResolvedElements(routeId, "/")),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: href,
+      });
+
+    try {
+      // Navigation A's tree is handed to React, then navigation B starts.
+      const navA = controller.beginNavigation();
+      void renderNavigation(navA, "https://example.com/b", "route:/b");
+      await vi.waitFor(() => expect(stateRef.current.routeId).toBe("route:/b"));
+      const renderA = stateRef.current.renderId;
+      controller.beginNavigation();
+
+      // React commits A only now. B's destination is still not visible.
+      controller.beginNavigationRenderCommit(renderA);
+      controller.commitNavigationRender(renderA);
+      expect(controller.isUserNavigationUncommitted()).toBe(true);
+
+      // An action posted from A's page shares B's id, but B still owns the router.
+      await expect(
+        controller.commitSameUrlNavigatePayload(
+          Promise.resolve(createResolvedElements("route:/b/action", "/")),
+          stateRef.current.navigationSnapshot,
+          { data: "saved", ok: true },
+          stateRef.current,
+          {
+            onDiscardedRevalidation,
+            revalidation: "dynamicOnly",
+            startedDuringUserNavigation: controller.isUserNavigationUncommitted(),
+            startedNavigationId: controller.getActiveNavigationId(),
+            targetHref: "https://example.com/b",
+          },
+        ),
+      ).resolves.toBe("saved");
+
+      expect(stateRef.current.routeId).toBe("route:/b");
+      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
   it("revalidates same-URL server action commits immediately before dispatch", async () => {
     const controller = createAppBrowserNavigationController();
     const initialState = createState({

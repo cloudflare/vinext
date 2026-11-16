@@ -14,6 +14,7 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
+import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
 vi.mock("@vitejs/plugin-rsc/browser", () => ({
   createFromFetch: vi.fn(),
@@ -100,6 +101,7 @@ describe("app browser server action client", () => {
             clientRscCompatibilityId: null,
             commitSameUrlNavigatePayload: vi.fn(),
             navigationPlanner,
+            ownsRouterForServerAction: () => true,
             performHardNavigation,
             renderRedirectPayload,
             syncCurrentHistoryState: vi.fn(),
@@ -177,6 +179,7 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,
+      ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
       syncCurrentHistoryState: vi.fn(),
@@ -253,6 +256,7 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,
+      ownsRouterForServerAction: () => true,
       performHardNavigation,
       renderRedirectPayload,
       syncCurrentHistoryState: vi.fn(),
@@ -307,6 +311,7 @@ describe("app browser server action client", () => {
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
+        ownsRouterForServerAction: () => true,
         performHardNavigation: vi.fn(),
         renderRedirectPayload: vi.fn(),
         syncCurrentHistoryState: vi.fn(),
@@ -316,6 +321,66 @@ describe("app browser server action client", () => {
 
     expect(commitSameUrlNavigatePayload).not.toHaveBeenCalled();
     expect(clearClientNavigationCaches).not.toHaveBeenCalled();
+  });
+
+  it("only reloads for an incompatible action response while the action owns the router", async () => {
+    const actionInitiation = createServerActionInitiationSnapshot({
+      href: "https://example.com/source?tab=profile",
+      navigationId: 1,
+      routerState: createActionTestRouterState(),
+      startedDuringUserNavigation: true,
+    });
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source?tab=billing", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("flight", {
+            status: 200,
+            headers: {
+              "content-type": "text/x-component",
+              [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "next-deployment",
+            },
+          }),
+      ),
+    );
+    const commitSameUrlNavigatePayload = vi.fn();
+    const performHardNavigation = vi.fn();
+    const ownsRouterForServerAction = vi.fn(() => false);
+    const deps = {
+      basePath: "",
+      clearClientNavigationCaches: vi.fn(),
+      clearDynamicClientNavigationCaches: vi.fn(),
+      clientRscCompatibilityId: "current-deployment",
+      commitSameUrlNavigatePayload,
+      navigationPlanner,
+      ownsRouterForServerAction,
+      performHardNavigation,
+      renderRedirectPayload: vi.fn(),
+      syncCurrentHistoryState: vi.fn(),
+      syncServerActionHttpFallbackHead: vi.fn(),
+    };
+
+    // Posted while a navigation was pending: that navigation owns what loads
+    // next, so the action must not reload the page it was posted from.
+    await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
+      undefined,
+    );
+    expect(ownsRouterForServerAction).toHaveBeenCalledWith(actionInitiation);
+    expect(performHardNavigation).not.toHaveBeenCalled();
+    expect(commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+    expect(createFromFetch).not.toHaveBeenCalled();
+
+    ownsRouterForServerAction.mockReturnValue(true);
+    await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
+      undefined,
+    );
+    expect(performHardNavigation).toHaveBeenCalledWith(
+      "https://example.com/source?tab=profile",
+      undefined,
+    );
   });
 
   it("throws the action error without committing when the action failed", async () => {
@@ -350,6 +415,7 @@ describe("app browser server action client", () => {
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
+        ownsRouterForServerAction: () => true,
         performHardNavigation: vi.fn(),
         renderRedirectPayload: vi.fn(),
         syncCurrentHistoryState: vi.fn(),
@@ -409,6 +475,7 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
+      ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
       syncCurrentHistoryState: vi.fn(),
@@ -470,6 +537,7 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
+      ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
       syncCurrentHistoryState: vi.fn(),
@@ -537,6 +605,7 @@ describe("app browser server action client", () => {
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
+        ownsRouterForServerAction: () => true,
         performHardNavigation: vi.fn(),
         renderRedirectPayload: vi.fn(),
         syncCurrentHistoryState: vi.fn(),
@@ -591,6 +660,7 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
+      ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
       syncCurrentHistoryState: vi.fn(),
