@@ -344,6 +344,9 @@ import {
   getOutputFileNames,
   createClientManualChunks,
   createClientCodeSplittingConfig,
+  collectPagesAppChunkRoots,
+  createPagesClientCodeSplittingConfig,
+  withInlineCommonChunks,
   createClientAssetFileNames,
   createWorkerFileNames,
   createMultiStageCodeSplittingConfig,
@@ -1672,9 +1675,13 @@ const appClientCodeSplittingConfig = createClientCodeSplittingConfig(appClientMa
 const appOnlyClientManualChunks = createClientManualChunks(_shimsDir, true, false);
 const appOnlyClientCodeSplittingConfig = createClientCodeSplittingConfig(appOnlyClientManualChunks);
 
-function getClientOutputConfig(preserveAppRouteBoundaries = false, hasPagesRouter = true) {
+function getClientOutputConfig(
+  pagesCodeSplitting: object,
+  preserveAppRouteBoundaries = false,
+  hasPagesRouter = true,
+) {
   const codeSplitting = !preserveAppRouteBoundaries
-    ? clientCodeSplittingConfig
+    ? pagesCodeSplitting
     : hasPagesRouter
       ? appClientCodeSplittingConfig
       : appOnlyClientCodeSplittingConfig;
@@ -1701,13 +1708,20 @@ export type VinextOptions = {
    */
   disableAppRouter?: boolean;
   /**
-   * Turn off Next.js-like client chunking in App Router production builds.
-   * By default, client components that the same routes use load through one
-   * shared chunk, as they do from Next.js' per-route client entries. Set this
-   * to load each client component from its own chunk instead, for example to
-   * control chunking entirely through your own chunk groups. vinext already
-   * turns this chunking off when the client build has chunk groups other than
-   * its own (`codeSplitting.groups`, `advancedChunks` or `manualChunks`).
+   * Turn off Next.js-like client chunking in production builds.
+   * By default, App Router client components that the same routes use load
+   * through one shared chunk, as they do from Next.js' per-route client
+   * entries. Set this to load each client component from its own chunk
+   * instead, for example to control chunking entirely through your own chunk
+   * groups. vinext already turns App Router grouping off when the client build
+   * has chunk groups other than its own (`codeSplitting.groups`,
+   * `advancedChunks` or `manualChunks`).
+   *
+   * Pages Router builds (other than hybrid App + Pages builds) load the
+   * modules `_app` imports as one chunk beside it and, with Rolldown 1.2.18 or
+   * later, copy small modules that pages share into each page instead of
+   * loading them as separate tiny chunks, as Next.js does. Set this to leave
+   * Pages Router chunking to the bundler.
    * @default false
    */
   disableNextLikeChunking?: boolean;
@@ -1897,6 +1911,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let nextConfig: ResolvedNextConfig;
   let nitroBuildDir: string | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
+  // Filled in from the client module graph; see vinext:pages-client-chunks.
+  const pagesAppChunkRoots = new Set<string>();
+  let pagesClientPreserveEntrySignatures: unknown;
+  const pagesClientChunks = createPagesClientCodeSplittingConfig(
+    clientCodeSplittingConfig,
+    pagesAppChunkRoots,
+  );
+  const pagesClientCodeSplitting = options.disableNextLikeChunking
+    ? clientCodeSplittingConfig
+    : pagesClientChunks.codeSplitting;
   let middlewarePath: string | null = null;
   let canonicalMiddlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
@@ -3856,7 +3880,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Router). For multi-environment builds (App Router, Cloudflare),
               // manualChunks is set per-environment on the client env below
               // to avoid leaking into RSC/SSR environments.
-              ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig() } : {}),
+              ...(!isSSR && !isMultiEnv
+                ? { output: getClientOutputConfig(pagesClientCodeSplitting) }
+                : {}),
             }),
           },
           worker: {
@@ -4555,7 +4581,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: appClientInput,
-                  output: getClientOutputConfig(true, hasPagesDir),
+                  output: getClientOutputConfig(pagesClientCodeSplitting, true, hasPagesDir),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -4581,7 +4607,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: getClientOutputConfig(),
+                  output: getClientOutputConfig(pagesClientCodeSplitting),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -4611,7 +4637,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: getClientOutputConfig(),
+                  output: getClientOutputConfig(pagesClientCodeSplitting),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -9278,6 +9304,68 @@ export const loadServerActionClient = ${
     plugins.push(createRouteClientReferencesFallbackPlugin());
     if (manualUseCachePluginPromise) plugins.push(manualUseCachePluginPromise);
   }
+  // Next.js-like Pages Router client chunks: `_app`'s imports load as one
+  // chunk, and small chunks that pages share are copied into each page.
+  plugins.push({
+    name: "vinext:pages-client-chunks",
+    apply: "build",
+    options: {
+      // Vite sets `preserveEntrySignatures` for library builds itself.
+      order: "post",
+      handler(inputOptions) {
+        if (this.environment?.name === "client") {
+          pagesClientPreserveEntrySignatures = inputOptions.preserveEntrySignatures;
+        }
+      },
+    },
+    buildStart() {
+      if (this.environment?.name === "client") pagesAppChunkRoots.clear();
+    },
+    buildEnd() {
+      if (this.environment?.name !== "client" || !hasPagesDir) return;
+      const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+      if (!appFilePath) return;
+      const appIds = new Set([toSlash(appFilePath), canonicalize(appFilePath)]);
+      const appId = [...this.getModuleIds()].find((id) => appIds.has(toSlash(id)));
+      if (!appId) return;
+      for (const id of collectPagesAppChunkRoots(
+        appId,
+        this.getModuleIds(),
+        (moduleId) => this.getModuleInfo(moduleId),
+        clientManualChunks,
+      )) {
+        pagesAppChunkRoots.add(id);
+      }
+    },
+    outputOptions: {
+      // Sees the client output after other plugins' outputOptions hooks.
+      order: "post",
+      handler(output) {
+        const environment = this.environment;
+        if (environment?.name !== "client") return;
+        const codeSplitting = output.codeSplitting;
+        if (
+          !codeSplitting ||
+          typeof codeSplitting !== "object" ||
+          !codeSplitting.groups?.includes(pagesClientChunks.pagesAppGroup)
+        ) {
+          return;
+        }
+        const rolldownOptions = environment.config.build.rolldownOptions;
+        return withInlineCommonChunks(output, {
+          preserveEntrySignatures: pagesClientPreserveEntrySignatures,
+          onDemandWrapping: (rolldownOptions.experimental as { onDemandWrapping?: unknown })
+            ?.onDemandWrapping,
+          rolldownVersion: this.meta.rolldownVersion,
+        });
+      },
+    },
+    generateBundle() {
+      // The client chunks exist now. A plain Pages Router SSR build inherits
+      // the top-level client output, so it must not group `_app`'s imports.
+      if (this.environment?.name === "client") pagesAppChunkRoots.clear();
+    },
+  });
   plugins.push({
     name: "vinext:plain-pages-build-config",
     apply: "build",

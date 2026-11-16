@@ -696,6 +696,21 @@ const projectServers = {
       },
     },
   },
+  "pages-router-complex-prod": {
+    // The chunk scenarios against a production build, where vinext chunks the
+    // client the way Next.js does (dev serves unbundled modules).
+    testDir: "./tests/e2e/pages-router-complex",
+    testMatch: ["**/chunk-scenarios.spec.ts"],
+    use: { baseURL: "http://localhost:4251" },
+    server: {
+      command: "npx vp build && npx vp preview --port 4251",
+      cwd: "./examples/pages-router-complex",
+      port: 4251,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+      env: { ATLAS_PURGE_BEARER: "e2e-purge-token", RELEASE_TAG: "e2e" },
+    },
+  },
   "cloudflare-encoded-paths": {
     testDir: "./tests/e2e/cloudflare-encoded-paths",
     use: { baseURL: "http://localhost:4197" },

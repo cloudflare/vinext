@@ -77,6 +77,37 @@ behaviour and may fail under vinext today.
 - **`instrumentation.page.ts`** gated on `NEXT_RUNTIME === "nodejs"`, with its
   effect observable through `/api/status`.
 
+## Client chunk scenarios
+
+The `workbench/` desks (`pages/[zone]/workbench/*`, modules in
+`lib/workbench/`) give production builds a varied client chunk graph, as a
+baseline for chunking changes. `tests/e2e/pages-router-complex/chunk-scenarios.spec.ts`
+checks that every piece still loads and hydrates, in dev and (as the
+`pages-router-complex-prod` Playwright project) against a production build.
+
+- **Modules shared by different page subsets**: the status pill (all four
+  desks plus a lazy chunk), summary strip (ledger + roster), filter bar
+  (roster + dispatch), export menu (ledger + dispatch + inventory), currency
+  (ledger + inventory) and duration (roster + dispatch + inventory + a lazy
+  module) helpers, and a desk CSS module (ledger + inventory).
+- **A shared module above 20 kB** (`data/region-table.ts`, dispatch +
+  inventory): the size at which Next.js' webpack config gives a module
+  shared by several pages its own chunk instead of duplicating it.
+- **`_app`-shared helpers**: roster imports `readCookie`, and every desk links
+  through `ZonedLink`, both of which `_app` also reaches.
+- **Vendor packages** (`__test_packages__/`, installed as `file:` deps so
+  they live under `node_modules`): a side-effect-free icon barrel used
+  partly by each desk, a CommonJS formatter (ledger + roster), and a table
+  kit with its own CSS module and `sideEffects: ["*.css"]` (inventory + a
+  lazy chunk).
+- **Lazy loading** (reports, tools): next/dynamic with SSR, next/dynamic with
+  `ssr: false`, React.lazy, a next/dynamic chunk that loads another one, two
+  lazy chunks sharing a helper, `import()` of a module another page imports
+  statically (the CSV encoder), and on-click `import()` of JSON and of a
+  lazy-only module.
+- **Page-only framework runtimes**: next/image and next/script (media),
+  next/form and the next/navigation hooks (search).
+
 ## Running
 
 ```bash
@@ -119,3 +150,4 @@ PLAYWRIGHT_PROJECT=pages-router-complex pnpm run test:e2e
   trials, draft, and so on.
 - `helpers/`, `surfaces/` — app-level page-data helpers and page templates.
 - `pages/` — the route tree described above.
+- `__test_packages__/` — local vendor packages for the chunk scenarios.

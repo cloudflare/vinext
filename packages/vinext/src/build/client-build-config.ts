@@ -449,6 +449,178 @@ export function createClientCodeSplittingConfig(
 }
 
 /**
+ * Collect the modules that root the Pages Router "pages-app" chunk: `_app`'s
+ * static imports, short of the modules the first vinext group takes ahead of
+ * it ("framework", "vinext" and "react-dom-server"). Every page loads `_app`,
+ * so splitting its imports only adds requests: a module that `_app` and some
+ * pages both import would otherwise get a shared chunk of its own. Next.js
+ * keeps `pages/_app` unsplit for the same reason. `_app`'s next/navigation
+ * hooks load on every page too, so they join it rather than load on their own.
+ *
+ * Rolldown adds what these modules use to the chunk (following only the
+ * re-exports of a side-effect-free barrel that are used), while `_app` itself
+ * keeps its own chunk: the client entry imports it, and the Pages manifests
+ * look it up by its source path. An import that statically leads back to
+ * `_app`, to a module loaded with `import()` (a page, a next/dynamic target)
+ * or to an app module the client entry loads (instrumentation-client and its
+ * imports) stays out: Rolldown would pull that module into the group too, and
+ * the entry would then load the whole group before `_app`. Modules the first
+ * group takes with its own (vinext's runtime helpers) don't count.
+ */
+export function collectPagesAppChunkRoots(
+  appId: string,
+  moduleIds: Iterable<string>,
+  getModuleInfo: (id: string) => {
+    readonly isEntry: boolean;
+    readonly importedIds: readonly string[];
+    readonly importers: readonly string[];
+    readonly dynamicImporters: readonly string[];
+  } | null,
+  clientManualChunks: (id: string) => string | undefined,
+): Set<string> {
+  const joinsGroup = (id: string) => {
+    const chunkName = clientManualChunks(id);
+    return (
+      chunkName === undefined ||
+      chunkName === "vinext-navigation" ||
+      chunkName === "vinext-app-router"
+    );
+  };
+  const closure = (ids: string[]) => {
+    const modules = new Set<string>();
+    while (ids.length > 0) {
+      const id = ids.pop()!;
+      if (modules.has(id)) continue;
+      modules.add(id);
+      ids.push(...(getModuleInfo(id)?.importedIds ?? []));
+    }
+    return modules;
+  };
+  const leadsToEntry = new Set([appId]);
+  const entries: string[] = [];
+  const firstGroupModules: string[] = [];
+  for (const id of moduleIds) {
+    const info = getModuleInfo(id);
+    if (info?.isEntry) entries.push(id);
+    if (!joinsGroup(id)) firstGroupModules.push(id);
+    else if (info?.dynamicImporters.length) leadsToEntry.add(id);
+  }
+  const firstGroupTakes = closure(firstGroupModules);
+  for (const id of closure(entries)) {
+    if (joinsGroup(id) && !firstGroupTakes.has(id)) leadsToEntry.add(id);
+  }
+  const pending = [...leadsToEntry];
+  while (pending.length > 0) {
+    for (const importer of getModuleInfo(pending.pop()!)?.importers ?? []) {
+      if (leadsToEntry.has(importer)) continue;
+      leadsToEntry.add(importer);
+      pending.push(importer);
+    }
+  }
+  const roots = new Set<string>();
+  for (const id of getModuleInfo(appId)?.importedIds ?? []) {
+    if (joinsGroup(id) && !leadsToEntry.has(id)) roots.add(id);
+  }
+  return roots;
+}
+
+/**
+ * Pages Router code splitting: vinext's groups, with the "pages-app" chunk of
+ * {@link collectPagesAppChunkRoots} after the first one. The returned group
+ * reads `appRoots` when Rolldown chunks the bundle, so a plugin fills it in
+ * once the client module graph is known.
+ */
+export function createPagesClientCodeSplittingConfig(
+  base: ReturnType<typeof createClientCodeSplittingConfig>,
+  appRoots: ReadonlySet<string>,
+) {
+  const [first, ...rest] = base.groups;
+  const pagesAppGroup = {
+    name(moduleId: string) {
+      return appRoots.has(moduleId) ? "pages-app" : null;
+    },
+    // `_app` may import less than the default `minSize`.
+    minSize: 0,
+  };
+  return { pagesAppGroup, codeSplitting: { ...base, groups: [first!, pagesAppGroup, ...rest] } };
+}
+
+/**
+ * Next.js' webpack `splitChunks.minSize` for Pages Router builds: a module
+ * group shared by pages but smaller than this is copied into each of them
+ * rather than loaded as a chunk of its own.
+ */
+export const PAGES_INLINE_COMMON_CHUNK_MAX_SIZE = 20_000;
+
+const STYLESHEET_MODULE_RE = /\.(?:css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/;
+
+/** Rolldown 1.2.18 added `codeSplitting.experimentalInlineCommonChunks`. */
+export function supportsInlineCommonChunks(rolldownVersion: string): boolean {
+  const [release = "", prerelease] = rolldownVersion.split("-", 2);
+  const [major = 0, minor = 0, patch = 0] = release.split(".").map(Number);
+  if (major !== 1) return major > 1;
+  if (minor !== 2) return minor > 2;
+  return patch > 18 || (patch === 18 && prerelease === undefined);
+}
+
+type InlineCommonChunksOutput = {
+  readonly codeSplitting?: unknown;
+  readonly format?: string;
+  readonly preserveModules?: boolean;
+  readonly strictExecutionOrder?: boolean;
+};
+
+/**
+ * Copy small Pages Router common chunks into the chunks that import them, as
+ * Next.js' webpack (below {@link PAGES_INLINE_COMMON_CHUNK_MAX_SIZE}) and
+ * Turbopack (at any size) duplicate small modules that several pages share
+ * instead of loading each set of them as a separate tiny chunk. Rolldown keeps
+ * one instance of each copied module and only evaluates it when an importer
+ * needs it, as both bundlers do. Stylesheets keep their own chunk, as
+ * Turbopack keeps a shared CSS module in one stylesheet.
+ *
+ * Returns the output options with inlining turned on, or undefined when the
+ * Rolldown version or other options (which Rolldown rejects in combination
+ * with it) rule it out, or when the output already configures it.
+ */
+export function withInlineCommonChunks<Output extends InlineCommonChunksOutput>(
+  output: Output,
+  options: {
+    preserveEntrySignatures?: unknown;
+    onDemandWrapping?: unknown;
+    rolldownVersion: string;
+  },
+): Output | undefined {
+  const codeSplitting = output.codeSplitting;
+  if (
+    !supportsInlineCommonChunks(options.rolldownVersion) ||
+    !codeSplitting ||
+    typeof codeSplitting !== "object" ||
+    "experimentalInlineCommonChunks" in codeSplitting ||
+    (output.format !== undefined &&
+      output.format !== "es" &&
+      output.format !== "esm" &&
+      output.format !== "module") ||
+    output.preserveModules === true ||
+    output.strictExecutionOrder === false ||
+    (options.preserveEntrySignatures !== undefined && options.preserveEntrySignatures !== false) ||
+    options.onDemandWrapping === true
+  ) {
+    return undefined;
+  }
+  return {
+    ...output,
+    codeSplitting: {
+      ...codeSplitting,
+      experimentalInlineCommonChunks: {
+        maxSize: PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
+        exclude: STYLESHEET_MODULE_RE,
+      },
+    },
+  };
+}
+
+/**
  * Matches React framework packages (and the RSC flight runtime) inside
  * `node_modules`. Used to split them into a dedicated "framework" chunk in the
  * RSC server build.

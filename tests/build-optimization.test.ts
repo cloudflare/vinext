@@ -3824,6 +3824,46 @@ describe("augmentSsrManifestFromBundle", () => {
     ]);
   });
 
+  it("lists the stylesheets of statically imported chunks, deepest imports first", () => {
+    const bundle = {
+      "assets/_app.js": {
+        type: "chunk" as const,
+        fileName: "assets/_app.js",
+        imports: ["assets/app-shared.js"],
+        modules: { "/app/pages/_app.tsx": {} },
+        viteMetadata: { importedCss: new Set(["assets/_app.css"]) },
+      },
+      "assets/app-shared.js": {
+        type: "chunk" as const,
+        fileName: "assets/app-shared.js",
+        imports: ["assets/panel.js"],
+        modules: { "/app/lib/layout.tsx": {} },
+        viteMetadata: { importedCss: new Set(["assets/globals.css"]) },
+      },
+      "assets/panel.js": {
+        type: "chunk" as const,
+        fileName: "assets/panel.js",
+        imports: ["assets/app-shared.js"],
+        modules: { "/app/lib/panel.tsx": {} },
+        viteMetadata: { importedCss: new Set(["assets/panel.css"]) },
+      },
+    };
+
+    // Vite lists a chunk's own stylesheets right after it.
+    const ssrManifest = { "pages/_app.tsx": ["/assets/_app.js", "/assets/_app.css"] };
+
+    const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, "/app");
+
+    expect(augmented["pages/_app.tsx"]).toEqual([
+      "assets/_app.js",
+      "assets/app-shared.js",
+      "assets/panel.js",
+      "assets/panel.css",
+      "assets/globals.css",
+      "assets/_app.css",
+    ]);
+  });
+
   it("records shared runtime chunks by chunk name for hash-only file names", () => {
     const bundle = {
       "_next/static/chunks/aB3_x-9Z.js": {

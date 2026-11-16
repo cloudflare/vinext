@@ -119,14 +119,6 @@ export function augmentSsrManifestFromBundle(
   const nextManifest = {} as Record<string, Set<string>>;
   const sharedChunkFiles = new Set<string>();
 
-  for (const [key, files] of Object.entries(ssrManifest)) {
-    const normalizedKey = normalizeManifestModuleId(key, root);
-    if (!nextManifest[normalizedKey]) nextManifest[normalizedKey] = new Set<string>();
-    for (const file of files) {
-      nextManifest[normalizedKey].add(collapseDuplicateBase(file, base));
-    }
-  }
-
   // A chunk's static imports must all load before it evaluates, so preload
   // them transitively: the browser would otherwise find each level only after
   // fetching the one above it.
@@ -150,6 +142,34 @@ export function augmentSsrManifestFromBundle(
     return closure;
   };
 
+  // The server may only have this manifest to link a page's CSS from, so list
+  // the stylesheets of statically imported chunks too, deepest imports first.
+  const staticImportCss = new Map<string, string[]>();
+  const getStaticImportCss = (fileName: string): string[] => {
+    let css = staticImportCss.get(fileName);
+    if (css) return css;
+    const files = new Set<string>();
+    const visited = new Set([fileName]);
+    const visit = (importer: string) => {
+      const chunk = bundle[importer];
+      if (chunk?.type !== "chunk") return;
+      for (const importedFile of (chunk as BundleBackfillChunk).imports ?? []) {
+        if (visited.has(importedFile)) continue;
+        visited.add(importedFile);
+        visit(importedFile);
+        const imported = bundle[importedFile];
+        if (imported?.type !== "chunk") continue;
+        for (const cssFile of (imported as BundleBackfillChunk).viteMetadata?.importedCss ?? []) {
+          files.add(cssFile);
+        }
+      }
+    };
+    visit(fileName);
+    css = [...files];
+    staticImportCss.set(fileName, css);
+    return css;
+  };
+
   for (const item of Object.values(bundle)) {
     if (item.type !== "chunk") continue;
     const chunk = item as BundleBackfillChunk;
@@ -169,6 +189,9 @@ export function augmentSsrManifestFromBundle(
     for (const importedFile of getStaticImportClosure(chunk.fileName)) {
       files.add(manifestFileWithBase(importedFile, base));
     }
+    for (const cssFile of getStaticImportCss(chunk.fileName)) {
+      files.add(manifestFileWithBase(cssFile, base));
+    }
     for (const cssFile of chunk.viteMetadata?.importedCss ?? []) {
       files.add(manifestFileWithBase(cssFile, base));
     }
@@ -184,6 +207,16 @@ export function augmentSsrManifestFromBundle(
       for (const file of files) {
         nextManifest[key].add(file);
       }
+    }
+  }
+
+  // Vite's files merge in after the bundle's, which put the stylesheets of a
+  // chunk's imports ahead of its own.
+  for (const [key, files] of Object.entries(ssrManifest)) {
+    const normalizedKey = normalizeManifestModuleId(key, root);
+    if (!nextManifest[normalizedKey]) nextManifest[normalizedKey] = new Set<string>();
+    for (const file of files) {
+      nextManifest[normalizedKey].add(collapseDuplicateBase(file, base));
     }
   }
 
