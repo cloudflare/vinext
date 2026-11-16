@@ -5469,6 +5469,42 @@ describe("app browser navigation controller", () => {
     }
   });
 
+  it("rejects with the error of a same-URL server action a pending navigation discards", async () => {
+    const initialState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/settings?tab=profile",
+        {},
+      ),
+      routeId: "route:/settings",
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/settings?tab=profile");
+    const onDiscardedRevalidation = vi.fn();
+    const thrown = new Error("save failed after revalidating");
+
+    try {
+      controller.beginNavigation();
+      await expect(
+        controller.commitSameUrlNavigatePayload(
+          Promise.resolve(createResolvedElements("route:/settings/action", "/")),
+          initialState.navigationSnapshot,
+          { data: thrown, ok: false },
+          stateRef.current,
+          {
+            onDiscardedRevalidation,
+            revalidation: "dynamicOnly",
+            startedNavigationId: controller.getActiveNavigationId(),
+            targetHref: "https://example.com/settings?tab=profile",
+          },
+        ),
+      ).rejects.toBe(thrown);
+      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
+      expect(stateRef.current.routeId).toBe("route:/settings");
+    } finally {
+      detach();
+    }
+  });
+
   it("applies a same-URL server action posted after a navigation committed but before it settles", async () => {
     const initialState = createState({
       navigationSnapshot: createClientNavigationRenderSnapshot(

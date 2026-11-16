@@ -212,13 +212,17 @@ export async function invokeClientServerAction(
     actionResultDecision.kind === "hardNavigate" &&
     !deps.ownsRouterForServerAction(actionInitiation)
   ) {
-    // The action still ran, so data it revalidated is refreshed afterwards.
-    const discardedRevalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-    evictClientNavigationCachesForRevalidation(discardedRevalidation, deps);
-    deps.notifyDiscardedServerActionRevalidation(discardedRevalidation);
-    return undefined;
-  }
-  if (
+    if (actionRedirectTarget !== null) {
+      // The action still ran, so data it revalidated is refreshed afterwards.
+      const discardedRevalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
+      evictClientNavigationCachesForRevalidation(discardedRevalidation, deps);
+      deps.notifyDiscardedServerActionRevalidation(discardedRevalidation);
+      return undefined;
+    }
+    // Without a redirect, the caller still gets the action's value or error,
+    // as in Next.js. Its tree goes to the commit below, whose ownership check
+    // discards it and refreshes what it revalidated.
+  } else if (
     applyServerActionResultDecision(
       actionResultDecision,
       () => deps.clearClientNavigationCaches(),

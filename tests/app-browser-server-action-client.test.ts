@@ -327,72 +327,133 @@ describe("app browser server action client", () => {
     expect(clearClientNavigationCaches).not.toHaveBeenCalled();
   });
 
-  it("only reloads for an incompatible action response while the action owns the router, and refreshes its revalidation otherwise", async () => {
-    const actionInitiation = createServerActionInitiationSnapshot({
-      href: "https://example.com/source?tab=profile",
-      navigationId: 1,
-      routerState: createActionTestRouterState(),
-      startedDuringUserNavigation: true,
-    });
-    vi.stubGlobal("window", {
-      location: { href: "https://example.com/source?tab=billing", origin: "https://example.com" },
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response("flight", {
-            status: 200,
-            headers: {
-              "content-type": "text/x-component",
-              [ACTION_REVALIDATED_HEADER]: "1",
-              [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "next-deployment",
-            },
-          }),
-      ),
-    );
-    const commitSameUrlNavigatePayload = vi.fn();
-    const performHardNavigation = vi.fn();
-    const ownsRouterForServerAction = vi.fn(() => false);
-    const clearClientNavigationCaches = vi.fn();
-    const notifyDiscardedServerActionRevalidation = vi.fn();
-    const deps = {
-      basePath: "",
-      clearClientNavigationCaches,
-      clearDynamicClientNavigationCaches: vi.fn(),
-      clientRscCompatibilityId: "current-deployment",
-      commitSameUrlNavigatePayload,
-      navigationPlanner,
-      notifyDiscardedServerActionRevalidation,
-      ownsRouterForServerAction,
-      performHardNavigation,
-      renderRedirectPayload: vi.fn(),
-      syncCurrentHistoryState: vi.fn(),
-      syncServerActionHttpFallbackHead: vi.fn(),
-    };
+  describe("incompatible action responses", () => {
+    const sourceHref = "https://example.com/source?tab=profile";
 
-    // Posted while a navigation was pending: that navigation owns what loads
-    // next, so the action must not reload the page it was posted from.
-    await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
-      undefined,
-    );
-    expect(ownsRouterForServerAction).toHaveBeenCalledWith(actionInitiation);
-    expect(performHardNavigation).not.toHaveBeenCalled();
-    expect(commitSameUrlNavigatePayload).not.toHaveBeenCalled();
-    expect(createFromFetch).not.toHaveBeenCalled();
-    // The action still ran: its revalidation is evicted and refreshed later.
-    expect(clearClientNavigationCaches).toHaveBeenCalledTimes(1);
-    expect(notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("staticAndDynamic");
+    function setUpIncompatibleResponse(headers: Record<string, string> = {}) {
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source?tab=billing", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response("flight", {
+              status: 200,
+              headers: {
+                "content-type": "text/x-component",
+                [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "next-deployment",
+                ...headers,
+              },
+            }),
+        ),
+      );
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: sourceHref,
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+        startedDuringUserNavigation: true,
+      });
+      const deps = {
+        basePath: "",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: "current-deployment",
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
+        // Posted while a navigation was pending: that navigation owns what
+        // loads next, so the action must not reload the page it came from.
+        ownsRouterForServerAction: vi.fn(() => false),
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      };
+      return { actionInitiation, deps };
+    }
 
-    ownsRouterForServerAction.mockReturnValue(true);
-    await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
-      undefined,
-    );
-    expect(performHardNavigation).toHaveBeenCalledWith(
-      "https://example.com/source?tab=profile",
-      undefined,
-    );
-    expect(notifyDiscardedServerActionRevalidation).toHaveBeenCalledTimes(1);
+    it("resolves a discarded action's value and hands its tree to the commit's ownership check", async () => {
+      const { actionInitiation, deps } = setUpIncompatibleResponse({
+        [ACTION_REVALIDATED_HEADER]: "1",
+      });
+      const wireElements = AppElementsWire.createMetadataEntries({
+        interception: null,
+        interceptionContext: null,
+        layoutIds: [AppElementsWire.encodeLayoutId("/")],
+        rootLayoutTreePath: "/",
+        routeId: AppElementsWire.encodeRouteId("/source", null),
+        slotBindings: [],
+      });
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        root: wireElements,
+        returnValue: { ok: true, data: "saved" },
+      });
+      // The commit discards a tree the action does not own and resolves its value.
+      deps.commitSameUrlNavigatePayload.mockImplementation(
+        async (_elements: unknown, _initiation: unknown, returnValue?: { data: unknown }) =>
+          returnValue?.data,
+      );
+
+      await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
+        "saved",
+      );
+      expect(deps.ownsRouterForServerAction).toHaveBeenCalledWith(actionInitiation);
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+      expect(deps.commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
+      const [elementsArg, initiationArg, returnValueArg, revalidationArg] =
+        deps.commitSameUrlNavigatePayload.mock.calls[0];
+      await expect(elementsArg).resolves.toEqual(normalizeAppElements(wireElements));
+      expect(initiationArg).toBe(actionInitiation);
+      expect(returnValueArg).toEqual({ ok: true, data: "saved" });
+      expect(revalidationArg).toBe("staticAndDynamic");
+    });
+
+    it("rejects with a discarded action's error", async () => {
+      const { actionInitiation, deps } = setUpIncompatibleResponse();
+      const thrown = new Error("action failed");
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok: false, data: thrown },
+      });
+
+      await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).rejects.toBe(
+        thrown,
+      );
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+    });
+
+    it("discards an incompatible redirect and refreshes what the action revalidated", async () => {
+      const { actionInitiation, deps } = setUpIncompatibleResponse({
+        [ACTION_REDIRECT_HEADER]: "/target",
+        [ACTION_REVALIDATED_HEADER]: "1",
+      });
+
+      await expect(
+        invokeClientServerAction("action-id", [], actionInitiation, deps),
+      ).resolves.toBeUndefined();
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(createFromFetch).not.toHaveBeenCalled();
+      expect(deps.clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("staticAndDynamic");
+    });
+
+    it("reloads the page the action was posted from while the action owns the router", async () => {
+      const { actionInitiation, deps } = setUpIncompatibleResponse({
+        [ACTION_REVALIDATED_HEADER]: "1",
+      });
+      deps.ownsRouterForServerAction.mockReturnValue(true);
+
+      await expect(
+        invokeClientServerAction("action-id", [], actionInitiation, deps),
+      ).resolves.toBeUndefined();
+      expect(deps.performHardNavigation).toHaveBeenCalledWith(sourceHref, undefined);
+      expect(createFromFetch).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(deps.notifyDiscardedServerActionRevalidation).not.toHaveBeenCalled();
+    });
   });
 
   it("throws the action error without committing when the action failed", async () => {
