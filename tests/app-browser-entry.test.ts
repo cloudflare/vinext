@@ -5412,6 +5412,46 @@ describe("app browser navigation controller", () => {
     }
   });
 
+  it("applies a same-URL server action posted while a refresh is pending", async () => {
+    // Next.js discards pending actions only for ACTION_NAVIGATE and
+    // ACTION_RESTORE; an action dispatched behind ACTION_REFRESH still runs.
+    const initialState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/settings?tab=profile",
+        {},
+      ),
+      routeId: "route:/settings",
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/settings?tab=profile");
+    const onDiscardedRevalidation = vi.fn();
+
+    try {
+      controller.beginNavigation("refresh");
+      expect(controller.isUserNavigationUncommitted()).toBe(false);
+
+      const committed = controller.commitSameUrlNavigatePayload(
+        Promise.resolve(createResolvedElements("route:/settings/action", "/")),
+        initialState.navigationSnapshot,
+        { data: "saved", ok: true },
+        stateRef.current,
+        {
+          onDiscardedRevalidation,
+          revalidation: "dynamicOnly",
+          startedNavigationId: controller.getActiveNavigationId(),
+          targetHref: "https://example.com/settings?tab=profile",
+        },
+      );
+
+      await vi.waitFor(() => expect(stateRef.current.routeId).toBe("route:/settings/action"));
+      controller.commitNavigationRender(stateRef.current.renderId);
+      await expect(committed).resolves.toBe("saved");
+      expect(onDiscardedRevalidation).not.toHaveBeenCalled();
+    } finally {
+      detach();
+    }
+  });
+
   it("discards a same-URL server action revalidation that lands before a pending navigation's payload", async () => {
     const initialState = createState({
       navigationSnapshot: createClientNavigationRenderSnapshot(

@@ -101,6 +101,10 @@ type BrowserRouterStateRef = {
   current: AppRouterState;
 };
 
+// Like Next.js, a navigation or history restore discards the server actions
+// posted while it is pending; a refresh queues them on its result instead.
+type UserNavigationKind = "navigation" | "refresh";
+
 type SameUrlServerActionLifecycleOptions = {
   onDiscardedRevalidation?: () => void;
   revalidation?: ServerActionRevalidationKind;
@@ -150,7 +154,7 @@ type BrowserNavigationPayloadOptions = {
 };
 
 type BrowserNavigationController = {
-  beginNavigation(): number;
+  beginNavigation(kind?: UserNavigationKind): number;
   getActiveNavigationId(): number;
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
@@ -356,6 +360,7 @@ export function createAppBrowserNavigationController(
   // started committing. An older navigation's render can still commit after
   // it began, but does not make its destination visible.
   let pendingUserNavigationOwnCommitStarted = false;
+  let pendingUserNavigationKind: UserNavigationKind = "navigation";
   // The render a history-snapshot restore dispatched for the pending user
   // navigation. It is not in pendingNavigationCommits, but is its own commit.
   let pendingUserNavigationRestoreRenderId: number | null = null;
@@ -424,7 +429,7 @@ export function createAppBrowserNavigationController(
     resolveReady?.();
   }
 
-  function beginNavigation(): number {
+  function beginNavigation(kind: UserNavigationKind = "navigation"): number {
     // User navigation owns the next visible result. Revoke any HMR payload
     // already suspended on RSC resolution so it cannot commit first and make
     // the still-current navigation look stale by advancing visible state.
@@ -434,6 +439,7 @@ export function createAppBrowserNavigationController(
     pendingUserNavigationLane = null;
     pendingUserNavigationCommitStarted = false;
     pendingUserNavigationOwnCommitStarted = false;
+    pendingUserNavigationKind = kind;
     pendingUserNavigationRestoreRenderId = null;
     pendingUserNavigationShellHref = null;
     retiredNavigationUrl = null;
@@ -458,12 +464,17 @@ export function createAppBrowserNavigationController(
   }
 
   /**
-   * Whether a user navigation is pending and none of its own authoritative
-   * renders has started committing. Once one has, its destination is visible
-   * and owns the actions posted from it, even while the navigation streams.
+   * Whether a user navigation other than a refresh is pending and none of its
+   * own authoritative renders has started committing. Once one has, its
+   * destination is visible and owns the actions posted from it, even while
+   * the navigation streams.
    */
   function isUserNavigationUncommitted(): boolean {
-    return pendingUserNavigationId !== null && !pendingUserNavigationOwnCommitStarted;
+    return (
+      pendingUserNavigationId !== null &&
+      pendingUserNavigationKind !== "refresh" &&
+      !pendingUserNavigationOwnCommitStarted
+    );
   }
 
   /**

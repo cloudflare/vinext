@@ -2179,7 +2179,9 @@ function bootstrapHydration(
     const navigationAbortHandle = navigationAbortCoordinator.begin();
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
-    const navId = browserNavigationController.beginNavigation();
+    const navId = browserNavigationController.beginNavigation(
+      navigationKind === "refresh" ? "refresh" : "navigation",
+    );
     const navigationCacheGeneration = clientNavigationCacheGeneration;
     discardedServerActionRefreshScheduler.markNavigationStart();
 
