@@ -3171,6 +3171,107 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('href="https://example.com/rss"');
   });
 
+  // The cases below follow createMetadataElements in Next.js 16.2.6
+  // (packages/next/src/lib/metadata/metadata.tsx) and its resolvers.
+  it("renders abstract, classification and the archives, assets and bookmarks links", () => {
+    const html = renderMetadataToHtml(
+      {
+        abstract: "abs",
+        classification: "cls",
+        archives: ["/arch"],
+        assets: "/assets",
+        bookmarks: ["/bm1", "/bm2"],
+      },
+      "/",
+    );
+    expect(html).toContain('<meta name="abstract" content="abs">');
+    expect(html).toContain('<meta name="classification" content="cls">');
+    expect(html).toContain(
+      '<link rel="archives" href="/arch"><link rel="assets" href="/assets"><link rel="bookmarks" href="/bm1"><link rel="bookmarks" href="/bm2">',
+    );
+  });
+
+  it("renders facebook and pinterest tags", () => {
+    expect(renderMetadataToHtml({ facebook: { appId: "123" } }, "/")).toContain(
+      '<meta property="fb:app_id" content="123">',
+    );
+    expect(renderMetadataToHtml({ facebook: { admins: ["1", "2"] } }, "/")).toContain(
+      '<meta property="fb:admins" content="1"><meta property="fb:admins" content="2">',
+    );
+    expect(renderMetadataToHtml({ facebook: { admins: "1" } }, "/")).toContain(
+      '<meta property="fb:admins" content="1">',
+    );
+    expect(renderMetadataToHtml({ pinterest: { richPin: true } }, "/")).toContain(
+      '<meta property="pinterest-rich-pin" content="true">',
+    );
+    expect(renderMetadataToHtml({ pinterest: { richPin: false } }, "/")).toContain(
+      '<meta property="pinterest-rich-pin" content="false">',
+    );
+  });
+
+  it("renders one verification tag per value, including me", () => {
+    const html = renderMetadataToHtml(
+      {
+        verification: {
+          google: ["g1", "g2"],
+          yahoo: "yh",
+          yandex: 123,
+          me: ["me@example.com", "https://me.example"],
+          other: { foo: ["a", ""] },
+        },
+      },
+      "/",
+    );
+    expect(html).toBe(
+      [
+        '<meta name="google-site-verification" content="g1">',
+        '<meta name="google-site-verification" content="g2">',
+        '<meta name="y_key" content="yh">',
+        '<meta name="yandex-verification" content="123">',
+        '<meta name="me" content="me@example.com">',
+        '<meta name="me" content="https://me.example">',
+        '<meta name="foo" content="a">',
+      ].join(""),
+    );
+  });
+
+  it("lists every disabled format in format-detection", () => {
+    const html = renderMetadataToHtml(
+      {
+        formatDetection: {
+          telephone: false,
+          date: false,
+          address: false,
+          email: false,
+          url: false,
+        },
+      },
+      "/",
+    );
+    expect(html).toBe(
+      '<meta name="format-detection" content="telephone=no, date=no, address=no, email=no, url=no">',
+    );
+  });
+
+  it("skips empty values in other", () => {
+    const html = renderMetadataToHtml({ other: { a: "", b: [], c: ["x", ""], n: 3 } }, "/");
+    expect(html).toBe('<meta name="c" content="x"><meta name="n" content="3">');
+  });
+
+  it("renders an Apple startup image given as a string in a list", () => {
+    const html = renderMetadataToHtml(
+      {
+        appleWebApp: {
+          startupImage: ["/st.png", { url: "/st2.png", media: "(device-width: 768px)" }],
+        },
+      },
+      "/",
+    );
+    expect(html).toContain(
+      '<link rel="apple-touch-startup-image" href="/st.png"><link rel="apple-touch-startup-image" href="/st2.png" media="(device-width: 768px)">',
+    );
+  });
+
   it("renders twitter:site and twitter:creator:id", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {

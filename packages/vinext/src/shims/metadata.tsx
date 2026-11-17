@@ -274,24 +274,34 @@ export type Metadata = {
     types?: Record<string, string | URL>;
   };
   verification?: {
-    google?: string;
-    yahoo?: string;
-    yandex?: string;
-    other?: Record<string, string | string[]>;
+    google?: MetadataValueList;
+    yahoo?: MetadataValueList;
+    yandex?: MetadataValueList;
+    me?: MetadataValueList;
+    other?: Record<string, MetadataValueList>;
   };
   metadataBase?: URL | null;
   appleWebApp?: {
     capable?: boolean;
     title?: string;
     statusBarStyle?: string;
-    startupImage?: string | Array<{ url: string; media?: string }>;
+    startupImage?: AppleStartupImage | AppleStartupImage[];
   };
   formatDetection?: {
-    email?: boolean;
-    address?: boolean;
     telephone?: boolean;
+    date?: boolean;
+    address?: boolean;
+    email?: boolean;
+    url?: boolean;
   };
+  abstract?: string | null;
+  archives?: string | string[] | null;
+  assets?: string | string[] | null;
+  bookmarks?: string | string[] | null;
   category?: string;
+  classification?: string | null;
+  facebook?: { appId?: string; admins?: string | string[] } | null;
+  pinterest?: { richPin?: string | boolean } | null;
   itunes?: {
     appId: string;
     appArgument?: string;
@@ -306,9 +316,21 @@ export type Metadata = {
     windows_universal?: AppLinksWindows | AppLinksWindows[];
     web?: AppLinksWeb | AppLinksWeb[];
   };
-  other?: Record<string, string | string[]>;
+  other?: Record<string, MetadataValueList>;
   [key: string]: unknown;
 };
+
+type MetadataValue = string | number | null | undefined;
+type MetadataValueList = MetadataValue | MetadataValue[];
+
+type AppleStartupImage = string | { url: string; media?: string };
+
+/** One entry per value; Next.js renders no tag for an empty or missing one. */
+function metadataValues(value: MetadataValueList): string[] {
+  return (Array.isArray(value) ? value : [value])
+    .filter((entry) => entry != null && entry !== "")
+    .map(String);
+}
 
 type AppLinksApple = {
   url: string | URL;
@@ -1114,18 +1136,32 @@ export function MetadataHead({
 
   // Format detection
   if (metadata.formatDetection) {
-    const parts: string[] = [];
-    if (metadata.formatDetection.telephone === false) parts.push("telephone=no");
-    if (metadata.formatDetection.address === false) parts.push("address=no");
-    if (metadata.formatDetection.email === false) parts.push("email=no");
+    const formatDetection = metadata.formatDetection;
+    const parts = (["telephone", "date", "address", "email", "url"] as const)
+      .filter((format) => formatDetection[format] === false)
+      .map((format) => `${format}=no`);
     if (parts.length > 0) {
       elements.push(<meta key={key++} name="format-detection" content={parts.join(", ")} />);
+    }
+  }
+
+  if (metadata.abstract) {
+    elements.push(<meta key={key++} name="abstract" content={metadata.abstract} />);
+  }
+
+  for (const rel of ["archives", "assets", "bookmarks"] as const) {
+    for (const href of metadataValues(metadata[rel])) {
+      elements.push(<link key={key++} rel={rel} href={href} />);
     }
   }
 
   // Category
   if (metadata.category) {
     elements.push(<meta key={key++} name="category" content={metadata.category} />);
+  }
+
+  if (metadata.classification) {
+    elements.push(<meta key={key++} name="classification" content={metadata.classification} />);
   }
 
   // Robots
@@ -1486,16 +1522,16 @@ export function MetadataHead({
   // Verification
   if (metadata.verification) {
     const v = metadata.verification;
-    if (v.google)
-      elements.push(<meta key={key++} name="google-site-verification" content={v.google} />);
-    if (v.yahoo) elements.push(<meta key={key++} name="y_key" content={v.yahoo} />);
-    if (v.yandex) elements.push(<meta key={key++} name="yandex-verification" content={v.yandex} />);
-    if (v.other) {
-      for (const [name, content] of Object.entries(v.other)) {
-        const values = Array.isArray(content) ? content : [content];
-        for (const val of values) {
-          elements.push(<meta key={key++} name={name} content={val} />);
-        }
+    const verificationTags: [name: string, values: MetadataValueList][] = [
+      ["google-site-verification", v.google],
+      ["y_key", v.yahoo],
+      ["yandex-verification", v.yandex],
+      ["me", v.me],
+      ...Object.entries(v.other ?? {}),
+    ];
+    for (const [name, values] of verificationTags) {
+      for (const content of metadataValues(values)) {
+        elements.push(<meta key={key++} name={name} content={content} />);
       }
     }
   }
@@ -1519,8 +1555,9 @@ export function MetadataHead({
       );
     }
     if (awa.startupImage) {
-      const imgs =
-        typeof awa.startupImage === "string" ? [{ url: awa.startupImage }] : awa.startupImage;
+      const imgs = (Array.isArray(awa.startupImage) ? awa.startupImage : [awa.startupImage]).map(
+        (image) => (typeof image === "string" ? { url: image } : image),
+      );
       for (const img of imgs) {
         elements.push(
           <link
@@ -1542,6 +1579,27 @@ export function MetadataHead({
       content += `, app-argument=${appArgument}`;
     }
     elements.push(<meta key={key++} name="apple-itunes-app" content={content} />);
+  }
+
+  // Facebook
+  if (metadata.facebook) {
+    if (metadata.facebook.appId) {
+      elements.push(<meta key={key++} property="fb:app_id" content={metadata.facebook.appId} />);
+    }
+    for (const admin of metadataValues(metadata.facebook.admins)) {
+      elements.push(<meta key={key++} property="fb:admins" content={admin} />);
+    }
+  }
+
+  // Pinterest
+  if (metadata.pinterest && metadata.pinterest.richPin !== undefined) {
+    elements.push(
+      <meta
+        key={key++}
+        property="pinterest-rich-pin"
+        content={String(metadata.pinterest.richPin)}
+      />,
+    );
   }
 
   // App Links
@@ -1575,8 +1633,7 @@ export function MetadataHead({
   // Other custom meta tags
   if (metadata.other) {
     for (const [name, content] of Object.entries(metadata.other)) {
-      const values = Array.isArray(content) ? content : [content];
-      for (const val of values) {
+      for (const val of metadataValues(content)) {
         elements.push(<meta key={key++} name={name} content={val} />);
       }
     }
