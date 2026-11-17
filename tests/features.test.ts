@@ -3536,6 +3536,44 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('href="http://trailingslash.com/docs/" hreflang="en"');
     expect(html).toContain('href="http://trailingslash.com/docs?source=print" media="print"');
   });
+
+  it("renders alternate link descriptors with their titles", () => {
+    // Ported from Next.js: packages/next/src/lib/metadata/resolvers/resolve-basics.ts
+    // (resolveUrlValuesOfObject, resolveCanonicalUrl) and generate/alternate.tsx.
+    // A value is a URL, a list of { url, title } descriptors, or null.
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("https://example.com"),
+        alternates: {
+          canonical: { url: "/canonical", title: "not rendered" },
+          languages: {
+            "en-US": [{ url: "/en-US" }, { url: new URL("https://en.example.com") }],
+            "de-DE": null,
+          },
+          media: { print: [{ url: "/print", title: "Print" }] },
+          types: {
+            "application/rss+xml": "/rss",
+            "application/atom+xml": [
+              { url: "/atom", title: "Atom" },
+              { url: "/atom-2", title: "Atom 2" },
+            ],
+            "application/json": [],
+          },
+        },
+      },
+      "/docs",
+    );
+    const links = html.match(/<link[^>]*>/g) ?? [];
+    expect(links).toEqual([
+      '<link rel="canonical" href="https://example.com/canonical">',
+      '<link rel="alternate" href="https://example.com/en-US" hreflang="en-US">',
+      '<link rel="alternate" href="https://en.example.com/docs" hreflang="en-US">',
+      '<link rel="alternate" href="https://example.com/print" title="Print" media="print">',
+      '<link rel="alternate" href="https://example.com/rss" type="application/rss+xml">',
+      '<link rel="alternate" href="https://example.com/atom" type="application/atom+xml" title="Atom">',
+      '<link rel="alternate" href="https://example.com/atom-2" type="application/atom+xml" title="Atom 2">',
+    ]);
+  });
 });
 
 describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {

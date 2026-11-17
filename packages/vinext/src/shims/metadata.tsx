@@ -268,10 +268,10 @@ export type Metadata = {
   icons?: IconsMetadata;
   manifest?: string | URL;
   alternates?: {
-    canonical?: string | URL;
-    languages?: Record<string, string | URL>;
-    media?: Record<string, string | URL>;
-    types?: Record<string, string | URL>;
+    canonical?: string | URL | AlternateLinkDescriptor | null;
+    languages?: Record<string, AlternateLinkValue>;
+    media?: Record<string, AlternateLinkValue>;
+    types?: Record<string, AlternateLinkValue>;
   };
   verification?: {
     google?: string;
@@ -899,6 +899,18 @@ function resolveMetadataUrl(
   }
 }
 
+type AlternateLinkDescriptor = { title?: string; url: string | URL };
+type AlternateLinkValue = string | URL | AlternateLinkDescriptor[] | null;
+
+/**
+ * Next.js resolveUrlValuesOfObject: a URL is one link, a list of descriptors
+ * keeps each title, and null or an empty list renders nothing.
+ */
+function alternateLinkDescriptors(value: AlternateLinkValue): AlternateLinkDescriptor[] {
+  if (typeof value === "string" || value instanceof URL) return [{ url: value }];
+  return Array.isArray(value) ? value.filter((descriptor) => descriptor.url) : [];
+}
+
 function resolveCanonicalUrl(
   url: string | URL,
   metadataBase: URL | null | undefined,
@@ -1009,6 +1021,7 @@ function renderMetadataElementToHtml(node: unknown): string {
         "href",
         "hrefLang",
         "type",
+        "title",
         "sizes",
         "color",
         "media",
@@ -1437,50 +1450,40 @@ export function MetadataHead({
   if (metadata.alternates) {
     const alt = metadata.alternates;
     if (alt.canonical) {
+      // Next.js resolveCanonicalUrl keeps only a descriptor's url.
+      const canonical =
+        typeof alt.canonical === "string" || alt.canonical instanceof URL
+          ? alt.canonical
+          : alt.canonical.url;
       elements.push(
         <link
           key={key++}
           rel="canonical"
-          href={resolveCanonicalUrl(alt.canonical, base, pathname, trailingSlash)}
+          href={resolveCanonicalUrl(canonical, base, pathname, trailingSlash)}
         />,
       );
     }
-    if (alt.languages) {
-      for (const [lang, href] of Object.entries(alt.languages)) {
-        elements.push(
-          <link
-            key={key++}
-            rel="alternate"
-            hrefLang={lang}
-            href={resolveAlternateUrl(href, base, pathname, trailingSlash)}
-          />,
-        );
+    const alternateLinks = (
+      values: Record<string, AlternateLinkValue> | undefined,
+      attribute: "hrefLang" | "media" | "type",
+    ) => {
+      for (const [name, value] of Object.entries(values ?? {})) {
+        for (const descriptor of alternateLinkDescriptors(value)) {
+          elements.push(
+            <link
+              key={key++}
+              rel="alternate"
+              {...{ [attribute]: name }}
+              {...(descriptor.title ? { title: descriptor.title } : {})}
+              href={resolveAlternateUrl(descriptor.url, base, pathname, trailingSlash)}
+            />,
+          );
+        }
       }
-    }
-    if (alt.media) {
-      for (const [media, href] of Object.entries(alt.media)) {
-        elements.push(
-          <link
-            key={key++}
-            rel="alternate"
-            media={media}
-            href={resolveAlternateUrl(href, base, pathname, trailingSlash)}
-          />,
-        );
-      }
-    }
-    if (alt.types) {
-      for (const [type, href] of Object.entries(alt.types)) {
-        elements.push(
-          <link
-            key={key++}
-            rel="alternate"
-            type={type}
-            href={resolveAlternateUrl(href, base, pathname, trailingSlash)}
-          />,
-        );
-      }
-    }
+    };
+    alternateLinks(alt.languages, "hrefLang");
+    alternateLinks(alt.media, "media");
+    alternateLinks(alt.types, "type");
   }
 
   // Verification
