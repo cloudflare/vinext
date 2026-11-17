@@ -3229,8 +3229,11 @@ function stripHash(url: string): string {
 /**
  * `detail` of the `vinext:navigate` events the router dispatches. Every such
  * navigation has already committed its router snapshot (`commitRouterSnapshot`).
+ * A string, not an object: the client entry and page chunks can each evaluate
+ * their own `next/router` instance, and the provider must recognise an event
+ * dispatched by any of them.
  */
-const ROUTER_NAVIGATE_EVENT_DETAIL = { routerStateCommitted: true } as const;
+const ROUTER_NAVIGATE_EVENT_DETAIL = "vinext.routerStateCommitted";
 
 /** Notify in-page listeners (e.g. useRouter hooks) that navigation occurred. */
 function dispatchNavigateEvent(): void {

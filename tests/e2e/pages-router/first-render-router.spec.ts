@@ -100,3 +100,33 @@ test("useRouter() keeps the committed route if location moves after the commit",
   }
   await expect(page.locator('[data-testid="first-render-id"]')).toHaveText("2");
 });
+
+// The client entry and page chunks can each evaluate their own `next/router`
+// instance, so the provider may receive `vinext:navigate` from a router module
+// other than its own. Such an event carries the router's marker as a value
+// created outside the provider's module, and must still count as a committed
+// navigation, never a cue to re-read the live location.
+test("useRouter() treats vinext:navigate from another router instance as committed", async ({
+  page,
+}) => {
+  await page.goto(`${BASE}/first-render-router/1`);
+  await page.waitForFunction(() => (window as any).next?.router?.isReady === true);
+  await takeRenders(page);
+
+  await page.evaluate(async () => {
+    window.history.replaceState(window.history.state, "", "/first-render-router/1?moved=1");
+    window.dispatchEvent(
+      new CustomEvent("vinext:navigate", { detail: "vinext.routerStateCommitted" }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+
+  // Nothing was committed, so the provider has no reason to re-render; any
+  // render that does happen must still see the committed route.
+  for (const render of await takeRenders(page)) {
+    expect({ query: render.query, asPath: render.asPath }).toEqual({
+      query: { id: "1" },
+      asPath: "/first-render-router/1",
+    });
+  }
+});
