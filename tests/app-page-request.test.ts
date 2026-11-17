@@ -46,6 +46,8 @@ describe("app page request helpers", () => {
                 isDynamicRoute: true,
                 isProduction: true,
                 params: { slug: "unknown" },
+                pathname: "/posts/unknown",
+                routePattern: "/posts/:slug",
               }),
             ),
         );
@@ -81,6 +83,8 @@ describe("app page request helpers", () => {
               isDynamicRoute: true,
               isProduction: true,
               params: { slug: "unknown" },
+              pathname: "/posts/unknown",
+              routePattern: "/posts/:slug",
             }),
           ),
         );
@@ -113,6 +117,8 @@ describe("app page request helpers", () => {
             isDynamicRoute: true,
             isProduction: true,
             params: { slug: "unknown" },
+            pathname: "/tagged-posts/unknown",
+            routePattern: "/tagged-posts/:slug",
             routeSegments: ["tagged-posts", "[slug]"],
           }),
         ),
