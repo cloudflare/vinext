@@ -1,0 +1,13 @@
+{
+  "name": "react-aria-components",
+  "version": "0.0.0-vinext-fixture",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.js"
+  },
+  "dependencies": {
+    "@react-stately/toast": "file:../fake-react-stately-toast",
+    "react-stately": "file:../fake-react-stately"
+  }
+}

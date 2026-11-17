@@ -1,0 +1,9 @@
+{
+  "name": "react-stately",
+  "version": "0.0.0-vinext-fixture",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.js"
+  }
+}

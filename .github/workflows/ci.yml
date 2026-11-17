@@ -665,6 +665,10 @@ jobs:
             label: root-layout-redirect
             shardIndex: 1
             shardTotal: 1
+          - project: app-ssr-external
+            label: app-ssr-external
+            shardIndex: 1
+            shardTotal: 1
           - project: ppr-impact-demo
             label: ppr-impact-demo
             shardIndex: 1

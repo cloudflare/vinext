@@ -1,0 +1,13 @@
+{
+  "name": "fake-export-order-barrel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "module": "./index.js",
+      "node": "./index.cjs",
+      "default": "./index.js"
+    }
+  }
+}

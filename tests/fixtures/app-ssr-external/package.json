@@ -1,0 +1,21 @@
+{
+  "name": "app-ssr-external-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@vitejs/plugin-rsc": "catalog:",
+    "antd": "file:./__test_packages__/fake-antd",
+    "fake-external-barrel": "file:./__test_packages__/fake-external-barrel",
+    "rc-util": "file:./__test_packages__/fake-rc-util",
+    "react": "catalog:",
+    "react-aria-components": "file:./__test_packages__/fake-react-aria-components",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "react-stately": "file:./__test_packages__/fake-react-stately",
+    "vinext": "workspace:*",
+    "vite": "catalog:"
+  },
+  "devDependencies": {
+    "vite-plus": "catalog:"
+  }
+}

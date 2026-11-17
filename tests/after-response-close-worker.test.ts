@@ -62,6 +62,7 @@ describe("closeAfterResponseWithBody on the Cloudflare Workers runtime", () => {
       (src) =>
         !src.includes(`${path.sep}app${path.sep}context-dedup-test`) &&
         !src.includes(`${path.sep}app${path.sep}optimize-imports-client-barrel`) &&
+        !src.includes(`${path.sep}app${path.sep}optimize-imports-resolution`) &&
         !src.includes(`${path.sep}app${path.sep}nextjs-compat${path.sep}node-modules-css`) &&
         !src.includes(
           `${path.sep}app${path.sep}nextjs-compat${path.sep}dynamic${path.sep}out-of-root-package`,

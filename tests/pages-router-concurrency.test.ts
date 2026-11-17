@@ -94,7 +94,12 @@ describe("Pages Router prod concurrency isolation", () => {
     tmpDir = await createIsolatedFixture(
       PAGES_FIXTURE_DIR,
       "vinext-pages-concurrency-",
-      (src) => !src.includes("node_modules") && !src.includes("alias-test"),
+      // optimize-imports-default imports a file: dependency that only the
+      // fixture's own node_modules installs.
+      (src) =>
+        !src.includes("node_modules") &&
+        !src.includes("alias-test") &&
+        !src.includes("optimize-imports-default"),
     );
 
     const outDir = path.join(tmpDir, "dist");

@@ -1455,12 +1455,21 @@ importers:
       fake-context-lib:
         specifier: file:./__test_packages__/fake-context-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-context-lib
+      fake-copy-barrel:
+        specifier: file:./__test_packages__/fake-copy-barrel-v1
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v1
+      fake-copy-consumer:
+        specifier: workspace:*
+        version: link:__test_packages__/fake-copy-consumer
       fake-css-lib:
         specifier: file:./__test_packages__/fake-css-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-css-lib
       fake-css-module-lib:
         specifier: file:./__test_packages__/fake-css-module-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib
+      fake-export-order-barrel:
+        specifier: file:./__test_packages__/fake-export-order-barrel
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-export-order-barrel
       fake-tsconfig-exact-lib:
         specifier: file:./__test_packages__/fake-tsconfig-exact-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib
@@ -1483,6 +1492,15 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 1.5.1(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.1.0(vitest@5.1.0))(@vitest/ui@5.1.0(vitest@5.1.0))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.63.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
+  tests/fixtures/app-basic/__test_packages__/fake-copy-consumer:
+    dependencies:
+      fake-copy-barrel:
+        specifier: file:../fake-copy-barrel-v2
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v2
+      react:
+        specifier: 'catalog:'
+        version: 19.3.1
 
   tests/fixtures/app-bfcache:
     dependencies:
@@ -1592,6 +1610,46 @@ importers:
         specifier: 'catalog:'
         version: 1.5.1(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.1.0(vitest@5.1.0))(@vitest/ui@5.1.0(vitest@5.1.0))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.63.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
 
+  tests/fixtures/app-ssr-external:
+    dependencies:
+      '@vitejs/plugin-rsc':
+        specifier: 'catalog:'
+        version: 0.5.38(@voidzero-dev/vite-plus-core@1.5.1(@types/node@25.9.2)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react-server-dom-webpack@19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react@19.3.1)
+      antd:
+        specifier: file:./__test_packages__/fake-antd
+        version: file:tests/fixtures/app-ssr-external/__test_packages__/fake-antd
+      fake-external-barrel:
+        specifier: file:./__test_packages__/fake-external-barrel
+        version: file:tests/fixtures/app-ssr-external/__test_packages__/fake-external-barrel
+      rc-util:
+        specifier: file:./__test_packages__/fake-rc-util
+        version: file:tests/fixtures/app-ssr-external/__test_packages__/fake-rc-util
+      react:
+        specifier: 'catalog:'
+        version: 19.3.1
+      react-aria-components:
+        specifier: file:./__test_packages__/fake-react-aria-components
+        version: file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.3.1(react@19.3.1)
+      react-server-dom-webpack:
+        specifier: 'catalog:'
+        version: 19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      react-stately:
+        specifier: file:./__test_packages__/fake-react-stately
+        version: file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately
+      vinext:
+        specifier: workspace:*
+        version: link:../../../packages/vinext
+      vite:
+        specifier: 'catalog:'
+        version: '@voidzero-dev/vite-plus-core@1.5.1(@types/node@25.9.2)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)'
+    devDependencies:
+      vite-plus:
+        specifier: 'catalog:'
+        version: 1.5.1(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.1.0(vitest@5.1.0))(@vitest/ui@5.1.0(vitest@5.1.0))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.63.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
   tests/fixtures/app-trailing-slash-isr: {}
 
   tests/fixtures/app-type-only-imports:
@@ -1639,6 +1697,9 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.38(@voidzero-dev/vite-plus-core@1.5.1(@types/node@25.9.2)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react-server-dom-webpack@19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react@19.3.1)
+      fake-node-first-barrel:
+        specifier: file:./__test_packages__/fake-node-first-barrel
+        version: file:tests/fixtures/cf-app-basic/__test_packages__/fake-node-first-barrel
       react:
         specifier: 'catalog:'
         version: 19.3.1
@@ -2314,6 +2375,9 @@ importers:
 
   tests/fixtures/pages-basic:
     dependencies:
+      '@tremor/react':
+        specifier: file:./__test_packages__/fake-tremor-react
+        version: file:tests/fixtures/pages-basic/__test_packages__/fake-tremor-react
       react:
         specifier: 'catalog:'
         version: 19.3.1
@@ -5895,6 +5959,9 @@ packages:
   '@radix-ui/rect@1.1.1':
     resolution: {integrity: sha512-HPwpGIzkl28mWyZqG52jiqDJ12waP11Pa1lGoiyUkIEuMLBP0oeK/C89esbXrxsky5we7dfd8U58nm0SgAWpVw==}
 
+  '@react-stately/toast@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately-toast':
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately-toast, type: directory}
+
   '@resvg/resvg-wasm@2.4.1':
     resolution: {integrity: sha512-yi6R0HyHtsoWTRA06Col4WoDs7SvlXU3DLMNP2bdAgs7HK18dTEVl1weXgxRzi8gwLteGUbIg29zulxIB3GSdg==}
     engines: {node: '>= 10'}
@@ -6795,6 +6862,9 @@ packages:
     peerDependencies:
       '@testing-library/dom': '>=7.21.4'
 
+  '@tremor/react@file:tests/fixtures/pages-basic/__test_packages__/fake-tremor-react':
+    resolution: {directory: tests/fixtures/pages-basic/__test_packages__/fake-tremor-react, type: directory}
+
   '@tybys/wasm-util@0.10.1':
     resolution: {integrity: sha512-9tTaPJLSiejZKx+Bmog4uSubteqTvFrVrURwkmHixBo0G4seD0zUxp98E1DzUBJxLQ3NPwXrGKDiVjwx/DpPsg==}
 
@@ -7574,6 +7644,9 @@ packages:
   ansis@4.2.0:
     resolution: {integrity: sha512-HqZ5rWlFjGiV0tDm3UxxgNRqsOTniqoKZu0pIAfh7TZQMGuZK+hH0drySty0si0QXj1ieop4+SkSfPZBPPkHig==}
     engines: {node: '>=14'}
+
+  antd@file:tests/fixtures/app-ssr-external/__test_packages__/fake-antd:
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-antd, type: directory}
 
   app-cjs-esm-package@file:tests/fixtures/esm-externals/__test_packages__/app-cjs-esm-package:
     resolution: {directory: tests/fixtures/esm-externals/__test_packages__/app-cjs-esm-package, type: directory}
@@ -8517,11 +8590,32 @@ packages:
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-context-lib, type: directory}
 
+  fake-copy-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v1:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v1, type: directory}
+
+  fake-copy-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v2:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v2, type: directory}
+
+  fake-copy-leaf@file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v1:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v1, type: directory}
+
+  fake-copy-leaf@file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v2:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v2, type: directory}
+
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-lib, type: directory}
 
   fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-module-lib, type: directory}
+
+  fake-export-order-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-export-order-barrel:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-export-order-barrel, type: directory}
+
+  fake-external-barrel@file:tests/fixtures/app-ssr-external/__test_packages__/fake-external-barrel:
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-external-barrel, type: directory}
+
+  fake-node-first-barrel@file:tests/fixtures/cf-app-basic/__test_packages__/fake-node-first-barrel:
+    resolution: {directory: tests/fixtures/cf-app-basic/__test_packages__/fake-node-first-barrel, type: directory}
 
   fake-tsconfig-exact-lib@file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib, type: directory}
@@ -10436,6 +10530,12 @@ packages:
   queue-microtask@1.2.3:
     resolution: {integrity: sha512-NuaNSa6flKT5JaSYQzJok04JzTL1CA6aGhv5rfLW3PgqA+M2ChpZQnAC8h8i4ZFkBS8X5RqkDBHA7r4hej3K9A==}
 
+  rc-util@file:tests/fixtures/app-ssr-external/__test_packages__/fake-rc-util:
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-rc-util, type: directory}
+
+  react-aria-components@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components:
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components, type: directory}
+
   react-day-picker@9.13.2:
     resolution: {integrity: sha512-IMPiXfXVIAuR5Yk58DDPBC8QKClrhdXV+Tr/alBrwrHUw0qDDYB1m5zPNuTnnPIr/gmJ4ChMxmtqPdxm8+R4Eg==}
     engines: {node: '>=18'}
@@ -10502,6 +10602,9 @@ packages:
       react: ^19.3.1
       react-dom: ^19.3.1
       webpack: ^5.59.0
+
+  react-stately@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately:
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately, type: directory}
 
   react-style-singleton@2.2.3:
     resolution: {integrity: sha512-b6jSvxvVnyptAiLjbkWLE/lOnR4lfTtDAl+eUC7RZy+QQWc6wRzIV2CE6xBuMmDxc2qIihtDCZD5NPOFl7fRBQ==}
@@ -14304,6 +14407,8 @@ snapshots:
 
   '@radix-ui/rect@1.1.1': {}
 
+  '@react-stately/toast@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately-toast': {}
+
   '@resvg/resvg-wasm@2.4.1': {}
 
   '@rolldown/binding-android-arm-eabi@1.2.9':
@@ -15073,6 +15178,8 @@ snapshots:
     dependencies:
       '@testing-library/dom': 10.4.2
 
+  '@tremor/react@file:tests/fixtures/pages-basic/__test_packages__/fake-tremor-react': {}
+
   '@tybys/wasm-util@0.10.1':
     dependencies:
       tslib: 2.8.1
@@ -15841,6 +15948,8 @@ snapshots:
   ansi-styles@5.2.0: {}
 
   ansis@4.2.0: {}
+
+  antd@file:tests/fixtures/app-ssr-external/__test_packages__/fake-antd: {}
 
   app-cjs-esm-package@file:tests/fixtures/esm-externals/__test_packages__/app-cjs-esm-package: {}
 
@@ -16876,9 +16985,27 @@ snapshots:
 
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib: {}
 
+  fake-copy-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v1:
+    dependencies:
+      fake-copy-leaf: file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v1
+
+  fake-copy-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-copy-barrel-v2:
+    dependencies:
+      fake-copy-leaf: file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v2
+
+  fake-copy-leaf@file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v1: {}
+
+  fake-copy-leaf@file:tests/fixtures/app-basic/__test_packages__/fake-copy-leaf-v2: {}
+
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib: {}
 
   fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib: {}
+
+  fake-export-order-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-export-order-barrel: {}
+
+  fake-external-barrel@file:tests/fixtures/app-ssr-external/__test_packages__/fake-external-barrel: {}
+
+  fake-node-first-barrel@file:tests/fixtures/cf-app-basic/__test_packages__/fake-node-first-barrel: {}
 
   fake-tsconfig-exact-lib@file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib: {}
 
@@ -19259,6 +19386,13 @@ snapshots:
 
   queue-microtask@1.2.3: {}
 
+  rc-util@file:tests/fixtures/app-ssr-external/__test_packages__/fake-rc-util: {}
+
+  react-aria-components@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components:
+    dependencies:
+      '@react-stately/toast': file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately-toast
+      react-stately: file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately
+
   react-day-picker@9.13.2(react@19.3.1):
     dependencies:
       '@date-fns/tz': 1.4.1
@@ -19316,6 +19450,8 @@ snapshots:
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
       webpack-sources: 3.3.4
+
+  react-stately@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately: {}
 
   react-style-singleton@2.2.3(@types/react@19.2.16)(react@19.3.1):
     dependencies:

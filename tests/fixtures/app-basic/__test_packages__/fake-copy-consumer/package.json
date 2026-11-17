@@ -1,0 +1,13 @@
+{
+  "name": "fake-copy-consumer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js"
+  },
+  "dependencies": {
+    "fake-copy-barrel": "file:../fake-copy-barrel-v2",
+    "react": "catalog:"
+  }
+}

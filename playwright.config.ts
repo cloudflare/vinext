@@ -121,6 +121,7 @@ const projectServers = {
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
       "app-router/tsconfig-exact-path.spec.ts",
+      "app-router/optimize-imports-resolution.spec.ts",
       "app-router/nextjs-compat/segment-cache-dynamic-params.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
@@ -569,6 +570,18 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "app-ssr-external": {
+    testDir: "./tests/e2e/app-ssr-external",
+    use: { baseURL: "http://localhost:4241" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4241",
+      cwd: "./tests/fixtures/app-ssr-external",
+      port: 4241,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "use-params-app-pages": {
     testDir: "./tests/e2e/use-params-app-pages",
     use: { baseURL: "http://localhost:4186" },
@@ -697,7 +710,8 @@ const projectServers = {
     },
   },
   "cloudflare-encoded-paths": {
-    testDir: "./tests/e2e/cloudflare-encoded-paths",
+    testDir: "./tests/e2e",
+    testMatch: ["cloudflare-encoded-paths/**/*.spec.ts", "cf-app-basic/**/*.spec.ts"],
     use: { baseURL: "http://localhost:4197" },
     server: {
       command:
@@ -709,7 +723,8 @@ const projectServers = {
     },
   },
   "cloudflare-dev-run-worker-first": {
-    testDir: "./tests/e2e/cloudflare-dev-run-worker-first",
+    testDir: "./tests/e2e",
+    testMatch: ["cloudflare-dev-run-worker-first/**/*.spec.ts", "cf-app-basic/**/*.spec.ts"],
     use: { baseURL: "http://localhost:4204" },
     server: {
       // Dev with the runWorkerFirst pattern that `vinext init` generates
