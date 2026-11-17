@@ -122,6 +122,10 @@
       "types": "./dist/server/prerender-manifest.d.ts",
       "import": "./dist/server/prerender-manifest.js"
     },
+    "./internal/server/prerendered-pages": {
+      "types": "./dist/server/prerendered-pages.d.ts",
+      "import": "./dist/server/prerendered-pages.js"
+    },
     "./internal/server/pregenerated-concrete-paths": {
       "types": "./dist/server/pregenerated-concrete-paths.d.ts",
       "import": "./dist/server/pregenerated-concrete-paths.js"

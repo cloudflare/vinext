@@ -25,7 +25,11 @@
  * pre-split implementation.
  */
 
-import type { CacheHandlerValue, IncrementalCacheValue } from "./cache-handler.js";
+import {
+  readsPrerenderedPages,
+  type CacheHandlerValue,
+  type IncrementalCacheValue,
+} from "./cache-handler.js";
 import type { VinextAssetFetcher } from "../server/multi-stage.js";
 import { getExplicitCdnCacheAdapter } from "./cdn-cache-state.js";
 export { setCdnCacheAdapter } from "./cdn-cache-state.js";
@@ -300,6 +304,11 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
 
   constructor(private readonly buildIdentity?: string) {}
+
+  /** The memory cache reads prerendered Pages output on the Node production server. */
+  get hasPrerenderedPages(): boolean {
+    return readsPrerenderedPages();
+  }
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const { getDataCacheHandler } = await import("./cache-handler.js");

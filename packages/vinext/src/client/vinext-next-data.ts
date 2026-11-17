@@ -83,25 +83,59 @@ type VinextLocaleGlobalTarget = {
   __VINEXT_DEFAULT_LOCALE__: string | undefined;
 };
 
-export function extractVinextNextDataJson(html: string): string | null {
-  const canonical =
-    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>([\s\S]*?)<\/script>/.exec(
-      html,
-    );
-  if (canonical) return canonical[1];
-
-  const assignment = /<script(?:\s[^>]*)?>\s*window\.__NEXT_DATA__\s*=\s*/.exec(html);
-  if (!assignment || assignment.index === undefined) return null;
-
-  let start = assignment.index + assignment[0].length;
-  while (
-    html[start] === " " ||
-    html[start] === "\n" ||
-    html[start] === "\t" ||
-    html[start] === "\r"
-  ) {
-    start++;
+/**
+ * The opening `<script>` tags of `html`: the text between `<script` and the
+ * first `>`, and where the tag's content starts. Scanned with `indexOf`, so a
+ * document with many unterminated tags stays linear.
+ */
+function* scriptOpenTags(html: string): Generator<{ attributes: string; contentStart: number }> {
+  let from = 0;
+  for (;;) {
+    const tagStart = html.indexOf("<script", from);
+    if (tagStart === -1) return;
+    const nameEnd = tagStart + "<script".length;
+    if (/\w/.test(html[nameEnd] ?? "")) {
+      from = nameEnd;
+      continue;
+    }
+    const tagEnd = html.indexOf(">", nameEnd);
+    if (tagEnd === -1) return;
+    yield { attributes: html.slice(nameEnd, tagEnd), contentStart: tagEnd + 1 };
+    from = tagEnd + 1;
   }
+}
+
+/** The index of the first non-whitespace character of `html` at or after `index`. */
+function skipWhitespace(html: string, index: number): number {
+  while (index < html.length && /\s/.test(html[index])) index++;
+  return index;
+}
+
+export function extractVinextNextDataJson(html: string): string | null {
+  for (const { attributes, contentStart } of scriptOpenTags(html)) {
+    if (
+      !/\bid=["']__NEXT_DATA__["']/.test(attributes) ||
+      !/\btype=["']application\/json["']/.test(attributes)
+    ) {
+      continue;
+    }
+    const contentEnd = html.indexOf("</script>", contentStart);
+    if (contentEnd === -1) break;
+    return html.slice(contentStart, contentEnd);
+  }
+
+  let start = -1;
+  const assignee = "window.__NEXT_DATA__";
+  for (const { attributes, contentStart } of scriptOpenTags(html)) {
+    if (attributes !== "" && !/^\s/.test(attributes)) continue;
+    let index = skipWhitespace(html, contentStart);
+    if (!html.startsWith(assignee, index)) continue;
+    index = skipWhitespace(html, index + assignee.length);
+    if (html[index] !== "=") continue;
+    start = skipWhitespace(html, index + 1);
+    break;
+  }
+  if (start === -1) return null;
   if (html[start] !== "{") return null;
 
   let depth = 0;

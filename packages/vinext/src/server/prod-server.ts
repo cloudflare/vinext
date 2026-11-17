@@ -1698,6 +1698,20 @@ function resolveAppRouterHandler(
   process.exit(1);
 }
 
+/**
+ * Serve prerendered Pages Router routes from `prerendered-routes` on a memory
+ * cache miss, as `next start` reads `.next/server/pages`. Skipped for the
+ * prerender's own server, which must render the pages it writes.
+ */
+async function installPrerenderedPagesReader(
+  serverDir: string,
+  purpose: ProdServerOptions["purpose"],
+): Promise<void> {
+  // Loaded on demand for the same reason as seed-cache below.
+  const { installPrerenderedPagesReader: install } = await import("./prerendered-pages.js");
+  install(purpose === "prerender" ? null : serverDir);
+}
+
 type AppRouterPrerenderSeeder = (serverDir: string) => Promise<number>;
 
 // Loaded on demand: seed-cache imports React, which picks its development or
@@ -1978,6 +1992,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.
+  if (appRouterHasPagesDir) await installPrerenderedPagesReader(serverDir, purpose);
   const seedPrerenderedRoutes = resolveAppRouterPrerenderSeeder(rscModule);
   const seededRoutes = await runWithServerEntryRequire(rscEntryRequire, () =>
     seedPrerenderedRoutes(serverDir),
@@ -2534,6 +2549,8 @@ async function createPagesRouterRequestHandler(
     clientEntryLookup: "any-client-entry",
     crossOrigin: vinextConfig?.crossOrigin ?? "",
   });
+
+  await installPrerenderedPagesReader(serverDir, purpose);
 
   // Build the static file metadata cache at startup (same as App Router).
   const staticCache = await StaticFileCache.create(clientDir);

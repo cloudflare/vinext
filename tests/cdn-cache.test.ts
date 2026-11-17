@@ -47,6 +47,7 @@ import {
 import { registerCdnPurgeRoutes } from "../packages/vinext/src/shims/cdn-purge-routes.js";
 import { setHeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { setPrerenderedPagesReader } from "../packages/vinext/src/shims/cache-handler.js";
 
 function resetAdapters(): void {
   setDataCacheHandler(new MemoryCacheHandler());
@@ -55,6 +56,62 @@ function resetAdapters(): void {
 
 beforeEach(resetAdapters);
 afterEach(resetAdapters);
+
+// ─── Prerendered Pages output read on a memory cache miss ────────────────
+
+// Next.js's FileSystemCache dates a prerendered page with its file's mtime, and
+// IncrementalCache.get counts revalidate from `lastModified || now`
+// (server/lib/incremental-cache/file-system-cache.ts and index.ts).
+describe("MemoryCacheHandler prerendered Pages reader", () => {
+  const now = Date.UTC(2026, 0, 1);
+
+  function readWithMtime(lastModified: number): Promise<{ cacheState?: string } | null> {
+    setPrerenderedPagesReader({
+      read: () =>
+        Promise.resolve({
+          value: {
+            kind: "PAGES",
+            html: "<p>built</p>",
+            pageData: {},
+            headers: undefined,
+            status: 200,
+          },
+          cacheControl: { revalidate: 60 },
+          lastModified,
+        }),
+      has: () => true,
+      supersede: () => {},
+    });
+    return new MemoryCacheHandler().get("pages:/page");
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+  });
+  afterEach(() => {
+    setPrerenderedPagesReader(undefined);
+    vi.useRealTimers();
+  });
+
+  it("counts revalidate from an mtime ahead of the server clock", async () => {
+    // Built on a host whose clock runs 10 minutes ahead: fresh until 60 s after that.
+    const result = await readWithMtime(now + 10 * 60_000);
+    expect(result).toMatchObject({ lastModified: now + 10 * 60_000 });
+    expect(result?.cacheState).toBeUndefined();
+  });
+
+  it("counts revalidate from an mtime in the past", async () => {
+    const result = await readWithMtime(now - 2 * 60_000);
+    expect(result?.cacheState).toBe("stale");
+  });
+
+  it("counts an epoch mtime from the first read", async () => {
+    const result = await readWithMtime(0);
+    expect(result).toMatchObject({ lastModified: now });
+    expect(result?.cacheState).toBeUndefined();
+  });
+});
 
 // ─── Backwards-compatible data cache aliases ─────────────────────────────
 

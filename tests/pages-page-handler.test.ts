@@ -57,6 +57,14 @@ function makeRequest(pathname = "/", method = "GET"): Request {
   return new Request(`http://localhost${pathname}`, { method });
 }
 
+/** A default adapter that reports prerendered Pages output, as the Node server's does. */
+function makePrerenderedPagesAdapter(): DefaultCdnCacheAdapter {
+  // `hasPrerenderedPages` is a getter on the class, so shadow it on the instance.
+  return Object.defineProperty(new DefaultCdnCacheAdapter(), "hasPrerenderedPages", {
+    value: true,
+  });
+}
+
 function makePreviewCookieHeader(data: object | string): string {
   const headers = new Map<string, string | string[]>();
   setPagesPreviewData(
@@ -256,7 +264,7 @@ describe("createPagesPageHandler — pre-render response headers", () => {
 
 describe("createPagesPageHandler — route miss", () => {
   it("preserves a forced error status when serving a prerendered page", async () => {
-    const adapter = Object.assign(new DefaultCdnCacheAdapter(), { hasPrerenderedPages: true });
+    const adapter = makePrerenderedPagesAdapter();
     vi.spyOn(adapter, "get").mockResolvedValue({
       lastModified: 0,
       cacheControl: { revalidate: false },
@@ -278,7 +286,7 @@ describe("createPagesPageHandler — route miss", () => {
   it.each(["/404", "/_error"])(
     "reads %s not-found HTML under its prerender key",
     async (pattern) => {
-      const adapter = Object.assign(new DefaultCdnCacheAdapter(), { hasPrerenderedPages: true });
+      const adapter = makePrerenderedPagesAdapter();
       const get = vi.spyOn(adapter, "get").mockResolvedValue({
         lastModified: 0,
         cacheControl: { revalidate: false },
@@ -1214,7 +1222,7 @@ describe("createPagesPageHandler — preview responses", () => {
         makePageModule(gsp ? { getStaticProps: () => ({ props: {} }) } : {}),
       );
       if (prerendered) {
-        const adapter = Object.assign(new DefaultCdnCacheAdapter(), { hasPrerenderedPages: true });
+        const adapter = makePrerenderedPagesAdapter();
         vi.spyOn(adapter, "get").mockResolvedValue({
           lastModified: 0,
           cacheControl: { revalidate: false },
@@ -1258,8 +1266,7 @@ describe("createPagesPageHandler — preview responses", () => {
       const html = "prebuilt 404";
       const etag = generatePagesETag(html);
       const sourceEtag = '"source-page"';
-      const adapter = Object.assign(new DefaultCdnCacheAdapter(), {
-        hasPrerenderedPages: true,
+      const adapter = Object.assign(makePrerenderedPagesAdapter(), {
         ownsBackgroundRevalidation: false,
       });
       vi.spyOn(adapter, "get").mockResolvedValue({
