@@ -388,6 +388,90 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     expect(sourceRscReads).toBe(0);
   });
 
+  // The same, for a redirect the App Router renders: the refresh waits until
+  // the redirect's render settles, not only until its action returns.
+  test("revalidating action without a tree does not refresh over another action's internal redirect", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const destinationPath = "/nextjs-compat/action-discarding/destination";
+
+    // The destination's real Flight payload, served as the redirect's tree.
+    let destinationFlight: { body: Buffer; headers: Record<string, string> } | null = null;
+    await page.route(
+      (url) => url.pathname === destinationPath && url.searchParams.has("_rsc"),
+      async (route) => {
+        const response = await route.fetch();
+        destinationFlight = { body: await response.body(), headers: response.headers() };
+        await route.fulfill({ response });
+      },
+    );
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+    await page.click("#navigate-discard-destination");
+    await expect(page.locator("#discard-destination")).toBeVisible();
+    await page.unrouteAll();
+    if (destinationFlight === null) throw new Error("Expected the destination's Flight payload");
+    const redirectFlight: { body: Buffer; headers: Record<string, string> } = destinationFlight;
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+
+    let releaseRedirectingAction = () => {};
+    const redirectingActionGate = new Promise<void>((resolve) => {
+      releaseRedirectingAction = resolve;
+    });
+    let actionRequests = 0;
+    let sourceRscReads = 0;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (isAppRouterServerActionRequestForPath(request, sourcePath)) {
+        actionRequests += 1;
+        const isRedirectingAction = actionRequests === 1;
+        const response = await route.fetch();
+        if (isRedirectingAction) {
+          await redirectingActionGate;
+          return route.fulfill({
+            status: 303,
+            headers: {
+              ...response.headers(),
+              "content-type": redirectFlight.headers["content-type"] ?? "text/x-component",
+              "x-action-redirect": destinationPath,
+            },
+            body: redirectFlight.body,
+          });
+        }
+        // Keep the real headers (revalidated, compatibility id) but drop the tree.
+        return route.fulfill({
+          status: 200,
+          headers: response.headers(),
+          body: '0:{"returnValue":{"ok":true,"data":1}}\n',
+        });
+      }
+      if (url.pathname === sourcePath && url.searchParams.has("_rsc")) sourceRscReads += 1;
+      return route.continue();
+    });
+
+    const redirectingActionRequest = page.waitForRequest((request) =>
+      isAppRouterServerActionRequestForPath(request, sourcePath),
+    );
+    await page.click("#slow-action");
+    await redirectingActionRequest;
+    const revalidatingActionResponse = page.waitForResponse((response) =>
+      isAppRouterServerActionRequestForPath(response.request(), sourcePath),
+    );
+    await page.click("#slow-action-refresh");
+    await revalidatingActionResponse;
+    await page.waitForTimeout(300);
+    expect(sourceRscReads).toBe(0);
+
+    releaseRedirectingAction();
+    await expect(page.locator("#discard-destination")).toBeVisible();
+    await page.waitForTimeout(1_000);
+    expect(new URL(page.url()).pathname).toBe(destinationPath);
+    await expect(page.locator("#discard-destination")).toBeVisible();
+  });
+
   // As in Next.js, a navigation that superseded an action discards the
   // action's redirect, even to another origin, and refreshes what it revalidated.
   test("superseded server action's external redirect does not replace the navigation", async ({

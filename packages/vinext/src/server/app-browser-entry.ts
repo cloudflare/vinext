@@ -1957,6 +1957,9 @@ function registerServerActionCallback(): void {
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
             if (target.type === "push") saveScrollPosition();
+            // The action settles before this render does, so the render holds
+            // revalidation refreshes, which would supersede it, until it settles.
+            discardedServerActionRefreshScheduler.markNavigationStart();
             void renderNavigationPayload({
               actionType: target.type === "push" ? "navigate" : "replace",
               historyUpdateMode: target.type === "push" ? "push" : "replace",
@@ -1975,9 +1978,11 @@ function registerServerActionCallback(): void {
               previousNextUrl: null,
               scrollIntent: actionScrollIntent,
               targetHref: target.href,
-            }).catch(() => {
-              browserNavigationController.performHardNavigation(target.href);
-            });
+            })
+              .catch(() => {
+                browserNavigationController.performHardNavigation(target.href);
+              })
+              .finally(() => discardedServerActionRefreshScheduler.markNavigationSettled());
           },
           syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>
             historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
