@@ -1628,28 +1628,24 @@ export async function prerenderApp({
 
       if (!renderEntryPath) continue;
 
-      // Use static analysis classification, but note its limitations for dynamic URLs:
-      // classifyAppRoute() returns 'ssr' for dynamic URLs with no explicit config,
-      // meaning "unknown — could have generateStaticParams". We must check
-      // generateStaticParams first before applying the ssr skip/error logic.
+      // Classify from the segment config alone. Passing isDynamic would also
+      // report 'ssr' for a dynamic URL with no explicit config, which only
+      // means "unknown — could have generateStaticParams" and is handled by
+      // the route.isDynamic branch below.
       const { type, revalidate: classifiedRevalidate } = classifyAppRoute(
         renderEntryPath,
         route.routePath,
-        route.isDynamic,
+        false,
       );
       if (type === "api") {
         results.push({ route: route.pattern, status: "skipped", reason: "api" });
         continue;
       }
 
-      // 'ssr' from explicit config (force-dynamic, revalidate=0) — truly dynamic,
-      // no point checking generateStaticParams.
-      // BUT: if isDynamic=true and there's no explicit dynamic/revalidate config,
-      // classifyAppRoute also returns 'ssr'. In that case we must still check
-      // generateStaticParams before giving up.
-      const isConfiguredDynamic = type === "ssr" && !route.isDynamic;
-
-      if (isConfiguredDynamic) {
+      // 'ssr' from explicit config (force-dynamic, revalidate=0) — truly dynamic.
+      // Next.js never renders such a page at build time, so skip it before
+      // generateStaticParams expands it into concrete paths.
+      if (type === "ssr") {
         if (mode === "export") {
           results.push({
             route: route.pattern,
