@@ -36,7 +36,7 @@ export const APP_ROUTE_KEY = "__route";
  * instead of matching a pathname again: the server's match depends on the raw
  * spelling of static segments and on recorded prerenders.
  */
-export const APP_ROUTE_GRAPH_ID_KEY = "__routeGraphId";
+const APP_ROUTE_GRAPH_ID_KEY = "__routeGraphId";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
 export const APP_SKIPPED_LAYOUT_IDS_KEY = "__skippedLayoutIds";
 export const APP_SOURCE_PAGE_SEGMENTS_KEY = "__srcPage";
