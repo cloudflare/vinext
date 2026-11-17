@@ -399,6 +399,62 @@ describe("app browser server action client", () => {
     });
   });
 
+  // Next.js marks a revalidating action before handling its redirect, and
+  // refreshes once the queue discards it.
+  it("discards a superseded compatible redirect and refreshes what the action revalidated", async () => {
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("flight", {
+            status: 303,
+            headers: {
+              "content-type": "text/x-component",
+              [ACTION_REDIRECT_HEADER]: "/target",
+              [ACTION_REVALIDATED_HEADER]: "1",
+              [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "current-deployment",
+            },
+          }),
+      ),
+    );
+    const deps = {
+      basePath: "",
+      clearClientNavigationCaches: vi.fn(),
+      clearDynamicClientNavigationCaches: vi.fn(),
+      clientRscCompatibilityId: "current-deployment",
+      commitSameUrlNavigatePayload: vi.fn(),
+      navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
+      ownsRouterForServerAction: vi.fn(() => false),
+      performHardNavigation: vi.fn(),
+      renderRedirectPayload: vi.fn(),
+      syncCurrentHistoryState: vi.fn(),
+      syncServerActionHttpFallbackHead: vi.fn(),
+    };
+
+    await expect(
+      invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/source",
+          navigationId: 1,
+          routerState: createActionTestRouterState(),
+        }),
+        deps,
+      ),
+    ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;push;/target;307;", handled: true });
+    // The redirect's tree is never read, let alone rendered.
+    expect(createFromFetch).not.toHaveBeenCalled();
+    expect(deps.renderRedirectPayload).not.toHaveBeenCalled();
+    expect(deps.performHardNavigation).not.toHaveBeenCalled();
+    expect(deps.clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+    expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("staticAndDynamic");
+  });
+
   describe("incompatible action responses", () => {
     const sourceHref = "https://example.com/source?tab=profile";
 

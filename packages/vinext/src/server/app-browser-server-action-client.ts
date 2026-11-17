@@ -203,23 +203,25 @@ export async function invokeClientServerAction(
   });
   const fetchResponseIsRsc = actionResultFacts.isRscContentType;
   const actionResultDecision = deps.navigationPlanner.classifyServerActionResult(actionResultFacts);
-  // An incompatible response reloads the page the action was posted from. A
-  // navigation that superseded the action owns what loads next: as in
-  // Next.js, it discards the action's state, and its own request runs into
-  // the same mismatch.
+  // A navigation that superseded the action owns what loads next: as in
+  // Next.js, it discards the action's state. Its redirect is not followed, and
+  // an incompatible response does not reload the page the action was posted
+  // from (the navigation's own request runs into the same mismatch).
+  const supersededRedirect =
+    actionRedirectTarget !== null && !deps.ownsRouterForServerAction(actionInitiation);
+  if (supersededRedirect) {
+    // The action still ran, so data it revalidated is refreshed afterwards.
+    const discardedRevalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
+    evictClientNavigationCachesForRevalidation(discardedRevalidation, deps);
+    deps.notifyDiscardedServerActionRevalidation(discardedRevalidation);
+    // As in Next.js, the caller still gets the handled redirect error, which
+    // resets its boundary without navigating.
+    throw new ServerActionRedirectError(actionRedirectTarget);
+  }
   const discardedIncompatibleResponse =
     actionResultDecision.kind === "hardNavigate" &&
     !deps.ownsRouterForServerAction(actionInitiation);
   if (discardedIncompatibleResponse) {
-    if (actionRedirectTarget !== null) {
-      // The action still ran, so data it revalidated is refreshed afterwards.
-      const discardedRevalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-      evictClientNavigationCachesForRevalidation(discardedRevalidation, deps);
-      deps.notifyDiscardedServerActionRevalidation(discardedRevalidation);
-      // As in Next.js, the caller still gets the handled redirect error, which
-      // resets its boundary without navigating; only the reload is discarded.
-      throw new ServerActionRedirectError(actionRedirectTarget);
-    }
     // Without a redirect, the caller still gets the action's value or error,
     // as in Next.js. Its tree goes to the commit below, whose ownership check
     // discards it and refreshes what it revalidated; a result without a tree
