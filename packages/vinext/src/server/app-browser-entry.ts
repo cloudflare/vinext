@@ -2233,6 +2233,17 @@ function bootstrapHydration(
           activeTraversalIntent?.historyState ?? window.history.state,
         ));
     const releaseNavigationInFlight = trackAppRouterNavigationInFlight();
+    // The route a learned template predicted for the URL being fetched, if
+    // any, and the store's retirement epoch when it did.
+    let prediction: { epoch: number; routeId: string } | null = null;
+    // Like Next.js's HardRetry (an MPA fallback for a redirected, non-RSC,
+    // other-build or failed response), which marks the predicted pattern too,
+    // in case this document is restored from BFCache.
+    const retireContradictedPrediction = (): void => {
+      if (prediction !== null) {
+        optimisticRouteTemplates.retire(prediction.routeId, prediction.epoch);
+      }
+    };
     try {
       const shouldUsePendingRouterState = programmaticTransition;
       if (hasBrowserRouterState()) {
@@ -2279,6 +2290,7 @@ function bootstrapHydration(
           : null;
 
       while (true) {
+        prediction = null;
         const url = new URL(currentHref, window.location.origin);
         const requestState = getRequestState(
           navigationKind,
@@ -2627,10 +2639,6 @@ function bootstrapHydration(
           }
         }
 
-        // The route a learned template predicted for this URL, if any, and
-        // the store's retirement epoch when it did.
-        let predictedRouteId: string | null = null;
-        let predictionEpoch = 0;
         if (!navResponse && fallbackReuseDecision.kind === "attemptOptimisticRouteShell") {
           await learnOptimisticRouteTemplatesFromPrefetchCache({
             interceptionContext: requestInterceptionContext,
@@ -2648,8 +2656,13 @@ function bootstrapHydration(
               routeManifest,
               templates: optimisticRouteTemplates.templates,
             });
-            predictedRouteId = optimisticPayload?.template.routeId ?? null;
-            predictionEpoch = optimisticRouteTemplates.getRetirementEpoch();
+            prediction =
+              optimisticPayload === null
+                ? null
+                : {
+                    epoch: optimisticRouteTemplates.getRetirementEpoch(),
+                    routeId: optimisticPayload.template.routeId,
+                  };
 
             if (
               optimisticPayload !== null &&
@@ -2759,11 +2772,9 @@ function bootstrapHydration(
           streamedRedirectType,
         });
         if (liveFetchDecision.kind === "hardNavigate") {
-          // Like Next.js's HardRetry (an MPA fallback for a redirected, non-RSC
-          // or failed response), which marks the predicted pattern too, in case
-          // this document is restored from BFCache. A page's redirect() isn't.
-          if (predictedRouteId !== null && liveFetchDecision.redirectSignal !== "streamed-header") {
-            optimisticRouteTemplates.retire(predictedRouteId, predictionEpoch);
+          // A page's redirect() came after the route matched.
+          if (liveFetchDecision.redirectSignal !== "streamed-header") {
+            retireContradictedPrediction();
           }
           if (liveFetchDecision.discardBody) {
             void navResponse.body?.cancel().catch(() => {});
@@ -2793,8 +2804,8 @@ function bootstrapHydration(
           // contradicts the template that predicted this URL, as in Next.js,
           // which marks the pattern with hasDynamicRewrite on a RedirectRetry.
           // A redirect() the page throws comes after the route matched.
-          if (predictedRouteId !== null && liveFetchDecision.redirectSignal === "response-url") {
-            optimisticRouteTemplates.retire(predictedRouteId, predictionEpoch);
+          if (liveFetchDecision.redirectSignal === "response-url") {
+            retireContradictedPrediction();
           }
           if (navigationKind === "traverse") {
             restoredBfcacheIds = null;
@@ -2875,9 +2886,8 @@ function bootstrapHydration(
         // supersedes this one or a skipped-layout retry follows. Once it shows
         // that a rewrite sends this URL to another route, stop predicting the
         // template's route.
-        if (predictedRouteId !== null && routeManifest !== null) {
-          const predicted = predictedRouteId;
-          const epoch = predictionEpoch;
+        if (prediction !== null && routeManifest !== null) {
+          const { epoch, routeId: predicted } = prediction;
           const manifest = routeManifest;
           // The navigation itself reports a failed or malformed payload.
           void Promise.resolve(rscPayload)
@@ -2955,6 +2965,7 @@ function bootstrapHydration(
           const staticExportElements = await rscPayload;
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           if (!isStaticExportPayloadDeploymentCompatible(staticExportElements)) {
+            retireContradictedPrediction();
             performHardNavigationForScrollIntent(currentHref);
             return;
           }
@@ -3136,6 +3147,7 @@ function bootstrapHydration(
       const errorDecision = navigationPlanner.classifyRscNavigationError({
         currentHref,
       });
+      retireContradictedPrediction();
       performHardNavigationForScrollIntent(errorDecision.url);
     } finally {
       navigationAbortHandle.release();
