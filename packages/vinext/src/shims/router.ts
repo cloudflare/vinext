@@ -169,6 +169,7 @@ function renderPagesRouterElement(
   }
 
   cancelPreviousRenderCommit();
+  commitRouterSnapshot();
 
   return new Promise<void>((resolve, reject) => {
     const cancel = () => {
@@ -443,6 +444,13 @@ type PagesRouterRuntimeState = {
   routerDidNavigate: boolean;
   deprecatedEventBridgeInstalled: boolean;
   pagesRouterReady: boolean;
+  /**
+   * The route snapshot of the last navigation render, taken when it committed
+   * history and `__NEXT_DATA__`, just before `root.render()`. `token` grows by
+   * one per commit, so the provider can tell a newer commit from the state it
+   * already holds.
+   */
+  committedRouterSnapshot: CommittedRouterSnapshot | null;
   publicRouter?: Record<string, unknown>;
 };
 
@@ -473,6 +481,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     routerDidNavigate: false,
     deprecatedEventBridgeInstalled: false,
     pagesRouterReady: typeof window === "undefined" || !shouldDeferInitialPagesRouterReady(),
+    committedRouterSnapshot: null,
   };
 }
 
@@ -3938,10 +3947,9 @@ export function useRouter(): NextRouter {
 type RouterSnapshot = ReturnType<typeof getRouterSnapshot>;
 
 /**
- * The live values a client router snapshot is derived from. A navigation
- * commits history and `window.__NEXT_DATA__` (always a new object, never
- * mutated in place) before `root.render()`, so comparing these by identity
- * tells whether the provider's stored snapshot still describes the live route.
+ * The live values a client router snapshot is derived from, compared by
+ * identity. `__NEXT_DATA__` is always assigned a new object, never mutated in
+ * place, so a same-URL navigation that refetches props still counts as a change.
  */
 type RouterSnapshotSource = {
   href: string;
@@ -3951,10 +3959,18 @@ type RouterSnapshotSource = {
   routerDidNavigate: boolean;
 };
 
+type CommittedRouterSnapshot = {
+  token: number;
+  snapshot: RouterSnapshot;
+  source: RouterSnapshotSource | null;
+};
+
 type RouterSnapshotState = {
   snapshot: RouterSnapshot;
   // `null` on the server, where the snapshot comes from the request context.
   source: RouterSnapshotSource | null;
+  // The `committedRouterSnapshot` token this state already accounts for.
+  commitToken: number;
 };
 
 function getRouterSnapshotSource(): RouterSnapshotSource | null {
@@ -3968,35 +3984,72 @@ function getRouterSnapshotSource(): RouterSnapshotSource | null {
   };
 }
 
-function takeRouterSnapshot(): RouterSnapshotState {
-  return { snapshot: getRouterSnapshot(), source: getRouterSnapshotSource() };
+function getCommittedRouterSnapshotToken(): number {
+  return routerRuntimeState.committedRouterSnapshot?.token ?? 0;
 }
 
+/**
+ * Record the route a navigation render is about to show. Called once its
+ * history entry and `__NEXT_DATA__` are committed, right before
+ * `root.render()`, like Next.js's `Router#set()` assigning `this.state` before
+ * `this.sub()` renders (packages/next/src/shared/lib/router/router.ts). The
+ * provider reads this snapshot while rendering, never the live location: on
+ * popstate the browser moves `location` before the route is resolved, and a
+ * rejected `beforePopState` never commits at all.
+ */
+function commitRouterSnapshot(): void {
+  routerRuntimeState.committedRouterSnapshot = {
+    token: getCommittedRouterSnapshotToken() + 1,
+    snapshot: getRouterSnapshot(),
+    source: getRouterSnapshotSource(),
+  };
+}
+
+function takeRouterSnapshot(): RouterSnapshotState {
+  return {
+    snapshot: getRouterSnapshot(),
+    source: getRouterSnapshotSource(),
+    commitToken: getCommittedRouterSnapshotToken(),
+  };
+}
+
+/** During render: adopt a navigation commit newer than the provider's state. */
+function adoptCommittedRouterSnapshot(prev: RouterSnapshotState): RouterSnapshotState {
+  const committed = routerRuntimeState.committedRouterSnapshot;
+  if (committed === null || committed.token === prev.commitToken) return prev;
+  return { snapshot: committed.snapshot, source: committed.source, commitToken: committed.token };
+}
+
+/**
+ * After `vinext:navigate` or the ready transition: the navigation has finished,
+ * so the live values are the router state. Keep the previous state when nothing
+ * it was built from changed, so `router` changes identity once per navigation.
+ */
 function refreshRouterSnapshot(prev: RouterSnapshotState): RouterSnapshotState {
-  if (prev.source === null) return prev;
-  const next = getRouterSnapshotSource();
+  const source = getRouterSnapshotSource();
+  const commitToken = getCommittedRouterSnapshotToken();
   if (
-    next !== null &&
-    prev.source.href === next.href &&
-    prev.source.historyState === next.historyState &&
-    prev.source.nextData === next.nextData &&
-    prev.source.isReady === next.isReady &&
-    prev.source.routerDidNavigate === next.routerDidNavigate
+    source !== null &&
+    prev.source !== null &&
+    prev.commitToken === commitToken &&
+    prev.source.href === source.href &&
+    prev.source.historyState === source.historyState &&
+    prev.source.nextData === source.nextData &&
+    prev.source.isReady === source.isReady &&
+    prev.source.routerDidNavigate === source.routerDidNavigate
   ) {
     return prev;
   }
-  return { snapshot: getRouterSnapshot(), source: next };
+  return { snapshot: getRouterSnapshot(), source, commitToken };
 }
 
 function PagesRouterProvider({ children }: { children: ReactNode }): ReactElement {
   const [routerState, setState] = useState(takeRouterSnapshot);
-  // A client navigation commits the new URL and __NEXT_DATA__ and then calls
-  // root.render(), which re-renders this provider with its old state. Next.js
-  // assigns router state before rendering the new page (Router#set() in
-  // packages/next/src/shared/lib/router/router.ts), so the page's first render
-  // already sees the destination route. Re-take the snapshot during render
-  // when its source changed, before any child reads the context.
-  const currentRouterState = refreshRouterSnapshot(routerState);
+  // A client navigation records its route snapshot and then calls
+  // root.render(), which re-renders this provider with its old state. Adopt the
+  // committed snapshot during render, before any child reads the context, so
+  // the new page's first render already sees its route, as in Next.js.
+  const currentRouterState = adoptCommittedRouterSnapshot(routerState);
   if (currentRouterState !== routerState) setState(currentRouterState);
   const { pathname, query, asPath, isReady } = currentRouterState.snapshot;
 

@@ -54,3 +54,35 @@ test("useRouter() returns the new route on the first render after client navigat
   await expect(page.locator('[data-testid="first-render-id"]')).toHaveText("1");
   expectEveryRenderToSee(await takeRenders(page), "1");
 });
+
+// The provider renders the route the navigation committed, not whatever the
+// browser location is when React gets to the render. On popstate the browser
+// moves `location` before the route is resolved, so a render that runs in that
+// interval must not mix the live URL with the committed page.
+test("useRouter() renders the committed route even if location moves before the render runs", async ({
+  page,
+}) => {
+  await page.goto(`${BASE}/first-render-router/1`);
+  await page.waitForFunction(() => (window as any).next?.router?.isReady === true);
+  await takeRenders(page);
+
+  await page.evaluate(() => {
+    const root = (window as any).__VINEXT_ROOT__;
+    const render = root.render.bind(root);
+    root.render = (element: unknown) => {
+      root.render = render;
+      render(element);
+      // React renders later, in its own task. Move the URL before it does.
+      window.history.replaceState(window.history.state, "", "/first-render-router/1?moved=1");
+    };
+  });
+  await page.click('[data-testid="first-render-push"]');
+  await page.waitForFunction(() => ((window as any).__FIRST_RENDER_ROUTER__ ?? []).length > 0);
+
+  const [first] = await takeRenders(page);
+  expect({ query: first.query, pathname: first.pathname, asPath: first.asPath }).toEqual({
+    query: { id: "2" },
+    pathname: "/first-render-router/[id]",
+    asPath: "/first-render-router/2",
+  });
+});
