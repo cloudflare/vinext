@@ -10,7 +10,11 @@ const BASE = "http://localhost:4174";
 // `${ROOT}/ja/accounts/datasets/<id>` and renders `[locale]/[...rest]`.
 const ROOT = "/nextjs-compat/optimistic-rewrite";
 
-async function navigateWatchingForDatasetShell(page: Page, href: string): Promise<boolean> {
+async function navigateWatchingForDatasetShell(
+  page: Page,
+  href: string,
+  landing: { selector: string; href: string } = { selector: "#rewrite-catch-all", href },
+): Promise<boolean> {
   await page.evaluate(() => {
     Reflect.set(window, "__datasetShellSeen", false);
     const observer = new MutationObserver(() => {
@@ -43,8 +47,8 @@ async function navigateWatchingForDatasetShell(page: Page, href: string): Promis
   await page.waitForTimeout(500);
   release();
 
-  await expect(page.locator("#rewrite-catch-all")).toBeVisible();
-  await expect(page).toHaveURL(`${BASE}${href}`);
+  await expect(page.locator(landing.selector)).toBeVisible();
+  await expect(page).toHaveURL(`${BASE}${landing.href}`);
   await page.unroute(pattern);
   return page.evaluate(() => {
     (Reflect.get(window, "__datasetShellObserver") as MutationObserver).disconnect();
@@ -52,18 +56,13 @@ async function navigateWatchingForDatasetShell(page: Page, href: string): Promis
   });
 }
 
-// Next.js 16.2.7: dispatchRetryDueToTreeMismatch marks the route pattern with
-// hasDynamicRewrite, and matchKnownRoute skips it afterwards. The wrong shell
-// shows at most once per pattern.
-test("stops predicting a template after a rewrite answers it with another route", async ({
-  page,
-}) => {
+// A loading-shell prefetch of an explicitly prefixed URL, which renders the
+// route it matches and so learns a correct `[locale]/datasets/[id]` template.
+async function learnDatasetTemplate(page: Page): Promise<void> {
   await page.goto(`${BASE}${ROOT}/accounts/a`);
   await waitForAppRouterHydration(page);
   await expect(page.locator("#account-page")).toHaveText("Account a");
 
-  // A loading-shell prefetch of an explicitly prefixed URL, which renders the
-  // route it matches and so learns a correct `[locale]/datasets/[id]` template.
   await page.evaluate((href) => {
     const router = Reflect.get(window, "next") as { router: { prefetch(href: string): void } };
     router.router.prefetch(href);
@@ -81,6 +80,15 @@ test("stops predicting a template after a rewrite answers it with another route"
       }, `${ROOT}/en/datasets/x`),
     )
     .toBe(true);
+}
+
+// Next.js 16.2.7: dispatchRetryDueToTreeMismatch marks the route pattern with
+// hasDynamicRewrite, and matchKnownRoute skips it afterwards. The wrong shell
+// shows at most once per pattern.
+test("stops predicting a template after a rewrite answers it with another route", async ({
+  page,
+}) => {
+  await learnDatasetTemplate(page);
 
   // First unprefixed navigation: the template predicts the dataset route, and
   // the server answers with the catch-all. Next.js also shows the wrong shell
@@ -91,4 +99,26 @@ test("stops predicting a template after a rewrite answers it with another route"
   // Second navigation like it: the mismatch should have retired the template.
   const secondSeen = await navigateWatchingForDatasetShell(page, `${ROOT}/accounts/datasets/z`);
   expect(secondSeen, "the wrong dataset shell shows again after a known mismatch").toBe(false);
+});
+
+// Next.js canary marks the pattern with hasDynamicRewrite when the request is
+// redirected (RedirectRetry in render-tree.ts); 16.2.7 does when the redirected
+// tree mismatches. Middleware redirects `${ROOT}/en/datasets/moved-<id>` to
+// `${ROOT}/en/accounts/<id>`.
+test("stops predicting a template after the server redirects a URL it predicted", async ({
+  page,
+}) => {
+  await learnDatasetTemplate(page);
+
+  const firstSeen = await navigateWatchingForDatasetShell(page, `${ROOT}/en/datasets/moved-y`, {
+    selector: "#account-page",
+    href: `${ROOT}/en/accounts/y`,
+  });
+  expect(firstSeen, "setup: first navigation shows the optimistic dataset shell").toBe(true);
+
+  const secondSeen = await navigateWatchingForDatasetShell(page, `${ROOT}/en/datasets/moved-z`, {
+    selector: "#account-page",
+    href: `${ROOT}/en/accounts/z`,
+  });
+  expect(secondSeen, "the dataset shell shows again after a redirect contradicted it").toBe(false);
 });

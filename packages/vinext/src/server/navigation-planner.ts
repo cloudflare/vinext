@@ -211,6 +211,7 @@ export type RscFetchResultDecision =
       kind: "followRedirect";
       discardBody: boolean;
       redirect: RscRedirectFollow;
+      redirectSignal: RscRedirectSignal;
       trace: NavigationTrace;
     }
   | {
@@ -447,6 +448,7 @@ function createRscFetchResultFollowRedirectDecision(options: {
     discardBody: options.discardBody,
     kind: "followRedirect",
     redirect: options.redirect,
+    redirectSignal: options.redirectSignal,
     trace: createNavigationTrace(
       NavigationTraceReasonCodes.redirectFollow,
       createRscFetchResultTraceFields(options.facts, {

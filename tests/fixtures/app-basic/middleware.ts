@@ -165,6 +165,15 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Coverage: tests/e2e/app-router/nextjs-compat/optimistic-rewrite.spec.ts
   if (pathname.startsWith("/nextjs-compat/optimistic-rewrite/")) {
     const rest = pathname.slice("/nextjs-compat/optimistic-rewrite".length);
+    // A moved dataset redirects to the account of the same id.
+    // Coverage: tests/e2e/app-router/nextjs-compat/optimistic-rewrite-mismatch.spec.ts
+    const moved = /^\/en\/datasets\/moved-([^/]+)$/.exec(rest);
+    if (moved) {
+      const target = request.nextUrl.clone();
+      target.pathname = `/nextjs-compat/optimistic-rewrite/en/accounts/${moved[1]}`;
+      target.search = "";
+      return NextResponse.redirect(target);
+    }
     if (!rest.startsWith("/en/") && !rest.startsWith("/ja/")) {
       const target = request.nextUrl.clone();
       target.pathname = `/nextjs-compat/optimistic-rewrite/ja${rest}`;

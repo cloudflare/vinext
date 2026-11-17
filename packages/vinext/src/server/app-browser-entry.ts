@@ -2783,6 +2783,13 @@ function bootstrapHydration(
           if (liveFetchDecision.discardBody) {
             void navResponse.body?.cancel().catch(() => {});
           }
+          // A request the server redirected (middleware, a config redirect)
+          // contradicts the template that predicted this URL, as in Next.js,
+          // which marks the pattern with hasDynamicRewrite on a RedirectRetry.
+          // A redirect() the page throws comes after the route matched.
+          if (predictedRouteId !== null && liveFetchDecision.redirectSignal === "response-url") {
+            optimisticRouteTemplates.retire(predictedRouteId, predictionEpoch);
+          }
           if (navigationKind === "traverse") {
             restoredBfcacheIds = null;
           }

@@ -132,6 +132,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
         previousNextUrl: "/feed",
         redirectDepth: 3,
       },
+      redirectSignal: "response-url",
       trace: {
         schemaVersion: NAVIGATION_TRACE_SCHEMA_VERSION,
         entries: [
@@ -205,6 +206,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
         previousNextUrl: "/feed",
         redirectDepth: 1,
       },
+      redirectSignal: "streamed-header",
       trace: {
         schemaVersion: NAVIGATION_TRACE_SCHEMA_VERSION,
         entries: [
