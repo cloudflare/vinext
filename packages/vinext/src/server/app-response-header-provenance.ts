@@ -3,8 +3,13 @@ import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-
 // The Link value the App page renderer emitted on each marked response.
 const frameworkLinkHeaders = new WeakMap<Headers, string>();
 const edgeRouteHandlerLinkHeaders = new WeakSet<Headers>();
+// Headers whose Cache-Control is the browser-only form of a Route Handler's own
+// policy, on a response that bypasses shared caches.
+const routeHandlerCachePolicyHeaders = new WeakSet<Headers>();
 
 const APP_RESPONSE_STAGE_LINK_PROVENANCE_HEADER = "x-vinext-app-stage-post-config-link";
+const APP_RESPONSE_STAGE_ROUTE_HANDLER_CACHE_POLICY_HEADER =
+  "x-vinext-app-stage-route-handler-cache-policy";
 
 /** Mark response headers whose Link value was emitted by the App page renderer. */
 export function markFrameworkLinkHeaders(
@@ -40,11 +45,79 @@ export function hasPostConfigLinkHeaders(headers: Headers): boolean {
   return frameworkLinkHeaders.has(headers) || edgeRouteHandlerLinkHeaders.has(headers);
 }
 
-/** Preserve Link provenance when a response wrapper reconstructs a Response. */
+/**
+ * Mark response headers whose Cache-Control is the browser-only form of the
+ * Route Handler's policy, on a response kept out of shared caches.
+ */
+export function markRouteHandlerCachePolicyHeaders(headers: Headers): void {
+  routeHandlerCachePolicyHeaders.add(headers);
+}
+
+/** Whether a never-cache response policy must keep the response's browser-only Route Handler policy. */
+export function hasRouteHandlerCachePolicyHeaders(headers: Headers): boolean {
+  return routeHandlerCachePolicyHeaders.has(headers);
+}
+
+/** Preserve Link and Route Handler Cache-Control provenance when a wrapper reconstructs a Response. */
 export function copyLinkHeaderProvenance(source: Headers, target: Headers): void {
   const frameworkLink = frameworkLinkHeaders.get(source);
   if (frameworkLink !== undefined) frameworkLinkHeaders.set(target, frameworkLink);
   if (edgeRouteHandlerLinkHeaders.has(source)) edgeRouteHandlerLinkHeaders.add(target);
+  if (routeHandlerCachePolicyHeaders.has(source)) routeHandlerCachePolicyHeaders.add(target);
+}
+
+/**
+ * Serialize Route Handler Cache-Control provenance across a response-stage
+ * transport. An application value under the marker name is removed.
+ */
+export function serializeResponseStageRouteHandlerCachePolicy(response: Response): Response {
+  const marked = routeHandlerCachePolicyHeaders.has(response.headers);
+  if (!marked && !response.headers.has(APP_RESPONSE_STAGE_ROUTE_HANDLER_CACHE_POLICY_HEADER)) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  if (marked) headers.set(APP_RESPONSE_STAGE_ROUTE_HANDLER_CACHE_POLICY_HEADER, "1");
+  else headers.delete(APP_RESPONSE_STAGE_ROUTE_HANDLER_CACHE_POLICY_HEADER);
+  const serialized = preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+  );
+  copyLinkHeaderProvenance(response.headers, serialized.headers);
+  return serialized;
+}
+
+/**
+ * Consume Route Handler Cache-Control provenance from a response-stage result:
+ * the transport marker of a remote stage, or the mark of a local one.
+ */
+export function consumeResponseStageRouteHandlerCachePolicy(response: Response): {
+  keepsRouteHandlerCachePolicy: boolean;
+  response: Response;
+} {
+  if (!response.headers.has(APP_RESPONSE_STAGE_ROUTE_HANDLER_CACHE_POLICY_HEADER)) {
+    return {
+      keepsRouteHandlerCachePolicy: routeHandlerCachePolicyHeaders.has(response.headers),
+      response,
+    };
+  }
+  const keepsRouteHandlerCachePolicy =
+    response.headers.get(APP_RESPONSE_STAGE_ROUTE_HANDLER_CACHE_POLICY_HEADER) === "1";
+  const headers = new Headers(response.headers);
+  headers.delete(APP_RESPONSE_STAGE_ROUTE_HANDLER_CACHE_POLICY_HEADER);
+  const consumed = preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+  );
+  copyLinkHeaderProvenance(response.headers, consumed.headers);
+  return { keepsRouteHandlerCachePolicy, response: consumed };
 }
 
 /** Serialize otherwise process-local Link provenance across a response-stage transport. */

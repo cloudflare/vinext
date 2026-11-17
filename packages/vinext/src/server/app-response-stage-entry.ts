@@ -29,7 +29,10 @@ import type {
 } from "./multi-stage.js";
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
 import { attachRequestCfMetadata } from "./request-pipeline.js";
-import { serializeResponseStageLinkProvenance } from "./app-response-header-provenance.js";
+import {
+  serializeResponseStageLinkProvenance,
+  serializeResponseStageRouteHandlerCachePolicy,
+} from "./app-response-header-provenance.js";
 import {
   attachFrameworkRequestError,
   attachFrameworkRequestRoute,
@@ -178,7 +181,9 @@ export async function handleResponseStage(
       const render = () =>
         rscHandler.handleResponseStage(request, cacheabilityContext, props, options);
       return serializeResponseStageLinkProvenance(
-        await runWithExecutionContext(cacheabilityContext, render),
+        serializeResponseStageRouteHandlerCachePolicy(
+          await runWithExecutionContext(cacheabilityContext, render),
+        ),
       );
     },
   );

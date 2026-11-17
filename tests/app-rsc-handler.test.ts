@@ -81,7 +81,9 @@ import {
   markEdgeRouteHandlerLinkHeaders,
   markFrameworkLinkHeaders,
   serializeResponseStageLinkProvenance,
+  serializeResponseStageRouteHandlerCachePolicy,
 } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import { dispatchAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-dispatch.js";
 import {
   cacheabilityManifestPageState,
   cacheabilityManifestRouteKey,
@@ -3754,6 +3756,197 @@ describe("createAppRscHandler", () => {
     });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
     expect(response.headers.get("Cache-Control")).toContain("no-store");
+  });
+
+  // A proxy that rewrites every request into an internal route keeps the
+  // browser part of a Route Handler's own Cache-Control. Next.js sends the
+  // whole value (packages/next/src/build/templates/app-route.ts); vinext keeps
+  // shared caches out because the handler can read the rewrite source.
+  describe("route handlers behind a middleware rewrite", () => {
+    const createRewrittenRouteHandler = (
+      handlerResponse: () => Response,
+      outerPolicy: {
+        configHeaders?: TestHandlerOptions["configHeaders"];
+        middlewareHeaders?: Record<string, string>;
+      } = {},
+    ) => {
+      const routeHandler = { GET: handlerResponse, revalidate: 3600 };
+      const routeSegments = ["build-1", "theme.css"];
+      const route = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        page: null,
+        pattern: "/build-1/theme.css",
+        routeHandler,
+        routeSegments,
+      });
+      const matchRoute = (pathname: string) =>
+        pathname === "/build-1/theme.css" ? { params: {}, route } : null;
+      const isrSet = vi.fn(async () => {});
+      const handler = createHandler({
+        configHeaders: outerPolicy.configHeaders ?? [],
+        dispatchMatchedRouteHandler: (options) =>
+          dispatchAppRouteHandler({
+            bypassSharedCache: options.bypassInterceptionContextCache,
+            cleanPathname: options.cleanPathname,
+            clearRequestContext() {},
+            draftModeSecret: "test-draft-secret",
+            i18n: null,
+            isDevelopment: false,
+            isProduction: true,
+            isrGet: async () => null,
+            isrRouteKey: (pathname) => `route:${pathname}`,
+            isrSet,
+            middlewareContext: options.middlewareContext,
+            middlewareRequestHeaders: options.middlewareContext.requestHeaders,
+            params: options.params,
+            request: options.request,
+            route: { pattern: route.pattern, routeHandler, routeSegments },
+            scheduleBackgroundRegeneration() {},
+            searchParams: options.searchParams,
+          }),
+        matchRequestRoute: matchRoute,
+        matchRoute,
+        middlewareModule: {
+          default(request: NextRequest) {
+            const target = new URL("/docs/build-1/theme.css", request.url);
+            return new Response(null, {
+              headers: {
+                ...outerPolicy.middlewareHeaders,
+                "x-middleware-rewrite": target.toString(),
+                "x-middleware": "1",
+              },
+            });
+          },
+        },
+      });
+      // The response stage of a split deployment is the same handler.
+      const dispatchResponseStage: DispatchAppWorkerResponseStage = async (request, props) =>
+        serializeResponseStageRouteHandlerCachePolicy(
+          await handler.handleResponseStage(request, null, props),
+        );
+      return { dispatchResponseStage, handler, isrSet };
+    };
+
+    const immutableHandler = () =>
+      new Response("body{}", {
+        headers: {
+          "Cache-Control": "public, max-age=31536000, immutable",
+          "Content-Type": "text/css",
+        },
+      });
+
+    it.each(["single", "split"] as const)(
+      "sends the browser-only form of the handler's Cache-Control in a %s-stage deployment",
+      async (stages) => {
+        const { dispatchResponseStage, handler, isrSet } =
+          createRewrittenRouteHandler(immutableHandler);
+
+        const response = await handler(
+          new Request("https://example.test/docs/theme.css"),
+          null,
+          false,
+          stages === "split" ? dispatchResponseStage : undefined,
+        );
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get("Cache-Control")).toBe("private, max-age=31536000, immutable");
+        expect(response.headers.has("x-vinext-app-stage-route-handler-cache-policy")).toBe(false);
+        await expect(response.text()).resolves.toBe("body{}");
+        // The rewritten path is still not an ISR identity.
+        expect(isrSet).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["single", "split"] as const)(
+      "keeps the route's revalidate policy off a %s-stage response",
+      async (stages) => {
+        const { dispatchResponseStage, handler, isrSet } = createRewrittenRouteHandler(
+          () => new Response("body{}", { headers: { "Content-Type": "text/css" } }),
+        );
+
+        const response = await handler(
+          new Request("https://example.test/docs/theme.css"),
+          null,
+          false,
+          stages === "split" ? dispatchResponseStage : undefined,
+        );
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get("Cache-Control")).toContain("no-store");
+        expect(isrSet).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["single", "split"] as const)(
+      "keeps the handler's value when a %s-stage request path does not differ",
+      async (stages) => {
+        const { dispatchResponseStage, handler } = createRewrittenRouteHandler(immutableHandler);
+
+        const response = await handler(
+          new Request("https://example.test/docs/build-1/theme.css"),
+          null,
+          false,
+          stages === "split" ? dispatchResponseStage : undefined,
+        );
+
+        expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+      },
+    );
+
+    // A shared-cache value that replaces the handler's after it ran must not
+    // pass the bypass.
+    it.each([
+      ["a config header", "single"],
+      ["a config header", "split"],
+      ["middleware", "single"],
+      ["middleware", "split"],
+    ] as const)(
+      "reduces a Cache-Control from %s in a %s-stage deployment",
+      async (source, stages) => {
+        const outer = "public, s-maxage=3600";
+        const { dispatchResponseStage, handler } = createRewrittenRouteHandler(
+          () => new Response("body{}", { headers: { "Cache-Control": "public, max-age=60" } }),
+          source === "middleware"
+            ? { middlewareHeaders: { "Cache-Control": outer } }
+            : {
+                configHeaders: [
+                  { source: "/theme.css", headers: [{ key: "Cache-Control", value: outer }] },
+                ],
+              },
+        );
+
+        const response = await handler(
+          new Request("https://example.test/docs/theme.css"),
+          null,
+          false,
+          stages === "split" ? dispatchResponseStage : undefined,
+        );
+
+        const sent = response.headers.get("Cache-Control") ?? "";
+        expect(sent).not.toMatch(/public|s-maxage/i);
+        expect(sent).toMatch(/^private\b/);
+      },
+    );
+
+    it("ignores a transport marker that the handler sets", async () => {
+      const { dispatchResponseStage, handler } = createRewrittenRouteHandler(
+        () =>
+          new Response("body{}", {
+            headers: { "x-vinext-app-stage-route-handler-cache-policy": "1" },
+          }),
+      );
+
+      const response = await handler(
+        new Request("https://example.test/docs/theme.css"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(response.headers.get("Cache-Control")).toContain("no-store");
+      expect(response.headers.has("x-vinext-app-stage-route-handler-cache-policy")).toBe(false);
+    });
   });
 
   it("keeps equivalent encoded App Page params on the shared cache path", async () => {

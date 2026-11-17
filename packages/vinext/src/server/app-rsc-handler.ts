@@ -155,6 +155,7 @@ import {
   NEVER_CACHE_CONTROL,
   reconcileCdnResponseHeadersAfterOuterPolicy,
   SERVER_ACTION_CACHE_CONTROL,
+  toBrowserOnlyCacheControl,
 } from "./cache-control.js";
 import {
   cloneRequestWithHeaders,
@@ -214,7 +215,10 @@ import {
 } from "./response-stage-policy.js";
 import {
   consumeResponseStageLinkProvenance,
+  consumeResponseStageRouteHandlerCachePolicy,
   copyLinkHeaderProvenance,
+  hasRouteHandlerCachePolicyHeaders,
+  markRouteHandlerCachePolicyHeaders,
 } from "./app-response-header-provenance.js";
 import { traceAppPageRender } from "./app-page-tracing.js";
 import { runOutsideWorkStoreScope } from "vinext/shims/internal/work-store-scope";
@@ -1025,8 +1029,14 @@ function withNeverCacheControl(
 ): Response {
   // An upgrade is never cached, and rebuilding it drops its webSocket.
   if (isWebSocketUpgradeResponse(response)) return response;
+  // A Route Handler policy keeps only its browser-only form. Config headers
+  // or middleware can replace Cache-Control after the handler, so the form is
+  // computed from the value at this last step.
+  const browserCacheControl = hasRouteHandlerCachePolicyHeaders(response.headers)
+    ? toBrowserOnlyCacheControl(response.headers.get("Cache-Control"))
+    : undefined;
   const applyNoStore = (headers: Headers): void => {
-    applyCdnResponseHeaders(headers, { cacheControl });
+    applyCdnResponseHeaders(headers, { cacheControl, browserCacheControl });
   };
   let markedResponse = response;
   try {
@@ -1771,7 +1781,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // expose a shared-cache directive. Single-stage rendering still applies
     // config and middleware policy with ordinary Next.js precedence.
     const transportedLink = consumeResponseStageLinkProvenance(response);
-    response = transportedLink.response;
+    const transportedCachePolicy = consumeResponseStageRouteHandlerCachePolicy(
+      transportedLink.response,
+    );
+    response = transportedCachePolicy.response;
     response = await applyConfigHeadersToResponseStage(
       response,
       Boolean(dispatchResponseStage || options.renderResponseStageLocally),
@@ -1783,6 +1796,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       transportedLink.appendToPostConfigLink,
     );
     reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, await loadOuterResponsePolicy());
+    if (transportedCachePolicy.keepsRouteHandlerCachePolicy) {
+      markRouteHandlerCachePolicyHeaders(response.headers);
+    }
     return markAppRscResponseConfigHeadersApplied(response);
   };
   const postMiddlewareRequestContext = buildPostMwRequestContext(userlandRequest);

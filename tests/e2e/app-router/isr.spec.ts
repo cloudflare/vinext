@@ -367,6 +367,32 @@ test.describe("App Router ISR", () => {
     );
   });
 
+  // Next.js sends a Route Handler's explicit Cache-Control unchanged
+  // (packages/next/src/build/templates/app-route.ts). When the request path
+  // differs from the cache path, vinext sends only its browser part.
+  test("keeps the browser part of a rewritten route handler's own Cache-Control", async ({
+    request,
+  }) => {
+    const rewritten = await request.get(`${baseUrl()}/route-cache-rewrite/immutable/a`);
+    expect(rewritten.status()).toBe(200);
+    expect(await rewritten.text()).toBe(
+      "CACHE_IDENTITY_IMMUTABLE_ROUTE:/route-cache-rewrite/immutable/a",
+    );
+    expect(rewritten.headers()["cache-control"]).toBe("private, max-age=31536000, immutable");
+
+    const encoded = await request.get(`${baseUrl()}/route-handler-cache-identity/immutable/%61`);
+    expect(await encoded.text()).toBe(
+      "CACHE_IDENTITY_IMMUTABLE_ROUTE:/route-handler-cache-identity/immutable/%61",
+    );
+    expect(encoded.headers()["cache-control"]).toBe("private, max-age=31536000, immutable");
+
+    const destination = await request.get(`${baseUrl()}/route-handler-cache-identity/immutable/a`);
+    expect(await destination.text()).toBe(
+      "CACHE_IDENTITY_IMMUTABLE_ROUTE:/route-handler-cache-identity/immutable/a",
+    );
+    expect(destination.headers()["cache-control"]).toBe("public, max-age=31536000, immutable");
+  });
+
   test("keeps query-selected rewrite destinations in distinct cache entries", async ({
     request,
   }) => {
