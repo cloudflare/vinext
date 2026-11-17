@@ -320,6 +320,70 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     expect(sourceDocumentLoads).toEqual([]);
   });
 
+  // As in Next.js, a navigation that superseded an action discards the
+  // action's redirect, even to another origin, and refreshes what it revalidated.
+  test("superseded server action's external redirect does not replace the navigation", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const destinationPath = "/nextjs-compat/action-discarding/destination";
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+    const initialValue = await page.locator("#discarded-action-value").textContent();
+    if (!initialValue) {
+      throw new Error("Expected initial discarded action value");
+    }
+
+    let releaseAction = () => {};
+    const actionGate = new Promise<void>((resolve) => {
+      releaseAction = resolve;
+    });
+    let externalLoads = 0;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (isAppRouterServerActionRequestForPath(request, sourcePath)) {
+        const response = await route.fetch();
+        await actionGate;
+        // Keep the real headers (revalidated, compatibility id), redirect away.
+        return route.fulfill({
+          status: 303,
+          headers: {
+            ...response.headers(),
+            "x-action-redirect": "http://external.example/landing",
+          },
+          body: "",
+        });
+      }
+      if (request.isNavigationRequest() && new URL(request.url()).host === "external.example") {
+        externalLoads += 1;
+        return route.fulfill({
+          contentType: "text/html",
+          body: '<p id="external-landing">External</p>',
+        });
+      }
+      return route.continue();
+    });
+
+    const actionRequest = page.waitForRequest((request) =>
+      isAppRouterServerActionRequestForPath(request, sourcePath),
+    );
+    await page.click("#slow-action-refresh");
+    await actionRequest;
+    await page.click("#navigate-discard-destination");
+    await expect(page.locator("#discard-destination")).toBeVisible();
+
+    const actionResponse = waitForActionDiscardingResponse(page);
+    releaseAction();
+    await actionResponse;
+    await expect(page.locator("#discarded-action-value")).not.toHaveText(initialValue, {
+      timeout: 10_000,
+    });
+    await page.waitForTimeout(300);
+    expect(externalLoads).toBe(0);
+    expect(new URL(page.url()).pathname).toBe(destinationPath);
+    await expect(page.locator("#discard-destination")).toBeVisible();
+  });
+
   // A navigation that falls back to a document load owns what loads next. A
   // discarded action's refresh must wait for that load, not reload the page
   // it was posted from over it.

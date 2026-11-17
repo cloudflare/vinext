@@ -266,10 +266,7 @@ describe("app browser server action client", () => {
       syncServerActionHttpFallbackHead: vi.fn(),
     });
 
-    expect(performHardNavigation).toHaveBeenCalledWith(
-      "https://example.com/outsideBasePath",
-      undefined,
-    );
+    expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/outsideBasePath");
     expect(renderRedirectPayload).not.toHaveBeenCalled();
   });
 
@@ -453,6 +450,103 @@ describe("app browser server action client", () => {
     expect(deps.performHardNavigation).not.toHaveBeenCalled();
     expect(deps.clearClientNavigationCaches).toHaveBeenCalledTimes(1);
     expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("staticAndDynamic");
+  });
+
+  describe("redirects of an action a navigation superseded", () => {
+    function setUpRedirect(
+      redirectHeaders: Record<string, string>,
+      options: { basePath?: string; ownsRouter?: () => boolean } = {},
+    ) {
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response("flight", {
+              status: 303,
+              headers: {
+                "content-type": "text/x-component",
+                [ACTION_REVALIDATED_HEADER]: "2",
+                [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "current-deployment",
+                ...redirectHeaders,
+              },
+            }),
+        ),
+      );
+      const deps = {
+        basePath: options.basePath ?? "",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: "current-deployment",
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
+        ownsRouterForServerAction: vi.fn(options.ownsRouter ?? (() => false)),
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      };
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: "https://example.com/source",
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+      });
+      return { actionInitiation, deps };
+    }
+
+    it.each([
+      ["another origin", "https://other.example/landing", ""],
+      ["outside the base path", "/elsewhere", "/app"],
+    ])("does not load a redirect target on %s", async (_name, target, basePath) => {
+      const { actionInitiation, deps } = setUpRedirect(
+        { [ACTION_REDIRECT_HEADER]: target },
+        { basePath },
+      );
+
+      await expect(
+        invokeClientServerAction("action-id", [], actionInitiation, deps),
+      ).resolves.toBeUndefined();
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.clearDynamicClientNavigationCaches).toHaveBeenCalledTimes(1);
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
+    });
+
+    it.each([
+      ["with", true],
+      ["without", false],
+    ])(
+      "discards a redirect %s a tree when a navigation starts while its Flight body decodes",
+      async (_name, withTree) => {
+        let ownsRouter = true;
+        const { actionInitiation, deps } = setUpRedirect(
+          { [ACTION_REDIRECT_HEADER]: "/target" },
+          { ownsRouter: () => ownsRouter },
+        );
+        vi.mocked(createFromFetch).mockImplementationOnce(async () => {
+          ownsRouter = false;
+          return withTree
+            ? AppElementsWire.createMetadataEntries({
+                interception: null,
+                interceptionContext: null,
+                layoutIds: [AppElementsWire.encodeLayoutId("/")],
+                rootLayoutTreePath: "/",
+                routeId: AppElementsWire.encodeRouteId("/target", null),
+                slotBindings: [],
+              })
+            : { returnValue: { ok: true, data: null } };
+        });
+
+        await expect(
+          invokeClientServerAction("action-id", [], actionInitiation, deps),
+        ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;push;/target;307;", handled: true });
+        expect(deps.renderRedirectPayload).not.toHaveBeenCalled();
+        expect(deps.performHardNavigation).not.toHaveBeenCalled();
+        expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
+      },
+    );
   });
 
   describe("incompatible action responses", () => {
