@@ -85,7 +85,8 @@ export type RouteClientReferenceSet = {
    * that import it. A render links one's stylesheets in its shell once one of
    * them renders before the shell flushes, as Next.js links a segment's CSS
    * beside it: below a layout still pending then, they wait for the boundary
-   * to reveal instead.
+   * to reveal instead. A streamed reference a boundary file reaches too has
+   * none, and is linked in the shell.
    */
   linkedElements: Map<string, string[]>;
 };
@@ -138,6 +139,17 @@ export function resolveRouteClientReferences(
     references.push(id);
     if (asyncIndices.has(index)) streamed.push(id);
   }
+  // A streamed reference a boundary (a loading.js fallback, say) reaches
+  // may render outside every element, and links its stylesheets only as the
+  // render orders them, so it's linked in the shell whatever renders.
+  const renderedFileSet = new Set(renderedFiles);
+  const boundaryStreamed = new Set<number>();
+  for (const file of files) {
+    if (renderedFileSet.has(file)) continue;
+    for (const index of plan.files[file]!) {
+      if (asyncIndices.has(index)) boundaryStreamed.add(index);
+    }
+  }
   // In the rendered files' own import order, which a boundary preloading one
   // of them first doesn't change.
   const linkedIndices = new Set<number>();
@@ -147,7 +159,7 @@ export function resolveRouteClientReferences(
       if (!indices.has(index)) continue;
       linkedIndices.add(index);
       const element = renderedElements[position];
-      if (element === undefined) continue;
+      if (element === undefined || boundaryStreamed.has(index)) continue;
       const id = plan.references[index]!;
       const elements = linkedElements.get(id);
       if (!elements) linkedElements.set(id, [element]);

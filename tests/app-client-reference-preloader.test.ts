@@ -215,6 +215,21 @@ describe("resolveRouteClientReferences", () => {
     });
   });
 
+  it("links a streamed reference a boundary reaches too in the shell", () => {
+    // The boundary (file 0) reaches "chart", which streams, as the page does.
+    const resolved = resolveRouteClientReferences(
+      { ...plan, files: [[1, 2], [0, 2, 1, 4], [3]] },
+      "/",
+    );
+    expect(resolved?.linked).toEqual(["link", "chart", "nav"]);
+    expect(resolved?.linkedElements).toEqual(
+      new Map([
+        ["link", ["page:"]],
+        ["nav", ["page:"]],
+      ]),
+    );
+  });
+
   it("links no reference of a render without a route", () => {
     expect(resolveRouteClientReferences(plan, null)).toEqual({
       references: ["link", "nav", "search"],

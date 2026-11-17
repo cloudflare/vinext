@@ -276,6 +276,25 @@ describe("App Router production SSR route client reference preloads", () => {
     }
   });
 
+  // A loading.js fallback can render a streamed component the page below
+  // the async layout imports too. Its stylesheet then links with the shell
+  // the fallback paints in, as before, not with the boundary's reveal.
+  it("links a streamed component's stylesheet in the shell when the loading.js fallback renders it", async () => {
+    const href = cssHref("--loading-css-shared-spinner");
+    const url = `${baseUrl}/loading-css/async-layout-shared/inner`;
+    // A cold render waits for the fallback's component before its shell.
+    const cold = await readStream(url);
+    expect(cold.html).toContain('data-testid="loading-css-shared-page"');
+    expect(stylesheetHrefs(cold.first)).toContain(href);
+    for (const label of ["warm", "warm again"]) {
+      const { first, html } = await readStream(url);
+      expect(first, label).toContain('data-testid="loading-css-shared-spinner"');
+      expect(first, label).not.toContain('data-testid="loading-css-shared-page"');
+      expect(html, label).toContain('data-testid="loading-css-shared-page"');
+      expect(stylesheetHrefs(first), label).toContain(href);
+    }
+  });
+
   it("links no stylesheet of the page or layouts a parent not-found boundary replaces", async () => {
     const hrefs = [cssHref("--loading-css-missing-layout"), cssHref("--loading-css-missing-page")];
     for (const label of ["cold", "warm"]) {
