@@ -1,0 +1,5 @@
+{
+  "name": "cf-app-cjs-package-scope-fixture",
+  "private": true,
+  "type": "commonjs"
+}

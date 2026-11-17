@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import type { Plugin } from "vite";
 import { isPathInsideOrEqual } from "../utils/path.js";
 import { isServerEnvironment } from "./environment.js";
@@ -10,17 +10,39 @@ import { isServerEnvironment } from "./environment.js";
  */
 const SERVER_OUTPUT_PACKAGE_JSON = `${JSON.stringify({ type: "module" })}\n`;
 
+/** Node accepts a package.json that starts with a UTF-8 byte order mark. */
+function parsePackageJson(text: string): unknown {
+  return JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+}
+
 /**
- * The `type` of the nearest package.json at or above `dir`, which decides how
- * Node and Vite treat `.js` files there. Node defaults to CommonJS without one.
+ * The real path of `dir`, as Node sees modules loaded from it: the deepest
+ * existing ancestor is resolved through symlinks, the rest appended.
+ */
+function realDirectoryPath(dir: string): string {
+  let existing = path.resolve(dir);
+  const rest: string[] = [];
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) return path.resolve(dir);
+    rest.unshift(path.basename(existing));
+    existing = parent;
+  }
+  return path.join(toSlash(fs.realpathSync(existing)), ...rest);
+}
+
+/**
+ * The `type` of the nearest package.json at or above `dir`'s real path, which
+ * decides how Node and Vite treat `.js` files there. Node defaults to
+ * CommonJS without one.
  */
 function readPackageScopeType(dir: string): string {
-  let directory = path.resolve(dir);
+  let directory = realDirectoryPath(dir);
   for (;;) {
     const packageJsonPath = path.join(directory, "package.json");
     if (fs.existsSync(packageJsonPath)) {
       try {
-        const { type } = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as {
+        const { type } = parsePackageJson(fs.readFileSync(packageJsonPath, "utf-8")) as {
           type?: unknown;
         };
         return typeof type === "string" ? type : "commonjs";
@@ -39,7 +61,7 @@ function pinModuleType(source: string | Uint8Array): string | null {
   const text = typeof source === "string" ? source : new TextDecoder().decode(source);
   let manifest: unknown;
   try {
-    manifest = JSON.parse(text);
+    manifest = parsePackageJson(text);
   } catch {
     return null;
   }
@@ -159,7 +181,10 @@ export function createServerModuleScopePlugin(options: {
       for (const dir of options.getModuleOutputDirs()) {
         if (readPackageScopeType(dir) === "module") continue;
         const packageJsonPath = path.join(dir, "package.json");
-        if (isPathInsideOrEqual(dir, root) || fs.existsSync(packageJsonPath)) {
+        if (
+          isPathInsideOrEqual(realDirectoryPath(dir), realDirectoryPath(root)) ||
+          fs.existsSync(packageJsonPath)
+        ) {
           this.error(
             `[vinext] ${dir} holds ESM server modules but isn't in a "type": "module" package scope, and vinext won't replace its package.json, so Node can't load them. Set "type": "module" in ${packageJsonPath}, or keep the server output directories below the project root.`,
           );

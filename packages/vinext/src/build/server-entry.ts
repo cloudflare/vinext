@@ -18,9 +18,16 @@ export function resolveBuiltPagesEntryPath(serverDir: string): string {
   return nodeEntryPath;
 }
 
-/** Resolve the built App handler even when a deployment host owns index.js. */
+/**
+ * Resolve the built App handler even when a deployment host owns index.js.
+ * A host-owned entry is index.mjs when the project's package.json isn't
+ * `"type": "module"`.
+ */
 export function resolveBuiltRscEntryPath(serverDir: string): string {
-  const fallbackPath = path.join(serverDir, "index.js");
+  const indexPath = path.join(serverDir, "index.js");
+  const moduleIndexPath = path.join(serverDir, "index.mjs");
+  const fallbackPath =
+    !fs.existsSync(indexPath) && fs.existsSync(moduleIndexPath) ? moduleIndexPath : indexPath;
   const manifestPath = path.join(serverDir, ".vite", "manifest.json");
   let manifest: unknown;
   try {

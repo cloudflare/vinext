@@ -5912,10 +5912,13 @@ export const loadServerActionClient = ${
         };
       },
     },
-    // The Cloudflare and Nitro plugins own their server entry names.
+    // The Cloudflare and Nitro plugins own their server entry names, except
+    // the App Router's child `ssr` environment under Cloudflare: plugin-rsc
+    // imports it from the Worker as a fixed `ssr/index.js`.
     createServerModuleScopePlugin({
       ownsFileNames: (name) =>
-        (name === "rsc" || name === "ssr") && !hasCloudflarePlugin && !hasNitroPlugin,
+        !hasNitroPlugin &&
+        (hasCloudflarePlugin ? hasAppDir && name === "ssr" : name === "rsc" || name === "ssr"),
       getModuleOutputDirs: () => pagesClientAssetsOutputDirs,
     }),
     {

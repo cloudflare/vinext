@@ -31,6 +31,10 @@ const CF_PAGES_FIXTURE_SOURCE_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/cf-pages-cjs-package-scope",
 );
+const CF_APP_FIXTURE_SOURCE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/cf-app-cjs-package-scope",
+);
 const OUTPUT_SCOPE_FIXTURE_SOURCE_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/app-cjs-output-scope",
@@ -58,6 +62,53 @@ async function buildIsolatedFixture(
   });
   await builder.buildApp();
   return fixtureDir;
+}
+
+type CloudflarePrerenderBuild = { fixtureDir: string; routes: PrerenderRouteResult[] };
+
+/** Builds a copy of a Cloudflare fixture and prerenders it, as `vinext build` does. */
+async function buildCloudflareAndPrerender(
+  sourceDir: string,
+  workerEnvironment: string,
+  childEnvironments?: string[],
+): Promise<CloudflarePrerenderBuild> {
+  const fixtureDir = await createIsolatedFixture(
+    sourceDir,
+    "vinext-cf-cjs-scope-",
+    undefined,
+    path.resolve(import.meta.dirname, "./fixtures/cf-app-basic/node_modules"),
+  );
+  const { cloudflare } = (await import(
+    pathToFileURL(path.join(fixtureDir, "node_modules/@cloudflare/vite-plugin/dist/index.mjs")).href
+  )) as {
+    cloudflare: (options?: {
+      inspectorPort?: false;
+      viteEnvironment?: { name: string; childEnvironments?: string[] };
+    }) => Plugin;
+  };
+  const builder = await createBuilder({
+    root: fixtureDir,
+    configFile: false,
+    plugins: [
+      vinext({ appDir: fixtureDir }),
+      cloudflare({
+        inspectorPort: false,
+        viteEnvironment: { name: workerEnvironment, childEnvironments },
+      }),
+    ],
+    logLevel: "silent",
+  });
+  await builder.buildApp();
+  const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+  const result = await runPrerender({
+    root: fixtureDir,
+    routeRootConfig: {
+      rscOutDir: builder.environments.rsc?.config.build.outDir,
+      ssrOutDir: builder.environments.ssr?.config.build.outDir,
+      clientOutDir: builder.environments.client?.config.build.outDir,
+    },
+  });
+  return { fixtureDir, routes: result?.routes ?? [] };
 }
 
 /** Imports a built server entry with Node's own loader, as `vinext start` does. */
@@ -293,6 +344,71 @@ describe('A root package.json with "type": "commonjs"', () => {
     }, 120_000);
   });
 
+  describe("production into a symlink to a directory in a CommonJS package", () => {
+    let fixtureDir: string;
+
+    beforeAll(async () => {
+      fixtureDir = await buildIsolatedFixture(
+        OUTPUT_SCOPE_FIXTURE_SOURCE_DIR,
+        "vinext-cjs-output-symlink-",
+        {
+          vinextOptions: { rscOutDir: "linked-server", ssrOutDir: "linked-server/ssr" },
+          // linked-server/ looks like part of the "type": "module" root, but
+          // Node loads its modules from their real path inside cjs-output/.
+          onFixture: (dir) => {
+            fs.mkdirSync(path.join(dir, "cjs-output", "server"), { recursive: true });
+            fs.symlinkSync(
+              path.join(dir, "cjs-output", "server"),
+              path.join(dir, "linked-server"),
+              "junction",
+            );
+          },
+        },
+      );
+    }, 120_000);
+
+    afterAll(() => {
+      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+    });
+
+    it("pins the real output directory to ESM", () => {
+      const result = importWithNode(path.join(fixtureDir, "linked-server", "index.js"), fixtureDir);
+      expect(result.stderr).not.toContain("SyntaxError");
+      expect(result.status).toBe(0);
+    });
+  });
+
+  describe("production into a directory with a BOM-prefixed module package.json", () => {
+    let fixtureDir: string;
+
+    beforeAll(async () => {
+      fixtureDir = await buildIsolatedFixture(FIXTURE_SOURCE_DIR, "vinext-cjs-scope-bom-", {
+        environments: { rsc: { build: { emptyOutDir: false } } },
+        onFixture: (dir) => {
+          // Node accepts the byte order mark and loads the output as ESM.
+          fs.mkdirSync(path.join(dir, "dist", "server"), { recursive: true });
+          fs.writeFileSync(
+            path.join(dir, "dist", "server", "package.json"),
+            `\uFEFF${JSON.stringify({ type: "module" })}`,
+          );
+        },
+      });
+    }, 120_000);
+
+    afterAll(() => {
+      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+    });
+
+    it("builds and emits a server entry that plain Node loads", () => {
+      const result = importWithNode(
+        path.join(fixtureDir, "dist", "server", "index.js"),
+        fixtureDir,
+      );
+      expect(result.stderr).not.toContain("SyntaxError");
+      expect(result.status).toBe(0);
+    });
+  });
+
   describe("Pages Router production with the SSR output beside the sources", () => {
     let fixtureDir: string | undefined;
 
@@ -328,53 +444,43 @@ describe('A root package.json with "type": "commonjs"', () => {
   });
 
   describe("Cloudflare Pages Router build with prerendering", () => {
-    let fixtureDir: string;
-    let routes: PrerenderRouteResult[];
+    let build: CloudflarePrerenderBuild | undefined;
 
     beforeAll(async () => {
-      fixtureDir = await createIsolatedFixture(
-        CF_PAGES_FIXTURE_SOURCE_DIR,
-        "vinext-cf-pages-cjs-scope-",
-        undefined,
-        path.resolve(import.meta.dirname, "./fixtures/cf-app-basic/node_modules"),
-      );
-      const { cloudflare } = (await import(
-        pathToFileURL(path.join(fixtureDir, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"))
-          .href
-      )) as {
-        cloudflare: (options?: {
-          inspectorPort?: false;
-          viteEnvironment?: { name: string };
-        }) => Plugin;
-      };
-      const builder = await createBuilder({
-        root: fixtureDir,
-        configFile: false,
-        plugins: [
-          vinext({ appDir: fixtureDir }),
-          cloudflare({ inspectorPort: false, viteEnvironment: { name: "ssr" } }),
-        ],
-        logLevel: "silent",
-      });
-      await builder.buildApp();
-      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
-      const result = await runPrerender({
-        root: fixtureDir,
-        routeRootConfig: {
-          ssrOutDir: builder.environments.ssr?.config.build.outDir,
-          clientOutDir: builder.environments.client?.config.build.outDir,
-        },
-      });
-      routes = result?.routes ?? [];
+      build = await buildCloudflareAndPrerender(CF_PAGES_FIXTURE_SOURCE_DIR, "ssr");
     }, 180_000);
 
     afterAll(() => {
-      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+      if (build) fs.rmSync(build.fixtureDir, { recursive: true, force: true });
     });
 
     it("prerenders from the host-owned index.mjs Worker entry", () => {
-      expect(fs.existsSync(path.join(fixtureDir, "dist", "ssr", "index.mjs"))).toBe(true);
-      expect(routes.find((route) => route.route === "/")).toMatchObject({ status: "rendered" });
+      expect(fs.existsSync(path.join(build!.fixtureDir, "dist", "ssr", "index.mjs"))).toBe(true);
+      expect(build!.routes.find((route) => route.route === "/")).toMatchObject({
+        status: "rendered",
+      });
+    });
+  });
+
+  describe("Cloudflare App Router build with prerendering", () => {
+    let build: CloudflarePrerenderBuild | undefined;
+
+    beforeAll(async () => {
+      build = await buildCloudflareAndPrerender(CF_APP_FIXTURE_SOURCE_DIR, "rsc", ["ssr"]);
+    }, 180_000);
+
+    afterAll(() => {
+      if (build) fs.rmSync(build.fixtureDir, { recursive: true, force: true });
+    });
+
+    it("prerenders from the host-owned index.mjs Worker and its ssr/index.js child", () => {
+      const serverDir = path.join(build!.fixtureDir, "dist", "server");
+      expect(fs.existsSync(path.join(serverDir, "index.mjs"))).toBe(true);
+      // plugin-rsc imports the child SSR entry as a fixed ssr/index.js.
+      expect(fs.existsSync(path.join(serverDir, "ssr", "index.js"))).toBe(true);
+      expect(build!.routes.find((route) => route.route === "/")).toMatchObject({
+        status: "rendered",
+      });
     });
   });
 
