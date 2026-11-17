@@ -36,10 +36,9 @@
  * `TypeError: Cannot read properties of undefined (reading 'outsideEmitter')`.
  */
 
-import fs from "node:fs";
 import path from "pathslash";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { ValidFileMatcher } from "../routing/file-matcher.js";
+import { findFileWithExts, type ValidFileMatcher } from "../routing/file-matcher.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { ensureInstrumentationRegistered } from "./instrumentation-runtime.js";
 /**
@@ -75,12 +74,8 @@ function findInstrumentationHookFile(
   fileMatcher: ValidFileMatcher,
 ): string | null {
   for (const dir of INSTRUMENTATION_LOCATIONS) {
-    for (const ext of fileMatcher.dottedExtensions) {
-      const fullPath = path.join(root, dir, `${basename}${ext}`);
-      if (fs.existsSync(fullPath)) {
-        return fullPath;
-      }
-    }
+    const file = findFileWithExts(path.join(root, dir), basename, fileMatcher);
+    if (file) return file;
   }
   return null;
 }

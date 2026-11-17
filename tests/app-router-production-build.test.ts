@@ -16,7 +16,13 @@ import {
 } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture, fetchRsc, testCacheDir } from "./helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  createIsolatedFixture,
+  fetchRsc,
+  startFixtureServer,
+  testCacheDir,
+} from "./helpers.js";
 
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
@@ -72,6 +78,84 @@ function readAllJs(dir: string): string {
   }
   return out;
 }
+
+// Ported from Next.js: test/production/app-dir/dangling-symlink-project-dir/
+// https://github.com/vercel/next.js/tree/canary/test/production/app-dir/dangling-symlink-project-dir
+describe("App Router convention discovery with dangling symlinks", () => {
+  it("discovers pages and a symlinked proxy in development and production", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-dangling-symlink-"));
+    const appDir = path.join(root, "src");
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(root, "src", "app"), { recursive: true });
+      fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+      fs.writeFileSync(
+        path.join(root, "src", "app", "layout.tsx"),
+        "export default function Root({ children }) { return <html><body>{children}</body></html>; }",
+      );
+      fs.writeFileSync(
+        path.join(root, "src", "app", "page.tsx"),
+        "export default function Page() { return <p>symlink test page</p>; }",
+      );
+      fs.writeFileSync(
+        path.join(root, "src", "proxy-impl.ts"),
+        `import { NextResponse } from "next/server";
+export function proxy() {
+  const response = NextResponse.next();
+  response.headers.set("x-test-proxy", "symlinked");
+  return response;
+}`,
+      );
+      fs.symlinkSync("missing", path.join(root, "dangling-link"), "file");
+      fs.symlinkSync("missing.ts", path.join(root, "instrumentation.ts"), "file");
+      fs.symlinkSync("missing.ts", path.join(root, "src", "middleware.ts"), "file");
+      fs.symlinkSync("proxy-impl.ts", path.join(root, "src", "proxy.ts"), "file");
+
+      async function expectPage(baseUrl: string) {
+        const response = await fetch(baseUrl);
+        const html = await response.text();
+        expect(response.status, html).toBe(200);
+        expect(response.headers.get("x-test-proxy")).toBe("symlinked");
+        expect(html).toContain("symlink test page");
+      }
+
+      const dev = await startFixtureServer(root, { appDir });
+      try {
+        await expectPage(dev.baseUrl);
+      } finally {
+        await dev.server.close();
+      }
+
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        plugins: [vinext({ appDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const { server } = await startProdServer({
+        host: "127.0.0.1",
+        port: 0,
+        outDir: path.join(root, "dist"),
+        silent: true,
+      });
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("Missing TCP server address");
+        await expectPage(`http://127.0.0.1:${address.port}`);
+      } finally {
+        await server[Symbol.asyncDispose]();
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
 
 describe("App Router Production build", () => {
   let fixtureDir: string;

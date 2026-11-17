@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from "vite-plus/test";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  createValidFileMatcher,
+  findFileWithExts,
+} from "../packages/vinext/src/routing/file-matcher.js";
 import {
   pagesRouter,
   matchRoute,
@@ -77,6 +81,30 @@ function makeTestAppRoute(
     siblingIntercepts: [],
   };
 }
+
+describe("convention file discovery", () => {
+  it("continues after a dangling symlink and returns a symlink to an existing file", async () => {
+    await withTempDir("vinext-conventions-", async (root) => {
+      await writeFile(path.join(root, "handler.ts"), "");
+      await symlink("missing.ts", path.join(root, "proxy.tsx"), "file");
+      await symlink("handler.ts", path.join(root, "proxy.ts"), "file");
+
+      expect(findFileWithExts(root, "proxy", createValidFileMatcher())).toBe(
+        canonical(root, "proxy.ts"),
+      );
+    });
+  });
+
+  it("propagates filesystem errors when the convention path cannot be resolved", async () => {
+    await withTempDir("vinext-conventions-", async (root) => {
+      await symlink("proxy.ts", path.join(root, "proxy.ts"), "file");
+
+      expect(() => findFileWithExts(root, "proxy", createValidFileMatcher())).toThrow(
+        expect.objectContaining({ code: "ELOOP" }),
+      );
+    });
+  });
+});
 
 describe("pagesRouter - route discovery", () => {
   it("discovers pages from the fixture directory", async () => {
