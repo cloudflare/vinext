@@ -269,6 +269,36 @@ describe("parallel route supplemental refreshes", () => {
     ).toEqual([]);
   });
 
+  // The page's route id holds the rewritten path decoded, while a named slot's
+  // route id holds it as the rewrite percent-encoded it.
+  it("does not refresh the own route of a rewritten page with a non-ASCII segment", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "",
+        refreshUrl: new URL("https://example.com/p/caf%C3%A9"),
+        state: {
+          interception: null,
+          previousNextUrl: null,
+          routeId: "route:/v1/p/café",
+          slotBindings: [
+            {
+              activeRouteId: "route:/v1/p/café",
+              ownerLayoutId: "layout:/[version]/p/[slug]",
+              slotId: "slot:children:/[version]/p/[slug]",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/v1/p/caf%C3%A9",
+              ownerLayoutId: "layout:/[version]/p/[slug]",
+              slotId: "slot:info:/[version]/p/[slug]",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual([]);
+  });
+
   it("still refreshes a slot that an earlier page left on a rewritten page", () => {
     expect(
       resolvePersistedSourcePageRefreshes({

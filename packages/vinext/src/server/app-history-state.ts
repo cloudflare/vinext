@@ -2,6 +2,8 @@ import { AppElementsWire } from "./app-elements.js";
 import type { TraverseDirection } from "./navigation-planner.js";
 import { isNonNegativeSafeInteger } from "../utils/number.js";
 import { isBfcacheSegmentId } from "./app-bfcache-identity.js";
+import { normalizePath } from "./normalize-path.js";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
@@ -400,6 +402,10 @@ export function readHistoryStateActiveRoutePaths(state: unknown): readonly strin
  * the path after a middleware rewrite, so it can differ from the visible URL
  * while the request to that URL already renders it. An intercepted page keeps
  * every slot, because its route is the source page.
+ *
+ * The page's route id holds the matched path decoded segment by segment, while
+ * a named slot's route id can hold the same path percent-encoded, so both are
+ * compared in that canonical form.
  */
 export function resolveActiveRoutePaths(state: {
   interception: unknown;
@@ -411,7 +417,8 @@ export function resolveActiveRoutePaths(state: {
 }): string[] {
   const pageRoute =
     state.interception === null ? AppElementsWire.parseElementKey(state.routeId) : null;
-  const pageRoutePath = pageRoute?.kind === "route" ? pageRoute.path : null;
+  const pageRoutePath =
+    pageRoute?.kind === "route" ? canonicalizeActiveRoutePath(pageRoute.path) : null;
   const paths = new Set<string>();
   for (const binding of state.slotBindings) {
     if (binding.state !== "active" || binding.activeRouteId == null) continue;
@@ -419,12 +426,16 @@ export function resolveActiveRoutePaths(state: {
     if (
       route?.kind === "route" &&
       route.interceptionContext === null &&
-      route.path !== pageRoutePath
+      canonicalizeActiveRoutePath(route.path) !== pageRoutePath
     ) {
       paths.add(route.path);
     }
   }
   return [...paths];
+}
+
+function canonicalizeActiveRoutePath(path: string): string {
+  return normalizePath(normalizePathnameForRouteMatch(path));
 }
 
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
