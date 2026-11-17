@@ -23,15 +23,35 @@ async function openAndRecordRequests(page: Page, visiblePath = VISIBLE_PATH): Pr
   return requests;
 }
 
+// The client queues a supplemental refresh only once the primary response has
+// arrived, so the grace period starts from that response, not its request.
+async function triggerAndWaitForPrimaryResponse(
+  page: Page,
+  trigger: string,
+  method: string,
+  visiblePath: string,
+): Promise<void> {
+  const primaryResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === method && new URL(response.url()).pathname === visiblePath,
+  );
+  await page.locator(trigger).click();
+  await primaryResponse;
+  // Leave time for any supplemental refresh the client would send.
+  await page.waitForTimeout(1500);
+}
+
 test.describe("refresh of a middleware-rewritten page with parallel slots", () => {
   test("router.refresh() sends one RSC request, to the visible URL", async ({ page }) => {
     const requests = await openAndRecordRequests(page);
     await expect(page.locator("#mw-rewrite-slot-refresh-info")).toHaveText("info shoe");
 
-    await page.locator("#mw-rewrite-slot-refresh-button").click();
-    await expect.poll(() => requests).toContain(`GET ${VISIBLE_PATH}`);
-    // Leave time for any supplemental refresh the client would send.
-    await page.waitForTimeout(1500);
+    await triggerAndWaitForPrimaryResponse(
+      page,
+      "#mw-rewrite-slot-refresh-button",
+      "GET",
+      VISIBLE_PATH,
+    );
 
     expect(requests).toEqual([`GET ${VISIBLE_PATH}`]);
   });
@@ -39,26 +59,35 @@ test.describe("refresh of a middleware-rewritten page with parallel slots", () =
   test("a revalidating server action sends one POST, to the visible URL", async ({ page }) => {
     const requests = await openAndRecordRequests(page);
 
-    await page.locator("#mw-rewrite-slot-refresh-action").click();
-    await expect.poll(() => requests).toContain(`POST ${VISIBLE_PATH}`);
-    // Leave time for any supplemental refresh the client would send.
-    await page.waitForTimeout(1500);
+    await triggerAndWaitForPrimaryResponse(
+      page,
+      "#mw-rewrite-slot-refresh-action",
+      "POST",
+      VISIBLE_PATH,
+    );
 
     expect(requests).toEqual([`POST ${VISIBLE_PATH}`]);
     await expect(page.locator("#mw-rewrite-slot-refresh-info")).toHaveText("info shoe");
   });
 
-  // The rewrite percent-encodes a non-ASCII segment in the matched path, while
-  // the page's route id holds it decoded. They are still the same route.
-  test("router.refresh() of a rewritten non-ASCII path sends one RSC request", async ({ page }) => {
-    const visiblePath = "/mw-rewrite-slot-refresh/p/caf%C3%A9";
-    const requests = await openAndRecordRequests(page, visiblePath);
+  // The page's route id holds the matched path decoded once, while a named
+  // slot's route id holds it as the rewrite encoded it. A non-ASCII segment
+  // and a literal percent sign are both still the page's own route.
+  for (const visiblePath of [
+    "/mw-rewrite-slot-refresh/p/caf%C3%A9",
+    "/mw-rewrite-slot-refresh/p/%25C3%25A9",
+  ]) {
+    test(`router.refresh() of rewritten ${visiblePath} sends one RSC request`, async ({ page }) => {
+      const requests = await openAndRecordRequests(page, visiblePath);
 
-    await page.locator("#mw-rewrite-slot-refresh-button").click();
-    await expect.poll(() => requests).toContain(`GET ${visiblePath}`);
-    // Leave time for any supplemental refresh the client would send.
-    await page.waitForTimeout(1500);
+      await triggerAndWaitForPrimaryResponse(
+        page,
+        "#mw-rewrite-slot-refresh-button",
+        "GET",
+        visiblePath,
+      );
 
-    expect(requests).toEqual([`GET ${visiblePath}`]);
-  });
+      expect(requests).toEqual([`GET ${visiblePath}`]);
+    });
+  }
 });

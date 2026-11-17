@@ -299,6 +299,36 @@ describe("parallel route supplemental refreshes", () => {
     ).toEqual([]);
   });
 
+  // A slug requested as %25C3%25A9 holds a literal percent sign. The page's
+  // route id is decoded once (/v1/p/%C3%A9) and must not be decoded again.
+  it("does not refresh the own route of a rewritten page with a literal percent sign", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "",
+        refreshUrl: new URL("https://example.com/p/%25C3%25A9"),
+        state: {
+          interception: null,
+          previousNextUrl: null,
+          routeId: "route:/v1/p/%C3%A9",
+          slotBindings: [
+            {
+              activeRouteId: "route:/v1/p/%C3%A9",
+              ownerLayoutId: "layout:/[version]/p/[slug]",
+              slotId: "slot:children:/[version]/p/[slug]",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/v1/p/%25C3%25A9",
+              ownerLayoutId: "layout:/[version]/p/[slug]",
+              slotId: "slot:info:/[version]/p/[slug]",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual([]);
+  });
+
   it("still refreshes a slot that an earlier page left on a rewritten page", () => {
     expect(
       resolvePersistedSourcePageRefreshes({

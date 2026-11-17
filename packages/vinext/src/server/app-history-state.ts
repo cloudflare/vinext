@@ -403,9 +403,11 @@ export function readHistoryStateActiveRoutePaths(state: unknown): readonly strin
  * while the request to that URL already renders it. An intercepted page keeps
  * every slot, because its route is the source page.
  *
- * The page's route id holds the matched path decoded segment by segment, while
- * a named slot's route id can hold the same path percent-encoded, so both are
- * compared in that canonical form.
+ * The page's route id holds the matched path already decoded segment by
+ * segment, and the children slot carries the same id. A named slot's route id
+ * holds the matched path as it came, possibly percent-encoded, so it is also
+ * compared once decoded. The page's path is never decoded again: a literal
+ * percent sign in it would turn into another character.
  */
 export function resolveActiveRoutePaths(state: {
   interception: unknown;
@@ -417,8 +419,7 @@ export function resolveActiveRoutePaths(state: {
 }): string[] {
   const pageRoute =
     state.interception === null ? AppElementsWire.parseElementKey(state.routeId) : null;
-  const pageRoutePath =
-    pageRoute?.kind === "route" ? canonicalizeActiveRoutePath(pageRoute.path) : null;
+  const pageRoutePath = pageRoute?.kind === "route" ? pageRoute.path : null;
   const paths = new Set<string>();
   for (const binding of state.slotBindings) {
     if (binding.state !== "active" || binding.activeRouteId == null) continue;
@@ -426,16 +427,13 @@ export function resolveActiveRoutePaths(state: {
     if (
       route?.kind === "route" &&
       route.interceptionContext === null &&
-      canonicalizeActiveRoutePath(route.path) !== pageRoutePath
+      route.path !== pageRoutePath &&
+      normalizePath(normalizePathnameForRouteMatch(route.path)) !== pageRoutePath
     ) {
       paths.add(route.path);
     }
   }
   return [...paths];
-}
-
-function canonicalizeActiveRoutePath(path: string): string {
-  return normalizePath(normalizePathnameForRouteMatch(path));
 }
 
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
