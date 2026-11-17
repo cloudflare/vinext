@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./*": "./dist/*.js"
+    "./*": "./src/*.js"
   }
 }
