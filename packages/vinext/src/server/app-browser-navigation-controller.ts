@@ -154,6 +154,8 @@ type BrowserNavigationController = {
   getBrowserRouterState(): AppRouterState;
   isCurrentNavigation(navId: number): boolean;
   waitForUserNavigationCommit(): Promise<void> | null;
+  waitForUserNavigationDispatch(): Promise<void> | null;
+  getUncommittedUserNavigationState(): { href: string; state: AppRouterState } | null;
   performHardNavigation(href: string, mode?: HardNavigationMode): boolean;
   waitForBrowserRouterStateReady(): Promise<void>;
   attachBrowserRouterState(
@@ -356,6 +358,10 @@ export function createAppBrowserNavigationController(
   // The render a history-snapshot restore dispatched for the pending user
   // navigation. It is not in pendingNavigationCommits, but is its own commit.
   let pendingUserNavigationRestoreRenderId: number | null = null;
+  // The state the pending user navigation handed to React, before it commits.
+  // Like the state Next.js's navigate reducer returns, server actions
+  // dispatched from then on run on it.
+  let pendingUserNavigationDispatch: { href: string; state: AppRouterState } | null = null;
   let latestHmrUpdateId = 0;
   const pendingNavigationCommits = new Map<
     number,
@@ -432,6 +438,7 @@ export function createAppBrowserNavigationController(
     pendingUserNavigationCommitStarted = false;
     pendingUserNavigationOwnCommitStarted = false;
     pendingUserNavigationRestoreRenderId = null;
+    pendingUserNavigationDispatch = null;
     pendingUserNavigationShellHref = null;
     retiredNavigationUrl = null;
     return activeNavigationId;
@@ -462,25 +469,56 @@ export function createAppBrowserNavigationController(
     return pendingUserNavigationId !== null && !pendingUserNavigationOwnCommitStarted;
   }
 
+  /** Whether the pending user navigation has not handed its state to React yet. */
+  function isUserNavigationUndispatched(): boolean {
+    return isUserNavigationUncommitted() && pendingUserNavigationDispatch === null;
+  }
+
   function notifyUserNavigationCommitWaiters(): void {
-    if (isUserNavigationUncommitted() || userNavigationCommitWaiters.length === 0) return;
+    if (userNavigationCommitWaiters.length === 0) return;
     const waiters = userNavigationCommitWaiters;
     userNavigationCommitWaiters = [];
+    // Each waiter checks its own condition again and re-queues if it still holds.
     for (const resolve of waiters) resolve();
+  }
+
+  function waitWhile(condition: () => boolean): Promise<void> | null {
+    if (!condition()) return null;
+    return new Promise<void>((resolve) => {
+      userNavigationCommitWaiters.push(resolve);
+    }).then(() => waitWhile(condition) ?? undefined);
   }
 
   /**
    * Like Next.js's action queue, a server action dispatched while a user
-   * navigation is pending runs once that navigation has committed, on its
-   * resulting state. Returns null when nothing is pending, so the action
-   * starts synchronously as before. A navigation that starts while the action
-   * waits queues it behind that one too.
+   * navigation is pending starts once the navigation's state is known (the
+   * navigate reducer has returned), and runs on that state. Returns null when
+   * nothing is pending, so the action starts synchronously as before. A
+   * navigation that starts while the action waits queues it behind that one.
+   */
+  function waitForUserNavigationDispatch(): Promise<void> | null {
+    return waitWhile(isUserNavigationUndispatched);
+  }
+
+  /**
+   * Resolves once the pending user navigation's own render has committed (or
+   * the navigation settled or was discarded). A same-URL action tree built on
+   * that navigation's state waits for it, so it lands on top of the
+   * navigation's commit instead of replacing its uncommitted render.
    */
   function waitForUserNavigationCommit(): Promise<void> | null {
-    if (!isUserNavigationUncommitted()) return null;
-    return new Promise<void>((resolve) => {
-      userNavigationCommitWaiters.push(resolve);
-    }).then(() => waitForUserNavigationCommit() ?? undefined);
+    return waitWhile(isUserNavigationUncommitted);
+  }
+
+  /** The pending user navigation's dispatched state, while it is not yet committed. */
+  function getUncommittedUserNavigationState(): { href: string; state: AppRouterState } | null {
+    return isUserNavigationUncommitted() ? pendingUserNavigationDispatch : null;
+  }
+
+  function recordUserNavigationDispatch(navId: number, href: string, state: AppRouterState): void {
+    if (navId !== pendingUserNavigationId || pendingUserNavigationOwnCommitStarted) return;
+    pendingUserNavigationDispatch = { href, state };
+    notifyUserNavigationCommitWaiters();
   }
 
   function beginPendingBrowserRouterState(): PendingBrowserRouterState {
@@ -551,6 +589,7 @@ export function createAppBrowserNavigationController(
       // Server action redirects reuse this navigation id without
       // beginNavigation(), so its retired URL must not outlive it.
       pendingUserNavigationShellHref = null;
+      pendingUserNavigationDispatch = null;
       retiredNavigationUrl = null;
       clearPendingPathname(navId);
       notifyUserNavigationCommitWaiters();
@@ -591,6 +630,7 @@ export function createAppBrowserNavigationController(
     activeNavigationId += 1;
     pendingUserNavigationId = null;
     pendingUserNavigationLane = null;
+    pendingUserNavigationDispatch = null;
     // The discarded destination never shows, so neither its hash target nor
     // the top-of-page fallback that navigateClientSide schedules may scroll.
     clearAppRouterScrollIntent();
@@ -1041,6 +1081,7 @@ export function createAppBrowserNavigationController(
       pendingUserNavigationRestoreRenderId = renderId;
     }
     dispatchVisibleCommit(approval.approvedCommit);
+    recordUserNavigationDispatch(options.navId, options.targetHref, options.state);
     return true;
   }
 
@@ -1234,6 +1275,10 @@ export function createAppBrowserNavigationController(
         options.visibleCommitMode ?? "transition",
         shouldRepublishPendingRouterState(options),
       );
+      // The optimistic shell is detached: the navigation's own state follows.
+      if (options.navigationCommitKind !== "detached") {
+        recordUserNavigationDispatch(options.navId, options.targetHref, approvedVisibleState);
+      }
       if (options.navigationResponseCompletion) {
         // Keep the live Flight branch streaming. If React commits it normally,
         // NavigationCommitSignal removes this render from the pending map
@@ -1282,6 +1327,15 @@ export function createAppBrowserNavigationController(
     const currentState = actionInitiationState ?? getBrowserRouterState();
     const startedNavigationId = lifecycleOptions?.startedNavigationId ?? activeNavigationId;
     const targetHref = lifecycleOptions?.targetHref ?? window.location.href;
+    // An action that started on a navigation's uncommitted state applies its
+    // tree once that navigation commits, on top of it, as Next.js applies the
+    // action's state after the navigation's.
+    if (
+      startedNavigationId === pendingUserNavigationId &&
+      getUncommittedUserNavigationState() !== null
+    ) {
+      await waitForUserNavigationCommit();
+    }
     const routeManifestLoad = loadRouteManifest();
     if (routeManifestLoad !== null && !(await routeManifestLoad)) {
       // The commit cannot be classified without the RouteManifest. An action
@@ -1416,6 +1470,8 @@ export function createAppBrowserNavigationController(
     getBrowserRouterState,
     isCurrentNavigation,
     waitForUserNavigationCommit,
+    waitForUserNavigationDispatch,
+    getUncommittedUserNavigationState,
     performHardNavigation,
     waitForBrowserRouterStateReady,
     attachBrowserRouterState,

@@ -805,11 +805,17 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
 }
 
 function createActionInitiationSnapshot() {
-  const routerState = getBrowserRouterState();
+  // Like Next.js, which runs a queued action on the state its navigate reducer
+  // returned, an action dispatched once a navigation's state is handed to
+  // React (but before it commits) runs on that state, from its destination.
+  const uncommittedNavigation = browserNavigationController.getUncommittedUserNavigationState();
   return createServerActionInitiationSnapshot({
-    href: window.location.href,
+    href:
+      uncommittedNavigation === null
+        ? window.location.href
+        : new URL(uncommittedNavigation.href, window.location.href).href,
     navigationId: browserNavigationController.getActiveNavigationId(),
-    routerState,
+    routerState: uncommittedNavigation?.state ?? getBrowserRouterState(),
   });
 }
 
@@ -1913,12 +1919,15 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
 function registerServerActionCallback(): void {
   setServerCallback(function callServer(id, args): Promise<unknown> {
     // Like Next.js's action queue, an action dispatched while a navigation is
-    // pending is sent once that navigation commits, from its destination.
-    const pendingNavigationCommit = browserNavigationController.waitForUserNavigationCommit();
-    if (pendingNavigationCommit !== null) {
-      return pendingNavigationCommit.then(() => callServer(id, args));
+    // pending is sent once that navigation's state is known, from its
+    // destination.
+    const pendingNavigationDispatch = browserNavigationController.waitForUserNavigationDispatch();
+    if (pendingNavigationDispatch !== null) {
+      return pendingNavigationDispatch.then(() => callServer(id, args));
     }
     const releaseCacheInvalidationGuard = historyController.beginCacheInvalidationGuard();
+    const startsOnUncommittedNavigation =
+      browserNavigationController.getUncommittedUserNavigationState() !== null;
     const actionInitiation = createActionInitiationSnapshot();
     // Next.js refreshes for a discarded or tree-less revalidation only once its
     // action queue is empty. Every action in flight holds that refresh, which
@@ -1984,8 +1993,12 @@ function registerServerActionCallback(): void {
               })
               .finally(() => discardedServerActionRefreshScheduler.markNavigationSettled());
           },
-          syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>
-            historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
+          syncCurrentHistoryState: (previousNextUrl, bfcacheIds) => {
+            // The current entry is still the source page's until the
+            // navigation the action started on commits and writes its own.
+            if (startsOnUncommittedNavigation) return;
+            historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds);
+          },
           syncServerActionHttpFallbackHead,
         }),
       )

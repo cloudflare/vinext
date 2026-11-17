@@ -5295,11 +5295,12 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("queues a server action dispatched during a navigation until React commits it", async () => {
+  it("queues a server action dispatched during a navigation until its state is handed to React", async () => {
     // A server action dispatched from /settings?tab=profile after a navigation
-    // to ?tab=billing started. As in Next.js's action queue, it waits for the
-    // navigation and then runs on the navigation's state, so its tree cannot
-    // replace the navigation's before React commits it.
+    // to ?tab=billing started. As in Next.js's action queue, it waits until
+    // the navigation's state is known (the navigate reducer returned), then
+    // runs on that state. Its tree lands on top of the navigation's commit
+    // instead of replacing its uncommitted render.
     const initialState = createState({
       navigationSnapshot: createClientNavigationRenderSnapshot(
         "https://example.com/settings?tab=profile",
@@ -5312,14 +5313,16 @@ describe("app browser navigation controller", () => {
     const onDiscardedRevalidation = vi.fn();
 
     try {
-      expect(controller.waitForUserNavigationCommit()).toBeNull();
+      expect(controller.waitForUserNavigationDispatch()).toBeNull();
       const navId = controller.beginNavigation();
-      const queued = controller.waitForUserNavigationCommit();
+      const queued = controller.waitForUserNavigationDispatch();
       expect(queued).not.toBeNull();
       let resumed = false;
       void queued!.then(() => {
         resumed = true;
       });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(resumed).toBe(false);
 
       const committed = renderCurrentStateNavigationPayload(controller, {
         actionType: "navigate",
@@ -5339,32 +5342,44 @@ describe("app browser navigation controller", () => {
         targetHref: "https://example.com/settings?tab=billing",
       });
       // The navigation's tree is handed to React, which has not committed it.
+      // The action resumes, on the navigation's state and destination.
       await vi.waitFor(() => expect(stateRef.current.routeId).toBe("route:/settings/billing"));
+      await queued;
+      expect(controller.waitForUserNavigationDispatch()).toBeNull();
+      const uncommitted = controller.getUncommittedUserNavigationState();
+      expect(uncommitted?.href).toBe("https://example.com/settings?tab=billing");
+      expect(uncommitted?.state.routeId).toBe("route:/settings/billing");
+
+      // Its tree arrives before React commits the navigation: it waits.
+      let actionSettled = false;
+      const action = controller
+        .commitSameUrlNavigatePayload(
+          Promise.resolve(createResolvedElements("route:/settings/action", "/")),
+          uncommitted!.state.navigationSnapshot,
+          { data: "saved", ok: true },
+          uncommitted!.state,
+          {
+            onDiscardedRevalidation,
+            revalidation: "none",
+            startedNavigationId: controller.getActiveNavigationId(),
+            targetHref: uncommitted!.href,
+          },
+        )
+        .finally(() => {
+          actionSettled = true;
+        });
       await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(resumed).toBe(false);
+      expect(actionSettled).toBe(false);
+      expect(stateRef.current.routeId).toBe("route:/settings/billing");
 
       const renderId = stateRef.current.renderId;
       controller.beginNavigationRenderCommit(renderId);
       controller.commitNavigationRender(renderId);
       await expect(committed).resolves.toBe("committed");
-      await queued;
-      expect(controller.waitForUserNavigationCommit()).toBeNull();
+      expect(controller.getUncommittedUserNavigationState()).toBeNull();
 
-      // The action now runs from the destination and its tree is applied.
-      await expect(
-        controller.commitSameUrlNavigatePayload(
-          Promise.resolve(createResolvedElements("route:/settings/action", "/")),
-          stateRef.current.navigationSnapshot,
-          { data: "saved", ok: true },
-          stateRef.current,
-          {
-            onDiscardedRevalidation,
-            revalidation: "none",
-            startedNavigationId: controller.getActiveNavigationId(),
-            targetHref: "https://example.com/settings?tab=billing",
-          },
-        ),
-      ).resolves.toBe("saved");
+      // Once the navigation is visible, the action's tree is applied on it.
+      await expect(action).resolves.toBe("saved");
       expect(stateRef.current.routeId).toBe("route:/settings/action");
       expect(onDiscardedRevalidation).not.toHaveBeenCalled();
       controller.finalizeNavigation(navId, null);

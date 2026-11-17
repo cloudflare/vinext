@@ -11,30 +11,31 @@ test.describe("useLinkStatus navigation ownership", () => {
     await waitForAppRouterHydration(page);
     await expect(page.locator("#post-1-page")).toBeVisible();
 
-    // Keep the link's response pending so it cannot clear its own indicator
-    // before the server action redirects to the home page.
-    let releaseNavigation!: () => void;
-    const navigationGate = new Promise<void>((resolve) => {
-      releaseNavigation = resolve;
-    });
-    await page.route("**/use-link-status/post/2*", async (route) => {
-      await navigationGate;
-      await route.continue().catch(() => {});
-    });
-
-    try {
-      await page.locator("#post-2-link").click({ noWaitAfter: true });
-      await expect(page.locator("#post-2-loading")).toHaveText("(Loading)");
-      const actionResponse = page.waitForResponse(
-        (response) => response.request().method() === "POST",
-      );
-      await page.locator("#server-action-home-btn").click();
-      await actionResponse;
-      await expect(page.locator("#post-2-loading")).toHaveCount(0, { timeout: 1_000 });
-      await expect(page.locator("#use-link-status-home")).toBeVisible();
-    } finally {
-      releaseNavigation();
-    }
+    // The post page takes 1.5s to render, so the link's navigation is still
+    // pending in React when the server action redirects to the home page. As
+    // in Next.js, whose action queue holds an action until the navigation's
+    // response arrives, the link's response itself is not held: the action
+    // runs on the navigation's state while its page is still rendering.
+    await page.locator("#post-2-link").click({ noWaitAfter: true });
+    await expect(page.locator("#post-2-loading")).toHaveText("(Loading)");
+    const actionRequest = page.waitForRequest((request) => request.method() === "POST");
+    const actionResponse = page.waitForResponse(
+      (response) => response.request().method() === "POST",
+    );
+    await page.locator("#server-action-home-btn").click();
+    await actionRequest;
+    // The action is sent while the link's navigation is still pending.
+    expect(await page.locator("#post-2-page").count()).toBe(0);
+    await expect(page.locator("#post-2-loading")).toHaveText("(Loading)");
+    await actionResponse;
+    await expect(page.locator("#post-2-loading")).toHaveCount(0, { timeout: 1_000 });
+    await expect(page.locator("#use-link-status-home")).toBeVisible();
+    await expect(page.locator("#post-2-page")).toHaveCount(0);
+    // The link's navigation must not land after the redirect.
+    await page.waitForTimeout(2_000);
+    await expect(page.locator("#use-link-status-home")).toBeVisible();
+    await expect(page.locator("#post-2-page")).toHaveCount(0);
+    expect(new URL(page.url()).pathname).toBe("/nextjs-compat/use-link-status");
   });
 
   test("imperative navigation clears link-owned pending state", async ({ page }) => {
