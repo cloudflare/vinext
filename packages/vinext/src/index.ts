@@ -5916,6 +5916,7 @@ export const loadServerActionClient = ${
     createServerModuleScopePlugin({
       ownsFileNames: (name) =>
         (name === "rsc" || name === "ssr") && !hasCloudflarePlugin && !hasNitroPlugin,
+      getModuleOutputDirs: () => pagesClientAssetsOutputDirs,
     }),
     {
       // Minify server-side build environments (rsc/ssr and the Cloudflare

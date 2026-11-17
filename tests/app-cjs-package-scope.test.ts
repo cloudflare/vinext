@@ -44,9 +44,11 @@ async function buildIsolatedFixture(
     vinextOptions?: Omit<VinextOptions, "appDir">;
     plugins?: Plugin[];
     environments?: UserConfig["environments"];
+    onFixture?: (fixtureDir: string) => void;
   } = {},
 ): Promise<string> {
   const fixtureDir = await createIsolatedFixture(sourceDir, prefix);
+  config.onFixture?.(fixtureDir);
   const builder = await createBuilder({
     root: fixtureDir,
     configFile: false,
@@ -217,10 +219,7 @@ describe('A root package.json with "type": "commonjs"', () => {
       const files = fs.readdirSync(serverDir, { recursive: true, encoding: "utf-8" });
       expect(files).toContain("index.js");
       expect(files).toContain(path.join("ssr", "index.js"));
-      // Only vinext's client assets module, which is always .mjs.
-      expect(
-        files.filter((file) => file.endsWith(".mjs") && !file.endsWith("vinext-client-assets.mjs")),
-      ).toEqual([]);
+      expect(files.filter((file) => file.endsWith(".mjs"))).toEqual([]);
       const result = importWithNode(path.join(serverDir, "index.js"), fixtureDir);
       expect(result.stderr).not.toContain("SyntaxError");
       expect(result.status).toBe(0);
@@ -260,15 +259,19 @@ describe('A root package.json with "type": "commonjs"', () => {
   });
 
   describe("Pages Router production with the SSR output beside the sources", () => {
-    let fixtureDir: string;
+    let fixtureDir: string | undefined;
 
-    beforeAll(async () => {
-      fixtureDir = await buildIsolatedFixture(
+    afterAll(() => {
+      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+    });
+
+    it("fails the build instead of replacing the project's package.json", async () => {
+      // The client assets module goes beside the SSR output directory, which
+      // is now the project root: its CommonJS scope would make it unloadable.
+      const build = buildIsolatedFixture(
         PAGES_FIXTURE_SOURCE_DIR,
         "vinext-pages-cjs-scope-outdir-",
         {
-          // The client assets module goes beside the SSR output directory,
-          // which is now the project root.
           plugins: [
             {
               name: "test:ssr-out-dir",
@@ -277,30 +280,16 @@ describe('A root package.json with "type": "commonjs"', () => {
               },
             },
           ],
+          onFixture: (dir) => {
+            fixtureDir = dir;
+          },
         },
       );
-    }, 120_000);
-
-    afterAll(() => {
-      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
-    });
-
-    it("leaves the project's package.json alone", () => {
-      expect(fs.readFileSync(path.join(fixtureDir, "package.json"), "utf-8")).toBe(
+      await expect(build).rejects.toThrow(/isn't in a "type": "module" package scope/);
+      expect(fs.readFileSync(path.join(fixtureDir!, "package.json"), "utf-8")).toBe(
         fs.readFileSync(path.join(PAGES_FIXTURE_SOURCE_DIR, "package.json"), "utf-8"),
       );
-      expect(
-        JSON.parse(fs.readFileSync(path.join(fixtureDir, "server", "package.json"), "utf-8")),
-      ).toEqual({ type: "module" });
-    });
-
-    it("emits a server entry that plain Node loads as ESM", () => {
-      // entry.js imports ../vinext-client-assets.mjs from the project root.
-      expect(fs.existsSync(path.join(fixtureDir, "vinext-client-assets.mjs"))).toBe(true);
-      const result = importWithNode(path.join(fixtureDir, "server", "entry.js"), fixtureDir);
-      expect(result.stderr).not.toContain("SyntaxError");
-      expect(result.status).toBe(0);
-    });
+    }, 120_000);
   });
 
   describe("Cloudflare Pages Router build with prerendering", () => {
@@ -368,7 +357,7 @@ describe('A root package.json with "type": "commonjs"', () => {
     });
 
     it("emits a server entry that plain Node loads as ESM", () => {
-      // entry.js imports ../vinext-client-assets.mjs, outside dist/server.
+      // entry.js imports ../vinext-client-assets.js, outside dist/server.
       const result = importWithNode(
         path.join(fixtureDir, "dist", "server", "entry.js"),
         fixtureDir,

@@ -129,7 +129,7 @@ describe("App Router production build with a chunk group that captures the brows
 
     // Cloudflare builds read the same lists from the server sidecar.
     const sidecar = fs.readFileSync(
-      path.join(fixtureDir, "dist", "server", "vinext-client-assets.mjs"),
+      path.join(fixtureDir, "dist", "server", "vinext-client-assets.js"),
       "utf8",
     );
     const assets = JSON.parse(sidecar.replace(/^export default /, "").replace(/;\n$/, ""));

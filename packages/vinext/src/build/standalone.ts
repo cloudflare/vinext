@@ -6,7 +6,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { readJsonFile } from "../utils/safe-json-file.js";
-import { PAGES_CLIENT_ASSETS_MODULE } from "./pages-client-assets-module.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 
 type PackageJson = {
@@ -281,9 +280,9 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
     dereference: true,
     filter: (src) => !path.relative(serverDir, src).split(path.sep).includes("node_modules"),
   });
-  const clientAssetsSidecar = path.join(outDir, PAGES_CLIENT_ASSETS_MODULE);
+  const clientAssetsSidecar = path.join(outDir, "vinext-client-assets.js");
   if (fs.existsSync(clientAssetsSidecar)) {
-    fs.copyFileSync(clientAssetsSidecar, path.join(standaloneDistDir, PAGES_CLIENT_ASSETS_MODULE));
+    fs.copyFileSync(clientAssetsSidecar, path.join(standaloneDistDir, "vinext-client-assets.js"));
   }
 
   const publicDir = path.join(root, "public");

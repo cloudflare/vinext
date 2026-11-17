@@ -648,7 +648,7 @@ export default function Page() { return <h1>Page loaded</h1> }`,
           (file) =>
             typeof file === "string" &&
             /\.[cm]?js$/.test(file) &&
-            path.basename(file) !== "vinext-client-assets.mjs",
+            path.basename(file) !== "vinext-client-assets.js",
         )
         .map((file) => fs.readFile(path.join(root, "dist", "server", "ssr", file), "utf8")),
     );

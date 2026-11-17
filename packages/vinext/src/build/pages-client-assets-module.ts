@@ -5,9 +5,7 @@ import type { PagesClientAssets } from "../server/pages-client-assets.js";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 import { VINEXT_CLIENT_ENTRY_MANIFEST } from "../utils/client-entry-manifest.js";
 
-// `.mjs` keeps this ESM module ESM wherever it is written, including beside
-// the server output in a CommonJS package scope.
-export const PAGES_CLIENT_ASSETS_MODULE = "vinext-client-assets.mjs";
+export const PAGES_CLIENT_ASSETS_MODULE = "vinext-client-assets.js";
 
 export function buildPagesClientAssetsModule(assets: PagesClientAssets): string {
   const prepared =

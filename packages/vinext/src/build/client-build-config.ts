@@ -592,7 +592,7 @@ export function createMultiStageCodeSplittingConfig(
 
 /**
  * Keep router stage chunks beside the server entry so their generated
- * `./vinext-client-assets.mjs` and deploy-filled cacheability externals continue
+ * `./vinext-client-assets.js` and deploy-filled cacheability externals continue
  * to resolve. Other chunks keep
  * the host's existing output pattern (or vinext's server-assets default).
  */

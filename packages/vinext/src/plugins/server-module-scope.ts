@@ -1,19 +1,20 @@
 import fs from "node:fs";
 import path from "pathslash";
 import type { Plugin } from "vite";
+import { isPathInsideOrEqual } from "../utils/path.js";
 import { isServerEnvironment } from "./environment.js";
 
 /**
  * Package manifest that makes Node load every `.js` file in a server output
  * directory as ESM, whatever the project's own package scope says.
  */
-export const SERVER_OUTPUT_PACKAGE_JSON = `${JSON.stringify({ type: "module" })}\n`;
+const SERVER_OUTPUT_PACKAGE_JSON = `${JSON.stringify({ type: "module" })}\n`;
 
 /**
  * The `type` of the nearest package.json at or above `dir`, which decides how
  * Node and Vite treat `.js` files there. Node defaults to CommonJS without one.
  */
-export function readPackageScopeType(dir: string): string {
+function readPackageScopeType(dir: string): string {
   let directory = path.resolve(dir);
   for (;;) {
     const packageJsonPath = path.join(directory, "package.json");
@@ -64,14 +65,17 @@ function pinModuleType(source: string | Uint8Array): string | null {
  *   the server environments vinext owns, so the fixed entry paths exist;
  * - pins every ESM server output directory whose package scope isn't
  *   `module` with an emitted `package.json` of `{"type":"module"}`, or by
- *   setting `type` on one another plugin emitted.
- *
- * The Pages Router client assets module, which can be written outside any
- * server output directory, is named `.mjs` instead (PAGES_CLIENT_ASSETS_MODULE).
+ *   setting `type` on one another plugin emitted;
+ * - does the same for the directories outside it that hold modules the
+ *   server imports (the Pages Router client assets module in `dist/`). It
+ *   never replaces a package.json there or writes one at or above the root:
+ *   such a layout fails the build, since Node couldn't load its output.
  */
 export function createServerModuleScopePlugin(options: {
   /** Whether vinext owns the entry and chunk names of this environment. */
   ownsFileNames: (environmentName: string) => boolean;
+  /** Directories, possibly outside a server output directory, with modules it imports. */
+  getModuleOutputDirs: () => Iterable<string>;
 }): Plugin {
   let root = process.cwd();
   let isModuleRoot = true;
@@ -147,6 +151,21 @@ export function createServerModuleScopePlugin(options: {
           source: SERVER_OUTPUT_PACKAGE_JSON,
         });
       },
+    },
+
+    writeBundle() {
+      if (!isServerEnvironment(this.environment)) return;
+      for (const dir of options.getModuleOutputDirs()) {
+        if (readPackageScopeType(dir) === "module") continue;
+        const packageJsonPath = path.join(dir, "package.json");
+        if (isPathInsideOrEqual(dir, root) || fs.existsSync(packageJsonPath)) {
+          this.error(
+            `[vinext] ${dir} holds ESM server modules but isn't in a "type": "module" package scope, and vinext won't replace its package.json, so Node can't load them. Set "type": "module" in ${packageJsonPath}, or keep the server output directories below the project root.`,
+          );
+        }
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(packageJsonPath, SERVER_OUTPUT_PACKAGE_JSON);
+      }
     },
   };
 }
