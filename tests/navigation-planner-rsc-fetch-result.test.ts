@@ -159,6 +159,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
       discardBody: false,
       kind: "hardNavigate",
       reason: "externalRedirectTarget",
+      redirectSignal: "response-url",
       url: "https://idp.example/login",
     });
     expectSingleTraceEntry(decision, NavigationTraceReasonCodes.redirectTerminalExternal, {
@@ -233,6 +234,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
       discardBody: true,
       kind: "hardNavigate",
       reason: "externalRedirectTarget",
+      redirectSignal: "streamed-header",
       url: "https://idp.example/login#step",
     });
     expectSingleTraceEntry(decision, NavigationTraceReasonCodes.redirectTerminalExternal, {

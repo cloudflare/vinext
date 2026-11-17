@@ -2759,6 +2759,12 @@ function bootstrapHydration(
           streamedRedirectType,
         });
         if (liveFetchDecision.kind === "hardNavigate") {
+          // Like Next.js's HardRetry (an MPA fallback for a redirected, non-RSC
+          // or failed response), which marks the predicted pattern too, in case
+          // this document is restored from BFCache. A page's redirect() isn't.
+          if (predictedRouteId !== null && liveFetchDecision.redirectSignal !== "streamed-header") {
+            optimisticRouteTemplates.retire(predictedRouteId, predictionEpoch);
+          }
           if (liveFetchDecision.discardBody) {
             void navResponse.body?.cancel().catch(() => {});
           }
@@ -2864,6 +2870,32 @@ function bootstrapHydration(
           : decodeAppElementsPromise(
               createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
             );
+
+        // The server's answer is authoritative even if a newer navigation
+        // supersedes this one or a skipped-layout retry follows. Once it shows
+        // that a rewrite sends this URL to another route, stop predicting the
+        // template's route.
+        if (predictedRouteId !== null && routeManifest !== null) {
+          const predicted = predictedRouteId;
+          const epoch = predictionEpoch;
+          const manifest = routeManifest;
+          // The navigation itself reports a failed or malformed payload.
+          void Promise.resolve(rscPayload)
+            .then((elements) => {
+              if (
+                isOptimisticRoutePredictionMismatch({
+                  elements,
+                  predictedRouteId: predicted,
+                  routeManifest: manifest,
+                })
+              ) {
+                // Ignored if an HMR refresh reset the retired routes since.
+                optimisticRouteTemplates.retire(predicted, epoch);
+              }
+            })
+            .catch(() => {});
+        }
+
         if (hasSupplementalRefresh) {
           const supplemental = persistedRefreshInterceptions.map(
             (interception) => (signal: AbortSignal) =>
@@ -2927,30 +2959,6 @@ function bootstrapHydration(
             return;
           }
           rscPayload = Promise.resolve(staticExportElements);
-        }
-
-        // The server's answer is authoritative even if a newer navigation
-        // supersedes this one. Once it shows that a rewrite sends this URL to
-        // another route, stop predicting the template's route.
-        if (predictedRouteId !== null && routeManifest !== null) {
-          const predicted = predictedRouteId;
-          const epoch = predictionEpoch;
-          const manifest = routeManifest;
-          // The navigation itself reports a failed or malformed payload.
-          void Promise.resolve(rscPayload)
-            .then((elements) => {
-              if (
-                isOptimisticRoutePredictionMismatch({
-                  elements,
-                  predictedRouteId: predicted,
-                  routeManifest: manifest,
-                })
-              ) {
-                // Ignored if an HMR refresh reset the retired routes since.
-                optimisticRouteTemplates.retire(predicted, epoch);
-              }
-            })
-            .catch(() => {});
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;

@@ -220,6 +220,7 @@ export type RscFetchResultDecision =
       url: string;
       hardNavigationMode?: "assign" | "replace";
       reason: RscFetchResultHardNavReason;
+      redirectSignal?: RscRedirectSignal;
       trace: NavigationTrace;
     };
 
@@ -424,6 +425,7 @@ function createRscFetchResultHardNavigationDecision(options: {
       ? { hardNavigationMode: options.hardNavigationMode }
       : {}),
     reason: options.reason,
+    ...(options.redirectSignal !== undefined ? { redirectSignal: options.redirectSignal } : {}),
     trace: createNavigationTrace(
       options.reasonCode,
       createRscFetchResultTraceFields(options.facts, {
