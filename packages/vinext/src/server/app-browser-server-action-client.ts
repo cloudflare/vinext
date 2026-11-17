@@ -40,7 +40,6 @@ export type ClientServerActionInitiation = {
   navigationId: number;
   path: string;
   routerState: AppRouterState;
-  startedDuringUserNavigation: boolean;
 };
 
 type ActionRedirectTarget = {
@@ -205,9 +204,9 @@ export async function invokeClientServerAction(
   const fetchResponseIsRsc = actionResultFacts.isRscContentType;
   const actionResultDecision = deps.navigationPlanner.classifyServerActionResult(actionResultFacts);
   // An incompatible response reloads the page the action was posted from. A
-  // navigation that superseded the action, or was pending when it was posted,
-  // owns what loads next: as in Next.js, it discards the action's state, and
-  // its own request runs into the same mismatch.
+  // navigation that superseded the action owns what loads next: as in
+  // Next.js, it discards the action's state, and its own request runs into
+  // the same mismatch.
   const discardedIncompatibleResponse =
     actionResultDecision.kind === "hardNavigate" &&
     !deps.ownsRouterForServerAction(actionInitiation);
@@ -307,8 +306,8 @@ export async function invokeClientServerAction(
       );
     }
     // A forwarded action revalidates without rendering the page. If a
-    // navigation discarded it, or was pending when it was posted, refresh what
-    // it revalidated once navigations settle, as with a discarded tree.
+    // navigation discarded it, refresh what it revalidated once navigations
+    // settle, as with a discarded tree.
     if (!deps.ownsRouterForServerAction(actionInitiation)) {
       deps.notifyDiscardedServerActionRevalidation(revalidation);
     }

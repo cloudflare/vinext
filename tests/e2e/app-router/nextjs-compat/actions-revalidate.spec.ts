@@ -103,6 +103,65 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     });
   });
 
+  // Next.js queues a server action dispatched while a navigation is pending
+  // and runs it on the navigation's state: it posts from the destination once
+  // the navigation is done, and its revalidated tree is applied there.
+  test("server action dispatched during a pending navigation runs after it, from the destination", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const destinationPath = "/nextjs-compat/action-discarding/destination";
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+    const initialValue = await page.locator("#discarded-action-value").textContent();
+    if (!initialValue) {
+      throw new Error("Expected initial discarded action value");
+    }
+
+    let releaseDestination = () => {};
+    const destinationGate = new Promise<void>((resolve) => {
+      releaseDestination = resolve;
+    });
+    let destinationRequested = () => {};
+    const destinationRequest = new Promise<void>((resolve) => {
+      destinationRequested = resolve;
+    });
+    await page.route(
+      (url) => url.pathname === destinationPath && url.searchParams.has("_rsc"),
+      async (route) => {
+        destinationRequested();
+        const response = await route.fetch();
+        await destinationGate;
+        await route.fulfill({ response });
+      },
+    );
+    const actionPaths: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && request.headers()["next-action"] !== undefined) {
+        actionPaths.push(new URL(request.url()).pathname);
+      }
+    });
+
+    await page.click("#navigate-discard-destination");
+    await destinationRequest;
+    await page.click("#slow-action-refresh");
+    await page.waitForTimeout(300);
+    expect(actionPaths).toEqual([]);
+
+    const actionResponse = page.waitForResponse((response) =>
+      isAppRouterServerActionRequestForPath(response.request(), destinationPath),
+    );
+    releaseDestination();
+    await expect(page.locator("#discard-destination")).toBeVisible();
+    await actionResponse;
+    expect(actionPaths).toEqual([destinationPath]);
+
+    await expect(page.locator("#discard-destination")).toBeVisible();
+    await expect(page.locator("#discarded-action-value")).not.toHaveText(initialValue, {
+      timeout: 10_000,
+    });
+  });
+
   // A navigation that falls back to a document load owns what loads next. A
   // discarded action's refresh must wait for that load, not reload the page
   // it was posted from over it.

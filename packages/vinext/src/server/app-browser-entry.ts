@@ -794,7 +794,6 @@ function createActionInitiationSnapshot() {
     href: window.location.href,
     navigationId: browserNavigationController.getActiveNavigationId(),
     routerState,
-    startedDuringUserNavigation: browserNavigationController.isUserNavigationUncommitted(),
   });
 }
 
@@ -928,14 +927,10 @@ async function commitSameUrlNavigatePayload(
     if (routeManifestLoad !== null) routeManifestLoaded = await routeManifestLoad;
     // Persisted interceptions and commit approval need the manifest. An action
     // that still owns the router reloads its page, like a hard-navigate commit
-    // decision. A superseded one, or one a pending navigation has overtaken,
-    // goes on to the commit below, which discards it.
+    // decision. A superseded one goes on to the commit below, which discards it.
     if (
       !routeManifestLoaded &&
-      browserNavigationController.ownsRouterForServerAction(
-        actionInitiation.navigationId,
-        actionInitiation.startedDuringUserNavigation,
-      )
+      browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)
     ) {
       browserNavigationController.performHardNavigation(actionInitiation.href);
       return undefined;
@@ -1031,7 +1026,6 @@ async function commitSameUrlNavigatePayload(
           discardedServerActionRefreshScheduler.schedule();
         },
         revalidation,
-        startedDuringUserNavigation: actionInitiation.startedDuringUserNavigation,
         startedNavigationId: actionInitiation.navigationId,
         targetHref: actionInitiation.href,
       },
@@ -1897,7 +1891,13 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
 }
 
 function registerServerActionCallback(): void {
-  setServerCallback((id, args) => {
+  setServerCallback(function callServer(id, args): Promise<unknown> {
+    // Like Next.js's action queue, an action dispatched while a navigation is
+    // pending is sent once that navigation commits, from its destination.
+    const pendingNavigationCommit = browserNavigationController.waitForUserNavigationCommit();
+    if (pendingNavigationCommit !== null) {
+      return pendingNavigationCommit.then(() => callServer(id, args));
+    }
     const releaseCacheInvalidationGuard = historyController.beginCacheInvalidationGuard();
     const actionInitiation = createActionInitiationSnapshot();
     return loadServerActionClient!()
@@ -1915,10 +1915,7 @@ function registerServerActionCallback(): void {
             }
           },
           ownsRouterForServerAction: (initiation) =>
-            browserNavigationController.ownsRouterForServerAction(
-              initiation.navigationId,
-              initiation.startedDuringUserNavigation,
-            ),
+            browserNavigationController.isCurrentNavigation(initiation.navigationId),
           performHardNavigation: (url, historyMode) =>
             browserNavigationController.performHardNavigation(url, historyMode),
           renderRedirectPayload(elements, target, actionInitiation, revalidation) {
@@ -2192,9 +2189,7 @@ function bootstrapHydration(
     const navigationAbortHandle = navigationAbortCoordinator.begin();
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
-    const navId = browserNavigationController.beginNavigation(
-      navigationKind === "refresh" ? "refresh" : "navigation",
-    );
+    const navId = browserNavigationController.beginNavigation();
     const navigationCacheGeneration = clientNavigationCacheGeneration;
     // A document load that left this document alive (a cancelled unload, a
     // 204 response) has no event, so a new navigation ends its hold.

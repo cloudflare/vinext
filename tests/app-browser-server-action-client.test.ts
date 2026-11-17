@@ -355,7 +355,6 @@ describe("app browser server action client", () => {
         href: "https://example.com/source?tab=profile",
         navigationId: 1,
         routerState: createActionTestRouterState(),
-        startedDuringUserNavigation: !ownsRouter,
       });
       const deps = {
         basePath: "",
@@ -422,7 +421,6 @@ describe("app browser server action client", () => {
         href: sourceHref,
         navigationId: 1,
         routerState: createActionTestRouterState(),
-        startedDuringUserNavigation: true,
       });
       const deps = {
         basePath: "",
@@ -432,8 +430,8 @@ describe("app browser server action client", () => {
         commitSameUrlNavigatePayload: vi.fn(),
         navigationPlanner,
         notifyDiscardedServerActionRevalidation: vi.fn(),
-        // Posted while a navigation was pending: that navigation owns what
-        // loads next, so the action must not reload the page it came from.
+        // A navigation superseded the action: it owns what loads next, so the
+        // action must not reload the page it came from.
         ownsRouterForServerAction: vi.fn(() => false),
         performHardNavigation: vi.fn(),
         renderRedirectPayload: vi.fn(),

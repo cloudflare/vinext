@@ -101,15 +101,9 @@ type BrowserRouterStateRef = {
   current: AppRouterState;
 };
 
-// Like Next.js, a navigation or history restore discards the server actions
-// posted while it is pending; a refresh queues them on its result instead.
-type UserNavigationKind = "navigation" | "refresh";
-
 type SameUrlServerActionLifecycleOptions = {
   onDiscardedRevalidation?: () => void;
   revalidation?: ServerActionRevalidationKind;
-  // Captured when the action was posted; defaults to the state at call time.
-  startedDuringUserNavigation?: boolean;
   startedNavigationId?: number;
   targetHref?: string;
 };
@@ -154,16 +148,12 @@ type BrowserNavigationPayloadOptions = {
 };
 
 type BrowserNavigationController = {
-  beginNavigation(kind?: UserNavigationKind): number;
+  beginNavigation(): number;
   getActiveNavigationId(): number;
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
   isCurrentNavigation(navId: number): boolean;
-  isUserNavigationUncommitted(): boolean;
-  ownsRouterForServerAction(
-    startedNavigationId: number,
-    startedDuringUserNavigation: boolean,
-  ): boolean;
+  waitForUserNavigationCommit(): Promise<void> | null;
   performHardNavigation(href: string, mode?: HardNavigationMode): boolean;
   waitForBrowserRouterStateReady(): Promise<void>;
   attachBrowserRouterState(
@@ -360,7 +350,8 @@ export function createAppBrowserNavigationController(
   // started committing. An older navigation's render can still commit after
   // it began, but does not make its destination visible.
   let pendingUserNavigationOwnCommitStarted = false;
-  let pendingUserNavigationKind: UserNavigationKind = "navigation";
+  // Server actions waiting for the pending user navigation to commit.
+  let userNavigationCommitWaiters: Array<() => void> = [];
   // The render a history-snapshot restore dispatched for the pending user
   // navigation. It is not in pendingNavigationCommits, but is its own commit.
   let pendingUserNavigationRestoreRenderId: number | null = null;
@@ -429,7 +420,7 @@ export function createAppBrowserNavigationController(
     resolveReady?.();
   }
 
-  function beginNavigation(kind: UserNavigationKind = "navigation"): number {
+  function beginNavigation(): number {
     // User navigation owns the next visible result. Revoke any HMR payload
     // already suspended on RSC resolution so it cannot commit first and make
     // the still-current navigation look stale by advancing visible state.
@@ -439,7 +430,6 @@ export function createAppBrowserNavigationController(
     pendingUserNavigationLane = null;
     pendingUserNavigationCommitStarted = false;
     pendingUserNavigationOwnCommitStarted = false;
-    pendingUserNavigationKind = kind;
     pendingUserNavigationRestoreRenderId = null;
     pendingUserNavigationShellHref = null;
     retiredNavigationUrl = null;
@@ -464,31 +454,32 @@ export function createAppBrowserNavigationController(
   }
 
   /**
-   * Whether a user navigation other than a refresh is pending and none of its
-   * own authoritative renders has started committing. Once one has, its
-   * destination is visible and owns the actions posted from it, even while
-   * the navigation streams.
+   * Whether a user navigation (including a refresh or history restore) is
+   * pending and none of its own authoritative renders has committed yet.
    */
   function isUserNavigationUncommitted(): boolean {
-    return (
-      pendingUserNavigationId !== null &&
-      pendingUserNavigationKind !== "refresh" &&
-      !pendingUserNavigationOwnCommitStarted
-    );
+    return pendingUserNavigationId !== null && !pendingUserNavigationOwnCommitStarted;
+  }
+
+  function notifyUserNavigationCommitWaiters(): void {
+    if (isUserNavigationUncommitted() || userNavigationCommitWaiters.length === 0) return;
+    const waiters = userNavigationCommitWaiters;
+    userNavigationCommitWaiters = [];
+    for (const resolve of waiters) resolve();
   }
 
   /**
-   * Whether a server action may still change what is visible, decided from
-   * what held when it was posted. A user navigation that had not committed
-   * then owns the next visible result, even though the action shares its id,
-   * and keeps it after it settles: as in Next.js, the navigation discards the action's
-   * state. A later navigation supersedes the id itself.
+   * Like Next.js's action queue, a server action dispatched while a user
+   * navigation is pending runs once that navigation has committed, on its
+   * resulting state. Returns null when nothing is pending, so the action
+   * starts synchronously as before. A navigation that starts while the action
+   * waits queues it behind that one too.
    */
-  function ownsRouterForServerAction(
-    startedNavigationId: number,
-    startedDuringUserNavigation: boolean,
-  ): boolean {
-    return isCurrentNavigation(startedNavigationId) && !startedDuringUserNavigation;
+  function waitForUserNavigationCommit(): Promise<void> | null {
+    if (!isUserNavigationUncommitted()) return null;
+    return new Promise<void>((resolve) => {
+      userNavigationCommitWaiters.push(resolve);
+    }).then(() => waitForUserNavigationCommit() ?? undefined);
   }
 
   function beginPendingBrowserRouterState(): PendingBrowserRouterState {
@@ -561,6 +552,7 @@ export function createAppBrowserNavigationController(
       pendingUserNavigationShellHref = null;
       retiredNavigationUrl = null;
       clearPendingPathname(navId);
+      notifyUserNavigationCommitWaiters();
     }
   }
 
@@ -612,6 +604,7 @@ export function createAppBrowserNavigationController(
     }
     clearCommittedNavigationFailureTargets(nextNavigationRenderId);
     settleNavigationCommits(nextNavigationRenderId, false);
+    notifyUserNavigationCommitWaiters();
 
     if (visibleState && setBrowserRouterState) {
       const setter = setBrowserRouterState;
@@ -746,6 +739,7 @@ export function createAppBrowserNavigationController(
     committingNavigationRenderId = null;
     drainPrePaintEffects(renderId);
     settleNavigationCommits(renderId, true);
+    notifyUserNavigationCommitWaiters();
   }
 
   function clearCommittedNavigationFailureTargets(renderId: number): void {
@@ -1266,15 +1260,13 @@ export function createAppBrowserNavigationController(
   ): Promise<unknown> {
     const currentState = actionInitiationState ?? getBrowserRouterState();
     const startedNavigationId = lifecycleOptions?.startedNavigationId ?? activeNavigationId;
-    const startedDuringUserNavigation =
-      lifecycleOptions?.startedDuringUserNavigation ?? isUserNavigationUncommitted();
     const targetHref = lifecycleOptions?.targetHref ?? window.location.href;
     const routeManifestLoad = loadRouteManifest();
     if (routeManifestLoad !== null && !(await routeManifestLoad)) {
       // The commit cannot be classified without the RouteManifest. An action
       // that still owns the router reloads, like a hard-navigate decision
       // below; a superseded one is discarded like a no-commit decision.
-      if (ownsRouterForServerAction(startedNavigationId, startedDuringUserNavigation)) {
+      if (isCurrentNavigation(startedNavigationId)) {
         performHardNavigation(targetHref);
         return undefined;
       }
@@ -1305,10 +1297,10 @@ export function createAppBrowserNavigationController(
       type: "navigate",
     });
 
-    // Approval reads the committed state, which does not move while a pending
-    // navigation's tree waits for React to commit it, so check ownership here.
-    // A discarded revalidation is refreshed once navigations settle.
-    if (!ownsRouterForServerAction(startedNavigationId, startedDuringUserNavigation)) {
+    // A navigation that superseded the action owns what loads next, so the
+    // action neither commits nor reloads its page. A discarded revalidation is
+    // refreshed once navigations settle.
+    if (!isCurrentNavigation(startedNavigationId)) {
       notifyDiscardedServerActionRevalidation(lifecycleOptions);
       return resolveSameUrlActionReturnValue(returnValue);
     }
@@ -1402,8 +1394,7 @@ export function createAppBrowserNavigationController(
     hasBrowserRouterState,
     getBrowserRouterState,
     isCurrentNavigation,
-    isUserNavigationUncommitted,
-    ownsRouterForServerAction,
+    waitForUserNavigationCommit,
     performHardNavigation,
     waitForBrowserRouterStateReady,
     attachBrowserRouterState,

@@ -1655,7 +1655,7 @@ describe("app browser entry navigation scheduling", () => {
     });
   });
 
-  it("lets a server action posted while a restored history snapshot commits own the router", async () => {
+  it("does not queue a server action dispatched while a restored history snapshot commits", async () => {
     const currentState = createState({
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/other", {}),
       routeId: "route:/other",
@@ -1684,7 +1684,7 @@ describe("app browser entry navigation scheduling", () => {
       // before it reaches finalizeNavigation(); the restored page's layout
       // effects can post an action from there.
       controller.beginNavigationRenderCommit(stateRef.current.renderId);
-      expect(controller.isUserNavigationUncommitted()).toBe(false);
+      expect(controller.waitForUserNavigationCommit()).toBeNull();
 
       await expect(
         controller.commitSameUrlNavigatePayload(
@@ -1695,7 +1695,6 @@ describe("app browser entry navigation scheduling", () => {
           {
             onDiscardedRevalidation,
             revalidation: "dynamicOnly",
-            startedDuringUserNavigation: controller.isUserNavigationUncommitted(),
             startedNavigationId: controller.getActiveNavigationId(),
             targetHref: "https://example.com/restored",
           },
@@ -5153,62 +5152,9 @@ describe("app browser navigation controller", () => {
       expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
       expect(assign).not.toHaveBeenCalled();
 
-      // An action posted after a navigation started shares its id, but the
-      // pending navigation still owns the router: it must not reload the old URL.
-      const pendingNavigationId = controller.beginNavigation();
-      await expect(commitAction(pendingNavigationId)).resolves.toBe("action-result");
-      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(2);
-      expect(assign).not.toHaveBeenCalled();
-
-      // Once that navigation settles, an action posted afterwards owns it again.
-      controller.finalizeNavigation(pendingNavigationId, null);
-      await expect(commitAction(pendingNavigationId)).resolves.toBeUndefined();
+      await expect(commitAction(controller.beginNavigation())).resolves.toBeUndefined();
       expect(assign).toHaveBeenCalledWith("https://example.com/settings");
       expect(stateRef.current.routeId).toBe("route:/settings");
-    } finally {
-      detach();
-    }
-  });
-
-  it("keeps a same-URL server action posted during a navigation discarded after that navigation settles", async () => {
-    const initialState = createState({
-      rootLayoutTreePath: "/",
-      routeId: "route:/settings",
-      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
-    });
-    let failRouteManifestLoad!: () => void;
-    const routeManifestLoad = new Promise<boolean>((resolve) => {
-      failRouteManifestLoad = () => resolve(false);
-    });
-    const { controller, detach, stateRef } = createControllerHarness(initialState, {
-      loadRouteManifest: () => routeManifestLoad,
-    });
-    const { assign } = stubWindow("https://example.com/settings");
-    const onDiscardedRevalidation = vi.fn();
-
-    try {
-      const navId = controller.beginNavigation();
-      const result = controller.commitSameUrlNavigatePayload(
-        Promise.resolve(createResolvedElements("route:/settings/account", "/", null)),
-        stateRef.current.navigationSnapshot,
-        { data: "action-result", ok: true },
-        stateRef.current,
-        {
-          onDiscardedRevalidation,
-          revalidation: "staticAndDynamic",
-          startedDuringUserNavigation: controller.isUserNavigationUncommitted(),
-          startedNavigationId: controller.getActiveNavigationId(),
-          targetHref: "https://example.com/settings",
-        },
-      );
-
-      // The navigation handles the failed load itself and settles first.
-      controller.finalizeNavigation(navId, null);
-      failRouteManifestLoad();
-
-      await expect(result).resolves.toBe("action-result");
-      expect(assign).not.toHaveBeenCalled();
-      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
     } finally {
       detach();
     }
@@ -5325,163 +5271,31 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("does not let a same-URL server action replace a navigation React has not committed yet", async () => {
-    // A server action posted from /settings?tab=profile after a navigation to
-    // ?tab=billing started. Its revalidated tree arrives after the navigation's
-    // tree was handed to React, but before React committed it.
-    stubWindow("https://example.com/settings?tab=profile");
+  it("queues a server action dispatched during a navigation until React commits it", async () => {
+    // A server action dispatched from /settings?tab=profile after a navigation
+    // to ?tab=billing started. As in Next.js's action queue, it waits for the
+    // navigation and then runs on the navigation's state, so its tree cannot
+    // replace the navigation's before React commits it.
     const initialState = createState({
-      elements: createResolvedElements("route:/settings", "/", null, {
-        "page:/settings": React.createElement("main", null, "profile (initial)"),
-      }),
       navigationSnapshot: createClientNavigationRenderSnapshot(
         "https://example.com/settings?tab=profile",
         {},
       ),
       routeId: "route:/settings",
     });
-    const controller = createAppBrowserNavigationController();
-    // Like React's state ref, this only moves on commit, which never happens here.
-    const stateRef = { current: initialState };
-    const dispatched: AppRouterState[] = [];
-    const detach = controller.attachBrowserRouterState((value) => {
-      if (!(value instanceof Promise)) dispatched.push(value);
-    }, stateRef);
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/settings?tab=profile");
     const onDiscardedRevalidation = vi.fn();
-    const pageText = (state: AppRouterState | undefined) => {
-      const page = state?.elements["page:/settings"] as
-        | React.ReactElement<{ children: unknown }>
-        | undefined;
-      return page?.props.children;
-    };
 
     try {
+      expect(controller.waitForUserNavigationCommit()).toBeNull();
       const navId = controller.beginNavigation();
-      const actionInitiationState = controller.getBrowserRouterState();
-      const actionNavigationId = controller.getActiveNavigationId();
-
-      void controller.renderNavigationPayload({
-        actionType: "navigate",
-        createNavigationCommitEffect: noopCommitEffect,
-        historyUpdateMode: "push",
-        navigationInitiationState: initialState,
-        navigationSnapshot: createClientNavigationRenderSnapshot(
-          "https://example.com/settings?tab=billing",
-          {},
-        ),
-        navId,
-        nextElements: createResolvedElements("route:/settings", "/", null, {
-          "page:/settings": React.createElement("main", null, "billing (navigation)"),
-        }),
-        operationLane: "navigation",
-        params: {},
-        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
-        pendingRouterState: null,
-        previousNextUrl: null,
-        targetHref: "https://example.com/settings?tab=billing",
+      const queued = controller.waitForUserNavigationCommit();
+      expect(queued).not.toBeNull();
+      let resumed = false;
+      void queued!.then(() => {
+        resumed = true;
       });
-      await vi.waitFor(() => expect(dispatched).toHaveLength(1));
-      expect(pageText(dispatched[0])).toBe("billing (navigation)");
-
-      await expect(
-        controller.commitSameUrlNavigatePayload(
-          Promise.resolve(
-            createResolvedElements("route:/settings", "/", null, {
-              "page:/settings": React.createElement("main", null, "profile (action)"),
-            }),
-          ),
-          initialState.navigationSnapshot,
-          { data: "saved", ok: true },
-          actionInitiationState,
-          {
-            onDiscardedRevalidation,
-            revalidation: "dynamicOnly",
-            startedNavigationId: actionNavigationId,
-            targetHref: "https://example.com/settings?tab=profile",
-          },
-        ),
-      ).resolves.toBe("saved");
-
-      // The navigation stays the last tree handed to React; the action's
-      // revalidation is refreshed once navigations settle instead.
-      expect(dispatched).toHaveLength(1);
-      expect(pageText(dispatched.at(-1))).toBe("billing (navigation)");
-      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
-    } finally {
-      detach();
-    }
-  });
-
-  it("applies a same-URL server action posted while a refresh is pending", async () => {
-    // Next.js discards pending actions only for ACTION_NAVIGATE and
-    // ACTION_RESTORE; an action dispatched behind ACTION_REFRESH still runs.
-    const initialState = createState({
-      navigationSnapshot: createClientNavigationRenderSnapshot(
-        "https://example.com/settings?tab=profile",
-        {},
-      ),
-      routeId: "route:/settings",
-    });
-    const { controller, detach, stateRef } = createControllerHarness(initialState);
-    stubWindow("https://example.com/settings?tab=profile");
-    const onDiscardedRevalidation = vi.fn();
-
-    try {
-      controller.beginNavigation("refresh");
-      expect(controller.isUserNavigationUncommitted()).toBe(false);
-
-      const committed = controller.commitSameUrlNavigatePayload(
-        Promise.resolve(createResolvedElements("route:/settings/action", "/")),
-        initialState.navigationSnapshot,
-        { data: "saved", ok: true },
-        stateRef.current,
-        {
-          onDiscardedRevalidation,
-          revalidation: "dynamicOnly",
-          startedNavigationId: controller.getActiveNavigationId(),
-          targetHref: "https://example.com/settings?tab=profile",
-        },
-      );
-
-      await vi.waitFor(() => expect(stateRef.current.routeId).toBe("route:/settings/action"));
-      controller.commitNavigationRender(stateRef.current.renderId);
-      await expect(committed).resolves.toBe("saved");
-      expect(onDiscardedRevalidation).not.toHaveBeenCalled();
-    } finally {
-      detach();
-    }
-  });
-
-  it("discards a same-URL server action revalidation that lands before a pending navigation's payload", async () => {
-    const initialState = createState({
-      navigationSnapshot: createClientNavigationRenderSnapshot(
-        "https://example.com/settings?tab=profile",
-        {},
-      ),
-      routeId: "route:/settings",
-    });
-    const { controller, detach, stateRef } = createControllerHarness(initialState);
-    stubWindow("https://example.com/settings?tab=profile");
-    const onDiscardedRevalidation = vi.fn();
-
-    try {
-      const navId = controller.beginNavigation();
-      // The action posts and its revalidation arrives before the navigation's.
-      await expect(
-        controller.commitSameUrlNavigatePayload(
-          Promise.resolve(createResolvedElements("route:/settings/action", "/")),
-          initialState.navigationSnapshot,
-          { data: "saved", ok: true },
-          stateRef.current,
-          {
-            onDiscardedRevalidation,
-            revalidation: "dynamicOnly",
-            startedNavigationId: controller.getActiveNavigationId(),
-            targetHref: "https://example.com/settings?tab=profile",
-          },
-        ),
-      ).resolves.toBe("saved");
-      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
 
       const committed = renderCurrentStateNavigationPayload(controller, {
         actionType: "navigate",
@@ -5500,16 +5314,81 @@ describe("app browser navigation controller", () => {
         previousNextUrl: null,
         targetHref: "https://example.com/settings?tab=billing",
       });
-
+      // The navigation's tree is handed to React, which has not committed it.
       await vi.waitFor(() => expect(stateRef.current.routeId).toBe("route:/settings/billing"));
-      controller.commitNavigationRender(stateRef.current.renderId);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(resumed).toBe(false);
+
+      const renderId = stateRef.current.renderId;
+      controller.beginNavigationRenderCommit(renderId);
+      controller.commitNavigationRender(renderId);
       await expect(committed).resolves.toBe("committed");
+      await queued;
+      expect(controller.waitForUserNavigationCommit()).toBeNull();
+
+      // The action now runs from the destination and its tree is applied.
+      await expect(
+        controller.commitSameUrlNavigatePayload(
+          Promise.resolve(createResolvedElements("route:/settings/action", "/")),
+          stateRef.current.navigationSnapshot,
+          { data: "saved", ok: true },
+          stateRef.current,
+          {
+            onDiscardedRevalidation,
+            revalidation: "none",
+            startedNavigationId: controller.getActiveNavigationId(),
+            targetHref: "https://example.com/settings?tab=billing",
+          },
+        ),
+      ).resolves.toBe("saved");
+      expect(stateRef.current.routeId).toBe("route:/settings/action");
+      expect(onDiscardedRevalidation).not.toHaveBeenCalled();
+      controller.finalizeNavigation(navId, null);
     } finally {
       detach();
     }
   });
 
-  it("rejects with the error of a same-URL server action a pending navigation discards", async () => {
+  it("resumes a queued server action when the navigation settles without committing", async () => {
+    const { controller, detach } = createControllerHarness(createState());
+    stubWindow("https://example.com/settings");
+
+    try {
+      const refreshId = controller.beginNavigation();
+      const queued = controller.waitForUserNavigationCommit();
+      expect(queued).not.toBeNull();
+      controller.finalizeNavigation(refreshId, null);
+      await expect(queued).resolves.toBeUndefined();
+    } finally {
+      detach();
+    }
+  });
+
+  it("keeps a queued server action waiting behind a navigation that starts while it waits", async () => {
+    const { controller, detach } = createControllerHarness(createState());
+    stubWindow("https://example.com/settings");
+
+    try {
+      const firstId = controller.beginNavigation();
+      const queued = controller.waitForUserNavigationCommit();
+      let resumed = false;
+      void queued!.then(() => {
+        resumed = true;
+      });
+      const secondId = controller.beginNavigation();
+      controller.finalizeNavigation(firstId, null);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(resumed).toBe(false);
+
+      controller.finalizeNavigation(secondId, null);
+      await queued;
+      expect(resumed).toBe(true);
+    } finally {
+      detach();
+    }
+  });
+
+  it("rejects with the error of a same-URL server action a navigation superseded", async () => {
     const initialState = createState({
       navigationSnapshot: createClientNavigationRenderSnapshot(
         "https://example.com/settings?tab=profile",
@@ -5523,6 +5402,7 @@ describe("app browser navigation controller", () => {
     const thrown = new Error("save failed after revalidating");
 
     try {
+      const actionNavigationId = controller.getActiveNavigationId();
       controller.beginNavigation();
       await expect(
         controller.commitSameUrlNavigatePayload(
@@ -5533,7 +5413,7 @@ describe("app browser navigation controller", () => {
           {
             onDiscardedRevalidation,
             revalidation: "dynamicOnly",
-            startedNavigationId: controller.getActiveNavigationId(),
+            startedNavigationId: actionNavigationId,
             targetHref: "https://example.com/settings?tab=profile",
           },
         ),
@@ -5545,7 +5425,7 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("applies a same-URL server action posted after a navigation committed but before it settles", async () => {
+  it("does not queue a server action dispatched after a navigation committed but before it settles", async () => {
     const initialState = createState({
       navigationSnapshot: createClientNavigationRenderSnapshot(
         "https://example.com/settings?tab=profile",
@@ -5583,8 +5463,8 @@ describe("app browser navigation controller", () => {
       await expect(committed).resolves.toBe("committed");
 
       // The navigation is still pending (its stream has not finished), but its
-      // destination is visible: an action posted from it owns the router.
-      expect(controller.isUserNavigationUncommitted()).toBe(false);
+      // destination is visible: an action dispatched from it runs at once.
+      expect(controller.waitForUserNavigationCommit()).toBeNull();
       await expect(
         controller.commitSameUrlNavigatePayload(
           Promise.resolve(createResolvedElements("route:/settings/action", "/")),
@@ -5594,7 +5474,6 @@ describe("app browser navigation controller", () => {
           {
             onDiscardedRevalidation,
             revalidation: "dynamicOnly",
-            startedDuringUserNavigation: controller.isUserNavigationUncommitted(),
             startedNavigationId: controller.getActiveNavigationId(),
             targetHref: "https://example.com/settings?tab=billing",
           },
@@ -5609,14 +5488,13 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("does not let an older navigation's commit end a newer navigation's ownership of server actions", async () => {
+  it("keeps queuing server actions when an older navigation commits during a newer one", async () => {
     const initialState = createState({
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/a", {}),
       routeId: "route:/a",
     });
     const { controller, detach, stateRef } = createControllerHarness(initialState);
     stubWindow("https://example.com/a");
-    const onDiscardedRevalidation = vi.fn();
     const renderNavigation = (navId: number, href: string, routeId: string) =>
       renderCurrentStateNavigationPayload(controller, {
         actionType: "navigate",
@@ -5639,32 +5517,24 @@ describe("app browser navigation controller", () => {
       void renderNavigation(navA, "https://example.com/b", "route:/b");
       await vi.waitFor(() => expect(stateRef.current.routeId).toBe("route:/b"));
       const renderA = stateRef.current.renderId;
-      controller.beginNavigation();
+      const navB = controller.beginNavigation();
+      const queued = controller.waitForUserNavigationCommit();
+      let resumed = false;
+      void queued!.then(() => {
+        resumed = true;
+      });
 
-      // React commits A only now. B's destination is still not visible.
+      // React commits A only now. B's destination is still not visible, so
+      // the action keeps waiting for B.
       controller.beginNavigationRenderCommit(renderA);
       controller.commitNavigationRender(renderA);
-      expect(controller.isUserNavigationUncommitted()).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(resumed).toBe(false);
+      expect(controller.waitForUserNavigationCommit()).not.toBeNull();
 
-      // An action posted from A's page shares B's id, but B still owns the router.
-      await expect(
-        controller.commitSameUrlNavigatePayload(
-          Promise.resolve(createResolvedElements("route:/b/action", "/")),
-          stateRef.current.navigationSnapshot,
-          { data: "saved", ok: true },
-          stateRef.current,
-          {
-            onDiscardedRevalidation,
-            revalidation: "dynamicOnly",
-            startedDuringUserNavigation: controller.isUserNavigationUncommitted(),
-            startedNavigationId: controller.getActiveNavigationId(),
-            targetHref: "https://example.com/b",
-          },
-        ),
-      ).resolves.toBe("saved");
-
-      expect(stateRef.current.routeId).toBe("route:/b");
-      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
+      controller.finalizeNavigation(navB, null);
+      await queued;
+      expect(resumed).toBe(true);
     } finally {
       detach();
     }
