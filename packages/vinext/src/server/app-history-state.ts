@@ -393,17 +393,36 @@ export function readHistoryStateActiveRoutePaths(state: unknown): readonly strin
   return paths.length > 0 ? [...new Set(paths)] : null;
 }
 
-export function resolveActiveRoutePaths(
+/**
+ * The route paths of the active slots that a refresh or traversal must refetch
+ * beside the visible URL: slots an earlier page left mounted. A slot that the
+ * page itself renders is left out. Its route is the page's own route, which is
+ * the path after a middleware rewrite, so it can differ from the visible URL
+ * while the request to that URL already renders it. An intercepted page keeps
+ * every slot, because its route is the source page.
+ */
+export function resolveActiveRoutePaths(state: {
+  interception: unknown;
+  routeId: string;
   slotBindings: readonly {
     activeRouteId?: string | null;
     state: string;
-  }[],
-): string[] {
+  }[];
+}): string[] {
+  const pageRoute =
+    state.interception === null ? AppElementsWire.parseElementKey(state.routeId) : null;
+  const pageRoutePath = pageRoute?.kind === "route" ? pageRoute.path : null;
   const paths = new Set<string>();
-  for (const binding of slotBindings) {
+  for (const binding of state.slotBindings) {
     if (binding.state !== "active" || binding.activeRouteId == null) continue;
     const route = AppElementsWire.parseElementKey(binding.activeRouteId);
-    if (route?.kind === "route" && route.interceptionContext === null) paths.add(route.path);
+    if (
+      route?.kind === "route" &&
+      route.interceptionContext === null &&
+      route.path !== pageRoutePath
+    ) {
+      paths.add(route.path);
+    }
   }
   return [...paths];
 }

@@ -373,7 +373,7 @@ const historyController = new AppBrowserHistoryController({
     if (!hasBrowserRouterState()) return null;
     const routerState = getBrowserRouterState();
     return {
-      activeRoutePaths: resolveActiveRoutePaths(routerState.slotBindings),
+      activeRoutePaths: resolveActiveRoutePaths(routerState),
       bfcacheIds: routerState.bfcacheIds,
       previousNextUrl: routerState.previousNextUrl,
     };
@@ -1519,11 +1519,22 @@ function BrowserRoot({
     }
 
     historyController.writeHydratedHistoryMetadata({
-      activeRoutePaths: resolveActiveRoutePaths(treeState.slotBindings),
+      activeRoutePaths: resolveActiveRoutePaths({
+        interception: treeState.interception,
+        routeId: treeState.routeId,
+        slotBindings: treeState.slotBindings,
+      }),
       bfcacheIds: treeState.bfcacheIds,
       previousNextUrl: treeState.previousNextUrl,
     });
-  }, [treeState.bfcacheIds, treeState.previousNextUrl, treeState.renderId, treeState.slotBindings]);
+  }, [
+    treeState.bfcacheIds,
+    treeState.interception,
+    treeState.previousNextUrl,
+    treeState.renderId,
+    treeState.routeId,
+    treeState.slotBindings,
+  ]);
 
   const routeTree = createElement(
     RedirectBoundary,
@@ -2310,7 +2321,7 @@ function bootstrapHydration(
               refreshUrl: url,
               state:
                 navigationKind === "traverse"
-                  ? { previousNextUrl: requestPreviousNextUrl, slotBindings: [] }
+                  ? { ...navigationInitiationState, previousNextUrl: requestPreviousNextUrl }
                   : navigationInitiationState,
             }).filter((sourcePathAndSearch) => {
               if (
@@ -2329,7 +2340,7 @@ function bootstrapHydration(
           historyController.syncCurrentHistoryStatePreviousNextUrl(
             requestPreviousNextUrl,
             getBrowserRouterState().bfcacheIds,
-            resolveActiveRoutePaths(getBrowserRouterState().slotBindings),
+            resolveActiveRoutePaths(getBrowserRouterState()),
           );
         }
 

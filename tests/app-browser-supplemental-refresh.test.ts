@@ -10,6 +10,7 @@ import {
   SupplementalRefreshError,
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
 import { AppElementsWire, type AppElements } from "../packages/vinext/src/server/app-elements.js";
+import { resolveActiveRoutePaths } from "../packages/vinext/src/server/app-history-state.js";
 import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
 import type {
   BrowserRouteManifest,
@@ -30,7 +31,9 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "",
         refreshUrl: new URL("https://example.com/refreshing/login?modal=new"),
         state: {
+          interception: null,
           previousNextUrl: "/refreshing?random=old",
+          routeId: "route:/refreshing/login",
           slotBindings: [],
         },
       }),
@@ -43,7 +46,9 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "/docs",
         refreshUrl: new URL("https://example.com/docs/nested-revalidate/modal?view=current"),
         state: {
+          interception: null,
           previousNextUrl: "/docs/nested-revalidate/drawer",
+          routeId: "route:/nested-revalidate/modal",
           slotBindings: [
             {
               activeRouteId: "route:/nested-revalidate/modal",
@@ -76,7 +81,9 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "/docs",
         refreshUrl: new URL("https://example.com/docs/docs/guide/modal"),
         state: {
+          interception: null,
           previousNextUrl: null,
+          routeId: "route:/docs/guide/modal",
           slotBindings: [],
         },
       }),
@@ -140,7 +147,9 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "",
         refreshUrl: new URL("https://example.com/detail-page"),
         state: {
+          interception: null,
           previousNextUrl: null,
+          routeId: "route:/detail-page",
           // These bindings belong to the intercepted page being left. A
           // cache-miss traversal must use the target history entry's paths,
           // never this navigation-initiation tree.
@@ -169,7 +178,9 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "",
         refreshUrl: new URL("https://example.com/client-cache"),
         state: {
+          interception: null,
           previousNextUrl: null,
+          routeId: "route:/client-cache",
           slotBindings: [
             {
               activeRouteId: "route:/client-cache",
@@ -195,18 +206,21 @@ describe("parallel route supplemental refreshes", () => {
       activeRoutePaths: ["/foo/bar"],
       basePath: "",
       refreshUrl: "https://example.com/foo/",
+      routeId: "route:/foo",
     },
     {
       name: "a trailing-slash route under basePath",
       activeRoutePaths: ["/foo/bar"],
       basePath: "/docs",
       refreshUrl: "https://example.com/docs/foo/",
+      routeId: "route:/foo",
     },
     {
       name: "an encoded Unicode route",
       activeRoutePaths: ["/café/bar"],
       basePath: "",
       refreshUrl: "https://example.com/caf%C3%A9",
+      routeId: "route:/café",
     },
   ])("does not refresh a retained descendant of $name", (testCase) => {
     expect(
@@ -215,11 +229,123 @@ describe("parallel route supplemental refreshes", () => {
         basePath: testCase.basePath,
         refreshUrl: new URL(testCase.refreshUrl),
         state: {
+          interception: null,
           previousNextUrl: null,
+          routeId: testCase.routeId,
           slotBindings: [],
         },
       }),
     ).toEqual([]);
+  });
+
+  // A middleware rewrite makes the page's own route (/v1/p/shoe) differ from
+  // the visible URL (/p/shoe). The request to the visible URL already renders
+  // it, as Next.js' single refresh request does.
+  it("does not refresh the own route of a page that middleware rewrote", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "",
+        refreshUrl: new URL("https://example.com/p/shoe"),
+        state: {
+          interception: null,
+          previousNextUrl: null,
+          routeId: "route:/v1/p/shoe",
+          slotBindings: [
+            {
+              activeRouteId: "route:/v1/p/shoe",
+              ownerLayoutId: "layout:/[version]/p/[slug]",
+              slotId: "slot:children:/[version]/p/[slug]",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/v1/p/shoe",
+              ownerLayoutId: "layout:/[version]/p/[slug]",
+              slotId: "slot:info:/[version]/p/[slug]",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("still refreshes a slot that an earlier page left on a rewritten page", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "",
+        refreshUrl: new URL("https://example.com/p/shoe?tab=new"),
+        state: {
+          interception: null,
+          previousNextUrl: null,
+          routeId: "route:/v1/p/shoe",
+          slotBindings: [
+            {
+              activeRouteId: "route:/v1/p/shoe",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:children:/",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/v1/feed",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:info:/",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual(["/v1/feed?tab=new"]);
+  });
+
+  it("still refreshes the source route of an intercepted page", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "",
+        refreshUrl: new URL("https://example.com/photo"),
+        state: {
+          interception: {
+            sourceMatchedUrl: "/feed",
+            sourceRouteId: "route:/feed",
+            slotId: "slot:modal:/",
+            targetMatchedUrl: "/photo",
+            targetRouteId: "route:/photo",
+          },
+          previousNextUrl: null,
+          routeId: "route:/feed",
+          slotBindings: [
+            {
+              activeRouteId: "route:/feed",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:children:/",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual(["/feed"]);
+  });
+
+  it("leaves the own route of a rewritten page out of the history entry", () => {
+    const slotBindings = [
+      { activeRouteId: "route:/v1/p/shoe", state: "active" },
+      { activeRouteId: "route:/v1/feed", state: "active" },
+    ];
+    expect(
+      resolveActiveRoutePaths({ interception: null, routeId: "route:/v1/p/shoe", slotBindings }),
+    ).toEqual(["/v1/feed"]);
+    expect(
+      resolveActiveRoutePaths({
+        interception: {
+          sourceMatchedUrl: "/v1/p/shoe",
+          sourceRouteId: "route:/v1/p/shoe",
+          slotId: "slot:modal:/",
+          targetMatchedUrl: "/v1/feed",
+          targetRouteId: "route:/v1/feed",
+        },
+        routeId: "route:/v1/p/shoe",
+        slotBindings,
+      }),
+    ).toEqual(["/v1/p/shoe", "/v1/feed"]);
   });
 
   it("does not treat a shared pathname prefix as a descendant", () => {
@@ -229,7 +355,9 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "",
         refreshUrl: new URL("https://example.com/foo"),
         state: {
+          interception: null,
           previousNextUrl: null,
+          routeId: "route:/foo",
           slotBindings: [],
         },
       }),

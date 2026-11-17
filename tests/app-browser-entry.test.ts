@@ -3944,7 +3944,7 @@ describe("app browser navigation controller", () => {
       const committedState = await pendingRouterState.promise;
       expect(createNavigationCommitEffect).toHaveBeenCalledWith(
         expect.objectContaining({
-          activeRoutePaths: resolveActiveRoutePaths(committedState.slotBindings),
+          activeRoutePaths: resolveActiveRoutePaths(committedState),
           bfcacheIds: committedState.bfcacheIds,
         }),
       );

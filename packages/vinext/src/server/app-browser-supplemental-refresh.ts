@@ -9,6 +9,7 @@ import {
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import type { AppRouterState } from "./app-browser-state.js";
+import { resolveActiveRoutePaths } from "./app-history-state.js";
 import { isNestedBfcacheSlotSegmentIdFor } from "./bfcache-identity.js";
 import type {
   BrowserRouteManifest,
@@ -257,7 +258,7 @@ export function resolvePersistedSourcePageRefreshes(options: {
   activeRoutePaths?: readonly string[];
   basePath: string;
   refreshUrl: URL;
-  state: Pick<AppRouterState, "previousNextUrl" | "slotBindings">;
+  state: Pick<AppRouterState, "interception" | "previousNextUrl" | "routeId" | "slotBindings">;
 }): string[] {
   const sourceUrlsByPathname = new Map<string, URL>();
   const refreshRoutePathname = removeTrailingSlash(
@@ -270,15 +271,7 @@ export function resolvePersistedSourcePageRefreshes(options: {
     sourceUrlsByPathname.set(sourceUrl.pathname, sourceUrl);
   }
 
-  const activeRoutePaths =
-    options.activeRoutePaths ??
-    options.state.slotBindings.flatMap((binding) => {
-      if (binding.state !== "active" || binding.activeRouteId == null) return [];
-      const activeRoute = AppElementsWire.parseElementKey(binding.activeRouteId);
-      return activeRoute?.kind === "route" && activeRoute.interceptionContext === null
-        ? [activeRoute.path]
-        : [];
-    });
+  const activeRoutePaths = options.activeRoutePaths ?? resolveActiveRoutePaths(options.state);
   for (const activeRoutePath of activeRoutePaths) {
     // A deeper children route can remain in the merged client tree after the
     // user navigates back to its ancestor for cache reuse. It is not a visible
