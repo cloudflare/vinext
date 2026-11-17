@@ -1920,6 +1920,14 @@ function registerServerActionCallback(): void {
     }
     const releaseCacheInvalidationGuard = historyController.beginCacheInvalidationGuard();
     const actionInitiation = createActionInitiationSnapshot();
+    // Next.js refreshes for a discarded or tree-less revalidation only once its
+    // action queue is empty. Every action in flight holds that refresh, which
+    // would otherwise supersede the action and discard its result.
+    discardedServerActionRefreshScheduler.markNavigationStart();
+    const settleServerAction = () => {
+      releaseCacheInvalidationGuard();
+      discardedServerActionRefreshScheduler.markNavigationSettled();
+    };
     return loadServerActionClient!()
       .then(({ invokeClientServerAction }) =>
         invokeClientServerAction(id, args, actionInitiation, {
@@ -1976,7 +1984,7 @@ function registerServerActionCallback(): void {
           syncServerActionHttpFallbackHead,
         }),
       )
-      .finally(releaseCacheInvalidationGuard);
+      .finally(settleServerAction);
   });
 }
 

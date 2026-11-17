@@ -320,6 +320,74 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     expect(sourceDocumentLoads).toEqual([]);
   });
 
+  // Next.js refreshes for a revalidation without a tree only once its action
+  // queue is empty. The refresh must not supersede an action still in flight
+  // and discard its redirect.
+  test("revalidating action without a tree refreshes only after other actions settle", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const externalUrl = "http://external.example/landing";
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+
+    let releaseRedirectingAction = () => {};
+    const redirectingActionGate = new Promise<void>((resolve) => {
+      releaseRedirectingAction = resolve;
+    });
+    let actionRequests = 0;
+    let sourceRscReads = 0;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (isAppRouterServerActionRequestForPath(request, sourcePath)) {
+        actionRequests += 1;
+        const isRedirectingAction = actionRequests === 1;
+        const response = await route.fetch();
+        if (isRedirectingAction) {
+          await redirectingActionGate;
+          return route.fulfill({
+            status: 303,
+            headers: { ...response.headers(), "x-action-redirect": externalUrl },
+            body: "",
+          });
+        }
+        // Keep the real headers (revalidated, compatibility id) but drop the tree.
+        return route.fulfill({
+          status: 200,
+          headers: response.headers(),
+          body: '0:{"returnValue":{"ok":true,"data":1}}\n',
+        });
+      }
+      if (url.pathname === sourcePath && url.searchParams.has("_rsc")) sourceRscReads += 1;
+      if (request.isNavigationRequest() && url.host === "external.example") {
+        return route.fulfill({
+          contentType: "text/html",
+          body: '<p id="external-landing">External</p>',
+        });
+      }
+      return route.continue();
+    });
+
+    const redirectingActionRequest = page.waitForRequest((request) =>
+      isAppRouterServerActionRequestForPath(request, sourcePath),
+    );
+    await page.click("#slow-action");
+    await redirectingActionRequest;
+    const revalidatingActionResponse = page.waitForResponse((response) =>
+      isAppRouterServerActionRequestForPath(response.request(), sourcePath),
+    );
+    await page.click("#slow-action-refresh");
+    await revalidatingActionResponse;
+    await page.waitForTimeout(500);
+    expect(sourceRscReads).toBe(0);
+
+    releaseRedirectingAction();
+    await expect(page.locator("#external-landing")).toBeVisible();
+    expect(page.url()).toBe(externalUrl);
+    expect(sourceRscReads).toBe(0);
+  });
+
   // As in Next.js, a navigation that superseded an action discards the
   // action's redirect, even to another origin, and refreshes what it revalidated.
   test("superseded server action's external redirect does not replace the navigation", async ({
