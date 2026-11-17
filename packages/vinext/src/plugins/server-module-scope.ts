@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "pathslash";
 import type { Plugin } from "vite";
-import { getBuildBundlerOptions, withBuildBundlerOptions } from "../build/client-build-config.js";
+import { isPathInsideOrEqual } from "../utils/path.js";
 import { isServerEnvironment } from "./environment.js";
 
 /**
@@ -34,24 +34,41 @@ export function readPackageScopeType(dir: string): string {
   }
 }
 
+/** Applies `type: "module"` to an emitted package manifest, keeping its other fields. */
+function pinModuleType(source: string | Uint8Array): string | null {
+  const text = typeof source === "string" ? source : new TextDecoder().decode(source);
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return null;
+  if (Reflect.get(manifest, "type") === "module") return text;
+  return `${JSON.stringify({ ...manifest, type: "module" }, null, 2)}\n`;
+}
+
 /**
  * Keeps vinext's server build output ESM under a CommonJS package scope.
  *
  * vinext's server bundles, and the modules it generates next to them
  * (`__vinext_action_owner_manifest.js` and other manifests), are ESM with
  * `.js` names. When the project's package.json omits `"type": "module"`, Vite
- * names server entries `.mjs` (so `dist/server/index.js` never exists) and
- * Node reads the generated `.js` modules as CommonJS. Next.js pins the module
- * type of its own output the same way, with `{"type": "commonjs"}` in
- * `.next/package.json`.
+ * names server entries `.mjs` (so `dist/server/index.js` never exists), and
+ * Node reads `.js` modules in an output directory under a CommonJS scope as
+ * CommonJS. Next.js pins the module type of its own output the same way, with
+ * `{"type": "commonjs"}` in `.next/package.json`.
  *
- * This plugin, only for such projects:
- * - restores `.js` entry and chunk names in the server environments vinext
- *   owns, so the fixed entry paths exist;
- * - writes `{"type":"module"}` to `package.json` in every server
- *   environment's output directory, and in the directories outside it that
- *   hold modules the server imports (the Pages Router client assets module
- *   in `dist/`).
+ * This plugin:
+ * - under a CommonJS project root, swaps Vite's `.mjs` server entry and chunk
+ *   name defaults back to the `.js` names Vite uses under a module root, in
+ *   the server environments vinext owns, so the fixed entry paths exist;
+ * - pins every ESM server output directory whose package scope isn't
+ *   `module` with an emitted `package.json` of `{"type":"module"}`, or by
+ *   setting `type` on one another plugin emitted;
+ * - does the same for the directories outside it that hold modules the
+ *   server imports (the Pages Router client assets module in `dist/`), but
+ *   never replaces a package.json there or writes one at or above the root.
  */
 export function createServerModuleScopePlugin(options: {
   /** Whether vinext owns the entry and chunk names of this environment. */
@@ -59,49 +76,98 @@ export function createServerModuleScopePlugin(options: {
   /** Directories, possibly outside a server output directory, with modules it imports. */
   getModuleOutputDirs: () => Iterable<string>;
 }): Plugin {
-  let isModuleScope = true;
+  let root = process.cwd();
+  let isModuleRoot = true;
+  const warnedDirs = new Set<string>();
 
   return {
     name: "vinext:server-module-scope",
     apply: "build",
 
-    config(config) {
-      isModuleScope = readPackageScopeType(path.resolve(config.root ?? process.cwd())) === "module";
+    configResolved(config) {
+      root = config.root;
+      isModuleRoot = readPackageScopeType(root) === "module";
     },
 
-    configEnvironment(name, config) {
-      if (isModuleScope || name === "client" || config.consumer === "client") return null;
-      if (!options.ownsFileNames(name)) return null;
-      const output = getBuildBundlerOptions(config.build)?.output;
-      if (Array.isArray(output)) return null;
-      const fileNames = {
-        ...(output?.entryFileNames === undefined ? { entryFileNames: "[name].js" } : {}),
-        ...(output?.chunkFileNames === undefined
-          ? { chunkFileNames: `${config.build?.assetsDir ?? "assets"}/[name]-[hash].js` }
-          : {}),
-      };
-      if (Object.keys(fileNames).length === 0) return null;
-      return { build: withBuildBundlerOptions({ output: fileNames }) };
+    // Runs before other plugins wrap the chunk names (multi-stage output).
+    // Rolldown calls it once per output, so array-shaped outputs are covered.
+    outputOptions: {
+      order: "pre",
+      handler(output) {
+        const environment = this.environment;
+        if (isModuleRoot || !isServerEnvironment(environment)) return null;
+        if (!options.ownsFileNames(environment.name)) return null;
+        // Vite's SSR defaults under a CommonJS root (resolveOutputJsExtension).
+        const assetsDir = environment.config.build.assetsDir;
+        const entryFileNames =
+          output.entryFileNames === "[name].mjs" ? "[name].js" : output.entryFileNames;
+        const chunkFileNames =
+          output.chunkFileNames === path.posix.join(assetsDir, "[name]-[hash].mjs")
+            ? path.posix.join(assetsDir, "[name]-[hash].js")
+            : output.chunkFileNames;
+        if (entryFileNames === output.entryFileNames && chunkFileNames === output.chunkFileNames) {
+          return null;
+        }
+        return { ...output, entryFileNames, chunkFileNames };
+      },
     },
 
-    generateBundle(_options, bundle) {
-      if (isModuleScope || !isServerEnvironment(this.environment)) return;
-      // Nitro writes its own server output and package manifest.
-      if (this.environment.name === "nitro") return;
-      if ("package.json" in bundle) return;
-      this.emitFile({
-        type: "asset",
-        fileName: "package.json",
-        source: SERVER_OUTPUT_PACKAGE_JSON,
-      });
+    // After every other plugin's assets are in the bundle.
+    generateBundle: {
+      order: "post",
+      handler(output, bundle) {
+        const environment = this.environment;
+        if (!isServerEnvironment(environment)) return;
+        // Nitro writes its own server output and package manifest.
+        if (environment.name === "nitro") return;
+        if (output.format !== "es") return;
+
+        const emitted = bundle["package.json"];
+        if (emitted) {
+          if (emitted.type !== "asset") return;
+          const source = pinModuleType(emitted.source);
+          if (source === null) {
+            this.error(
+              `[vinext] The package.json emitted into the ${environment.name} server output isn't a JSON object, so it can't declare "type": "module" for vinext's ESM output.`,
+            );
+          }
+          emitted.source = source;
+          return;
+        }
+
+        const outDir = path.resolve(root, output.dir ?? environment.config.build.outDir);
+        if (readPackageScopeType(outDir) === "module") return;
+        // Vite has already emptied the output directory, so a package.json
+        // still there isn't output: leave it to its owner.
+        if (fs.existsSync(path.join(outDir, "package.json"))) {
+          this.warn(
+            `${path.join(outDir, "package.json")} doesn't declare "type": "module", so Node will load vinext's ESM server output there as CommonJS.`,
+          );
+          return;
+        }
+        this.emitFile({
+          type: "asset",
+          fileName: "package.json",
+          source: SERVER_OUTPUT_PACKAGE_JSON,
+        });
+      },
     },
 
     writeBundle() {
-      if (isModuleScope || !isServerEnvironment(this.environment)) return;
+      if (!isServerEnvironment(this.environment)) return;
       for (const dir of options.getModuleOutputDirs()) {
         if (readPackageScopeType(dir) === "module") continue;
+        const packageJsonPath = path.join(dir, "package.json");
+        if (isPathInsideOrEqual(dir, root) || fs.existsSync(packageJsonPath)) {
+          if (warnedDirs.has(dir)) continue;
+          warnedDirs.add(dir);
+          this.warn(
+            `${dir} isn't in an ESM package scope and vinext won't write its package.json, so Node will load the server modules vinext writes there as CommonJS.`,
+          );
+          continue;
+        }
         fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(path.join(dir, "package.json"), SERVER_OUTPUT_PACKAGE_JSON);
+        fs.writeFileSync(packageJsonPath, SERVER_OUTPUT_PACKAGE_JSON);
       }
     },
   };

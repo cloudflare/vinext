@@ -15,9 +15,9 @@ import fs from "node:fs";
 import type { Server } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createBuilder, type ViteDevServer } from "vite";
+import { createBuilder, type Plugin, type UserConfig, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import vinext from "../packages/vinext/src/index.js";
+import vinext, { type VinextOptions } from "../packages/vinext/src/index.js";
 import { createIsolatedFixture, fetchHtml, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_SOURCE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-cjs-package-scope");
@@ -26,13 +26,27 @@ const PAGES_FIXTURE_SOURCE_DIR = path.resolve(
   "./fixtures/pages-cjs-package-scope",
 );
 
-/** Builds a copy of a fixture, keeping its `"type": "commonjs"` package.json. */
-async function buildIsolatedFixture(sourceDir: string, prefix: string): Promise<string> {
+const OUTPUT_SCOPE_FIXTURE_SOURCE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/app-cjs-output-scope",
+);
+
+/** Builds a copy of a fixture, keeping its own package.json. */
+async function buildIsolatedFixture(
+  sourceDir: string,
+  prefix: string,
+  config: {
+    vinextOptions?: Omit<VinextOptions, "appDir">;
+    plugins?: Plugin[];
+    environments?: UserConfig["environments"];
+  } = {},
+): Promise<string> {
   const fixtureDir = await createIsolatedFixture(sourceDir, prefix);
   const builder = await createBuilder({
     root: fixtureDir,
     configFile: false,
-    plugins: [vinext({ appDir: fixtureDir })],
+    plugins: [vinext({ ...config.vinextOptions, appDir: fixtureDir }), ...(config.plugins ?? [])],
+    environments: config.environments,
     logLevel: "silent",
   });
   await builder.buildApp();
@@ -152,6 +166,125 @@ describe('A root package.json with "type": "commonjs"', () => {
       ({ server, baseUrl } = await startBuiltServer(fixtureDir));
       await expectActionsRedirect(baseUrl);
     }, 60_000);
+  });
+
+  describe("production with custom server output options", () => {
+    let fixtureDir: string;
+
+    beforeAll(async () => {
+      fixtureDir = await buildIsolatedFixture(FIXTURE_SOURCE_DIR, "vinext-cjs-scope-output-", {
+        environments: {
+          // An array-shaped output and an empty assetsDir are both valid.
+          rsc: { build: { assetsDir: "" } },
+          ssr: { build: { rolldownOptions: { output: [{}] } } },
+        },
+        plugins: [
+          {
+            name: "test:emit-commonjs-package-json",
+            apply: "build",
+            generateBundle() {
+              if (this.environment.name !== "rsc") return;
+              this.emitFile({
+                type: "asset",
+                fileName: "package.json",
+                source: JSON.stringify({ name: "emitted", type: "commonjs" }),
+              });
+            },
+          },
+        ],
+      });
+    }, 120_000);
+
+    afterAll(() => {
+      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+    });
+
+    it("keeps an emitted package.json, pinned to ESM", () => {
+      const serverDir = path.join(fixtureDir, "dist", "server");
+      expect(JSON.parse(fs.readFileSync(path.join(serverDir, "package.json"), "utf-8"))).toEqual({
+        name: "emitted",
+        type: "module",
+      });
+    });
+
+    it("emits .js entries and chunks that plain Node loads as ESM", () => {
+      const serverDir = path.join(fixtureDir, "dist", "server");
+      const files = fs.readdirSync(serverDir, { recursive: true, encoding: "utf-8" });
+      expect(files).toContain("index.js");
+      expect(files).toContain(path.join("ssr", "index.js"));
+      expect(files.filter((file) => file.endsWith(".mjs"))).toEqual([]);
+      const result = importWithNode(path.join(serverDir, "index.js"), fixtureDir);
+      expect(result.stderr).not.toContain("SyntaxError");
+      expect(result.status).toBe(0);
+    });
+  });
+
+  describe('production with a "type": "module" root and output in a CommonJS package', () => {
+    let fixtureDir: string;
+
+    beforeAll(async () => {
+      fixtureDir = await buildIsolatedFixture(
+        OUTPUT_SCOPE_FIXTURE_SOURCE_DIR,
+        "vinext-cjs-output-scope-",
+        {
+          vinextOptions: {
+            rscOutDir: "cjs-output/server",
+            ssrOutDir: "cjs-output/server/ssr",
+            clientOutDir: "cjs-output/client",
+          },
+        },
+      );
+    }, 120_000);
+
+    afterAll(() => {
+      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+    });
+
+    it("pins the server output directory to ESM", () => {
+      const serverDir = path.join(fixtureDir, "cjs-output", "server");
+      expect(JSON.parse(fs.readFileSync(path.join(serverDir, "package.json"), "utf-8"))).toEqual({
+        type: "module",
+      });
+      const result = importWithNode(path.join(serverDir, "index.js"), fixtureDir);
+      expect(result.stderr).not.toContain("SyntaxError");
+      expect(result.status).toBe(0);
+    });
+  });
+
+  describe("Pages Router production with the SSR output beside the sources", () => {
+    let fixtureDir: string;
+
+    beforeAll(async () => {
+      fixtureDir = await buildIsolatedFixture(
+        PAGES_FIXTURE_SOURCE_DIR,
+        "vinext-pages-cjs-scope-outdir-",
+        {
+          // The client assets module goes beside the SSR output directory,
+          // which is now the project root.
+          plugins: [
+            {
+              name: "test:ssr-out-dir",
+              configEnvironment(name) {
+                return name === "ssr" ? { build: { outDir: "server" } } : null;
+              },
+            },
+          ],
+        },
+      );
+    }, 120_000);
+
+    afterAll(() => {
+      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+    });
+
+    it("leaves the project's package.json alone", () => {
+      expect(fs.readFileSync(path.join(fixtureDir, "package.json"), "utf-8")).toBe(
+        fs.readFileSync(path.join(PAGES_FIXTURE_SOURCE_DIR, "package.json"), "utf-8"),
+      );
+      expect(
+        JSON.parse(fs.readFileSync(path.join(fixtureDir, "server", "package.json"), "utf-8")),
+      ).toEqual({ type: "module" });
+    });
   });
 
   describe("Pages Router production", () => {

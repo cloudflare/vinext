@@ -5912,7 +5912,6 @@ export const loadServerActionClient = ${
         };
       },
     },
-    // Runs after the file-name defaults above so it sees the names they set.
     // The Cloudflare and Nitro plugins own their server entry names.
     createServerModuleScopePlugin({
       ownsFileNames: (name) =>
