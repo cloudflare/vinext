@@ -1362,6 +1362,32 @@ describe("createAppRscHandler", () => {
     }
   });
 
+  it("keeps the renderer's Cache-Control over next.config headers while prerendering", async () => {
+    // The build reads a page's Cache-Control to tell a render that used
+    // headers() or cookies() from a reusable one. Next.js generates static
+    // pages without its config headers, which the server adds when it serves.
+    const dynamicCacheControl = "private, no-cache, no-store, max-age=0, must-revalidate";
+    const handler = createHandler({
+      configHeaders: [
+        { source: "/about", headers: [{ key: "Cache-Control", value: "public, max-age=60" }] },
+      ],
+      dispatchMatchedPage: async () =>
+        new Response("page", { headers: { "Cache-Control": dynamicCacheControl } }),
+    });
+    const cacheControl = async () =>
+      (await handler(new Request("https://example.test/docs/about"), null)).headers.get(
+        "cache-control",
+      );
+
+    try {
+      expect(await cacheControl()).toBe("public, max-age=60");
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      expect(await cacheControl()).toBe(dynamicCacheControl);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   describe("shared cache identity", () => {
     function useQueryFreeIdentityAdapter(
       overrides: Partial<

@@ -138,6 +138,12 @@ export function isAppRscResponseConfigHeadersApplied(response: Response): boolea
   return configHeadersAlreadyApplied.has(response);
 }
 
+const NO_HEADER_OVERWRITES: ReadonlySet<string> = new Set();
+
+function isPrerenderBuild(): boolean {
+  return typeof process !== "undefined" && process.env?.VINEXT_PRERENDER === "1";
+}
+
 /** Apply only the matching next.config headers for an App Router request. */
 export async function applyAppRscConfigHeaders(
   headers: Headers,
@@ -171,7 +177,13 @@ export async function applyAppRscConfigHeaders(
     // including for force-dynamic App Pages. Other response headers retain
     // the existing merge precedence.
     // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
-    overwriteExisting: options.overwriteExisting ?? isCdnResponsePolicyHeader,
+    //
+    // The build keeps the renderer's policy: it reads Cache-Control to tell a
+    // render that used a request API from a reusable one, and the server
+    // applies config headers when it serves the prerendered page.
+    overwriteExisting: isPrerenderBuild()
+      ? NO_HEADER_OVERWRITES
+      : (options.overwriteExisting ?? isCdnResponsePolicyHeader),
   });
 }
 
