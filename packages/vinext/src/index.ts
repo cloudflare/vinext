@@ -3615,12 +3615,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // external, so their imports can still be rewritten.
         const optimizedPackageNames = getOptimizedPackageNames(nextConfig?.optimizePackageImports);
         pagesBundledPackages = new Set([...serverTranspilePackages, ...optimizedPackageNames]);
-        // RSC also rewrites the subpath barrels of SUBPATH_OPTIMIZE_PACKAGES.
-        const alwaysBundledServerPackages = [
-          ...PATCHED_SERVER_PACKAGES,
-          ...optimizedPackageNames,
-          ...SUBPATH_OPTIMIZE_PACKAGES,
-        ];
         const openTelemetryPackages = findOpenTelemetryPackages(root);
         registerNodeOpenTelemetryLoader =
           env.command === "build" &&
@@ -3645,6 +3639,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           openTelemetryPackages,
         );
         resolvedServerExternalPackages = nextServerExternal;
+        // Under `ssr.external: true`, RSC bundles every optimized barrel so a
+        // rewrite can stop at its "use client" leaves, including the subpath
+        // barrels of SUBPATH_OPTIMIZE_PACKAGES. SSR bundles only the packages
+        // the user listed: a default-list package bundled there would still
+        // import its other dependencies as externals, which Node may not load.
+        const bundledServerPackages = (names: readonly string[]): string[] => [
+          ...PATCHED_SERVER_PACKAGES,
+          ...names.filter((name) => !nextServerExternal.includes(name)),
+        ];
+        const rscBundledPackages = bundledServerPackages([
+          ...optimizedPackageNames,
+          ...SUBPATH_OPTIMIZE_PACKAGES,
+        ]);
+        const ssrBundledPackages = bundledServerPackages(
+          getOptimizedPackageNames(nextConfig?.optimizePackageImports, { includeDefaults: false }),
+        );
         // Detect if this is a multi-environment build (App Router or Cloudflare).
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
@@ -3936,7 +3946,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(hasCloudflarePlugin || hasNitroPlugin
             ? {}
             : config.ssr?.external === true
-              ? { ssr: { external: true as const, noExternal: alwaysBundledServerPackages } }
+              ? { ssr: { external: true as const, noExternal: ssrBundledPackages } }
               : {
                   ssr: {
                     external: [
@@ -4406,8 +4416,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // Packages in `external` above take precedence per Vite rules.
                       // When user sets `ssr.external: true`, only packages vinext
                       // must patch and optimized barrels stay in the pipeline.
-                      noExternal:
-                        userSsrExternal === true ? alwaysBundledServerPackages : (true as const),
+                      noExternal: userSsrExternal === true ? rscBundledPackages : (true as const),
                     },
                   }),
               optimizeDeps: {
@@ -4456,9 +4465,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
                       // When user sets `ssr.external: true`, only packages vinext
-                      // must patch and optimized barrels stay in the pipeline.
-                      noExternal:
-                        userSsrExternal === true ? alwaysBundledServerPackages : (true as const),
+                      // must patch and the user's optimized barrels stay in the
+                      // pipeline.
+                      noExternal: userSsrExternal === true ? ssrBundledPackages : (true as const),
                     },
                   }),
               optimizeDeps: {

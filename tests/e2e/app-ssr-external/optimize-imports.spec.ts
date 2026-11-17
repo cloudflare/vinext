@@ -22,3 +22,15 @@ test("rewrites optimized barrel imports when every dependency is external", asyn
   expect(html).toMatch(/data-testid="toast-queue">function</);
   expect(html).toMatch(/data-testid="toast-hook">function</);
 });
+
+// antd is on vinext's default list. Like the real package, the fake's ES build
+// deep-imports rc-util, which Node can't load natively, so SSR must keep the
+// whole package external rather than bundle it for every import shape.
+test("keeps default-list packages external in SSR", async ({ request }) => {
+  const res = await request.get("/default-barrel");
+  expect(res.status()).toBe(200);
+  const html = await res.text();
+  for (const id of ["named", "namespace", "reexport"]) {
+    expect(html).toContain(`data-testid="${id}">antd-button<`);
+  }
+});

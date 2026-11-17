@@ -870,6 +870,16 @@ describe("vinext:optimize-imports transform", () => {
     );
   });
 
+  it("leaves an import alone when the entry defines every imported name", async () => {
+    // Like react-icons' subpath entries, which define their icons inline.
+    const call = await setupTransform("lucide-react", `export function Check() { return null; }`);
+    for (const envName of ["rsc", "ssr"]) {
+      expect(
+        await call(`import { Check } from "lucide-react";`, "/app/page.tsx", envName),
+      ).toBeNull();
+    }
+  });
+
   it("only registers the packages this environment imports for resolveId", async () => {
     tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),

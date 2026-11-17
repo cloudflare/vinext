@@ -1,0 +1,7 @@
+{
+  "name": "rc-util",
+  "version": "0.0.0-vinext-fixture",
+  "private": true,
+  "main": "lib/index.js",
+  "module": "es/index.js"
+}

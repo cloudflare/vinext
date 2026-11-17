@@ -1615,9 +1615,15 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.38(@voidzero-dev/vite-plus-core@1.5.1(@types/node@25.9.2)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react-server-dom-webpack@19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react@19.3.1)
+      antd:
+        specifier: file:./__test_packages__/fake-antd
+        version: file:tests/fixtures/app-ssr-external/__test_packages__/fake-antd
       fake-external-barrel:
         specifier: file:./__test_packages__/fake-external-barrel
         version: file:tests/fixtures/app-ssr-external/__test_packages__/fake-external-barrel
+      rc-util:
+        specifier: file:./__test_packages__/fake-rc-util
+        version: file:tests/fixtures/app-ssr-external/__test_packages__/fake-rc-util
       react:
         specifier: 'catalog:'
         version: 19.3.1
@@ -7639,6 +7645,9 @@ packages:
     resolution: {integrity: sha512-HqZ5rWlFjGiV0tDm3UxxgNRqsOTniqoKZu0pIAfh7TZQMGuZK+hH0drySty0si0QXj1ieop4+SkSfPZBPPkHig==}
     engines: {node: '>=14'}
 
+  antd@file:tests/fixtures/app-ssr-external/__test_packages__/fake-antd:
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-antd, type: directory}
+
   app-cjs-esm-package@file:tests/fixtures/esm-externals/__test_packages__/app-cjs-esm-package:
     resolution: {directory: tests/fixtures/esm-externals/__test_packages__/app-cjs-esm-package, type: directory}
 
@@ -10520,6 +10529,9 @@ packages:
 
   queue-microtask@1.2.3:
     resolution: {integrity: sha512-NuaNSa6flKT5JaSYQzJok04JzTL1CA6aGhv5rfLW3PgqA+M2ChpZQnAC8h8i4ZFkBS8X5RqkDBHA7r4hej3K9A==}
+
+  rc-util@file:tests/fixtures/app-ssr-external/__test_packages__/fake-rc-util:
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-rc-util, type: directory}
 
   react-aria-components@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components:
     resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components, type: directory}
@@ -15937,6 +15949,8 @@ snapshots:
 
   ansis@4.2.0: {}
 
+  antd@file:tests/fixtures/app-ssr-external/__test_packages__/fake-antd: {}
+
   app-cjs-esm-package@file:tests/fixtures/esm-externals/__test_packages__/app-cjs-esm-package: {}
 
   app-esm-package@file:tests/fixtures/esm-externals/__test_packages__/app-esm-package1: {}
@@ -19371,6 +19385,8 @@ snapshots:
   quansync@0.2.11: {}
 
   queue-microtask@1.2.3: {}
+
+  rc-util@file:tests/fixtures/app-ssr-external/__test_packages__/fake-rc-util: {}
 
   react-aria-components@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components:
     dependencies:

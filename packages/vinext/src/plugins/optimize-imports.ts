@@ -168,10 +168,14 @@ export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
  * adds them all to `transpilePackages`, the server keeps these packages in its
  * bundle: a barrel resolved as external can't be rewritten and loads whole.
  */
-export function getOptimizedPackageNames(optimizePackageImports: readonly string[] = []): string[] {
-  const names = [...DEFAULT_OPTIMIZE_PACKAGES, ...optimizePackageImports].map(
-    packageNameFromSpecifier,
-  );
+export function getOptimizedPackageNames(
+  optimizePackageImports: readonly string[] = [],
+  { includeDefaults = true }: { includeDefaults?: boolean } = {},
+): string[] {
+  const names = [
+    ...(includeDefaults ? DEFAULT_OPTIMIZE_PACKAGES : []),
+    ...optimizePackageImports,
+  ].map(packageNameFromSpecifier);
   return [...new Set(names.filter((name): name is string => name !== null))];
 }
 
@@ -836,14 +840,16 @@ export function createOptimizeImportsPlugin(
             continue;
           }
 
-          // A subpath entry that defines (or is the boundary for) every imported
-          // name gains nothing from a rewrite.
-          if (
-            isSubpath &&
-            specifiers.every(({ imported }) => getEntry(imported)?.source === barrelEntry)
-          ) {
-            continue;
-          }
+          // An entry that defines every imported name gains nothing from a
+          // rewrite, which would only bypass its prebundle. A subpath entry that
+          // is the boundary for every name is left alone too.
+          const entryDefinesEveryName = specifiers.every(({ imported }) => {
+            if (isSubpath) return getEntry(imported)?.source === barrelEntry;
+            const entry = exportMap.get(imported);
+            const boundary = preferReactServer ? entry?.rscBoundary : entry?.ssrBoundary;
+            return entry?.source === barrelEntry && !boundary;
+          });
+          if (entryDefinesEveryName) continue;
 
           // Package sources of a subpath entry resolve from the entry's own
           // location, which may hold a different version than the importer sees.

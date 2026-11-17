@@ -860,6 +860,7 @@ describe("optimizeDeps.exclude for vinext", () => {
     await fsp.writeFile(path.join(root, "next.config.mjs"), `export default {};`);
 
     return {
+      root,
       config(userConfig: Record<string, unknown> = {}, command: "serve" | "build" = "serve") {
         return (mainPlugin as any).config(
           { root, build: {}, plugins: [], ...userConfig },
@@ -911,6 +912,37 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.rsc.resolve.noExternal).toContain("@vercel/og");
       expect(result.environments.ssr.resolve.external).toBe(true);
       expect(result.environments.ssr.resolve.noExternal).toContain("@vercel/og");
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  // RSC bundles every optimized barrel so its imports can stop at "use client"
+  // leaves; SSR bundles only the user's list, since a bundled package would
+  // still import its other dependencies as externals.
+  it("bundles optimized barrels on the server when ssr.external: true", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-optimize-no-external-");
+
+    try {
+      await fsp.writeFile(
+        path.join(fixture.root, "next.config.mjs"),
+        `export default { serverExternalPackages: ["lucide-react"], experimental: { optimizePackageImports: ["my-barrel"] } };`,
+      );
+      const result = await fixture.config({ ssr: { external: true } });
+
+      const rscNoExternal = result.environments.rsc.resolve.noExternal;
+      expect(rscNoExternal).toEqual(
+        expect.arrayContaining(["antd", "react-aria-components", "my-barrel"]),
+      );
+      expect(rscNoExternal).not.toContain("lucide-react");
+      for (const ssrNoExternal of [
+        result.ssr.noExternal,
+        result.environments.ssr.resolve.noExternal,
+      ]) {
+        expect(ssrNoExternal).toContain("my-barrel");
+        expect(ssrNoExternal).not.toContain("antd");
+        expect(ssrNoExternal).not.toContain("react-aria-components");
+      }
     } finally {
       await fixture.cleanup();
     }
