@@ -21,6 +21,11 @@
  * unstyled. Next.js links each rendered segment's CSS, its Client Components'
  * included, whether they render or not, so a render links the stylesheets of
  * the references its rendered route files import statically the same way.
+ * Next.js renders that CSS beside the segment, so React links it in the shell
+ * when it reaches the segment before the shell flushes, and otherwise, below
+ * a layout still pending then, holds the boundary's reveal for it instead of
+ * the shell. A render does the same as it reaches the element that renders
+ * each file (see `renderElementStylesheets`).
  *
  * plugin-rsc hints a client module's scripts without the render's nonce, which
  * a nonce-based CSP blocks, and always as anonymous, so under
@@ -33,10 +38,11 @@
  * links a lazily imported module's stylesheets as anonymous, and a later page
  * doing so would fail the CORS check on the no-cors copy the browser cached.
  */
+import { createElement, type ReactNode } from "react";
 import * as ReactDOM from "react-dom";
 import { setOnClientReference } from "@vitejs/plugin-rsc/ssr";
 import { getOrCreateAls } from "vinext/shims/internal/als-registry";
-import type { RouteClientReferenceSet } from "./app-client-reference-preloader.js";
+import { elementKey, type RouteClientReferenceSet } from "./app-client-reference-preloader.js";
 import { escapeHtmlAttr } from "./html.js";
 import { tagPromiseWithRequest } from "./isolate-shared-promise.js";
 import type { AssetCrossOrigin } from "./pages-client-assets.js";
@@ -60,6 +66,14 @@ export type StreamedClientReferences = {
    */
   unlinked: string[];
   linkedStylesheets: Set<string>;
+  /** Each linked reference's elements (see `RouteClientReferenceSet.linkedElements`). */
+  linkedElements: ReadonlyMap<string, readonly string[]>;
+  /** The keys (see `elementKey`) of the elements in the render's payload. */
+  payloadElements: Set<string>;
+  /** The keys of the elements the render has reached. */
+  renderedElements: Set<string>;
+  /** Whether the shell's `<head>` has its stylesheets. */
+  headLinked: boolean;
 };
 
 const WRAPPED = Symbol.for("vinext.streamedClientReferences.wrapped");
@@ -99,17 +113,38 @@ function linkStylesheets(hrefs: readonly string[], render: StreamedClientReferen
 }
 
 /**
+ * Whether the render has reached an element rendering a file that imports
+ * linked reference `id`. One the payload lacks counts as reached, since the
+ * render can't tell when it would.
+ */
+function isReached(render: StreamedClientReferences, id: string): boolean {
+  const elements = render.linkedElements.get(id);
+  return (
+    !elements ||
+    elements.some((key) => render.renderedElements.has(key) || !render.payloadElements.has(key))
+  );
+}
+
+/**
  * Before reference `id` links its stylesheets, link those of the streamed and
- * linked references that come before it in import order.
+ * linked references that come before it in import order, except linked ones
+ * the render hasn't reached yet.
  */
 function linkStreamedStylesheetsBefore(render: StreamedClientReferences, id: string): void {
   const position = render.positions.get(id);
   if (position === undefined) return;
+  const unreached: string[] = [];
   while (render.unlinked.length > 0 && render.positions.get(render.unlinked[0]!)! < position) {
-    const hrefs = referenceDeps.get(render.unlinked.shift()!)?.css ?? [];
+    const unlinked = render.unlinked.shift()!;
+    if (!isReached(render, unlinked)) {
+      unreached.push(unlinked);
+      continue;
+    }
+    const hrefs = referenceDeps.get(unlinked)?.css ?? [];
     for (const href of hrefs) render.linkedStylesheets.add(href);
     linkStylesheets(hrefs, render);
   }
+  render.unlinked.unshift(...unreached);
 }
 
 /**
@@ -200,6 +235,20 @@ function unlinkedReferences(
   return stylesheetOrder(route).filter((id) => streamed.has(id) || linked.has(id));
 }
 
+// The elements of the references whose stylesheets a render links, rendered
+// or not.
+function linkedElements(
+  route: RouteClientReferenceSet | undefined,
+): Map<string, readonly string[]> {
+  if (!route) return new Map();
+  return new Map(
+    route.linked.flatMap((id) => {
+      const elements = route.linkedElements.get(id);
+      return elements ? [[id, elements] as const] : [];
+    }),
+  );
+}
+
 export function createStreamedClientReferences(
   route: RouteClientReferenceSet | undefined,
   nonce: string | undefined,
@@ -213,6 +262,10 @@ export function createStreamedClientReferences(
     positions: new Map(stylesheetOrder(route).map((id, index) => [id, index])),
     unlinked: unlinkedReferences(route, streamed),
     linkedStylesheets: new Set(),
+    linkedElements: linkedElements(route),
+    payloadElements: new Set(),
+    renderedElements: new Set(),
+    headLinked: false,
   };
 }
 
@@ -228,6 +281,53 @@ export function resetStreamedClientReferences(
   render.positions = new Map(stylesheetOrder(route).map((id, index) => [id, index]));
   render.unlinked = unlinkedReferences(route, render.streamed);
   render.linkedStylesheets.clear();
+  render.linkedElements = linkedElements(route);
+  render.payloadElements.clear();
+  render.renderedElements.clear();
+  render.headLinked = false;
+}
+
+/** Record the ids of the elements in the payload a render decoded. */
+export function setPayloadElements(
+  render: StreamedClientReferences,
+  elementIds: Iterable<string>,
+): void {
+  for (const id of elementIds) render.payloadElements.add(elementKey(id));
+}
+
+/**
+ * The stylesheets of the linked references the files element `elementId`
+ * renders import, which the render reaches now. Before the shell's `<head>`
+ * has its stylesheets, it gets them there. After, the element is below a
+ * boundary that was still pending, so they're returned as React stylesheets,
+ * which React attaches to the boundary's reveal, as Next.js's segment CSS.
+ */
+export function renderElementStylesheets(
+  render: StreamedClientReferences,
+  elementId: string,
+): ReactNode {
+  const key = elementKey(elementId);
+  if (render.renderedElements.has(key)) return null;
+  render.renderedElements.add(key);
+  if (!render.headLinked) return null;
+  const hrefs = new Set<string>();
+  render.unlinked = render.unlinked.filter((id) => {
+    if (!render.linkedElements.get(id)?.includes(key)) return true;
+    for (const href of referenceDeps.get(id)?.css ?? []) hrefs.add(href);
+    return false;
+  });
+  if (hrefs.size === 0) return null;
+  // React links each once, and holds the boundary's reveal for those it
+  // already linked too.
+  return Array.from(hrefs, (href) =>
+    createElement("link", {
+      key: href,
+      rel: "stylesheet",
+      href,
+      precedence: STYLESHEET_PRECEDENCE,
+      crossOrigin: render.crossOrigin,
+    }),
+  );
 }
 
 /** Run a render, and the Flight stream it reads, with its streamed references. */
@@ -240,15 +340,20 @@ export function runWithStreamedClientReferences<R>(
 
 /**
  * The `<head>` links of the stylesheets a render's shell left unlinked, those
- * of streamed and linked references after every reference it rendered.
+ * of streamed and linked references after every reference it rendered. Those
+ * of linked references it hasn't reached stay unlinked, for the elements that
+ * reach them later (see `renderElementStylesheets`).
  */
 export function renderStreamedStylesheets(render: StreamedClientReferences): string {
+  render.headLinked = true;
   const hrefs = new Set<string>();
-  for (const id of render.unlinked.splice(0)) {
+  render.unlinked = render.unlinked.filter((id) => {
+    if (!isReached(render, id)) return true;
     for (const href of referenceDeps.get(id)?.css ?? []) {
       if (!render.linkedStylesheets.has(href)) hrefs.add(href);
     }
-  }
+    return false;
+  });
   // React writes "" for anonymous.
   const crossOrigin = render.crossOrigin === "use-credentials" ? "use-credentials" : "";
   let html = "";

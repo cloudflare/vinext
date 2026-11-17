@@ -249,6 +249,32 @@ describe("App Router production SSR route client reference preloads", () => {
     }
   });
 
+  // Issue #4735. Next.js 16.2.7 (webpack and Turbopack) links the CSS of a
+  // segment as React reaches it: in the shell for the async layout's, but
+  // only in the loading.js boundary's reveal for the page's below it, so the
+  // fallback paints without waiting for it.
+  it("links a page's client component stylesheet below an async layout in the boundary's reveal", async () => {
+    const panelHref = cssHref("--loading-css-async-layout-panel");
+    const noteHref = cssHref("--loading-css-async-layout-note");
+    expect(panelHref).not.toBe(noteHref);
+    for (const label of ["cold", "warm"]) {
+      const { first, html } = await readStream(`${baseUrl}/loading-css/async-layout/inner`);
+      // The shell flushes with the fallback before the async layout resolves.
+      expect(first, label).toContain('data-testid="loading-css-async-layout-fallback"');
+      expect(first, label).not.toContain('data-testid="loading-css-async-layout-panel"');
+      expect(html, label).toContain('data-testid="loading-css-async-layout-panel"');
+      // The async layout's own CSS still blocks the shell.
+      expect(stylesheetHrefs(first), label).toContain(noteHref);
+      expect(stylesheetHrefs(html), label).not.toContain(panelHref);
+      // React holds the boundary's reveal until the page's CSS loads.
+      const reveal = html.match(/\$RR\("[^"]*","[^"]*",(\[\[.*?\]\])\)/)?.[1];
+      expect(reveal, label).toBeDefined();
+      expect(JSON.parse(reveal!), label).toEqual([
+        [panelHref, "vite-rsc/client-reference", "crossorigin", ""],
+      ]);
+    }
+  });
+
   it("links no stylesheet of the page or layouts a parent not-found boundary replaces", async () => {
     const hrefs = [cssHref("--loading-css-missing-layout"), cssHref("--loading-css-missing-page")];
     for (const label of ["cold", "warm"]) {

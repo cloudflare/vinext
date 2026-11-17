@@ -428,12 +428,17 @@ describe("collectClientReferencePreloadPlan", () => {
       routes: [
         {
           ...route("/dash", files.page, [files.layout]),
+          routeSegments: ["dash"],
+          layoutTreePositions: [0],
           templates: [files.template],
+          templateTreePositions: [1],
           loadingPath: files.loading,
           errorPath: files.error,
           notFoundPath: files.notFound,
           parallelSlots: [
             {
+              name: "feed",
+              layoutIndex: -1,
               pagePath: null,
               defaultPath: files.feedDefault,
               layoutPath: files.feedLayout,
@@ -442,6 +447,8 @@ describe("collectClientReferencePreloadPlan", () => {
               interceptingRoutes: [],
             },
             {
+              name: "team",
+              layoutIndex: 0,
               pagePath: files.teamPage,
               defaultPath: files.teamDefault,
               layoutPath: files.teamLayout,
@@ -465,6 +472,17 @@ describe("collectClientReferencePreloadPlan", () => {
       "/teamLayout-ref.tsx",
       "/feedDefault-ref.tsx",
       "/teamPage-ref.tsx",
+    ]);
+    // The element rendering each, as the App Router keys them: a slot's
+    // files render in the slot's element, and the page's id names the
+    // request's path.
+    expect(plan.renderedElements.get("/dash")).toEqual([
+      "layout:/",
+      "template:/dash",
+      "page:",
+      "slot:team:/",
+      "slot:feed:/",
+      "slot:team:/",
     ]);
   });
 

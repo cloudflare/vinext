@@ -41,6 +41,15 @@ export const ElementsContext = React.createContext<AppElements>(EMPTY_ELEMENTS);
 
 export const ChildrenContext = React.createContext<React.ReactNode>(null);
 
+/**
+ * During SSR, renders the stylesheets of the client references the files a
+ * Slot's element renders import, beside the element (see
+ * `renderElementStylesheets`). Unset in the browser.
+ */
+export const ElementStylesheetsContext = React.createContext<
+  ((elementId: string) => React.ReactNode) | null
+>(null);
+
 export const ParallelSlotsContext = React.createContext<Readonly<
   Record<string, React.ReactNode>
 > | null>(null);
@@ -843,6 +852,7 @@ export function Slot({
   parallelSlots?: Readonly<Record<string, React.ReactNode>>;
 }) {
   const elements = React.useContext(ElementsContext);
+  const renderStylesheets = React.useContext(ElementStylesheetsContext);
 
   if (!Object.hasOwn(elements, id)) {
     if (process.env.NODE_ENV !== "production" && !AppElementsWire.isSlotId(id)) {
@@ -874,10 +884,20 @@ export function Slot({
     </RenderedSearchContext.Provider>
   );
 
-  return BfcacheIdMapContext && BfcacheSegmentIdContext ? (
-    <BfcacheSlotBoundary id={id} content={content} />
+  const rendered =
+    BfcacheIdMapContext && BfcacheSegmentIdContext ? (
+      <BfcacheSlotBoundary id={id} content={content} />
+    ) : (
+      content
+    );
+  const stylesheets = renderStylesheets?.(id);
+  return stylesheets ? (
+    <>
+      {stylesheets}
+      {rendered}
+    </>
   ) : (
-    content
+    rendered
   );
 }
 

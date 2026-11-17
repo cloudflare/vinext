@@ -192,6 +192,7 @@ describe("resolveRouteClientReferences", () => {
     files: [[1], [0, 2, 1, 4], [3]],
     routes: { "/": [0, 1] },
     rendered: { "/": [1] },
+    renderedElements: { "/": ["page:"] },
     staticFiles: [[], [0, 2, 1], []],
     routeless: [0, 2],
     async: [2],
@@ -205,6 +206,12 @@ describe("resolveRouteClientReferences", () => {
       // first. Not "lazy" (dynamically imported) or "search" (only a
       // boundary imports it); "link" is every render's, and the page's too.
       linked: ["link", "chart", "nav"],
+      // The page's element renders the file that imports each.
+      linkedElements: new Map([
+        ["link", ["page:"]],
+        ["chart", ["page:"]],
+        ["nav", ["page:"]],
+      ]),
     });
   });
 
@@ -213,6 +220,7 @@ describe("resolveRouteClientReferences", () => {
       references: ["link", "nav", "search"],
       streamed: [],
       linked: [],
+      linkedElements: new Map(),
     });
   });
 
