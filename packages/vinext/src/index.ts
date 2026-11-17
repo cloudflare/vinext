@@ -1913,7 +1913,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   // Filled in from the client module graph; see vinext:pages-client-chunks.
   const pagesAppChunkRoots = new Set<string>();
-  let pagesClientPreserveEntrySignatures: unknown;
+  // The client's input options once every plugin's `options` hook has run.
+  let pagesClientInputOptions: { preserveEntrySignatures?: unknown; onDemandWrapping?: unknown } =
+    {};
 
   const pagesClientChunks = createPagesClientCodeSplittingConfig(
     clientCodeSplittingConfig,
@@ -9310,13 +9312,20 @@ export const loadServerActionClient = ${
   plugins.push({
     name: "vinext:pages-client-chunks",
     apply: "build",
+    // Runs its post-order hooks after those of normal-order plugins.
+    enforce: "post",
     options: {
       // Vite sets `preserveEntrySignatures` for library builds itself.
       order: "post",
       handler(inputOptions) {
-        if (this.environment?.name === "client") {
-          pagesClientPreserveEntrySignatures = inputOptions.preserveEntrySignatures;
-        }
+        if (this.environment?.name !== "client") return;
+
+        pagesClientInputOptions = {
+          preserveEntrySignatures: inputOptions.preserveEntrySignatures,
+          onDemandWrapping: (
+            inputOptions.experimental as { onDemandWrapping?: unknown } | undefined
+          )?.onDemandWrapping,
+        };
       },
     },
     buildStart() {
@@ -9358,11 +9367,8 @@ export const loadServerActionClient = ${
           return;
         }
 
-        const rolldownOptions = environment.config.build.rolldownOptions;
         return withInlineCommonChunks(output, {
-          preserveEntrySignatures: pagesClientPreserveEntrySignatures,
-          onDemandWrapping: (rolldownOptions.experimental as { onDemandWrapping?: unknown })
-            ?.onDemandWrapping,
+          ...pagesClientInputOptions,
           rolldownVersion: this.meta.rolldownVersion,
         });
       },

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { createBuilder, rolldownVersion, type Rolldown } from "vite";
+import { createBuilder, rolldownVersion, type Plugin, type Rolldown } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
@@ -14,11 +14,12 @@ const FIXTURE = path.resolve(import.meta.dirname, "fixtures/pages-client-chunks"
 async function buildChunks(
   options: { disableNextLikeChunking?: boolean } = {},
   environmentNames: string[] = ["client"],
+  plugins: Plugin[] = [],
 ): Promise<Rolldown.OutputChunk[][]> {
   const builder = await createBuilder({
     root: FIXTURE,
     configFile: false,
-    plugins: [vinext({ disableAppRouter: true, ...options })],
+    plugins: [vinext({ disableAppRouter: true, ...options }), ...plugins],
     environments: { client: { build: { write: false } }, ssr: { build: { write: false } } },
     logLevel: "silent",
   });
@@ -105,6 +106,19 @@ describe("Pages Router client chunks", () => {
   it("leaves the SSR build that follows the client build alone", async () => {
     const [, ssrChunks] = await buildChunks({}, ["client", "ssr"]);
     expect(ssrChunks!.filter((chunk) => chunk.name === "pages-app")).toEqual([]);
+  });
+
+  it("doesn't copy shared modules when a plugin turns on onDemandWrapping", async () => {
+    const onDemandWrapping: Plugin = {
+      name: "test:on-demand-wrapping",
+      options(inputOptions) {
+        inputOptions.experimental = { ...inputOptions.experimental, onDemandWrapping: true };
+      },
+    };
+
+    const [chunks] = await buildChunks({}, ["client"], [onDemandWrapping]);
+
+    expect(chunksWith(chunks!, "/lib/shared-label.ts").map(facadeOf)).toEqual([undefined]);
   });
 
   it("leaves Pages Router chunking to the bundler with disableNextLikeChunking", async () => {
