@@ -68,7 +68,7 @@ describe("App Router production SSR streamed client references with inline CSS",
   // under inlineCss, so the page's below a pending layout reaches the
   // boundary's reveal inline, as React writes it, not fetched.
   it("inlines a page's stylesheet below an async layout in the boundary's reveal", async () => {
-    const response = await fetch(`${baseUrl}/loading-css/async-layout/inner`);
+    const response = await fetch(`${baseUrl}/loading-css/async-layout/inner?no-csp`);
     expect(response.status).toBe(200);
     const html = await response.text();
 
@@ -86,5 +86,32 @@ describe("App Router production SSR streamed client references with inline CSS",
     // Neither linked nor fetched for the reveal.
     expect(html).not.toMatch(new RegExp(`<link\\b[^>]*\\bhref="${panelHref}"`));
     expect(html).toMatch(/\$RR\("[^"]*","[^"]*",\[\]\)/);
+  });
+
+  // React writes a late <style> resource without the CSP nonce, which it
+  // takes as a script nonce only, so the reveal links the stylesheet with it.
+  it("links a page's stylesheet below an async layout with the CSP nonce in the reveal", async () => {
+    const response = await fetch(`${baseUrl}/loading-css/async-layout/inner`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+
+    expect(html).toContain('data-testid="loading-css-async-layout-panel"');
+    const head = html.slice(0, html.indexOf("</head>"));
+    expect(head).toMatch(
+      /<style data-vinext-inline-css nonce="vinext-test-nonce"[^>]*>[^<]*--loading-css-async-layout-note/,
+    );
+    expect(html).not.toContain("--loading-css-async-layout-panel");
+    const reveal = html.match(/\$RR\("[^"]*","[^"]*",(\[\[.*?\]\])\)/)?.[1];
+    expect(reveal).toBeDefined();
+    expect(JSON.parse(reveal!)).toEqual([
+      [
+        expect.stringMatching(/\.css$/),
+        "vite-rsc/client-reference",
+        "crossorigin",
+        "",
+        "nonce",
+        "vinext-test-nonce",
+      ],
+    ]);
   });
 });

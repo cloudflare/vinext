@@ -305,7 +305,11 @@ export function setPayloadElements(
  * With `experimental.inlineCss`, a stylesheet in `inlineCssManifest` is
  * returned as a React `<style>` resource holding its CSS instead, as Next.js
  * renders it, since React serializes a late stylesheet into the reveal's
- * script, which the stream's inline CSS rewrite doesn't see.
+ * script, which the stream's inline CSS rewrite doesn't see. React writes
+ * that `<style>` with the render's style nonce only, which it has none of, as
+ * it gets the nonce as a string, as Next.js passes it. So a render with a CSP
+ * nonce links the stylesheet instead, with the nonce, as Next.js links one,
+ * where the shell would have inlined it with the nonce.
  */
 export function renderElementStylesheets(
   render: StreamedClientReferences,
@@ -326,7 +330,7 @@ export function renderElementStylesheets(
   // React links each once, and holds the boundary's reveal for those it
   // already linked too.
   return Array.from(hrefs, (href) => {
-    const css = inlineCssManifest ? getInlineCss(inlineCssManifest, href) : null;
+    const css = inlineCssManifest && !render.nonce ? getInlineCss(inlineCssManifest, href) : null;
     return css === null
       ? createElement("link", {
           key: href,
@@ -334,6 +338,7 @@ export function renderElementStylesheets(
           href,
           precedence: STYLESHEET_PRECEDENCE,
           crossOrigin: render.crossOrigin,
+          nonce: render.nonce,
         })
       : createElement("style", { key: href, href, precedence: STYLESHEET_PRECEDENCE }, css);
   });

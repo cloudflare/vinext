@@ -266,11 +266,12 @@ describe("App Router production SSR route client reference preloads", () => {
       // The async layout's own CSS still blocks the shell.
       expect(stylesheetHrefs(first), label).toContain(noteHref);
       expect(stylesheetHrefs(html), label).not.toContain(panelHref);
-      // React holds the boundary's reveal until the page's CSS loads.
+      // React holds the boundary's reveal until the page's CSS loads, linked
+      // with the CSP nonce, as Next.js links a segment's CSS.
       const reveal = html.match(/\$RR\("[^"]*","[^"]*",(\[\[.*?\]\])\)/)?.[1];
       expect(reveal, label).toBeDefined();
       expect(JSON.parse(reveal!), label).toEqual([
-        [panelHref, "vite-rsc/client-reference", "crossorigin", ""],
+        [panelHref, "vite-rsc/client-reference", "crossorigin", "", "nonce", "vinext-test-nonce"],
       ]);
     }
   });
