@@ -3193,8 +3193,12 @@ function bootstrapHydration(
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
     clearNavigationCaches: clearClientNavigationCaches,
-    commitHashNavigation: (href, historyUpdateMode, scroll) =>
-      historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+    commitHashNavigation: (href, historyUpdateMode, scroll) => {
+      // Like a new navigation, a same-document history change shows that a
+      // document load which left this page alive was abandoned.
+      releaseHeldMpaNavigationRefreshSettlements();
+      return historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll);
+    },
     getPrefetchRouterState: () => {
       if (!browserNavigationController.hasBrowserRouterState()) {
         return initialPrefetchRouterState;
@@ -3224,6 +3228,8 @@ function bootstrapHydration(
     commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) =>
       historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState),
     discardPendingNavigation: () => {
+      // A raw history write likewise ends an abandoned document load's hold.
+      releaseHeldMpaNavigationRefreshSettlements();
       if (
         browserNavigationController.discardPendingNavigation(
           historyController.readCurrentTreeSnapshot(),

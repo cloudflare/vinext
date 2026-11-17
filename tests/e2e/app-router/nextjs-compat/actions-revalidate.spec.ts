@@ -744,6 +744,65 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     await expect.poll(() => sourceRscReads, { timeout: 10_000 }).toBeGreaterThan(0);
   });
 
+  // A forward same-document history change shows the same, whether a hash
+  // navigation through the router or a raw history.pushState.
+  for (const [name, write] of [
+    [
+      "a hash navigation",
+      () =>
+        (window as unknown as { next: { router: { push(href: string): void } } }).next.router.push(
+          "#later",
+        ),
+    ],
+    ["a raw history.pushState", () => window.history.pushState(null, "", "?later=1")],
+  ] as const) {
+    test(`held refresh runs after a 204 document load when ${name} follows`, async ({ page }) => {
+      const sourcePath = "/nextjs-compat/action-discarding";
+      const destinationPath = "/nextjs-compat/action-discarding/destination";
+      await page.goto(`${BASE}${sourcePath}`);
+      await waitForAppRouterHydration(page);
+
+      let destinationDocumentLoads = 0;
+      let sourceRscReads = 0;
+      await page.route("**/*", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (isAppRouterServerActionRequestForPath(request, sourcePath)) {
+          const response = await route.fetch();
+          // Keep the real headers (revalidated, compatibility id) but drop the tree.
+          return route.fulfill({
+            status: 200,
+            headers: response.headers(),
+            body: '0:{"returnValue":{"ok":true,"data":1}}\n',
+          });
+        }
+        if (url.pathname === sourcePath && url.searchParams.has("_rsc")) sourceRscReads += 1;
+        if (url.pathname !== destinationPath) return route.continue();
+        // The navigation falls back to a document load, answered with 204.
+        if (url.searchParams.has("_rsc")) return route.abort("failed");
+        if (request.isNavigationRequest()) {
+          destinationDocumentLoads += 1;
+          return route.fulfill({ status: 204, body: "" });
+        }
+        return route.continue();
+      });
+
+      await page.click("#navigate-discard-destination");
+      await expect.poll(() => destinationDocumentLoads).toBe(1);
+      expect(new URL(page.url()).pathname).toBe(sourcePath);
+
+      const actionResponse = waitForActionDiscardingResponse(page);
+      await page.click("#slow-action-refresh");
+      await actionResponse;
+      await page.waitForTimeout(300);
+      // Held behind the load, which may still be in progress as far as Vinext knows.
+      expect(sourceRscReads).toBe(0);
+
+      await page.evaluate(write);
+      await expect.poll(() => sourceRscReads, { timeout: 10_000 }).toBeGreaterThan(0);
+    });
+  }
+
   test("discarded server action refreshes after a document load that left the page alive", async ({
     page,
   }) => {
