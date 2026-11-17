@@ -6,6 +6,7 @@
     "@vitejs/plugin-rsc": "catalog:",
     "fake-external-barrel": "file:./__test_packages__/fake-external-barrel",
     "react": "catalog:",
+    "react-aria-components": "file:./__test_packages__/fake-react-aria-components",
     "react-dom": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vinext": "workspace:*",

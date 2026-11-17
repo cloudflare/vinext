@@ -1621,6 +1621,9 @@ importers:
       react:
         specifier: 'catalog:'
         version: 19.3.1
+      react-aria-components:
+        specifier: file:./__test_packages__/fake-react-aria-components
+        version: file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components
       react-dom:
         specifier: 'catalog:'
         version: 19.3.1(react@19.3.1)
@@ -10512,6 +10515,9 @@ packages:
   queue-microtask@1.2.3:
     resolution: {integrity: sha512-NuaNSa6flKT5JaSYQzJok04JzTL1CA6aGhv5rfLW3PgqA+M2ChpZQnAC8h8i4ZFkBS8X5RqkDBHA7r4hej3K9A==}
 
+  react-aria-components@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components:
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components, type: directory}
+
   react-day-picker@9.13.2:
     resolution: {integrity: sha512-IMPiXfXVIAuR5Yk58DDPBC8QKClrhdXV+Tr/alBrwrHUw0qDDYB1m5zPNuTnnPIr/gmJ4ChMxmtqPdxm8+R4Eg==}
     engines: {node: '>=18'}
@@ -19354,6 +19360,8 @@ snapshots:
   quansync@0.2.11: {}
 
   queue-microtask@1.2.3: {}
+
+  react-aria-components@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components: {}
 
   react-day-picker@9.13.2(react@19.3.1):
     dependencies:

@@ -283,6 +283,7 @@ import { validateMiddlewareModuleExports } from "./plugins/middleware-export-val
 import {
   createOptimizeImportsPlugin,
   getOptimizedPackageNames,
+  SUBPATH_OPTIMIZE_PACKAGES,
 } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
@@ -3614,7 +3615,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // external, so their imports can still be rewritten.
         const optimizedPackageNames = getOptimizedPackageNames(nextConfig?.optimizePackageImports);
         pagesBundledPackages = new Set([...serverTranspilePackages, ...optimizedPackageNames]);
-        const alwaysBundledServerPackages = [...PATCHED_SERVER_PACKAGES, ...optimizedPackageNames];
+        // RSC also rewrites the subpath barrels of SUBPATH_OPTIMIZE_PACKAGES.
+        const alwaysBundledServerPackages = [
+          ...PATCHED_SERVER_PACKAGES,
+          ...optimizedPackageNames,
+          ...SUBPATH_OPTIMIZE_PACKAGES,
+        ];
         const openTelemetryPackages = findOpenTelemetryPackages(root);
         registerNodeOpenTelemetryLoader =
           env.command === "build" &&
