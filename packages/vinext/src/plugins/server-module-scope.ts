@@ -176,8 +176,30 @@ export function createServerModuleScopePlugin(options: {
       },
     },
 
-    writeBundle() {
-      if (!isServerEnvironment(this.environment)) return;
+    // A plugin registered after vinext can emit its own package.json from a
+    // later generateBundle hook. writeBundle runs after every file is written,
+    // so pin the manifest that actually landed on disk.
+    writeBundle(output, bundle) {
+      const environment = this.environment;
+      if (!isServerEnvironment(environment)) return;
+      const emitted = bundle["package.json"];
+      if (environment.name !== "nitro" && output.format === "es" && emitted?.type === "asset") {
+        const source = pinModuleType(emitted.source);
+        if (source === null) {
+          this.error(
+            `[vinext] The package.json emitted into the ${environment.name} server output isn't a JSON object, so it can't declare "type": "module" for vinext's ESM output.`,
+          );
+        }
+        const current =
+          typeof emitted.source === "string"
+            ? emitted.source
+            : new TextDecoder().decode(emitted.source);
+        if (source !== current) {
+          const outDir = path.resolve(root, output.dir ?? environment.config.build.outDir);
+          fs.writeFileSync(path.join(outDir, "package.json"), source);
+          emitted.source = source;
+        }
+      }
       for (const dir of options.getModuleOutputDirs()) {
         if (readPackageScopeType(dir) === "module") continue;
         const packageJsonPath = path.join(dir, "package.json");

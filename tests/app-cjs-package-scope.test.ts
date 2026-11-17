@@ -240,13 +240,18 @@ describe('A root package.json with "type": "commonjs"', () => {
           {
             name: "test:emit-commonjs-package-json",
             apply: "build",
-            generateBundle() {
-              if (this.environment.name !== "rsc") return;
-              this.emitFile({
-                type: "asset",
-                fileName: "package.json",
-                source: JSON.stringify({ name: "emitted", type: "commonjs" }),
-              });
+            // Post-ordered and registered after vinext, so it runs after
+            // vinext's own generateBundle hook.
+            generateBundle: {
+              order: "post",
+              handler() {
+                if (this.environment.name !== "rsc") return;
+                this.emitFile({
+                  type: "asset",
+                  fileName: "package.json",
+                  source: JSON.stringify({ name: "emitted", type: "commonjs" }),
+                });
+              },
             },
           },
         ],
