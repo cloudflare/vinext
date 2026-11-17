@@ -904,6 +904,89 @@ describe("createAppRscHandler", () => {
     if (externalRewrite) expect(local.headers.get("CF-Cache-Status")).toBe("HIT");
   });
 
+  // Issue #4705: a next.config redirect also answers in the request stage.
+  it("labels a next.config redirect BYPASS only in a staged handler", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+      async () => new Response("unused"),
+    );
+    const handler = createHandler({
+      configRedirects: [{ source: "/about", destination: "/login", permanent: false }],
+    });
+
+    const staged = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+    expect(dispatchResponseStage).not.toHaveBeenCalled();
+    expect(staged.status).toBe(307);
+    expect(staged.headers.get("Location")).toBe("/docs/login");
+    expect(staged.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+
+    const local = await handler(new Request("https://example.test/docs/about"), null);
+    expect(local.status).toBe(307);
+    expect(local.headers.get("X-Vinext-Cache")).toBeNull();
+  });
+
+  // Issue #4705: each phase's external rewrite proxies in the request stage.
+  it.each([
+    ["beforeFiles", "/about"],
+    ["afterFiles", "/missing"],
+    ["fallback", "/missing"],
+  ] as const)(
+    "labels a next.config %s external rewrite BYPASS only in a staged handler",
+    async (phase, source) => {
+      // A real loopback upstream, as the fetch instrumentation reinstalls its
+      // own `fetch` during request handling.
+      const server = createServer((_req, res) => {
+        // Another deployment's cache status and RSC identity.
+        res.writeHead(200, {
+          "CF-Cache-Status": "HIT",
+          "Content-Type": "text/plain",
+          "X-Vinext-RSC-Build-Id": "upstream-rsc-build",
+        });
+        res.end("upstream");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const { port } = server.address() as AddressInfo;
+      try {
+        const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+          async () => new Response("unused"),
+        );
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites: {
+            afterFiles: [],
+            beforeFiles: [],
+            fallback: [],
+            [phase]: [{ source, destination: `http://127.0.0.1:${port}/upstream` }],
+          },
+          renderNotFound: async () => null,
+        });
+
+        const staged = await handler(
+          new Request(`https://example.test/docs${source}`),
+          null,
+          false,
+          dispatchResponseStage,
+        );
+        expect(dispatchResponseStage).not.toHaveBeenCalled();
+        expect(await staged.text()).toBe("upstream");
+        expect(staged.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+        expect(staged.headers.get("CF-Cache-Status")).toBeNull();
+        expect(staged.headers.get("X-Vinext-RSC-Build-Id")).toBeNull();
+
+        const local = await handler(new Request(`https://example.test/docs${source}`), null);
+        expect(await local.text()).toBe("upstream");
+        expect(local.headers.get("X-Vinext-Cache")).toBeNull();
+        expect(local.headers.get("CF-Cache-Status")).toBe("HIT");
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
   it("normalizes a direct contextual RSC request before shared response-stage dispatch", async () => {
     const route = createPageRoute();
     const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);

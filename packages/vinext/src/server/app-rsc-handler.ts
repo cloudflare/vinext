@@ -869,6 +869,8 @@ async function applyRewrite(
     rewrites: NextRewrite[];
     /** Raw pathname identity used for config source matching and capture substitution. */
     paramsPathname?: string;
+    /** Whether a staged response stage exists, so an external proxy answers in the uncached request stage. */
+    staged: boolean;
     validateExternalRewriteRequest: () => Promise<Response | null>;
   },
   cleanPathname: string,
@@ -902,12 +904,15 @@ async function applyRewrite(
     // Next.js proxies a next.config external rewrite without the config and
     // middleware headers it staged, though its Set-Cookie patch still puts
     // middleware's cookies ahead of the upstream's.
+    const response = withExternalRewriteResponseHeaders(
+      await configMatchers.proxyExternalRequest(proxyRequest, rewritten),
+      new Headers(),
+      options.middlewareContext.headers?.getSetCookie() ?? [],
+    );
+    // The proxied response is answered in the uncached request stage, so a
+    // staged response stage and its shared cache never see this request.
     return markAppRscResponseConfigHeadersApplied(
-      withExternalRewriteResponseHeaders(
-        await configMatchers.proxyExternalRequest(proxyRequest, rewritten),
-        new Headers(),
-        options.middlewareContext.headers?.getSetCookie() ?? [],
-      ),
+      options.staged ? withRequestStageBypassCacheState(response) : response,
     );
   }
 
@@ -1331,10 +1336,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               redirect.destinationQuery,
             ),
           );
-    return new Response(null, {
+    const response = new Response(null, {
       status: redirect.statusCode,
       headers: { Location: location },
     });
+    // As for a middleware answer, a staged response stage and its shared
+    // cache never see this request.
+    return dispatchResponseStage ? withRequestStageBypassCacheState(response) : response;
   }
 
   const rscCacheBustingRedirect =
@@ -1788,6 +1796,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           cleanPathnameIsRequestPathname ? requestPathname : cleanPathname,
         ),
         rewrites: [rewrite],
+        staged: dispatchResponseStage !== undefined,
         validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
       },
       matchPathname(cleanPathname),
@@ -2639,6 +2648,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             cleanPathnameIsRequestPathname ? requestPathname : cleanPathname,
           ),
           rewrites: [rewrite],
+          staged: dispatchResponseStage !== undefined,
           validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
         matchPathname(cleanPathname),
@@ -2731,6 +2741,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               cleanPathnameIsRequestPathname ? requestPathname : cleanPathname,
             ),
             rewrites: [rewrite],
+            staged: dispatchResponseStage !== undefined,
             validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
           },
           matchPathname(cleanPathname),
