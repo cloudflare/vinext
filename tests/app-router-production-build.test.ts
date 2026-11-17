@@ -1792,16 +1792,27 @@ describe("use cache production argument isolation", () => {
     );
   }
 
-  // Like Next.js (use-cache-wrapper.ts, `encodeFormData`), only a File's bytes
-  // are keyed, so a File differing only in metadata reuses the entry.
+  // Like Next.js (use-cache-wrapper.ts, `encodeFormData`), a File's name and
+  // MIME type are keyed with its bytes, since the cached function observes them.
   it.each([
     ["filename", { name: "public.txt" }],
-    ["timestamp", { time: "333" }],
     ["mime", { type: "application/pdf" }],
-  ] as const)("reuses the entry for a File differing only in %s", async (label, change) => {
+  ] as const)("serves a File differing only in %s its own entry", async (label, change) => {
     const base = { kind: "file", partition: `metadata-${label}` };
     const first = await request(base);
-    expect(await request({ ...base, ...change })).toEqual(first);
+    const second = await request({ ...base, ...change });
+    expect(second.value).not.toEqual(first.value);
+    expect(second.execution).not.toBe(first.execution);
+    expect(await request(base)).toEqual(first);
+    expect(await request({ ...base, ...change })).toEqual(second);
+  });
+
+  // lastModified defaults to the construction time and does not survive a
+  // multipart submission, so Next.js leaves it out of the key.
+  it("reuses the entry for a File differing only in timestamp", async () => {
+    const base = { kind: "file", partition: "metadata-timestamp" };
+    const first = await request(base);
+    expect(await request({ ...base, time: "333" })).toEqual(first);
   });
 
   it("separates equal-size file contents with identical metadata", async () => {
