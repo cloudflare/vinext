@@ -3270,6 +3270,10 @@ function bootstrapHydration(
     // payload. This covers both /page#target -> /page and /page -> /page#target.
     // Notify the transition start so observers still see the URL change, then
     // restore scroll directly and skip the RSC dispatch.
+    // A traversal shows that a document load which left this page alive was
+    // abandoned, like a new navigation does. A hash-only or snapshot traversal
+    // never reaches navigateRsc, so end that load's refresh hold here.
+    releaseHeldMpaNavigationRefreshSettlements();
     const href = window.location.href;
     const isExternalHistoryEntry = isExternalHistoryState(event.state);
     if (

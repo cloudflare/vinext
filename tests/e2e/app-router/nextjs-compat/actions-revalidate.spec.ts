@@ -688,6 +688,62 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
 
   // A document load answered with 204 leaves this document alive without any
   // event. Discarded actions after it must still refresh what they revalidated.
+  // A traversal handled inside popstate (a hash-only entry, a restored
+  // snapshot) also shows that a 204 document load was abandoned, so a refresh
+  // held behind that load runs.
+  test("held refresh runs after a 204 document load when a hash traversal follows", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const destinationPath = "/nextjs-compat/action-discarding/destination";
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      window.location.hash = "top";
+    });
+    await expect.poll(() => new URL(page.url()).hash).toBe("#top");
+
+    let destinationDocumentLoads = 0;
+    let sourceRscReads = 0;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (isAppRouterServerActionRequestForPath(request, sourcePath)) {
+        const response = await route.fetch();
+        // Keep the real headers (revalidated, compatibility id) but drop the tree.
+        return route.fulfill({
+          status: 200,
+          headers: response.headers(),
+          body: '0:{"returnValue":{"ok":true,"data":1}}\n',
+        });
+      }
+      if (url.pathname === sourcePath && url.searchParams.has("_rsc")) sourceRscReads += 1;
+      if (url.pathname !== destinationPath) return route.continue();
+      // The navigation falls back to a document load, answered with 204.
+      if (url.searchParams.has("_rsc")) return route.abort("failed");
+      if (request.isNavigationRequest()) {
+        destinationDocumentLoads += 1;
+        return route.fulfill({ status: 204, body: "" });
+      }
+      return route.continue();
+    });
+
+    await page.click("#navigate-discard-destination");
+    await expect.poll(() => destinationDocumentLoads).toBe(1);
+    expect(new URL(page.url()).pathname).toBe(sourcePath);
+
+    const actionResponse = waitForActionDiscardingResponse(page);
+    await page.click("#slow-action-refresh");
+    await actionResponse;
+    await page.waitForTimeout(300);
+    // Held behind the load, which may still be in progress as far as Vinext knows.
+    expect(sourceRscReads).toBe(0);
+
+    await page.goBack();
+    await expect.poll(() => new URL(page.url()).hash).toBe("");
+    await expect.poll(() => sourceRscReads, { timeout: 10_000 }).toBeGreaterThan(0);
+  });
+
   test("discarded server action refreshes after a document load that left the page alive", async ({
     page,
   }) => {
