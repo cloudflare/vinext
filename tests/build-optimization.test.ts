@@ -6901,7 +6901,7 @@ describe("createMultiStageChunkFileNames", () => {
 
       for (const [index, outputDir] of outputDirs.entries()) {
         await expect(
-          fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
+          fsp.readFile(path.join(outputDir, "vinext-client-assets.mjs"), "utf8"),
         ).resolves.toContain("export default");
         const outputFiles = await fsp.readdir(outputDir, { recursive: true });
         const responseStageFile = outputFiles.find((file) =>
@@ -7007,7 +7007,7 @@ describe("createMultiStageChunkFileNames", () => {
 
       for (const [index, outputDir] of outputDirs.entries()) {
         await expect(
-          fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
+          fsp.readFile(path.join(outputDir, "vinext-client-assets.mjs"), "utf8"),
         ).resolves.toContain("export default");
         const outputFiles = await fsp.readdir(outputDir, { recursive: true });
         // The browser `client` environment inherits top-level `build.ssr` in
@@ -7102,7 +7102,7 @@ describe("createMultiStageChunkFileNames", () => {
 
       for (const [index, outputDir] of outputDirs.entries()) {
         await expect(
-          fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
+          fsp.readFile(path.join(outputDir, "vinext-client-assets.mjs"), "utf8"),
         ).resolves.toContain("export default");
         const outputFiles = (await fsp.readdir(outputDir, { recursive: true })).filter((file) =>
           file.endsWith(".js"),
@@ -7114,7 +7114,7 @@ describe("createMultiStageChunkFileNames", () => {
               await fsp.readFile(path.join(outputDir, file), "utf8"),
             ]),
           )
-        ).find(([, source]) => source.includes("vinext-client-assets.js"))?.[0];
+        ).find(([, source]) => source.includes("vinext-client-assets.mjs"))?.[0];
         expect(responseStageFile).toBeDefined();
         await expect(
           import(`${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`),

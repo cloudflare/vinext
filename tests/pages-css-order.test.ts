@@ -110,7 +110,7 @@ export default function Other() { return <Panel>Other page</Panel>; }
     await builder.buildApp();
 
     const sidecar = (await import(
-      pathToFileURL(path.join(root, "dist", "vinext-client-assets.js")).href
+      pathToFileURL(path.join(root, "dist", "vinext-client-assets.mjs")).href
     )) as { default: { cssGraph?: CssGraph } };
     emittedCssGraph = sidecar.default.cssGraph ?? {};
 

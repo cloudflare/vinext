@@ -11627,7 +11627,7 @@ export default function Page() { return <p>manifest reuse</p>; }
         await builder.buildApp();
 
         const { default: assets } = await import(
-          pathToFileURL(path.join(root, "dist/vinext-client-assets.js")).href
+          pathToFileURL(path.join(root, "dist/vinext-client-assets.mjs")).href
         );
         const scans = { manifest: 0, cssGraph: 0, lazyChunks: 0 };
         const clientBuildManifest = JSON.parse(

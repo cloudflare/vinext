@@ -56,8 +56,14 @@ describe("client asset sidecar builds", () => {
       });
       await builder.buildApp();
 
-      const rscSidecar = await fs.readFile(path.join(rscOutDir, "vinext-client-assets.js"), "utf8");
-      const ssrSidecar = await fs.readFile(path.join(ssrOutDir, "vinext-client-assets.js"), "utf8");
+      const rscSidecar = await fs.readFile(
+        path.join(rscOutDir, "vinext-client-assets.mjs"),
+        "utf8",
+      );
+      const ssrSidecar = await fs.readFile(
+        path.join(ssrOutDir, "vinext-client-assets.mjs"),
+        "utf8",
+      );
       expect(rscSidecar).toContain('"appBootstrapPreinitModules"');
       // The RSC render names each client reference's chunks (#4179).
       expect(rscSidecar).toContain('"appClientReferenceChunks"');
@@ -65,7 +71,7 @@ describe("client asset sidecar builds", () => {
       expect(ssrSidecar).toBe(rscSidecar);
 
       const rscEntry = await fs.readFile(path.join(rscOutDir, "index.js"), "utf8");
-      expect(rscEntry).toContain("./vinext-client-assets.js");
+      expect(rscEntry).toContain("./vinext-client-assets.mjs");
 
       const adjacentServerManifest = await fs.readFile(
         path.join(rscOutDir, "vinext-server.json"),
@@ -127,14 +133,20 @@ describe("client asset sidecar builds", () => {
       });
       await builder.buildApp();
 
-      const rscSidecar = await fs.readFile(path.join(rscOutDir, "vinext-client-assets.js"), "utf8");
-      const ssrSidecar = await fs.readFile(path.join(ssrOutDir, "vinext-client-assets.js"), "utf8");
+      const rscSidecar = await fs.readFile(
+        path.join(rscOutDir, "vinext-client-assets.mjs"),
+        "utf8",
+      );
+      const ssrSidecar = await fs.readFile(
+        path.join(ssrOutDir, "vinext-client-assets.mjs"),
+        "utf8",
+      );
       expect(rscSidecar).toContain('"appBootstrapPreinitModules"');
       expect(ssrSidecar).toBe(rscSidecar);
-      await expect(fs.access(path.join(outRoot, "vinext-client-assets.js"))).rejects.toThrow();
+      await expect(fs.access(path.join(outRoot, "vinext-client-assets.mjs"))).rejects.toThrow();
 
       const rscEntry = await fs.readFile(path.join(rscOutDir, "index.js"), "utf8");
-      expect(rscEntry).toContain("./vinext-client-assets.js");
+      expect(rscEntry).toContain("./vinext-client-assets.mjs");
     } finally {
       await fs.rm(fixtureRoot, { recursive: true, force: true });
       await fs.rm(outRoot, { recursive: true, force: true });

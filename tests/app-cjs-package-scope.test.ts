@@ -17,6 +17,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder, type Plugin, type UserConfig, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import type { PrerenderRouteResult } from "../packages/vinext/src/build/prerender.js";
 import vinext, { type VinextOptions } from "../packages/vinext/src/index.js";
 import { createIsolatedFixture, fetchHtml, startFixtureServer } from "./helpers.js";
 
@@ -26,6 +27,10 @@ const PAGES_FIXTURE_SOURCE_DIR = path.resolve(
   "./fixtures/pages-cjs-package-scope",
 );
 
+const CF_PAGES_FIXTURE_SOURCE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/cf-pages-cjs-package-scope",
+);
 const OUTPUT_SCOPE_FIXTURE_SOURCE_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/app-cjs-output-scope",
@@ -212,7 +217,10 @@ describe('A root package.json with "type": "commonjs"', () => {
       const files = fs.readdirSync(serverDir, { recursive: true, encoding: "utf-8" });
       expect(files).toContain("index.js");
       expect(files).toContain(path.join("ssr", "index.js"));
-      expect(files.filter((file) => file.endsWith(".mjs"))).toEqual([]);
+      // Only vinext's client assets module, which is always .mjs.
+      expect(
+        files.filter((file) => file.endsWith(".mjs") && !file.endsWith("vinext-client-assets.mjs")),
+      ).toEqual([]);
       const result = importWithNode(path.join(serverDir, "index.js"), fixtureDir);
       expect(result.stderr).not.toContain("SyntaxError");
       expect(result.status).toBe(0);
@@ -285,6 +293,65 @@ describe('A root package.json with "type": "commonjs"', () => {
         JSON.parse(fs.readFileSync(path.join(fixtureDir, "server", "package.json"), "utf-8")),
       ).toEqual({ type: "module" });
     });
+
+    it("emits a server entry that plain Node loads as ESM", () => {
+      // entry.js imports ../vinext-client-assets.mjs from the project root.
+      expect(fs.existsSync(path.join(fixtureDir, "vinext-client-assets.mjs"))).toBe(true);
+      const result = importWithNode(path.join(fixtureDir, "server", "entry.js"), fixtureDir);
+      expect(result.stderr).not.toContain("SyntaxError");
+      expect(result.status).toBe(0);
+    });
+  });
+
+  describe("Cloudflare Pages Router build with prerendering", () => {
+    let fixtureDir: string;
+    let routes: PrerenderRouteResult[];
+
+    beforeAll(async () => {
+      fixtureDir = await createIsolatedFixture(
+        CF_PAGES_FIXTURE_SOURCE_DIR,
+        "vinext-cf-pages-cjs-scope-",
+        undefined,
+        path.resolve(import.meta.dirname, "./fixtures/cf-app-basic/node_modules"),
+      );
+      const { cloudflare } = (await import(
+        pathToFileURL(path.join(fixtureDir, "node_modules/@cloudflare/vite-plugin/dist/index.mjs"))
+          .href
+      )) as {
+        cloudflare: (options?: {
+          inspectorPort?: false;
+          viteEnvironment?: { name: string };
+        }) => Plugin;
+      };
+      const builder = await createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [
+          vinext({ appDir: fixtureDir }),
+          cloudflare({ inspectorPort: false, viteEnvironment: { name: "ssr" } }),
+        ],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+      const result = await runPrerender({
+        root: fixtureDir,
+        routeRootConfig: {
+          ssrOutDir: builder.environments.ssr?.config.build.outDir,
+          clientOutDir: builder.environments.client?.config.build.outDir,
+        },
+      });
+      routes = result?.routes ?? [];
+    }, 180_000);
+
+    afterAll(() => {
+      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+    });
+
+    it("prerenders from the host-owned index.mjs Worker entry", () => {
+      expect(fs.existsSync(path.join(fixtureDir, "dist", "ssr", "index.mjs"))).toBe(true);
+      expect(routes.find((route) => route.route === "/")).toMatchObject({ status: "rendered" });
+    });
   });
 
   describe("Pages Router production", () => {
@@ -301,7 +368,7 @@ describe('A root package.json with "type": "commonjs"', () => {
     });
 
     it("emits a server entry that plain Node loads as ESM", () => {
-      // entry.js imports the client assets module written beside dist/server.
+      // entry.js imports ../vinext-client-assets.mjs, outside dist/server.
       const result = importWithNode(
         path.join(fixtureDir, "dist", "server", "entry.js"),
         fixtureDir,

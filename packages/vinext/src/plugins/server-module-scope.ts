@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "pathslash";
 import type { Plugin } from "vite";
-import { isPathInsideOrEqual } from "../utils/path.js";
 import { isServerEnvironment } from "./environment.js";
 
 /**
@@ -65,20 +64,17 @@ function pinModuleType(source: string | Uint8Array): string | null {
  *   the server environments vinext owns, so the fixed entry paths exist;
  * - pins every ESM server output directory whose package scope isn't
  *   `module` with an emitted `package.json` of `{"type":"module"}`, or by
- *   setting `type` on one another plugin emitted;
- * - does the same for the directories outside it that hold modules the
- *   server imports (the Pages Router client assets module in `dist/`), but
- *   never replaces a package.json there or writes one at or above the root.
+ *   setting `type` on one another plugin emitted.
+ *
+ * The Pages Router client assets module, which can be written outside any
+ * server output directory, is named `.mjs` instead (PAGES_CLIENT_ASSETS_MODULE).
  */
 export function createServerModuleScopePlugin(options: {
   /** Whether vinext owns the entry and chunk names of this environment. */
   ownsFileNames: (environmentName: string) => boolean;
-  /** Directories, possibly outside a server output directory, with modules it imports. */
-  getModuleOutputDirs: () => Iterable<string>;
 }): Plugin {
   let root = process.cwd();
   let isModuleRoot = true;
-  const warnedDirs = new Set<string>();
 
   return {
     name: "vinext:server-module-scope",
@@ -151,24 +147,6 @@ export function createServerModuleScopePlugin(options: {
           source: SERVER_OUTPUT_PACKAGE_JSON,
         });
       },
-    },
-
-    writeBundle() {
-      if (!isServerEnvironment(this.environment)) return;
-      for (const dir of options.getModuleOutputDirs()) {
-        if (readPackageScopeType(dir) === "module") continue;
-        const packageJsonPath = path.join(dir, "package.json");
-        if (isPathInsideOrEqual(dir, root) || fs.existsSync(packageJsonPath)) {
-          if (warnedDirs.has(dir)) continue;
-          warnedDirs.add(dir);
-          this.warn(
-            `${dir} isn't in an ESM package scope and vinext won't write its package.json, so Node will load the server modules vinext writes there as CommonJS.`,
-          );
-          continue;
-        }
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(packageJsonPath, SERVER_OUTPUT_PACKAGE_JSON);
-      }
     },
   };
 }

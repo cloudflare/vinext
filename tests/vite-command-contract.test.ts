@@ -306,7 +306,7 @@ await import(${JSON.stringify(pathToFileURL(VITE_CLI_PATH).href)});
 
     const pagesEntry = fs.readFileSync(path.join(root, "dist/server/entry.js"), "utf-8");
     const pagesClientAssets = fs.readFileSync(
-      path.join(root, "dist/vinext-client-assets.js"),
+      path.join(root, "dist/vinext-client-assets.mjs"),
       "utf-8",
     );
     expect(pagesClientAssets).toContain('"clientEntry"');
