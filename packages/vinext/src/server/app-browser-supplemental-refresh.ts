@@ -287,12 +287,13 @@ export function resolvePersistedSourcePageRefreshes(options: {
     }
     // Route ids hold the matched path decoded once per segment. Turn it back
     // into a request path, so a literal percent sign (`%C3%A9` as text) is
-    // sent as `%25C3%25A9` rather than as the different route `é`. An
-    // ambiguous path keeps its id form.
-    const pathname = restoreBasePath(
-      encodeMatchedPathname(activeRoutePath) ?? activeRoutePath,
-      options.basePath,
-    );
+    // sent as `%25C3%25A9` rather than as the different route `é`. When the
+    // request path can't be rebuilt (an ambiguous `%252F`, or a path the URL
+    // parser would change), the slot keeps its content: requesting the id
+    // as it is could render a different route into it.
+    const requestPath = encodeMatchedPathname(activeRoutePath);
+    if (requestPath === null) continue;
+    const pathname = restoreBasePath(requestPath, options.basePath);
     if (sourceUrlsByPathname.has(pathname)) continue;
     const sourceUrl = new URL(pathname, options.refreshUrl);
     sourceUrl.search = options.refreshUrl.search;

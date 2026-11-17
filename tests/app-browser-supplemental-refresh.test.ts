@@ -329,6 +329,49 @@ describe("parallel route supplemental refreshes", () => {
     ).toEqual(["/docs/v1/p/%25C3%25A9", "/docs/v1/p/caf%C3%A9"]);
   });
 
+  // A route id is the matched path decoded once. %252F as text is what both a
+  // request for %25252F and one for %252F decode to, and a trailing space is
+  // stripped by the URL parser, so neither id gives back its request path.
+  it("does not refetch a retained route whose request path can't be rebuilt", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "",
+        refreshUrl: new URL("https://example.com/p/shoe"),
+        state: {
+          interception: null,
+          previousNextUrl: null,
+          routeId: "route:/v1/p/shoe",
+          slotBindings: [
+            {
+              activeRouteId: "route:/v1/p/shoe",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:children:/",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/v1/p/%252F",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:info:/",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/v1/p/x ",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:aside:/",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/v1/feed",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:feed:/",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual(["/v1/feed"]);
+  });
+
   it("still refreshes a slot that a decoded route of the same path left", () => {
     expect(
       resolvePersistedSourcePageRefreshes({
