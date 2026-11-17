@@ -5953,6 +5953,9 @@ packages:
   '@radix-ui/rect@1.1.1':
     resolution: {integrity: sha512-HPwpGIzkl28mWyZqG52jiqDJ12waP11Pa1lGoiyUkIEuMLBP0oeK/C89esbXrxsky5we7dfd8U58nm0SgAWpVw==}
 
+  '@react-stately/toast@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately-toast':
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately-toast, type: directory}
+
   '@resvg/resvg-wasm@2.4.1':
     resolution: {integrity: sha512-yi6R0HyHtsoWTRA06Col4WoDs7SvlXU3DLMNP2bdAgs7HK18dTEVl1weXgxRzi8gwLteGUbIg29zulxIB3GSdg==}
     engines: {node: '>= 10'}
@@ -14392,6 +14395,8 @@ snapshots:
 
   '@radix-ui/rect@1.1.1': {}
 
+  '@react-stately/toast@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately-toast': {}
+
   '@resvg/resvg-wasm@2.4.1': {}
 
   '@rolldown/binding-android-arm-eabi@1.2.9':
@@ -19369,6 +19374,7 @@ snapshots:
 
   react-aria-components@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components:
     dependencies:
+      '@react-stately/toast': file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately-toast
       react-stately: file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately
 
   react-day-picker@9.13.2(react@19.3.1):
