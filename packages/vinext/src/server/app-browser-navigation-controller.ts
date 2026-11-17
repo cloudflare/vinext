@@ -349,9 +349,9 @@ export function createAppBrowserNavigationController(
   // Whether a render has started committing since the pending user navigation
   // began. From then on it is visible and can no longer be discarded.
   let pendingUserNavigationCommitStarted = false;
-  // Whether a non-detached render of the pending user navigation itself has
-  // started committing. An older navigation's render can still commit after
-  // it began, but does not make its destination visible.
+  // Whether a render of the pending user navigation itself (its optimistic
+  // shell included) has started committing. An older navigation's render can
+  // still commit after it began, but does not make its destination visible.
   let pendingUserNavigationOwnCommitStarted = false;
   // Server actions waiting for the pending user navigation to commit.
   let userNavigationCommitWaiters: Array<() => void> = [];
@@ -772,6 +772,10 @@ export function createAppBrowserNavigationController(
       committingOperation.navigationId === pendingUserNavigationId
     ) {
       pendingUserNavigationShellHref = normalizeBrowserHref(committingCommit.targetHref);
+      // Next.js's action queue completes the navigation once its shell state
+      // commits and streams the deferred data afterward: server actions run
+      // on the visible shell from here on.
+      pendingUserNavigationOwnCommitStarted = true;
     } else {
       pendingUserNavigationCommitStarted = true;
       if (

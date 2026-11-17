@@ -1917,7 +1917,22 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
 }
 
 function registerServerActionCallback(): void {
-  setServerCallback(function callServer(id, args): Promise<unknown> {
+  setServerCallback((id, args) => {
+    // Next.js refreshes for a discarded or tree-less revalidation only once its
+    // action queue is empty, queued actions included. Every action holds that
+    // refresh from its dispatch until it settles: the refresh would otherwise
+    // supersede the action and discard its result, or queue it again.
+    discardedServerActionRefreshScheduler.markNavigationStart();
+    let result: Promise<unknown>;
+    try {
+      result = callServer(id, args);
+    } catch (error) {
+      result = Promise.reject(error);
+    }
+    return result.finally(() => discardedServerActionRefreshScheduler.markNavigationSettled());
+  });
+
+  function callServer(id: string, args: unknown[]): Promise<unknown> {
     // Like Next.js's action queue, an action dispatched while a navigation is
     // pending is sent once that navigation's state is known, from its
     // destination.
@@ -1929,14 +1944,6 @@ function registerServerActionCallback(): void {
     const startsOnUncommittedNavigation =
       browserNavigationController.getUncommittedUserNavigationState() !== null;
     const actionInitiation = createActionInitiationSnapshot();
-    // Next.js refreshes for a discarded or tree-less revalidation only once its
-    // action queue is empty. Every action in flight holds that refresh, which
-    // would otherwise supersede the action and discard its result.
-    discardedServerActionRefreshScheduler.markNavigationStart();
-    const settleServerAction = () => {
-      releaseCacheInvalidationGuard();
-      discardedServerActionRefreshScheduler.markNavigationSettled();
-    };
     return loadServerActionClient!()
       .then(({ invokeClientServerAction }) =>
         invokeClientServerAction(id, args, actionInitiation, {
@@ -2002,8 +2009,8 @@ function registerServerActionCallback(): void {
           syncServerActionHttpFallbackHead,
         }),
       )
-      .finally(settleServerAction);
-  });
+      .finally(releaseCacheInvalidationGuard);
+  }
 }
 
 // Reports the errors that only the HTML render threw, as Next.js's

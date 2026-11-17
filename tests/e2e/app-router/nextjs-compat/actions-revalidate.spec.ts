@@ -472,6 +472,88 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     await expect(page.locator("#discard-destination")).toBeVisible();
   });
 
+  // Next.js refreshes only once its action queue is empty, queued actions
+  // included. A navigation that ends without committing releases a queued
+  // action and a pending refresh at once; the action runs first.
+  test("queued server action runs before a pending refresh when its navigation ends without committing", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const destinationPath = "/nextjs-compat/action-discarding/destination";
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+
+    let releaseRevalidatingAction = () => {};
+    const revalidatingActionGate = new Promise<void>((resolve) => {
+      releaseRevalidatingAction = resolve;
+    });
+    let releaseNavigation = () => {};
+    const navigationGate = new Promise<void>((resolve) => {
+      releaseNavigation = resolve;
+    });
+    let navigationRequested = () => {};
+    const navigationRequest = new Promise<void>((resolve) => {
+      navigationRequested = resolve;
+    });
+    const events: string[] = [];
+    let actionRequests = 0;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (isAppRouterServerActionRequestForPath(request, sourcePath)) {
+        actionRequests += 1;
+        const isRevalidatingAction = actionRequests === 1;
+        events.push(isRevalidatingAction ? "revalidating action" : "queued action");
+        const response = await route.fetch();
+        if (!isRevalidatingAction) return route.fulfill({ response });
+        await revalidatingActionGate;
+        // Keep the real headers (revalidated, compatibility id) but drop the tree.
+        return route.fulfill({
+          status: 200,
+          headers: response.headers(),
+          body: '0:{"returnValue":{"ok":true,"data":1}}\n',
+        });
+      }
+      if (url.pathname === destinationPath && url.searchParams.has("_rsc")) {
+        navigationRequested();
+        await navigationGate;
+        // A blocked redirect ends the navigation without committing anything.
+        return route.fulfill({
+          status: 200,
+          headers: {
+            "content-type": "text/x-component",
+            "x-vinext-rsc-redirect": "javascript:alert(1)",
+          },
+          body: "",
+        });
+      }
+      if (url.pathname === sourcePath && url.searchParams.has("_rsc")) events.push("refresh");
+      return route.continue();
+    });
+
+    const revalidatingActionRequest = page.waitForRequest((request) =>
+      isAppRouterServerActionRequestForPath(request, sourcePath),
+    );
+    await page.click("#slow-action-refresh");
+    await revalidatingActionRequest;
+    await page.click("#navigate-discard-destination");
+    await navigationRequest;
+    await page.click("#slow-action");
+
+    // The revalidation lands while the navigation is pending: its refresh waits.
+    const revalidatingActionResponse = page.waitForResponse((response) =>
+      isAppRouterServerActionRequestForPath(response.request(), sourcePath),
+    );
+    releaseRevalidatingAction();
+    await revalidatingActionResponse;
+    await page.waitForTimeout(300);
+    expect(events).toEqual(["revalidating action"]);
+
+    releaseNavigation();
+    await expect.poll(() => events, { timeout: 10_000 }).toContain("refresh");
+    expect(events).toEqual(["revalidating action", "queued action", "refresh"]);
+  });
+
   // As in Next.js, a navigation that superseded an action discards the
   // action's redirect, even to another origin, and refreshes what it revalidated.
   test("superseded server action's external redirect does not replace the navigation", async ({

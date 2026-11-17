@@ -4737,6 +4737,50 @@ describe("app browser navigation controller", () => {
       }
     });
 
+    // Next.js's queue completes the navigation once the shell state commits
+    // and streams the deferred data afterward, so an action dispatched from
+    // the visible shell runs at once and its tree is applied.
+    it("does not queue a server action dispatched after the shell commits", async () => {
+      const { controller, detach, commitShell, render } = createShellHarness();
+      const onDiscardedRevalidation = vi.fn();
+
+      try {
+        const navId = controller.beginNavigation();
+        expect(controller.waitForUserNavigationDispatch()).not.toBeNull();
+        await commitShell(navId);
+
+        expect(controller.waitForUserNavigationDispatch()).toBeNull();
+        expect(controller.getUncommittedUserNavigationState()).toBeNull();
+        const shellState = controller.getBrowserRouterState();
+        await expect(
+          controller.commitSameUrlNavigatePayload(
+            Promise.resolve(createResolvedElements("route:/dashboard/action", "/")),
+            shellState.navigationSnapshot,
+            { data: "saved", ok: true },
+            shellState,
+            {
+              onDiscardedRevalidation,
+              revalidation: "dynamicOnly",
+              startedNavigationId: navId,
+              targetHref: "https://example.com/dashboard",
+            },
+          ),
+        ).resolves.toBe("saved");
+        expect(controller.getBrowserRouterState().routeId).toBe("route:/dashboard/action");
+        expect(onDiscardedRevalidation).not.toHaveBeenCalled();
+
+        // The navigation's own payload, fetched before the action ran, arrives
+        // afterwards: it does not replace the action's newer tree, and settles
+        // so the navigation can finish.
+        const authoritative = render(navId, "authoritative");
+        await expect(authoritative.outcome).resolves.toBe("no-commit");
+        expect(controller.getBrowserRouterState().routeId).toBe("route:/dashboard/action");
+        controller.finalizeNavigation(navId, null);
+      } finally {
+        detach();
+      }
+    });
+
     it("releases the snapshot of an authoritative render that is already rendering", async () => {
       const { controller, detach, commit, commitClientNavigationState, commitShell, render } =
         createShellHarness();
