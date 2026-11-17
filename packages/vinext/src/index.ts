@@ -3883,8 +3883,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Router). For multi-environment builds (App Router, Cloudflare),
               // manualChunks is set per-environment on the client env below
               // to avoid leaking into RSC/SSR environments.
+              // Library builds keep the plain groups.
               ...(!isSSR && !isMultiEnv
-                ? { output: getClientOutputConfig(pagesClientCodeSplitting) }
+                ? {
+                    output: getClientOutputConfig(
+                      config.build?.lib ? clientCodeSplittingConfig : pagesClientCodeSplitting,
+                    ),
+                  }
                 : {}),
             }),
           },
@@ -9332,7 +9337,8 @@ export const loadServerActionClient = ${
       if (this.environment?.name === "client") pagesAppChunkRoots.clear();
     },
     buildEnd() {
-      if (this.environment?.name !== "client" || !hasPagesDir) return;
+      const environment = this.environment;
+      if (environment?.name !== "client" || environment.config.build.lib || !hasPagesDir) return;
 
       const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
       if (!appFilePath) return;

@@ -108,6 +108,26 @@ describe("Pages Router client chunks", () => {
     expect(ssrChunks!.filter((chunk) => chunk.name === "pages-app")).toEqual([]);
   });
 
+  it("leaves library builds alone", async () => {
+    const builder = await createBuilder({
+      root: FIXTURE,
+      configFile: false,
+      plugins: [vinext({ disableAppRouter: true })],
+      build: {
+        lib: { entry: path.join(FIXTURE, "lib/library-entry.ts"), formats: ["es"] },
+        write: false,
+      },
+      logLevel: "silent",
+    });
+
+    const result = await builder.build(builder.environments.client!);
+    const chunks = (Array.isArray(result) ? result : [result as Rolldown.RolldownOutput])
+      .flatMap((output) => output.output)
+      .filter((item): item is Rolldown.OutputChunk => item.type === "chunk");
+
+    expect(chunks.map((chunk) => chunk.name)).not.toContain("pages-app");
+  });
+
   it("doesn't copy shared modules when a plugin turns on onDemandWrapping", async () => {
     const onDemandWrapping: Plugin = {
       name: "test:on-demand-wrapping",
