@@ -137,13 +137,14 @@ export function createServerModuleScopePlugin(options: {
 
         const outDir = path.resolve(root, output.dir ?? environment.config.build.outDir);
         if (readPackageScopeType(outDir) === "module") return;
-        // Vite has already emptied the output directory, so a package.json
-        // still there isn't output: leave it to its owner.
-        if (fs.existsSync(path.join(outDir, "package.json"))) {
-          this.warn(
-            `${path.join(outDir, "package.json")} doesn't declare "type": "module", so Node will load vinext's ESM server output there as CommonJS.`,
+        // A package.json still on disk (the directory is a package, or
+        // `emptyOutDir: false` kept it) isn't output: never replace it, but
+        // don't emit a server Node can't load either.
+        const packageJsonPath = path.join(outDir, "package.json");
+        if (fs.existsSync(packageJsonPath)) {
+          this.error(
+            `[vinext] ${packageJsonPath} doesn't declare "type": "module", so Node can't load vinext's ESM server output in ${outDir}. Set "type": "module" there, remove it, or build into another directory.`,
           );
-          return;
         }
         this.emitFile({
           type: "asset",

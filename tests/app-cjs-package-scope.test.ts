@@ -258,6 +258,41 @@ describe('A root package.json with "type": "commonjs"', () => {
     });
   });
 
+  describe("production into a directory with a CommonJS package.json", () => {
+    let fixtureDir: string | undefined;
+
+    afterAll(() => {
+      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+    });
+
+    it("fails the build instead of emitting a server Node can't load", async () => {
+      // `emptyOutDir: false` keeps cjs-output/package.json ("type": "commonjs")
+      // in the RSC output directory.
+      const build = buildIsolatedFixture(
+        OUTPUT_SCOPE_FIXTURE_SOURCE_DIR,
+        "vinext-cjs-outdir-pkg-",
+        {
+          vinextOptions: {
+            rscOutDir: "cjs-output",
+            ssrOutDir: "cjs-output/ssr",
+            clientOutDir: "cjs-output-client",
+          },
+          environments: { rsc: { build: { emptyOutDir: false } } },
+          onFixture: (dir) => {
+            fixtureDir = dir;
+          },
+        },
+      );
+      await expect(build).rejects.toThrow(/doesn't declare "type": "module"/);
+      expect(fs.readFileSync(path.join(fixtureDir!, "cjs-output", "package.json"), "utf-8")).toBe(
+        fs.readFileSync(
+          path.join(OUTPUT_SCOPE_FIXTURE_SOURCE_DIR, "cjs-output", "package.json"),
+          "utf-8",
+        ),
+      );
+    }, 120_000);
+  });
+
   describe("Pages Router production with the SSR output beside the sources", () => {
     let fixtureDir: string | undefined;
 
