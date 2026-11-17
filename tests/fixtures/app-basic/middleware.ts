@@ -161,6 +161,16 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     target.pathname = pathname.replace("/encoded-parity/middleware/", "/encoded-parity/page/");
     return NextResponse.rewrite(target);
   }
+  // Serves the default locale without a prefix, as i18n middleware does.
+  // Coverage: tests/e2e/app-router/nextjs-compat/optimistic-rewrite.spec.ts
+  if (pathname.startsWith("/nextjs-compat/optimistic-rewrite/")) {
+    const rest = pathname.slice("/nextjs-compat/optimistic-rewrite".length);
+    if (!rest.startsWith("/en/") && !rest.startsWith("/ja/")) {
+      const target = request.nextUrl.clone();
+      target.pathname = `/nextjs-compat/optimistic-rewrite/ja${rest}`;
+      return NextResponse.rewrite(target);
+    }
+  }
   if (pathname.startsWith("/encoded-parity/rewrite-any/")) {
     const target = request.nextUrl.clone();
     target.pathname = pathname.replace("/encoded-parity/rewrite-any/", "/encoded-parity/");
@@ -692,6 +702,7 @@ export const config = {
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
     "/encoded-parity/rewrite-any/:path*",
+    "/nextjs-compat/optimistic-rewrite/:path*",
     "/encoded-parity/sibling/:path*",
     "/middleware-throw",
     "/middleware-event",
