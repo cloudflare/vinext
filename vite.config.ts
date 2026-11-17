@@ -195,6 +195,7 @@ export default defineConfig({
             // dirs and use per-worker optimizer caches in their own project.
             // When adding a test that calls startFixtureServer() or createServer(),
             // move it here.
+            "tests/app-cjs-package-scope.test.ts",
             "tests/app-layout-not-found-route-group.test.ts",
             "tests/app-multiple-root-layouts-not-found.test.ts",
             "tests/app-route-client-preloads-production.test.ts",
@@ -294,6 +295,7 @@ export default defineConfig({
           // test needs to mock an external fetch, wire MSW per-file with
           // `setupServer` rather than reverting this exclusion.
           include: [
+            "tests/app-cjs-package-scope.test.ts",
             "tests/app-layout-not-found-route-group.test.ts",
             "tests/app-multiple-root-layouts-not-found.test.ts",
             "tests/app-route-client-preloads-production.test.ts",
