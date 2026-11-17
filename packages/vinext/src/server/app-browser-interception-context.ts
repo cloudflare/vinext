@@ -97,7 +97,7 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
  * the URL parser changed it (stripping a control character, say), navigate
  * without interception instead of naming a different source.
  */
-function encodeMatchedPathname(pathname: string): string | null {
+export function encodeMatchedPathname(pathname: string): string | null {
   if (/%25(?:2f|23|3f|5c)/i.test(pathname)) return null;
   let encoded: string;
   try {

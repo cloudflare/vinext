@@ -295,6 +295,40 @@ describe("parallel route supplemental refreshes", () => {
     ).toEqual([]);
   });
 
+  it("refreshes a retained literal-percent route at its own request path", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "/docs",
+        refreshUrl: new URL("https://example.com/docs/p/shoe"),
+        state: {
+          interception: null,
+          previousNextUrl: null,
+          routeId: "route:/v1/p/shoe",
+          slotBindings: [
+            {
+              activeRouteId: "route:/v1/p/shoe",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:children:/",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/v1/p/%C3%A9",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:info:/",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/v1/p/café",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:aside:/",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual(["/docs/v1/p/%25C3%25A9", "/docs/v1/p/caf%C3%A9"]);
+  });
+
   it("still refreshes a slot that a decoded route of the same path left", () => {
     expect(
       resolvePersistedSourcePageRefreshes({
