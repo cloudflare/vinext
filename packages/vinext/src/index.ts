@@ -116,6 +116,7 @@ import {
   hasExportedName,
 } from "./build/report.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
+import { createServerModuleScopePlugin } from "./plugins/server-module-scope.js";
 import {
   createRscScanGlobImportsPlugin,
   isRscScanGlobImportsAffected,
@@ -5911,6 +5912,13 @@ export const loadServerActionClient = ${
         };
       },
     },
+    // Runs after the file-name defaults above so it sees the names they set.
+    // The Cloudflare and Nitro plugins own their server entry names.
+    createServerModuleScopePlugin({
+      ownsFileNames: (name) =>
+        (name === "rsc" || name === "ssr") && !hasCloudflarePlugin && !hasNitroPlugin,
+      getModuleOutputDirs: () => pagesClientAssetsOutputDirs,
+    }),
     {
       // Minify server-side build environments (rsc/ssr and the Cloudflare
       // worker env) by default. Vite only minifies the `client` environment
