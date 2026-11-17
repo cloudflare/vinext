@@ -153,6 +153,11 @@ export type AppPageSsrHandler = {
       signal?: AbortSignal;
       /** Route whose client references load before the render; null for none. */
       preloadRoutePattern?: string | null;
+      /**
+       * A boundary's document, which replaces some of the route's files: link
+       * only the stylesheets of the client references it renders.
+       */
+      isBoundaryRender?: boolean;
       /** When true, wait for the full React tree before emitting bytes. */
       waitForAllReady?: boolean;
       /** Render is producing a static/prerendered HTML artifact. */
@@ -220,6 +225,12 @@ type RenderAppPageHtmlStreamOptions = {
    * render without a route. Undefined loads every client reference.
    */
   preloadRoutePattern?: string | null;
+  /**
+   * A boundary's document (not-found, forbidden, unauthorized or error), which
+   * replaces the page and the layouts below the boundary: link only the
+   * stylesheets of the client references it renders, not the route's.
+   */
+  isBoundaryRender?: boolean;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
   /** Render is producing a static/prerendered HTML artifact. */
@@ -338,6 +349,7 @@ export async function renderAppPageHtmlStream(
     capturedRscDataRef: options.capturedRscDataRef,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
     preloadRoutePattern: options.preloadRoutePattern,
+    isBoundaryRender: options.isBoundaryRender,
     waitForAllReady: options.waitForAllReady,
     isStaticGeneration: options.isStaticGeneration,
     isForceStatic: options.isForceStatic,
