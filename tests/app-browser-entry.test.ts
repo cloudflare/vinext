@@ -1592,6 +1592,30 @@ describe("app browser entry navigation scheduling", () => {
     expect(runRefresh).toHaveBeenCalledTimes(2);
   });
 
+  it("refreshes with the strongest revalidation among coalesced discarded actions", () => {
+    const queued: Array<() => void> = [];
+    const runRefresh = vi.fn();
+    const scheduler = createDiscardedServerActionRefreshScheduler({
+      queueTask(callback) {
+        queued.push(callback);
+      },
+      runRefresh,
+    });
+
+    // A dynamicOnly refresh keeps static prefetches.
+    scheduler.schedule("dynamicOnly");
+    queued.shift()?.();
+    expect(runRefresh).toHaveBeenLastCalledWith("dynamicOnly");
+
+    scheduler.markNavigationStart();
+    scheduler.schedule("staticAndDynamic");
+    scheduler.schedule("dynamicOnly");
+    scheduler.markNavigationSettled();
+    while (queued.length > 0) queued.shift()?.();
+    expect(runRefresh).toHaveBeenCalledTimes(2);
+    expect(runRefresh).toHaveBeenLastCalledWith("staticAndDynamic");
+  });
+
   it("does not expose a per-navigation transition override at the controller boundary", () => {
     type Controller = ReturnType<typeof createAppBrowserNavigationController>;
     function assertNoTransitionOverride(controller: Controller) {
@@ -5364,7 +5388,7 @@ describe("app browser navigation controller", () => {
       void queued!.then(() => {
         resumed = true;
       });
-      void renderCurrentStateNavigationPayload(controller, {
+      const rendered = renderCurrentStateNavigationPayload(controller, {
         actionType: "navigate",
         createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
@@ -5386,6 +5410,8 @@ describe("app browser navigation controller", () => {
       await queued;
       expect(resumed).toBe(true);
       expect(controller.waitForUserNavigationCommit()).toBeNull();
+      // The render settles too, so the navigation can finish.
+      await expect(rendered).resolves.toBe("committed");
     } finally {
       detach();
     }

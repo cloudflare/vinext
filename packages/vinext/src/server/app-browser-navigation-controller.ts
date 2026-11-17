@@ -747,13 +747,13 @@ export function createAppBrowserNavigationController(
 
   /**
    * Dev only: the recovery boundary replaced a render's subtree, so its commit
-   * signals never run. Its URL update still runs, and the server actions that
-   * waited for its navigation resume on the visible error state.
+   * signals never run. The error fallback is what became visible: the render
+   * settles as committed, its URL update runs, its navigation can finish, and
+   * the server actions that waited for it resume.
    */
   function recoverNavigationRender(renderId: number): void {
     markNavigationRenderVisible(renderId);
-    drainPrePaintEffects(renderId);
-    notifyUserNavigationCommitWaiters();
+    commitNavigationRender(renderId);
   }
 
   function commitNavigationRender(renderId: number): void {

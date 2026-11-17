@@ -166,7 +166,7 @@ export function createServerActionResultFacts(
 
 export function shouldScheduleRefreshForDiscardedServerAction(
   revalidation: ServerActionRevalidationKind,
-): boolean {
+): revalidation is Exclude<ServerActionRevalidationKind, "none"> {
   return revalidation !== "none";
 }
 
@@ -186,15 +186,19 @@ export function createServerActionInitiationSnapshot<TRouterState>(options: {
   };
 }
 
+type RefreshRevalidationKind = Exclude<ServerActionRevalidationKind, "none">;
+
 type DiscardedServerActionRefreshScheduler = {
   markNavigationSettled(): void;
   markNavigationStart(): void;
-  schedule(): void;
+  schedule(revalidation?: RefreshRevalidationKind): void;
 };
 
 type DiscardedServerActionRefreshSchedulerOptions = {
   queueTask?: (callback: () => void) => void;
-  runRefresh: () => void;
+  // Receives the strongest revalidation among the coalesced requests, so a
+  // `dynamicOnly` refresh keeps the static prefetches, as in Next.js.
+  runRefresh: (revalidation: RefreshRevalidationKind) => void;
 };
 
 export function createDiscardedServerActionRefreshScheduler(
@@ -203,14 +207,15 @@ export function createDiscardedServerActionRefreshScheduler(
   const queueTask = options.queueTask ?? queueMicrotask;
   let activeNavigationCount = 0;
   let flushQueued = false;
-  let refreshPending = false;
+  let pendingRevalidation: RefreshRevalidationKind | null = null;
 
   function flush(): void {
     flushQueued = false;
-    if (!refreshPending || activeNavigationCount > 0) return;
+    if (pendingRevalidation === null || activeNavigationCount > 0) return;
 
-    refreshPending = false;
-    options.runRefresh();
+    const revalidation = pendingRevalidation;
+    pendingRevalidation = null;
+    options.runRefresh(revalidation);
   }
 
   function queueFlush(): void {
@@ -229,8 +234,8 @@ export function createDiscardedServerActionRefreshScheduler(
     markNavigationStart() {
       activeNavigationCount += 1;
     },
-    schedule() {
-      refreshPending = true;
+    schedule(revalidation = "staticAndDynamic") {
+      if (pendingRevalidation !== "staticAndDynamic") pendingRevalidation = revalidation;
       queueFlush();
     },
   };

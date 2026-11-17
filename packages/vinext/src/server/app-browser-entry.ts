@@ -397,8 +397,9 @@ const browserNavigationController = createAppBrowserNavigationController({
 });
 const discardedServerActionRefreshScheduler = hasServerActions
   ? createDiscardedServerActionRefreshScheduler({
-      runRefresh() {
-        clearClientNavigationCaches();
+      runRefresh(revalidation) {
+        if (revalidation === "staticAndDynamic") clearClientNavigationCaches();
+        else clearDynamicClientNavigationCaches();
         void getNavigationRuntime()?.functions.navigate?.(
           window.location.href,
           0,
@@ -1023,7 +1024,9 @@ async function commitSameUrlNavigatePayload(
       actionInitiation.routerState,
       {
         onDiscardedRevalidation() {
-          discardedServerActionRefreshScheduler.schedule();
+          if (shouldScheduleRefreshForDiscardedServerAction(revalidation)) {
+            discardedServerActionRefreshScheduler.schedule(revalidation);
+          }
         },
         revalidation,
         startedNavigationId: actionInitiation.navigationId,
@@ -1912,7 +1915,7 @@ function registerServerActionCallback(): void {
           navigationPlanner,
           notifyDiscardedServerActionRevalidation(revalidation) {
             if (shouldScheduleRefreshForDiscardedServerAction(revalidation)) {
-              discardedServerActionRefreshScheduler.schedule();
+              discardedServerActionRefreshScheduler.schedule(revalidation);
             }
           },
           ownsRouterForServerAction: (initiation) =>
