@@ -899,6 +899,48 @@ function resolveMetadataUrl(
   }
 }
 
+const ROBOTS_DIRECTIVES = [
+  "noarchive",
+  "nosnippet",
+  "noimageindex",
+  "nocache",
+  "notranslate",
+  "indexifembedded",
+  "nositelinkssearchbox",
+  "unavailable_after",
+  "max-video-preview",
+  "max-image-preview",
+  "max-snippet",
+] as const;
+
+type RobotsDirectives = { index?: boolean; follow?: boolean; [key: string]: unknown };
+
+/**
+ * Ported from Next.js resolveRobotsValue
+ * (packages/next/src/lib/metadata/resolvers/resolve-basics.ts): index and
+ * follow first, then the known directives in this order. A directive set to
+ * false is left out; only index and follow have a `no` form.
+ */
+function resolveRobotsValue(robots: string | RobotsDirectives | undefined): string | null {
+  if (!robots) return null;
+  if (typeof robots === "string") return robots;
+
+  const values: string[] = [];
+  if (robots.index) values.push("index");
+  else if (typeof robots.index === "boolean") values.push("noindex");
+  if (robots.follow) values.push("follow");
+  else if (typeof robots.follow === "boolean") values.push("nofollow");
+
+  for (const directive of ROBOTS_DIRECTIVES) {
+    const value = robots[directive];
+    if (value === undefined || value === false) continue;
+    values.push(
+      typeof value === "boolean" ? directive : `${directive}:${String(value as string | number)}`,
+    );
+  }
+  return values.join(", ");
+}
+
 function resolveCanonicalUrl(
   url: string | URL,
   metadataBase: URL | null | undefined,
@@ -1130,36 +1172,11 @@ export function MetadataHead({
 
   // Robots
   if (metadata.robots) {
-    if (typeof metadata.robots === "string") {
-      elements.push(<meta key={key++} name="robots" content={metadata.robots} />);
-    } else {
-      const { googleBot, ...robotsRest } = metadata.robots;
-      const robotParts: string[] = [];
-      for (const [k, v] of Object.entries(robotsRest)) {
-        if (v === true) robotParts.push(k);
-        else if (v === false) robotParts.push(`no${k}`);
-        else if (typeof v === "string" || typeof v === "number") robotParts.push(`${k}:${v}`);
-      }
-      if (robotParts.length > 0) {
-        elements.push(<meta key={key++} name="robots" content={robotParts.join(", ")} />);
-      }
-      // googlebot
-      if (googleBot) {
-        if (typeof googleBot === "string") {
-          elements.push(<meta key={key++} name="googlebot" content={googleBot} />);
-        } else {
-          const gbParts: string[] = [];
-          for (const [k, v] of Object.entries(googleBot)) {
-            if (v === true) gbParts.push(k);
-            else if (v === false) gbParts.push(`no${k}`);
-            else if (typeof v === "string" || typeof v === "number") gbParts.push(`${k}:${v}`);
-          }
-          if (gbParts.length > 0) {
-            elements.push(<meta key={key++} name="googlebot" content={gbParts.join(", ")} />);
-          }
-        }
-      }
-    }
+    const robots = resolveRobotsValue(metadata.robots);
+    if (robots) elements.push(<meta key={key++} name="robots" content={robots} />);
+    const googleBot =
+      typeof metadata.robots === "string" ? null : resolveRobotsValue(metadata.robots.googleBot);
+    if (googleBot) elements.push(<meta key={key++} name="googlebot" content={googleBot} />);
   }
 
   // Open Graph
