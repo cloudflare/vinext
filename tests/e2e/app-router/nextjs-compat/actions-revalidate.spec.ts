@@ -162,6 +162,75 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     });
   });
 
+  // A revalidating action answered without a tree (as a forwarded action is)
+  // refreshes the current URL, but not over a pending external document load.
+  test("revalidating action without a tree does not refresh over a pending external navigation", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const externalUrl = "http://external.example/landing";
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+
+    let releaseAction = () => {};
+    const actionGate = new Promise<void>((resolve) => {
+      releaseAction = resolve;
+    });
+    let releaseExternal = () => {};
+    const externalGate = new Promise<void>((resolve) => {
+      releaseExternal = resolve;
+    });
+    let externalRequested = () => {};
+    const externalRequest = new Promise<void>((resolve) => {
+      externalRequested = resolve;
+    });
+    let sourceRscReads = 0;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (isAppRouterServerActionRequestForPath(request, sourcePath)) {
+        const response = await route.fetch();
+        await actionGate;
+        // Keep the real headers (revalidated, compatibility id) but drop the tree.
+        return route.fulfill({
+          status: 200,
+          headers: response.headers(),
+          body: '0:{"returnValue":{"ok":true,"data":1}}\n',
+        });
+      }
+      if (url.pathname === sourcePath && url.searchParams.has("_rsc")) sourceRscReads += 1;
+      if (request.isNavigationRequest() && url.host === "external.example") {
+        externalRequested();
+        await externalGate;
+        return route.fulfill({
+          contentType: "text/html",
+          body: '<p id="external-landing">External</p>',
+        });
+      }
+      return route.continue();
+    });
+
+    const actionResponse = page.waitForResponse((response) =>
+      isAppRouterServerActionRequestForPath(response.request(), sourcePath),
+    );
+    await page.click("#slow-action-refresh");
+    await page.evaluate((href) => {
+      (window as unknown as { next: { router: { push(href: string): void } } }).next.router.push(
+        href,
+      );
+    }, externalUrl);
+    await externalRequest;
+
+    releaseAction();
+    await actionResponse;
+    await page.waitForTimeout(500);
+    expect(sourceRscReads).toBe(0);
+
+    releaseExternal();
+    await expect(page.locator("#external-landing")).toBeVisible();
+    expect(page.url()).toBe(externalUrl);
+  });
+
   // A navigation that falls back to a document load owns what loads next. A
   // discarded action's refresh must wait for that load, not reload the page
   // it was posted from over it.

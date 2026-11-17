@@ -1470,8 +1470,16 @@ function BrowserRoot({
     mpaNavigationTree = currentMpaNavigationTree;
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
+        // Like a navigation's document-load fallback, this load holds the
+        // refresh of a discarded or tree-less revalidation, which would
+        // otherwise reload this URL over it.
+        releaseHeldMpaNavigationRefreshSettlements();
+        discardedServerActionRefreshScheduler.markNavigationStart();
+        const releaseRefreshSettlement = holdMpaNavigationRefreshSettlement();
         setMpaNavigationState(href, historyUpdateMode);
-        return waitForMpaNavigationRestore();
+        const restored = waitForMpaNavigationRestore();
+        void restored.then(releaseRefreshSettlement);
+        return restored;
       },
     });
     browserRouterStateHasEverCommitted = true;
