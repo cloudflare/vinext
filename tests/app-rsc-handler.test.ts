@@ -3795,6 +3795,77 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=3600");
   });
 
+  // The cache path is the request pathname with each segment decoded once, so
+  // a literal percent sign (`%25`) is already a bare `%` there. Matching it as
+  // if it were still encoded decodes it a second time and makes the params
+  // differ from the request's, although both spell one path.
+  // Next.js prerenders and serves such a path from the cache:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts
+  describe("App Page paths with an encoded percent sign", () => {
+    const route = createPageRoute({
+      isDynamic: true,
+      params: ["slug"],
+      pattern: "/blog/:slug",
+      routeSegments: ["blog", "[slug]"],
+    });
+    const matcher = createAppRscRouteMatcher([
+      { params: ["slug"], pattern: "/blog/:slug", patternParts: ["blog", ":slug"] },
+    ]);
+    const matchRoute = (pathname: string) => {
+      const match = matcher.matchRequestRoute(pathname);
+      return match ? { params: match.params, route } : null;
+    };
+
+    async function expectCacheMode(
+      pathname: string,
+      cleanPathname: string,
+      cache: "bypass" | "shared",
+    ) {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(new Response("page")),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+      await handler(
+        new Request(`https://example.test/docs${pathname}`),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      expect(dispatchResponseStage).toHaveBeenCalledOnce();
+      expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({ cleanPathname });
+      expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache });
+    }
+
+    it.each([
+      ["/blog/fallback%25", "/blog/fallback%"],
+      ["/blog/100%25%20off", "/blog/100% off"],
+      ["/blog/a%2541", "/blog/a%41"],
+    ])("keeps %s on the shared cache path", async (pathname, cleanPathname) => {
+      await expectCacheMode(pathname, cleanPathname, "shared");
+    });
+
+    // A literal `%2F` keeps its own cache path (`%252F`), apart from an encoded
+    // slash (`%2F`).
+    it.each([
+      ["/blog/a%2Fb", "/blog/a%2Fb"],
+      ["/blog/a%252Fb", "/blog/a%252Fb"],
+    ])("keeps %s on the shared cache path", async (pathname, cleanPathname) => {
+      await expectCacheMode(pathname, cleanPathname, "shared");
+    });
+
+    // `%25252F` decodes to the cache path of `%252F` but is a different param.
+    it.each([
+      ["/blog/a%25252Fb", "/blog/a%252Fb"],
+      ["/blog/a%252523b", "/blog/a%2523b"],
+    ])("still bypasses shared caches for %s", async (pathname, cleanPathname) => {
+      await expectCacheMode(pathname, cleanPathname, "bypass");
+    });
+  });
+
   it("uses a source-specific cache identity when a rewrite changes the request pathname", async () => {
     const route = createPageRoute();
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>

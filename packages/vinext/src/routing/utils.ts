@@ -217,6 +217,21 @@ export function normalizePathnameForRouteMatchStrict(pathname: string): string {
     .join("/");
 }
 
+// A `%` in a normalized pathname that starts neither a preserved delimiter
+// escape (`%2F`) nor the escape of a literal one (`%252F`).
+const NORMALIZED_PATHNAME_LITERAL_PERCENT_REGEX = /%(?!(?:25)?(?:2f|23|3f|5c))/gi;
+
+/**
+ * Spell a pathname normalized by `normalizePathnameForRouteMatch` so it can be
+ * matched like a request pathname again. Normalizing decodes each segment once,
+ * which leaves a literal percent sign (`%25`) as a bare `%`; matching decodes
+ * params once more, so that `%` has to be encoded again first. The delimiter
+ * escapes normalization keeps are left as they are.
+ */
+export function encodeNormalizedPathnameForRouteMatch(pathname: string): string {
+  return pathname.replace(NORMALIZED_PATHNAME_LITERAL_PERCENT_REGEX, "%25");
+}
+
 function decodeMatchedParam(value: string): string {
   try {
     return decodeURIComponent(value);
