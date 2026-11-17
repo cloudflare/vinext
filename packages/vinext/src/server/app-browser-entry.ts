@@ -220,6 +220,7 @@ import {
   createOptimisticRouteTemplate,
   createOptimisticRouteTemplateStore,
   getOptimisticPrefetchSourceKey,
+  isOptimisticRoutePredictionMismatch,
   getOptimisticRouteTemplateKey,
   keepOptimisticStreamingMetadata,
   resolveOptimisticNavigationParamsForHref,
@@ -2626,6 +2627,8 @@ function bootstrapHydration(
           }
         }
 
+        // The route a learned template predicted for this URL, if any.
+        let predictedRouteId: string | null = null;
         if (!navResponse && fallbackReuseDecision.kind === "attemptOptimisticRouteShell") {
           await learnOptimisticRouteTemplatesFromPrefetchCache({
             interceptionContext: requestInterceptionContext,
@@ -2643,6 +2646,7 @@ function bootstrapHydration(
               routeManifest,
               templates: optimisticRouteTemplates.templates,
             });
+            predictedRouteId = optimisticPayload?.template.routeId ?? null;
 
             if (
               optimisticPayload !== null &&
@@ -2913,6 +2917,28 @@ function bootstrapHydration(
             return;
           }
           rscPayload = Promise.resolve(staticExportElements);
+        }
+
+        // The server's answer is authoritative even if a newer navigation
+        // supersedes this one. Once it shows that a rewrite sends this URL to
+        // another route, stop predicting the template's route.
+        if (predictedRouteId !== null && routeManifest !== null) {
+          const predicted = predictedRouteId;
+          const manifest = routeManifest;
+          void Promise.resolve(rscPayload).then(
+            (elements) => {
+              if (
+                isOptimisticRoutePredictionMismatch({
+                  elements,
+                  predictedRouteId: predicted,
+                  routeManifest: manifest,
+                })
+              ) {
+                optimisticRouteTemplates.retire(predicted);
+              }
+            },
+            () => {},
+          );
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -3275,6 +3301,9 @@ function bootstrapHydration(
         return;
       }
       clearClientNavigationCaches();
+      // Routes may have changed, so predict again routes a rewrite answered
+      // with another one, as Next.js's hmrRefresh resets its known routes.
+      optimisticRouteTemplates.forgetRetiredRoutes();
       // Clear stale errors from the dev overlay before dispatching the
       // fresh tree. If the new tree renders cleanly, the overlay stays
       // empty; if it throws again, devOnCaughtError/devOnUncaughtError

@@ -14,6 +14,7 @@ import {
   createOptimisticRouteTemplateStore,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
+  isOptimisticRoutePredictionMismatch,
   keepOptimisticStreamingMetadata,
   matchOptimisticRouteManifestRoute,
   resolveOptimisticNavigationParamsForHref,
@@ -1644,6 +1645,112 @@ describe("optimistic route template store", () => {
     await laterPending;
     expect(store.templates.get(template.routeId)).toBe(template);
     expect(store.hasSource("source:/posts/1")).toBe(true);
+  });
+
+  it("stops predicting a retired route and never learns it again", async () => {
+    // Next.js marks the pattern with hasDynamicRewrite (markRouteEntryAsDynamicRewrite
+    // in segment-cache/cache.ts), and discoverKnownRoutePart keeps that pattern.
+    const store = createOptimisticRouteTemplateStore();
+    const retired = storedTemplate("route:/:locale/datasets/:id");
+    const other = storedTemplate("route:/posts/[id]");
+    await store.learn("source:/en/datasets/x", async () => ({ key: "retired", template: retired }));
+    await store.learn("source:/en/datasets/x+slots", async () => ({
+      key: "retired-with-slots",
+      template: retired,
+    }));
+    await store.learn("source:/posts/1", async () => ({ key: "other", template: other }));
+
+    store.retire(retired.routeId);
+
+    expect([...store.templates.keys()]).toEqual(["other"]);
+    expect(store.hasSource("source:/en/datasets/x")).toBe(true);
+
+    // Nor from the same prefetch learned again after a clear (a refresh or a
+    // server action), which Next.js's known routes survive too.
+    store.clear();
+    await store.learn("source:/en/datasets/x", async () => ({ key: "retired", template: retired }));
+    expect(store.templates.size).toBe(0);
+    expect(store.hasSource("source:/en/datasets/x")).toBe(true);
+
+    // An HMR refresh resets them, as Next.js's resetKnownRoutes does.
+    store.clear();
+    store.forgetRetiredRoutes();
+    await store.learn("source:/en/datasets/x", async () => ({ key: "retired", template: retired }));
+    expect(store.templates.get("retired")).toBe(retired);
+  });
+
+  it("drops a learning of a retired route that was in flight", async () => {
+    const store = createOptimisticRouteTemplateStore();
+    const learning = deferredLearning();
+    const pending = store.learn("source:/en/datasets/x", learning.learnTemplate);
+
+    store.retire("route:/:locale/datasets/:id");
+    learning.resolve(storedTemplate("route:/:locale/datasets/:id"));
+    await pending;
+
+    expect(store.templates.size).toBe(0);
+  });
+});
+
+describe("isOptimisticRoutePredictionMismatch", () => {
+  // app/[locale]/[...rest] and app/[locale]/datasets/[id], with middleware
+  // rewriting `/x` to `/ja/x`.
+  const routeManifest = manifest([
+    route({
+      id: "route:/:locale/:rest+",
+      isDynamic: true,
+      paramNames: ["locale", "rest"],
+      pattern: "/:locale/:rest+",
+      patternParts: [":locale", ":rest+"],
+    }),
+    route({
+      id: "route:/:locale/datasets/:id",
+      isDynamic: true,
+      paramNames: ["locale", "id"],
+      pattern: "/:locale/datasets/:id",
+      patternParts: [":locale", "datasets", ":id"],
+    }),
+  ]);
+  const payload = (renderedPathname: string): AppElements =>
+    AppElementsWire.createMetadataEntries({
+      interceptionContext: null,
+      layoutIds: ["layout:/"],
+      rootLayoutTreePath: "/",
+      routeId: AppElementsWire.encodeRouteId(renderedPathname, null),
+    });
+
+  it("flags a payload a rewrite rendered with another route than the predicted one", () => {
+    // `/accounts/datasets/y` reads as `[locale]=accounts` + `datasets/[id]`,
+    // but the server rendered `/ja/accounts/datasets/y` with `[...rest]`.
+    expect(
+      isOptimisticRoutePredictionMismatch({
+        elements: payload("/ja/accounts/datasets/y"),
+        predictedRouteId: "route:/:locale/datasets/:id",
+        routeManifest,
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts a payload the predicted route rendered, rewritten or not", () => {
+    for (const pathname of ["/en/datasets/y", "/ja/datasets/y"]) {
+      expect(
+        isOptimisticRoutePredictionMismatch({
+          elements: payload(pathname),
+          predictedRouteId: "route:/:locale/datasets/:id",
+          routeManifest,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("says nothing about a payload whose route it can't read", () => {
+    expect(
+      isOptimisticRoutePredictionMismatch({
+        elements: payload("/"),
+        predictedRouteId: "route:/:locale/datasets/:id",
+        routeManifest,
+      }),
+    ).toBe(false);
   });
 });
 

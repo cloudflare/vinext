@@ -168,6 +168,25 @@ function matchRenderedRouteId(routeId: string, routeManifest: BrowserRouteManife
   return trieMatchRaw(trie, splitPathSegments(parsed.path))?.route.id ?? null;
 }
 
+/**
+ * Whether a navigation's payload proves the template it predicted from wrong:
+ * the server rendered another route for the URL, as when middleware rewrites
+ * it. Like Next.js's dispatchRetryDueToTreeMismatch, which marks the predicted
+ * pattern with hasDynamicRewrite. A payload whose route can't be read says
+ * nothing.
+ */
+export function isOptimisticRoutePredictionMismatch(options: {
+  elements: AppElements;
+  predictedRouteId: string;
+  routeManifest: BrowserRouteManifest;
+}): boolean {
+  const renderedRouteId = matchRenderedRouteId(
+    AppElementsWire.readMetadata(options.elements).routeId,
+    options.routeManifest,
+  );
+  return renderedRouteId !== null && renderedRouteId !== options.predictedRouteId;
+}
+
 function mergeParams(
   target: Record<string, string | string[]>,
   source: Record<string, string | string[]>,
@@ -711,11 +730,19 @@ export type LearnedOptimisticRouteTemplate = {
  * it was derived from, and drops any result a learning started before the
  * clear resolves to. Sources that are still cached are learned again on the
  * next optimistic navigation.
+ *
+ * `retire()` stops predicting a route a navigation proved wrong, as when
+ * middleware rewrites URLs of its shape to another route. Like a Next.js
+ * pattern marked with hasDynamicRewrite, the route stays retired through
+ * `clear()` (refreshes, server actions) and is never learned again, until
+ * `forgetRetiredRoutes()`, which Next.js's resetKnownRoutes does on an HMR
+ * refresh.
  */
 export function createOptimisticRouteTemplateStore() {
   const templates = new Map<string, OptimisticRouteTemplate>();
   const learnedSources = new Set<string>();
   const learning = new Map<string, Promise<void>>();
+  const retiredRouteIds = new Set<string>();
   let generation = 0;
 
   return {
@@ -725,6 +752,15 @@ export function createOptimisticRouteTemplateStore() {
       templates.clear();
       learnedSources.clear();
       learning.clear();
+    },
+    forgetRetiredRoutes(): void {
+      retiredRouteIds.clear();
+    },
+    retire(routeId: string): void {
+      retiredRouteIds.add(routeId);
+      for (const [key, template] of templates) {
+        if (template.routeId === routeId) templates.delete(key);
+      }
     },
     hasSource(sourceKey: string): boolean {
       return learnedSources.has(sourceKey) || learning.has(sourceKey);
@@ -737,7 +773,10 @@ export function createOptimisticRouteTemplateStore() {
       const promise: Promise<void> = learnTemplate()
         .then((learned) => {
           if (learned === null || learnedGeneration !== generation) return;
-          templates.set(learned.key, learned.template);
+          // A source of a retired route stays learned, so it isn't read again.
+          if (!retiredRouteIds.has(learned.template.routeId)) {
+            templates.set(learned.key, learned.template);
+          }
           learnedSources.add(sourceKey);
         })
         .finally(() => {
