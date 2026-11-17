@@ -56,10 +56,10 @@ test("useRouter() returns the new route on the first render after client navigat
 });
 
 // The provider renders the route the navigation committed, not whatever the
-// browser location is when React gets to the render. On popstate the browser
-// moves `location` before the route is resolved, so a render that runs in that
-// interval must not mix the live URL with the committed page.
-test("useRouter() renders the committed route even if location moves before the render runs", async ({
+// browser location is when React renders or when the navigation completes. On
+// popstate the browser moves `location` before the route is resolved, so the
+// live URL must never be mixed with the committed page.
+test("useRouter() keeps the committed route if location moves after the commit", async ({
   page,
 }) => {
   await page.goto(`${BASE}/first-render-router/1`);
@@ -67,22 +67,36 @@ test("useRouter() renders the committed route even if location moves before the 
   await takeRenders(page);
 
   await page.evaluate(() => {
-    const root = (window as any).__VINEXT_ROOT__;
+    const w = window as any;
+    w.__FIRST_RENDER_NAVIGATED__ = false;
+    w.next.router.events.on("routeChangeComplete", () => {
+      // vinext:navigate is dispatched right after routeChangeComplete; let the
+      // provider's listener run and React commit before declaring it done.
+      setTimeout(() => {
+        w.__FIRST_RENDER_NAVIGATED__ = true;
+      }, 50);
+    });
+    const root = w.__VINEXT_ROOT__;
     const render = root.render.bind(root);
     root.render = (element: unknown) => {
       root.render = render;
       render(element);
-      // React renders later, in its own task. Move the URL before it does.
+      // React renders later, in its own task. Move the URL before it does and
+      // keep it moved through the navigation's completion.
       window.history.replaceState(window.history.state, "", "/first-render-router/1?moved=1");
     };
   });
   await page.click('[data-testid="first-render-push"]');
-  await page.waitForFunction(() => ((window as any).__FIRST_RENDER_ROUTER__ ?? []).length > 0);
+  await page.waitForFunction(() => (window as any).__FIRST_RENDER_NAVIGATED__ === true);
 
-  const [first] = await takeRenders(page);
-  expect({ query: first.query, pathname: first.pathname, asPath: first.asPath }).toEqual({
-    query: { id: "2" },
-    pathname: "/first-render-router/[id]",
-    asPath: "/first-render-router/2",
-  });
+  const renders = await takeRenders(page);
+  expect(renders.length).toBeGreaterThan(0);
+  for (const render of renders) {
+    expect({ query: render.query, pathname: render.pathname, asPath: render.asPath }).toEqual({
+      query: { id: "2" },
+      pathname: "/first-render-router/[id]",
+      asPath: "/first-render-router/2",
+    });
+  }
+  await expect(page.locator('[data-testid="first-render-id"]')).toHaveText("2");
 });
