@@ -31,6 +31,12 @@ export const APP_INTERCEPTION_KEY = "__interception";
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
 export const APP_LAYOUT_IDS_KEY = "__layoutIds";
 export const APP_ROUTE_KEY = "__route";
+/**
+ * Route manifest id of the route the server matched, so the browser reads it
+ * instead of matching a pathname again: the server's match depends on the raw
+ * spelling of static segments and on recorded prerenders.
+ */
+export const APP_ROUTE_GRAPH_ID_KEY = "__routeGraphId";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
 export const APP_SKIPPED_LAYOUT_IDS_KEY = "__skippedLayoutIds";
 export const APP_SOURCE_PAGE_SEGMENTS_KEY = "__srcPage";
@@ -186,6 +192,7 @@ type AppElementsMetadata = {
   interception: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutIds: readonly string[];
+  routeGraphId: string | null;
   routeId: string;
   rootLayoutTreePath: string | null;
   bfcacheSegmentIdentities: AppElementsBfcacheSegmentIdentities;
@@ -199,6 +206,7 @@ type AppElementsWireMetadataInput = {
   interception?: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutIds?: readonly string[];
+  routeGraphId?: string | null;
   routeId: string;
   rootLayoutTreePath: string | null;
   bfcacheSegmentIdentities?: AppElementsBfcacheSegmentIdentities;
@@ -209,6 +217,7 @@ type AppElementsWireMetadataInput = {
 type AppElementsWireMetadataEntries = Readonly<{
   [APP_DYNAMIC_STALE_TIME_KEY]?: number;
   [APP_ROUTE_KEY]: string;
+  [APP_ROUTE_GRAPH_ID_KEY]?: string;
   [APP_INTERCEPTION_KEY]?: AppElementsInterception;
   [APP_INTERCEPTION_CONTEXT_KEY]: string | null;
   [APP_LAYOUT_IDS_KEY]: readonly string[];
@@ -247,6 +256,7 @@ type AppElementsWireKeys = {
   readonly layoutIds: typeof APP_LAYOUT_IDS_KEY;
   readonly rootLayout: typeof APP_ROOT_LAYOUT_KEY;
   readonly route: typeof APP_ROUTE_KEY;
+  readonly routeGraphId: typeof APP_ROUTE_GRAPH_ID_KEY;
   readonly bfcacheSegmentIdentities: typeof APP_BFCACHE_SEGMENT_IDENTITIES_KEY;
   readonly skippedLayoutIds: typeof APP_SKIPPED_LAYOUT_IDS_KEY;
   readonly slotBindings: typeof APP_SLOT_BINDINGS_KEY;
@@ -344,6 +354,9 @@ function createAppElementsWireMetadataEntries(
   const sourcePageSegments = encodeSourcePageSegments(input.sourcePage);
   const entries: AppElementsWireMetadataEntries = {
     [APP_ROUTE_KEY]: input.routeId,
+    ...(typeof input.routeGraphId === "string"
+      ? { [APP_ROUTE_GRAPH_ID_KEY]: input.routeGraphId }
+      : {}),
     [APP_INTERCEPTION_CONTEXT_KEY]: input.interceptionContext,
     [APP_LAYOUT_IDS_KEY]: layoutIds,
     [APP_ROOT_LAYOUT_KEY]: input.rootLayoutTreePath,
@@ -752,6 +765,8 @@ export function readAppElementsMetadata(
   if (typeof routeId !== "string") {
     throw new Error("[vinext] Missing __route string in App Router payload");
   }
+  const routeGraphIdValue = elements[APP_ROUTE_GRAPH_ID_KEY];
+  const routeGraphId = typeof routeGraphIdValue === "string" ? routeGraphIdValue : null;
 
   const interceptionContext = elements[APP_INTERCEPTION_CONTEXT_KEY];
   if (
@@ -804,6 +819,7 @@ export function readAppElementsMetadata(
     interception,
     interceptionContext: interceptionContext ?? null,
     layoutIds,
+    routeGraphId,
     routeId,
     rootLayoutTreePath,
     bfcacheSegmentIdentities,
@@ -825,6 +841,7 @@ export const AppElementsWire: AppElementsWireCodec = {
     layoutIds: APP_LAYOUT_IDS_KEY,
     rootLayout: APP_ROOT_LAYOUT_KEY,
     route: APP_ROUTE_KEY,
+    routeGraphId: APP_ROUTE_GRAPH_ID_KEY,
     bfcacheSegmentIdentities: APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
     skippedLayoutIds: APP_SKIPPED_LAYOUT_IDS_KEY,
     slotBindings: APP_SLOT_BINDINGS_KEY,

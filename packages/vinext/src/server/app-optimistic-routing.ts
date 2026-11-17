@@ -1,16 +1,7 @@
 import { createElement, isValidElement, Suspense, type ReactNode } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
-import {
-  decodeMatchedParams,
-  splitPathnameForRouteMatch,
-  splitPathSegments,
-} from "../routing/utils.js";
-import {
-  buildRouteTrie as buildRequestRouteTrie,
-  trieMatchRaw,
-  type TrieNode as RequestRouteTrieNode,
-} from "../routing/route-trie.js";
+import { decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
 import {
   buildOptimisticRouteTrie,
   matchOptimisticRouteTrie,
@@ -69,10 +60,6 @@ type OptimisticNavigationPayload = {
 };
 
 const routeTrieCache = new WeakMap<BrowserRouteManifest, OptimisticRouteTrieNode>();
-const renderedRouteTrieCache = new WeakMap<
-  BrowserRouteManifest,
-  RequestRouteTrieNode<BrowserRouteManifestRoute>
->();
 // Shared never-settling thenable used to suspend optimistic page segments until
 // the real RSC payload replaces them.
 const OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER = new Promise<never>(() => {});
@@ -147,25 +134,6 @@ export function matchOptimisticRouteManifestRoute(options: {
 
   decodeMatchedParams(match.params);
   return match;
-}
-
-/**
- * The manifest route that rendered a payload, read from its route id, which
- * holds the pathname the server matched (after rewrites, without basePath),
- * already decoded once. It is matched like the server matches a request: the
- * manifest keeps the server's route order, and the server's trie falls back
- * from a static dead end to a dynamic or catch-all sibling, which the
- * optimistic trie deliberately doesn't.
- */
-function matchRenderedRouteId(routeId: string, routeManifest: BrowserRouteManifest): string | null {
-  const parsed = AppElementsWire.parseElementKey(routeId);
-  if (parsed?.kind !== "route") return null;
-  let trie = renderedRouteTrieCache.get(routeManifest);
-  if (trie === undefined) {
-    trie = buildRequestRouteTrie(Array.from(routeManifest.segmentGraph.routes.values()));
-    renderedRouteTrieCache.set(routeManifest, trie);
-  }
-  return trieMatchRaw(trie, splitPathSegments(parsed.path))?.route.id ?? null;
 }
 
 function mergeParams(
@@ -426,8 +394,12 @@ export function createOptimisticRouteTemplate(options: {
   // A payload rendered by another route than the one the URL matches came
   // through a rewrite (middleware, or a config rewrite), so it says nothing
   // about the URL's route. Like Next.js's discoverKnownRoutePart, learn
-  // nothing from it.
-  if (matchRenderedRouteId(metadata.routeId, options.routeManifest) !== match.route.id) {
+  // nothing from it. The rendered route is the one the server names, as its
+  // match depends on the raw spelling of static segments and on recorded
+  // prerenders. The URL's match here reads an encoded static segment as the
+  // literal one, so a dynamic sibling's payload for another spelling of a
+  // static page (`/%61dmin` beside `/admin`) is learned for neither route.
+  if (metadata.routeGraphId !== match.route.id) {
     return null;
   }
 
