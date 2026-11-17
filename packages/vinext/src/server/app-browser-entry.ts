@@ -386,6 +386,9 @@ const browserNavigationController = createAppBrowserNavigationController({
   getRouteManifest: getBrowserRouteManifest,
   loadRouteManifest: loadNavigationRuntimeRouteManifest,
   navigateDocument: (href, mode) => {
+    // Every hard navigation the controller starts (a navigation's fallback, a
+    // server action's redirect or reload) loads its document here.
+    void holdRefreshesForDocumentLoad();
     if (mpaNavigationTree) {
       mpaNavigationTree.enter(href, mode === "replace" ? "replace" : "push");
       return;
@@ -415,7 +418,7 @@ const discardedServerActionRefreshScheduler = hasServerActions
       markNavigationStart() {},
       schedule() {},
     };
-// Scheduler settlements of navigations whose document load is pending.
+// Scheduler settlements of document loads that are still pending.
 const heldMpaNavigationRefreshSettlements = new Set<() => void>();
 function holdMpaNavigationRefreshSettlement(): () => void {
   const release = () => {
@@ -427,6 +430,18 @@ function holdMpaNavigationRefreshSettlement(): () => void {
 }
 function releaseHeldMpaNavigationRefreshSettlements(): void {
   for (const release of heldMpaNavigationRefreshSettlements) release();
+}
+// A discarded or tree-less revalidation's refresh would reload this URL over a
+// pending document load, so it waits until bfcache restores this document, or
+// until a later navigation or document load shows this one was abandoned (a
+// cancelled unload, a 204 response leave the page alive without any event).
+function holdRefreshesForDocumentLoad(): Promise<void> {
+  releaseHeldMpaNavigationRefreshSettlements();
+  discardedServerActionRefreshScheduler.markNavigationStart();
+  const release = holdMpaNavigationRefreshSettlement();
+  const restored = waitForMpaNavigationRestore();
+  void restored.then(release);
+  return restored;
 }
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
@@ -1470,15 +1485,8 @@ function BrowserRoot({
     mpaNavigationTree = currentMpaNavigationTree;
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
-        // Like a navigation's document-load fallback, this load holds the
-        // refresh of a discarded or tree-less revalidation, which would
-        // otherwise reload this URL over it.
-        releaseHeldMpaNavigationRefreshSettlements();
-        discardedServerActionRefreshScheduler.markNavigationStart();
-        const releaseRefreshSettlement = holdMpaNavigationRefreshSettlement();
+        const restored = holdRefreshesForDocumentLoad();
         setMpaNavigationState(href, historyUpdateMode);
-        const restored = waitForMpaNavigationRestore();
-        void restored.then(releaseRefreshSettlement);
         return restored;
       },
     });
@@ -3139,15 +3147,11 @@ function bootstrapHydration(
       // checks, and error paths. The finally runs even when the catch returns.
       // settlePendingBrowserRouterState is idempotent via the settled flag.
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
-      if (!startedHardNavigation) discardedServerActionRefreshScheduler.markNavigationSettled();
+      // A document load it started holds refreshes on its own (navigateDocument).
+      discardedServerActionRefreshScheduler.markNavigationSettled();
       releaseNavigationInFlight();
       if (startedHardNavigation) {
-        // A discarded action's refresh would reload the old URL over the
-        // pending document load, so it waits until bfcache restores this
-        // document, or until a later navigation shows the load was abandoned.
-        const release = holdMpaNavigationRefreshSettlement();
         await waitForMpaNavigationRestore();
-        release();
       }
     }
   };

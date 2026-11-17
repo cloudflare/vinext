@@ -231,6 +231,95 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     expect(page.url()).toBe(externalUrl);
   });
 
+  // A server action's redirect to another origin loads a document. A
+  // revalidating action without a tree, still in flight beside it, refreshes
+  // the current URL only once that load is gone, not over it.
+  test("revalidating action without a tree does not refresh over another action's document load", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const externalUrl = "http://external.example/landing";
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+
+    let releaseRevalidatingAction = () => {};
+    const revalidatingActionGate = new Promise<void>((resolve) => {
+      releaseRevalidatingAction = resolve;
+    });
+    let releaseExternal = () => {};
+    const externalGate = new Promise<void>((resolve) => {
+      releaseExternal = resolve;
+    });
+    let externalRequested = () => {};
+    const externalRequest = new Promise<void>((resolve) => {
+      externalRequested = resolve;
+    });
+    let actionRequests = 0;
+    let sourceRscReads = 0;
+    const sourceDocumentLoads: string[] = [];
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (isAppRouterServerActionRequestForPath(request, sourcePath)) {
+        actionRequests += 1;
+        const isRevalidatingAction = actionRequests === 1;
+        const response = await route.fetch();
+        if (isRevalidatingAction) {
+          await revalidatingActionGate;
+          // Keep the real headers (revalidated, compatibility id) but drop the tree.
+          return route.fulfill({
+            status: 200,
+            headers: response.headers(),
+            body: '0:{"returnValue":{"ok":true,"data":1}}\n',
+          });
+        }
+        return route.fulfill({
+          status: 200,
+          headers: { ...response.headers(), "x-action-redirect": externalUrl },
+          body: "",
+        });
+      }
+      if (url.pathname === sourcePath && url.searchParams.has("_rsc")) {
+        sourceRscReads += 1;
+        // A refresh that falls back loads this page over the external one.
+        return route.abort("failed");
+      }
+      if (request.isNavigationRequest() && url.pathname === sourcePath) {
+        sourceDocumentLoads.push(url.href);
+      }
+      if (request.isNavigationRequest() && url.host === "external.example") {
+        externalRequested();
+        await externalGate;
+        return route.fulfill({
+          contentType: "text/html",
+          body: '<p id="external-landing">External</p>',
+        });
+      }
+      return route.continue();
+    });
+
+    const revalidatingActionRequest = page.waitForRequest((request) =>
+      isAppRouterServerActionRequestForPath(request, sourcePath),
+    );
+    await page.click("#slow-action-refresh");
+    await revalidatingActionRequest;
+    await page.click("#slow-action");
+    await externalRequest;
+
+    const revalidatingActionResponse = page.waitForResponse((response) =>
+      isAppRouterServerActionRequestForPath(response.request(), sourcePath),
+    );
+    releaseRevalidatingAction();
+    await revalidatingActionResponse;
+    await page.waitForTimeout(500);
+    expect(sourceRscReads).toBe(0);
+
+    releaseExternal();
+    await expect(page.locator("#external-landing")).toBeVisible();
+    expect(page.url()).toBe(externalUrl);
+    expect(sourceDocumentLoads).toEqual([]);
+  });
+
   // A navigation that falls back to a document load owns what loads next. A
   // discarded action's refresh must wait for that load, not reload the page
   // it was posted from over it.
