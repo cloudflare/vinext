@@ -3935,8 +3935,70 @@ export function useRouter(): NextRouter {
   );
 }
 
+type RouterSnapshot = ReturnType<typeof getRouterSnapshot>;
+
+/**
+ * The live values a client router snapshot is derived from. A navigation
+ * commits history and `window.__NEXT_DATA__` (always a new object, never
+ * mutated in place) before `root.render()`, so comparing these by identity
+ * tells whether the provider's stored snapshot still describes the live route.
+ */
+type RouterSnapshotSource = {
+  href: string;
+  historyState: unknown;
+  nextData: unknown;
+  isReady: boolean;
+  routerDidNavigate: boolean;
+};
+
+type RouterSnapshotState = {
+  snapshot: RouterSnapshot;
+  // `null` on the server, where the snapshot comes from the request context.
+  source: RouterSnapshotSource | null;
+};
+
+function getRouterSnapshotSource(): RouterSnapshotSource | null {
+  if (typeof window === "undefined") return null;
+  return {
+    href: window.location.href,
+    historyState: window.history?.state,
+    nextData: window.__NEXT_DATA__,
+    isReady: isPagesRouterReady(),
+    routerDidNavigate: routerRuntimeState.routerDidNavigate,
+  };
+}
+
+function takeRouterSnapshot(): RouterSnapshotState {
+  return { snapshot: getRouterSnapshot(), source: getRouterSnapshotSource() };
+}
+
+function refreshRouterSnapshot(prev: RouterSnapshotState): RouterSnapshotState {
+  if (prev.source === null) return prev;
+  const next = getRouterSnapshotSource();
+  if (
+    next !== null &&
+    prev.source.href === next.href &&
+    prev.source.historyState === next.historyState &&
+    prev.source.nextData === next.nextData &&
+    prev.source.isReady === next.isReady &&
+    prev.source.routerDidNavigate === next.routerDidNavigate
+  ) {
+    return prev;
+  }
+  return { snapshot: getRouterSnapshot(), source: next };
+}
+
 function PagesRouterProvider({ children }: { children: ReactNode }): ReactElement {
-  const [{ pathname, query, asPath, isReady }, setState] = useState(getRouterSnapshot);
+  const [routerState, setState] = useState(takeRouterSnapshot);
+  // A client navigation commits the new URL and __NEXT_DATA__ and then calls
+  // root.render(), which re-renders this provider with its old state. Next.js
+  // assigns router state before rendering the new page (Router#set() in
+  // packages/next/src/shared/lib/router/router.ts), so the page's first render
+  // already sees the destination route. Re-take the snapshot during render
+  // when its source changed, before any child reads the context.
+  const currentRouterState = refreshRouterSnapshot(routerState);
+  if (currentRouterState !== routerState) setState(currentRouterState);
+  const { pathname, query, asPath, isReady } = currentRouterState.snapshot;
 
   // Popstate is handled by the Pages Router client entry via
   // installPagesRouterRuntime() so beforePopState() is consistently enforced
@@ -3945,7 +4007,7 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
   // vinext:navigate listener.
   useEffect(() => {
     const onNavigate = ((_e: CustomEvent) => {
-      setState(getRouterSnapshot());
+      setState(refreshRouterSnapshot);
     }) as EventListener;
     window.addEventListener("vinext:navigate", onNavigate);
     let cancelled = false;
@@ -3954,7 +4016,7 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
 
       const becameReady = markPagesRouterReady();
       if (becameReady) {
-        setState(getRouterSnapshot());
+        setState(refreshRouterSnapshot);
         notifyNextNavigationPagesContext();
       }
     }, 0);
