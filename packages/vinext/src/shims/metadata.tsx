@@ -459,10 +459,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function isOtherMetadata(value: unknown): value is NonNullable<Metadata["other"]> {
   if (!isPlainObject(value)) return false;
-  return Object.values(value).every((item) => {
-    if (typeof item === "string") return true;
-    return Array.isArray(item) && item.every((nestedItem) => typeof nestedItem === "string");
-  });
+  const isValue = (item: unknown) =>
+    item == null || typeof item === "string" || typeof item === "number";
+  return Object.values(value).every((item) =>
+    Array.isArray(item) ? item.every(isValue) : isValue(item),
+  );
 }
 
 /**

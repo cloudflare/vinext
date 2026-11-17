@@ -2700,6 +2700,14 @@ describe("metadata segment merge", () => {
     });
   });
 
+  it("merges other custom meta tags that hold numbers", () => {
+    const result = mergeMetadata([
+      { other: { inherited: "keep" } },
+      { other: { count: 3, list: [1, "x"] } },
+    ]);
+    expect(result.other).toEqual({ inherited: "keep", count: 3, list: [1, "x"] });
+  });
+
   it("preserves root openGraph when page does not override it", () => {
     const result = mergeMetadata([
       { openGraph: { title: "OG Layout", siteName: "Site" } },
