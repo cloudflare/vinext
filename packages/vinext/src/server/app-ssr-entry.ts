@@ -580,8 +580,9 @@ export async function handleSsr(
         }
 
         let flightRoot: PromiseLike<AppWireElements> | null = null;
+        // The inline CSS manifest is set before any request (see below).
         const renderStylesheetsForElement = (elementId: string): ReactNode =>
-          renderElementStylesheets(streamedReferences, elementId);
+          renderElementStylesheets(streamedReferences, elementId, globalThis.__VINEXT_INLINE_CSS__);
 
         function VinextFlightRoot(): ReactNode {
           // Browsers fetch module scripts at high priority, ahead of the

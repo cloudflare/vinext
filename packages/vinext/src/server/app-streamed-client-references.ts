@@ -43,6 +43,7 @@ import * as ReactDOM from "react-dom";
 import { setOnClientReference } from "@vitejs/plugin-rsc/ssr";
 import { getOrCreateAls } from "vinext/shims/internal/als-registry";
 import { elementKey, type RouteClientReferenceSet } from "./app-client-reference-preloader.js";
+import { getInlineCss } from "./app-ssr-stream.js";
 import { escapeHtmlAttr } from "./html.js";
 import { tagPromiseWithRequest } from "./isolate-shared-promise.js";
 import type { AssetCrossOrigin } from "./pages-client-assets.js";
@@ -301,10 +302,15 @@ export function setPayloadElements(
  * has its stylesheets, it gets them there. After, the element is below a
  * boundary that was still pending, so they're returned as React stylesheets,
  * which React attaches to the boundary's reveal, as Next.js's segment CSS.
+ * With `experimental.inlineCss`, a stylesheet in `inlineCssManifest` is
+ * returned as a React `<style>` resource holding its CSS instead, as Next.js
+ * renders it, since React serializes a late stylesheet into the reveal's
+ * script, which the stream's inline CSS rewrite doesn't see.
  */
 export function renderElementStylesheets(
   render: StreamedClientReferences,
   elementId: string,
+  inlineCssManifest: Readonly<Record<string, string>> | undefined,
 ): ReactNode {
   const key = elementKey(elementId);
   if (render.renderedElements.has(key)) return null;
@@ -319,15 +325,18 @@ export function renderElementStylesheets(
   if (hrefs.size === 0) return null;
   // React links each once, and holds the boundary's reveal for those it
   // already linked too.
-  return Array.from(hrefs, (href) =>
-    createElement("link", {
-      key: href,
-      rel: "stylesheet",
-      href,
-      precedence: STYLESHEET_PRECEDENCE,
-      crossOrigin: render.crossOrigin,
-    }),
-  );
+  return Array.from(hrefs, (href) => {
+    const css = inlineCssManifest ? getInlineCss(inlineCssManifest, href) : null;
+    return css === null
+      ? createElement("link", {
+          key: href,
+          rel: "stylesheet",
+          href,
+          precedence: STYLESHEET_PRECEDENCE,
+          crossOrigin: render.crossOrigin,
+        })
+      : createElement("style", { key: href, href, precedence: STYLESHEET_PRECEDENCE }, css);
+  });
 }
 
 /** Run a render, and the Flight stream it reads, with its streamed references. */

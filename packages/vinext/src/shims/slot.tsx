@@ -872,8 +872,10 @@ export function Slot({
   if (element === UNMATCHED_SLOT) {
     notFound();
   }
+  // An element that renders nothing still reaches its files' stylesheets.
+  const stylesheets = renderStylesheets?.(id);
   if (element === null) {
-    return null;
+    return stylesheets ?? null;
   }
 
   const content = (
@@ -890,7 +892,6 @@ export function Slot({
     ) : (
       content
     );
-  const stylesheets = renderStylesheets?.(id);
   return stylesheets ? (
     <>
       {stylesheets}
