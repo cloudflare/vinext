@@ -556,8 +556,9 @@ describe("handleApiRoute", () => {
         await handleApiRoute(server, req, mockRes(), "/api/users", [route("/api/users")]);
       }
 
-      // The decoder strips the BOM, and Next.js still hands over "".
-      expect(bodies).toEqual(["", undefined]);
+      // The decoder strips the BOM, and Next.js still hands over "". A request
+      // without a body gets "" too.
+      expect(bodies).toEqual(["", ""]);
     });
 
     it("parses application/ld+json bodies as JSON", async () => {
@@ -592,7 +593,9 @@ describe("handleApiRoute", () => {
       expect(capturedBody).toBe("plain text body");
     });
 
-    it("returns undefined for empty body", async () => {
+    it("returns an empty string for a request without a body", async () => {
+      // Next.js parseBody returns the decoded body, "" here.
+      // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/api-utils/node/parse-body.ts
       let capturedBody: unknown = "sentinel";
       const handler = vi.fn((req: any) => {
         capturedBody = req.body;
@@ -603,7 +606,7 @@ describe("handleApiRoute", () => {
 
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
-      expect(capturedBody).toBeUndefined();
+      expect(capturedBody).toBe("");
     });
 
     it("returns raw string when no content-type header is set", async () => {

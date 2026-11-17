@@ -139,16 +139,15 @@ async function parseBody(
       const body = Buffer.concat(chunks);
       const raw = decoder.decode(body);
       if (!raw) {
-        // A body that decodes to nothing, such as a lone BOM, stays "" like
-        // in Next.js; only a request without body bytes gets undefined.
+        // Next.js parseBody returns the decoded body, so a request without
+        // one and a body that decodes to nothing, such as a lone BOM, are
+        // both "".
         resolve(
           isJsonMediaType(mediaType)
             ? {}
             : mediaType === "application/x-www-form-urlencoded"
               ? decodeQueryString(raw)
-              : body.length > 0
-                ? raw
-                : undefined,
+              : raw,
         );
         return;
       }

@@ -192,13 +192,13 @@ export async function parsePagesApiBody(
   }
 
   if (!rawBody) {
-    // A body that decodes to nothing, such as a lone BOM, stays "" like in
-    // Next.js; only a request without body bytes gets undefined.
+    // Next.js parseBody returns the decoded body, so a request without one and
+    // a body that decodes to nothing, such as a lone BOM, are both "".
     return isJsonMediaType(mediaType)
       ? {}
       : mediaType === "application/x-www-form-urlencoded"
         ? decodeQueryString("")
-        : rawBody;
+        : "";
   }
 
   if (isJsonMediaType(mediaType)) {

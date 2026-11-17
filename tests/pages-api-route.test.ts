@@ -215,6 +215,24 @@ describe("pages api route", () => {
     await expect(emptyJsonResponse.json()).resolves.toEqual({});
   });
 
+  it("gives a request without a body an empty string, like Next.js parseBody", async () => {
+    // Next.js returns the decoded body for a non-JSON, non-urlencoded request,
+    // which is "" when there is none, so `req.body.id` reads undefined instead
+    // of throwing.
+    // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/api-utils/node/parse-body.ts
+    const bodyHandler = (req: { body: unknown }, res: { json: (data: unknown) => void }) => {
+      res.json({ body: req.body ?? null, type: typeof req.body });
+    };
+    for (const method of ["GET", "DELETE"]) {
+      const response = await handlePagesApiRoute({
+        match: createMatch(bodyHandler),
+        request: new Request("https://example.com/api/parse", { method }),
+        url: "/api/parse",
+      });
+      await expect(response.json()).resolves.toEqual({ body: "", type: "string" });
+    }
+  });
+
   it("sends Buffer payloads with octet-stream content-type and content-length", async () => {
     const response = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
