@@ -736,7 +736,9 @@ export type LearnedOptimisticRouteTemplate = {
  * pattern marked with hasDynamicRewrite, the route stays retired through
  * `clear()` (refreshes, server actions) and is never learned again, until
  * `forgetRetiredRoutes()`, which Next.js's resetKnownRoutes does on an HMR
- * refresh.
+ * refresh. A retirement carries the epoch read with `getRetirementEpoch()`
+ * when the prediction was made, so a navigation that started before an HMR
+ * refresh can't retire a route of the new route graph.
  */
 export function createOptimisticRouteTemplateStore() {
   const templates = new Map<string, OptimisticRouteTemplate>();
@@ -744,6 +746,7 @@ export function createOptimisticRouteTemplateStore() {
   const learning = new Map<string, Promise<void>>();
   const retiredRouteIds = new Set<string>();
   let generation = 0;
+  let retirementEpoch = 0;
 
   return {
     templates: templates as ReadonlyMap<string, OptimisticRouteTemplate>,
@@ -755,8 +758,13 @@ export function createOptimisticRouteTemplateStore() {
     },
     forgetRetiredRoutes(): void {
       retiredRouteIds.clear();
+      retirementEpoch++;
     },
-    retire(routeId: string): void {
+    getRetirementEpoch(): number {
+      return retirementEpoch;
+    },
+    retire(routeId: string, epoch: number): void {
+      if (epoch !== retirementEpoch) return;
       retiredRouteIds.add(routeId);
       for (const [key, template] of templates) {
         if (template.routeId === routeId) templates.delete(key);

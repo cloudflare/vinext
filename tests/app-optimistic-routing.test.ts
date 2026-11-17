@@ -1660,7 +1660,7 @@ describe("optimistic route template store", () => {
     }));
     await store.learn("source:/posts/1", async () => ({ key: "other", template: other }));
 
-    store.retire(retired.routeId);
+    store.retire(retired.routeId, store.getRetirementEpoch());
 
     expect([...store.templates.keys()]).toEqual(["other"]);
     expect(store.hasSource("source:/en/datasets/x")).toBe(true);
@@ -1684,11 +1684,26 @@ describe("optimistic route template store", () => {
     const learning = deferredLearning();
     const pending = store.learn("source:/en/datasets/x", learning.learnTemplate);
 
-    store.retire("route:/:locale/datasets/:id");
+    store.retire("route:/:locale/datasets/:id", store.getRetirementEpoch());
     learning.resolve(storedTemplate("route:/:locale/datasets/:id"));
     await pending;
 
     expect(store.templates.size).toBe(0);
+  });
+
+  it("ignores a retirement predicted before an HMR refresh reset the retired routes", async () => {
+    const store = createOptimisticRouteTemplateStore();
+    const template = storedTemplate("route:/:locale/datasets/:id");
+    await store.learn("source:/en/datasets/x", async () => ({ key: "datasets", template }));
+    const epochBeforeHmr = store.getRetirementEpoch();
+
+    // The navigation's payload resolves after the HMR refresh.
+    store.clear();
+    store.forgetRetiredRoutes();
+    store.retire(template.routeId, epochBeforeHmr);
+
+    await store.learn("source:/en/datasets/x", async () => ({ key: "datasets", template }));
+    expect(store.templates.get("datasets")).toBe(template);
   });
 });
 

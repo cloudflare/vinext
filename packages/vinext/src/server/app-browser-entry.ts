@@ -2627,8 +2627,10 @@ function bootstrapHydration(
           }
         }
 
-        // The route a learned template predicted for this URL, if any.
+        // The route a learned template predicted for this URL, if any, and
+        // the store's retirement epoch when it did.
         let predictedRouteId: string | null = null;
+        let predictionEpoch = 0;
         if (!navResponse && fallbackReuseDecision.kind === "attemptOptimisticRouteShell") {
           await learnOptimisticRouteTemplatesFromPrefetchCache({
             interceptionContext: requestInterceptionContext,
@@ -2647,6 +2649,7 @@ function bootstrapHydration(
               templates: optimisticRouteTemplates.templates,
             });
             predictedRouteId = optimisticPayload?.template.routeId ?? null;
+            predictionEpoch = optimisticRouteTemplates.getRetirementEpoch();
 
             if (
               optimisticPayload !== null &&
@@ -2924,9 +2927,11 @@ function bootstrapHydration(
         // another route, stop predicting the template's route.
         if (predictedRouteId !== null && routeManifest !== null) {
           const predicted = predictedRouteId;
+          const epoch = predictionEpoch;
           const manifest = routeManifest;
-          void Promise.resolve(rscPayload).then(
-            (elements) => {
+          // The navigation itself reports a failed or malformed payload.
+          void Promise.resolve(rscPayload)
+            .then((elements) => {
               if (
                 isOptimisticRoutePredictionMismatch({
                   elements,
@@ -2934,11 +2939,11 @@ function bootstrapHydration(
                   routeManifest: manifest,
                 })
               ) {
-                optimisticRouteTemplates.retire(predicted);
+                // Ignored if an HMR refresh reset the retired routes since.
+                optimisticRouteTemplates.retire(predicted, epoch);
               }
-            },
-            () => {},
-          );
+            })
+            .catch(() => {});
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
