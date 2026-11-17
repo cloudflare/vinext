@@ -1643,9 +1643,13 @@ export async function prerenderApp({
       }
 
       // 'ssr' from explicit config (force-dynamic, revalidate=0) — truly dynamic.
-      // Next.js never renders such a page at build time, so skip it before
-      // generateStaticParams expands it into concrete paths.
-      if (type === "ssr") {
+      // Next.js never renders such a page at build time. A dynamic URL still
+      // has its generateStaticParams collected and validated below, as Next.js
+      // does (build/utils.ts isPageStatic → buildAppStaticPaths); only the
+      // render of each generated path is skipped.
+      const isConfiguredDynamic = type === "ssr";
+
+      if (isConfiguredDynamic && !route.isDynamic) {
         if (mode === "export") {
           results.push({
             route: route.pattern,
@@ -1761,7 +1765,7 @@ export async function prerenderApp({
             continue;
           }
 
-          if (paramSets.length === 0) {
+          if (paramSets.length === 0 && !isConfiguredDynamic) {
             // No concrete artifact is emitted, but the route remains SSG and
             // may be generated on demand at runtime.
             results.push({
@@ -1793,6 +1797,7 @@ export async function prerenderApp({
             // writes a duplicate vinext-prerender.json entry.
             if (queuedRouteUrls.has(urlPath)) continue;
             queuedRouteUrls.add(urlPath);
+            if (isConfiguredDynamic) continue;
             urlsToRender.push({
               urlPath,
               routePattern: route.pattern,
@@ -1825,6 +1830,18 @@ export async function prerenderApp({
                   isFallback: true,
                 });
               }
+            }
+          }
+
+          if (isConfiguredDynamic) {
+            if (mode === "export") {
+              results.push({
+                route: route.pattern,
+                status: "error",
+                error: `Route uses dynamic rendering (force-dynamic or revalidate=0) which is not supported with output: 'export'`,
+              });
+            } else {
+              results.push({ route: route.pattern, status: "skipped", reason: "dynamic" });
             }
           }
         } catch (e) {
