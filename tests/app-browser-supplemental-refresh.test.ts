@@ -269,38 +269,10 @@ describe("parallel route supplemental refreshes", () => {
     ).toEqual([]);
   });
 
-  // The page's route id holds the rewritten path decoded, while a named slot's
-  // route id holds it as the rewrite percent-encoded it.
-  it("does not refresh the own route of a rewritten page with a non-ASCII segment", () => {
-    expect(
-      resolvePersistedSourcePageRefreshes({
-        basePath: "",
-        refreshUrl: new URL("https://example.com/p/caf%C3%A9"),
-        state: {
-          interception: null,
-          previousNextUrl: null,
-          routeId: "route:/v1/p/café",
-          slotBindings: [
-            {
-              activeRouteId: "route:/v1/p/café",
-              ownerLayoutId: "layout:/[version]/p/[slug]",
-              slotId: "slot:children:/[version]/p/[slug]",
-              state: "active",
-            },
-            {
-              activeRouteId: "route:/v1/p/caf%C3%A9",
-              ownerLayoutId: "layout:/[version]/p/[slug]",
-              slotId: "slot:info:/[version]/p/[slug]",
-              state: "active",
-            },
-          ],
-        },
-      }),
-    ).toEqual([]);
-  });
-
-  // A slug requested as %25C3%25A9 holds a literal percent sign. The page's
-  // route id is decoded once (/v1/p/%C3%A9) and must not be decoded again.
+  // The server writes every route id in the canonical form the page's render
+  // identity uses: a slug requested as %25C3%25A9 is /v1/p/%C3%A9 and one
+  // requested as caf%C3%A9 is /v1/p/café. A slot left by the second route on
+  // a page of the first is a different route and is still refreshed.
   it("does not refresh the own route of a rewritten page with a literal percent sign", () => {
     expect(
       resolvePersistedSourcePageRefreshes({
@@ -314,12 +286,6 @@ describe("parallel route supplemental refreshes", () => {
             {
               activeRouteId: "route:/v1/p/%C3%A9",
               ownerLayoutId: "layout:/[version]/p/[slug]",
-              slotId: "slot:children:/[version]/p/[slug]",
-              state: "active",
-            },
-            {
-              activeRouteId: "route:/v1/p/%25C3%25A9",
-              ownerLayoutId: "layout:/[version]/p/[slug]",
               slotId: "slot:info:/[version]/p/[slug]",
               state: "active",
             },
@@ -327,6 +293,34 @@ describe("parallel route supplemental refreshes", () => {
         },
       }),
     ).toEqual([]);
+  });
+
+  it("still refreshes a slot that a decoded route of the same path left", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "",
+        refreshUrl: new URL("https://example.com/p/%25C3%25A9"),
+        state: {
+          interception: null,
+          previousNextUrl: null,
+          routeId: "route:/v1/p/%C3%A9",
+          slotBindings: [
+            {
+              activeRouteId: "route:/v1/p/%C3%A9",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:children:/",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/v1/p/é",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:info:/",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual(["/v1/p/%C3%A9"]);
   });
 
   it("still refreshes a slot that an earlier page left on a rewritten page", () => {

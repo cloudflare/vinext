@@ -2,8 +2,6 @@ import { AppElementsWire } from "./app-elements.js";
 import type { TraverseDirection } from "./navigation-planner.js";
 import { isNonNegativeSafeInteger } from "../utils/number.js";
 import { isBfcacheSegmentId } from "./app-bfcache-identity.js";
-import { normalizePath } from "./normalize-path.js";
-import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
@@ -403,11 +401,8 @@ export function readHistoryStateActiveRoutePaths(state: unknown): readonly strin
  * while the request to that URL already renders it. An intercepted page keeps
  * every slot, because its route is the source page.
  *
- * The page's route id holds the matched path already decoded segment by
- * segment, and the children slot carries the same id. A named slot's route id
- * holds the matched path as it came, possibly percent-encoded, so it is also
- * compared once decoded. The page's path is never decoded again: a literal
- * percent sign in it would turn into another character.
+ * The server writes the page's route id and its slots' route ids in the same
+ * canonical form, so the ids are compared as they are.
  */
 export function resolveActiveRoutePaths(state: {
   interception: unknown;
@@ -427,8 +422,7 @@ export function resolveActiveRoutePaths(state: {
     if (
       route?.kind === "route" &&
       route.interceptionContext === null &&
-      route.path !== pageRoutePath &&
-      normalizePath(normalizePathnameForRouteMatch(route.path)) !== pageRoutePath
+      route.path !== pageRoutePath
     ) {
       paths.add(route.path);
     }
