@@ -29,7 +29,13 @@ describe("vite preview (Pages Router, Node)", () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    tmpDir = await createIsolatedFixture(PAGES_FIXTURE_DIR, "vinext-vite-preview-pages-");
+    // optimize-imports-default imports a file: dependency that only the
+    // fixture's own node_modules installs.
+    tmpDir = await createIsolatedFixture(
+      PAGES_FIXTURE_DIR,
+      "vinext-vite-preview-pages-",
+      (src) => !src.includes("optimize-imports-default"),
+    );
     const builder = await createBuilder({
       root: tmpDir,
       configFile: false,

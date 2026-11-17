@@ -906,11 +906,11 @@ describe("optimizeDeps.exclude for vinext", () => {
     try {
       const result = await fixture.config({ ssr: { external: true } });
 
-      expect(result.ssr.noExternal).toEqual(["@vercel/og"]);
+      expect(result.ssr.noExternal).toContain("@vercel/og");
       expect(result.environments.rsc.resolve.external).toBe(true);
-      expect(result.environments.rsc.resolve.noExternal).toEqual(["@vercel/og"]);
+      expect(result.environments.rsc.resolve.noExternal).toContain("@vercel/og");
       expect(result.environments.ssr.resolve.external).toBe(true);
-      expect(result.environments.ssr.resolve.noExternal).toEqual(["@vercel/og"]);
+      expect(result.environments.ssr.resolve.noExternal).toContain("@vercel/og");
     } finally {
       await fixture.cleanup();
     }

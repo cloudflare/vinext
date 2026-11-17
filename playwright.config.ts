@@ -570,6 +570,18 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "app-ssr-external": {
+    testDir: "./tests/e2e/app-ssr-external",
+    use: { baseURL: "http://localhost:4241" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4241",
+      cwd: "./tests/fixtures/app-ssr-external",
+      port: 4241,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "use-params-app-pages": {
     testDir: "./tests/e2e/use-params-app-pages",
     use: { baseURL: "http://localhost:4186" },

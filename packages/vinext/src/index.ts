@@ -280,7 +280,10 @@ import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-on
 import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
 import { createCloudflareDevModuleUrlsPlugin } from "./plugins/cloudflare-dev-module-urls.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
-import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
+import {
+  createOptimizeImportsPlugin,
+  getOptimizedPackageNames,
+} from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { createOgHarfbuzzPlugin } from "./plugins/og-harfbuzz.js";
@@ -3607,7 +3610,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(nextConfig?.turbopackTranspilePackages ?? []),
           ...(nextConfig?.optimizePackageImports ?? []),
         ];
-        pagesBundledPackages = new Set(serverTranspilePackages);
+        // Optimized barrels stay bundled even where other dependencies are
+        // external, so their imports can still be rewritten.
+        const optimizedPackageNames = getOptimizedPackageNames(nextConfig?.optimizePackageImports);
+        pagesBundledPackages = new Set([...serverTranspilePackages, ...optimizedPackageNames]);
+        const alwaysBundledServerPackages = [...PATCHED_SERVER_PACKAGES, ...optimizedPackageNames];
         const openTelemetryPackages = findOpenTelemetryPackages(root);
         registerNodeOpenTelemetryLoader =
           env.command === "build" &&
@@ -3923,7 +3930,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(hasCloudflarePlugin || hasNitroPlugin
             ? {}
             : config.ssr?.external === true
-              ? { ssr: { external: true as const, noExternal: [...PATCHED_SERVER_PACKAGES] } }
+              ? { ssr: { external: true as const, noExternal: alwaysBundledServerPackages } }
               : {
                   ssr: {
                     external: [
@@ -4392,9 +4399,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // ESM loader. Matches Next.js behavior of bundling everything.
                       // Packages in `external` above take precedence per Vite rules.
                       // When user sets `ssr.external: true`, only packages vinext
-                      // must patch stay in the transform pipeline.
+                      // must patch and optimized barrels stay in the pipeline.
                       noExternal:
-                        userSsrExternal === true ? [...PATCHED_SERVER_PACKAGES] : (true as const),
+                        userSsrExternal === true ? alwaysBundledServerPackages : (true as const),
                     },
                   }),
               optimizeDeps: {
@@ -4443,9 +4450,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
                       // When user sets `ssr.external: true`, only packages vinext
-                      // must patch stay in the transform pipeline.
+                      // must patch and optimized barrels stay in the pipeline.
                       noExternal:
-                        userSsrExternal === true ? [...PATCHED_SERVER_PACKAGES] : (true as const),
+                        userSsrExternal === true ? alwaysBundledServerPackages : (true as const),
                     },
                   }),
               optimizeDeps: {

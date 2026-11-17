@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@tremor/react": "file:./__test_packages__/fake-tremor-react",
     "react": "catalog:",
     "react-dom": "catalog:",
     "vinext": "workspace:*"

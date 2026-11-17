@@ -1,0 +1,17 @@
+{
+  "name": "app-ssr-external-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@vitejs/plugin-rsc": "catalog:",
+    "fake-external-barrel": "file:./__test_packages__/fake-external-barrel",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:"
+  },
+  "devDependencies": {
+    "vite-plus": "catalog:"
+  }
+}

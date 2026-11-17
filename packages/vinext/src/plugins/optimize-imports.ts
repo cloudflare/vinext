@@ -18,6 +18,7 @@ import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { collectBindingNames, getAstName, parseProgram } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
+import { packageNameFromSpecifier } from "../utils/package-name.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 
@@ -161,6 +162,18 @@ export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
   // import in dev and the RSC build (https://github.com/cloudflare/vinext/issues/4007).
   "@heroui/react",
 ];
+
+/**
+ * Names of the packages whose barrel imports are optimized. Like Next.js, which
+ * adds them all to `transpilePackages`, the server keeps these packages in its
+ * bundle: a barrel resolved as external can't be rewritten and loads whole.
+ */
+export function getOptimizedPackageNames(optimizePackageImports: readonly string[] = []): string[] {
+  const names = [...DEFAULT_OPTIMIZE_PACKAGES, ...optimizePackageImports].map(
+    packageNameFromSpecifier,
+  );
+  return [...new Set(names.filter((name): name is string => name !== null))];
+}
 
 /**
  * Packages whose subpath imports (`pkg/Sub`) are also optimized, in the RSC
