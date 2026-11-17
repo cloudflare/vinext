@@ -5349,6 +5349,76 @@ describe("app browser navigation controller", () => {
     }
   });
 
+  it("resumes a queued server action when the dev recovery boundary replaces the navigation's render", async () => {
+    const initialState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      routeId: "route:/settings",
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/settings");
+
+    try {
+      const navId = controller.beginNavigation();
+      const queued = controller.waitForUserNavigationCommit();
+      let resumed = false;
+      void queued!.then(() => {
+        resumed = true;
+      });
+      void renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: noopCommitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/broken", {}),
+        navId,
+        nextElements: Promise.resolve(createResolvedElements("route:/broken", "/")),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/broken",
+      });
+      await vi.waitFor(() => expect(stateRef.current.routeId).toBe("route:/broken"));
+
+      // The route throws while rendering: the boundary's fallback commits, but
+      // none of the render's commit signals run.
+      controller.recoverNavigationRender(stateRef.current.renderId);
+      await queued;
+      expect(resumed).toBe(true);
+      expect(controller.waitForUserNavigationCommit()).toBeNull();
+    } finally {
+      detach();
+    }
+  });
+
+  it("starts a queued server action from the restored state when a history write discards the navigation", async () => {
+    stubWindow("https://example.com/settings");
+    const visibleState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      routeId: "route:/settings",
+    });
+    const controller = createAppBrowserNavigationController();
+    // Like React's ref, written during render: it holds navigation B's tree,
+    // which React rendered but never committed, until the restore renders.
+    const stateRef = { current: visibleState };
+    const detach = controller.attachBrowserRouterState(() => {}, stateRef);
+
+    try {
+      controller.beginNavigation();
+      const queued = controller.waitForUserNavigationCommit();
+      stateRef.current = createState({
+        navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/b", {}),
+        routeId: "route:/b",
+      });
+
+      expect(controller.discardPendingNavigation(visibleState)).toBe(true);
+      await queued;
+      expect(controller.getBrowserRouterState()).toBe(visibleState);
+    } finally {
+      detach();
+    }
+  });
+
   it("resumes a queued server action when the navigation settles without committing", async () => {
     const { controller, detach } = createControllerHarness(createState());
     stubWindow("https://example.com/settings");

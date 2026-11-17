@@ -66,7 +66,7 @@ export type ClientServerActionDeps = {
   navigationPlanner: typeof import("./navigation-planner.js").navigationPlanner;
   /** Whether the action may still change what is visible (see the controller). */
   ownsRouterForServerAction(actionInitiation: ClientServerActionInitiation): boolean;
-  /** Refreshes the current URL once navigations settle, for a discarded action that revalidated. */
+  /** Refreshes the current URL once navigations settle, for a revalidation no tree applied. */
   notifyDiscardedServerActionRevalidation(revalidation: ServerActionRevalidationKind): void;
   performHardNavigation(url: string, historyMode?: "assign" | "replace"): void;
   renderRedirectPayload(
@@ -305,12 +305,10 @@ export async function invokeClientServerAction(
         renderedPathAndSearch,
       );
     }
-    // A forwarded action revalidates without rendering the page. If a
-    // navigation discarded it, refresh what it revalidated once navigations
-    // settle, as with a discarded tree.
-    if (!deps.ownsRouterForServerAction(actionInitiation)) {
-      deps.notifyDiscardedServerActionRevalidation(revalidation);
-    }
+    // A forwarded action revalidates without rendering the page. As in
+    // Next.js, which navigates to the current URL when a revalidating
+    // response has no Flight data, refresh it once navigations settle.
+    deps.notifyDiscardedServerActionRevalidation(revalidation);
     if (result.returnValue) {
       if (!result.returnValue.ok) {
         throw await normalizeServerActionThrownValue(result.returnValue.data, fetchResponse.status);

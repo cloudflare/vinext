@@ -373,26 +373,29 @@ describe("app browser server action client", () => {
       return { actionInitiation, deps };
     }
 
-    it("refreshes what the action revalidated when a navigation owns the router", async () => {
+    it("refreshes what the action revalidated when a navigation superseded it", async () => {
       const { actionInitiation, deps } = setUpForwardedResponse(false);
 
       await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
         "saved",
       );
-      expect(deps.ownsRouterForServerAction).toHaveBeenCalledWith(actionInitiation);
       expect(deps.performHardNavigation).not.toHaveBeenCalled();
       expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
       expect(deps.clearDynamicClientNavigationCaches).toHaveBeenCalledTimes(1);
       expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
     });
 
-    it("schedules no refresh while the action owns the router", async () => {
+    it("refreshes what the action revalidated while the action owns the router", async () => {
+      // Next.js navigates to the current URL for a revalidating response that
+      // carries no Flight data.
       const { actionInitiation, deps } = setUpForwardedResponse(true);
 
       await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
         "saved",
       );
-      expect(deps.notifyDiscardedServerActionRevalidation).not.toHaveBeenCalled();
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
     });
   });
 

@@ -1305,12 +1305,13 @@ function getRequestState(
 // URL update for the in-flight navigation would otherwise be lost. Force-drain
 // the queued pre-paint effect for this renderId so the URL still moves to the
 // navigation target, the dev overlay shows which URL is broken, and HMR's
-// rsc:update fetches the right payload after the bug is fixed.
+// rsc:update fetches the right payload after the bug is fixed. Server actions
+// queued behind that navigation run too.
 function handleDevRecoveryBoundaryCatch(resetKey: number): void {
   // React's onCaughtError option already routes the error to the dev overlay.
   // Our job here is purely to drive the URL update for the in-flight
   // navigation that this failed render belonged to.
-  browserNavigationController.drainPrePaintEffects(resetKey);
+  browserNavigationController.recoverNavigationRender(resetKey);
 }
 
 function isMpaNavigationState(

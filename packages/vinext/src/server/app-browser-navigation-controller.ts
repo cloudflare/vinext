@@ -195,6 +195,7 @@ type BrowserNavigationController = {
    * navigation would otherwise be lost.
    */
   drainPrePaintEffects(renderId: number): void;
+  recoverNavigationRender(renderId: number): void;
   beginNavigationRenderCommit(renderId: number): void;
   commitNavigationRender(renderId: number): void;
   clearCommittedNavigationFailureTargets(renderId: number): void;
@@ -604,14 +605,18 @@ export function createAppBrowserNavigationController(
     }
     clearCommittedNavigationFailureTargets(nextNavigationRenderId);
     settleNavigationCommits(nextNavigationRenderId, false);
-    notifyUserNavigationCommitWaiters();
 
     if (visibleState && setBrowserRouterState) {
       const setter = setBrowserRouterState;
       startTransition(() => {
         setter(visibleState);
       });
+      // The state ref moves during render, so it can still hold the discarded
+      // tree. The restore replaces it, so the server actions that waited for
+      // the navigation start from the restored state.
+      if (browserRouterStateRef) browserRouterStateRef.current = visibleState;
     }
+    notifyUserNavigationCommitWaiters();
     return true;
   }
 
@@ -710,6 +715,13 @@ export function createAppBrowserNavigationController(
    */
   function beginNavigationRenderCommit(renderId: number): void {
     committingNavigationRenderId = renderId;
+    markNavigationRenderVisible(renderId);
+    clearCommittedNavigationFailureTargets(renderId);
+    writeNavigationRenderHistory(renderId);
+  }
+
+  /** Records that a render is now visible, ending its navigation's wait. */
+  function markNavigationRenderVisible(renderId: number): void {
     // The optimistic shell is a detached commit: the authoritative render
     // that follows is still pending, so it does not end discardability.
     const committingCommit = pendingNavigationCommits.get(renderId);
@@ -731,8 +743,17 @@ export function createAppBrowserNavigationController(
         pendingUserNavigationOwnCommitStarted = true;
       }
     }
-    clearCommittedNavigationFailureTargets(renderId);
-    writeNavigationRenderHistory(renderId);
+  }
+
+  /**
+   * Dev only: the recovery boundary replaced a render's subtree, so its commit
+   * signals never run. Its URL update still runs, and the server actions that
+   * waited for its navigation resume on the visible error state.
+   */
+  function recoverNavigationRender(renderId: number): void {
+    markNavigationRenderVisible(renderId);
+    drainPrePaintEffects(renderId);
+    notifyUserNavigationCommitWaiters();
   }
 
   function commitNavigationRender(renderId: number): void {
@@ -1408,6 +1429,7 @@ export function createAppBrowserNavigationController(
     commitSameUrlNavigatePayload,
     hmrReplaceTree,
     drainPrePaintEffects,
+    recoverNavigationRender,
     beginNavigationRenderCommit,
     commitNavigationRender,
     clearCommittedNavigationFailureTargets,
