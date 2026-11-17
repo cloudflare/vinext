@@ -523,9 +523,13 @@ describe("app browser server action client", () => {
         [ACTION_REVALIDATED_HEADER]: "1",
       });
 
+      // As in Next.js, the caller still gets the handled redirect error.
       await expect(
         invokeClientServerAction("action-id", [], actionInitiation, deps),
-      ).resolves.toBeUndefined();
+      ).rejects.toMatchObject({
+        digest: "NEXT_REDIRECT;push;/target;307;",
+        handled: true,
+      });
       expect(deps.performHardNavigation).not.toHaveBeenCalled();
       expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
       expect(createFromFetch).not.toHaveBeenCalled();

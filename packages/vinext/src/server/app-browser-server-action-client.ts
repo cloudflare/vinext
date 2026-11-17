@@ -216,7 +216,9 @@ export async function invokeClientServerAction(
       const discardedRevalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
       evictClientNavigationCachesForRevalidation(discardedRevalidation, deps);
       deps.notifyDiscardedServerActionRevalidation(discardedRevalidation);
-      return undefined;
+      // As in Next.js, the caller still gets the handled redirect error, which
+      // resets its boundary without navigating; only the reload is discarded.
+      throw new ServerActionRedirectError(actionRedirectTarget);
     }
     // Without a redirect, the caller still gets the action's value or error,
     // as in Next.js. Its tree goes to the commit below, whose ownership check
