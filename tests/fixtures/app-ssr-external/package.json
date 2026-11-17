@@ -9,6 +9,7 @@
     "react-aria-components": "file:./__test_packages__/fake-react-aria-components",
     "react-dom": "catalog:",
     "react-server-dom-webpack": "catalog:",
+    "react-stately": "file:./__test_packages__/fake-react-stately",
     "vinext": "workspace:*",
     "vite": "catalog:"
   },

@@ -1630,6 +1630,9 @@ importers:
       react-server-dom-webpack:
         specifier: 'catalog:'
         version: 19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      react-stately:
+        specifier: file:./__test_packages__/fake-react-stately
+        version: file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately
       vinext:
         specifier: workspace:*
         version: link:../../../packages/vinext
@@ -10585,6 +10588,9 @@ packages:
       react-dom: ^19.3.1
       webpack: ^5.59.0
 
+  react-stately@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately:
+    resolution: {directory: tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately, type: directory}
+
   react-style-singleton@2.2.3:
     resolution: {integrity: sha512-b6jSvxvVnyptAiLjbkWLE/lOnR4lfTtDAl+eUC7RZy+QQWc6wRzIV2CE6xBuMmDxc2qIihtDCZD5NPOFl7fRBQ==}
     engines: {node: '>=10'}
@@ -19361,7 +19367,9 @@ snapshots:
 
   queue-microtask@1.2.3: {}
 
-  react-aria-components@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components: {}
+  react-aria-components@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-aria-components:
+    dependencies:
+      react-stately: file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately
 
   react-day-picker@9.13.2(react@19.3.1):
     dependencies:
@@ -19420,6 +19428,8 @@ snapshots:
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
       webpack-sources: 3.3.4
+
+  react-stately@file:tests/fixtures/app-ssr-external/__test_packages__/fake-react-stately: {}
 
   react-style-singleton@2.2.3(@types/react@19.2.16)(react@19.3.1):
     dependencies:

@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 // The fixture sets `ssr.external: true` and lists fake-external-barrel in
 // optimizePackageImports. Its fake react-aria-components has a subpath barrel,
-// which vinext optimizes in RSC.
+// which vinext optimizes in RSC, re-exporting an external react-stately module.
 test("rewrites optimized barrel imports when every dependency is external", async ({ request }) => {
   const res = await request.get("/");
   expect(res.status()).toBe(200);
@@ -18,4 +18,5 @@ test("rewrites optimized barrel imports when every dependency is external", asyn
       new RegExp(`data-testid="${id}" data-unused-loaded="false"[^>]*>${text}<`),
     );
   }
+  expect(html).toMatch(/data-testid="toast-queue">function</);
 });

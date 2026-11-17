@@ -1474,12 +1474,16 @@ describe("vinext:optimize-imports subpath imports", () => {
       }
       if (source === "react-aria-components/External")
         return { id: "rac-external", external: true };
+      if (source === "react-stately/external" && importer === toastEntryPath) {
+        return { id: source, external: true };
+      }
       return null;
     };
 
     const plugin = createOptimizeImportsPlugin(() => undefined) as Plugin;
     await unwrapHook((plugin as any).buildStart)!.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
+    const resolveId = unwrapHook(plugin.resolveId)!;
     const call = async (envName: string, code: string, id: string) =>
       await (transform as any).call(
         {
@@ -1500,7 +1504,9 @@ describe("vinext:optimize-imports subpath imports", () => {
         code,
         id,
       );
-    return { call, racDir, nestedStately, statelySource, resolveCalls };
+    const callResolveId = async (envName: string, source: string, importer: string) =>
+      await (resolveId as any).call({ environment: { name: envName }, resolve }, source, importer);
+    return { call, callResolveId, racDir, nestedStately, statelySource, resolveCalls };
   }
 
   const heroToastQueue =
@@ -1535,6 +1541,30 @@ describe("vinext:optimize-imports subpath imports", () => {
       ["react-aria-components/Toast", heroToastQueue],
       ["react-stately/useToastState", `${racDir}/dist/exports/Toast.mjs`],
     ]);
+  });
+
+  it("keeps an external package source bare and resolves it from the entry", async () => {
+    const { call, callResolveId, racDir } = await setup(
+      [
+        `export { UNSTABLE_Toast } from "../private/Toast.mjs";`,
+        `export { ToastQueue as UNSTABLE_ToastQueue } from "react-stately/external";`,
+      ].join("\n"),
+    );
+    const result = await call(
+      "rsc",
+      `import { UNSTABLE_Toast, UNSTABLE_ToastQueue } from "react-aria-components/Toast";`,
+      "/app/page.tsx",
+    );
+    expect(result!.code).toContain(
+      `import { ToastQueue as UNSTABLE_ToastQueue } from "react-stately/external";`,
+    );
+    expect(result!.code).toContain(
+      `import { UNSTABLE_Toast } from ${JSON.stringify(`${racDir}/dist/private/Toast.mjs`)};`,
+    );
+    expect(await callResolveId("rsc", "react-stately/external", "/app/page.tsx")).toEqual({
+      id: "react-stately/external",
+      external: true,
+    });
   });
 
   it("rewrites names defined in a private module to its file", async () => {

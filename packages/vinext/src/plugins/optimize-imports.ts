@@ -853,7 +853,14 @@ export function createOptimizeImportsPlugin(
               const source = getEntry(imported)?.source;
               if (!source || path.isAbsolute(source) || resolvedPackageSources.has(source))
                 continue;
-              const resolvedId = await resolveFileId(this, source, barrelEntry);
+              const resolved = await this.resolve(source, barrelEntry, { skipSelf: true });
+              // An external source stays a bare import that resolveId resolves
+              // from the entry, the same request the entry itself makes.
+              const resolvedId = resolved?.external
+                ? source
+                : resolved && path.isAbsolute(resolved.id)
+                  ? resolved.id
+                  : null;
               if (!resolvedId) {
                 allResolved = false;
                 break;
@@ -883,8 +890,8 @@ export function createOptimizeImportsPlugin(
             // works in practice, but a future improvement would be to resolve the
             // extension here (or verify via the barrel AST that the file exists).
             const resolvedSource = resolvedPackageSources.get(entry.source) ?? entry.source;
-            // Subpath imports emit already-resolved ids for package sources.
-            if (!isSubpath && !path.isAbsolute(resolvedSource) && !origins.has(resolvedSource)) {
+            // Subpath imports emit already-resolved ids for bundled package sources.
+            if (!path.isAbsolute(resolvedSource) && !origins.has(resolvedSource)) {
               origins.set(resolvedSource, barrelEntry);
             }
             // Key on both resolved source and isNamespace: a named import and a
