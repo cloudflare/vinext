@@ -1,0 +1,7 @@
+{
+  "name": "vinext-cf-app-build-outdir",
+  "compatibility_date": "2026-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "vinext/server/app-router-entry",
+  "assets": { "not_found_handling": "none", "binding": "ASSETS" },
+}

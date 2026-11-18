@@ -135,6 +135,11 @@ async function loadHybridUserConfig(
   };
 }
 
+/** Root of the build output: Vite's `build.outDir`, "dist" by default. */
+function resolveBuildOutDir(context: BuildLifecycleContext): string {
+  return path.resolve(context.root, context.routeRootConfig?.outDir ?? "dist");
+}
+
 async function buildHybridPagesBundle(
   builder: ViteBuilder,
   context: BuildLifecycleContext,
@@ -153,9 +158,10 @@ async function buildHybridPagesBundle(
   const { build: _userSsrBuild, ...pagesEnvironment } = userSsrEnvironment ?? {};
   const mergedBuild = vite.mergeConfig(userConfig.build ?? {}, userSsrEnvironment?.build ?? {});
   const userOutput = mergedBuild.rolldownOptions?.output;
+  const serverOutDir = path.join(resolveBuildOutDir(context), "server");
   const appAssetsPath = path.resolve(
     context.root,
-    builder.environments.rsc?.config.build.outDir ?? "dist/server",
+    builder.environments.rsc?.config.build.outDir ?? serverOutDir,
     PAGES_CLIENT_ASSETS_MODULE,
   );
   const pagesClientAssetsModule = fs.existsSync(appAssetsPath)
@@ -163,7 +169,7 @@ async function buildHybridPagesBundle(
     : null;
   const pagesBuild = {
     ...mergedBuild,
-    outDir: "dist/server",
+    outDir: serverOutDir,
     emptyOutDir: false,
     // The primary App build owns the shared server manifest. Emitting another
     // one here would replace its RSC entries with the auxiliary Pages graph.
@@ -238,7 +244,7 @@ export function prepareBuildOutput(
 
   cleanBuildOutput({
     root: context.root,
-    outDir: path.resolve(context.root, "dist"),
+    outDir: resolveBuildOutDir(context),
     emptyOutDir,
   });
 }
@@ -321,12 +327,11 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     const { emitStandaloneOutput } = await import("./standalone.js");
     const standalone = emitStandaloneOutput({
       root: context.root,
-      outDir: path.resolve(context.root, "dist"),
+      outDir: resolveBuildOutDir(context),
     });
-    console.log(
-      `  Generated standalone output in ${path.relative(context.root, standalone.standaloneDir)}/`,
-    );
-    console.log("  Start it with: node dist/standalone/server.js\n");
+    const standaloneDir = path.relative(context.root, standalone.standaloneDir);
+    console.log(`  Generated standalone output in ${standaloneDir}/`);
+    console.log(`  Start it with: node ${path.join(standaloneDir, "server.js")}\n`);
     return;
   }
 

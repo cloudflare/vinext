@@ -152,6 +152,14 @@ function readDiscoveryUserFailure(response: Response, text: string): string | nu
   }
 }
 
+/** Framework manifests live in `<outDir>/server`, `dist/server` by default. */
+function resolveManifestDir(
+  root: string,
+  routeRootConfig: VinextRouteRootConfig | null | undefined,
+): string {
+  return path.resolve(root, routeRootConfig?.outDir ?? "dist", "server");
+}
+
 type PrerenderPathDiscoveryOptions = {
   root: string;
   /** Additional concrete public paths to resolve through the route graph. */
@@ -1382,9 +1390,10 @@ export async function discoverPrerenderPathManifest(
 
   if (!appDir && !pagesDir) return null;
 
+  const manifestDir = resolveManifestDir(root, options.routeRootConfig);
   const configuredRscServerDir = options.routeRootConfig?.rscOutDir
     ? path.resolve(root, options.routeRootConfig.rscOutDir)
-    : path.join(root, "dist", "server");
+    : manifestDir;
   const defaultRscBundlePath = resolveBuiltRscEntryPath(configuredRscServerDir);
   const rscBundlePath = options.rscBundlePath ?? defaultRscBundlePath;
   const relativeRscEntryPath = path.relative(configuredRscServerDir, rscBundlePath);
@@ -1395,12 +1404,11 @@ export async function discoverPrerenderPathManifest(
   const pagesBundlePath =
     options.pagesBundlePath ??
     resolveBuiltPagesEntryPath(
-      path.resolve(root, options.routeRootConfig?.ssrOutDir ?? path.join("dist", "server")),
+      path.resolve(root, options.routeRootConfig?.ssrOutDir ?? manifestDir),
     );
   const bundleServerDir = fs.existsSync(rscBundlePath)
     ? rscServerDir
     : path.dirname(pagesBundlePath);
-  const manifestDir = path.join(root, "dist", "server");
   const config = options.nextConfig
     ? { ...options.nextConfig }
     : { ...(await resolveNextConfig(await loadNextConfig(root, PHASE_PRODUCTION_BUILD), root)) };
@@ -1788,7 +1796,7 @@ export async function emitPrerenderPathManifest(
   const manifest = await discoverPrerenderPathManifest(options);
   if (!manifest) return null;
 
-  const manifestDir = path.join(options.root, "dist", "server");
+  const manifestDir = resolveManifestDir(options.root, options.routeRootConfig);
   fs.mkdirSync(manifestDir, { recursive: true });
   fs.writeFileSync(
     path.join(manifestDir, PRERENDER_PATHS_MANIFEST),
