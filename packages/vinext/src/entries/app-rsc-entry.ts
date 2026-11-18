@@ -664,6 +664,8 @@ const __requestHandler = createAppRscRequestHandler({
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
       interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+      interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
+      interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
       route,
       params: pickParams(route, intercept.sourceMatchedParams),
     };
@@ -2138,6 +2140,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
       interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+      interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
+      interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
       route,
       params: pickParams(route, intercept.sourceMatchedParams),
     };

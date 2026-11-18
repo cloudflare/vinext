@@ -11,6 +11,8 @@ const GUARDED_OWNER_MARKER = "SECRET-VAULT-CONTENT";
 const GUARDED_MEMBER_MARKER = "SECRET-MEMBER-CONTENT";
 const GUARDED_NOTE_MARKER = "SECRET-NOTE-CONTENT";
 const GUARDED_VIEWER_MARKER = "SECRET-VIEWER-CONTENT";
+const GUARDED_GALLERY_MARKER = "SECRET-GALLERY-CONTENT";
+const GUARDED_TEAM_MARKER = "SECRET-TEAM-CONTENT";
 
 type StartedServer = {
   baseUrl: string;
@@ -334,6 +336,130 @@ describe.each([
       rendersSource: false,
       rendersModal: true,
       retainsSource: true,
+    });
+  }, 30_000);
+
+  // Middleware blocks /gallery and /teams/[team] but not the pics beneath
+  // them, which /gallery/@modal/(.)pics/[id] and /teams/[team]/@modal/(.)pics/[id]
+  // intercept. An intercepted render shows the source page the client already
+  // has and renders only the layouts above the slot, which a direct request to
+  // the pic renders too, with the same team. The pic's own request authorizes
+  // them, as in Next.js, which runs only the target's middleware. A source
+  // whose team differs from the pic's would render a layout the pic's request
+  // never did, so its own middleware still decides.
+  it("renders an interception source's layouts under the target's request when the target renders them too", async () => {
+    if (!server) throw new Error("Interception authorization fixture server did not start");
+    const { baseUrl } = server;
+
+    for (const source of ["/gallery", "/albums", "/teams/acme", "/teams/acme/nested"]) {
+      const direct = await fetch(`${baseUrl}${source}`);
+      expect(direct.status).toBe(403);
+      expect(direct.headers.get("x-auth-guard")).toBe("blocked");
+    }
+
+    const gallery = await fetch(`${baseUrl}/gallery/pics/1`, {
+      headers: interceptionHeaders("/gallery"),
+    });
+    const galleryBody = await gallery.text();
+    expect({
+      status: gallery.status,
+      rendersSource:
+        galleryBody.includes(GUARDED_GALLERY_MARKER) ||
+        galleryBody.includes("SECRET-GALLERY-TITLE"),
+      rendersLayout: galleryBody.includes("GALLERY-LAYOUT"),
+      rendersModal: galleryBody.includes("GALLERY-PICS-MODAL"),
+      retainsSource: retainedElementIds(galleryBody).includes("page:/gallery"),
+    }).toEqual({
+      status: 200,
+      rendersSource: false,
+      rendersLayout: true,
+      rendersModal: true,
+      retainsSource: true,
+    });
+
+    // A route group inside the slot adds no URL segment.
+    const albums = await fetch(`${baseUrl}/albums/pics/1`, {
+      headers: interceptionHeaders("/albums"),
+    });
+    const albumsBody = await albums.text();
+    expect({
+      status: albums.status,
+      rendersSource: albumsBody.includes("SECRET-ALBUMS-CONTENT"),
+      rendersModal: albumsBody.includes("ALBUMS-PICS-MODAL"),
+    }).toEqual({ status: 200, rendersSource: false, rendersModal: true });
+
+    const team = await fetch(`${baseUrl}/teams/acme/pics/1`, {
+      headers: interceptionHeaders("/teams/acme"),
+    });
+    const teamBody = await team.text();
+    expect({
+      status: team.status,
+      rendersSource: teamBody.includes(GUARDED_TEAM_MARKER),
+      rendersLayout: teamBody.includes("TEAM-LAYOUT:acme"),
+      rendersModal: teamBody.includes("TEAM-PICS-MODAL"),
+      retainsSource: retainedElementIds(teamBody).includes("page:/teams/acme"),
+    }).toEqual({
+      status: 200,
+      rendersSource: false,
+      rendersLayout: true,
+      rendersModal: true,
+      retainsSource: true,
+    });
+
+    // A directory inside the slot belongs to the intercepting branch too.
+    const nested = await fetch(`${baseUrl}/teams/acme/nested/pics/1`, {
+      headers: interceptionHeaders("/teams/acme/nested"),
+    });
+    const nestedBody = await nested.text();
+    expect({
+      status: nested.status,
+      rendersSource: nestedBody.includes("SECRET-TEAM-NESTED-CONTENT"),
+      rendersLayout: nestedBody.includes("TEAM-LAYOUT:acme"),
+      rendersModal: nestedBody.includes("TEAM-NESTED-PICS-MODAL"),
+    }).toEqual({ status: 200, rendersSource: false, rendersLayout: true, rendersModal: true });
+    const otherNested = await fetch(`${baseUrl}/teams/acme/nested/pics/1`, {
+      headers: interceptionHeaders("/teams/other/nested"),
+    });
+    const otherNestedBody = await otherNested.text();
+    expect({
+      status: otherNested.status,
+      rendersOtherTeam: otherNestedBody.includes("TEAM-LAYOUT:other"),
+      exposedGuardedContent: otherNestedBody.includes("SECRET-TEAM-NESTED-CONTENT"),
+    }).toEqual({ status: 403, rendersOtherTeam: false, exposedGuardedContent: false });
+
+    const otherTeam = await fetch(`${baseUrl}/teams/acme/pics/1`, {
+      headers: interceptionHeaders("/teams/other"),
+    });
+    const otherTeamBody = await otherTeam.text();
+    expect({
+      status: otherTeam.status,
+      authGuard: otherTeam.headers.get("x-auth-guard"),
+      rendersOtherTeam: otherTeamBody.includes("TEAM-LAYOUT:other"),
+      exposedGuardedContent: otherTeamBody.includes(GUARDED_TEAM_MARKER),
+    }).toEqual({
+      status: 403,
+      authGuard: "blocked",
+      rendersOtherTeam: false,
+      exposedGuardedContent: false,
+    });
+
+    // shelf/(.)item/[id] sits beside shelf/[slug], which has a layout of its
+    // own, so an intercept from a shelf renders that shelf's layout and page.
+    // A direct request to the item renders neither.
+    const directShelf = await fetch(`${baseUrl}/shelf/secret`);
+    expect(directShelf.status).toBe(403);
+    const shelf = await fetch(`${baseUrl}/shelf/item/1`, {
+      headers: interceptionHeaders("/shelf/secret"),
+    });
+    const shelfBody = await shelf.text();
+    expect({
+      status: shelf.status,
+      authGuard: shelf.headers.get("x-auth-guard"),
+      exposedGuardedContent: shelfBody.includes("SECRET-SHELF"),
+    }).toEqual({
+      status: 403,
+      authGuard: "blocked",
+      exposedGuardedContent: false,
     });
   }, 30_000);
 });
