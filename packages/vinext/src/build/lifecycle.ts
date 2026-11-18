@@ -390,7 +390,11 @@ export function createBuildLifecyclePlugins(options: {
         handler(config) {
           if (outputPrepared || !options.shouldPrepare(config)) return;
           const context = createContext();
-          if (config.build.emptyOutDir === false) context.emptyOutDir = false;
+          // A raw `emptyOutDir: false` stays the escape hatch; otherwise follow
+          // the resolved value, which later config hooks may have set.
+          if (context.emptyOutDir !== false && typeof config.build.emptyOutDir === "boolean") {
+            context.emptyOutDir = config.build.emptyOutDir;
+          }
           // Report a missing standalone prerequisite before onPrepare runs its checks.
           checkStandaloneBuildPrerequisite(context);
           options.onPrepare?.();

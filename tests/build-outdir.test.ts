@@ -288,4 +288,27 @@ describe("build.outDir", () => {
       }),
     ).rejects.toThrow('clientOutDir "dist" contains the server metadata directory "dist/server"');
   });
+
+  it("empties an external build.outDir when a later plugin sets emptyOutDir: true", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    fs.rmSync(path.join(fixtureDir, "pages"), { recursive: true });
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-outdir-out-"));
+    temporaryDirs.push(outDir);
+    fs.writeFileSync(path.join(outDir, "stale.txt"), "from an earlier build");
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        { name: "test:late-outdir", config: () => ({ build: { outDir, emptyOutDir: true } }) },
+      ],
+      logLevel: "silent",
+      [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
+    } as Parameters<typeof createBuilder>[0]);
+    await builder.buildApp();
+
+    expect(fs.existsSync(path.join(fixtureDir, "dist"))).toBe(false);
+    expect(fs.readdirSync(outDir).sort()).toEqual(["client", "server"]);
+  }, 180_000);
 });
