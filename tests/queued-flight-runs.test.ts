@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { trackQueuedFlightRuns } from "../packages/vinext/src/server/queued-flight-runs.js";
+import { loadCacheFlightCodec } from "./helpers/cache-flight-codec.js";
 
 function controlledStream() {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -76,6 +77,36 @@ describe("trackQueuedFlightRuns", () => {
     const failedRead = reader.read();
     controller.error(failure);
     await expect(failedRead).rejects.toBe(failure);
+    await flight.currentRunConsumed();
+  });
+
+  it("settles a run when the consumer stops reading partway without cancelling", async () => {
+    // React's Flight client stops reading, without cancelling, when it fails
+    // to decode a chunk.
+    const { controller, stream } = controlledStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const reader = flight.stream.getReader();
+
+    for (let i = 0; i < 4; i++) controller.enqueue(new Uint8Array([i]));
+    expect((await reader.read()).value?.[0]).toBe(0);
+    expect((await reader.read()).value?.[0]).toBe(1);
+    // Never reads again.
+    await flight.currentRunConsumed();
+  });
+
+  it("settles when the Flight root resolves before a later chunk fails to decode", async () => {
+    const { createFromReadableStream } = loadCacheFlightCodec();
+    const encoder = new TextEncoder();
+    const { controller, stream } = controlledStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const root = createFromReadableStream(flight.stream) as Promise<unknown>;
+
+    // The root row, then an error row the client fails to parse (it parses
+    // those as it reads them), in the same run.
+    controller.enqueue(encoder.encode('0:{"ok":true}\n'));
+    controller.enqueue(encoder.encode("1:E{not json\n"));
+    controller.enqueue(encoder.encode('2:"after"\n'));
+    await expect(root).resolves.toEqual({ ok: true });
     await flight.currentRunConsumed();
   });
 

@@ -19,7 +19,8 @@ export type QueuedFlightRuns = {
   /**
    * Settles once the consumer has read past the last chunk of the current run
    * of queued chunks: it asked for the next chunk after taking that one. Also
-   * settles when the stream ends, fails or is cancelled.
+   * settles when the stream ends, fails or is cancelled, and when the consumer
+   * stops reading without cancelling.
    */
   currentRunConsumed(): Promise<void>;
 };
@@ -38,6 +39,12 @@ export type QueuedFlightRuns = {
  * chunk of a flush to the Flight client before React renders again.
  *
  * A run ends at a chunk the stream has not queued yet: that is not waited for.
+ *
+ * React's Flight client stops reading, without cancelling, when it fails to
+ * decode a chunk. A consumer that hasn't asked for the next chunk by the next
+ * task has stopped, so the run settles then. One that is still decoding asks
+ * within a few microtasks, since the Flight client decodes a chunk
+ * synchronously and reads the next one right after.
  */
 export function trackQueuedFlightRuns(stream: ReadableStream<Uint8Array>): QueuedFlightRuns {
   const reader = stream.getReader();
@@ -46,6 +53,8 @@ export function trackQueuedFlightRuns(stream: ReadableStream<Uint8Array>): Queue
   let pendingRead: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
   let lastChunkEndedRun = false;
   let cancelled = false;
+  // Counts the consumer's pulls, so a timer can tell whether it pulled again.
+  let pulls = 0;
 
   let settleRun = noop;
   let run: Promise<void> | null = null;
@@ -70,6 +79,7 @@ export function trackQueuedFlightRuns(stream: ReadableStream<Uint8Array>): Queue
   const tracked = new ReadableStream<Uint8Array>(
     {
       async pull(controller) {
+        pulls++;
         // The consumer took the run's last chunk and asks for more.
         if (lastChunkEndedRun) {
           lastChunkEndedRun = false;
@@ -99,6 +109,11 @@ export function trackQueuedFlightRuns(stream: ReadableStream<Uint8Array>): Queue
           (): typeof NOT_QUEUED => NOT_QUEUED,
         );
         if (next === NOT_QUEUED || next.done) lastChunkEndedRun = true;
+        const pullsAtEnqueue = pulls;
+        setTimeout(() => {
+          // The consumer stopped reading.
+          if (pulls === pullsAtEnqueue) endRun();
+        }, 0);
       },
       cancel(reason) {
         cancelled = true;
