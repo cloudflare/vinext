@@ -50,15 +50,23 @@ describe("cleanBuildOutput", () => {
     expect(fs.existsSync(staleModule)).toBe(true);
   });
 
-  it("does not remove an output directory outside the project root by default", () => {
+  it("does not empty an output directory outside the project root by default", () => {
     const externalOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-external-output-"));
     try {
       const staleModule = writeFile(externalOutDir, "stale-dead-module.js", "export default 1;\n");
+      const prerenderFiles = [
+        "server/vinext-prerender.json",
+        "server/prerendered-routes/about.html",
+        "server/vinext-prerender-paths.json",
+        "server/RSC_BUILD_ID",
+      ].map((file) => writeFile(externalOutDir, file, "stale\n"));
 
       const result = cleanBuildOutput({ root: tmpDir, outDir: externalOutDir });
 
       expect(result.cleaned).toBe(false);
       expect(fs.existsSync(staleModule)).toBe(true);
+      // The server would seed its cache from the previous build's prerendered pages.
+      for (const file of prerenderFiles) expect(fs.existsSync(file)).toBe(false);
     } finally {
       fs.rmSync(externalOutDir, { recursive: true, force: true });
     }
@@ -67,9 +75,8 @@ describe("cleanBuildOutput", () => {
   it("never removes the project root or a directory containing it", () => {
     const source = writeFile(tmpDir, "app/page.tsx", "export default 1;\n");
 
-    // As in Vite, an outDir equal to the root is not emptied by default.
-    expect(cleanBuildOutput({ root: tmpDir, outDir: "." }).cleaned).toBe(false);
     for (const options of [
+      { root: tmpDir, outDir: "." },
       { root: tmpDir, outDir: tmpDir, emptyOutDir: true },
       { root: tmpDir, outDir: "..", emptyOutDir: true },
     ]) {
@@ -109,6 +116,14 @@ describe("cleanBuildOutput", () => {
     } finally {
       fs.rmSync(target, { recursive: true, force: true });
     }
+  });
+
+  it("removes a symlinked outDir whose target no longer exists", () => {
+    fs.symlinkSync(path.join(tmpDir, "missing"), path.join(tmpDir, "dist"));
+
+    expect(cleanBuildOutput({ root: tmpDir }).cleaned).toBe(true);
+
+    expect(fs.lstatSync(path.join(tmpDir, "dist"), { throwIfNoEntry: false })).toBeUndefined();
   });
 
   it("refuses a symlinked outDir that points into a protected source directory", () => {

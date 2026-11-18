@@ -1858,8 +1858,11 @@ type NitroSetupContext = {
     buildDir?: string;
     exportConditions?: string[];
     ignore?: string[];
+    publicAssets?: { dir: string }[];
+    rootDir?: string;
     traceDeps?: string[];
   };
+  hooks: { hook(name: "build:before", handler: () => void): void };
 };
 
 function createServerEnvironmentFileNameResolver(
@@ -1903,6 +1906,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let nextConfig: ResolvedNextConfig;
   let nitroBuildDir: string | undefined;
   let nitroOptions: NitroSetupContext["options"] | undefined;
+  // The build.outDir that Nitro's config hook sees, and publishes as static files.
+  let nitroPublishedOutDir: string | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let canonicalMiddlewarePath: string | null = null;
@@ -8737,6 +8742,12 @@ export const loadServerActionClient = ${
     // replay per-user responses to other users.
     {
       name: "vinext:nitro-setup",
+      config: {
+        order: "pre",
+        handler(config) {
+          nitroPublishedOutDir = config.build?.outDir;
+        },
+      },
       configResolved(config) {
         nitroPublicDir = config.publicDir;
         // Nitro publishes Vite's `build.outDir` as static files, and vinext
@@ -8768,6 +8779,21 @@ export const loadServerActionClient = ${
       nitro: {
         setup: (nitro: NitroSetupContext) => {
           nitroOptions = nitro.options;
+          // Nitro's dev server serves the directories it publishes without
+          // its ignore patterns, so it would serve the last production
+          // build's <build.outDir>/server, including the prerender secret in
+          // vinext-server.json. Vite serves the client in dev, so drop that
+          // directory before Nitro creates its dev server.
+          if (nitro.options.dev) {
+            nitro.hooks.hook("build:before", () => {
+              if (nitroPublishedOutDir === undefined || !nitro.options.publicAssets) return;
+              const baseDir = nitro.options.rootDir ?? root;
+              const outDir = path.resolve(baseDir, nitroPublishedOutDir);
+              nitro.options.publicAssets = nitro.options.publicAssets.filter(
+                (asset) => path.resolve(baseDir, asset.dir) !== outDir,
+              );
+            });
+          }
           nitroBuildDir = nitro.options.buildDir
             ? path.resolve(root, nitro.options.buildDir)
             : undefined;

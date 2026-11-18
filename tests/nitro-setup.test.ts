@@ -19,7 +19,11 @@ type NitroSetupTarget = {
     routeRules?: Record<string, Record<string, unknown>>;
     traceDeps?: string[];
   };
+  hooks?: { hook(name: string, handler: () => void): void };
 };
+
+// Nitro's hooks, for a dev setup.
+const devHooks = { hook() {} };
 
 type NitroSetupPlugin = {
   nitro?: {
@@ -280,7 +284,7 @@ describe("vinext Nitro setup integration", () => {
     ["under a Nitro baseURL", { dev: false, baseURL: "/docs/", serveStatic: true }],
   ])("does not register the public files plugin %s", async (_, options) => {
     const nitroPlugin = await initializeNitroSetupPlugin(createAppProject());
-    const nitro: NitroSetupTarget = { options };
+    const nitro: NitroSetupTarget = { options, hooks: devHooks };
 
     await nitroPlugin.nitro!.setup!(nitro);
 
@@ -293,7 +297,7 @@ describe("vinext Nitro setup integration", () => {
   it("registers the request-target plugin for builds only", async () => {
     const nitroPlugin = await initializeNitroSetupPlugin(createAppProject());
     const build: NitroSetupTarget = { options: { dev: false, serveStatic: false } };
-    const dev: NitroSetupTarget = { options: { dev: true } };
+    const dev: NitroSetupTarget = { options: { dev: true }, hooks: devHooks };
 
     await nitroPlugin.nitro!.setup!(build);
     await nitroPlugin.nitro!.setup!(build);
@@ -314,6 +318,7 @@ describe("vinext Nitro setup integration", () => {
         routeRules: {},
         traceDeps: ["existing-trace"],
       },
+      hooks: devHooks,
     };
 
     await nitroPlugin.nitro!.setup!(nitro);

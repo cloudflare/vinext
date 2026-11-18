@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
-import { createBuilder, resolveConfig, type Plugin } from "vite";
+import { createBuilder, createServer, resolveConfig, type Plugin } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
 import { emitPrerenderPathManifest } from "../packages/vinext/src/build/prerender-paths.js";
@@ -494,4 +494,43 @@ describe("build.outDir", () => {
     expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "hello.txt"))).toBe(true);
     expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "server"))).toBe(false);
   }, 180_000);
+
+  it("keeps the last build's server metadata out of Nitro's dev server", async () => {
+    const fixtureDir = await isolatedFixture(
+      NITRO_PAGES_FIXTURE_SOURCE_DIR,
+      path.join(NITRO_PAGES_FIXTURE_SOURCE_DIR, "node_modules"),
+    );
+    // A previous production build left its server metadata under build.outDir.
+    const outDir = path.join(fixtureDir, "out");
+    fs.mkdirSync(path.join(outDir, "server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(outDir, "server", "vinext-server.json"),
+      '{"prerenderSecret":"last-build-secret"}',
+    );
+    const nitroModule = (await import(
+      pathToFileURL(path.join(fixtureDir, "node_modules/nitro/dist/vite.mjs")).href
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+
+    const server = await createServer({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        nitroModule.nitro({ buildDir: path.join(fixtureDir, ".nitro") }),
+      ],
+      build: { outDir },
+      server: { port: 0, host: "127.0.0.1" },
+      logLevel: "silent",
+    });
+    try {
+      await server.listen();
+      const address = server.httpServer?.address();
+      if (!address || typeof address === "string") throw new Error("dev server has no address");
+      const response = await fetch(`http://127.0.0.1:${address.port}/server/vinext-server.json`);
+
+      expect(await response.text()).not.toContain("last-build-secret");
+    } finally {
+      await server.close();
+    }
+  }, 120_000);
 });

@@ -88,7 +88,12 @@ function shouldCleanBuildOutput(options: CleanBuildOutputOptions, outDir: string
  */
 function emptyDir(dir: string): void {
   const stat = fs.statSync(dir, { throwIfNoEntry: false });
-  if (!stat) return;
+  if (!stat) {
+    // A symlink to a directory that no longer exists: remove the link, so the
+    // build creates the directory.
+    fs.rmSync(dir, { force: true });
+    return;
+  }
   if (!stat.isDirectory()) {
     fs.rmSync(dir, { force: true });
     return;
@@ -100,9 +105,28 @@ function emptyDir(dir: string): void {
   }
 }
 
+// Files in <outDir>/server that belong to one build: its RSC build ID and its
+// prerendered output. The server seeds its cache from them and deploy warms
+// their paths, and a build that doesn't prerender writes none of them.
+const BUILD_PRERENDER_FILES = [
+  "vinext-prerender.json",
+  "prerendered-routes",
+  "vinext-prerender-paths.json",
+  "RSC_BUILD_ID",
+];
+
 export function cleanBuildOutput(options: CleanBuildOutputOptions): CleanBuildOutputResult {
   const outDir = resolveOutDir(options.root, options.outDir);
-  if (!shouldCleanBuildOutput(options, outDir)) return { cleaned: false, outDir };
+  if (!shouldCleanBuildOutput(options, outDir)) {
+    // An outDir that isn't emptied (outside the project root by default, as
+    // in Vite, or with emptyOutDir: false) mustn't keep the previous build's
+    // prerendered output, or the server would serve its pages.
+    assertOutputDirIsSafe("build.outDir", outDir, options);
+    for (const file of BUILD_PRERENDER_FILES) {
+      fs.rmSync(path.join(outDir, "server", file), { recursive: true, force: true });
+    }
+    return { cleaned: false, outDir };
+  }
 
   assertOutputDirIsSafe("build.outDir", outDir, options);
   emptyDir(outDir);
