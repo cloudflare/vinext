@@ -226,6 +226,21 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
+  it("reads the warm plan from a custom build.outDir's server directory", () => {
+    writeFile("out/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "out/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/dashboard"] }),
+    );
+
+    expect(readPrerenderWarmPlan(tmpDir, { serverDir: path.join(tmpDir, "out/server") })).toEqual({
+      buildId: "build-a",
+      loadingShellPaths: [],
+      paths: ["/dashboard"],
+      rscPaths: [],
+    });
+  });
+
   it("disables RSC variants for adapters without strict response Vary", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(

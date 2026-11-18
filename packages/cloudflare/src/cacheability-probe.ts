@@ -140,8 +140,11 @@ function isRetryableProbeHttpStatus(status: number): boolean {
   return status === 404 || status === 408 || status === 429 || status >= 502;
 }
 
-export function readPrerenderSecret(root: string): string {
-  const manifestPath = path.join(root, "dist", "server", "vinext-server.json");
+export function readPrerenderSecret(
+  root: string,
+  serverDir = path.join(root, "dist", "server"),
+): string {
+  const manifestPath = path.join(serverDir, "vinext-server.json");
   const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as unknown;
   const secret =
     parsed && typeof parsed === "object" && !Array.isArray(parsed)
@@ -149,7 +152,7 @@ export function readPrerenderSecret(root: string): string {
       : undefined;
   if (typeof secret !== "string" || secret.length === 0) {
     throw new Error(
-      "Cannot probe staged Worker cacheability because dist/server/vinext-server.json does not contain a prerender secret. Rebuild the app before deploying.",
+      `Cannot probe staged Worker cacheability because ${path.relative(root, manifestPath)} does not contain a prerender secret. Rebuild the app before deploying.`,
     );
   }
   return secret;
@@ -346,6 +349,8 @@ export async function probeStagedWorkerCacheability(options: {
   retries?: number;
   retryDelayMs?: number;
   root: string;
+  /** Holds vinext-server.json: `<build.outDir>/server`, `dist/server` by default. */
+  serverDir?: string;
   targets: readonly CdnWarmTarget[];
   targetUrl: string;
   timeoutMs?: number;
@@ -354,7 +359,7 @@ export async function probeStagedWorkerCacheability(options: {
   /** @internal Apply stricter artifact bounds for focused coordinator tests. */
   manifestLimits?: { maxBytes?: number };
 }): Promise<CacheabilityProbeResult> {
-  const secret = readPrerenderSecret(options.root);
+  const secret = readPrerenderSecret(options.root, options.serverDir);
   const concurrency = Math.max(1, options.concurrency ?? 25);
   const retries = Math.max(0, options.retries ?? DEFAULT_CACHEABILITY_PROBE_RETRIES);
   const retryDelayMs = Math.max(

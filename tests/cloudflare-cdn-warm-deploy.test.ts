@@ -461,6 +461,24 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toThrow(`Worker graph to statically import ${CACHEABILITY_MANIFEST_MODULE}`);
   });
 
+  it("writes a cacheability manifest into a custom build.outDir's generated config", () => {
+    writeTwoStageWorkerArtifact();
+    fs.renameSync(path.join(tmpDir, "dist"), path.join(tmpDir, "out"));
+
+    expect(
+      writeCacheabilityManifestArtifact(
+        tmpDir,
+        undefined,
+        { buildId: "build-a", routes: {}, version: 1 },
+        "wrangler",
+        "out",
+      ),
+    ).toBe("out/server/wrangler.json");
+    expect(
+      fs.readFileSync(path.join(tmpDir, "out/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
+    ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
+  });
+
   it("writes a cacheability manifest into the cf Build Output bundle", () => {
     writeBuildOutputWorkerArtifact();
 

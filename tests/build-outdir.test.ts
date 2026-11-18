@@ -32,6 +32,10 @@ const CF_NODE_MODULES_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/cf-app-basic/node_modules",
 );
+const NITRO_PAGES_FIXTURE_SOURCE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/pages-router-nitro",
+);
 
 const temporaryDirs: string[] = [];
 
@@ -258,10 +262,12 @@ describe("build.outDir", () => {
       logLevel: "silent",
     });
 
+    // vinext resolves the root through symlinks (macOS's /var is /private/var).
+    const realRoot = fs.realpathSync(fixtureDir);
     const outDirs = Object.fromEntries(
       ["rsc", "ssr", "client"].map((name) => [
         name,
-        toSlash(path.relative(fixtureDir, builder.environments[name]!.config.build.outDir)),
+        toSlash(path.relative(realRoot, builder.environments[name]!.config.build.outDir)),
       ]),
     );
     expect(outDirs).toEqual({ rsc: "dist/server", ssr: "out/server/ssr", client: "out/client" });
@@ -330,7 +336,7 @@ describe("build.outDir", () => {
         build: { outDir: "..", emptyOutDir: true },
         logLevel: "silent",
       }),
-    ).rejects.toThrow('The rsc output directory "." contains the project root');
+    ).rejects.toThrow('The build.outDir ".." contains the project root');
     expect(fs.existsSync(source)).toBe(true);
   });
 
@@ -406,7 +412,71 @@ describe("build.outDir", () => {
         build: { outDir: "." },
         logLevel: "silent",
       }),
-    ).rejects.toThrow('build.outDir "." is the project root');
+    ).rejects.toThrow('The build.outDir "." contains the project root');
     expect(fs.existsSync(source)).toBe(true);
   });
+
+  it("rejects a build.outDir that holds the app directory before cleaning it", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    const source = path.join(fixtureDir, "app", "page.tsx");
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        build: { outDir: "app" },
+        logLevel: "silent",
+        [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
+      } as Parameters<typeof createBuilder>[0]),
+    ).rejects.toThrow('The build.outDir "app" overlaps the app directory "app"');
+    expect(fs.existsSync(source)).toBe(true);
+  });
+
+  it("rejects an environment outDir inside the public directory", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    const asset = path.join(fixtureDir, "public", "assets", "logo.svg");
+    fs.mkdirSync(path.dirname(asset), { recursive: true });
+    fs.writeFileSync(asset, "<svg/>");
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir, clientOutDir: "public/assets" })],
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow(
+      'The client output directory "public/assets" overlaps the public directory "public"',
+    );
+    expect(fs.existsSync(asset)).toBe(true);
+  });
+
+  it("keeps the server metadata under build.outDir out of Nitro's public output", async () => {
+    const fixtureDir = await isolatedFixture(
+      NITRO_PAGES_FIXTURE_SOURCE_DIR,
+      path.join(NITRO_PAGES_FIXTURE_SOURCE_DIR, "node_modules"),
+    );
+    // Nitro publishes Vite's build.outDir as static files.
+    const outDir = path.join(fixtureDir, "out");
+    const nitroModule = (await import(
+      pathToFileURL(path.join(fixtureDir, "node_modules/nitro/dist/vite.mjs")).href
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        nitroModule.nitro({ buildDir: path.join(fixtureDir, ".nitro") }),
+      ],
+      build: { outDir },
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    expect(fs.existsSync(path.join(outDir, "server", "vinext-server.json"))).toBe(true);
+    expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "hello.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "server"))).toBe(false);
+  }, 180_000);
 });
