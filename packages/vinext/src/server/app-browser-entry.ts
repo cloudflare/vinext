@@ -130,8 +130,10 @@ import {
   hydrateRootInTransition,
   resolveFetchedHydrationLocation,
 } from "./app-browser-hydration.js";
+import { stripBasePath } from "../utils/base-path.js";
 import {
   AppElementsWire,
+  bindAppElementsSlotRefreshPathname,
   getMountedSlotIdsHeader,
   resolveVisitedResponseInterceptionContext,
   type AppElements,
@@ -688,7 +690,12 @@ async function decodeSupplementalRefresh(
     elements,
     new URL(renderedPathAndSearch ?? targetPathname, window.location.origin).search,
   );
-  return elements;
+  // The slots it rendered are refetched at the URL it was fetched from, like
+  // the slots a navigation commits.
+  return bindAppElementsSlotRefreshPathname(
+    elements,
+    stripBasePath(new URL(targetPathname, window.location.origin).pathname, __basePath),
+  );
 }
 
 function isSettledPrefetchCacheEntry(
@@ -1372,7 +1379,10 @@ function BrowserRoot({
   initialNavigationSnapshot: ClientNavigationRenderSnapshot;
 }) {
   const resolvedElements = use(initialElements);
-  const initialMetadata = AppElementsWire.readMetadata(resolvedElements);
+  // The slots the document rendered are refetched at the document's URL.
+  const initialMetadata = AppElementsWire.readMetadata(
+    bindAppElementsSlotRefreshPathname(resolvedElements, initialNavigationSnapshot.pathname),
+  );
   const [treeStateValue, setTreeStateValue] = useState<
     AppRouterState | Promise<AppRouterState> | MpaNavigationState
   >(() => ({
