@@ -632,9 +632,19 @@ export async function handleSsr(
             // flush (#4770). Rendering it a task later, once the chunks already
             // written are decoded, matches Next.js on Node, whose Node stream
             // hands the Flight client a whole flush at once.
-            flightRoot = Promise.resolve(
-              createFromReadableStream<AppWireElements>(ssrStream, SSR_FLIGHT_OPTIONS),
-            ).then((elements) => new Promise((resolve) => scheduleTask(() => resolve(elements))));
+            //
+            // A PPR fallback shell reads its payload whole, so it has no later
+            // chunk to wait for, and its prerender aborts a task after it
+            // starts: a root rendered a task later would leave it empty.
+            const decoded = createFromReadableStream<AppWireElements>(
+              ssrStream,
+              SSR_FLIGHT_OPTIONS,
+            );
+            flightRoot = options?.pprFallbackShellSignal
+              ? decoded
+              : Promise.resolve(decoded).then(
+                  (elements) => new Promise((resolve) => scheduleTask(() => resolve(elements))),
+                );
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
