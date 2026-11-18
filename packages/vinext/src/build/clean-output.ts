@@ -20,13 +20,16 @@ function resolveOutDir(root: string, outDir: string | undefined): string {
 }
 
 function shouldCleanBuildOutput(options: CleanBuildOutputOptions): boolean {
+  const root = path.resolve(options.root);
+  const outDir = resolveOutDir(options.root, options.outDir);
+  // A `build.outDir` of "." (or any directory containing the project) would
+  // delete the project itself, source and .git included.
+  if (isPathInsideOrEqual(outDir, root)) return false;
   if (options.emptyOutDir === false) return false;
   if (options.emptyOutDir === true) return true;
 
-  return isPathInsideOrEqual(
-    path.resolve(options.root),
-    resolveOutDir(options.root, options.outDir),
-  );
+  // As Vite does, empty only an outDir inside the project root by default.
+  return isPathInsideOrEqual(root, outDir);
 }
 
 export function cleanBuildOutput(options: CleanBuildOutputOptions): CleanBuildOutputResult {

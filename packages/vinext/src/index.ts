@@ -2641,6 +2641,47 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const plugins: PluginOption[] = [
     buildLifecyclePlugins[0],
     {
+      // The main config hook runs early (enforce: "pre") and derives the
+      // default output directories from the `build.outDir` it sees then. A
+      // later plugin may still set `build.outDir`, so move the defaults to
+      // the final output root once every other config hook has run.
+      name: "vinext:build-outdir",
+      apply: "build",
+      enforce: "post",
+      config: {
+        order: "post",
+        handler(config) {
+          if (internalOptions.__buildOutDir !== undefined) return;
+          const environments: Record<string, { build: { outDir: string } }> = {};
+          const finalOutDir = toSlash(config.build?.outDir ?? "dist");
+          if (finalOutDir !== buildOutDir) {
+            for (const [name, environment] of Object.entries(config.environments ?? {})) {
+              const outDir = environment?.build?.outDir;
+              if (outDir === undefined) continue;
+              const subdir = ["client", "server", "server/ssr"].find(
+                (candidate) => toSlash(outDir) === path.join(buildOutDir, candidate),
+              );
+              if (subdir !== undefined) {
+                environments[name] = { build: { outDir: path.join(finalOutDir, subdir) } };
+              }
+            }
+            buildOutDir = finalOutDir;
+          }
+          const effectiveOutDir = (name: string) =>
+            environments[name]?.build.outDir ?? config.environments?.[name]?.build?.outDir;
+          // The client build runs last and empties its outDir, whether vinext,
+          // @vitejs/plugin-rsc, a platform plugin or the user chose it.
+          assertClientOutDirIsSeparate(root, {
+            clientOutDir: effectiveOutDir("client"),
+            rscOutDir: effectiveOutDir("rsc"),
+            ssrOutDir: effectiveOutDir("ssr"),
+            outDir: buildOutDir,
+          });
+          return Object.keys(environments).length > 0 ? { environments } : undefined;
+        },
+      },
+    },
+    {
       // ── Dev request origin check ─────────────────────────────────────
       // Vite registers pre plugins' middlewares first, so listing this pre
       // plugin first validates every request (including /@*, /__vite*,
@@ -2892,9 +2933,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (internalOptions.__buildOutDir === undefined) {
           hasUserBuildOutDir = config.build?.outDir !== undefined;
           buildOutDir = toSlash(config.build?.outDir ?? "dist");
-        }
-        if (env.command === "build") {
-          assertClientOutDirIsSeparate(root, { ...options, outDir: buildOutDir });
         }
         const devCliLifecycleEnabled =
           env.command === "serve" &&

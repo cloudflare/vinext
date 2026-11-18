@@ -204,4 +204,44 @@ describe("build.outDir", () => {
       ]),
     );
   }, 180_000);
+
+  it("follows a build.outDir that a later plugin sets", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    fs.rmSync(path.join(fixtureDir, "pages"), { recursive: true });
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-outdir-out-"));
+    temporaryDirs.push(outDir);
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        { name: "test:late-outdir", config: () => ({ build: { outDir } }) },
+      ],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    expect(fs.existsSync(path.join(fixtureDir, "dist"))).toBe(false);
+    expect(fs.readdirSync(outDir).sort()).toEqual(["client", "server"]);
+    expect(listFiles(path.join(outDir, "server"))).toEqual(
+      expect.arrayContaining(["index.js", "ssr/index.js", "BUILD_ID", "vinext-server.json"]),
+    );
+  }, 180_000);
+
+  it("rejects a server outDir inside the client outDir derived from build.outDir", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+
+    // The client build runs last and empties build/client, which would delete
+    // the RSC output in build/client/rsc.
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir, rscOutDir: "build/client/rsc" })],
+        build: { outDir: "build" },
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow('clientOutDir "build/client" contains rscOutDir "build/client/rsc"');
+  });
 });
