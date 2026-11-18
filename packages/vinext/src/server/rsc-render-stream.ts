@@ -29,6 +29,11 @@ const NOT_QUEUED = Symbol("not queued");
 // queued: one in Node, two in workerd. A few more leave a margin.
 const QUEUED_READ_TURNS = 4;
 
+// A joined chunk stops taking chunks once it reaches this size, so a large
+// flush goes out as a few chunks of about this size, not one buffer of the
+// whole flush. It is far above what a page's collection usually takes.
+const MAX_JOINED_BYTES = 1024 * 1024;
+
 function afterQueuedReadTurns(): Promise<typeof NOT_QUEUED> {
   let turns: Promise<void> = Promise.resolve();
   for (let turn = 1; turn < QUEUED_READ_TURNS; turn++) turns = turns.then(noop);
@@ -49,7 +54,8 @@ function afterQueuedReadTurns(): Promise<typeof NOT_QUEUED> {
  * every chunk of it to the Flight client before React renders again.
  *
  * A chunk React has not written yet is not waited for: it goes out in the
- * next chunk, like a flush React writes later.
+ * next chunk, like a flush React writes later. A flush larger than
+ * `MAX_JOINED_BYTES` goes out in chunks of about that size.
  */
 function coalesceQueuedChunks(stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
   const reader = stream.getReader();
@@ -68,7 +74,8 @@ function coalesceQueuedChunks(stream: ReadableStream<Uint8Array>): ReadableStrea
           return;
         }
         const chunks = [first.value];
-        for (;;) {
+        let size = first.value.byteLength;
+        while (size < MAX_JOINED_BYTES) {
           const read = reader.read();
           const next = await Promise.race([read, afterQueuedReadTurns()]).catch(
             (): typeof NOT_QUEUED => NOT_QUEUED,
@@ -79,6 +86,7 @@ function coalesceQueuedChunks(stream: ReadableStream<Uint8Array>): ReadableStrea
             break;
           }
           chunks.push(next.value);
+          size += next.value.byteLength;
         }
         if (cancelled) return;
         controller.enqueue(chunks.length === 1 ? chunks[0] : concatUint8Arrays(chunks));
