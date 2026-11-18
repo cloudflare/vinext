@@ -303,6 +303,7 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     if (context.nextConfig.output !== "export") {
       await finalizeCacheAdapterPrerenderOutput(context.cacheConfig, context.root, {
         clientOutDir: buildOutput.clientOutDir,
+        outDir: buildOutput.outDir,
       });
     }
     await emitPrerenderPathManifest({
@@ -331,7 +332,10 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     });
     const standaloneDir = path.relative(context.root, standalone.standaloneDir);
     console.log(`  Generated standalone output in ${standaloneDir}/`);
-    console.log(`  Start it with: node ${path.join(standaloneDir, "server.js")}\n`);
+    const serverScript = path.join(standaloneDir, "server.js");
+    // Quote the path so the command still works for an outDir with spaces.
+    const serverArg = /\s/.test(serverScript) ? JSON.stringify(serverScript) : serverScript;
+    console.log(`  Start it with: node ${serverArg}\n`);
     return;
   }
 
