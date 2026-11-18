@@ -63,4 +63,18 @@ describe("App Router production SSR of a collection built from its children", ()
     expect(count).toBe(LARGE_CELL_COUNT);
     expect(table).toContain(`cell-${LARGE_CELL_COUNT - 1}-`);
   });
+
+  // A boundary's content comes in a later flush, after the shell, or while
+  // React is still writing the first one. Several requests, so a warm server
+  // is covered: the first one can be slow enough to hide the race.
+  it.each([
+    ["streamed after the shell", "/streamed"],
+    ["awaited in the first flush", "/awaited"],
+  ])("server-renders every item of a collection in a Suspense boundary, %s", async (_, route) => {
+    for (let request = 0; request < 3; request += 1) {
+      const { count, table } = await renderedCells(new URL(route, baseUrl));
+      expect(count).toBe(CELL_COUNT);
+      expect(table).toContain(`cell-${CELL_COUNT - 1}-`);
+    }
+  });
 });

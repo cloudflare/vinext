@@ -65,7 +65,6 @@ import {
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
 import type { AppSsrRenderResult } from "./app-page-stream.js";
-import { trackQueuedFlightRuns } from "./queued-flight-runs.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
@@ -160,6 +159,14 @@ async function loadStaticPrerender(): Promise<StaticPrerender> {
     return staticRenderer.prerender;
   }
   throw new Error("[vinext] react-dom/static did not expose prerender().");
+}
+
+// Runs the callback in a later task, after every pending microtask: with
+// setImmediate where it exists, as React's Node builds schedule, and setTimeout
+// elsewhere, as its edge builds do.
+function scheduleTask(callback: () => void): void {
+  if (typeof setImmediate === "function") setImmediate(callback);
+  else setTimeout(callback, 0);
 }
 
 function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
@@ -619,13 +626,15 @@ export async function handleSsr(
             } as PreloadModuleOptions);
           }
           if (!flightRoot) {
-            // The root renders once the Flight client has decoded every chunk
-            // queued with the one that completed it, so the tree it renders
-            // doesn't stop at a chunk of the same flush (#4770).
-            const flight = trackQueuedFlightRuns(ssrStream);
+            // The Flight client decodes a flush one chunk at a time, a few
+            // microtasks apart, and while Fizz starts it retries in a
+            // microtask, so it rendered the root between two chunks of one
+            // flush (#4770). Rendering it a task later, once the chunks already
+            // written are decoded, matches Next.js on Node, whose Node stream
+            // hands the Flight client a whole flush at once.
             flightRoot = Promise.resolve(
-              createFromReadableStream<AppWireElements>(flight.stream, SSR_FLIGHT_OPTIONS),
-            ).then((elements) => flight.currentRunConsumed().then(() => elements));
+              createFromReadableStream<AppWireElements>(ssrStream, SSR_FLIGHT_OPTIONS),
+            ).then((elements) => new Promise((resolve) => scheduleTask(() => resolve(elements))));
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);

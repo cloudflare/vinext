@@ -463,6 +463,21 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react/jsx-dev-runtime",
 ]);
 
+// The conditions react-server-dom's "./server" and "./static" entries list
+// under `react-server`, in the order its exports map tries them.
+const REACT_SERVER_DOM_BUILD_CONDITIONS = ["workerd", "deno", "node", "edge-light", "browser"];
+
+// plugin-rsc imports the edge build of its vendored Flight server, or of an
+// installed react-server-dom-webpack, and pre-bundles it by these specifiers.
+const REACT_SERVER_DOM_EDGE_ENTRY =
+  /^((?:@vitejs\/plugin-rsc\/vendor\/react-server-dom|react-server-dom-webpack)\/(?:server|static))\.edge$/;
+
+function selectsReactServerDomNodeBuild(conditions: readonly string[]): boolean {
+  return (
+    REACT_SERVER_DOM_BUILD_CONDITIONS.find((condition) => conditions.includes(condition)) === "node"
+  );
+}
+
 // vinext's cache runtime lazily imports plugin-rsc's React serializer, and the
 // next/image shim imports @unpic/react and ipaddr.js. The Worker scan never
 // crawls vinext's own server modules, so without these the optimizer discovers
@@ -4810,6 +4825,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 (id) => !isExcludedShim(id.slice(id.lastIndexOf(">") + 1).trim()),
               );
             }
+            // Pre-bundle the Flight server build that vinext:react-server-dom-node
+            // resolves its imports to. The optimizer resolves includes without
+            // that plugin.
+            if (
+              optimizer.include &&
+              !isClient &&
+              !hasCloudflarePlugin &&
+              selectsReactServerDomNodeBuild(environment.resolve.conditions)
+            ) {
+              optimizer.include = optimizer.include.map((id) =>
+                id.replace(REACT_SERVER_DOM_EDGE_ENTRY, "$1.node"),
+              );
+            }
             // The excluded shims' own dependencies are required whenever the
             // client optimizer runs, since a filtered next/image include no
             // longer brings ipaddr.js with it. noDiscovery only opts out of the
@@ -5635,6 +5663,34 @@ export const loadServerActionClient = ${
             return;
           }
           return this.resolve(`${id}.edge`, importer, { ...options, skipSelf: true });
+        },
+      },
+    },
+    {
+      // On Node, `react-dom/server` resolves to React's Node Fizz build, which
+      // schedules its work with setImmediate. plugin-rsc imports the edge build
+      // of the Flight server by path, skipping React's exports map, and that
+      // build schedules with setTimeout. Fizz could then retry a boundary
+      // before the Flight server wrote the rest of it, and a client component
+      // that builds itself from its children rendered only part of them
+      // (#4770). Next.js pairs the two builds on both runtimes. Resolve the
+      // Flight server to its Node build wherever React's map would pick it.
+      name: "vinext:react-server-dom-node",
+      enforce: "pre",
+      resolveId: {
+        filter: { id: REACT_SERVER_DOM_EDGE_ENTRY },
+        handler(id, importer, options) {
+          if (
+            hasCloudflarePlugin ||
+            this.environment?.config.consumer !== "server" ||
+            !selectsReactServerDomNodeBuild(this.environment.config.resolve.conditions)
+          ) {
+            return;
+          }
+          return this.resolve(id.replace(REACT_SERVER_DOM_EDGE_ENTRY, "$1.node"), importer, {
+            ...options,
+            skipSelf: true,
+          });
         },
       },
     },

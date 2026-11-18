@@ -2386,7 +2386,11 @@ describe("App Router integration", () => {
       rscEnvironment.depsOptimizer?.metadata.depInfoList.map((dep) => dep.id) ?? [];
     // plugin-rsc selects its vendored runtime unless the package.json at the
     // working directory declares react-server-dom-webpack; the repo root does not.
+    // On Node, vinext pre-bundles its Node build, the one Fizz is paired with.
     expect(optimizedDependencies).toContain(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/static.node",
+    );
+    expect(optimizedDependencies).not.toContain(
       "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge",
     );
   });
@@ -3199,7 +3203,7 @@ describe("App Router dev with plugin-rsc's vendored Flight runtime", () => {
       const optimizedDependencies =
         rscEnvironment.depsOptimizer?.metadata.depInfoList.map((dep) => dep.id) ?? [];
       expect(optimizedDependencies).toContain(
-        "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge",
+        "@vitejs/plugin-rsc/vendor/react-server-dom/static.node",
       );
       expect(warnings.filter((warning) => warning.includes("react-server-dom-webpack"))).toEqual(
         [],
