@@ -19,7 +19,7 @@ function parsePackageJson(text: string): unknown {
  * The real path of `dir`, as Node sees modules loaded from it: the deepest
  * existing ancestor is resolved through symlinks, the rest appended.
  */
-function realDirectoryPath(dir: string): string {
+export function realDirectoryPath(dir: string): string {
   let existing = path.resolve(dir);
   const rest: string[] = [];
   while (!fs.existsSync(existing)) {

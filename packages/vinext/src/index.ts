@@ -116,7 +116,7 @@ import {
   hasExportedName,
 } from "./build/report.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
-import { createServerModuleScopePlugin } from "./plugins/server-module-scope.js";
+import { createServerModuleScopePlugin, realDirectoryPath } from "./plugins/server-module-scope.js";
 import {
   createRscScanGlobImportsPlugin,
   isRscScanGlobImportsAffected,
@@ -1984,7 +1984,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Workers must keep this module inside their deployable output directory.
   // An App Router ssr output nested inside the rsc output (the default
   // dist/server/ssr, and Cloudflare's child ssr environment) ships with it,
-  // so both import the rsc copy instead of carrying a second one.
+  // so both import the rsc copy instead of carrying a second one. Node
+  // resolves the import from the ssr bundle's real path, so the nesting must
+  // hold through symlinks too.
   const resolvePagesClientAssetsOutputDir = (
     environmentName: string,
     outputDir: string,
@@ -1992,7 +1994,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   ): string => {
     if (environmentName !== "ssr") return outputDir;
     if (hasAppDir) {
-      return rscOutputDir && isPathInside(rscOutputDir, outputDir) ? rscOutputDir : outputDir;
+      return rscOutputDir &&
+        isPathInside(rscOutputDir, outputDir) &&
+        realDirectoryPath(outputDir) ===
+          path.join(realDirectoryPath(rscOutputDir), path.relative(rscOutputDir, outputDir))
+        ? rscOutputDir
+        : outputDir;
     }
     return selectedMultiStageOutput || hasCloudflarePlugin ? outputDir : path.dirname(outputDir);
   };

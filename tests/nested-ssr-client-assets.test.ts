@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -81,6 +82,55 @@ describe("client assets module with ssr nested in the rsc output (#4761)", () =>
 
     it("ships the module once in the server output", () => {
       expectOneSharedSidecar(path.join(root, "dist", "server"));
+    });
+  });
+
+  describe("Node build with the ssr output a symlink under the rsc output", () => {
+    let root: string;
+    let outRoot: string;
+
+    beforeAll(async () => {
+      root = await createIsolatedFixture(NODE_FIXTURE, "vinext-symlinked-ssr-sidecar-");
+      outRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-symlinked-ssr-out-"));
+      // Node loads the ssr bundle from the symlink's real target, which isn't
+      // inside the rsc output, so ssr keeps a copy of its own there.
+      fs.mkdirSync(path.join(outRoot, "server"));
+      fs.mkdirSync(path.join(outRoot, "ssr-target"));
+      fs.symlinkSync(path.join(outRoot, "ssr-target"), path.join(outRoot, "server", "ssr"), "dir");
+      const builder = await createBuilder({
+        root,
+        cacheDir: testCacheDir(root),
+        configFile: false,
+        logLevel: "silent",
+        plugins: [
+          vinext({
+            appDir: root,
+            rscOutDir: path.join(outRoot, "server"),
+            ssrOutDir: path.join(outRoot, "server", "ssr"),
+            clientOutDir: path.join(outRoot, "client"),
+          }),
+        ],
+      });
+      await builder.buildApp();
+    }, 180_000);
+
+    afterAll(() => {
+      if (root) fs.rmSync(root, { recursive: true, force: true });
+      if (outRoot) fs.rmSync(outRoot, { recursive: true, force: true });
+    });
+
+    it("points every ssr import at a module beside the bundle's real path", () => {
+      const ssrDir = path.join(outRoot, "ssr-target");
+      expect(fs.lstatSync(path.join(outRoot, "server", "ssr")).isSymbolicLink()).toBe(true);
+      const targets = findFiles(ssrDir, (name) => name.endsWith(".js")).flatMap((file) =>
+        [
+          ...fs.readFileSync(file, "utf8").matchAll(/["']([^"']*vinext-client-assets\.js)["']/g),
+        ].map((match) => path.resolve(path.dirname(file), match[1])),
+      );
+      expect(targets.length).toBeGreaterThan(0);
+      for (const target of targets) {
+        expect(fs.readFileSync(target, "utf8")).toContain('"appBootstrapPreinitModules"');
+      }
     });
   });
 });
