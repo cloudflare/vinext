@@ -65,6 +65,7 @@ import {
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
 import type { AppSsrRenderResult } from "./app-page-stream.js";
+import { coalesceQueuedChunks } from "./coalesce-queued-chunks.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
@@ -618,7 +619,10 @@ export async function handleSsr(
             } as PreloadModuleOptions);
           }
           if (!flightRoot) {
-            flightRoot = createFromReadableStream<AppWireElements>(ssrStream, SSR_FLIGHT_OPTIONS);
+            flightRoot = createFromReadableStream<AppWireElements>(
+              coalesceQueuedChunks(ssrStream),
+              SSR_FLIGHT_OPTIONS,
+            );
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);

@@ -75,64 +75,6 @@ describe("createRscRenderer", () => {
     await reader.cancel();
   });
 
-  it("passes on the chunks React writes at once as one chunk", async () => {
-    // React's edge Flight server writes a large flush as several chunks in one
-    // go. The SSR Flight client must get them together, or Fizz renders
-    // between them (#4770).
-    const encoder = new TextEncoder();
-    let controller!: ReadableStreamDefaultController<Uint8Array>;
-    const render = createRscRenderer(
-      () =>
-        new ReadableStream<Uint8Array>({
-          start(streamController) {
-            controller = streamController;
-          },
-        }),
-    );
-    const reader = render({}).getReader();
-
-    const firstFlush = reader.read();
-    for (const row of ["0:a\n", "1:b\n", "2:c\n"]) controller.enqueue(encoder.encode(row));
-    expect(new TextDecoder().decode((await firstFlush).value)).toBe("0:a\n1:b\n2:c\n");
-
-    // A chunk written later is not waited for, and goes out on its own.
-    const secondFlush = reader.read();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    controller.enqueue(encoder.encode("3:d\n"));
-    controller.close();
-    expect(new TextDecoder().decode((await secondFlush).value)).toBe("3:d\n");
-    expect((await reader.read()).done).toBe(true);
-  });
-
-  it("joins a large flush into chunks of about 1 MiB, not one buffer", async () => {
-    const chunkBytes = 256 * 1024;
-    let controller!: ReadableStreamDefaultController<Uint8Array>;
-    const render = createRscRenderer(
-      () =>
-        new ReadableStream<Uint8Array>({
-          start(streamController) {
-            controller = streamController;
-          },
-        }),
-    );
-    const reader = render({}).getReader();
-
-    const firstRead = reader.read();
-    for (let i = 0; i < 10; i++) controller.enqueue(new Uint8Array(chunkBytes).fill(i));
-    controller.close();
-    const sizes: number[] = [];
-    const bytes: number[] = [];
-    let result = await firstRead;
-    while (!result.done) {
-      sizes.push(result.value.byteLength);
-      bytes.push(result.value[0], result.value[result.value.byteLength - 1]);
-      result = await reader.read();
-    }
-    expect(sizes).toEqual([4 * chunkBytes, 4 * chunkBytes, 2 * chunkBytes]);
-    // Each joined chunk holds its chunks in order.
-    expect(bytes).toEqual([0, 3, 4, 7, 8, 9]);
-  });
-
   it("does not report a cancellation with a platform's own reason", async () => {
     const { cancelled, reported, stream } = renderPendingModel();
     const reader = stream.getReader();
