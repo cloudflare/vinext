@@ -2086,46 +2086,6 @@ describe("buildPageElements", () => {
     ]);
   });
 
-  // A rewrite can hand the page a percent-encoded matched path. Its named
-  // slots carry the page's own canonical route id, so the browser can tell
-  // them from slots an earlier page left without decoding paths.
-  it.each([
-    { routePath: "/v1/p/caf%C3%A9", routeId: "route:/v1/p/café" },
-    { routePath: "/v1/p/%25C3%25A9", routeId: "route:/v1/p/%C3%A9" },
-  ])("gives named slots the page route id for $routePath", async ({ routePath, routeId }) => {
-    function TestPage(): React.ReactNode {
-      return React.createElement("div", null, "Hello");
-    }
-    function TestLayout({ children }: { children?: React.ReactNode }): React.ReactNode {
-      return children;
-    }
-
-    const route = createSyntheticRoute({
-      page: createSyntheticPageModule(TestPage),
-      layouts: [createSyntheticPageModule(TestLayout)],
-      layoutTreePositions: [0],
-      routeSegments: ["[version]", "p", "[slug]"],
-      pattern: "/:version/p/:slug",
-      slots: {
-        "info@/@info": {
-          id: "slot:info:/",
-          name: "info",
-          page: createSyntheticPageModule(() => React.createElement("div", null, "info")),
-          layoutIndex: 0,
-          routeSegments: [],
-        },
-      },
-    });
-
-    const result = await buildPageElements(createBaseOptions({ route, routePath }));
-    const record = result as Record<string, unknown>;
-
-    expect(record[APP_ROUTE_KEY]).toBe(routeId);
-    expect(record[APP_SLOT_BINDINGS_KEY]).toEqual([
-      { activeRouteId: routeId, ownerLayoutId: "layout:/", slotId: "slot:info:/", state: "active" },
-    ]);
-  });
-
   it("attaches the active route identity to a synthetic children page carrier", async () => {
     function TestPage(): React.ReactNode {
       return React.createElement("div", null, "Child page");

@@ -1,4 +1,4 @@
-import { AppElementsWire } from "./app-elements.js";
+import { AppElementsWire, isSameOriginRefreshPathname } from "./app-elements.js";
 import type { TraverseDirection } from "./navigation-planner.js";
 import { isNonNegativeSafeInteger } from "../utils/number.js";
 import { isBfcacheSegmentId } from "./app-bfcache-identity.js";
@@ -377,54 +377,32 @@ export function readHistoryStateActiveRoutePaths(state: unknown): readonly strin
   if (!Array.isArray(value)) return null;
   const paths: string[] = [];
   for (const entry of value) {
-    if (
-      typeof entry !== "string" ||
-      !entry.startsWith("/") ||
-      entry.startsWith("//") ||
-      entry.includes("?") ||
-      entry.includes("#") ||
-      entry.includes("\\") ||
-      entry.includes("\0")
-    ) {
-      return null;
-    }
+    if (!isSameOriginRefreshPathname(entry)) return null;
     paths.push(entry);
   }
   return paths.length > 0 ? [...new Set(paths)] : null;
 }
 
 /**
- * The route paths of the active slots that a refresh or traversal must refetch
- * beside the visible URL: slots an earlier page left mounted. A slot that the
- * page itself renders is left out. Its route is the page's own route, which is
- * the path after a middleware rewrite, so it can differ from the visible URL
- * while the request to that URL already renders it. An intercepted page keeps
- * every slot, because its route is the source page.
- *
- * The server writes the page's route id and its slots' route ids in the same
- * canonical form, so the ids are compared as they are.
+ * The pathnames, without basePath, at which a refresh or traversal refetches
+ * the active slots: the URL of the navigation that rendered each slot, which
+ * the client records on its binding. The slots the current page rendered carry
+ * its own URL, which the refresh request already covers. A binding without
+ * one falls back to its route path.
  */
-export function resolveActiveRoutePaths(state: {
-  interception: unknown;
-  routeId: string;
+export function resolveActiveRoutePaths(
   slotBindings: readonly {
     activeRouteId?: string | null;
+    refreshPathname?: string;
     state: string;
-  }[];
-}): string[] {
-  const pageRoute =
-    state.interception === null ? AppElementsWire.parseElementKey(state.routeId) : null;
-  const pageRoutePath = pageRoute?.kind === "route" ? pageRoute.path : null;
+  }[],
+): string[] {
   const paths = new Set<string>();
-  for (const binding of state.slotBindings) {
+  for (const binding of slotBindings) {
     if (binding.state !== "active" || binding.activeRouteId == null) continue;
     const route = AppElementsWire.parseElementKey(binding.activeRouteId);
-    if (
-      route?.kind === "route" &&
-      route.interceptionContext === null &&
-      route.path !== pageRoutePath
-    ) {
-      paths.add(route.path);
+    if (route?.kind === "route" && route.interceptionContext === null) {
+      paths.add(binding.refreshPathname ?? route.path);
     }
   }
   return [...paths];

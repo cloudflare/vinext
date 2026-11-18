@@ -9,8 +9,11 @@ import {
   resolveSupplementalRefreshes,
   SupplementalRefreshError,
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
-import { AppElementsWire, type AppElements } from "../packages/vinext/src/server/app-elements.js";
-import { resolveActiveRoutePaths } from "../packages/vinext/src/server/app-history-state.js";
+import {
+  AppElementsWire,
+  bindAppElementsSlotRefreshPathname,
+  type AppElements,
+} from "../packages/vinext/src/server/app-elements.js";
 import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
 import type {
   BrowserRouteManifest,
@@ -31,9 +34,7 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "",
         refreshUrl: new URL("https://example.com/refreshing/login?modal=new"),
         state: {
-          interception: null,
           previousNextUrl: "/refreshing?random=old",
-          routeId: "route:/refreshing/login",
           slotBindings: [],
         },
       }),
@@ -46,9 +47,7 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "/docs",
         refreshUrl: new URL("https://example.com/docs/nested-revalidate/modal?view=current"),
         state: {
-          interception: null,
           previousNextUrl: "/docs/nested-revalidate/drawer",
-          routeId: "route:/nested-revalidate/modal",
           slotBindings: [
             {
               activeRouteId: "route:/nested-revalidate/modal",
@@ -81,9 +80,7 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "/docs",
         refreshUrl: new URL("https://example.com/docs/docs/guide/modal"),
         state: {
-          interception: null,
           previousNextUrl: null,
-          routeId: "route:/docs/guide/modal",
           slotBindings: [],
         },
       }),
@@ -140,6 +137,74 @@ describe("parallel route supplemental refreshes", () => {
     ]);
   });
 
+  // A caller drops a source-page refresh that names an interception target,
+  // so both resolvers must name a retained modal by the same URL: the one it
+  // was intercepted at, never its decoded route path.
+  it("refreshes a retained intercepted slot at the URL it was intercepted at", () => {
+    const interception: BrowserRouteManifestInterception = {
+      id: "interception:slot:modal:/feed->/p/[slug]",
+      ownerLayoutId: "layout:/",
+      slotId: "slot:modal:/",
+      sourcePatternParts: ["feed"],
+      targetPatternParts: ["p", ":slug"],
+      targetRouteId: "route:/p/:slug",
+    };
+    const routeManifest: BrowserRouteManifest = {
+      graphVersion: "test",
+      segmentGraph: {
+        interceptions: new Map([[interception.id, interception]]),
+        interceptionsBySlotId: new Map(),
+        layouts: new Map(),
+        rootBoundaries: new Map(),
+        routes: new Map(),
+        slotBindings: new Map(),
+      },
+    };
+    const slotBindings = [
+      {
+        activeRouteId: "route:/about",
+        ownerLayoutId: "layout:/",
+        refreshPathname: "/about",
+        slotId: "slot:children:/",
+        state: "active" as const,
+      },
+      {
+        // A slug requested as %25C3%25A9: its route id is decoded once.
+        activeRouteId: "route:/p/%C3%A9",
+        interceptionId: interception.id,
+        interceptionSourceMatchedUrl: "/feed",
+        ownerLayoutId: "layout:/",
+        refreshPathname: "/p/%25C3%25A9",
+        slotId: "slot:modal:/",
+        state: "active" as const,
+      },
+    ];
+    const refreshUrl = new URL("https://example.com/docs/about?tab=new");
+
+    expect(
+      resolvePersistedRefreshInterceptions({
+        basePath: "/docs",
+        refreshUrl,
+        requestInterceptionContext: null,
+        routeManifest,
+        state: { interception: null, slotBindings },
+      }),
+    ).toEqual([
+      {
+        interception,
+        interceptionContext: "/feed",
+        targetPathname: "/docs/p/%25C3%25A9?tab=new",
+      },
+    ]);
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "/docs",
+        refreshUrl,
+        state: { previousNextUrl: null, slotBindings },
+      }),
+    ).toEqual(["/docs/p/%25C3%25A9?tab=new"]);
+  });
+
   it("uses the traversed-to history entry instead of routes from the page being left", () => {
     expect(
       resolvePersistedSourcePageRefreshes({
@@ -147,9 +212,7 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "",
         refreshUrl: new URL("https://example.com/detail-page"),
         state: {
-          interception: null,
           previousNextUrl: null,
-          routeId: "route:/detail-page",
           // These bindings belong to the intercepted page being left. A
           // cache-miss traversal must use the target history entry's paths,
           // never this navigation-initiation tree.
@@ -178,9 +241,7 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "",
         refreshUrl: new URL("https://example.com/client-cache"),
         state: {
-          interception: null,
           previousNextUrl: null,
-          routeId: "route:/client-cache",
           slotBindings: [
             {
               activeRouteId: "route:/client-cache",
@@ -206,21 +267,18 @@ describe("parallel route supplemental refreshes", () => {
       activeRoutePaths: ["/foo/bar"],
       basePath: "",
       refreshUrl: "https://example.com/foo/",
-      routeId: "route:/foo",
     },
     {
       name: "a trailing-slash route under basePath",
       activeRoutePaths: ["/foo/bar"],
       basePath: "/docs",
       refreshUrl: "https://example.com/docs/foo/",
-      routeId: "route:/foo",
     },
     {
       name: "an encoded Unicode route",
       activeRoutePaths: ["/café/bar"],
       basePath: "",
       refreshUrl: "https://example.com/caf%C3%A9",
-      routeId: "route:/café",
     },
   ])("does not refresh a retained descendant of $name", (testCase) => {
     expect(
@@ -229,254 +287,161 @@ describe("parallel route supplemental refreshes", () => {
         basePath: testCase.basePath,
         refreshUrl: new URL(testCase.refreshUrl),
         state: {
-          interception: null,
           previousNextUrl: null,
-          routeId: testCase.routeId,
           slotBindings: [],
         },
       }),
     ).toEqual([]);
   });
 
-  // A middleware rewrite makes the page's own route (/v1/p/shoe) differ from
-  // the visible URL (/p/shoe). The request to the visible URL already renders
-  // it, as Next.js' single refresh request does.
-  it("does not refresh the own route of a page that middleware rewrote", () => {
-    expect(
-      resolvePersistedSourcePageRefreshes({
-        basePath: "",
-        refreshUrl: new URL("https://example.com/p/shoe"),
-        state: {
-          interception: null,
-          previousNextUrl: null,
-          routeId: "route:/v1/p/shoe",
-          slotBindings: [
-            {
-              activeRouteId: "route:/v1/p/shoe",
-              ownerLayoutId: "layout:/[version]/p/[slug]",
-              slotId: "slot:children:/[version]/p/[slug]",
-              state: "active",
-            },
-            {
-              activeRouteId: "route:/v1/p/shoe",
-              ownerLayoutId: "layout:/[version]/p/[slug]",
-              slotId: "slot:info:/[version]/p/[slug]",
-              state: "active",
-            },
-          ],
-        },
-      }),
-    ).toEqual([]);
-  });
+  // A slot records the browser URL of the navigation that rendered it. Next.js
+  // refetches a reused segment at that URL, and none whose URL is the current
+  // one: packages/next/src/client/components/router-reducer/ppr-navigations.ts
+  // (reuseActiveSegmentInDefaultSlot, accumulateRefreshUrl).
+  it.each([
+    { pathname: "/p/shoe", routeId: "route:/v1/p/shoe" },
+    { pathname: "/p/caf%C3%A9", routeId: "route:/v1/p/café" },
+    { pathname: "/p/%25C3%25A9", routeId: "route:/v1/p/%C3%A9" },
+  ])(
+    "does not refresh the slots of the page that middleware rewrote from $pathname",
+    ({ pathname, routeId }) => {
+      expect(
+        resolvePersistedSourcePageRefreshes({
+          basePath: "/docs",
+          refreshUrl: new URL(`https://example.com/docs${pathname}`),
+          state: {
+            previousNextUrl: null,
+            slotBindings: [
+              {
+                activeRouteId: routeId,
+                ownerLayoutId: "layout:/",
+                refreshPathname: pathname,
+                slotId: "slot:children:/",
+                state: "active",
+              },
+              {
+                // A named slot's id holds the matched path as it came.
+                activeRouteId: `route:/v1${pathname}`,
+                ownerLayoutId: "layout:/",
+                refreshPathname: pathname,
+                slotId: "slot:info:/",
+                state: "active",
+              },
+            ],
+          },
+        }),
+      ).toEqual([]);
+    },
+  );
 
-  // The server writes every route id in the canonical form the page's render
-  // identity uses: a slug requested as %25C3%25A9 is /v1/p/%C3%A9 and one
-  // requested as caf%C3%A9 is /v1/p/café. A slot left by the second route on
-  // a page of the first is a different route and is still refreshed.
-  it("does not refresh the own route of a rewritten page with a literal percent sign", () => {
-    expect(
-      resolvePersistedSourcePageRefreshes({
-        basePath: "",
-        refreshUrl: new URL("https://example.com/p/%25C3%25A9"),
-        state: {
-          interception: null,
-          previousNextUrl: null,
-          routeId: "route:/v1/p/%C3%A9",
-          slotBindings: [
-            {
-              activeRouteId: "route:/v1/p/%C3%A9",
-              ownerLayoutId: "layout:/[version]/p/[slug]",
-              slotId: "slot:info:/[version]/p/[slug]",
-              state: "active",
-            },
-          ],
-        },
-      }),
-    ).toEqual([]);
-  });
-
-  it("refreshes a retained literal-percent route at its own request path", () => {
+  it("refreshes a retained slot at the URL of the page that rendered it", () => {
     expect(
       resolvePersistedSourcePageRefreshes({
         basePath: "/docs",
-        refreshUrl: new URL("https://example.com/docs/p/shoe"),
+        refreshUrl: new URL("https://example.com/docs/blog/new?tab=1"),
         state: {
-          interception: null,
           previousNextUrl: null,
-          routeId: "route:/v1/p/shoe",
           slotBindings: [
             {
-              activeRouteId: "route:/v1/p/shoe",
+              activeRouteId: "route:/blog/new",
               ownerLayoutId: "layout:/",
+              refreshPathname: "/blog/new",
               slotId: "slot:children:/",
               state: "active",
             },
             {
-              activeRouteId: "route:/v1/p/%C3%A9",
+              // /blog/%6Eew rendered the dynamic sibling of /blog/new. Its
+              // route path names the static page, its URL the dynamic one.
+              activeRouteId: "route:/blog/%6Eew",
               ownerLayoutId: "layout:/",
+              refreshPathname: "/blog/%6Eew",
               slotId: "slot:info:/",
               state: "active",
             },
             {
-              activeRouteId: "route:/v1/p/café",
+              // A literal percent sign stays as the URL spelled it.
+              activeRouteId: "route:/v1/p/%25C3%25A9",
               ownerLayoutId: "layout:/",
-              slotId: "slot:aside:/",
-              state: "active",
-            },
-          ],
-        },
-      }),
-    ).toEqual(["/docs/v1/p/%25C3%25A9", "/docs/v1/p/caf%C3%A9"]);
-  });
-
-  // A route id is the matched path decoded once. %252F as text is what both a
-  // request for %25252F and one for %252F decode to, and a trailing space is
-  // stripped by the URL parser, so neither id gives back its request path.
-  it("does not refetch a retained route whose request path can't be rebuilt", () => {
-    expect(
-      resolvePersistedSourcePageRefreshes({
-        basePath: "",
-        refreshUrl: new URL("https://example.com/p/shoe"),
-        state: {
-          interception: null,
-          previousNextUrl: null,
-          routeId: "route:/v1/p/shoe",
-          slotBindings: [
-            {
-              activeRouteId: "route:/v1/p/shoe",
-              ownerLayoutId: "layout:/",
-              slotId: "slot:children:/",
-              state: "active",
-            },
-            {
-              activeRouteId: "route:/v1/p/%252F",
-              ownerLayoutId: "layout:/",
-              slotId: "slot:info:/",
-              state: "active",
-            },
-            {
-              activeRouteId: "route:/v1/p/x ",
-              ownerLayoutId: "layout:/",
+              refreshPathname: "/p/%25C3%25A9",
               slotId: "slot:aside:/",
               state: "active",
             },
             {
+              // The visible URL, so middleware rewrites it again, never the
+              // rewritten path.
               activeRouteId: "route:/v1/feed",
               ownerLayoutId: "layout:/",
+              refreshPathname: "/feed",
               slotId: "slot:feed:/",
               state: "active",
             },
           ],
         },
       }),
-    ).toEqual(["/v1/feed"]);
+    ).toEqual(["/docs/blog/%6Eew?tab=1", "/docs/p/%25C3%25A9?tab=1", "/docs/feed?tab=1"]);
   });
 
-  it("still refreshes a slot that a decoded route of the same path left", () => {
+  it("never refreshes a retained path on another origin", () => {
     expect(
       resolvePersistedSourcePageRefreshes({
+        activeRoutePaths: ["//other-origin.example/feed", "/feed"],
         basePath: "",
-        refreshUrl: new URL("https://example.com/p/%25C3%25A9"),
-        state: {
-          interception: null,
-          previousNextUrl: null,
-          routeId: "route:/v1/p/%C3%A9",
-          slotBindings: [
-            {
-              activeRouteId: "route:/v1/p/%C3%A9",
-              ownerLayoutId: "layout:/",
-              slotId: "slot:children:/",
-              state: "active",
-            },
-            {
-              activeRouteId: "route:/v1/p/é",
-              ownerLayoutId: "layout:/",
-              slotId: "slot:info:/",
-              state: "active",
-            },
-          ],
-        },
-      }),
-    ).toEqual(["/v1/p/%C3%A9"]);
-  });
-
-  it("still refreshes a slot that an earlier page left on a rewritten page", () => {
-    expect(
-      resolvePersistedSourcePageRefreshes({
-        basePath: "",
-        refreshUrl: new URL("https://example.com/p/shoe?tab=new"),
-        state: {
-          interception: null,
-          previousNextUrl: null,
-          routeId: "route:/v1/p/shoe",
-          slotBindings: [
-            {
-              activeRouteId: "route:/v1/p/shoe",
-              ownerLayoutId: "layout:/",
-              slotId: "slot:children:/",
-              state: "active",
-            },
-            {
-              activeRouteId: "route:/v1/feed",
-              ownerLayoutId: "layout:/",
-              slotId: "slot:info:/",
-              state: "active",
-            },
-          ],
-        },
-      }),
-    ).toEqual(["/v1/feed?tab=new"]);
-  });
-
-  it("still refreshes the source route of an intercepted page", () => {
-    expect(
-      resolvePersistedSourcePageRefreshes({
-        basePath: "",
-        refreshUrl: new URL("https://example.com/photo"),
-        state: {
-          interception: {
-            sourceMatchedUrl: "/feed",
-            sourceRouteId: "route:/feed",
-            slotId: "slot:modal:/",
-            targetMatchedUrl: "/photo",
-            targetRouteId: "route:/photo",
-          },
-          previousNextUrl: null,
-          routeId: "route:/feed",
-          slotBindings: [
-            {
-              activeRouteId: "route:/feed",
-              ownerLayoutId: "layout:/",
-              slotId: "slot:children:/",
-              state: "active",
-            },
-          ],
-        },
+        refreshUrl: new URL("https://example.com/p/shoe"),
+        state: { previousNextUrl: null, slotBindings: [] },
       }),
     ).toEqual(["/feed"]);
   });
 
-  it("leaves the own route of a rewritten page out of the history entry", () => {
-    const slotBindings = [
-      { activeRouteId: "route:/v1/p/shoe", state: "active" },
-      { activeRouteId: "route:/v1/feed", state: "active" },
-    ];
-    expect(
-      resolveActiveRoutePaths({ interception: null, routeId: "route:/v1/p/shoe", slotBindings }),
-    ).toEqual(["/v1/feed"]);
-    expect(
-      resolveActiveRoutePaths({
-        interception: {
-          sourceMatchedUrl: "/v1/p/shoe",
-          sourceRouteId: "route:/v1/p/shoe",
-          slotId: "slot:modal:/",
-          targetMatchedUrl: "/v1/feed",
-          targetRouteId: "route:/v1/feed",
+  it("records a refresh pathname only on active slots that have none", () => {
+    const elements: AppElements = AppElementsWire.createMetadataEntries({
+      interceptionContext: null,
+      layoutIds: ["layout:/"],
+      rootLayoutTreePath: "/",
+      routeId: "route:/p/shoe",
+      slotBindings: [
+        {
+          activeRouteId: "route:/feed",
+          ownerLayoutId: "layout:/",
+          refreshPathname: "/feed",
+          slotId: "slot:aside:/",
+          state: "active",
         },
-        routeId: "route:/v1/p/shoe",
-        slotBindings,
+        {
+          activeRouteId: "route:/p/shoe",
+          ownerLayoutId: "layout:/",
+          slotId: "slot:info:/",
+          state: "active",
+        },
+        { ownerLayoutId: "layout:/", slotId: "slot:modal:/", state: "default" },
+      ],
+    });
+
+    const bound = bindAppElementsSlotRefreshPathname(elements, "/p/shoe");
+    expect(AppElementsWire.readMetadata(bound).slotBindings).toEqual([
+      expect.objectContaining({ slotId: "slot:aside:/", refreshPathname: "/feed" }),
+      expect.objectContaining({ slotId: "slot:info:/", refreshPathname: "/p/shoe" }),
+      expect.not.objectContaining({ refreshPathname: expect.anything() }),
+    ]);
+    expect(AppElementsWire.readMetadata(elements).slotBindings[1]).not.toHaveProperty(
+      "refreshPathname",
+    );
+    for (const pathname of ["//other-origin.example/x", "/\t/x", "/a\\b", "p/shoe"]) {
+      expect(bindAppElementsSlotRefreshPathname(elements, pathname)).toBe(elements);
+    }
+    expect(() =>
+      AppElementsWire.readMetadata({
+        ...elements,
+        [AppElementsWire.keys.slotBindings]: [
+          {
+            activeRouteId: "route:/feed",
+            ownerLayoutId: "layout:/",
+            refreshPathname: "//other-origin.example/feed",
+            slotId: "slot:aside:/",
+            state: "active",
+          },
+        ],
       }),
-    ).toEqual(["/v1/p/shoe", "/v1/feed"]);
+    ).toThrow("expected refresh pathnames");
   });
 
   it("does not treat a shared pathname prefix as a descendant", () => {
@@ -486,9 +451,7 @@ describe("parallel route supplemental refreshes", () => {
         basePath: "",
         refreshUrl: new URL("https://example.com/foo"),
         state: {
-          interception: null,
           previousNextUrl: null,
-          routeId: "route:/foo",
           slotBindings: [],
         },
       }),
@@ -615,6 +578,7 @@ describe("parallel route supplemental refreshes", () => {
           {
             activeRouteId: "route:/nested",
             ownerLayoutId: "layout:/",
+            refreshPathname: "/nested",
             slotId: "slot:children:/",
             state: "active",
           },
@@ -655,7 +619,12 @@ describe("parallel route supplemental refreshes", () => {
     expect(result["slot:drawer:/nested"]).toBe("fresh drawer");
     expect(AppElementsWire.readMetadata(result).slotBindings).toEqual([
       expect.objectContaining({ slotId: "slot:children:/", state: "active" }),
-      expect.objectContaining({ slotId: "slot:children:/nested", state: "active" }),
+      // The promoted carrier is refetched where the source page came from.
+      expect.objectContaining({
+        refreshPathname: "/nested",
+        slotId: "slot:children:/nested",
+        state: "active",
+      }),
       expect.objectContaining({ slotId: "slot:drawer:/nested", state: "active" }),
       expect.objectContaining({ slotId: "slot:modal:/nested", state: "active" }),
     ]);

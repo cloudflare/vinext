@@ -130,8 +130,10 @@ import {
   hydrateRootInTransition,
   resolveFetchedHydrationLocation,
 } from "./app-browser-hydration.js";
+import { stripBasePath } from "../utils/base-path.js";
 import {
   AppElementsWire,
+  bindAppElementsSlotRefreshPathname,
   getMountedSlotIdsHeader,
   resolveVisitedResponseInterceptionContext,
   type AppElements,
@@ -373,7 +375,7 @@ const historyController = new AppBrowserHistoryController({
     if (!hasBrowserRouterState()) return null;
     const routerState = getBrowserRouterState();
     return {
-      activeRoutePaths: resolveActiveRoutePaths(routerState),
+      activeRoutePaths: resolveActiveRoutePaths(routerState.slotBindings),
       bfcacheIds: routerState.bfcacheIds,
       previousNextUrl: routerState.previousNextUrl,
     };
@@ -688,7 +690,12 @@ async function decodeSupplementalRefresh(
     elements,
     new URL(renderedPathAndSearch ?? targetPathname, window.location.origin).search,
   );
-  return elements;
+  // The slots it rendered are refetched at the URL it was fetched from, like
+  // the slots a navigation commits.
+  return bindAppElementsSlotRefreshPathname(
+    elements,
+    stripBasePath(new URL(targetPathname, window.location.origin).pathname, __basePath),
+  );
 }
 
 function isSettledPrefetchCacheEntry(
@@ -1372,7 +1379,10 @@ function BrowserRoot({
   initialNavigationSnapshot: ClientNavigationRenderSnapshot;
 }) {
   const resolvedElements = use(initialElements);
-  const initialMetadata = AppElementsWire.readMetadata(resolvedElements);
+  // The slots the document rendered are refetched at the document's URL.
+  const initialMetadata = AppElementsWire.readMetadata(
+    bindAppElementsSlotRefreshPathname(resolvedElements, initialNavigationSnapshot.pathname),
+  );
   const [treeStateValue, setTreeStateValue] = useState<
     AppRouterState | Promise<AppRouterState> | MpaNavigationState
   >(() => ({
@@ -1519,22 +1529,11 @@ function BrowserRoot({
     }
 
     historyController.writeHydratedHistoryMetadata({
-      activeRoutePaths: resolveActiveRoutePaths({
-        interception: treeState.interception,
-        routeId: treeState.routeId,
-        slotBindings: treeState.slotBindings,
-      }),
+      activeRoutePaths: resolveActiveRoutePaths(treeState.slotBindings),
       bfcacheIds: treeState.bfcacheIds,
       previousNextUrl: treeState.previousNextUrl,
     });
-  }, [
-    treeState.bfcacheIds,
-    treeState.interception,
-    treeState.previousNextUrl,
-    treeState.renderId,
-    treeState.routeId,
-    treeState.slotBindings,
-  ]);
+  }, [treeState.bfcacheIds, treeState.previousNextUrl, treeState.renderId, treeState.slotBindings]);
 
   const routeTree = createElement(
     RedirectBoundary,
@@ -2321,7 +2320,7 @@ function bootstrapHydration(
               refreshUrl: url,
               state:
                 navigationKind === "traverse"
-                  ? { ...navigationInitiationState, previousNextUrl: requestPreviousNextUrl }
+                  ? { previousNextUrl: requestPreviousNextUrl, slotBindings: [] }
                   : navigationInitiationState,
             }).filter((sourcePathAndSearch) => {
               if (
@@ -2340,7 +2339,7 @@ function bootstrapHydration(
           historyController.syncCurrentHistoryStatePreviousNextUrl(
             requestPreviousNextUrl,
             getBrowserRouterState().bfcacheIds,
-            resolveActiveRoutePaths(getBrowserRouterState()),
+            resolveActiveRoutePaths(getBrowserRouterState().slotBindings),
           );
         }
 

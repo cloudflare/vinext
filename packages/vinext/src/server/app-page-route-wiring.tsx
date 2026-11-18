@@ -83,8 +83,6 @@ import {
   isAppPageRouteGroupSegment,
 } from "./app-page-segment-state.js";
 import { createAppPageSegmentPlan } from "./app-page-segment-plan.js";
-import { normalizePath } from "./normalize-path.js";
-import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import type { AppPageRenderIdentity } from "./app-page-render-identity.js";
 import {
   resolveAppPageModuleTraceSegment,
@@ -783,10 +781,6 @@ function createAppPageSlotBindings<
   },
 ): readonly AppElementsSlotBinding[] {
   const bindings: AppElementsSlotBinding[] = [];
-  // A named slot's route id takes the matched path in the canonical form the
-  // page's render identity uses, so the browser can tell the page's own slots
-  // from slots an earlier page left by comparing ids, without decoding.
-  const canonicalRoutePath = normalizePath(normalizePathnameForRouteMatch(options.routePath));
   if (route.childrenSlot) {
     const ownerLayoutId = layoutEntries.find(
       (layoutEntry) => layoutEntry.treePath === route.childrenSlot?.ownerTreePath,
@@ -810,7 +804,7 @@ function createAppPageSlotBindings<
       state === "active"
         ? options.interception?.slotId === slotId
           ? options.interception.targetRouteId
-          : AppElementsWire.encodeRouteId(canonicalRoutePath, null)
+          : AppElementsWire.encodeRouteId(options.routePath, null)
         : null;
     const isInterceptedSlot = options.interception?.slotId === slotId;
     bindings.push({

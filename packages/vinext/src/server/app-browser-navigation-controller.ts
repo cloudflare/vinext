@@ -1123,7 +1123,7 @@ export function createAppBrowserNavigationController(
       );
 
       const commitEffect = options.createNavigationCommitEffect({
-        activeRoutePaths: resolveActiveRoutePaths(approvedVisibleState),
+        activeRoutePaths: resolveActiveRoutePaths(approvedVisibleState.slotBindings),
         bfcacheIds: approvedVisibleState.bfcacheIds,
         href: options.targetHref,
         historyUpdateMode: options.historyUpdateMode,

@@ -9,7 +9,6 @@ import {
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import type { AppRouterState } from "./app-browser-state.js";
-import { encodeMatchedPathname } from "./app-browser-interception-context.js";
 import { resolveActiveRoutePaths } from "./app-history-state.js";
 import { isNestedBfcacheSlotSegmentIdFor } from "./bfcache-identity.js";
 import type {
@@ -117,6 +116,9 @@ export function mergeRefreshedParallelSlot(
               {
                 ...promotableChildrenBindings[0],
                 activeRouteId: refreshedChildrenBindings[0].activeRouteId,
+                ...(refreshedChildrenBindings[0].refreshPathname !== undefined
+                  ? { refreshPathname: refreshedChildrenBindings[0].refreshPathname }
+                  : {}),
                 state: "active",
               },
             ]
@@ -259,7 +261,7 @@ export function resolvePersistedSourcePageRefreshes(options: {
   activeRoutePaths?: readonly string[];
   basePath: string;
   refreshUrl: URL;
-  state: Pick<AppRouterState, "interception" | "previousNextUrl" | "routeId" | "slotBindings">;
+  state: Pick<AppRouterState, "previousNextUrl" | "slotBindings">;
 }): string[] {
   const sourceUrlsByPathname = new Map<string, URL>();
   const refreshRoutePathname = removeTrailingSlash(
@@ -272,7 +274,19 @@ export function resolvePersistedSourcePageRefreshes(options: {
     sourceUrlsByPathname.set(sourceUrl.pathname, sourceUrl);
   }
 
-  const activeRoutePaths = options.activeRoutePaths ?? resolveActiveRoutePaths(options.state);
+  // The browser pathname of the refresh, compared as it is with the refresh
+  // pathnames bindings record, which are browser pathnames too.
+  const refreshRequestPathname = removeTrailingSlash(
+    stripBasePath(options.refreshUrl.pathname, options.basePath),
+  );
+
+  // Each path is a binding's refresh pathname, the URL of the navigation that
+  // rendered the slot, or its route path when it has none. The slots the
+  // current page rendered carry the refresh URL itself, so the last filter
+  // below leaves them to the refresh request, as Next.js refetches only a
+  // reused segment's URL that differs from the current one.
+  const activeRoutePaths =
+    options.activeRoutePaths ?? resolveActiveRoutePaths(options.state.slotBindings);
   for (const activeRoutePath of activeRoutePaths) {
     // A deeper children route can remain in the merged client tree after the
     // user navigates back to its ancestor for cache reuse. It is not a visible
@@ -280,22 +294,16 @@ export function resolvePersistedSourcePageRefreshes(options: {
     // refresh open and repeatedly replace the ancestor DOM. Persisted visible
     // branches are ancestors or siblings of the current route instead.
     if (
-      activeRoutePath !== refreshRoutePathname &&
-      (refreshRoutePathname === "/" || activeRoutePath.startsWith(refreshRoutePathname + "/"))
+      isDescendantPathname(activeRoutePath, refreshRequestPathname) ||
+      isDescendantPathname(activeRoutePath, refreshRoutePathname)
     ) {
       continue;
     }
-    // Route ids hold the matched path decoded once per segment. Turn it back
-    // into a request path, so a literal percent sign (`%C3%A9` as text) is
-    // sent as `%25C3%25A9` rather than as the different route `é`. When the
-    // request path can't be rebuilt (an ambiguous `%252F`, or a path the URL
-    // parser would change), the slot keeps its content: requesting the id
-    // as it is could render a different route into it.
-    const requestPath = encodeMatchedPathname(activeRoutePath);
-    if (requestPath === null) continue;
-    const pathname = restoreBasePath(requestPath, options.basePath);
+    const pathname = restoreBasePath(activeRoutePath, options.basePath);
     if (sourceUrlsByPathname.has(pathname)) continue;
     const sourceUrl = new URL(pathname, options.refreshUrl);
+    // History state is page-writable: never refetch another origin.
+    if (sourceUrl.origin !== options.refreshUrl.origin) continue;
     sourceUrl.search = options.refreshUrl.search;
     sourceUrlsByPathname.set(pathname, sourceUrl);
   }
@@ -307,6 +315,10 @@ export function resolvePersistedSourcePageRefreshes(options: {
     if (pathAndSearch !== refreshPathAndSearch) resolved.push(pathAndSearch);
   }
   return resolved;
+}
+
+function isDescendantPathname(pathname: string, ancestor: string): boolean {
+  return pathname !== ancestor && (ancestor === "/" || pathname.startsWith(ancestor + "/"));
 }
 
 export type PersistedRefreshInterception = {
@@ -349,7 +361,12 @@ export function resolvePersistedRefreshInterceptions(options: {
       ) !== null
         ? state.interception
         : null;
-    const targetPathname = retainedInterception?.targetMatchedUrl ?? activeRoute.path;
+    // The URL the slot was intercepted at, which the refresh asks for again
+    // with the same interception context, as resolvePersistedSourcePageRefreshes
+    // names the same slot. A matched or route path would be rewritten again,
+    // or decoded once more.
+    const targetPathname =
+      binding.refreshPathname ?? retainedInterception?.targetMatchedUrl ?? activeRoute.path;
     const targetParts = splitPathnameForRouteMatch(getMatchedUrlPathname(targetPathname));
     const isPrimaryRefreshInterception =
       requestInterceptionContext !== null &&
