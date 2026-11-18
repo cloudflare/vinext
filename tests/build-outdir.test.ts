@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
-import { createBuilder, type Plugin } from "vite";
+import { createBuilder, resolveConfig, type Plugin } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
 import { emitPrerenderPathManifest } from "../packages/vinext/src/build/prerender-paths.js";
@@ -330,7 +330,64 @@ describe("build.outDir", () => {
         build: { outDir: "..", emptyOutDir: true },
         logLevel: "silent",
       }),
-    ).rejects.toThrow('The rsc output directory "../server" contains the project root');
+    ).rejects.toThrow('The rsc output directory "." contains the project root');
+    expect(fs.existsSync(source)).toBe(true);
+  });
+
+  it("previews a plain Pages build from a build.outDir that a later plugin sets", async () => {
+    const fixtureDir = await isolatedFixture(PAGES_FIXTURE_SOURCE_DIR);
+    const latePlugin = { name: "test:late-outdir", config: () => ({ build: { outDir: "out" } }) };
+    const inlineConfig = {
+      root: fixtureDir,
+      configFile: false as const,
+      plugins: [vinext({ appDir: fixtureDir }), latePlugin],
+      logLevel: "silent" as const,
+    };
+
+    const builder = await createBuilder(inlineConfig);
+    // `vite preview` resolves the config again; the preview server serves the
+    // client and server environments' outDirs.
+    const preview = await resolveConfig(inlineConfig, "serve", "production", "production", true);
+
+    for (const name of ["client", "ssr"]) {
+      const outDir = (config: { environments: Record<string, { build: { outDir: string } }> }) =>
+        toSlash(
+          path.relative(
+            fixtureDir,
+            path.resolve(fixtureDir, config.environments[name]!.build.outDir),
+          ),
+        );
+      expect(outDir(preview)).toBe(outDir(builder.config));
+    }
+    expect(
+      toSlash(
+        path.relative(
+          fixtureDir,
+          path.resolve(fixtureDir, preview.environments.client!.build.outDir),
+        ),
+      ),
+    ).toBe("out/client");
+  });
+
+  it("rejects an environment outDir at the project root set by a configEnvironment hook", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    const source = path.join(fixtureDir, "app", "page.tsx");
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [
+          vinext({ appDir: fixtureDir }),
+          {
+            name: "test:env-outdir",
+            configEnvironment: (name) =>
+              name === "rsc" ? { build: { outDir: fixtureDir, emptyOutDir: true } } : undefined,
+          },
+        ],
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow('The rsc output directory "." contains the project root');
     expect(fs.existsSync(source)).toBe(true);
   });
 });

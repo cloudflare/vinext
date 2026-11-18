@@ -333,8 +333,10 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     const standaloneDir = path.relative(context.root, standalone.standaloneDir);
     console.log(`  Generated standalone output in ${standaloneDir}/`);
     const serverScript = path.join(standaloneDir, "server.js");
-    // Quote the path so the command still works for an outDir with spaces.
-    const serverArg = /\s/.test(serverScript) ? JSON.stringify(serverScript) : serverScript;
+    // Single-quote any path a POSIX shell would split or expand.
+    const serverArg = /^[\w@%+=:,./-]+$/.test(serverScript)
+      ? serverScript
+      : `'${serverScript.replaceAll("'", "'\\''")}'`;
     console.log(`  Start it with: node ${serverArg}\n`);
     return;
   }

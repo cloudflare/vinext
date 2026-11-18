@@ -2646,11 +2646,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // later plugin may still set `build.outDir`, so move the defaults to
       // the final output root once every other config hook has run.
       name: "vinext:build-outdir",
-      apply: "build",
+      // `vite preview` resolves the config again and serves the
+      // environments' outDirs, so they have to match the build's.
+      apply: (_config, env) => env.command === "build" || env.isPreview === true,
       enforce: "post",
       config: {
         order: "post",
-        handler(config) {
+        handler(config, env) {
           if (internalOptions.__buildOutDir !== undefined) return;
           const environments: Record<string, { build: { outDir: string } }> = {};
           const finalOutDir = toSlash(config.build?.outDir ?? "dist");
@@ -2673,32 +2675,39 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
             buildOutDir = finalOutDir;
           }
-          const effectiveOutDir = (name: string) =>
-            environments[name]?.build.outDir ?? config.environments?.[name]?.build?.outDir;
-          // The client build runs last and empties its outDir, whether vinext,
-          // @vitejs/plugin-rsc, a platform plugin or the user chose it.
-          assertClientOutDirIsSeparate(root, {
-            clientOutDir: effectiveOutDir("client"),
-            rscOutDir: effectiveOutDir("rsc"),
-            ssrOutDir: effectiveOutDir("ssr"),
-            outDir: buildOutDir,
-          });
-          // Vite empties each environment's outDir on its own, so one at or
-          // above the project root (e.g. `build.outDir: ".."` in a project
-          // named "server") would delete the project's source.
-          for (const name of ["client", "rsc", "ssr"]) {
-            const outDir = effectiveOutDir(name);
-            if (outDir === undefined || !isPathInsideOrEqual(path.resolve(root, outDir), root)) {
-              continue;
-            }
-            throw new Error(
-              `[vinext] The ${name} output directory "${outDir}" contains the project root. ` +
-                "Building there would delete the project. Choose a build.outDir that does not " +
-                "contain the project.",
-            );
+          if (env.command === "build") {
+            const effectiveOutDir = (name: string) =>
+              environments[name]?.build.outDir ?? config.environments?.[name]?.build?.outDir;
+            // The client build runs last and empties its outDir, whether vinext,
+            // @vitejs/plugin-rsc, a platform plugin or the user chose it.
+            assertClientOutDirIsSeparate(root, {
+              clientOutDir: effectiveOutDir("client"),
+              rscOutDir: effectiveOutDir("rsc"),
+              ssrOutDir: effectiveOutDir("ssr"),
+              outDir: buildOutDir,
+            });
           }
           return Object.keys(environments).length > 0 ? { environments } : undefined;
         },
+      },
+      configResolved(config) {
+        if (config.command !== "build") return;
+        // Vite empties each environment's outDir on its own, so one at or
+        // above the project root (e.g. `build.outDir: ".."` in a project
+        // named "server") would delete the project's source. Check the
+        // resolved values, after every config and configEnvironment hook.
+        for (const name of ["client", "rsc", "ssr"]) {
+          const outDir = config.environments[name]?.build.outDir;
+          if (outDir === undefined || !isPathInsideOrEqual(path.resolve(root, outDir), root)) {
+            continue;
+          }
+          const shownOutDir = toSlash(path.relative(root, path.resolve(root, outDir))) || ".";
+          throw new Error(
+            `[vinext] The ${name} output directory "${shownOutDir}" contains the project root. ` +
+              "Building there would delete the project. Choose a build.outDir that does not " +
+              "contain the project.",
+          );
+        }
       },
     },
     {

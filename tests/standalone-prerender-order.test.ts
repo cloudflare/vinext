@@ -117,4 +117,26 @@ describe("standalone build lifecycle ordering", () => {
     expect(printBuildReport).toHaveBeenCalledOnce();
     expect(emitStandaloneOutput).not.toHaveBeenCalled();
   });
+
+  it("prints a start command that a shell runs as one argument", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      for (const [outDir, expected] of [
+        ["dist", "node dist/standalone/server.js"],
+        ["build $(date)", "node 'build $(date)/standalone/server.js'"],
+        ["it's;out", "node 'it'\\''s;out/standalone/server.js'"],
+      ]) {
+        log.mockClear();
+        emitStandaloneOutput.mockImplementationOnce(() => ({
+          standaloneDir: path.join(process.cwd(), outDir, "standalone"),
+        }));
+
+        await finalizeWith({ output: "standalone" });
+
+        expect(log).toHaveBeenCalledWith(`  Start it with: ${expected}\n`);
+      }
+    } finally {
+      log.mockRestore();
+    }
+  });
 });
