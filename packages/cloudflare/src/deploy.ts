@@ -22,6 +22,7 @@ import {
   emitPrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
 import {
+  readRecordedBuildOutDir,
   VINEXT_BUILD_LIFECYCLE_CONFIG,
   type BuildLifecycleInvocation,
 } from "vinext/internal/build/lifecycle";
@@ -633,8 +634,9 @@ async function loadDeployViteConfigMetadata(
   const routeRootConfig = await findVinextRouteRootConfigInPlugins(plugins);
   // The build writes BUILD_ID, vinext-server.json and the prerender output
   // below Vite's `build.outDir`; the steps after it read them from there.
-  // runBuild replaces this with the value its resolved config used.
-  const outDir = loaded?.config.build?.outDir;
+  // The last build recorded the value its resolved config used, which a
+  // plugin's config hook may have set; runBuild replaces it with its own.
+  const outDir = readRecordedBuildOutDir(root) ?? loaded?.config.build?.outDir;
   return {
     // The executed Vite config is authoritative. Source scans cannot see
     // imported or composed cache objects and must not suppress valid metadata.

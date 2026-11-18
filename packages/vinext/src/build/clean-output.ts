@@ -81,11 +81,14 @@ function shouldCleanBuildOutput(options: CleanBuildOutputOptions, outDir: string
   return isPathInside(path.resolve(options.root), outDir);
 }
 
-/** Empty `dir` as Vite's emptyDir does, keeping a `.git` directory in it. */
+/**
+ * Empty `dir` as Vite's emptyDir does, keeping a `.git` directory in it. A
+ * symlinked outDir keeps its link, and the directory it points to is
+ * emptied; assertOutputDirIsSafe has already checked that directory.
+ */
 function emptyDir(dir: string): void {
-  const stat = fs.lstatSync(dir, { throwIfNoEntry: false });
+  const stat = fs.statSync(dir, { throwIfNoEntry: false });
   if (!stat) return;
-  // A symlinked outDir is removed as a link; the directory it points to stays.
   if (!stat.isDirectory()) {
     fs.rmSync(dir, { force: true });
     return;

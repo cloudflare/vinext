@@ -94,19 +94,31 @@ describe("cleanBuildOutput", () => {
     }
   });
 
-  it("removes a symlinked outDir as a link and leaves its target alone", () => {
+  it("empties the directory a symlinked outDir points to, as Vite does", () => {
     const target = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-output-target-"));
     try {
-      const kept = writeFile(target, "kept.txt", "kept\n");
+      const stale = writeFile(target, "server/index.js", "stale\n");
+      const history = writeFile(target, ".git/HEAD", "ref: refs/heads/main\n");
       fs.symlinkSync(target, path.join(tmpDir, "dist"));
 
       expect(cleanBuildOutput({ root: tmpDir }).cleaned).toBe(true);
 
-      expect(fs.existsSync(path.join(tmpDir, "dist"))).toBe(false);
-      expect(fs.existsSync(kept)).toBe(true);
+      expect(fs.lstatSync(path.join(tmpDir, "dist")).isSymbolicLink()).toBe(true);
+      expect(fs.existsSync(stale)).toBe(false);
+      expect(fs.existsSync(history)).toBe(true);
     } finally {
       fs.rmSync(target, { recursive: true, force: true });
     }
+  });
+
+  it("refuses a symlinked outDir that points into a protected source directory", () => {
+    const page = writeFile(tmpDir, "src/app/page.tsx", "export default 1;\n");
+    fs.symlinkSync(path.join(tmpDir, "src/app"), path.join(tmpDir, "dist"));
+
+    expect(() =>
+      cleanBuildOutput({ root: tmpDir, protectedDirs: { app: path.join(tmpDir, "src/app") } }),
+    ).toThrow('The build.outDir "src/app" overlaps the app directory "src/app"');
+    expect(fs.existsSync(page)).toBe(true);
   });
 
   it("refuses an outDir that is, contains or sits inside a protected source directory", () => {
