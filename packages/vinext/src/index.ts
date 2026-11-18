@@ -2708,6 +2708,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               "contain the project.",
           );
         }
+        // Vite leaves an outDir equal to the root alone, but vinext derives
+        // <outDir>/server and <outDir>/client from it, which Vite would empty:
+        // with `build.outDir: "."` that is the app's own server/ or client/.
+        if (path.relative(root, path.resolve(root, buildOutDir)) === "") {
+          throw new Error(
+            `[vinext] build.outDir "${buildOutDir}" is the project root. vinext would write ` +
+              "and empty its server/ and client/ directories there. Choose a build.outDir " +
+              "below or outside the project, such as the default dist.",
+          );
+        }
       },
     },
     {

@@ -332,7 +332,9 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     });
     const standaloneDir = path.relative(context.root, standalone.standaloneDir);
     console.log(`  Generated standalone output in ${standaloneDir}/`);
-    const serverScript = path.join(standaloneDir, "server.js");
+    const scriptPath = path.join(standaloneDir, "server.js");
+    // node would read a leading "-" as an option.
+    const serverScript = scriptPath.startsWith("-") ? `./${scriptPath}` : scriptPath;
     // Single-quote any path a POSIX shell would split or expand.
     const serverArg = /^[\w@%+=:,./-]+$/.test(serverScript)
       ? serverScript

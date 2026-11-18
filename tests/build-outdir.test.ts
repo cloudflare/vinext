@@ -390,4 +390,23 @@ describe("build.outDir", () => {
     ).rejects.toThrow('The rsc output directory "." contains the project root');
     expect(fs.existsSync(source)).toBe(true);
   });
+
+  it("rejects a build.outDir equal to the project root", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    // An app's own server/ directory would be the derived RSC outDir.
+    const source = path.join(fixtureDir, "server", "db.ts");
+    fs.mkdirSync(path.dirname(source));
+    fs.writeFileSync(source, "export const db = {};\n");
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        build: { outDir: "." },
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow('build.outDir "." is the project root');
+    expect(fs.existsSync(source)).toBe(true);
+  });
 });

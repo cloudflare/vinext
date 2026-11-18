@@ -125,6 +125,7 @@ describe("standalone build lifecycle ordering", () => {
         ["dist", "node dist/standalone/server.js"],
         ["build $(date)", "node 'build $(date)/standalone/server.js'"],
         ["it's;out", "node 'it'\\''s;out/standalone/server.js'"],
+        ["-build", "node ./-build/standalone/server.js"],
       ]) {
         log.mockClear();
         emitStandaloneOutput.mockImplementationOnce(() => ({
