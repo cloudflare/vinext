@@ -468,7 +468,7 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
 const REACT_SERVER_DOM_BUILD_CONDITIONS = ["workerd", "deno", "node", "edge-light", "browser"];
 
 // plugin-rsc imports the edge build of its vendored Flight server, or of an
-// installed react-server-dom-webpack, and pre-bundles it by these specifiers.
+// installed react-server-dom-webpack, by these specifiers.
 const REACT_SERVER_DOM_EDGE_ENTRY =
   /^((?:@vitejs\/plugin-rsc\/vendor\/react-server-dom|react-server-dom-webpack)\/(?:server|static))\.edge$/;
 
@@ -4825,19 +4825,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 (id) => !isExcludedShim(id.slice(id.lastIndexOf(">") + 1).trim()),
               );
             }
-            // Pre-bundle the Flight server build that vinext:react-server-dom-node
-            // resolves its imports to. The optimizer resolves includes without
-            // that plugin.
-            if (
-              optimizer.include &&
-              !isClient &&
-              !hasCloudflarePlugin &&
-              selectsReactServerDomNodeBuild(environment.resolve.conditions)
-            ) {
-              optimizer.include = optimizer.include.map((id) =>
-                id.replace(REACT_SERVER_DOM_EDGE_ENTRY, "$1.node"),
-              );
-            }
             // The excluded shims' own dependencies are required whenever the
             // client optimizer runs, since a filtered next/image include no
             // longer brings ipaddr.js with it. noDiscovery only opts out of the
@@ -5675,7 +5662,12 @@ export const loadServerActionClient = ${
       // that builds itself from its children rendered only part of them
       // (#4770). Next.js pairs the two builds on both runtimes. Resolve the
       // Flight server to its Node build wherever React's map would pick it.
+      //
+      // Builds only: React's Node development build installs a process-wide
+      // async_hooks hook each time it loads, and never removes it, so every
+      // dev server in a process would add one that runs on every promise.
       name: "vinext:react-server-dom-node",
+      apply: "build",
       enforce: "pre",
       resolveId: {
         filter: { id: REACT_SERVER_DOM_EDGE_ENTRY },
