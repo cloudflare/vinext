@@ -5501,6 +5501,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   minimumCacheTTL: nextConfig?.images?.minimumCacheTTL,
                   maximumResponseBody: nextConfig?.images?.maximumResponseBody,
                 },
+                serveImagesInProcess: hasNitroPlugin,
                 hasPagesDir,
                 publicFiles:
                   isServeCommand && devPublicFileRoutes
