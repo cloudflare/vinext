@@ -8,7 +8,6 @@ import { PassThrough } from "node:stream";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { resolveBuildOutputDir } from "../packages/cloudflare/src/build-output.js";
 import type { TPRRouteResult } from "../packages/cloudflare/src/tpr.js";
-import { recordBuildOutDir } from "../packages/vinext/src/build/output-dir-record.js";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 const emitPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
@@ -590,18 +589,26 @@ export function createBuilder(config) {
     );
   });
 
-  it("reads a --skip-build deploy's output from the build.outDir the last build recorded", async () => {
+  it("reads a --skip-build deploy's output from the Vite config's build.outDir", async () => {
     writeProject("true");
     writeFile("next.config.mjs", 'export default { output: "export" };\n');
-    // A plugin's config hook set build.outDir, which the config file doesn't show.
-    recordBuildOutDir(tmpDir, path.join(tmpDir, "out"));
+    const viteConfig = path.join(tmpDir, "vite.config.ts");
+    fs.writeFileSync(
+      viteConfig,
+      fs
+        .readFileSync(viteConfig, "utf8")
+        .replace(
+          "export default defineConfig({",
+          'export default defineConfig({\n  build: { outDir: "out" },',
+        ),
+    );
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true });
 
     expect(runPrerenderMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        routeRootConfig: expect.objectContaining({ outDir: path.join(tmpDir, "out") }),
+        routeRootConfig: expect.objectContaining({ outDir: "out" }),
       }),
     );
   });

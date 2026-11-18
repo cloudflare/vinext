@@ -21,11 +21,8 @@ import type { ResolvedNextConfig } from "../config/next-config.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 import { cleanBuildOutput, type ProtectedSourceDirs } from "./clean-output.js";
-import { recordBuildOutDir } from "./output-dir-record.js";
 import { PAGES_CLIENT_ASSETS_MODULE } from "./pages-client-assets-module.js";
 import { runWithPreviewBuildCredentials } from "./preview-credentials.js";
-
-export { readRecordedBuildOutDir } from "./output-dir-record.js";
 
 type ProjectViteApi = Pick<
   typeof import("vite"),
@@ -247,13 +244,12 @@ export function prepareBuildOutput(
 ): void {
   checkStandaloneBuildPrerequisite(context);
 
-  const { outDir } = cleanBuildOutput({
+  cleanBuildOutput({
     root: context.root,
     outDir: resolveBuildOutDir(context),
     emptyOutDir,
     protectedDirs: context.protectedDirs,
   });
-  recordBuildOutDir(context.root, outDir);
 }
 
 async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContext): Promise<void> {

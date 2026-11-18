@@ -17,7 +17,6 @@ import { pathToFileURL } from "node:url";
 import { createBuilder, resolveConfig, type Plugin } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
-import { readRecordedBuildOutDir } from "../packages/vinext/src/build/output-dir-record.js";
 import { emitPrerenderPathManifest } from "../packages/vinext/src/build/prerender-paths.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
 import vinext from "../packages/vinext/src/index.js";
@@ -125,7 +124,6 @@ describe("build.outDir", () => {
     expect(fs.existsSync(path.join(fixtureDir, "dist"))).toBe(false);
     // stale.txt is gone: the build emptied build.outDir as it empties dist.
     expect(fs.readdirSync(outDir).sort()).toEqual(["client", "server", "vinext-client-assets.js"]);
-    expect(readRecordedBuildOutDir(fixtureDir)).toBe(outDir);
     expect(result?.routes.filter((route) => route.status === "rendered").length).toBeGreaterThan(0);
     const serverFiles = listFiles(path.join(outDir, "server"));
     expect(serverFiles).toEqual(
@@ -318,8 +316,6 @@ describe("build.outDir", () => {
 
     expect(fs.existsSync(path.join(fixtureDir, "dist"))).toBe(false);
     expect(fs.readdirSync(outDir).sort()).toEqual(["client", "server"]);
-    // `vinext start` and `vinext deploy --skip-build` read the outDir from here.
-    expect(readRecordedBuildOutDir(fixtureDir)).toBe(outDir);
   }, 180_000);
 
   it("rejects a build.outDir whose derived server directory is the project root", async () => {

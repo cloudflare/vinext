@@ -26,7 +26,7 @@ import { runCheck, formatReport } from "./check.js";
 import { init as runInit } from "./init.js";
 import { resolveInitOptions } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { readRecordedBuildOutDir } from "./build/output-dir-record.js";
+import { readViteConfigOutDir } from "./build/vite-config-outdir.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { parseArgs } from "./cli-args.js";
 import { generateRouteTypes } from "./typegen.js";
@@ -184,8 +184,8 @@ async function start() {
   await startProdServer({
     port,
     host,
-    // The build records Vite's resolved build.outDir; dist/ before any build.
-    outDir: readRecordedBuildOutDir(process.cwd()) ?? path.resolve(process.cwd(), "dist"),
+    // The build writes under the Vite config's build.outDir, dist/ by default.
+    outDir: (await readViteConfigOutDir(process.cwd())) ?? path.resolve(process.cwd(), "dist"),
   });
 }
 
