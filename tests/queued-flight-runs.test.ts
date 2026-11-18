@@ -12,6 +12,24 @@ function controlledStream() {
   return { controller, stream };
 }
 
+// A stream whose `cancelled` settles with the reason it is cancelled with.
+function cancellableStream() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  let markCancelled!: (reason: unknown) => void;
+  const cancelled = new Promise<unknown>((resolve) => {
+    markCancelled = resolve;
+  });
+  const stream = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      controller = streamController;
+    },
+    cancel(reason) {
+      markCancelled(reason);
+    },
+  });
+  return { cancelled, controller, stream };
+}
+
 const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 // Reads like the Flight client: one chunk per read, the next read after it.
@@ -80,10 +98,10 @@ describe("trackQueuedFlightRuns", () => {
     await flight.currentRunConsumed();
   });
 
-  it("settles a run when the consumer stops reading partway without cancelling", async () => {
+  it("settles a run and cancels the source when the consumer stops reading partway", async () => {
     // React's Flight client stops reading, without cancelling, when it fails
     // to decode a chunk.
-    const { controller, stream } = controlledStream();
+    const { cancelled, controller, stream } = cancellableStream();
     const flight = trackQueuedFlightRuns(stream);
     const reader = flight.stream.getReader();
 
@@ -92,12 +110,15 @@ describe("trackQueuedFlightRuns", () => {
     expect((await reader.read()).value?.[0]).toBe(1);
     // Never reads again.
     await flight.currentRunConsumed();
+    expect(await cancelled).toBeInstanceOf(Error);
+    // The abandoned side is closed off too.
+    await expect(reader.read()).rejects.toBeInstanceOf(Error);
   });
 
   it("settles when the Flight root resolves before a later chunk fails to decode", async () => {
     const { createFromReadableStream } = loadCacheFlightCodec();
     const encoder = new TextEncoder();
-    const { controller, stream } = controlledStream();
+    const { cancelled, controller, stream } = cancellableStream();
     const flight = trackQueuedFlightRuns(stream);
     const root = createFromReadableStream(flight.stream) as Promise<unknown>;
 
@@ -108,6 +129,33 @@ describe("trackQueuedFlightRuns", () => {
     controller.enqueue(encoder.encode('2:"after"\n'));
     await expect(root).resolves.toEqual({ ok: true });
     await flight.currentRunConsumed();
+    expect(await cancelled).toBeInstanceOf(Error);
+  });
+
+  it("does not cancel the source of a consumer that keeps reading", async () => {
+    let cancelledWith: unknown = "not cancelled";
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(streamController) {
+        controller = streamController;
+      },
+      cancel(reason) {
+        cancelledWith = reason;
+      },
+    });
+    const flight = trackQueuedFlightRuns(stream);
+    const { chunks, finished } = consume(flight.stream);
+
+    // Chunks a few tasks apart, as React writes later flushes.
+    for (let i = 0; i < 5; i++) {
+      controller.enqueue(new Uint8Array([i]));
+      await nextTask();
+      await nextTask();
+    }
+    controller.close();
+    await finished;
+    expect(chunks.map((chunk) => chunk[0])).toEqual([0, 1, 2, 3, 4]);
+    expect(cancelledWith).toBe("not cancelled");
   });
 
   it("settles a run when the consumer cancels, and cancels the source", async () => {

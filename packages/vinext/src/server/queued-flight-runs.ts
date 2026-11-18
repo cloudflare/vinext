@@ -20,7 +20,7 @@ export type QueuedFlightRuns = {
    * Settles once the consumer has read past the last chunk of the current run
    * of queued chunks: it asked for the next chunk after taking that one. Also
    * settles when the stream ends, fails or is cancelled, and when the consumer
-   * stops reading without cancelling.
+   * stops reading without cancelling, which also cancels the source.
    */
   currentRunConsumed(): Promise<void>;
 };
@@ -42,7 +42,7 @@ export type QueuedFlightRuns = {
  *
  * React's Flight client stops reading, without cancelling, when it fails to
  * decode a chunk. A consumer that hasn't asked for the next chunk by the next
- * task has stopped, so the run settles then. One that is still decoding asks
+ * task has stopped, so the run settles then, and the source is cancelled. One that is still decoding asks
  * within a few microtasks, since the Flight client decodes a chunk
  * synchronously and reads the next one right after.
  */
@@ -111,8 +111,14 @@ export function trackQueuedFlightRuns(stream: ReadableStream<Uint8Array>): Queue
         if (next === NOT_QUEUED || next.done) lastChunkEndedRun = true;
         const pullsAtEnqueue = pulls;
         setTimeout(() => {
-          // The consumer stopped reading.
-          if (pulls === pullsAtEnqueue) endRun();
+          if (cancelled || pulls !== pullsAtEnqueue) return;
+          // The consumer stopped reading. Release the source, so a tee in
+          // front of it doesn't keep queuing the rest of the payload here.
+          cancelled = true;
+          endRun();
+          const reason = new Error("The SSR Flight client stopped reading the RSC stream.");
+          reader.cancel(reason).catch(noop);
+          controller.error(reason);
         }, 0);
       },
       cancel(reason) {
