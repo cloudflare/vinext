@@ -431,6 +431,17 @@ function holdMpaNavigationRefreshSettlement(): () => void {
 function releaseHeldMpaNavigationRefreshSettlements(): void {
   for (const release of heldMpaNavigationRefreshSettlements) release();
 }
+// Scheduler settlements of action redirect renders that are still pending.
+const heldRedirectRenderRefreshSettlements = new Set<() => void>();
+function holdRefreshesForRedirectRender(): () => void {
+  discardedServerActionRefreshScheduler.markNavigationStart();
+  const release = () => {
+    if (!heldRedirectRenderRefreshSettlements.delete(release)) return;
+    discardedServerActionRefreshScheduler.markNavigationSettled();
+  };
+  heldRedirectRenderRefreshSettlements.add(release);
+  return release;
+}
 // A discarded or tree-less revalidation's refresh would reload this URL over a
 // pending document load, so it waits until bfcache restores this document, or
 // until a later navigation or document load shows this one was abandoned (a
@@ -438,6 +449,9 @@ function releaseHeldMpaNavigationRefreshSettlements(): void {
 function holdRefreshesForDocumentLoad(): Promise<void> {
   releaseHeldMpaNavigationRefreshSettlements();
   discardedServerActionRefreshScheduler.markNavigationStart();
+  // The load's MPA state replaces every action redirect render dispatched
+  // before it, which can then never commit: the load holds refreshes instead.
+  for (const releaseRender of heldRedirectRenderRefreshSettlements) releaseRender();
   const release = holdMpaNavigationRefreshSettlement();
   const restored = waitForMpaNavigationRestore();
   void restored.then(release);
@@ -1974,8 +1988,9 @@ function registerServerActionCallback(): void {
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
             if (target.type === "push") saveScrollPosition();
             // The action settles before this render does, so the render holds
-            // revalidation refreshes, which would supersede it, until it settles.
-            discardedServerActionRefreshScheduler.markNavigationStart();
+            // revalidation refreshes, which would supersede it, until it settles
+            // or a document load replaces it.
+            const releaseRefreshHold = holdRefreshesForRedirectRender();
             void renderNavigationPayload({
               actionType: target.type === "push" ? "navigate" : "replace",
               historyUpdateMode: target.type === "push" ? "push" : "replace",
@@ -1998,7 +2013,7 @@ function registerServerActionCallback(): void {
               .catch(() => {
                 browserNavigationController.performHardNavigation(target.href);
               })
-              .finally(() => discardedServerActionRefreshScheduler.markNavigationSettled());
+              .finally(releaseRefreshHold);
           },
           syncCurrentHistoryState: (previousNextUrl, bfcacheIds) => {
             // The current entry is still the source page's until the
@@ -3225,8 +3240,13 @@ function bootstrapHydration(
     },
     claimCurrentHistoryTreeSnapshot: (historyUpdateMode, previousHistoryState) =>
       historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState),
-    commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) =>
-      historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState),
+    commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) => {
+      // A raw history write that reuses the router's own entry state skips
+      // discardPendingNavigation, as Next.js skips ACTION_RESTORE for `__NA`,
+      // but still ends an abandoned document load's hold.
+      releaseHeldMpaNavigationRefreshSettlements();
+      historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState);
+    },
     discardPendingNavigation: () => {
       // A raw history write likewise ends an abandoned document load's hold.
       releaseHeldMpaNavigationRefreshSettlements();

@@ -755,6 +755,18 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
         ),
     ],
     ["a raw history.pushState", () => window.history.pushState(null, "", "?later=1")],
+    // Reusing the router's own entry state takes the app-owned write path.
+    [
+      "a raw history.pushState of the router's state",
+      () => window.history.pushState(window.history.state, "", "?later=1"),
+    ],
+    // A native fragment navigation, outside the router.
+    [
+      "a location.hash assignment",
+      () => {
+        window.location.hash = "later";
+      },
+    ],
   ] as const) {
     test(`held refresh runs after a 204 document load when ${name} follows`, async ({ page }) => {
       const sourcePath = "/nextjs-compat/action-discarding";
@@ -802,6 +814,111 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
       await expect.poll(() => sourceRscReads, { timeout: 10_000 }).toBeGreaterThan(0);
     });
   }
+
+  // A document load supersedes an action redirect whose render is still
+  // suspended: that render can never commit, so it no longer holds the refresh
+  // once the 204 load is abandoned.
+  test("held refresh runs after a 204 document load superseded a suspended action redirect", async ({
+    page,
+  }) => {
+    const sourcePath = "/nextjs-compat/action-discarding";
+    const redirectPath = "/client-nav-test";
+    const externalUrl = "http://external.example/landing";
+
+    // The redirect destination's real Flight payload, served as the redirect's tree.
+    let redirectFlight: { body: Buffer; headers: Record<string, string> } | null = null;
+    await page.route(
+      (url) => url.pathname === redirectPath && url.searchParams.has("_rsc"),
+      async (route) => {
+        const response = await route.fetch();
+        redirectFlight = { body: await response.body(), headers: response.headers() };
+        await route.fulfill({ response });
+      },
+    );
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate((href) => {
+      (window as unknown as { next: { router: { push(href: string): void } } }).next.router.push(
+        href,
+      );
+    }, redirectPath);
+    await expect(page.getByTestId("client-nav-info")).toBeVisible();
+    await page.unrouteAll();
+    if (redirectFlight === null) throw new Error("Expected the redirect's Flight payload");
+    const flight: { body: Buffer; headers: Record<string, string> } = redirectFlight;
+    await page.goto(`${BASE}${sourcePath}`);
+    await waitForAppRouterHydration(page);
+
+    let actionRequests = 0;
+    let clientModuleRequested = () => {};
+    const clientModuleRequest = new Promise<void>((resolve) => {
+      clientModuleRequested = resolve;
+    });
+    let externalDocumentLoads = 0;
+    let sourceRscReads = 0;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (isAppRouterServerActionRequestForPath(request, sourcePath)) {
+        actionRequests += 1;
+        const response = await route.fetch();
+        if (actionRequests === 1) {
+          return route.fulfill({
+            status: 303,
+            headers: {
+              ...response.headers(),
+              "content-type": flight.headers["content-type"] ?? "text/x-component",
+              "x-action-redirect": redirectPath,
+            },
+            body: flight.body,
+          });
+        }
+        // Keep the real headers (revalidated, compatibility id) but drop the tree.
+        return route.fulfill({
+          status: 200,
+          headers: response.headers(),
+          body: '0:{"returnValue":{"ok":true,"data":1}}\n',
+        });
+      }
+      // The redirect's client component never loads, so its render stays suspended.
+      if (url.pathname.includes("client-nav-test/client-component")) {
+        clientModuleRequested();
+        return;
+      }
+      if (url.pathname === sourcePath && url.searchParams.has("_rsc")) sourceRscReads += 1;
+      if (request.isNavigationRequest() && url.host === "external.example") {
+        externalDocumentLoads += 1;
+        return route.fulfill({ status: 204, body: "" });
+      }
+      return route.continue();
+    });
+
+    await page.click("#slow-action");
+    await clientModuleRequest;
+    await page.evaluate((href) => {
+      (window as unknown as { next: { router: { push(href: string): void } } }).next.router.push(
+        href,
+      );
+    }, externalUrl);
+    await expect.poll(() => externalDocumentLoads).toBe(1);
+    expect(new URL(page.url()).pathname).toBe(sourcePath);
+
+    const actionResponse = waitForActionDiscardingResponse(page);
+    await page.click("#slow-action-refresh");
+    await actionResponse;
+    await page.waitForTimeout(300);
+    // Held behind the load, which may still be in progress as far as Vinext knows.
+    expect(sourceRscReads).toBe(0);
+
+    // A hash navigation through the router renders nothing that could settle
+    // the redirect's render.
+    await page.evaluate(() => {
+      (window as unknown as { next: { router: { push(href: string): void } } }).next.router.push(
+        "#later",
+      );
+    });
+    await expect.poll(() => sourceRscReads, { timeout: 10_000 }).toBeGreaterThan(0);
+  });
 
   test("discarded server action refreshes after a document load that left the page alive", async ({
     page,
