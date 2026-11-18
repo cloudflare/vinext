@@ -452,8 +452,13 @@ const BYPASS_IMAGE_CONTENT_TYPES = new Set([
   "image/heic",
 ]);
 
-/** Formats Next.js serves as-is when animated (`ANIMATABLE_TYPES`). */
-const ANIMATABLE_IMAGE_CONTENT_TYPES = new Set(["image/webp", "image/png", "image/gif"]);
+/** Formats served as-is when animated. */
+const ANIMATABLE_IMAGE_CONTENT_TYPES = new Set([
+  "image/webp",
+  "image/png",
+  "image/gif",
+  "image/avif",
+]);
 
 /** Next.js's 400 body for a source whose type it does not serve, such as SVG. */
 export const IMAGE_TYPE_NOT_ALLOWED_MESSAGE =

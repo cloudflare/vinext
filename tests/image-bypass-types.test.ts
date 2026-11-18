@@ -68,6 +68,20 @@ function riff(chunks: string): Uint8Array<ArrayBuffer> {
 const STATIC_WEBP = riff("VP8 \0\0\0\0");
 const ANIMATED_WEBP = riff("VP8X\0\0\0\0ANIM\0\0\0\0");
 
+function avif(majorBrand: string, compatibleBrands: string): Uint8Array<ArrayBuffer> {
+  const size = 16 + compatibleBrands.length;
+  return new Uint8Array([
+    0,
+    0,
+    0,
+    size,
+    ...new TextEncoder().encode(`ftyp${majorBrand}\0\0\0\0${compatibleBrands}mdat`),
+  ]);
+}
+
+const STATIC_AVIF = avif("avif", "mif1");
+const ANIMATED_AVIF = avif("avis", "avifmsf1");
+
 /** A stream of `bytes` in chunks of `chunkSize`, counting the chunks pulled. */
 function chunkedSource(bytes: Uint8Array, chunkSize: number) {
   const source = { pulled: 0, body: null as unknown as ReadableStream<Uint8Array> };
@@ -132,6 +146,16 @@ describe("isAnimatedImage", () => {
 
   it("ends the scan at a truncated PNG chunk", async () => {
     expect(await isAnimated(ANIMATED_PNG.subarray(0, PNG_SIGNATURE.length + 30))).toBe(false);
+  });
+
+  it("recognizes the AVIF sequence brand in the file type box", async () => {
+    expect(await isAnimated(ANIMATED_AVIF)).toBe(true);
+    expect(await isAnimated(avif("avif", "mif1avis"))).toBe(true);
+    expect(await isAnimated(STATIC_AVIF)).toBe(false);
+    // The next box is outside ftyp, even if its bytes happen to say avis.
+    const outsideFileType = STATIC_AVIF.slice();
+    outsideFileType.set(new TextEncoder().encode("avis"), 20);
+    expect(await isAnimated(outsideFileType)).toBe(false);
   });
 });
 
@@ -227,6 +251,7 @@ describe("handleImageOptimization formats Next.js does not optimize", () => {
     ["GIF", ANIMATED_GIF, "image/gif"],
     ["PNG", ANIMATED_PNG, "image/png"],
     ["WebP", ANIMATED_WEBP, "image/webp"],
+    ["AVIF", ANIMATED_AVIF, "image/avif"],
   ] as const) {
     it(`serves an animated ${name} as-is`, async () => {
       const { handlers: imageHandlers, transformed } = handlers(bytes, contentType);
@@ -239,13 +264,19 @@ describe("handleImageOptimization formats Next.js does not optimize", () => {
     });
   }
 
-  it("transforms a still GIF from its replayed bytes", async () => {
-    const { handlers: imageHandlers, transformed } = handlers(STATIC_GIF, "image/gif");
-    const response = await handleImageOptimization(imageRequest("/still.gif"), imageHandlers);
+  it.each([
+    ["gif", STATIC_GIF, "image/gif"],
+    ["avif", STATIC_AVIF, "image/avif"],
+  ] as const)("transforms a still %s from its replayed bytes", async (extension, bytes, type) => {
+    const { handlers: imageHandlers, transformed } = handlers(bytes, type);
+    const response = await handleImageOptimization(
+      imageRequest(`/still.${extension}`),
+      imageHandlers,
+    );
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("transformed");
     expect(response.headers.get("Content-Type")).toBe("image/avif");
-    expect(transformed).toEqual([new TextDecoder().decode(STATIC_GIF)]);
+    expect(transformed).toEqual([new TextDecoder().decode(bytes)]);
   });
 
   it("falls back to the replayed source when the transform fails", async () => {
