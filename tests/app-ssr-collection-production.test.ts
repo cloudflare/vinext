@@ -7,6 +7,15 @@ import { createIsolatedFixture } from "./helpers.js";
 
 const FIXTURE_SOURCE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-ssr-collection");
 const CELL_COUNT = 60;
+const LARGE_CELL_COUNT = 12_000;
+
+async function renderedCells(url: URL): Promise<{ count: number; table: string }> {
+  const response = await fetch(url);
+  expect(response.status).toBe(200);
+  const html = await response.text();
+  const table = html.match(/<table id="collection">([\s\S]*?)<\/table>/)?.[1] ?? "";
+  return { count: table.match(/<tr>/g)?.length ?? 0, table };
+}
 
 // #4770: react-aria-components collections (Table, ListBox, ...) render a hidden
 // copy of their children first and build the visible markup from what it
@@ -44,12 +53,14 @@ describe("App Router production SSR of a collection built from its children", ()
   });
 
   it("server-renders every item of the collection", async () => {
-    const response = await fetch(new URL("/", baseUrl));
-    expect(response.status).toBe(200);
-    const html = await response.text();
-    const table = html.match(/<table id="collection">([\s\S]*?)<\/table>/)?.[1] ?? "";
-    const rendered = table.match(/<tr>/g)?.length ?? 0;
-    expect(rendered).toBe(CELL_COUNT);
+    const { count, table } = await renderedCells(new URL("/", baseUrl));
+    expect(count).toBe(CELL_COUNT);
     expect(table).toContain(`cell-${CELL_COUNT - 1}-`);
+  });
+
+  it("server-renders every item of a collection whose payload is several MB", async () => {
+    const { count, table } = await renderedCells(new URL("/large", baseUrl));
+    expect(count).toBe(LARGE_CELL_COUNT);
+    expect(table).toContain(`cell-${LARGE_CELL_COUNT - 1}-`);
   });
 });

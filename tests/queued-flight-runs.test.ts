@@ -1,0 +1,99 @@
+import { describe, expect, it } from "vite-plus/test";
+import { trackQueuedFlightRuns } from "../packages/vinext/src/server/queued-flight-runs.js";
+
+function controlledStream() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      controller = streamController;
+    },
+  });
+  return { controller, stream };
+}
+
+const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// Reads like the Flight client: one chunk per read, the next read after it.
+function consume(stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  const finished = (async () => {
+    for (let result = await reader.read(); !result.done; result = await reader.read()) {
+      chunks.push(result.value);
+    }
+  })();
+  return { chunks, finished };
+}
+
+describe("trackQueuedFlightRuns", () => {
+  it("settles a run once every chunk queued with it has been read, and passes them on unchanged", async () => {
+    const { controller, stream } = controlledStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const { chunks, finished } = consume(flight.stream);
+
+    const written = Array.from({ length: 300 }, (_, i) => new Uint8Array(4096).fill(i % 256));
+    for (const chunk of written) controller.enqueue(chunk);
+    await Promise.resolve();
+    // Asked while the run is still being read: it waits for all of it.
+    await flight.currentRunConsumed();
+    expect(chunks).toEqual(written);
+    expect(chunks[299]).toBe(written[299]);
+
+    controller.close();
+    await finished;
+  });
+
+  it("does not wait for a chunk that is not queued yet", async () => {
+    const { controller, stream } = controlledStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const { chunks, finished } = consume(flight.stream);
+
+    controller.enqueue(new Uint8Array([1]));
+    controller.enqueue(new Uint8Array([2]));
+    await flight.currentRunConsumed();
+    expect(chunks.map((chunk) => chunk[0])).toEqual([1, 2]);
+    // A run that has ended stays settled until the next chunk arrives.
+    await flight.currentRunConsumed();
+
+    await nextTask();
+    controller.enqueue(new Uint8Array([3]));
+    await nextTask();
+    await flight.currentRunConsumed();
+    expect(chunks.map((chunk) => chunk[0])).toEqual([1, 2, 3]);
+
+    controller.close();
+    await finished;
+  });
+
+  it("settles a run when the stream fails, and passes the error on", async () => {
+    const failure = new Error("render failed");
+    const { controller, stream } = controlledStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const reader = flight.stream.getReader();
+
+    controller.enqueue(new Uint8Array([1]));
+    expect((await reader.read()).value?.[0]).toBe(1);
+    const failedRead = reader.read();
+    controller.error(failure);
+    await expect(failedRead).rejects.toBe(failure);
+    await flight.currentRunConsumed();
+  });
+
+  it("settles a run when the consumer cancels, and cancels the source", async () => {
+    let cancelledWith: unknown;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+      },
+      cancel(reason) {
+        cancelledWith = reason;
+      },
+    });
+    const flight = trackQueuedFlightRuns(stream);
+    const reader = flight.stream.getReader();
+    await reader.read();
+    await reader.cancel("gone");
+    await flight.currentRunConsumed();
+    expect(cancelledWith).toBe("gone");
+  });
+});

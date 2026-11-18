@@ -9,6 +9,15 @@ import { createIsolatedFixture } from "./helpers.js";
 const CF_APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/cf-app-basic");
 const CLOUDFLARE_NODE_MODULES = path.join(CF_APP_FIXTURE_DIR, "node_modules");
 const CELL_COUNT = 60;
+const LARGE_CELL_COUNT = 12_000;
+
+async function renderedCells(url: URL): Promise<{ count: number; table: string }> {
+  const response = await fetch(url);
+  expect(response.status).toBe(200);
+  const html = await response.text();
+  const table = html.match(/<table id="collection">([\s\S]*?)<\/table>/)?.[1] ?? "";
+  return { count: table.match(/<tr>/g)?.length ?? 0, table };
+}
 
 type CloudflarePluginFactory = (options: {
   viteEnvironment: { name: string; childEnvironments: string[] };
@@ -89,12 +98,15 @@ describe("App Router SSR of a collection built from its children on the Workers 
   it("server-renders every item of the collection", async () => {
     // A few requests, so a warm isolate is covered as well as a cold one.
     for (let request = 0; request < 3; request += 1) {
-      const response = await fetch(new URL("/ssr-collection", baseUrl));
-      expect(response.status).toBe(200);
-      const html = await response.text();
-      const table = html.match(/<table id="collection">([\s\S]*?)<\/table>/)?.[1] ?? "";
-      expect(table.match(/<tr>/g)?.length ?? 0).toBe(CELL_COUNT);
+      const { count, table } = await renderedCells(new URL("/ssr-collection", baseUrl));
+      expect(count).toBe(CELL_COUNT);
       expect(table).toContain(`cell-${CELL_COUNT - 1}-`);
     }
+  }, 60_000);
+
+  it("server-renders every item of a collection whose payload is several MB", async () => {
+    const { count, table } = await renderedCells(new URL("/ssr-collection/large", baseUrl));
+    expect(count).toBe(LARGE_CELL_COUNT);
+    expect(table).toContain(`cell-${LARGE_CELL_COUNT - 1}-`);
   }, 60_000);
 });
