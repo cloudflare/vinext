@@ -16,7 +16,6 @@ import { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { createBuilder, resolveConfig, type Plugin } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
-import { resolveDeployBuildOutDir } from "../packages/cloudflare/src/deploy.js";
 import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
 import { emitPrerenderPathManifest } from "../packages/vinext/src/build/prerender-paths.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
@@ -233,31 +232,6 @@ describe("build.outDir", () => {
       expect.arrayContaining(["index.js", "ssr/index.js", "BUILD_ID", "vinext-server.json"]),
     );
   }, 180_000);
-
-  it("finds a later plugin's build.outDir for deploy without emptying the build", async () => {
-    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
-    const buildId = path.join(fixtureDir, "out", "server", "BUILD_ID");
-    fs.mkdirSync(path.dirname(buildId), { recursive: true });
-    fs.writeFileSync(buildId, "build-a");
-    // Deploy loads the project's Vite config file; supply its plugins inline.
-    const vite = {
-      resolveConfig: ((inlineConfig, command) =>
-        resolveConfig(
-          {
-            ...inlineConfig,
-            configFile: false,
-            plugins: [
-              vinext({ appDir: fixtureDir }),
-              { name: "test:late-outdir", config: () => ({ build: { outDir: "out" } }) },
-            ],
-          },
-          command,
-        )) as typeof resolveConfig,
-    };
-
-    expect(await resolveDeployBuildOutDir(vite, fixtureDir, "production", undefined)).toBe("out");
-    expect(fs.readFileSync(buildId, "utf8")).toBe("build-a");
-  });
 
   it("rejects a server outDir inside the client outDir derived from build.outDir", async () => {
     const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);

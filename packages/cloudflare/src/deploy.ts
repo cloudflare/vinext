@@ -196,10 +196,7 @@ export type DeployOptions = {
 
 export type DeploymentTool = "cf" | "wrangler";
 
-type ProjectViteApi = Pick<
-  typeof import("vite"),
-  "createBuilder" | "loadConfigFromFile" | "resolveConfig"
->;
+type ProjectViteApi = Pick<typeof import("vite"), "createBuilder" | "loadConfigFromFile">;
 
 type ProjectWranglerApi = {
   unstable_readConfig(
@@ -625,23 +622,6 @@ export function resolveViteBuildMode(
   return deploymentTool === "cf" ? (env ?? "production") : "production";
 }
 
-/**
- * The `build.outDir` the build writes BUILD_ID, vinext-server.json and the
- * prerender output below, which the steps after it read. A plugin's config
- * hook may set it, and only resolveConfig runs those hooks. vinext's build
- * lifecycle, which empties the output, runs only for runBuild's builder or
- * the Vite CLI, so resolving leaves a `--skip-build` deploy's output alone.
- */
-export async function resolveDeployBuildOutDir(
-  vite: Pick<ProjectViteApi, "resolveConfig">,
-  root: string,
-  mode: string,
-  configFile: string | undefined,
-): Promise<string> {
-  const config = await vite.resolveConfig({ root, mode, configFile, logLevel: "silent" }, "build");
-  return config.build.outDir;
-}
-
 async function loadDeployViteConfigMetadata(
   root: string,
   mode: string,
@@ -651,14 +631,17 @@ async function loadDeployViteConfigMetadata(
   const loaded = await vite.loadConfigFromFile({ command: "build", mode }, configFile, root);
   const plugins = loaded?.config.plugins;
   const routeRootConfig = await findVinextRouteRootConfigInPlugins(plugins);
-  const outDir = await resolveDeployBuildOutDir(vite, root, mode, configFile);
+  // The build writes BUILD_ID, vinext-server.json and the prerender output
+  // below Vite's `build.outDir`; the steps after it read them from there.
+  // runBuild replaces this with the value its resolved config used.
+  const outDir = loaded?.config.build?.outDir;
   return {
     // The executed Vite config is authoritative. Source scans cannot see
     // imported or composed cache objects and must not suppress valid metadata.
     cacheConfig: await findVinextCacheConfigInPlugins(plugins),
     nextConfig: await findVinextNextConfigInPlugins(plugins),
     prerenderConfig: await findVinextPrerenderConfigInPlugins(plugins),
-    routeRootConfig: { ...routeRootConfig, outDir },
+    routeRootConfig: outDir === undefined ? routeRootConfig : { ...routeRootConfig, outDir },
   };
 }
 
@@ -667,7 +650,7 @@ async function runBuild(
   env: string | undefined,
   mode: string,
   configFile: string | undefined,
-): Promise<void> {
+): Promise<string> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
   const { createBuilder } = await loadProjectViteApi(info.root);
@@ -681,7 +664,7 @@ async function runBuild(
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
   let completed = false;
-  await withCloudflareEnv(env, async () => {
+  const outDir = await withCloudflareEnv(env, async () => {
     const invocation: BuildLifecycleInvocation = {
       // Deploy decides platform-specific finalization only after TPR and staged
       // warmup selection.
@@ -696,8 +679,10 @@ async function runBuild(
       [VINEXT_BUILD_LIFECYCLE_CONFIG]: invocation,
     } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
+    return builder.config.build.outDir;
   });
   if (!completed) throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
+  return outDir;
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
@@ -2500,7 +2485,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
   // Step 5: Build
   if (!options.skipBuild) {
-    await withBuildContext(() => runBuild(info, cloudflareEnv, viteMode, viteConfigFile));
+    const outDir = await withBuildContext(() =>
+      runBuild(info, cloudflareEnv, viteMode, viteConfigFile),
+    );
+    // A plugin's config hook may set `build.outDir`, which the config file
+    // alone does not show.
+    viteConfigMetadata.routeRootConfig = { ...viteConfigMetadata.routeRootConfig, outDir };
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }

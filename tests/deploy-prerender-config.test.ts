@@ -539,7 +539,10 @@ describe("deploy prerender config wiring", () => {
         "node_modules/vite/index.js",
         `export * from ${JSON.stringify(viteUrl)};
 export function createBuilder(config) {
-  return { async buildApp() { config.__vinextBuildLifecycle.onComplete(); } };
+  return {
+    config: { build: { outDir: "dist" } },
+    async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
+  };
 }
 `,
       );
@@ -556,6 +559,35 @@ export function createBuilder(config) {
       }
     },
   );
+
+  it("reads the build output from the build.outDir the build resolved", async () => {
+    writeProject("true");
+    writeFile("next.config.mjs", 'export default { output: "export" };\n');
+    const viteUrl = pathToFileURL(createRequire(import.meta.url).resolve("vite")).href;
+    writeFile(
+      "node_modules/vite/package.json",
+      JSON.stringify({ name: "vite", type: "module", main: "index.js" }),
+    );
+    // A plugin's config hook set build.outDir, which the config file doesn't show.
+    writeFile(
+      "node_modules/vite/index.js",
+      `export * from ${JSON.stringify(viteUrl)};
+export function createBuilder(config) {
+  return {
+    config: { build: { outDir: "out" } },
+    async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
+  };
+}
+`,
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({ routeRootConfig: expect.objectContaining({ outDir: "out" }) }),
+    );
+  });
 
   it("loads Vite config even when the prerender-all flag already decides prerendering", async () => {
     writeProject("true");
