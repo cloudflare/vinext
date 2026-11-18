@@ -354,7 +354,7 @@ import {
   getBuildBundlerOptions,
   withBuildBundlerOptions,
 } from "./build/client-build-config.js";
-import { assertOutputDirIsSafe } from "./build/clean-output.js";
+import { assertOutputDirIsSafe, resolveEnvironmentOutputDirs } from "./build/clean-output.js";
 import {
   collectClientReferenceChunks,
   collectClientReferenceSources,
@@ -2696,9 +2696,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
       configResolved(config) {
         if (config.command !== "build") return;
-        // Vite empties each environment's outDir and the build cleanup
-        // empties build.outDir, so none of them may hold the project or its
-        // sources. Check the resolved values, after every config and
+        // Vite empties each environment's output directories and the build
+        // cleanup empties build.outDir, so none of them may hold the project
+        // or its sources. Check the resolved values, after every config and
         // configEnvironment hook. With `build.outDir: "."` the derived
         // server/ and client/ would be the app's own directories.
         const safety = {
@@ -2707,7 +2707,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
         assertOutputDirIsSafe("build.outDir", buildOutDir, safety);
         for (const [name, environment] of Object.entries(config.environments)) {
-          assertOutputDirIsSafe(`${name} output directory`, environment.build.outDir, safety);
+          for (const outputDir of resolveEnvironmentOutputDirs(root, environment.build)) {
+            assertOutputDirIsSafe(`${name} output directory`, outputDir, safety);
+          }
         }
       },
     },

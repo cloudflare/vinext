@@ -57,6 +57,22 @@ export function assertOutputDirIsSafe(
   }
 }
 
+/**
+ * The directories an environment build writes and Vite empties: each
+ * `rolldownOptions.output` entry's `dir`, or the outDir for an entry without
+ * one, as Vite's getResolvedOutDirs resolves them.
+ */
+export function resolveEnvironmentOutputDirs(
+  root: string,
+  build: { outDir: string; rolldownOptions?: { output?: unknown } },
+): string[] {
+  const outDir = path.resolve(root, build.outDir);
+  const output = build.rolldownOptions?.output;
+  if (!output) return [outDir];
+  const outputs = (Array.isArray(output) ? output : [output]) as { dir?: string }[];
+  return [...new Set(outputs.map(({ dir }) => (dir ? path.resolve(root, dir) : outDir)))];
+}
+
 function shouldCleanBuildOutput(options: CleanBuildOutputOptions, outDir: string): boolean {
   if (options.emptyOutDir === false) return false;
   if (options.emptyOutDir === true) return true;

@@ -196,7 +196,10 @@ export type DeployOptions = {
 
 export type DeploymentTool = "cf" | "wrangler";
 
-type ProjectViteApi = Pick<typeof import("vite"), "createBuilder" | "loadConfigFromFile">;
+type ProjectViteApi = Pick<
+  typeof import("vite"),
+  "createBuilder" | "loadConfigFromFile" | "resolveConfig"
+>;
 
 type ProjectWranglerApi = {
   unstable_readConfig(
@@ -622,6 +625,23 @@ export function resolveViteBuildMode(
   return deploymentTool === "cf" ? (env ?? "production") : "production";
 }
 
+/**
+ * The `build.outDir` the build writes BUILD_ID, vinext-server.json and the
+ * prerender output below, which the steps after it read. A plugin's config
+ * hook may set it, and only resolveConfig runs those hooks. vinext's build
+ * lifecycle, which empties the output, runs only for runBuild's builder or
+ * the Vite CLI, so resolving leaves a `--skip-build` deploy's output alone.
+ */
+export async function resolveDeployBuildOutDir(
+  vite: Pick<ProjectViteApi, "resolveConfig">,
+  root: string,
+  mode: string,
+  configFile: string | undefined,
+): Promise<string> {
+  const config = await vite.resolveConfig({ root, mode, configFile, logLevel: "silent" }, "build");
+  return config.build.outDir;
+}
+
 async function loadDeployViteConfigMetadata(
   root: string,
   mode: string,
@@ -631,16 +651,14 @@ async function loadDeployViteConfigMetadata(
   const loaded = await vite.loadConfigFromFile({ command: "build", mode }, configFile, root);
   const plugins = loaded?.config.plugins;
   const routeRootConfig = await findVinextRouteRootConfigInPlugins(plugins);
-  // The build writes BUILD_ID, vinext-server.json and the prerender output
-  // below Vite's `build.outDir`; the steps after it read them from there.
-  const outDir = loaded?.config.build?.outDir;
+  const outDir = await resolveDeployBuildOutDir(vite, root, mode, configFile);
   return {
     // The executed Vite config is authoritative. Source scans cannot see
     // imported or composed cache objects and must not suppress valid metadata.
     cacheConfig: await findVinextCacheConfigInPlugins(plugins),
     nextConfig: await findVinextNextConfigInPlugins(plugins),
     prerenderConfig: await findVinextPrerenderConfigInPlugins(plugins),
-    routeRootConfig: outDir === undefined ? routeRootConfig : { ...routeRootConfig, outDir },
+    routeRootConfig: { ...routeRootConfig, outDir },
   };
 }
 
