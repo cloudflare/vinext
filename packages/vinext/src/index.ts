@@ -2683,6 +2683,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ssrOutDir: effectiveOutDir("ssr"),
             outDir: buildOutDir,
           });
+          // Vite empties each environment's outDir on its own, so one at or
+          // above the project root (e.g. `build.outDir: ".."` in a project
+          // named "server") would delete the project's source.
+          for (const name of ["client", "rsc", "ssr"]) {
+            const outDir = effectiveOutDir(name);
+            if (outDir === undefined || !isPathInsideOrEqual(path.resolve(root, outDir), root)) {
+              continue;
+            }
+            throw new Error(
+              `[vinext] The ${name} output directory "${outDir}" contains the project root. ` +
+                "Building there would delete the project. Choose a build.outDir that does not " +
+                "contain the project.",
+            );
+          }
           return Object.keys(environments).length > 0 ? { environments } : undefined;
         },
       },

@@ -311,4 +311,26 @@ describe("build.outDir", () => {
     expect(fs.existsSync(path.join(fixtureDir, "dist"))).toBe(false);
     expect(fs.readdirSync(outDir).sort()).toEqual(["client", "server"]);
   }, 180_000);
+
+  it("rejects a build.outDir whose derived server directory is the project root", async () => {
+    // A project named "server" with build.outDir ".." would get its RSC
+    // output, which Vite empties, at the project root itself.
+    const isolatedDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-outdir-parent-"));
+    temporaryDirs.push(parentDir);
+    const fixtureDir = path.join(parentDir, "server");
+    fs.renameSync(isolatedDir, fixtureDir);
+    const source = path.join(fixtureDir, "app", "page.tsx");
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        build: { outDir: "..", emptyOutDir: true },
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow('The rsc output directory "../server" contains the project root');
+    expect(fs.existsSync(source)).toBe(true);
+  });
 });
