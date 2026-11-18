@@ -1982,10 +1982,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     ModuleDependencyStore<DevPagesModuleDependency>
   >();
   // Workers must keep this module inside their deployable output directory.
-  const resolvePagesClientAssetsOutputDir = (environmentName: string, outputDir: string): string =>
-    !selectedMultiStageOutput && !hasAppDir && !hasCloudflarePlugin && environmentName === "ssr"
-      ? path.dirname(outputDir)
-      : outputDir;
+  // An App Router ssr output nested inside the rsc output (the default
+  // dist/server/ssr, and Cloudflare's child ssr environment) ships with it,
+  // so both import the rsc copy instead of carrying a second one.
+  const resolvePagesClientAssetsOutputDir = (
+    environmentName: string,
+    outputDir: string,
+    rscOutputDir: string | undefined,
+  ): string => {
+    if (environmentName !== "ssr") return outputDir;
+    if (hasAppDir) {
+      return rscOutputDir && isPathInside(rscOutputDir, outputDir) ? rscOutputDir : outputDir;
+    }
+    return selectedMultiStageOutput || hasCloudflarePlugin ? outputDir : path.dirname(outputDir);
+  };
+  const resolveRscOutputDir = (config: ResolvedConfig): string | undefined => {
+    const outDir = config.environments.rsc?.build.outDir;
+    return outDir ? path.resolve(config.root, outDir) : undefined;
+  };
   let pagesClientAssetsModule: string | null = internalOptions.__pagesClientAssetsModule ?? null;
   let clientBuildFiles: string[] = [];
   // Dev-only public route inventory. Vite's watcher keeps this synchronized,
@@ -5677,6 +5691,7 @@ export const loadServerActionClient = ${
           const sidecarDir = resolvePagesClientAssetsOutputDir(
             this.environment.name,
             environmentOutDir,
+            resolveRscOutputDir(this.environment.getTopLevelConfig()),
           );
           pagesClientAssetsExternalTargets.set(
             this.environment.name,
@@ -5710,7 +5725,11 @@ export const loadServerActionClient = ${
         const buildRoot = environment.config.root ?? process.cwd();
         const outputDir = path.resolve(buildRoot, output.dir ?? environment.config.build.outDir);
         pagesClientAssetsOutputDirs.add(
-          resolvePagesClientAssetsOutputDir(environment.name, outputDir),
+          resolvePagesClientAssetsOutputDir(
+            environment.name,
+            outputDir,
+            resolveRscOutputDir(environment.getTopLevelConfig()),
+          ),
         );
       },
     },
