@@ -640,6 +640,8 @@ export function assertClientOutDirIsSeparate(
   const serverOutDirs = [
     ["rscOutDir", dirs.rscOutDir ?? path.join(outDir, "server")],
     ["ssrOutDir", dirs.ssrOutDir ?? path.join(outDir, "server", "ssr")],
+    // BUILD_ID, vinext-server.json and the prerender output live here.
+    ["the server metadata directory", path.join(outDir, "server")],
   ] as const;
   for (const [name, dir] of serverOutDirs) {
     const relative = path.relative(clientOutDir, path.resolve(root, dir));

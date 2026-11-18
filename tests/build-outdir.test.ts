@@ -244,4 +244,48 @@ describe("build.outDir", () => {
       }),
     ).rejects.toThrow('clientOutDir "build/client" contains rscOutDir "build/client/rsc"');
   });
+
+  it("keeps an explicit rscOutDir when a later plugin sets build.outDir", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir, rscOutDir: "dist/server" }),
+        { name: "test:late-outdir", config: () => ({ build: { outDir: "out" } }) },
+      ],
+      logLevel: "silent",
+    });
+
+    const outDirs = Object.fromEntries(
+      ["rsc", "ssr", "client"].map((name) => [
+        name,
+        toSlash(path.relative(fixtureDir, builder.environments[name]!.config.build.outDir)),
+      ]),
+    );
+    expect(outDirs).toEqual({ rsc: "dist/server", ssr: "out/server/ssr", client: "out/client" });
+  });
+
+  it("rejects a client outDir that contains the server metadata directory", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+
+    // BUILD_ID and vinext-server.json go to <build.outDir>/server, which the
+    // last client build would empty along with the rest of "dist".
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [
+          vinext({
+            appDir: fixtureDir,
+            clientOutDir: "dist",
+            rscOutDir: "out/rsc",
+            ssrOutDir: "out/ssr",
+          }),
+        ],
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow('clientOutDir "dist" contains the server metadata directory "dist/server"');
+  });
 });

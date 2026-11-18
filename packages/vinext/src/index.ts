@@ -2655,9 +2655,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const environments: Record<string, { build: { outDir: string } }> = {};
           const finalOutDir = toSlash(config.build?.outDir ?? "dist");
           if (finalOutDir !== buildOutDir) {
+            // Output directories set explicitly through vinext's options win.
+            const explicitOutDirs: Record<string, string | undefined> = {
+              client: options.clientOutDir,
+              rsc: options.rscOutDir,
+              ssr: hasAppDir ? options.ssrOutDir : undefined,
+            };
             for (const [name, environment] of Object.entries(config.environments ?? {})) {
               const outDir = environment?.build?.outDir;
-              if (outDir === undefined) continue;
+              if (outDir === undefined || explicitOutDirs[name] !== undefined) continue;
               const subdir = ["client", "server", "server/ssr"].find(
                 (candidate) => toSlash(outDir) === path.join(buildOutDir, candidate),
               );
