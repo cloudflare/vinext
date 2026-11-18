@@ -280,6 +280,72 @@ describe("images.localPatterns parity", () => {
 runLocalImageUrlParitySuite("app");
 runLocalImageUrlParitySuite("pages");
 
+// Ported from Next.js's routing-server optimizer path test.
+// https://github.com/vercel/next.js/blob/canary/test/e2e/routing-server/router/docs-route-selection/docs-route-selection.test.ts
+it.each(["app", "pages"] as const)(
+  "%s router advertises images.path while serving the default optimizer under basePath",
+  async (router) => {
+    const basePath = "/docs";
+    const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), `vinext-${router}-image-path-`));
+    let server: ViteDevServer | undefined;
+    try {
+      await fs.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(fixtureDir, "node_modules"),
+        "junction",
+      );
+      await fs.mkdir(path.join(fixtureDir, "public"));
+      await fs.writeFile(path.join(fixtureDir, "public", "hello world.png"), PNG_1X1);
+      const pageFile = path.join(
+        fixtureDir,
+        router === "app" ? "app/image-path/page.jsx" : "pages/image-path.jsx",
+      );
+      await fs.mkdir(path.dirname(pageFile), { recursive: true });
+      if (router === "app") {
+        await fs.writeFile(
+          path.join(fixtureDir, "app/layout.jsx"),
+          "export default function Layout({ children }) { return <html><body>{children}</body></html>; }",
+        );
+      }
+      await fs.writeFile(
+        pageFile,
+        `import Image from "next/image";
+export default function Page() {
+  return <Image alt="space" src="${basePath}/hello world.png" width={64} height={64} />;
+}`,
+      );
+      await fs.writeFile(
+        path.join(fixtureDir, "next.config.mjs"),
+        `export default { basePath: ${JSON.stringify(basePath)}, images: { path: "/media/image" } };`,
+      );
+      const started = await startFixtureServer(fixtureDir);
+      server = started.server;
+      const html = await fetchHtmlWithRetry(started.baseUrl, `${basePath}/image-path`);
+      const advertised = new URL(getImageSrcFromHtml(html, "space"), started.baseUrl);
+
+      expect(advertised.pathname).toBe("/media/image");
+      expect(advertised.searchParams.get("url")).toBe(`${basePath}/hello world.png`);
+      expect(advertised.searchParams.get("w")).toBe("128");
+      expect(advertised.searchParams.get("q")).toBe("75");
+      expect((await fetch(advertised)).status).toBe(404);
+      expect(
+        (await fetch(`${started.baseUrl}${basePath}${advertised.pathname}${advertised.search}`))
+          .status,
+      ).toBe(404);
+
+      const optimized = await fetch(
+        `${started.baseUrl}${basePath}/_next/image${advertised.search}`,
+      );
+      expect(optimized.status).toBe(200);
+      expect(optimized.headers.get("content-type")).toMatch(/^image\//);
+    } finally {
+      await server?.close();
+      await fs.rm(fixtureDir, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
 // Ported from Next.js: test/integration/image-optimizer/test/util.ts
 // https://github.com/vercel/next.js/blob/v16.2.6/test/integration/image-optimizer/test/util.ts
 // The Pages Router production server answers `/_next/image` itself. vinext

@@ -3267,6 +3267,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_IMAGE_DOMAINS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.domains ?? []),
         );
+        defines["process.env.__VINEXT_IMAGE_PATH"] =
+          JSON.stringify(nextConfig.images?.path) ?? "undefined";
         // Expose allowed image widths (union of deviceSizes + imageSizes) for
         // server-side validation. Matches Next.js behavior: only configured
         // sizes are accepted by the image optimization endpoint.
