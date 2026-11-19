@@ -15,6 +15,10 @@ import type {
   AppPageModule,
   AppPageRouteHead,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import {
+  resolveAppPageRouteHeadRef,
+  type AppPageRouteHeadRef,
+} from "../packages/vinext/src/server/app-page-route-head-ref.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app-page-head.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
@@ -300,7 +304,9 @@ function resolveEntryHead(
 ): AppPageRouteHead {
   const entry = Object.entries(elements).find(([key]) => key.startsWith(entryPrefix))?.[1];
   expect(React.isValidElement(entry)).toBe(true);
-  return (entry as React.ReactElement<{ resolveHead: () => AppPageRouteHead }>).props.resolveHead();
+  return resolveAppPageRouteHeadRef(
+    (entry as React.ReactElement<{ head: AppPageRouteHeadRef<AppPageRouteHead> }>).props.head,
+  );
 }
 
 async function renderElementEntry(elements: AppElements, elementId: string): Promise<string> {
