@@ -223,6 +223,22 @@ describe("App prerender endpoint helpers", () => {
     ]);
   });
 
+  it("lists no metadata routes for a build without any", async () => {
+    // Discovery asks every staged App Worker; page routing would otherwise
+    // answer, e.g. with a trailingSlash redirect.
+    const response = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/metadata-routes?warm=1"),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/metadata-routes",
+        staticParamsMap: {},
+      },
+    );
+
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toEqual([]);
+  });
+
   it("calls generateStaticParams with object parent params and serializes the result", async () => {
     const generateStaticParams = vi.fn(({ params }) => [
       { category: params.category, slug: "hello" },

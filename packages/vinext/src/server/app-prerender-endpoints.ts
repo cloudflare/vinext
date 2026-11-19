@@ -58,7 +58,6 @@ export async function handleAppPrerenderEndpoint(
   }
 
   if (options.pathname === VINEXT_PRERENDER_METADATA_ROUTES_PATH) {
-    if (!options.getMetadataRoutePaths) return null;
     return handleMetadataRoutesEndpoint(request, options);
   }
 
@@ -81,7 +80,12 @@ async function handleMetadataRoutesEndpoint(
   try {
     // Listing runs the routes' generators, which Next.js calls with a work
     // store.
-    const paths = await runInWorkStoreScope(() => options.getMetadataRoutePaths?.(pathsRequest));
+    // A build without metadata routes lists none, rather than leaving the
+    // request to page routing.
+    const getMetadataRoutePaths = options.getMetadataRoutePaths;
+    const paths = getMetadataRoutePaths
+      ? await runInWorkStoreScope(() => getMetadataRoutePaths(pathsRequest))
+      : [];
     return jsonResponse(paths);
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
