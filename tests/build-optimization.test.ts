@@ -4368,6 +4368,72 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
 // ─── vinext:async-hooks-stub ───────────────────────────────────────────────────
 
+describe("vinext:react-server-dom-node", () => {
+  type ResolveIdHandler = (
+    this: unknown,
+    id: string,
+    importer: string | undefined,
+    options: object,
+  ) => unknown;
+
+  // Returns the id the Flight server entry is resolved to in a server
+  // environment with these conditions, or undefined when it is left alone.
+  async function resolvedFlightEntry(id: string, conditions: string[]) {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = (vinext() as any[])
+      .flat(Infinity)
+      .find((p: any) => p?.name === "vinext:react-server-dom-node");
+    let resolved: string | undefined;
+    await (plugin.resolveId as { handler: ResolveIdHandler }).handler.call(
+      {
+        environment: { config: { consumer: "server", resolve: { conditions } } },
+        resolve: async (target: string) => {
+          resolved = target;
+          return { id: target };
+        },
+      },
+      id,
+      "/app/entry.js",
+      {},
+    );
+    return resolved;
+  }
+
+  const SERVER = "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge";
+  const STATIC = "react-server-dom-webpack/static.edge";
+
+  it("pairs the Flight server with react-dom's Node build on Node", async () => {
+    expect(await resolvedFlightEntry(SERVER, ["module", "node"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    expect(await resolvedFlightEntry(STATIC, ["module", "node"])).toBe(
+      "react-server-dom-webpack/static.node",
+    );
+  });
+
+  // react-dom maps `deno` to server.node.js but to static.browser.js.
+  it("follows react-dom's own map for the deno condition", async () => {
+    expect(await resolvedFlightEntry(SERVER, ["deno", "node"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    expect(await resolvedFlightEntry(SERVER, ["deno"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    expect(await resolvedFlightEntry(STATIC, ["deno", "node"])).toBeUndefined();
+  });
+
+  it("keeps the edge build where react-dom's Fizz build is not Node's", async () => {
+    // react-dom/server's Bun and edge builds schedule with setTimeout, as the
+    // Flight server's edge build does.
+    expect(await resolvedFlightEntry(SERVER, ["bun", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["bun", "node"])).toBe(
+      "react-server-dom-webpack/static.node",
+    );
+    expect(await resolvedFlightEntry(SERVER, ["workerd", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["edge-light"])).toBeUndefined();
+  });
+});
+
 describe("vinext:async-hooks-stub", () => {
   const VIRTUAL_ID = "\0vinext:async-hooks-stub";
 

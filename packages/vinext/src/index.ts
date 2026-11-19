@@ -467,19 +467,49 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react/jsx-dev-runtime",
 ]);
 
-// The conditions react-server-dom's "./server" and "./static" entries list
-// under `react-server`, in the order its exports map tries them.
-const REACT_SERVER_DOM_BUILD_CONDITIONS = ["workerd", "deno", "node", "edge-light", "browser"];
+// The builds react-dom's "./server" and "./static" entries resolve to, by
+// condition in the order its exports map (React 19.3.1) tries them, and
+// without a match. The Flight server is paired with the Fizz entry of the same
+// name: where that is React's Node build, so is the Flight server.
+const REACT_DOM_BUILDS = {
+  server: {
+    conditions: [
+      ["workerd", "edge"],
+      ["bun", "bun"],
+      ["deno", "node"],
+      ["worker", "browser"],
+      ["node", "node"],
+      ["edge-light", "edge"],
+      ["browser", "browser"],
+    ],
+    fallback: "node",
+  },
+  static: {
+    conditions: [
+      ["workerd", "edge"],
+      ["deno", "browser"],
+      ["worker", "browser"],
+      ["node", "node"],
+      ["edge-light", "edge"],
+      ["browser", "browser"],
+    ],
+    fallback: "node",
+  },
+} as const;
 
 // plugin-rsc imports the edge build of its vendored Flight server, or of an
 // installed react-server-dom-webpack, and pre-bundles it by these specifiers.
 const REACT_SERVER_DOM_EDGE_ENTRY =
-  /^((?:@vitejs\/plugin-rsc\/vendor\/react-server-dom|react-server-dom-webpack)\/(?:server|static))\.edge$/;
+  /^((?:@vitejs\/plugin-rsc\/vendor\/react-server-dom|react-server-dom-webpack)\/(server|static))\.edge$/;
 
-function selectsReactServerDomNodeBuild(conditions: readonly string[]): boolean {
-  return (
-    REACT_SERVER_DOM_BUILD_CONDITIONS.find((condition) => conditions.includes(condition)) === "node"
-  );
+/** The Node build of the Flight server entry `id`, if Fizz's is Node too. */
+function reactServerDomNodeEntry(id: string, conditions: readonly string[]): string | undefined {
+  const match = REACT_SERVER_DOM_EDGE_ENTRY.exec(id);
+  if (!match) return undefined;
+  const builds = REACT_DOM_BUILDS[match[2] as keyof typeof REACT_DOM_BUILDS];
+  const build =
+    builds.conditions.find(([condition]) => conditions.includes(condition))?.[1] ?? builds.fallback;
+  return build === "node" ? `${match[1]}.node` : undefined;
 }
 
 // vinext's cache runtime lazily imports plugin-rsc's React serializer, and the
@@ -4833,14 +4863,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // Pre-bundle the Flight server build that vinext:react-server-dom-node
             // resolves its imports to. The optimizer resolves includes without
             // that plugin.
-            if (
-              optimizer.include &&
-              !isClient &&
-              !hasCloudflarePlugin &&
-              selectsReactServerDomNodeBuild(environment.resolve.conditions)
-            ) {
-              optimizer.include = optimizer.include.map((id) =>
-                id.replace(REACT_SERVER_DOM_EDGE_ENTRY, "$1.node"),
+            if (optimizer.include && !isClient && !hasCloudflarePlugin) {
+              optimizer.include = optimizer.include.map(
+                (id) => reactServerDomNodeEntry(id, environment.resolve.conditions) ?? id,
               );
             }
             // The excluded shims' own dependencies are required whenever the
@@ -5679,20 +5704,17 @@ export const loadServerActionClient = ${
       // before the Flight server wrote the rest of it, and a client component
       // that builds itself from its children rendered only part of them
       // (#4770). Next.js pairs the two builds on both runtimes. Resolve the
-      // Flight server to its Node build wherever React's map would pick it.
+      // Flight server to its Node build wherever react-dom's map picks the
+      // Node build of the matching Fizz entry.
       name: "vinext:react-server-dom-node",
       enforce: "pre",
       resolveId: {
         filter: { id: REACT_SERVER_DOM_EDGE_ENTRY },
         handler(id, importer, options) {
-          if (
-            hasCloudflarePlugin ||
-            this.environment?.config.consumer !== "server" ||
-            !selectsReactServerDomNodeBuild(this.environment.config.resolve.conditions)
-          ) {
-            return;
-          }
-          return this.resolve(id.replace(REACT_SERVER_DOM_EDGE_ENTRY, "$1.node"), importer, {
+          if (hasCloudflarePlugin || this.environment?.config.consumer !== "server") return;
+          const nodeEntry = reactServerDomNodeEntry(id, this.environment.config.resolve.conditions);
+          if (!nodeEntry) return;
+          return this.resolve(nodeEntry, importer, {
             ...options,
             skipSelf: true,
           });
