@@ -25,6 +25,66 @@ type CleanBuildOutputResult = {
  * repository's shared directory in its `commondir` file. Each object
  * directory's `info/alternates` lists more object directories it reads.
  */
+const GIT_QUOTE_ESCAPES: Record<string, number> = {
+  a: 7,
+  b: 8,
+  t: 9,
+  n: 10,
+  v: 11,
+  f: 12,
+  r: 13,
+  '"': 34,
+  "\\": 92,
+};
+
+/**
+ * A C-style quoted path at the start of `text`, as Git writes one, and where
+ * it ends; undefined when it isn't one.
+ */
+function unquoteGitPath(text: string): { path: string; end: number } | undefined {
+  const bytes: number[] = [];
+  let i = 1;
+  while (i < text.length) {
+    const char = String.fromCodePoint(text.codePointAt(i)!);
+    if (char === '"') return { path: Buffer.from(bytes).toString("utf8"), end: i + 1 };
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char));
+      i += char.length;
+      continue;
+    }
+    const escape = text[i + 1] ?? "";
+    const octal = /^[0-3][0-7]{2}/.exec(text.slice(i + 1))?.[0];
+    if (octal) {
+      bytes.push(parseInt(octal, 8));
+      i += 4;
+    } else if (escape in GIT_QUOTE_ESCAPES) {
+      bytes.push(GIT_QUOTE_ESCAPES[escape]!);
+      i += 2;
+    } else {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Git's path lists: entries split on `separator`, any of them quoted. */
+function splitGitPathList(list: string, separator: string): string[] {
+  const entries: string[] = [];
+  let rest = list;
+  while (rest) {
+    const quoted = rest.startsWith('"') ? unquoteGitPath(rest) : undefined;
+    const end = quoted
+      ? quoted.end
+      : rest.indexOf(separator) === -1
+        ? rest.length
+        : rest.indexOf(separator);
+    entries.push(quoted ? quoted.path : rest.slice(0, end));
+    rest = rest.slice(end);
+    if (rest.startsWith(separator)) rest = rest.slice(separator.length);
+  }
+  return entries.filter(Boolean);
+}
+
 function resolveGitDirs(root: string): string[] {
   // Git strips only trailing CR and LF from these files; a path may end in
   // spaces.
@@ -38,25 +98,30 @@ function resolveGitDirs(root: string): string[] {
     }
   };
   const gitDirs: string[] = [];
+  // Both the path Git uses, which may be a symlink, and its target.
+  const protect = (file: string) => {
+    const target = resolveRealPath(file);
+    gitDirs.push(path.join(resolveRealPath(path.dirname(file)), path.basename(file)), target);
+    return target;
+  };
   // A Git directory or a gitfile naming one, and the repository's shared
   // directory.
   const addGitDir = (dir: string) => {
-    gitDirs.push(resolveRealPath(dir));
+    protect(dir);
     const target = readPathFile(dir, "gitdir: ");
-    const gitDir = resolveRealPath(target ? path.resolve(path.dirname(dir), target) : dir);
-    gitDirs.push(gitDir);
+    const gitDir = target ? protect(path.resolve(path.dirname(dir), target)) : resolveRealPath(dir);
     const commonDir = readPathFile(path.join(gitDir, "commondir"));
-    if (commonDir) gitDirs.push(resolveRealPath(path.resolve(gitDir, commonDir)));
+    if (commonDir) protect(path.resolve(gitDir, commonDir));
   };
   // Relative to the working directory, as Git reads them.
   const env = process.env;
   if (env.GIT_DIR) addGitDir(path.resolve(env.GIT_DIR));
   const objectDirs = [
     env.GIT_OBJECT_DIRECTORY,
-    ...(env.GIT_ALTERNATE_OBJECT_DIRECTORIES?.split(path.delimiter) ?? []),
-  ].flatMap((dir) => (dir ? [resolveRealPath(path.resolve(dir))] : []));
+    ...splitGitPathList(env.GIT_ALTERNATE_OBJECT_DIRECTORIES ?? "", path.delimiter),
+  ].flatMap((dir) => (dir ? [path.resolve(dir)] : []));
   for (const file of [env.GIT_COMMON_DIR, env.GIT_INDEX_FILE]) {
-    if (file) gitDirs.push(resolveRealPath(path.resolve(file)));
+    if (file) protect(path.resolve(file));
   }
 
   let repoRoot: string | undefined = root;
@@ -71,17 +136,17 @@ function resolveGitDirs(root: string): string[] {
   }
   if (repoRoot) addGitDir(path.join(repoRoot, ".git"));
 
-  objectDirs.push(...gitDirs.map((dir) => resolveRealPath(path.join(dir, "objects"))));
+  objectDirs.push(...gitDirs.map((dir) => path.join(dir, "objects")));
   // Git reads alternates of alternates; each line is a path relative to the
   // object directory whose file lists it.
+  const seen = new Set<string>();
   for (let i = 0; i < objectDirs.length; i++) {
-    const objectDir = objectDirs[i]!;
-    gitDirs.push(objectDir);
+    const objectDir = protect(objectDirs[i]!);
+    if (seen.has(objectDir)) continue;
+    seen.add(objectDir);
     const alternates = readPathFile(path.join(objectDir, "info", "alternates"));
-    for (const line of alternates?.split(/\r?\n/) ?? []) {
-      if (!line || line.startsWith("#")) continue;
-      const alternate = resolveRealPath(path.resolve(objectDir, line));
-      if (!objectDirs.includes(alternate)) objectDirs.push(alternate);
+    for (const line of splitGitPathList(alternates?.replace(/\r/g, "") ?? "", "\n")) {
+      if (!line.startsWith("#")) objectDirs.push(path.resolve(objectDir, line));
     }
   }
   return gitDirs;

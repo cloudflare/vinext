@@ -2711,7 +2711,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
         assertOutputDirIsSafe("build.outDir", buildOutDir, safety);
         for (const [name, environment] of Object.entries(config.environments)) {
-          for (const outputDir of resolveEnvironmentOutputDirs(root, environment.build)) {
+          // vinext's own hooks write to build.outDir even when every bundler
+          // output has its own dir.
+          const outputDirs = new Set([
+            path.resolve(root, environment.build.outDir),
+            ...resolveEnvironmentOutputDirs(root, environment.build),
+          ]);
+          for (const outputDir of outputDirs) {
             assertOutputDirIsSafe(`${name} output directory`, outputDir, safety);
           }
         }
@@ -8776,27 +8782,32 @@ export const loadServerActionClient = ${
           // server serves them without its ignore patterns, so it would serve
           // the last production build's <build.outDir>/server, including the
           // prerender secret in vinext-server.json. Vite serves the client in
-          // dev, so drop that entry before Nitro creates its dev server. Nitro
-          // adds it as the last public asset and then calls build:before, so
-          // take it as that call starts, before any other module's hooks
-          // (including beforeEach callbacks) can add assets.
-          if (nitro.options.dev) {
-            const callHook = nitro.hooks.callHook.bind(nitro.hooks);
-            nitro.hooks.callHook = (name, ...args) => {
-              if (name === "build:before") {
-                nitro.hooks.callHook = callHook;
-                const viteOutput = nitro.options.publicAssets?.at(-1);
-                if (
-                  viteOutput?.baseURL === "/" &&
-                  viteOutput.fallthrough === true &&
-                  viteOutput.maxAge === 0
-                ) {
+          // dev, so drop that entry before Nitro creates its dev server. A
+          // build ignores its <dir>/server, which is the build.outDir Nitro
+          // saw and may differ from the final one. Nitro adds the entry as the
+          // last public asset and then calls build:before, so take it as that
+          // call starts, before any other module's hooks (including
+          // beforeEach callbacks) can add assets.
+          const callHook = nitro.hooks.callHook.bind(nitro.hooks);
+          nitro.hooks.callHook = (name, ...args) => {
+            if (name === "build:before") {
+              nitro.hooks.callHook = callHook;
+              const viteOutput = nitro.options.publicAssets?.at(-1);
+              if (
+                viteOutput?.baseURL === "/" &&
+                viteOutput.fallthrough === true &&
+                viteOutput.maxAge === 0
+              ) {
+                if (nitro.options.dev) {
                   nitro.options.publicAssets!.pop();
+                } else {
+                  nitro.options.ignore ??= [];
+                  nitro.options.ignore.push(`${path.resolve(root, viteOutput.dir, "server")}/**`);
                 }
               }
-              return callHook(name, ...args);
-            };
-          }
+            }
+            return callHook(name, ...args);
+          };
           nitroBuildDir = nitro.options.buildDir
             ? path.resolve(root, nitro.options.buildDir)
             : undefined;

@@ -433,6 +433,25 @@ describe("build.outDir", () => {
     expect(fs.existsSync(source)).toBe(true);
   });
 
+  it("checks an environment's build.outDir when each bundler output has its own dir", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        environments: {
+          client: {
+            build: { outDir: "app", rolldownOptions: { output: { dir: "out/client" } } },
+          },
+        },
+        logLevel: "silent",
+        [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
+      } as Parameters<typeof createBuilder>[0]),
+    ).rejects.toThrow('The client output directory "app" overlaps the app directory "app"');
+  });
+
   it("checks build.outDir for a build that doesn't write", async () => {
     const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
 
@@ -508,6 +527,42 @@ describe("build.outDir", () => {
 
     expect(fs.existsSync(path.join(outDir, "server", "vinext-server.json"))).toBe(true);
     expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "hello.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "server"))).toBe(false);
+  }, 180_000);
+
+  it("keeps an earlier build.outDir's server metadata out of Nitro's public output", async () => {
+    const fixtureDir = await isolatedFixture(
+      NITRO_PAGES_FIXTURE_SOURCE_DIR,
+      path.join(NITRO_PAGES_FIXTURE_SOURCE_DIR, "node_modules"),
+    );
+    // Nitro publishes the build.outDir it sees, which a later build left its
+    // server metadata in, before a plugin after Nitro moves build.outDir.
+    const nitroOutDir = path.join(fixtureDir, "out");
+    fs.mkdirSync(path.join(nitroOutDir, "server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(nitroOutDir, "server", "vinext-server.json"),
+      '{"prerenderSecret":"last-build-secret"}',
+    );
+    const nitroModule = (await import(
+      pathToFileURL(path.join(fixtureDir, "node_modules/nitro/dist/vite.mjs")).href
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        nitroModule.nitro({ buildDir: path.join(fixtureDir, ".nitro") }),
+        {
+          name: "move-outdir",
+          config: () => ({ build: { outDir: path.join(fixtureDir, "final") } }),
+        },
+      ],
+      build: { outDir: nitroOutDir },
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
     expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "server"))).toBe(false);
   }, 180_000);
 

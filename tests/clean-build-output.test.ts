@@ -228,6 +228,54 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it("reads quoted entries in Git's alternate object path lists", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-quoted-alternates-"));
+    const previous = process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
+    try {
+      const fromEnv = path.join(store, `env${path.delimiter}objects`);
+      const fromFile = path.join(store, "file\tobjects");
+      writeFile(fromEnv, "pack/objects.pack", "PACK");
+      const pack = writeFile(fromFile, "pack/objects.pack", "PACK");
+      process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES = `"${fromEnv}"`;
+      writeFile(tmpDir, ".git/objects/info/alternates", `"${fromFile.replace("\t", "\\t")}"\n`);
+
+      for (const target of [fromEnv, fromFile]) {
+        fs.rmSync(path.join(tmpDir, "dist"), { force: true });
+        fs.symlinkSync(target, path.join(tmpDir, "dist"));
+        expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+          "overlaps the project's Git directory",
+        );
+      }
+      expect(fs.existsSync(pack)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
+      else process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES = previous;
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an outDir that holds a symlinked GIT_INDEX_FILE", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-index-link-"));
+    const previous = process.env.GIT_INDEX_FILE;
+    try {
+      const index = writeFile(store, "real/index", "DIRC");
+      const link = path.join(store, "links", "index");
+      fs.mkdirSync(path.dirname(link));
+      fs.symlinkSync(index, link);
+      process.env.GIT_INDEX_FILE = link;
+      fs.symlinkSync(path.dirname(link), path.join(tmpDir, "dist"));
+
+      expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(link)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_INDEX_FILE;
+      else process.env.GIT_INDEX_FILE = previous;
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
   it("refuses an outDir that holds the index GIT_INDEX_FILE names", () => {
     const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-index-"));
     const previous = process.env.GIT_INDEX_FILE;
