@@ -430,6 +430,37 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(selected.paths).toEqual(["/hot", "/cold"]);
   });
 
+  it("selects only metadata routes for asset-named and /api/ traffic", async () => {
+    const { selectTPRWarmPlan } = await import("../packages/cloudflare/src/deploy.js");
+
+    const selected = selectTPRWarmPlan(
+      {
+        loadingShellPaths: [],
+        paths: [],
+        routeHandlerPaths: ["/api/report", "/api/opengraph-image"],
+        routePatterns: {
+          "/api/report": { kind: "app-route", pattern: "/api/report" },
+          "/api/opengraph-image": {
+            kind: "app-route",
+            metadataRoute: true,
+            pattern: "/api/opengraph-image",
+          },
+        },
+        rscPaths: [],
+      },
+      [],
+      100,
+      10,
+      [
+        { path: "/api/report", requests: 50 },
+        { path: "/api/opengraph-image", requests: 5 },
+      ],
+    );
+
+    // The page filter rejects /api/ traffic for Route Handlers, as before.
+    expect(selected.routeHandlerPaths).toEqual(["/api/opengraph-image"]);
+  });
+
   it("selects only routes the plan still requests after cacheability pruning", async () => {
     const { selectTPRWarmPlan } = await import("../packages/cloudflare/src/deploy.js");
 

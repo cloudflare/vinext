@@ -1011,6 +1011,8 @@ export function selectTPRWarmPlan(
   traffic: readonly TrafficEntry[],
   coverage: number,
   limit: number,
+  /** Asset-named and `/api/` traffic, which only a metadata route may serve. */
+  metadataTraffic: readonly TrafficEntry[] = [],
 ): PrerenderWarmPlan {
   const canonical = (pathname: string): string => normalizePathTrailingSlash(pathname, false);
   // Only paths the plan still requests can be selected: the cacheability
@@ -1022,16 +1024,29 @@ export function selectTPRWarmPlan(
     ...(plan.routeHandlerPaths ?? []),
     ...plan.rscPaths,
   ]);
-  const resolved = new Set(
-    Object.entries(plan.routePatterns ?? {})
-      .filter(([pathname]) => requested.has(pathname))
-      .map(([pathname, route]) => canonical(route.cacheabilityProbe?.concretePathname ?? pathname)),
+  const resolvedRoutes = Object.entries(plan.routePatterns ?? {}).filter(([pathname]) =>
+    requested.has(pathname),
+  );
+  const resolvedPaths = (routes: typeof resolvedRoutes) =>
+    new Set(
+      routes.map(([pathname, route]) =>
+        canonical(route.cacheabilityProbe?.concretePathname ?? pathname),
+      ),
+    );
+  const resolved = resolvedPaths(resolvedRoutes);
+  const resolvedMetadata = resolvedPaths(
+    resolvedRoutes.filter(([, route]) => route.metadataRoute === true),
   );
   const requestsByPath = new Map<string, number>();
-  for (const { path, requests } of traffic) {
-    const pathname = canonical(path);
-    if (!resolved.has(pathname)) continue;
-    requestsByPath.set(pathname, (requestsByPath.get(pathname) ?? 0) + requests);
+  for (const [entries, paths] of [
+    [traffic, resolved],
+    [metadataTraffic, resolvedMetadata],
+  ] as const) {
+    for (const { path, requests } of entries) {
+      const pathname = canonical(path);
+      if (!paths.has(pathname)) continue;
+      requestsByPath.set(pathname, (requestsByPath.get(pathname) ?? 0) + requests);
+    }
   }
   const selected = new Set(
     selectRoutes(
@@ -2667,9 +2682,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
           ? (plan) =>
               selectTPRWarmPlan(
                 plan,
-                [...tprRoutes, ...tprMetadataCandidates],
+                tprRoutes,
                 Math.max(1, Math.min(100, options.tprCoverage ?? 90)),
                 Math.max(1, options.tprLimit ?? 1000),
+                tprMetadataCandidates,
               )
           : undefined,
         statusSource: warmupStatusSource,
