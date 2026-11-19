@@ -184,6 +184,25 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it.each(["\n\n", "\r", "\r\n\r\n"])(
+    "reads a gitfile path that ends in %j, as Git does",
+    (lineEnd) => {
+      const gitDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-gitfile-ending-"));
+      try {
+        const head = writeFile(gitDir, "HEAD", "ref: refs/heads/main\n");
+        writeFile(tmpDir, ".git", `gitdir: ${gitDir}${lineEnd}`);
+        fs.symlinkSync(gitDir, path.join(tmpDir, "dist"));
+
+        expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+          "overlaps the project's Git directory",
+        );
+        expect(fs.existsSync(head)).toBe(true);
+      } finally {
+        fs.rmSync(gitDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("refuses an outDir in the Git directory of a repository the project is nested in", () => {
     const head = writeFile(tmpDir, ".git/HEAD", "ref: refs/heads/main\n");
     const root = path.join(tmpDir, "apps/site");

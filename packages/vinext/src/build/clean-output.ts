@@ -24,12 +24,13 @@ type CleanBuildOutputResult = {
  * repository's shared directory in its `commondir` file.
  */
 function resolveGitDirs(root: string): string[] {
-  // Git strips only the line ending from these files; a path may end in spaces.
+  // Git strips only trailing CR and LF from these files; a path may end in
+  // spaces.
   const readPathFile = (file: string, prefix = ""): string | undefined => {
     try {
       const content = fs.readFileSync(file, "utf8");
       if (!content.startsWith(prefix)) return undefined;
-      return content.slice(prefix.length).replace(/\r?\n$/, "") || undefined;
+      return content.slice(prefix.length).replace(/[\r\n]+$/, "") || undefined;
     } catch {
       return undefined;
     }
