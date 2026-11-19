@@ -212,6 +212,36 @@ describe("TPR route resolution", () => {
     }
   });
 
+  it("keeps static metadata files the Worker serves", () => {
+    const assetsDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-metadata-"));
+    try {
+      fs.mkdirSync(path.join(assetsDir, "docs"));
+      fs.writeFileSync(path.join(assetsDir, "docs/icon.png"), "");
+      expect(
+        filterTrafficPaths(
+          [
+            { path: "/favicon.ico", requests: 9 },
+            { path: "/icon1.png", requests: 8 },
+            { path: "/shop/-/opengraph-image.png", requests: 7 },
+            { path: "/blog/twitter-image.jpeg", requests: 6 },
+            // A public file of the same name is a built asset.
+            { path: "/docs/icon.png", requests: 5 },
+            { path: "/logo.png", requests: 4 },
+            { path: "/my-icon.png", requests: 3 },
+          ],
+          { assetsDir },
+        ).map(({ path }) => path),
+      ).toEqual([
+        "/favicon.ico",
+        "/icon1.png",
+        "/shop/-/opengraph-image.png",
+        "/blog/twitter-image.jpeg",
+      ]);
+    } finally {
+      fs.rmSync(assetsDir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps exact /api App Router page candidates", () => {
     expect(filterTrafficPaths([{ path: "/api", requests: 1 }])).toEqual([
       { path: "/api", requests: 1 },

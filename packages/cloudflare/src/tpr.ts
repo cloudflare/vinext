@@ -225,6 +225,10 @@ function isStaticAssetPath(assetPaths: Set<string>, pathname: string, basePath =
   );
 }
 
+/** The served name of a static metadata image file (scanMetadataFiles). */
+const STATIC_METADATA_FILE_PATH =
+  /\/(?:favicon\.ico|(?:icon|apple-icon|opengraph-image|twitter-image)\d?\.(?:ico|jpe?g|png|svg|gif))$/;
+
 /** Filter out non-page requests (static assets, API routes, internal routes). */
 export function filterTrafficPaths(
   entries: TrafficEntry[],
@@ -235,8 +239,13 @@ export function filterTrafficPaths(
     if (!e.path.startsWith("/")) return false;
     // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
     if (e.path.startsWith("/cdn-cgi/")) return false;
-    // Static assets
-    if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path))
+    // Static assets. The Worker serves static metadata files such as
+    // app/favicon.ico and app/blog/opengraph-image.png, so those names are
+    // left to the built-assets check.
+    if (
+      /\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path) &&
+      !STATIC_METADATA_FILE_PATH.test(e.path)
+    )
       return false;
     if (assetPaths && isStaticAssetPath(assetPaths, e.path, options.basePath)) return false;
     // API routes
