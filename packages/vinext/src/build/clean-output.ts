@@ -116,7 +116,8 @@ function emptyDir(dir: string): void {
 
 // Files in <outDir>/server that belong to one build: its RSC build ID and its
 // prerendered output. The server seeds its cache from them and deploy warms
-// their paths, and a build that doesn't prerender writes none of them.
+// their paths. A build writes only the ones it produces (no prerender files
+// when it doesn't prerender), so any others are left from an earlier build.
 const BUILD_PRERENDER_FILES = [
   "vinext-prerender.json",
   "prerendered-routes",
