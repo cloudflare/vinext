@@ -7,8 +7,6 @@ import vinext from "vinext";
 import { workersCacheCdnAdapter } from "../../../../packages/cloudflare/src/cache/workers-cache-cdn-adapter.js";
 
 export default defineConfig({
-  // The e2e build covers a custom build.outDir on Cloudflare.
-  build: { outDir: "out" },
   plugins: [
     vinext({ cache: { cdn: workersCacheCdnAdapter() }, prerender: { routes: "*" } }),
     cloudflare({
