@@ -684,7 +684,8 @@ async function runBuild(
       [VINEXT_BUILD_LIFECYCLE_CONFIG]: invocation,
     } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
-    return builder.config.build.outDir;
+    // Vite resolves a relative outDir against the resolved root.
+    return path.resolve(builder.config.root, builder.config.build.outDir);
   });
   if (!completed) throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
   return outDir;

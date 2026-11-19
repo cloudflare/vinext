@@ -540,7 +540,7 @@ describe("deploy prerender config wiring", () => {
         `export * from ${JSON.stringify(viteUrl)};
 export function createBuilder(config) {
   return {
-    config: { build: { outDir: "dist" } },
+    config: { root: config.root, build: { outDir: "dist" } },
     async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
   };
 }
@@ -568,13 +568,14 @@ export function createBuilder(config) {
       "node_modules/vite/package.json",
       JSON.stringify({ name: "vite", type: "module", main: "index.js" }),
     );
-    // A plugin's config hook set build.outDir, which the config file doesn't show.
+    // A plugin's config hook set build.outDir and root, which the config file
+    // doesn't show. Vite resolves the outDir against the root.
     writeFile(
       "node_modules/vite/index.js",
       `export * from ${JSON.stringify(viteUrl)};
 export function createBuilder(config) {
   return {
-    config: { build: { outDir: "out" } },
+    config: { root: config.root + "/site", build: { outDir: "out" } },
     async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
   };
 }
@@ -585,7 +586,9 @@ export function createBuilder(config) {
     await deploy({ root: tmpDir });
 
     expect(runPrerenderMock).toHaveBeenCalledWith(
-      expect.objectContaining({ routeRootConfig: expect.objectContaining({ outDir: "out" }) }),
+      expect.objectContaining({
+        routeRootConfig: expect.objectContaining({ outDir: path.join(tmpDir, "site", "out") }),
+      }),
     );
   });
 
