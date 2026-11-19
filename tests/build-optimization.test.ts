@@ -48,7 +48,7 @@ import {
   SSR_MANIFEST_SHARED_CHUNKS_KEY,
 } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
-import { aliasEntriesToRecord } from "./helpers.js";
+import { aliasEntriesToRecord, createIsolatedFixture } from "./helpers.js";
 import { injectPregeneratedConcretePaths } from "../packages/vinext/src/build/inject-pregenerated-paths.js";
 
 // `stripServerExports` returns `{ code, map }`; these tests assert on the
@@ -1277,6 +1277,50 @@ describe("optimizeDeps.exclude for vinext", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  // Fizz renders in the SSR environment, so its conditions pick the Flight
+  // server build the RSC optimizer pre-bundles.
+  it.each([
+    [["node"], "@vitejs/plugin-rsc/vendor/react-server-dom/static.node"],
+    [["worker", "node"], "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge"],
+  ])(
+    "pre-bundles the Flight server build paired with SSR conditions %j",
+    async (ssrConditions, flightEntry) => {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const mainPlugin = vinext().find(
+        (p: any) => p.name === "vinext:config" && typeof p.configResolved === "function",
+      );
+      const root = await createIsolatedFixture(
+        path.resolve(import.meta.dirname, "fixtures/app-ssr-collection"),
+        "vinext-flight-include-",
+      );
+      try {
+        await (mainPlugin as any).config({ root, build: {} }, { command: "serve" });
+        const rsc = {
+          consumer: "server",
+          resolve: { conditions: ["node"] },
+          optimizeDeps: { include: ["@vitejs/plugin-rsc/vendor/react-server-dom/static.edge"] },
+        };
+        const ssr = {
+          consumer: "server",
+          resolve: { conditions: ssrConditions },
+          optimizeDeps: { include: [] },
+        };
+        await (mainPlugin as any).configResolved({
+          cacheDir: path.join(root, ".vite"),
+          command: "serve",
+          configFile: false,
+          environments: { rsc, ssr },
+          logger: createLogger("silent"),
+          plugins: [],
+        });
+        expect(rsc.optimizeDeps.include).toEqual([flightEntry]);
+      } finally {
+        await fsp.rm(root, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+    15000,
+  );
 
   it("leaves the Pages Router client optimizer's shim includes alone", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
@@ -4377,8 +4421,13 @@ describe("vinext:react-server-dom-node", () => {
   ) => unknown;
 
   // Returns the id the Flight server entry is resolved to in a server
-  // environment with these conditions, or undefined when it is left alone.
-  async function resolvedFlightEntry(id: string, conditions: string[]) {
+  // environment with these conditions, whose SSR environment (where Fizz
+  // renders) has `ssrConditions`, or undefined when it is left alone.
+  async function resolvedFlightEntry(
+    id: string,
+    conditions: string[],
+    ssrConditions: string[] | null = conditions,
+  ) {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugin = (vinext() as any[])
       .flat(Infinity)
@@ -4386,7 +4435,12 @@ describe("vinext:react-server-dom-node", () => {
     let resolved: string | undefined;
     await (plugin.resolveId as { handler: ResolveIdHandler }).handler.call(
       {
-        environment: { config: { consumer: "server", resolve: { conditions } } },
+        environment: {
+          config: { consumer: "server", resolve: { conditions } },
+          getTopLevelConfig: () => ({
+            environments: ssrConditions ? { ssr: { resolve: { conditions: ssrConditions } } } : {},
+          }),
+        },
         resolve: async (target: string) => {
           resolved = target;
           return { id: target };
@@ -4431,6 +4485,20 @@ describe("vinext:react-server-dom-node", () => {
     );
     expect(await resolvedFlightEntry(SERVER, ["workerd", "node"])).toBeUndefined();
     expect(await resolvedFlightEntry(STATIC, ["edge-light"])).toBeUndefined();
+  });
+
+  // Fizz renders in the SSR environment, whose conditions are its own.
+  it("follows the SSR environment's conditions, not the RSC environment's", async () => {
+    // react-dom maps `worker` to its browser builds.
+    expect(await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(SERVER, ["workerd"], ["node"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    // Without an SSR environment, the environment's own conditions decide.
+    expect(await resolvedFlightEntry(SERVER, ["node"], null)).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
   });
 });
 
