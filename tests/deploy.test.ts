@@ -1186,11 +1186,22 @@ describe("parseDeployArgs", () => {
       "Cloudflare-Workers-Version-Overrides",
       "X-Vinext-Expected-Worker-Version",
       "x-vinext-prerender-secret",
+      "x-rsc-action",
+      "x-middleware-prefetch",
     ])("rejects %s because vinext sets it itself", (name) => {
       expect(() => parseDeployArgs(["--warm-cache", "--warm-cache-header", `${name}: 1`])).toThrow(
         `--warm-cache-header cannot set "${name}": vinext sets this header itself on warm-up requests.`,
       );
     });
+
+    it.each(["Connection", "Expect", "Keep-Alive", "Transfer-Encoding", "upgrade"])(
+      "rejects %s because fetch() does not allow it",
+      (name) => {
+        expect(() =>
+          parseDeployArgs(["--warm-cache", "--warm-cache-header", `${name}: x`]),
+        ).toThrow(`--warm-cache-header cannot set "${name}": fetch() does not allow it.`);
+      },
+    );
 
     it.each([
       ["s3cret-without-colon", '--warm-cache-header expects "Name: value"'],

@@ -17,9 +17,10 @@ const INVALID_HEADER_VALUE = /[^\t\x20-\x7e\x80-\xff]/;
 
 // Headers vinext sets, or deliberately omits, to choose what each request asks
 // for: the representation (Accept, RSC and Next-Router-*), the Worker version,
-// the prerender secret, the deployment ID, and cache revalidation. A user value
-// would change which cache entry is filled or which Worker answers, so these
-// names are rejected rather than silently overridden.
+// the prerender secret, the deployment ID, and cache revalidation. Server
+// action and middleware headers make the Worker treat a request as uncacheable.
+// A user value would change which cache entry is filled or which Worker
+// answers, so these names are rejected rather than silently overridden.
 const RESERVED_HEADER_NAMES = new Set([
   "accept",
   "cache-control",
@@ -29,8 +30,17 @@ const RESERVED_HEADER_NAMES = new Set([
   "rsc",
   "user-agent",
   "x-deployment-id",
+  "x-rsc-action",
 ]);
-const RESERVED_HEADER_PREFIXES = ["next-", "x-nextjs-", "x-vinext-"];
+const RESERVED_HEADER_PREFIXES = ["next-", "x-middleware-", "x-nextjs-", "x-vinext-"];
+// Node's fetch() throws for these at request time, after the version is staged.
+const FETCH_REJECTED_HEADER_NAMES = new Set([
+  "connection",
+  "expect",
+  "keep-alive",
+  "transfer-encoding",
+  "upgrade",
+]);
 
 function isReservedHeaderName(name: string): boolean {
   const lower = name.toLowerCase();
@@ -44,6 +54,9 @@ function isReservedHeaderName(name: string): boolean {
 export function validateWarmCacheRequestHeader(name: string, value: string, source: string): void {
   if (!HEADER_NAME.test(name)) {
     throw new Error(`${source} has an invalid header name.`);
+  }
+  if (FETCH_REJECTED_HEADER_NAMES.has(name.toLowerCase())) {
+    throw new Error(`${source} cannot set "${name}": fetch() does not allow it.`);
   }
   if (isReservedHeaderName(name)) {
     throw new Error(
