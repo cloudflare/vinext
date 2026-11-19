@@ -1217,7 +1217,11 @@ describe("optimizeDeps.exclude for vinext", () => {
           ],
         },
       };
-      const ssr = { consumer: "server", optimizeDeps: { include: ["next/headers", "some-lib"] } };
+      const ssr = {
+        consumer: "server",
+        resolve: { conditions: [] },
+        optimizeDeps: { include: ["next/headers", "some-lib"] },
+      };
       // Client environments that other plugins create get the same treatment.
       const browser = { consumer: "client", optimizeDeps: { include: ["next/link"] } };
       await (mainPlugin as any).configResolved({
@@ -1298,7 +1302,11 @@ describe("optimizeDeps.exclude for vinext", () => {
       // The client pre-bundles the shims with the Pages Router runtime, so
       // they share one copy of their module state.
       const client = { consumer: "client", optimizeDeps: { include: ["next/link", "some-lib"] } };
-      const ssr = { consumer: "server", optimizeDeps: { include: ["next/link", "some-lib"] } };
+      const ssr = {
+        consumer: "server",
+        resolve: { conditions: [] },
+        optimizeDeps: { include: ["next/link", "some-lib"] },
+      };
       await (mainPlugin as any).configResolved({
         cacheDir: path.join(tmpDir, ".vite"),
         command: "serve",
