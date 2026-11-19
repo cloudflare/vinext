@@ -255,6 +255,7 @@ import {
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
+import { reactServerDomAsyncHookOptimizeDepsPlugin } from "./plugins/react-server-dom-async-hook.js";
 import { createNitroDevDepsOptimizerGatePlugin } from "./plugins/nitro-dev-deps-optimizer-gate.js";
 import { createClientCompileHintsPlugin } from "./plugins/client-compile-hints.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
@@ -468,7 +469,7 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
 const REACT_SERVER_DOM_BUILD_CONDITIONS = ["workerd", "deno", "node", "edge-light", "browser"];
 
 // plugin-rsc imports the edge build of its vendored Flight server, or of an
-// installed react-server-dom-webpack, by these specifiers.
+// installed react-server-dom-webpack, and pre-bundles it by these specifiers.
 const REACT_SERVER_DOM_EDGE_ENTRY =
   /^((?:@vitejs\/plugin-rsc\/vendor\/react-server-dom|react-server-dom-webpack)\/(?:server|static))\.edge$/;
 
@@ -4724,6 +4725,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 : []),
             importMetaUrlCapability.optimizeDepsPlugin,
             createShimRequirePlugin(),
+            reactServerDomAsyncHookOptimizeDepsPlugin,
           ];
           // Covers server environments vinext does not create, such as other
           // plugins' Worker environments.
@@ -4823,6 +4825,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (optimizer.include && (!isClient || hasAppDir)) {
               optimizer.include = optimizer.include.filter(
                 (id) => !isExcludedShim(id.slice(id.lastIndexOf(">") + 1).trim()),
+              );
+            }
+            // Pre-bundle the Flight server build that vinext:react-server-dom-node
+            // resolves its imports to. The optimizer resolves includes without
+            // that plugin.
+            if (
+              optimizer.include &&
+              !isClient &&
+              !hasCloudflarePlugin &&
+              selectsReactServerDomNodeBuild(environment.resolve.conditions)
+            ) {
+              optimizer.include = optimizer.include.map((id) =>
+                id.replace(REACT_SERVER_DOM_EDGE_ENTRY, "$1.node"),
               );
             }
             // The excluded shims' own dependencies are required whenever the
@@ -5662,12 +5677,7 @@ export const loadServerActionClient = ${
       // that builds itself from its children rendered only part of them
       // (#4770). Next.js pairs the two builds on both runtimes. Resolve the
       // Flight server to its Node build wherever React's map would pick it.
-      //
-      // Builds only: React's Node development build installs a process-wide
-      // async_hooks hook each time it loads, and never removes it, so every
-      // dev server in a process would add one that runs on every promise.
       name: "vinext:react-server-dom-node",
-      apply: "build",
       enforce: "pre",
       resolveId: {
         filter: { id: REACT_SERVER_DOM_EDGE_ENTRY },

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createBuilder } from "vite";
+import { createBuilder, createServer, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { createIsolatedFixture } from "./helpers.js";
@@ -71,6 +71,44 @@ describe("App Router production SSR of a collection built from its children", ()
     ["streamed after the shell", "/streamed"],
     ["awaited in the first flush", "/awaited"],
   ])("server-renders every item of a collection in a Suspense boundary, %s", async (_, route) => {
+    for (let request = 0; request < 3; request += 1) {
+      const { count, table } = await renderedCells(new URL(route, baseUrl));
+      expect(count).toBe(CELL_COUNT);
+      expect(table).toContain(`cell-${CELL_COUNT - 1}-`);
+    }
+  });
+});
+
+// In dev, too, the Flight server is React's Node build, the one Fizz uses.
+describe("App Router dev SSR of a collection built from its children", () => {
+  let baseUrl = "";
+  let fixtureDir = "";
+  let server: ViteDevServer | undefined;
+
+  beforeAll(async () => {
+    fixtureDir = await createIsolatedFixture(FIXTURE_SOURCE_DIR, "vinext-ssr-collection-dev-");
+    server = await createServer({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [vinext({ appDir: fixtureDir })],
+      server: { host: "127.0.0.1", port: 0 },
+      logLevel: "silent",
+    });
+    await server.listen();
+    const address = server.httpServer?.address();
+    baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  }, 120_000);
+
+  afterAll(async () => {
+    await server?.close();
+    if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["at the root", "/"],
+    ["in a Suspense boundary streamed after the shell", "/streamed"],
+    ["in a Suspense boundary awaited in the first flush", "/awaited"],
+  ])("server-renders every item of a collection %s", async (_, route) => {
     for (let request = 0; request < 3; request += 1) {
       const { count, table } = await renderedCells(new URL(route, baseUrl));
       expect(count).toBe(CELL_COUNT);
