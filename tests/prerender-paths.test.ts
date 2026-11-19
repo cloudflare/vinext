@@ -1404,6 +1404,52 @@ describe("prerender path manifest", () => {
     expect(manifest?.excludedWarmPaths ?? []).toEqual([]);
   });
 
+  it("warms a traffic-picked asset path a rewrite hands to a metadata route", async () => {
+    // No Next.js test port applies: traffic-aware warming is vinext-specific.
+    // The runtime matches metadata routes again after each rewrite phase.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/[...slug]/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/opengraph-image.tsx", "export default function Image() {}");
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => ({
+          beforeFiles: [],
+          afterFiles: [{ source: "/legacy.png", destination: "/opengraph-image" }],
+          fallback: [],
+        }),
+      },
+      tmpDir,
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      candidatePathsOnly: true,
+      metadataCandidatePaths: ["/legacy.png", "/unrelated.png"],
+      nextConfig,
+      requestRouting: "uncached-stage",
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    // The catch-all page claims neither, and /unrelated.png isn't rewritten.
+    expect(manifest?.paths).toEqual(["/"]);
+    expect(manifest?.routeHandlerPaths).toContain("/legacy.png");
+    expect(manifest?.routeHandlerPaths).not.toContain("/unrelated.png");
+    expect(manifest?.routePatterns?.["/legacy.png"]).toMatchObject({
+      kind: "app-route",
+      metadataRoute: true,
+      pattern: "/legacy.png",
+    });
+    expect(manifest?.routePatterns?.["/legacy.png"]?.cacheabilityProbe).toMatchObject({
+      routeMayResolve: true,
+    });
+  });
+
   it("gives a traffic-picked path to the first metadata route the runtime matches", async () => {
     // No Next.js test port applies: traffic-aware warming is vinext-specific.
     writeFile("package.json", JSON.stringify({ type: "module" }));

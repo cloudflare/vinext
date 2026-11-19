@@ -1777,7 +1777,28 @@ export async function discoverPrerenderPathManifest(
       addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
       continue;
     }
-    if (metadataOnly) continue;
+    if (metadataOnly) {
+      // The runtime matches metadata routes again after each rewrite phase, so
+      // the request stage can serve a rewritten asset-named path from one. It
+      // is warmed as that request, keyed by its own path; no page claims it.
+      if (
+        options.requestRouting === "uncached-stage" &&
+        configuredRulesAffectWarmPath(
+          pathname,
+          [
+            ...config.rewrites.beforeFiles,
+            ...config.rewrites.afterFiles,
+            ...config.rewrites.fallback,
+          ].filter((rewrite) => !isExternalUrl(rewrite.destination)),
+          warmPathMatchConfig(config, true),
+        )
+      ) {
+        metadataRoutes.set(pathname, { pattern: pathname });
+        candidateOnlyPathSet.add(pathname);
+        addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
+      }
+      continue;
+    }
     if (!seen.has(pathname)) candidateOnlyPathSet.add(pathname);
     addPath(paths, seen, pathname);
     if (pagesDir) addPath(discoveredPagesPaths, seenPagesPaths, pathname);
