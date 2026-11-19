@@ -37,6 +37,19 @@ function pathForms(file: string): string[] {
   return [...forms];
 }
 
+/**
+ * `file` resolved against `base` as Git resolves it, through the filesystem:
+ * a `..` after a symlink leaves the link's target, not the link.
+ */
+function resolveGitPath(base: string, file: string): string {
+  let current = path.isAbsolute(file) ? path.parse(path.resolve(file)).root : path.resolve(base);
+  for (const part of file.split(/[\\/]+/)) {
+    if (!part || part === ".") continue;
+    current = part === ".." ? path.dirname(resolveRealPath(current)) : path.join(current, part);
+  }
+  return current;
+}
+
 // The byte each escape in a C-style quoted path stands for.
 const GIT_QUOTE_ESCAPES: Record<string, number> = {
   a: 7,
@@ -130,32 +143,36 @@ function resolveGitDirs(root: string): string[] {
   const addGitDir = (dir: string) => {
     protect(dir);
     const target = readPathFile(dir, "gitdir: ");
-    const gitDir = target ? protect(path.resolve(path.dirname(dir), target)) : resolveRealPath(dir);
+    const gitDir = target
+      ? protect(resolveGitPath(path.dirname(dir), target))
+      : resolveRealPath(dir);
     const commonDir = readPathFile(path.join(gitDir, "commondir"));
-    if (commonDir) protect(path.resolve(gitDir, commonDir));
+    if (commonDir) protect(resolveGitPath(gitDir, commonDir));
   };
   // Relative to the working directory, as Git reads them.
   const env = process.env;
-  if (env.GIT_DIR) addGitDir(path.resolve(env.GIT_DIR));
+  const cwd = process.cwd();
+  if (env.GIT_DIR) addGitDir(resolveGitPath(cwd, env.GIT_DIR));
   const objectDirs = [
     env.GIT_OBJECT_DIRECTORY,
     ...splitGitPathList(env.GIT_ALTERNATE_OBJECT_DIRECTORIES ?? "", path.delimiter),
-  ].flatMap((dir) => (dir ? [path.resolve(dir)] : []));
+  ].flatMap((dir) => (dir ? [resolveGitPath(cwd, dir)] : []));
   for (const file of [env.GIT_COMMON_DIR, env.GIT_INDEX_FILE]) {
-    if (file) protect(path.resolve(file));
+    if (file) protect(resolveGitPath(cwd, file));
   }
 
-  let repoRoot: string | undefined = root;
-  while (!fs.existsSync(path.join(repoRoot, ".git"))) {
-    const parent = path.dirname(repoRoot);
-    if (parent === repoRoot) {
+  // A symlinked root (kept with resolve.preserveSymlinks) may sit in another
+  // repository than its target, so search from every form of it.
+  for (const form of pathForms(root)) {
+    for (let dir = form; ; dir = path.dirname(dir)) {
+      if (fs.existsSync(path.join(dir, ".git"))) {
+        addGitDir(path.join(dir, ".git"));
+        break;
+      }
       // Not in a repository.
-      repoRoot = undefined;
-      break;
+      if (path.dirname(dir) === dir) break;
     }
-    repoRoot = parent;
   }
-  if (repoRoot) addGitDir(path.join(repoRoot, ".git"));
 
   objectDirs.push(...gitDirs.map((dir) => path.join(dir, "objects")));
   // Git reads alternates of alternates; each line is a path relative to the
@@ -166,8 +183,11 @@ function resolveGitDirs(root: string): string[] {
     if (seen.has(objectDir)) continue;
     seen.add(objectDir);
     const alternates = readPathFile(path.join(objectDir, "info", "alternates"));
-    for (const line of splitGitPathList(alternates?.replace(/\r/g, "") ?? "", "\n")) {
-      if (!line.startsWith("#")) objectDirs.push(path.resolve(objectDir, line));
+    // Git skips a comment line before unquoting it.
+    for (const line of alternates?.split(/\r?\n/) ?? []) {
+      if (!line || line.startsWith("#")) continue;
+      const [entry] = splitGitPathList(line, "\n");
+      if (entry) objectDirs.push(resolveGitPath(objectDir, entry));
     }
   }
   return gitDirs;
@@ -202,7 +222,7 @@ export function assertOutputDirIsSafe(
         "as the default dist.",
     );
   }
-  const gitDirs = resolveGitDirs(root);
+  const gitDirs = resolveGitDirs(options.root);
   if (
     gitDirs.some(
       (gitDir) => isPathInsideOrEqual(gitDir, realOutDir) || isPathInside(realOutDir, gitDir),

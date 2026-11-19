@@ -254,6 +254,44 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it("refuses an outDir in the repository a symlinked root sits in", () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-logical-repo-"));
+    try {
+      // The project's target is tmpDir, outside the repository its link is in.
+      const head = writeFile(repo, ".git/HEAD", "ref: refs/heads/main\n");
+      const root = path.join(repo, "site");
+      fs.symlinkSync(tmpDir, root);
+
+      expect(() =>
+        cleanBuildOutput({ root, outDir: path.join(repo, ".git"), emptyOutDir: true }),
+      ).toThrow("overlaps the project's Git directory");
+      expect(fs.existsSync(head)).toBe(true);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a quoted alternate that starts with #, through the link it names", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-hash-alternate-"));
+    try {
+      const pack = writeFile(store, "alternate/pack/objects.pack", "PACK");
+      fs.mkdirSync(path.join(store, "inner"));
+      // Git reads "#link/../alternate" as a path, and its .. leaves the
+      // link's target: <store>/alternate.
+      fs.mkdirSync(path.join(tmpDir, ".git/objects/info"), { recursive: true });
+      fs.symlinkSync(path.join(store, "inner"), path.join(tmpDir, ".git/objects/#link"));
+      writeFile(tmpDir, ".git/objects/info/alternates", '"#link/../alternate"\n');
+      fs.symlinkSync(path.join(store, "alternate"), path.join(tmpDir, "dist"));
+
+      expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(pack)).toBe(true);
+    } finally {
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
   it("refuses an outDir that holds a symlink to a protected directory", () => {
     const target = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-linked-app-"));
     try {
