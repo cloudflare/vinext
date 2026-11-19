@@ -598,6 +598,56 @@ describe("Cloudflare CDN warmup", () => {
     );
   });
 
+  it("keeps metadata link searches in the warmed and retry plans", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const route = (search: string) => ({
+      cacheabilityProbe: { canPrunePattern: true },
+      kind: "app-route" as const,
+      metadataRoute: true as const,
+      metadataSearch: search,
+      pattern: "/blog/:slug/opengraph-image",
+    });
+    const routePatterns = {
+      "/blog/a/opengraph-image": route("?a-hash"),
+      "/blog/b/opengraph-image": route("?b-hash"),
+    };
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) =>
+      new URL(requestHref(input)!).pathname === "/blog/b/opengraph-image"
+        ? new Response("failed", { status: 500 })
+        : cacheablePagesData(),
+    );
+
+    const result = await warmCdnCache({
+      expectedBuildId: "build-a",
+      fetchImpl: fetchImpl as typeof fetch,
+      paths: [],
+      retries: 0,
+      routeHandlerPaths: ["/blog/a/opengraph-image", "/blog/b/opengraph-image"],
+      routePatterns,
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result.warmedPlan.routePatterns).toEqual({
+      "/blog/a/opengraph-image": routePatterns["/blog/a/opengraph-image"],
+    });
+    expect(result.retryPlan.routePatterns).toEqual({
+      "/blog/b/opengraph-image": routePatterns["/blog/b/opengraph-image"],
+    });
+
+    fetchImpl.mockClear();
+    await warmCdnCache({
+      ...result.retryPlan,
+      expectedBuildId: "build-a",
+      fetchImpl: fetchImpl as typeof fetch,
+      retries: 0,
+      targetUrl: "https://app.example.com",
+    });
+    expect(fetchImpl.mock.calls.map(([input]) => requestHref(input))).toEqual([
+      "https://app.example.com/blog/b/opengraph-image?b-hash",
+    ]);
+  });
+
   it("caps route reports without listing concrete paths for large apps", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const paths: string[] = [];

@@ -1669,6 +1669,15 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const failedRouteHandlerPaths = failedRequests
     .filter(({ target }) => target.kind === "app-route")
     .map(({ target }) => target.sourcePathname);
+  const planRoutePatterns = (
+    targets: readonly CdnWarmTarget[],
+  ): { routePatterns?: Record<string, PrerenderRoutePattern> } => {
+    const entries = targets.flatMap((target) => {
+      const route = options.routePatterns?.[target.sourcePathname];
+      return route ? [[target.sourcePathname, route] as const] : [];
+    });
+    return entries.length > 0 ? { routePatterns: Object.fromEntries(entries) } : {};
+  };
 
   printCdnWarmRouteReport(
     requests,
@@ -1710,6 +1719,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
         .filter((target) => target.kind === "rsc-full")
         .map((target) => target.sourcePathname),
       ...(warmedRouteHandlerPaths.length > 0 ? { routeHandlerPaths: warmedRouteHandlerPaths } : {}),
+      ...planRoutePatterns(warmedRequests),
     },
     retryPlan: {
       loadingShellPaths: failedRequests
@@ -1725,6 +1735,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
         .filter(({ target }) => target.kind === "rsc-full")
         .map(({ target }) => target.sourcePathname),
       ...(failedRouteHandlerPaths.length > 0 ? { routeHandlerPaths: failedRouteHandlerPaths } : {}),
+      ...planRoutePatterns(failedRequests.map(({ target }) => target)),
     },
   };
 

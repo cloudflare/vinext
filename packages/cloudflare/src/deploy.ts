@@ -1544,6 +1544,7 @@ async function deployUploadedVersionWithCdnWarmup(
               pagesDataPaths: warmResult.retryPlan.pagesDataPaths,
               paths: warmResult.retryPlan.paths,
               routeHandlerPaths: warmResult.retryPlan.routeHandlerPaths,
+              routePatterns: warmResult.retryPlan.routePatterns,
               rscPaths: warmResult.retryPlan.rscPaths,
             };
             if (options.warmCdnCertify && warmResult.warmed > 0) {
