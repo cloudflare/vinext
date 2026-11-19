@@ -308,6 +308,27 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it("refuses an outDir that holds a link inside the target of a protected directory's link", () => {
+    const links = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-nested-link-"));
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-nested-target-"));
+    try {
+      writeFile(target, "app/page.tsx", "export default function Page() {}\n");
+      // src/app leads through <links>/inner, a second link, to <target>/app.
+      fs.symlinkSync(target, path.join(links, "inner"));
+      fs.mkdirSync(path.join(tmpDir, "src"));
+      fs.symlinkSync(path.join(links, "inner", "app"), path.join(tmpDir, "src", "app"));
+      fs.symlinkSync(links, path.join(tmpDir, "dist"));
+
+      expect(() => cleanBuildOutput({ root: tmpDir, protectedDirs: { app: "src/app" } })).toThrow(
+        "overlaps the app directory",
+      );
+      expect(fs.lstatSync(path.join(links, "inner")).isSymbolicLink()).toBe(true);
+    } finally {
+      fs.rmSync(links, { recursive: true, force: true });
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  });
+
   it("refuses an outDir that holds a symlinked folder on the way to GIT_INDEX_FILE", () => {
     const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-index-folder-"));
     const target = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-index-target-"));
@@ -417,6 +438,28 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")(
+    "reads a backslash in a POSIX Git path as part of its name",
+    () => {
+      const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-backslash-"));
+      const previous = process.env.GIT_DIR;
+      try {
+        const head = writeFile(store, "meta\\repo.git/HEAD", "ref: refs/heads/main\n");
+        process.env.GIT_DIR = path.join(store, "meta\\repo.git");
+        fs.symlinkSync(path.join(store, "meta\\repo.git"), path.join(tmpDir, "dist"));
+
+        expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+          "overlaps the project's Git directory",
+        );
+        expect(fs.existsSync(head)).toBe(true);
+      } finally {
+        if (previous === undefined) delete process.env.GIT_DIR;
+        else process.env.GIT_DIR = previous;
+        fs.rmSync(store, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("follows a GIT_DIR that names a gitfile", () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-gitfile-"));
     const previous = process.env.GIT_DIR;
@@ -448,6 +491,20 @@ describe("cleanBuildOutput", () => {
       );
     }
     expect(fs.existsSync(head)).toBe(true);
+  });
+
+  it("refuses an outDir in a bare repository's Git directories that holds the project", () => {
+    writeFile(tmpDir, "HEAD", "ref: refs/heads/main\n");
+    const object = writeFile(tmpDir, "objects/ab/cdef", "blob\n");
+    fs.mkdirSync(path.join(tmpDir, "refs"));
+    const root = path.join(tmpDir, "site");
+    fs.mkdirSync(root);
+
+    expect(() => cleanBuildOutput({ root, outDir: "../objects", emptyOutDir: true })).toThrow(
+      "overlaps the project's Git directory",
+    );
+    expect(fs.existsSync(object)).toBe(true);
+    expect(cleanBuildOutput({ root }).cleaned).toBe(true);
   });
 
   it("refuses an outDir inside the project's .git directory", () => {

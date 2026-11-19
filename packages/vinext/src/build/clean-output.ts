@@ -17,44 +17,63 @@ type CleanBuildOutputResult = {
   outDir: string;
 };
 
-/**
- * Every path that reaches `file`: with the symlinks in each of its ancestors
- * resolved in turn, from none to all, then its own target. Emptying any of
- * them, or a directory holding one, removes `file` or a link on its way.
- */
-function pathForms(file: string): string[] {
-  const forms = new Set<string>();
-  let prefix = path.resolve(file);
-  let suffix = "";
-  for (;;) {
-    forms.add(suffix ? path.join(resolveRealPath(prefix), suffix) : resolveRealPath(prefix));
-    const parent = path.dirname(prefix);
-    if (parent === prefix) break;
-    suffix = suffix ? path.join(path.basename(prefix), suffix) : path.basename(prefix);
-    prefix = parent;
-  }
-  forms.add(path.resolve(file));
-  return [...forms];
-}
+// Path separators: a backslash is a filename character on POSIX.
+const PATH_SEPARATORS = process.platform === "win32" ? /[\\/]+/ : /\/+/;
+// Symlinks followed on one path before giving up, as Linux does.
+const MAX_SYMLINKS = 40;
 
 /**
- * `file` resolved against `base` as Git resolves it, through the filesystem:
- * a `..` after a symlink leaves the link's target, not the link.
+ * Where `file`, taken relative to `base`, leads through the filesystem, as Git
+ * and the OS resolve it: the location of each symlink on the way, each in a
+ * real directory, and the real path it ends at. A `..` leaves the directory
+ * reached so far, so after a symlink it leaves the link's target, not the
+ * link. Emptying any of these paths, or a directory holding one, removes
+ * `file` or a link on its way.
  */
-function resolveGitPath(base: string, file: string): string {
-  let current = path.resolve(base);
-  let rest = file;
-  if (path.isAbsolute(file)) {
-    // The root is a drive or UNC share on Windows, so walk only what follows.
-    // Resolving the whole path would drop each `..` before its link.
-    current = path.parse(file).root;
-    rest = file.slice(current.length);
-  }
-  for (const part of rest.split(/[\\/]+/)) {
+function walkPath(file: string, base?: string): { links: string[]; real: string } {
+  const links: string[] = [];
+  let current = base === undefined ? resolveRealPath(process.cwd()) : walkPath(base).real;
+  let parts: string[] = [];
+  const enter = (next: string) => {
+    const root = path.parse(next).root;
+    if (root) {
+      // A drive-relative path like C:repo starts at that drive's working
+      // directory.
+      current = resolveRealPath(/[\\/]$/.test(root) ? root : path.resolve(root));
+    }
+    parts = [...next.slice(root.length).split(PATH_SEPARATORS), ...parts];
+  };
+  enter(file);
+  let followed = 0;
+  while (parts.length) {
+    const part = parts.shift()!;
     if (!part || part === ".") continue;
-    current = part === ".." ? path.dirname(resolveRealPath(current)) : path.join(current, part);
+    if (part === "..") {
+      current = path.dirname(current);
+      continue;
+    }
+    const next = path.join(current, part);
+    let target: string | undefined;
+    try {
+      if (fs.lstatSync(next).isSymbolicLink()) target = fs.readlinkSync(next);
+    } catch {
+      // Missing, so nothing after it exists either.
+    }
+    if (target === undefined || followed++ >= MAX_SYMLINKS) {
+      current = next;
+      continue;
+    }
+    // A relative target is relative to the link's directory, `current`.
+    links.push(next);
+    enter(target);
   }
-  return current;
+  return { links, real: resolveRealPath(current) };
+}
+
+/** Every path that reaches `file`: as given, each link on its way, and its target. */
+function pathForms(file: string): string[] {
+  const { links, real } = walkPath(path.resolve(file));
+  return [...new Set([path.resolve(file), ...links, real])];
 }
 
 // The byte each escape in a C-style quoted path stands for.
@@ -118,14 +137,31 @@ function splitGitPathList(list: string, separator: string): string[] {
   return entries.filter(Boolean);
 }
 
+// The directories in a Git directory, after gitrepository-layout(5), and Git
+// LFS's object store.
+const GIT_DIR_ENTRIES = [
+  "objects",
+  "refs",
+  "reftable",
+  "logs",
+  "hooks",
+  "info",
+  "branches",
+  "remotes",
+  "modules",
+  "worktrees",
+  "rr-cache",
+  "lfs",
+];
+
 /**
- * The project's Git storage, as given and with symlinks resolved: the `.git` in
- * the project root or, as Git finds it, the nearest one above it, and any
- * directory or index that Git's environment variables name. In a worktree or
- * submodule `.git` (or GIT_DIR) is a gitfile naming the Git directory, which
- * names the repository's shared directory in its `commondir` file. Each
- * object directory's `info/alternates` lists more object directories it
- * reads.
+ * The project's Git storage, as given, each link on the way and resolved: the
+ * `.git` in the project root or, as Git finds it, the nearest one above it or
+ * a bare repository holding the project, and any directory or index that
+ * Git's environment variables name. In a worktree or submodule `.git` (or
+ * GIT_DIR) is a gitfile naming the Git directory, which names the
+ * repository's shared directory in its `commondir` file. Each object
+ * directory's `info/alternates` lists more object directories it reads.
  */
 function resolveGitDirs(root: string): string[] {
   // Git strips only trailing CR and LF from these files; a path may end in
@@ -140,40 +176,54 @@ function resolveGitDirs(root: string): string[] {
     }
   };
   const gitDirs: string[] = [];
-  // The path Git uses in every form, and its target.
-  const protect = (file: string) => {
-    gitDirs.push(...pathForms(file));
-    return resolveRealPath(file);
+  // Repositories whose object directories Git reads.
+  const repoDirs: string[] = [];
+  // `file`, relative to `base` as Git reads it: each link on its way and its
+  // target.
+  const protect = (file: string, base?: string) => {
+    const { links, real } = walkPath(file, base);
+    gitDirs.push(...links, real);
+    return real;
   };
   // A Git directory or a gitfile naming one, and the repository's shared
   // directory.
   const addGitDir = (dir: string) => {
-    protect(dir);
-    const target = readPathFile(dir, "gitdir: ");
-    const gitDir = target
-      ? protect(resolveGitPath(path.dirname(dir), target))
-      : resolveRealPath(dir);
+    let gitDir = protect(dir);
+    // A gitfile's path is relative to the directory it was named in.
+    const target = readPathFile(gitDir, "gitdir: ");
+    if (target) gitDir = protect(target, path.dirname(dir));
+    repoDirs.push(gitDir);
     const commonDir = readPathFile(path.join(gitDir, "commondir"));
-    if (commonDir) protect(resolveGitPath(gitDir, commonDir));
+    if (commonDir) repoDirs.push(protect(commonDir, gitDir));
   };
   // Relative to the working directory, as Git reads them.
   const env = process.env;
-  const cwd = process.cwd();
-  if (env.GIT_DIR) addGitDir(resolveGitPath(cwd, env.GIT_DIR));
+  if (env.GIT_DIR) addGitDir(env.GIT_DIR);
   const objectDirs = [
     env.GIT_OBJECT_DIRECTORY,
     ...splitGitPathList(env.GIT_ALTERNATE_OBJECT_DIRECTORIES ?? "", path.delimiter),
-  ].flatMap((dir) => (dir ? [resolveGitPath(cwd, dir)] : []));
+  ].flatMap((dir) => (dir ? [walkPath(dir).real] : []));
   for (const file of [env.GIT_COMMON_DIR, env.GIT_INDEX_FILE]) {
-    if (file) protect(resolveGitPath(cwd, file));
+    if (file) protect(file);
   }
 
   // A symlinked root (kept with resolve.preserveSymlinks) may sit in another
   // repository than its target, so search from every form of it.
-  for (const form of pathForms(root)) {
+  const rootForms = pathForms(root);
+  for (const form of rootForms) {
     for (let dir = form; ; dir = path.dirname(dir)) {
       if (fs.existsSync(path.join(dir, ".git"))) {
         addGitDir(path.join(dir, ".git"));
+        break;
+      }
+      if (["HEAD", "objects", "refs"].every((entry) => fs.existsSync(path.join(dir, entry)))) {
+        // A bare repository holds the project: protect its Git directories,
+        // apart from any the project is in.
+        repoDirs.push(walkPath(dir).real);
+        for (const entry of GIT_DIR_ENTRIES) {
+          const file = path.join(dir, entry);
+          if (!rootForms.some((rootForm) => isPathInsideOrEqual(file, rootForm))) protect(file);
+        }
         break;
       }
       // Not in a repository.
@@ -181,7 +231,7 @@ function resolveGitDirs(root: string): string[] {
     }
   }
 
-  objectDirs.push(...gitDirs.map((dir) => path.join(dir, "objects")));
+  objectDirs.push(...repoDirs.map((dir) => walkPath(path.join(dir, "objects")).real));
   // Git reads alternates of alternates; each line is a path relative to the
   // object directory whose file lists it.
   const seen = new Set<string>();
@@ -194,7 +244,7 @@ function resolveGitDirs(root: string): string[] {
     for (const line of alternates?.split(/\r?\n/) ?? []) {
       if (!line || line.startsWith("#")) continue;
       const [entry] = splitGitPathList(line, "\n");
-      if (entry) objectDirs.push(resolveGitPath(objectDir, entry));
+      if (entry) objectDirs.push(walkPath(entry, objectDir).real);
     }
   }
   return gitDirs;
