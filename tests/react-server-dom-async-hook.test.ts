@@ -17,22 +17,28 @@ const load = plugin.load as { handler: LoadHandler };
 const DEVELOPMENT_BUILD =
   "/app/node_modules/@vitejs/plugin-rsc/dist/vendor/react-server-dom/cjs/react-server-dom-webpack-server.node.development.js";
 
-// A dev server's environment, with the owner plugin its vinext() adds.
-function devEnvironment(name = "rsc") {
-  const owner = createReactServerDomAsyncHookOwnerPlugin();
+// A dev server's environment, with the owner plugin its vinext() adds. A
+// restarted server passes the plugin of the server it replaces.
+function devEnvironment(name = "rsc", owner = createReactServerDomAsyncHookOwnerPlugin()) {
   const context: EnvironmentContext = { environment: { name } };
-  return {
-    // Evaluates the module the development build gets, as the environment does.
-    loadAsyncHooks(): typeof import("node:async_hooks") {
-      const id = resolveId.handler.call(undefined, "async_hooks", DEVELOPMENT_BUILD)!;
-      const { code } = (owner.transform as { handler: TransformHandler }).handler.call(
-        context,
-        load.handler.call(undefined, id),
-      );
+  // Transforms the module the development build gets, as the environment does,
+  // and returns a function that evaluates it.
+  const transformAsyncHooks = () => {
+    const id = resolveId.handler.call(undefined, "async_hooks", DEVELOPMENT_BUILD)!;
+    const { code } = (owner.transform as { handler: TransformHandler }).handler.call(
+      context,
+      load.handler.call(undefined, id),
+    );
+    return (): typeof import("node:async_hooks") => {
       const module = { exports: {} as typeof import("node:async_hooks") };
       compileFunction(code, ["require", "module"])(createRequire(import.meta.url), module);
       return module.exports;
-    },
+    };
+  };
+  return {
+    owner,
+    transformAsyncHooks,
+    loadAsyncHooks: () => transformAsyncHooks()(),
     close() {
       (owner.closeBundle as CloseBundle).call(context);
     },
@@ -109,6 +115,51 @@ describe("reactServerDomAsyncHookOptimizeDepsPlugin", () => {
     } finally {
       liveHook.disable();
       otherHook.disable();
+    }
+  });
+
+  // Vite closes an environment's plugins before its module runner, which does
+  // not wait for a module it is still evaluating.
+  it("does not enable a hook whose server closed while the build was evaluating", async () => {
+    const environment = devEnvironment();
+    const evaluate = environment.transformAsyncHooks();
+    environment.close();
+    let inits = 0;
+    const hook = evaluate()
+      .createHook({ init: () => void inits++ })
+      .enable();
+    try {
+      await nextTask();
+      expect(inits).toBe(0);
+    } finally {
+      hook.disable();
+    }
+  });
+
+  it("enables the hook of a restarted server that reuses the closed server's plugins", async () => {
+    const closed = devEnvironment();
+    const lateEvaluate = closed.transformAsyncHooks();
+    closed.close();
+    const restarted = devEnvironment("rsc", closed.owner);
+    const inits = { late: 0, restarted: 0 };
+    const restartedHook = restarted
+      .loadAsyncHooks()
+      .createHook({ init: () => void inits.restarted++ })
+      .enable();
+    const lateHook = lateEvaluate()
+      .createHook({ init: () => void inits.late++ })
+      .enable();
+    try {
+      await nextTask();
+      expect(inits.restarted).toBeGreaterThan(0);
+      expect(inits.late).toBe(0);
+      restarted.close();
+      const afterClose = inits.restarted;
+      await nextTask();
+      expect(inits.restarted).toBe(afterClose);
+    } finally {
+      restartedHook.disable();
+      lateHook.disable();
     }
   });
 
