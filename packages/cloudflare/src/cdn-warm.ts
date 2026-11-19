@@ -1759,6 +1759,7 @@ export async function warmCdnCacheFromPrerender(
     pagesDataPaths: plan.pagesDataPaths,
     paths: plan.paths,
     routeHandlerPaths: plan.routeHandlerPaths,
+    routePatterns: plan.routePatterns,
     rscPaths: plan.rscPaths,
   };
   return warmCdnCache({

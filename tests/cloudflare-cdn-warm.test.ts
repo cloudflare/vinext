@@ -2141,6 +2141,38 @@ describe("Cloudflare CDN warmup", () => {
     ).resolves.toMatchObject({ total: 1, warmed: 1, skipped: 0, failed: 0 });
   });
 
+  it("warms metadata routes from the discovery manifest at their linked URL", async () => {
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: [],
+        routeHandlerPaths: ["/opengraph-image"],
+        routePatterns: {
+          "/opengraph-image": {
+            kind: "app-route",
+            metadataRoute: true,
+            metadataSearch: "?og-hash",
+            pattern: "/opengraph-image",
+          },
+        },
+      }),
+    );
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => cacheablePagesData());
+
+    await expect(
+      warmCdnCacheFromPrerender({
+        fetchImpl: fetchImpl as typeof fetch,
+        root: tmpDir,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 1, warmed: 1 });
+    expect(requestHref(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://app.example.com/opengraph-image?og-hash",
+    );
+  });
+
   it("requires an explicit opt-out for adapters without a build identity header", async () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
