@@ -1494,6 +1494,14 @@ describe("prerenderApp — default mode (app-basic)", () => {
     expect(Object.values(metadataRoutes)).not.toContain("/blog/:slug/opengraph-image");
     // Generated sitemaps replace the base sitemap URL.
     expect(metadataRoutes).not.toHaveProperty("/products/sitemap.xml");
+    // Image routes are warmed at the URL the rendered page links them with.
+    const html = fs.readFileSync(path.join(outDir, "index.html"), "utf8");
+    for (const pathname of ["/favicon.ico", "/icon"]) {
+      const search = manifest?.routePatterns?.[pathname]?.metadataSearch;
+      expect(search).toMatch(/^\?[0-9a-f]{16}$/);
+      expect(html).toContain(`href="${pathname}${search}"`);
+    }
+    expect(manifest?.routePatterns?.["/sitemap.xml"]?.metadataSearch).toBeUndefined();
   }, 60_000);
 
   // As in Next.js, whose build fails on a prerender error, a page that throws

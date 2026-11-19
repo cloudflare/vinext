@@ -249,7 +249,7 @@ describe("Cloudflare CDN warmup", () => {
             kind: "app-route",
             pattern: "/api/data",
           },
-          "/opengraph-image": metadataRoute("/opengraph-image"),
+          "/opengraph-image": { ...metadataRoute("/opengraph-image"), metadataSearch: "?og-hash" },
           "/products/sitemap/0.xml": metadataRoute("/products/sitemap.xml"),
         },
         trailingSlash: true,
@@ -263,18 +263,21 @@ describe("Cloudflare CDN warmup", () => {
       "/docs/products/sitemap/0.xml",
     ]);
     expect(Object.keys(plan.routePatterns ?? {})).toEqual(plan.routeHandlerPaths);
-    expect(plan.routePatterns?.["/docs/opengraph-image"]).toMatchObject({ metadataRoute: true });
+    expect(plan.routePatterns?.["/docs/opengraph-image"]).toMatchObject({
+      metadataRoute: true,
+      metadataSearch: "?og-hash",
+    });
   });
 
-  it("rejects a metadata route marker on a non-Route Handler pattern", () => {
+  it.each([
+    { kind: "app-page", metadataRoute: true, pattern: "/" },
+    { kind: "app-route", metadataSearch: "?hash", pattern: "/" },
+    { kind: "app-route", metadataRoute: true, metadataSearch: "hash", pattern: "/" },
+  ])("rejects a metadata route marker on a non-metadata Route Handler: %o", (route) => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
       "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({
-        buildId: "build-a",
-        paths: ["/"],
-        routePatterns: { "/": { kind: "app-page", metadataRoute: true, pattern: "/" } },
-      }),
+      JSON.stringify({ buildId: "build-a", paths: ["/"], routePatterns: { "/": route } }),
     );
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -566,13 +569,20 @@ describe("Cloudflare CDN warmup", () => {
         paths: [],
         routeHandlerPaths: ["/blog/a/opengraph-image", "/blog/b/opengraph-image", "/sitemap.xml"],
         routePatterns: {
-          "/blog/a/opengraph-image": metadataRoute("/blog/:slug/opengraph-image"),
+          "/blog/a/opengraph-image": {
+            ...metadataRoute("/blog/:slug/opengraph-image"),
+            metadataSearch: "?a-hash",
+          },
           "/blog/b/opengraph-image": metadataRoute("/blog/:slug/opengraph-image"),
           "/sitemap.xml": metadataRoute("/sitemap.xml"),
         },
         targetUrl: "https://app.example.com",
       }),
     ).resolves.toMatchObject({ skipped: 1, warmed: 2 });
+    // A metadata image is warmed at the URL pages link it with.
+    expect(fetchImpl.mock.calls.map(([input]) => requestHref(input))).toContain(
+      "https://app.example.com/blog/a/opengraph-image?a-hash",
+    );
 
     expect(log).toHaveBeenCalledWith(
       "    Route pattern                Kind            Warmed  Skipped  Failed",

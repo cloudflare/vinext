@@ -201,6 +201,10 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
                 route.kind === "pages-page") &&
               (route.metadataRoute === undefined ||
                 (route.metadataRoute === true && route.kind === "app-route")) &&
+              (route.metadataSearch === undefined ||
+                (route.metadataRoute === true &&
+                  typeof route.metadataSearch === "string" &&
+                  /^\?[^#]+$/.test(route.metadataSearch))) &&
               typeof route.pattern === "string" &&
               route.pattern.startsWith("/") &&
               (route.cacheabilityProbe === undefined ||
@@ -685,7 +689,8 @@ export async function createCdnWarmTargets(
       headers: routeHeaders,
       kind: "app-route",
       label: `${pathname} (${route?.metadataRoute ? "Metadata route" : "Route Handler"})`,
-      pathname,
+      // Request a metadata image as pages link it, `?<contentHash>` included.
+      pathname: `${pathname}${route?.metadataSearch ?? ""}`,
       sourcePathname: pathname,
       route,
     });

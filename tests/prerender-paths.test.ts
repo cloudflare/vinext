@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -1062,6 +1063,7 @@ describe("prerender path manifest", () => {
           {
             paths: ["/docs/opengraph-image/one", "/docs/opengraph-image/two"],
             routePattern: "/docs/opengraph-image",
+            search: "?docs-hash",
           },
           {
             routePattern: "/blog/:slug/opengraph-image",
@@ -1101,11 +1103,19 @@ describe("prerender path manifest", () => {
       "/docs/opengraph-image/one": {
         kind: "app-route",
         metadataRoute: true,
+        metadataSearch: "?docs-hash",
         pattern: "/docs/opengraph-image",
       },
-      "/favicon.ico": { kind: "app-route", metadataRoute: true, pattern: "/favicon.ico" },
+      // Pages link a static image with the build's hash of the file.
+      "/favicon.ico": {
+        kind: "app-route",
+        metadataRoute: true,
+        metadataSearch: `?${createHash("sha1").update("icon").digest("hex").slice(0, 16)}`,
+        pattern: "/favicon.ico",
+      },
       "/sitemap.xml": { kind: "app-route", metadataRoute: true, pattern: "/sitemap.xml" },
     });
+    expect(manifest?.routePatterns?.["/sitemap.xml"]?.metadataSearch).toBeUndefined();
     const metadataRequest = fetchMock.mock.calls.find(([input]) =>
       (input instanceof Request ? input.url : String(input)).includes(
         "/__vinext/prerender/metadata-routes",
@@ -1117,6 +1127,147 @@ describe("prerender path manifest", () => {
     expect(new Headers(metadataRequest?.[1]?.headers).get("x-vinext-prerender-secret")).toBe(
       "staged-discovery-secret",
     );
+  });
+
+  it("matches traffic-picked paths to metadata routes whose paths it doesn't enumerate", async () => {
+    // No Next.js test port applies: traffic-aware warming is vinext-specific.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/docs/[[...slug]]/page.tsx", "export default function Page() { return null; }");
+    writeFile(
+      "app/docs/opengraph-image.tsx",
+      "export function generateImageMetadata() { return []; }\nexport default function Image() {}",
+    );
+    writeFile(
+      "app/blog/[slug]/opengraph-image.tsx",
+      "export function generateStaticParams() { return []; }\nexport default function Image() {}",
+    );
+    writeFile(
+      "app/products/sitemap.ts",
+      "export function generateSitemaps() { return []; }\nexport default function sitemap() { return []; }",
+    );
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          { generatedPaths: "image", routePattern: "/docs/opengraph-image", search: "?docs-hash" },
+          { generatedPaths: "params", routePattern: "/blog/:slug/opengraph-image" },
+          { generatedPaths: "sitemap", routePattern: "/products/sitemap.xml" },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      candidatePaths: [
+        "/blog/post/opengraph-image",
+        "/docs/opengraph-image/small",
+        "/docs/guide",
+        "/products/sitemap/2.xml",
+        "/blog/post/opengraph-image/extra",
+      ],
+      candidatePathsOnly: true,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    expect([...(manifest?.routeHandlerPaths ?? [])].sort()).toEqual([
+      "/blog/post/opengraph-image",
+      "/docs/opengraph-image/small",
+      "/products/sitemap/2.xml",
+    ]);
+    // The /docs catch-all page claims only the paths no metadata route serves.
+    expect([...(manifest?.paths ?? [])].sort()).toEqual(["/", "/docs/guide"]);
+    expect(manifest?.routePatterns).toMatchObject({
+      "/blog/post/opengraph-image": {
+        cacheabilityProbe: { unlisted: true },
+        kind: "app-route",
+        metadataRoute: true,
+        pattern: "/blog/:slug/opengraph-image",
+      },
+      "/docs/opengraph-image/small": {
+        kind: "app-route",
+        metadataRoute: true,
+        metadataSearch: "?docs-hash",
+        pattern: "/docs/opengraph-image",
+      },
+      "/products/sitemap/2.xml": {
+        kind: "app-route",
+        metadataRoute: true,
+        pattern: "/products/sitemap.xml",
+      },
+    });
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        (input instanceof Request ? input.url : String(input)).endsWith(
+          "/__vinext/prerender/metadata-routes?warm=1&dynamicPaths=0",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("matches routing rules to a metadata route's unslashed pathname", async () => {
+    // No Next.js test port applies: warm-time routing checks are vinext's. The
+    // runtime serves a metadata route without the trailingSlash redirect.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/opengraph-image.tsx", "export default function Image() {}");
+    writeFile("app/icon.tsx", "export default function Icon() {}");
+    writeFile(
+      "next.config.mjs",
+      [
+        "export default {",
+        "  trailingSlash: true,",
+        "  redirects: async () => [",
+        "    { source: '/opengraph-image/', destination: '/', permanent: false },",
+        "    { source: '/icon', destination: '/', permanent: false },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          { paths: ["/opengraph-image"], routePattern: "/opengraph-image" },
+          { paths: ["/icon"], routePattern: "/icon" },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+      responseVary: "verbatim",
+    });
+
+    // The runtime requests /opengraph-image as served, which the slashed
+    // source never matches, and /icon, which the unslashed one does.
+    expect(manifest?.routeHandlerPaths).toEqual(["/opengraph-image"]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/icon"]);
   });
 
   it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {

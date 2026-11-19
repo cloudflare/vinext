@@ -45,7 +45,13 @@ import {
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../server/headers.js";
-import { scanMetadataFiles } from "../server/metadata-routes.js";
+import {
+  isValidMetadataImageId,
+  matchMetadataRoutePattern,
+  metadataRouteLinkSearch,
+  scanMetadataFiles,
+} from "../server/metadata-routes.js";
+import { createMetadataRouteContentHash } from "../server/metadata-route-build-data.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
@@ -74,6 +80,11 @@ export type PrerenderRoutePattern = {
   kind: "app-page" | "app-route" | "pages-page";
   /** A file-based metadata route, which Next.js serves as a Route Handler. */
   metadataRoute?: true;
+  /**
+   * The query a page links this metadata route with (`?<contentHash>`), which
+   * its warm request carries so a cache keyed by query holds the linked URL.
+   */
+  metadataSearch?: string;
   pattern: string;
   /** Closed-world safety facts for probe coordinator optimizations. */
   cacheabilityProbe?: {
@@ -950,12 +961,60 @@ async function collectAppPaths(options: {
   };
 }
 
+/** A metadata route warm target: its Route Handler pattern and link query. */
+type MetadataWarmRoute = { pattern: string; search?: string };
+
+/** A metadata route whose paths a traffic-picked candidate can match. */
+type MetadataPathMatcher = { generatedPaths: "image" | "params" | "sitemap" } & MetadataWarmRoute;
+
+/**
+ * The config a warm path's routing rules see. A metadata route never takes a
+ * trailingSlash redirect, so its rules match its served, unslashed pathname.
+ */
+function warmPathMatchConfig<T extends { trailingSlash: boolean }>(
+  config: T,
+  metadataRoute: boolean,
+): T {
+  return metadataRoute && config.trailingSlash ? { ...config, trailingSlash: false } : config;
+}
+
+/** Match a candidate path to a described metadata route, as the runtime serves it. */
+function matchMetadataWarmPath(
+  pathname: string,
+  matchers: readonly MetadataPathMatcher[],
+): MetadataWarmRoute | null {
+  const urlParts = pathname.split("/").filter(Boolean);
+  for (const { generatedPaths, ...route } of matchers) {
+    if (generatedPaths === "sitemap") {
+      const prefix = `${route.pattern.slice(0, -".xml".length)}/`;
+      const id = pathname.startsWith(prefix) ? pathname.slice(prefix.length, -".xml".length) : "";
+      if (pathname.endsWith(".xml") && id.length > 0 && !id.includes("/")) return route;
+      continue;
+    }
+    const patternParts = route.pattern.split("/").filter(Boolean);
+    if (generatedPaths === "image") {
+      const id = urlParts.at(-1);
+      if (
+        id !== undefined &&
+        isValidMetadataImageId(id) &&
+        matchMetadataRoutePattern(urlParts.slice(0, -1), patternParts)
+      ) {
+        return route;
+      }
+      continue;
+    }
+    if (matchMetadataRoutePattern(urlParts, patternParts)) return route;
+  }
+  return null;
+}
+
 /**
  * Collect the file-based metadata routes Next.js prerenders, keyed by path to
  * the Route Handler pattern their responses record. Every static file is
  * static, at one URL even under a dynamic segment (`/shop/-/icon.png`). The
  * server lists code-generated ones from their modules
- * (getWarmableMetadataRoutes).
+ * (getWarmableMetadataRoutes), or, without `enumerateDynamicPaths`, describes
+ * the ones whose paths need generating as `matchers`.
  */
 async function collectMetadataRoutePaths(options: {
   appDir: string;
@@ -963,26 +1022,37 @@ async function collectMetadataRoutePaths(options: {
   enumerateDynamicPaths: boolean;
   retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
-}): Promise<{ nonDynamicPaths: string[]; routePatterns: Map<string, string> }> {
+}): Promise<{
+  matchers: MetadataPathMatcher[];
+  nonDynamicPaths: string[];
+  routes: Map<string, MetadataWarmRoute>;
+}> {
   const metadataRoutes = scanMetadataFiles(options.appDir);
-  const routePatterns = new Map<string, string>();
+  const routes = new Map<string, MetadataWarmRoute>();
+  const matchers: MetadataPathMatcher[] = [];
   const nonDynamicPaths: string[] = [];
-  const addMetadataPath = (pathname: string, routePattern: string): void => {
-    if (routePatterns.has(pathname)) return;
-    routePatterns.set(pathname, routePattern);
-    if (pathname === routePattern) nonDynamicPaths.push(pathname);
+  const addMetadataPath = (pathname: string, route: MetadataWarmRoute): void => {
+    if (routes.has(pathname)) return;
+    routes.set(pathname, route);
+    if (pathname === route.pattern) nonDynamicPaths.push(pathname);
   };
   for (const route of metadataRoutes) {
-    if (!route.isDynamic) addMetadataPath(route.servedUrl, route.servedUrl);
+    if (route.isDynamic) continue;
+    // The build links the file with the same hash.
+    const search = metadataRouteLinkSearch({
+      contentHash: createMetadataRouteContentHash(route),
+      type: route.type,
+    });
+    addMetadataPath(route.servedUrl, { pattern: route.servedUrl, ...(search ? { search } : {}) });
   }
   if (!options.baseUrl || !metadataRoutes.some((route) => route.isDynamic)) {
-    return { nonDynamicPaths, routePatterns };
+    return { matchers, nonDynamicPaths, routes };
   }
 
-  const search = new URLSearchParams({ warm: "1" });
-  if (!options.enumerateDynamicPaths) search.set("dynamicPaths", "0");
+  const query = new URLSearchParams({ warm: "1" });
+  if (!options.enumerateDynamicPaths) query.set("dynamicPaths", "0");
   const text = await fetchDiscoveryEndpoint(
-    `${options.baseUrl}${VINEXT_PRERENDER_METADATA_ROUTES_PATH}?${search}`,
+    `${options.baseUrl}${VINEXT_PRERENDER_METADATA_ROUTES_PATH}?${query}`,
     options.secretHeaders,
     options.retryOptions,
   );
@@ -992,16 +1062,34 @@ async function collectMetadataRoutePaths(options: {
   }
   for (const entry of entries) {
     const routePattern: unknown = entry?.routePattern;
-    if (typeof routePattern !== "string" || !routePattern.startsWith("/")) {
+    const search: unknown = entry?.search;
+    if (
+      typeof routePattern !== "string" ||
+      !routePattern.startsWith("/") ||
+      (search !== undefined && (typeof search !== "string" || !/^\?[^#]+$/.test(search)))
+    ) {
       throw new Error("[vinext] Invalid metadata route warmup discovery response");
     }
+    const route: MetadataWarmRoute = { pattern: routePattern, ...(search ? { search } : {}) };
     try {
+      if ("generatedPaths" in entry) {
+        const generatedPaths: unknown = entry.generatedPaths;
+        if (
+          generatedPaths !== "image" &&
+          generatedPaths !== "params" &&
+          generatedPaths !== "sitemap"
+        ) {
+          throw new Error("[vinext] Invalid metadata route warmup discovery response");
+        }
+        matchers.push({ ...route, generatedPaths });
+        continue;
+      }
       if ("staticParams" in entry) {
         if (!Array.isArray(entry.staticParams)) {
           throw new Error(`generateStaticParams must return an array for ${routePattern}.`);
         }
         for (const params of routeStaticParamSets({ pattern: routePattern }, entry.staticParams)) {
-          addMetadataPath(buildUrlFromParams(routePattern, params), routePattern);
+          addMetadataPath(buildUrlFromParams(routePattern, params), route);
         }
         continue;
       }
@@ -1012,18 +1100,18 @@ async function collectMetadataRoutePaths(options: {
       ) {
         throw new Error("[vinext] Invalid metadata route warmup discovery response");
       }
-      for (const pathname of paths) addMetadataPath(pathname, routePattern);
+      for (const pathname of paths) addMetadataPath(pathname, route);
     } catch (error) {
       throwDiscoveryFailure(routePattern, error);
     }
   }
-  return { nonDynamicPaths, routePatterns };
+  return { matchers, nonDynamicPaths, routes };
 }
 
 async function resolveAppWarmPaths(options: {
   appDir: string;
   i18n: ResolvedNextConfig["i18n"];
-  metadataRoutePatterns: ReadonlyMap<string, string>;
+  metadataRoutes: ReadonlyMap<string, MetadataWarmRoute>;
   pagesDir: string | null;
   pageExtensions: readonly string[];
   paths: readonly string[];
@@ -1070,13 +1158,14 @@ async function resolveAppWarmPaths(options: {
   const routePatterns: Record<string, PrerenderRoutePattern> = {};
   for (const pathname of options.paths) {
     // A metadata route is served before App and Pages routes are matched.
-    const metadataRoutePattern = options.metadataRoutePatterns.get(pathname);
-    if (metadataRoutePattern !== undefined) {
+    const metadataRoute = options.metadataRoutes.get(pathname);
+    if (metadataRoute !== undefined) {
       appRoutePaths.push(pathname);
       routePatterns[pathname] = {
         kind: "app-route",
         metadataRoute: true,
-        pattern: metadataRoutePattern,
+        ...(metadataRoute.search ? { metadataSearch: metadataRoute.search } : {}),
+        pattern: metadataRoute.pattern,
       };
       continue;
     }
@@ -1245,7 +1334,13 @@ function annotateCacheabilityProbeSafety(
     Object.keys(routePatterns).map((pathname) => [
       pathname,
       new Set(
-        cachePolicyRules.filter((rule) => cachePolicyRuleMatchesWarmPath(pathname, rule, config)),
+        cachePolicyRules.filter((rule) =>
+          cachePolicyRuleMatchesWarmPath(
+            pathname,
+            rule,
+            warmPathMatchConfig(config, routePatterns[pathname].metadataRoute === true),
+          ),
+        ),
       ),
     ]),
   );
@@ -1261,8 +1356,13 @@ function annotateCacheabilityProbeSafety(
     const routePattern = routePatterns[patternPaths[0]].pattern;
     const relevantRules = cachePolicyRules.filter(
       (rule) =>
-        patternPaths.some((path) => cachePolicyRuleSourceMatchesWarmPath(path, rule, config)) ||
-        routePatternCouldIntersectCachePolicyRule(routePattern, rule, config.basePath),
+        patternPaths.some((path) =>
+          cachePolicyRuleSourceMatchesWarmPath(
+            path,
+            rule,
+            warmPathMatchConfig(config, routePatterns[path].metadataRoute === true),
+          ),
+        ) || routePatternCouldIntersectCachePolicyRule(routePattern, rule, config.basePath),
     );
     canPrunePatterns.set(
       patternKey,
@@ -1512,7 +1612,8 @@ export async function discoverPrerenderPathManifest(
   const appListedRoutePaths = new Set<string>();
   const candidateOnlyPathSet = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
-  let metadataRoutePatterns = new Map<string, string>();
+  let metadataRoutes = new Map<string, MetadataWarmRoute>();
+  let metadataPathMatchers: MetadataPathMatcher[] = [];
   await withPrerenderEndpoints(async () => {
     let prodServer: PrerenderProdServer | null = null;
     const needsServer = await shouldStartPathDiscoveryServer({
@@ -1599,8 +1700,9 @@ export async function discoverPrerenderPathManifest(
           retryOptions: pathDiscoveryRetryOptions,
           secretHeaders,
         });
-        metadataRoutePatterns = metadataPathResult.routePatterns;
-        for (const pathname of metadataRoutePatterns.keys()) {
+        metadataRoutes = metadataPathResult.routes;
+        metadataPathMatchers = metadataPathResult.matchers;
+        for (const pathname of metadataRoutes.keys()) {
           addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
         }
         for (const pathname of metadataPathResult.nonDynamicPaths) {
@@ -1647,6 +1749,14 @@ export async function discoverPrerenderPathManifest(
         pathname = pathname.slice(config.basePath.length);
       else continue;
     }
+    if (metadataRoutes.has(pathname)) continue;
+    const metadataRoute = matchMetadataWarmPath(pathname, metadataPathMatchers);
+    if (metadataRoute) {
+      metadataRoutes.set(pathname, metadataRoute);
+      candidateOnlyPathSet.add(pathname);
+      addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
+      continue;
+    }
     if (!seen.has(pathname)) candidateOnlyPathSet.add(pathname);
     addPath(paths, seen, pathname);
     if (pagesDir) addPath(discoveredPagesPaths, seenPagesPaths, pathname);
@@ -1663,17 +1773,19 @@ export async function discoverPrerenderPathManifest(
   const routedWarmPaths = [...paths, ...discoveredRouteHandlerPaths];
   const excludedWarmPathSet = new Set(
     options.responseVary && !hasStagedRequestRouting
-      ? routedWarmPaths.filter(
-          (pathname) =>
-            configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
+      ? routedWarmPaths.filter((pathname) => {
+          const pathConfig = warmPathMatchConfig(config, metadataRoutes.has(pathname));
+          return (
+            configuredRulesAffectWarmPath(pathname, config.redirects, pathConfig) ||
             configuredRewritesCanReplaceWarmPath(
               pathname,
               config.rewrites,
               discoveredNonDynamicPathSet.has(pathname),
-              config,
+              pathConfig,
               () => true,
-            ),
-        )
+            )
+          );
+        })
       : [],
   );
   const configuredPagesWarmPaths = discoveredPagesPaths.filter(
@@ -1711,7 +1823,7 @@ export async function discoverPrerenderPathManifest(
     ? await resolveAppWarmPaths({
         appDir,
         i18n: config.i18n,
-        metadataRoutePatterns,
+        metadataRoutes,
         pagesDir,
         pageExtensions: config.pageExtensions,
         paths: [...configuredCandidatePaths, ...configuredRouteHandlerPaths],
@@ -1743,7 +1855,7 @@ export async function discoverPrerenderPathManifest(
           ? pagesDataRequestsGetTrailingSlash
           : undefined,
       skipProxyUrlNormalize: config.skipProxyUrlNormalize,
-      trailingSlash: config.trailingSlash,
+      trailingSlash: warmPathMatchConfig(config, metadataRoutes.has(pathname)).trailingSlash,
     });
   const routeMayResolveWarmPathSet = new Set(
     hasStagedRequestRouting
@@ -1754,7 +1866,7 @@ export async function discoverPrerenderPathManifest(
               pathname,
               config.rewrites,
               discoveredNonDynamicPathSet.has(pathname),
-              config,
+              warmPathMatchConfig(config, metadataRoutes.has(pathname)),
               (rewrite) => !isExternalUrl(rewrite.destination),
             ),
         )
@@ -1762,18 +1874,20 @@ export async function discoverPrerenderPathManifest(
   );
   const requestStageMayTerminateWarmPathSet = new Set(
     hasStagedRequestRouting
-      ? routedWarmPaths.filter(
-          (pathname) =>
+      ? routedWarmPaths.filter((pathname) => {
+          const pathConfig = warmPathMatchConfig(config, metadataRoutes.has(pathname));
+          return (
             middlewareMatchesWarmPath(pathname) ||
-            configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
+            configuredRulesAffectWarmPath(pathname, config.redirects, pathConfig) ||
             configuredRewritesCanReplaceWarmPath(
               pathname,
               config.rewrites,
               discoveredNonDynamicPathSet.has(pathname),
-              config,
+              pathConfig,
               (rewrite) => isExternalUrl(rewrite.destination),
-            ),
-        )
+            )
+          );
+        })
       : [],
   );
   for (const pathname of configuredCandidatePaths) {

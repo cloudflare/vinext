@@ -6,6 +6,7 @@ import {
   robotsToText,
   sitemapToXml,
   type ManifestConfig,
+  metadataRouteLinkSearch,
   type MetadataFileRoute,
   type RobotsConfig,
   type SitemapEntry,
@@ -132,12 +133,17 @@ export type PrerenderableMetadataRoute = {
 };
 
 /**
- * A code-generated metadata route for CDN warming: its concrete paths, or the
- * raw `generateStaticParams` results to fill into `routePattern`.
+ * A metadata route for CDN warming: its concrete paths, the raw
+ * `generateStaticParams` results to fill into `routePattern`, or, when dynamic
+ * paths aren't enumerated, the shape of the paths it serves (`params` fills
+ * `routePattern`, `image` adds an image id, `sitemap` replaces `.xml` with
+ * `/<id>.xml`). `search` is the query a page links it with.
  */
-export type WarmableMetadataRoute =
-  | { paths: string[]; routePattern: string }
-  | { routePattern: string; staticParams: unknown };
+export type WarmableMetadataRoute = { routePattern: string; search?: string } & (
+  | { paths: string[] }
+  | { staticParams: unknown }
+  | { generatedPaths: "image" | "params" | "sitemap" }
+);
 
 type RenderedMetadataRoute = {
   browserCacheControl?: string;
@@ -359,10 +365,14 @@ function generatedImagePaths(route: MetadataRuntimeRoute, imageMetadata: unknown
  * "force-dynamic"`, `revalidate = 0`); a render that turns out dynamic is
  * left to the warm-up's cacheability check. Like any Route Handler, one under
  * a dynamic segment is prerendered only for its own `generateStaticParams`
- * (collectAppRouteSegments reads no page or layout). `generateSitemaps` and
- * `generateImageMetadata` give the ids below a static prefix; under a dynamic
- * segment their ids lack the segment's params, so none is prerendered.
- * Probed on next@16.2.7 with webpack and Turbopack.
+ * (collectAppRouteSegments reads no page or layout).
+ * `generateSitemaps` and `generateImageMetadata` give the ids below a static
+ * prefix; under a dynamic segment their ids lack the segment's params, so none
+ * is prerendered. Probed on next@16.2.7 with webpack and Turbopack.
+ *
+ * Without `enumerateDynamicPaths`, a route whose paths need generating is
+ * described instead, so a traffic-picked path can be matched to it, including
+ * one the runtime stores on demand (isMetadataRouteStaticGenEnabled).
  *
  * Static metadata files need no module, so the build lists them itself.
  */
@@ -377,26 +387,44 @@ export async function getWarmableMetadataRoutes(
     if (route.module?.dynamic === "force-dynamic" || route.module?.revalidate === 0) continue;
     const functions = getMetadataRouteFunctions(route);
     if (!functions.defaultExport) continue;
-    const routePattern = metadataRouteCacheabilityPattern(route);
+    const search = metadataRouteLinkSearch(route);
+    const base = {
+      routePattern: metadataRouteCacheabilityPattern(route),
+      ...(search ? { search } : {}),
+    };
 
     if (route.type === "sitemap" && functions.generateSitemaps) {
-      if (!options.enumerateDynamicPaths || route.patternParts) continue;
+      if (route.patternParts) continue;
+      if (!options.enumerateDynamicPaths) {
+        routes.push({ ...base, generatedPaths: "sitemap" });
+        continue;
+      }
       const paths = generatedSitemapPaths(route, await functions.generateSitemaps({}));
-      routes.push({ paths, routePattern });
+      routes.push({ ...base, paths });
     } else if (functions.generateImageMetadata) {
-      if (!options.enumerateDynamicPaths || route.patternParts) continue;
+      if (!options.enumerateDynamicPaths) {
+        routes.push({ ...base, generatedPaths: "image" });
+        continue;
+      }
+      if (route.patternParts) continue;
       // Next.js's generated generateStaticParams passes its plain params.
       const imageMetadata = await functions.generateImageMetadata({ params: {} });
       const paths = generatedImagePaths(route, imageMetadata);
-      routes.push({ paths, routePattern });
+      routes.push({ ...base, paths });
     } else if (route.patternParts) {
-      if (!options.enumerateDynamicPaths || !functions.generateStaticParams) continue;
+      if (!options.enumerateDynamicPaths) {
+        if (isMetadataRouteStaticGenEnabled(route)) {
+          routes.push({ ...base, generatedPaths: "params" });
+        }
+        continue;
+      }
+      if (!functions.generateStaticParams) continue;
       const staticParams = await functions.generateStaticParams({ params: {} });
       // JSON drops an undefined value, so send null to keep the route named in
       // the discovery error.
-      routes.push({ routePattern, staticParams: staticParams ?? null });
+      routes.push({ ...base, staticParams: staticParams ?? null });
     } else {
-      routes.push({ paths: [route.servedUrl], routePattern });
+      routes.push({ ...base, paths: [route.servedUrl] });
     }
   }
 

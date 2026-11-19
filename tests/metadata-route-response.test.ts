@@ -158,10 +158,13 @@ describe("handleMetadataRouteRequest", () => {
       route("/twitter-image", "twitter-image", { default: image, dynamic: "force-dynamic" }),
       route("/icon", "icon", { default: image, revalidate: 0 }),
       route("/products/sitemap.xml", "sitemap", { default: () => [], generateSitemaps }),
-      route("/gallery/opengraph-image", "opengraph-image", {
-        default: image,
-        generateImageMetadata,
-      }),
+      {
+        ...route("/gallery/opengraph-image", "opengraph-image", {
+          default: image,
+          generateImageMetadata,
+        }),
+        contentHash: "gallery-hash",
+      },
       route(
         "/blog/[slug]/opengraph-image",
         "opengraph-image",
@@ -199,6 +202,8 @@ describe("handleMetadataRouteRequest", () => {
       {
         paths: ["/gallery/opengraph-image/small", "/gallery/opengraph-image/large"],
         routePattern: "/gallery/opengraph-image",
+        // Pages link an image with its content hash.
+        search: "?gallery-hash",
       },
       {
         routePattern: "/blog/:slug/opengraph-image",
@@ -214,11 +219,22 @@ describe("handleMetadataRouteRequest", () => {
     generateSitemaps.mockClear();
     generateImageMetadata.mockClear();
     generateStaticParams.mockClear();
+    // Without enumeration, a route whose paths need generating is described
+    // for traffic-picked paths, including one the runtime stores on demand.
     await expect(
       getWarmableMetadataRoutes(routes, { enumerateDynamicPaths: false }),
     ).resolves.toEqual([
       { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
       { paths: ["/robots.txt"], routePattern: "/robots.txt" },
+      { generatedPaths: "sitemap", routePattern: "/products/sitemap.xml" },
+      {
+        generatedPaths: "image",
+        routePattern: "/gallery/opengraph-image",
+        search: "?gallery-hash",
+      },
+      { generatedPaths: "params", routePattern: "/blog/:slug/opengraph-image" },
+      { generatedPaths: "params", routePattern: "/news/:slug/opengraph-image" },
+      { generatedPaths: "image", routePattern: "/shop/:id/opengraph-image" },
     ]);
     expect(generateSitemaps).not.toHaveBeenCalled();
     expect(generateImageMetadata).not.toHaveBeenCalled();
