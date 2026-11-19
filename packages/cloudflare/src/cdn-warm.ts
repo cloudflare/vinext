@@ -199,6 +199,8 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
               (route.kind === "app-page" ||
                 route.kind === "app-route" ||
                 route.kind === "pages-page") &&
+              (route.metadataRoute === undefined ||
+                (route.metadataRoute === true && route.kind === "app-route")) &&
               typeof route.pattern === "string" &&
               route.pattern.startsWith("/") &&
               (route.cacheabilityProbe === undefined ||
@@ -289,10 +291,16 @@ export function createPrerenderWarmPlan(
     manifest.rscPaths !== undefined &&
     manifest.rscBuildId !== undefined;
   const applyConfig = (pathname: string) => applyWarmPathConfig(pathname, manifest);
+  // Metadata routes never take a trailingSlash redirect, so public traffic and
+  // their <head> links request them as served.
+  const applyRouteHandlerConfig = (pathname: string) =>
+    manifest.routePatterns?.[pathname]?.metadataRoute
+      ? applyWarmPathConfig(pathname, { basePath: manifest.basePath })
+      : applyConfig(pathname);
   const routePatterns = manifest.routePatterns
     ? Object.fromEntries(
         Object.entries(manifest.routePatterns).map(([pathname, route]) => [
-          pathname.includes("/_next/data/") ? pathname : applyConfig(pathname),
+          pathname.includes("/_next/data/") ? pathname : applyRouteHandlerConfig(pathname),
           route,
         ]),
       )
@@ -318,7 +326,7 @@ export function createPrerenderWarmPlan(
     ...(supportsCanonicalRsc ? { rscBuildId: manifest.rscBuildId } : {}),
     rscPaths: supportsCanonicalRsc ? manifest.rscPaths!.map(applyConfig) : [],
     ...(manifest.routeHandlerPaths
-      ? { routeHandlerPaths: manifest.routeHandlerPaths.map(applyConfig) }
+      ? { routeHandlerPaths: manifest.routeHandlerPaths.map(applyRouteHandlerConfig) }
       : {}),
     ...(routePatterns ? { routePatterns } : {}),
   };
@@ -518,7 +526,11 @@ function createCdnWarmRouteReport(
       routes.get(key) ??
       ({
         failed: 0,
-        kind: target.route ? CDN_WARM_ROUTE_KIND_LABELS[target.route.kind] : "Other",
+        kind: target.route?.metadataRoute
+          ? "Metadata route"
+          : target.route
+            ? CDN_WARM_ROUTE_KIND_LABELS[target.route.kind]
+            : "Other",
         key,
         pattern: target.route?.pattern ?? "Other discovered requests",
         paths: new Set<string>(),
@@ -668,13 +680,14 @@ export async function createCdnWarmTargets(
   for (const pathname of new Set(options.routeHandlerPaths ?? [])) {
     const routeHeaders = new Headers(commonHeaders);
     routeHeaders.set("Accept", "*/*");
+    const route = options.routePatterns?.[pathname];
     requests.push({
       headers: routeHeaders,
       kind: "app-route",
-      label: `${pathname} (Route Handler)`,
+      label: `${pathname} (${route?.metadataRoute ? "Metadata route" : "Route Handler"})`,
       pathname,
       sourcePathname: pathname,
-      route: options.routePatterns?.[pathname],
+      route,
     });
   }
   return requests;

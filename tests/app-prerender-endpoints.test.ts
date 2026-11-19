@@ -199,6 +199,30 @@ describe("App prerender endpoint helpers", () => {
     await expect(response?.text()).resolves.toBe("This page could not be found");
   });
 
+  it("asks for prerender or warm-up metadata routes by the request's query", async () => {
+    const getMetadataRoutePaths = vi.fn(async (request: unknown) => [request]);
+    const request = (search: string) =>
+      handleAppPrerenderEndpoint(
+        new Request(`http://localhost/__vinext/prerender/metadata-routes${search}`),
+        {
+          getMetadataRoutePaths,
+          isPrerenderEnabled: () => true,
+          pathname: "/__vinext/prerender/metadata-routes",
+          staticParamsMap: {},
+        },
+      );
+
+    await expect((await request(""))?.json()).resolves.toEqual([
+      { enumerateDynamicPaths: true, warm: false },
+    ]);
+    await expect((await request("?warm=1"))?.json()).resolves.toEqual([
+      { enumerateDynamicPaths: true, warm: true },
+    ]);
+    await expect((await request("?warm=1&dynamicPaths=0"))?.json()).resolves.toEqual([
+      { enumerateDynamicPaths: false, warm: true },
+    ]);
+  });
+
   it("calls generateStaticParams with object parent params and serializes the result", async () => {
     const generateStaticParams = vi.fn(({ params }) => [
       { category: params.category, slug: "hello" },

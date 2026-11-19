@@ -1026,6 +1026,99 @@ describe("prerender path manifest", () => {
     expect(manifest?.rscPaths).toEqual([]);
   });
 
+  it("discovers the metadata routes Next.js prerenders as Route Handler warm targets", async () => {
+    // Next.js prerenders static metadata routes and the ones whose own module
+    // generates their params; see getWarmableMetadataRoutes for the probe.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/docs/[[...slug]]/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/favicon.ico", "icon");
+    writeFile("app/opengraph-image.png", "png");
+    // Next.js serves and prerenders this at /shop/-/twitter-image.png.
+    writeFile("app/shop/[id]/twitter-image.png", "png");
+    writeFile("app/sitemap.ts", "export default function sitemap() { return []; }");
+    writeFile(
+      "app/docs/opengraph-image.tsx",
+      "export function generateImageMetadata() { return []; }\nexport default function Image() {}",
+    );
+    writeFile(
+      "app/blog/[slug]/opengraph-image.tsx",
+      "export function generateStaticParams() { return []; }\nexport default function Image() {}",
+    );
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
+          {
+            paths: ["/docs/opengraph-image/one", "/docs/opengraph-image/two"],
+            routePattern: "/docs/opengraph-image",
+          },
+          {
+            routePattern: "/blog/:slug/opengraph-image",
+            staticParams: [{ slug: "first" }, { slug: "with space" }],
+          },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    const metadataPaths = [
+      "/blog/first/opengraph-image",
+      "/blog/with%20space/opengraph-image",
+      "/docs/opengraph-image/one",
+      "/docs/opengraph-image/two",
+      "/favicon.ico",
+      "/opengraph-image.png",
+      "/shop/-/twitter-image.png",
+      "/sitemap.xml",
+    ];
+    expect([...(manifest?.routeHandlerPaths ?? [])].sort()).toEqual(metadataPaths);
+    // The /docs catch-all page doesn't claim the metadata routes below it.
+    expect(manifest?.paths).toEqual(["/"]);
+    expect(manifest?.routePatterns).toMatchObject({
+      "/blog/first/opengraph-image": {
+        kind: "app-route",
+        metadataRoute: true,
+        pattern: "/blog/:slug/opengraph-image",
+      },
+      "/docs/opengraph-image/one": {
+        kind: "app-route",
+        metadataRoute: true,
+        pattern: "/docs/opengraph-image",
+      },
+      "/favicon.ico": { kind: "app-route", metadataRoute: true, pattern: "/favicon.ico" },
+      "/sitemap.xml": { kind: "app-route", metadataRoute: true, pattern: "/sitemap.xml" },
+    });
+    const metadataRequest = fetchMock.mock.calls.find(([input]) =>
+      (input instanceof Request ? input.url : String(input)).includes(
+        "/__vinext/prerender/metadata-routes",
+      ),
+    );
+    expect(metadataRequest?.[0]).toBe(
+      "https://staged.example.workers.dev/__vinext/prerender/metadata-routes?warm=1",
+    );
+    expect(new Headers(metadataRequest?.[1]?.headers).get("x-vinext-prerender-secret")).toBe(
+      "staged-discovery-secret",
+    );
+  });
+
   it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {
     // No Next.js test port applies: staged Worker version overrides and
     // cloudflare:workers bindings are Cloudflare-specific.

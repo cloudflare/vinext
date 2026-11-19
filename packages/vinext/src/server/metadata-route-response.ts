@@ -130,6 +130,14 @@ export type PrerenderableMetadataRoute = {
   routeSegments: string[];
 };
 
+/**
+ * A code-generated metadata route for CDN warming: its concrete paths, or the
+ * raw `generateStaticParams` results to fill into `routePattern`.
+ */
+export type WarmableMetadataRoute =
+  | { paths: string[]; routePattern: string }
+  | { routePattern: string; staticParams: unknown };
+
 type RenderedMetadataRoute = {
   browserCacheControl?: string;
   cacheLife: CacheLifeConfig | null;
@@ -215,10 +223,11 @@ function beginMetadataRouteCacheability(route: MetadataRuntimeRoute): void {
     });
     replaceHeadersContext(staticContext);
   }
-  beginRouteCacheability(
-    "app-route",
-    route.patternParts ? `/${route.patternParts.join("/")}` : route.servedUrl,
-  );
+  beginRouteCacheability("app-route", metadataRouteCacheabilityPattern(route));
+}
+
+function metadataRouteCacheabilityPattern(route: MetadataRuntimeRoute): string {
+  return route.patternParts ? `/${route.patternParts.join("/")}` : route.servedUrl;
 }
 
 function getMetadataRouteFunctions(route: MetadataRuntimeRoute): MetadataRouteFunctions {
@@ -301,17 +310,9 @@ export async function getPrerenderableMetadataRoutePaths(
       continue;
     }
 
-    const entries = await functions.generateSitemaps({});
-    if (!Array.isArray(entries)) continue;
-    const sitemapPrefix = route.servedUrl.slice(0, -4);
-    for (const entry of entries) {
-      if (!isObject(entry) || Reflect.get(entry, "id") == null) {
-        throw new Error("id property is required for every item returned from generateSitemaps");
-      }
-      const id = String(Reflect.get(entry, "id"));
-      if (!id || id.includes("/")) continue;
+    for (const path of generatedSitemapPaths(route, await functions.generateSitemaps({}))) {
       paths.push({
-        path: `${sitemapPrefix}/${encodeURIComponent(id)}.xml`,
+        path,
         routePattern: route.servedUrl,
         routeSegments: route.routeSegments ?? [],
       });
@@ -319,6 +320,84 @@ export async function getPrerenderableMetadataRoutePaths(
   }
 
   return paths;
+}
+
+function generatedSitemapPaths(route: MetadataRuntimeRoute, entries: unknown): string[] {
+  if (!Array.isArray(entries)) return [];
+  const sitemapPrefix = route.servedUrl.slice(0, -4);
+  const paths: string[] = [];
+  for (const entry of entries) {
+    if (!isObject(entry) || Reflect.get(entry, "id") == null) {
+      throw new Error("id property is required for every item returned from generateSitemaps");
+    }
+    const id = String(Reflect.get(entry, "id"));
+    if (!id || id.includes("/")) continue;
+    paths.push(`${sitemapPrefix}/${encodeURIComponent(id)}.xml`);
+  }
+  return paths;
+}
+
+function generatedImagePaths(route: MetadataRuntimeRoute, imageMetadata: unknown): string[] {
+  if (!Array.isArray(imageMetadata)) return [];
+  const paths: string[] = [];
+  for (const item of imageMetadata) {
+    if (!isObject(item) || Reflect.get(item, "id") == null) {
+      throw new Error("id property is required for every item returned from generateImageMetadata");
+    }
+    // The request handler serves only valid ids (findGeneratedImageId).
+    const id = String(Reflect.get(item, "id"));
+    if (isValidMetadataImageId(id)) paths.push(`${route.servedUrl}/${id}`);
+  }
+  return paths;
+}
+
+/**
+ * List the code-generated metadata routes a Next.js build prerenders, for CDN
+ * warming. Next.js compiles each into a GET Route Handler that is static
+ * unless it uses a request-time API or dynamic config (`dynamic =
+ * "force-dynamic"`, `revalidate = 0`); a render that turns out dynamic is
+ * left to the warm-up's cacheability check. Like any Route Handler, one under
+ * a dynamic segment is prerendered only for its own `generateStaticParams`
+ * (collectAppRouteSegments reads no page or layout). `generateSitemaps` and
+ * `generateImageMetadata` give the ids below a static prefix; under a dynamic
+ * segment their ids lack the segment's params, so none is prerendered.
+ * Probed on next@16.2.7 with webpack and Turbopack.
+ *
+ * Static metadata files need no module, so the build lists them itself.
+ */
+export async function getWarmableMetadataRoutes(
+  metadataRoutes: readonly MetadataRuntimeRoute[],
+  options: { enumerateDynamicPaths: boolean },
+): Promise<WarmableMetadataRoute[]> {
+  const routes: WarmableMetadataRoute[] = [];
+
+  for (const route of metadataRoutes) {
+    if (!route.isDynamic) continue;
+    if (route.module?.dynamic === "force-dynamic" || route.module?.revalidate === 0) continue;
+    const functions = getMetadataRouteFunctions(route);
+    if (!functions.defaultExport) continue;
+    const routePattern = metadataRouteCacheabilityPattern(route);
+
+    if (route.type === "sitemap" && functions.generateSitemaps) {
+      if (!options.enumerateDynamicPaths || route.patternParts) continue;
+      const paths = generatedSitemapPaths(route, await functions.generateSitemaps({}));
+      routes.push({ paths, routePattern });
+    } else if (functions.generateImageMetadata) {
+      if (!options.enumerateDynamicPaths || route.patternParts) continue;
+      // Next.js's generated generateStaticParams passes its plain params.
+      const imageMetadata = await functions.generateImageMetadata({ params: {} });
+      const paths = generatedImagePaths(route, imageMetadata);
+      routes.push({ paths, routePattern });
+    } else if (route.patternParts) {
+      if (!options.enumerateDynamicPaths || !functions.generateStaticParams) continue;
+      const staticParams = await functions.generateStaticParams({ params: {} });
+      routes.push({ routePattern, staticParams });
+    } else {
+      routes.push({ paths: [route.servedUrl], routePattern });
+    }
+  }
+
+  return routes;
 }
 
 function getCachedMetadataRouteValue(entry: ISRCacheEntry | null): CachedRouteValue | null {

@@ -6,6 +6,7 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   getPrerenderableMetadataRoutePaths,
+  getWarmableMetadataRoutes,
   handleMetadataRouteRequest,
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
@@ -116,6 +117,99 @@ describe("handleMetadataRouteRequest", () => {
         routeSegments: [],
       },
     ]);
+  });
+
+  it("lists the metadata routes a Next.js build prerenders for CDN warming", async () => {
+    // Probed on next@16.2.7 (webpack and Turbopack): `next build` prerenders
+    // app/sitemap.js and app/robots.js, app/blog/[slug]/opengraph-image.js per
+    // its own generateStaticParams, app/gallery/opengraph-image.js per
+    // generateImageMetadata id and app/products/sitemap.js per
+    // generateSitemaps id. It leaves force-dynamic routes, an opengraph-image
+    // whose only params come from its page's generateStaticParams, and
+    // generateImageMetadata below a dynamic segment to request time.
+    const route = (
+      servedUrl: string,
+      type: string,
+      module: Record<string, unknown>,
+      patternParts?: string[],
+    ): MetadataFileRoute => ({
+      type,
+      isDynamic: true,
+      filePath: `/tmp/app${servedUrl}.tsx`,
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl,
+      contentType: type === "sitemap" ? "application/xml" : "image/png",
+      module,
+      ...(patternParts ? { patternParts } : {}),
+    });
+    const image = async () => new Response("image");
+    const generateSitemaps = vi.fn(async () => [{ id: 0 }, { id: "one" }]);
+    const generateImageMetadata = vi.fn(() => [{ id: "small" }, { id: "large" }, { id: "a/b" }]);
+    const generateStaticParams = vi.fn(() => [{ slug: "first" }, { slug: "second" }]);
+    const routes = [
+      route("/sitemap.xml", "sitemap", { default: () => [] }),
+      route("/robots.txt", "robots", { default: () => ({}), revalidate: 60 }),
+      route("/twitter-image", "twitter-image", { default: image, dynamic: "force-dynamic" }),
+      route("/icon", "icon", { default: image, revalidate: 0 }),
+      route("/products/sitemap.xml", "sitemap", { default: () => [], generateSitemaps }),
+      route("/gallery/opengraph-image", "opengraph-image", {
+        default: image,
+        generateImageMetadata,
+      }),
+      route(
+        "/blog/[slug]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateStaticParams },
+        ["blog", ":slug", "opengraph-image"],
+      ),
+      route("/docs/[slug]/opengraph-image", "opengraph-image", { default: image }, [
+        "docs",
+        ":slug",
+        "opengraph-image",
+      ]),
+      route(
+        "/shop/[id]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateImageMetadata },
+        ["shop", ":id", "opengraph-image"],
+      ),
+    ];
+
+    await expect(
+      getWarmableMetadataRoutes(routes, { enumerateDynamicPaths: true }),
+    ).resolves.toEqual([
+      { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
+      { paths: ["/robots.txt"], routePattern: "/robots.txt" },
+      {
+        paths: ["/products/sitemap/0.xml", "/products/sitemap/one.xml"],
+        routePattern: "/products/sitemap.xml",
+      },
+      {
+        paths: ["/gallery/opengraph-image/small", "/gallery/opengraph-image/large"],
+        routePattern: "/gallery/opengraph-image",
+      },
+      {
+        routePattern: "/blog/:slug/opengraph-image",
+        staticParams: [{ slug: "first" }, { slug: "second" }],
+      },
+    ]);
+    expect(generateImageMetadata).toHaveBeenCalledTimes(1);
+    expect(generateImageMetadata).toHaveBeenCalledWith({ params: {} });
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+
+    generateSitemaps.mockClear();
+    generateImageMetadata.mockClear();
+    generateStaticParams.mockClear();
+    await expect(
+      getWarmableMetadataRoutes(routes, { enumerateDynamicPaths: false }),
+    ).resolves.toEqual([
+      { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
+      { paths: ["/robots.txt"], routePattern: "/robots.txt" },
+    ]);
+    expect(generateSitemaps).not.toHaveBeenCalled();
+    expect(generateImageMetadata).not.toHaveBeenCalled();
+    expect(generateStaticParams).not.toHaveBeenCalled();
   });
 
   it("publishes collected cache tags and cache life for prerender seeding", async () => {

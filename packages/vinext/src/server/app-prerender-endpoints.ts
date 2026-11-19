@@ -23,9 +23,15 @@ type AppPrerenderPageRoute = {
   };
 };
 
+/** `warm` asks for CDN warm-up's metadata routes instead of prerender's. */
+export type AppPrerenderMetadataRoutePathsRequest = {
+  enumerateDynamicPaths: boolean;
+  warm: boolean;
+};
+
 type HandleAppPrerenderEndpointOptions = {
   isPrerenderEnabled?: () => boolean;
-  getMetadataRoutePaths?: () => Promise<unknown>;
+  getMetadataRoutePaths?: (request: AppPrerenderMetadataRoutePathsRequest) => Promise<unknown>;
   loadPagesRoutes?: () => Promise<unknown>;
   pathname: string;
   rootParamNamesByPattern?: AppPrerenderRootParamNamesMap;
@@ -53,21 +59,32 @@ export async function handleAppPrerenderEndpoint(
 
   if (options.pathname === VINEXT_PRERENDER_METADATA_ROUTES_PATH) {
     if (!options.getMetadataRoutePaths) return null;
-    return handleMetadataRoutesEndpoint(options);
+    return handleMetadataRoutesEndpoint(request, options);
   }
 
   return null;
 }
 
 async function handleMetadataRoutesEndpoint(
+  request: Request,
   options: HandleAppPrerenderEndpointOptions,
 ): Promise<Response> {
   if (!isEnabled(options)) {
     return notFoundResponse({ headers: NO_STORE_HEADERS });
   }
 
+  const url = new URL(request.url);
+  const pathsRequest = {
+    enumerateDynamicPaths: url.searchParams.get("dynamicPaths") !== "0",
+    warm: url.searchParams.get("warm") === "1",
+  };
   try {
-    return jsonResponse(await options.getMetadataRoutePaths?.());
+    // Warm-up runs the routes' generateStaticParams, which Next.js calls with
+    // a work store.
+    const paths = pathsRequest.warm
+      ? await runInWorkStoreScope(() => options.getMetadataRoutePaths?.(pathsRequest))
+      : await options.getMetadataRoutePaths?.(pathsRequest);
+    return jsonResponse(paths);
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
   }
