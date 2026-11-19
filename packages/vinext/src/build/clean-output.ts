@@ -230,7 +230,14 @@ function resolveGitDirs(root: string): string[] {
   // as a path too, so a symlinked one keeps its target.
   const protectRepository = (dir: string) => {
     if (!rootForms.some((rootForm) => isPathInsideOrEqual(dir, rootForm))) protect(dir);
-    for (const entry of GIT_DIR_ENTRIES) {
+    // A split index keeps its shared part in sharedindex.<hash>.
+    let sharedIndexes: string[] = [];
+    try {
+      sharedIndexes = fs.readdirSync(dir).filter((entry) => entry.startsWith("sharedindex."));
+    } catch {
+      // Not a directory yet.
+    }
+    for (const entry of [...GIT_DIR_ENTRIES, ...sharedIndexes]) {
       const file = path.join(dir, entry);
       if (!rootForms.some((rootForm) => isPathInsideOrEqual(file, rootForm))) protect(file);
     }

@@ -615,6 +615,23 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it("refuses an outDir that holds the target of a symlinked shared index", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-shared-index-"));
+    try {
+      // A split index reads its shared part from .git/sharedindex.<hash>.
+      const sharedIndex = writeFile(store, "sharedindex.0123", "DIRC");
+      fs.mkdirSync(path.join(tmpDir, ".git"));
+      fs.symlinkSync(sharedIndex, path.join(tmpDir, ".git", "sharedindex.0123"));
+
+      expect(() => cleanBuildOutput({ root: tmpDir, outDir: store, emptyOutDir: true })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(sharedIndex)).toBe(true);
+    } finally {
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
   it("keeps searching above a folder that only looks like a bare repository", () => {
     const head = writeFile(tmpDir, ".git/HEAD", "ref: refs/heads/main\n");
     // container has HEAD, objects and refs, but its HEAD isn't a Git HEAD.

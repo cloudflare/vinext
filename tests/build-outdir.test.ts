@@ -468,7 +468,7 @@ describe("build.outDir", () => {
     ).rejects.toThrow('The build.outDir "app" overlaps the app directory "app"');
   });
 
-  it("rejects a plugin that moves Vite's root after vinext read it", async () => {
+  it("rejects a plugin that moves Vite's root before the build empties anything", async () => {
     const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-moved-root-repo-"));
     temporaryDirs.push(repo);
@@ -476,7 +476,8 @@ describe("build.outDir", () => {
     fs.writeFileSync(path.join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
     fs.mkdirSync(path.join(repo, "site"));
 
-    // The root Vite would build from is in a repository vinext never checked.
+    // The root Vite would build from is in a repository vinext never checked,
+    // and the build lifecycle empties build.outDir as the config resolves.
     await expect(
       createBuilder({
         root: fixtureDir,
@@ -485,7 +486,33 @@ describe("build.outDir", () => {
           vinext({ appDir: fixtureDir }),
           { name: "move-root", config: () => ({ root: path.join(repo, "site") }) },
         ],
-        build: { outDir: path.join(repo, ".git") },
+        build: { outDir: path.join(repo, ".git"), emptyOutDir: true },
+        logLevel: "silent",
+        [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
+      } as Parameters<typeof createBuilder>[0]),
+    ).rejects.toThrow("A plugin moved Vite's root");
+    expect(fs.existsSync(path.join(repo, ".git", "HEAD"))).toBe(true);
+  });
+
+  it("rejects a plugin that moves Vite's root to a symlink of it", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-linked-root-repo-"));
+    temporaryDirs.push(repo);
+    fs.mkdirSync(path.join(repo, ".git"));
+    fs.writeFileSync(path.join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.symlinkSync(fixtureDir, path.join(repo, "site"));
+
+    // Both roots are the same directory, but Vite would resolve ../.git
+    // from the link: the repository's Git directory.
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        resolve: { preserveSymlinks: true },
+        plugins: [
+          vinext({ appDir: fixtureDir, rscOutDir: "../.git" }),
+          { name: "move-root", config: () => ({ root: path.join(repo, "site") }) },
+        ],
         logLevel: "silent",
       }),
     ).rejects.toThrow("A plugin moved Vite's root");
