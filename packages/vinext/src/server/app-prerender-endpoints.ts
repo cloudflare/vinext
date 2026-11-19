@@ -79,11 +79,9 @@ async function handleMetadataRoutesEndpoint(
     warm: url.searchParams.get("warm") === "1",
   };
   try {
-    // Warm-up runs the routes' generateStaticParams, which Next.js calls with
-    // a work store.
-    const paths = pathsRequest.warm
-      ? await runInWorkStoreScope(() => options.getMetadataRoutePaths?.(pathsRequest))
-      : await options.getMetadataRoutePaths?.(pathsRequest);
+    // Listing runs the routes' generators, which Next.js calls with a work
+    // store.
+    const paths = await runInWorkStoreScope(() => options.getMetadataRoutePaths?.(pathsRequest));
     return jsonResponse(paths);
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);

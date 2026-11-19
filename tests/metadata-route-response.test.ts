@@ -241,6 +241,68 @@ describe("handleMetadataRouteRequest", () => {
     expect(generateStaticParams).not.toHaveBeenCalled();
   });
 
+  it("runs discovery generators without the discovery request's headers", async () => {
+    // No Next.js test port applies: Next.js runs these generators at build
+    // time through the generateStaticParams its metadata loader adds, where
+    // request APIs throw.
+    const readHeaders = async () => {
+      await headers();
+      return [{ id: "a", slug: "a" }];
+    };
+    const route = (
+      servedUrl: string,
+      type: string,
+      module: Record<string, unknown>,
+      patternParts?: string[],
+    ): MetadataFileRoute => ({
+      type,
+      isDynamic: true,
+      filePath: `/tmp/app${servedUrl}.tsx`,
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl,
+      contentType: type === "sitemap" ? "application/xml" : "image/png",
+      module,
+      ...(patternParts ? { patternParts } : {}),
+    });
+    const image = async () => new Response("image");
+    const routes = [
+      route("/sitemap.xml", "sitemap", {
+        default: markUseCache(async () => []),
+        generateSitemaps: readHeaders,
+      }),
+      route("/gallery/opengraph-image", "opengraph-image", {
+        default: image,
+        generateImageMetadata: readHeaders,
+      }),
+      route(
+        "/blog/[slug]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateStaticParams: readHeaders },
+        ["blog", ":slug", "opengraph-image"],
+      ),
+    ];
+    const discover = (fn: () => Promise<unknown>) =>
+      runWithRequestContext(
+        createRequestContext({
+          headersContext: {
+            cookies: new Map(),
+            headers: new Headers({ "x-vinext-prerender-secret": "secret" }),
+          },
+        }),
+        fn,
+      );
+
+    for (const listed of routes) {
+      await expect(
+        discover(() => getWarmableMetadataRoutes([listed], { enumerateDynamicPaths: true })),
+      ).rejects.toThrow("used a request API such as `headers()`");
+    }
+    await expect(discover(() => getPrerenderableMetadataRoutePaths([routes[0]!]))).rejects.toThrow(
+      "used a request API such as `headers()`",
+    );
+  });
+
   it("stamps the adapter's build identity on metadata route responses", async () => {
     // No Next.js test port applies: deploy warm-up checks this vinext header
     // against the staged Worker version, as it does for Route Handlers.

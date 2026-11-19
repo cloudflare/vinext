@@ -19,6 +19,7 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
+import { runStaticParamsGeneration } from "./static-params-generation.js";
 import {
   coalesceOnDemandResponse,
   isrCacheControl,
@@ -317,7 +318,9 @@ export async function getPrerenderableMetadataRoutePaths(
       continue;
     }
 
-    for (const path of generatedSitemapPaths(route, await functions.generateSitemaps({}))) {
+    const generateSitemaps = functions.generateSitemaps;
+    const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}));
+    for (const path of generatedSitemapPaths(route, sitemaps)) {
       paths.push({
         path,
         routePattern: route.servedUrl,
@@ -327,6 +330,23 @@ export async function getPrerenderableMetadataRoutePaths(
   }
 
   return paths;
+}
+
+/**
+ * Runs one of a metadata route's generators for discovery the way Next.js'
+ * build does, through the generateStaticParams its metadata loader gives the
+ * route: request APIs throw, and the discovery request's state stays its own.
+ */
+function runMetadataRouteGenerator<T>(
+  route: MetadataRuntimeRoute,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return runStaticParamsGeneration(
+    route.module ?? {},
+    metadataRouteCacheabilityPattern(route),
+    route.routeSegments ?? [],
+    fn,
+  );
 }
 
 function generatedSitemapPaths(route: MetadataRuntimeRoute, entries: unknown): string[] {
@@ -399,7 +419,9 @@ export async function getWarmableMetadataRoutes(
         routes.push({ ...base, generatedPaths: "sitemap" });
         continue;
       }
-      const paths = generatedSitemapPaths(route, await functions.generateSitemaps({}));
+      const generateSitemaps = functions.generateSitemaps;
+      const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}));
+      const paths = generatedSitemapPaths(route, sitemaps);
       routes.push({ ...base, paths });
     } else if (functions.generateImageMetadata) {
       if (!options.enumerateDynamicPaths) {
@@ -408,7 +430,10 @@ export async function getWarmableMetadataRoutes(
       }
       if (route.patternParts) continue;
       // Next.js's generated generateStaticParams passes its plain params.
-      const imageMetadata = await functions.generateImageMetadata({ params: {} });
+      const generateImageMetadata = functions.generateImageMetadata;
+      const imageMetadata = await runMetadataRouteGenerator(route, async () =>
+        generateImageMetadata({ params: {} }),
+      );
       const paths = generatedImagePaths(route, imageMetadata);
       routes.push({ ...base, paths });
     } else if (route.patternParts) {
@@ -418,8 +443,11 @@ export async function getWarmableMetadataRoutes(
         }
         continue;
       }
-      if (!functions.generateStaticParams) continue;
-      const staticParams = await functions.generateStaticParams({ params: {} });
+      const generateStaticParams = functions.generateStaticParams;
+      if (!generateStaticParams) continue;
+      const staticParams = await runMetadataRouteGenerator(route, async () =>
+        generateStaticParams({ params: {} }),
+      );
       // JSON drops an undefined value, so send null to keep the route named in
       // the discovery error.
       routes.push({ ...base, staticParams: staticParams ?? null });
