@@ -1039,10 +1039,10 @@ async function collectMetadataRoutePaths(options: {
     if (routes.has(pathname) || matchMetadataWarmPath(pathname, matchers)) return;
     routes.set(pathname, route);
   };
-  if (metadataRoutes.length === 0) return { matchers, routes };
   if (!options.baseUrl || !options.secretHeaders[VINEXT_PRERENDER_SECRET_HEADER]) {
     // No server to ask: the build embeds these files and links each with this
-    // hash.
+    // hash. With a server, it lists the deployed build's routes, which
+    // `--skip-build` keeps even after the source drops them.
     for (const route of metadataRoutes) {
       if (route.isDynamic) continue;
       const search = metadataRouteLinkSearch({

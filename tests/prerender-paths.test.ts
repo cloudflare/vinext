@@ -1142,6 +1142,45 @@ describe("prerender path manifest", () => {
     );
   });
 
+  it("warms the metadata routes the deployed build serves after the source drops them", async () => {
+    // No Next.js test port applies: `--skip-build` warms the staged build,
+    // whose routes the Worker lists even when the source no longer has them.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          { paths: ["/favicon.ico"], routePattern: "/favicon.ico", search: "?built-hash" },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    expect(manifest?.routeHandlerPaths).toEqual(["/favicon.ico"]);
+    expect(manifest?.routePatterns?.["/favicon.ico"]).toMatchObject({
+      metadataRoute: true,
+      metadataSearch: "?built-hash",
+      pattern: "/favicon.ico",
+    });
+  });
+
   it("hashes static metadata files itself when no server is running", async () => {
     // No Next.js test port applies: the hash matches the links vinext's build
     // writes.
@@ -1475,7 +1514,9 @@ describe("prerender path manifest", () => {
         }),
       )
       .mockResolvedValueOnce(new Response("version still propagating", { status: 500 }))
-      .mockResolvedValueOnce(Response.json([{ slug: "intro" }]));
+      .mockResolvedValueOnce(Response.json([{ slug: "intro" }]))
+      // The metadata route listing, after the version is reachable.
+      .mockImplementation(async () => Response.json([]));
     vi.stubGlobal("fetch", remoteFetch);
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
@@ -1505,7 +1546,7 @@ describe("prerender path manifest", () => {
     });
 
     expect(manifest?.paths).toEqual(["/cached/intro"]);
-    expect(remoteFetch).toHaveBeenCalledTimes(4);
+    expect(remoteFetch).toHaveBeenCalledTimes(5);
     for (const [, init] of remoteFetch.mock.calls) {
       expect(init?.redirect).toBe("manual");
     }
@@ -1514,7 +1555,9 @@ describe("prerender path manifest", () => {
   it("uses the full discovery phase when no retry limit is configured", async () => {
     // No Next.js test port applies: Worker version propagation is Cloudflare-specific.
     let attempts = 0;
-    const remoteFetch = vi.fn<typeof fetch>(async () => {
+    const remoteFetch = vi.fn<typeof fetch>(async (input) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.includes("/__vinext/prerender/metadata-routes")) return Response.json([]);
       attempts++;
       return attempts <= 61
         ? new Response("old Worker", { status: 404 })
@@ -1545,7 +1588,7 @@ describe("prerender path manifest", () => {
     });
 
     expect(manifest?.paths).toEqual(["/cached/intro"]);
-    expect(remoteFetch).toHaveBeenCalledTimes(62);
+    expect(attempts).toBe(62);
   });
 
   it("reports exhausted discovery attempts and the last transient status", async () => {
@@ -2687,7 +2730,15 @@ describe("prerender path manifest", () => {
         "app/[slug]/page.mdx",
         'export function generateStaticParams() { return [{ slug: "hello" }] }\n\n# Hello\n',
       );
-      vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
+      vi.mocked(fetch).mockImplementation(async (input) =>
+        Response.json(
+          (input instanceof Request ? input.url : String(input)).includes(
+            "/__vinext/prerender/metadata-routes",
+          )
+            ? []
+            : [{ slug: "hello" }],
+        ),
+      );
 
       const [
         { emitPrerenderPathManifest },
