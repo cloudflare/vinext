@@ -1500,7 +1500,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.routePatterns?.["/foo/opengraph-image"]?.metadataSearch).toBeUndefined();
   });
 
-  it("matches a traffic-picked path to a metadata route on its decoded pathname", async () => {
+  it("matches traffic-picked metadata paths on decoded IDs and static segments as sent", async () => {
     // No Next.js test port applies: traffic-aware warming is vinext-specific.
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
@@ -1535,20 +1535,21 @@ describe("prerender path manifest", () => {
       await import("../packages/vinext/src/build/prerender-paths.js");
     const manifest = await discoverPrerenderPathManifest({
       root: tmpDir,
-      // The runtime decodes /%73mall to /small before matching.
-      candidatePaths: ["/%73mall/opengraph-image/one"],
+      // The runtime serves image ID %6Fne as `one`, but matches static
+      // segments as sent: /%73mall isn't /small.
+      candidatePaths: ["/small/opengraph-image/%6Fne", "/%73mall/opengraph-image/one"],
       candidatePathsOnly: true,
       pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
     });
 
     // Warmed at the spelling visitors requested, which the cache keys on.
-    expect(manifest?.routeHandlerPaths).toEqual(["/%73mall/opengraph-image/one"]);
-    expect(manifest?.routePatterns?.["/%73mall/opengraph-image/one"]).toMatchObject({
+    expect(manifest?.routeHandlerPaths).toEqual(["/small/opengraph-image/%6Fne"]);
+    expect(manifest?.routePatterns?.["/small/opengraph-image/%6Fne"]).toMatchObject({
       metadataRoute: true,
       metadataSearch: "?small-hash",
       pattern: "/small/opengraph-image",
     });
-    expect(manifest?.paths).toEqual(["/"]);
+    expect(manifest?.routePatterns?.["/%73mall/opengraph-image/one"]?.metadataRoute).toBeUndefined();
   });
 
   it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {

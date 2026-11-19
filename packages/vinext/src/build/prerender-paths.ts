@@ -982,9 +982,38 @@ function warmPathMatchConfig<T extends { trailingSlash: boolean }>(
 }
 
 /**
+ * Whether a pathname has a described metadata route's shape. Generated IDs are
+ * checked only on the decoded pathname, which the runtime serves them from.
+ */
+function metadataWarmPathMatches(
+  pathname: string,
+  { generatedPaths, pattern }: MetadataPathMatcher,
+  checkIds: boolean,
+): boolean {
+  if (generatedPaths === "sitemap") {
+    const prefix = `${pattern.slice(0, -".xml".length)}/`;
+    const id = pathname.startsWith(prefix) ? pathname.slice(prefix.length, -".xml".length) : "";
+    return pathname.endsWith(".xml") && id.length > 0 && !id.includes("/");
+  }
+  const urlParts = pathname.split("/").filter(Boolean);
+  const patternParts = pattern.split("/").filter(Boolean);
+  if (generatedPaths === "image") {
+    const id = urlParts.at(-1);
+    return (
+      id !== undefined &&
+      (!checkIds || isValidMetadataImageId(id)) &&
+      matchMetadataRoutePattern(urlParts.slice(0, -1), patternParts) !== null
+    );
+  }
+  return matchMetadataRoutePattern(urlParts, patternParts) !== null;
+}
+
+/**
  * Match a candidate path to a described metadata route, as the runtime serves
- * it: on its segment-decoded pathname. The caller keeps the requested spelling
- * as the warm target.
+ * it: the first route both its segment-decoded pathname and, for static
+ * segments, its pathname as sent match (`/%70roducts/sitemap/0.xml` is not
+ * `/products/sitemap/0.xml`). The caller keeps the requested spelling as the
+ * warm target.
  */
 function matchMetadataWarmPath(
   requestPathname: string,
@@ -997,27 +1026,14 @@ function matchMetadataWarmPath(
     // The runtime rejects malformed encoding before routing.
     return null;
   }
-  const urlParts = pathname.split("/").filter(Boolean);
-  for (const { generatedPaths, ...route } of matchers) {
-    if (generatedPaths === "sitemap") {
-      const prefix = `${route.pattern.slice(0, -".xml".length)}/`;
-      const id = pathname.startsWith(prefix) ? pathname.slice(prefix.length, -".xml".length) : "";
-      if (pathname.endsWith(".xml") && id.length > 0 && !id.includes("/")) return route;
-      continue;
+  for (const matcher of matchers) {
+    if (
+      metadataWarmPathMatches(pathname, matcher, true) &&
+      metadataWarmPathMatches(requestPathname, matcher, false)
+    ) {
+      const { generatedPaths: _generatedPaths, ...route } = matcher;
+      return route;
     }
-    const patternParts = route.pattern.split("/").filter(Boolean);
-    if (generatedPaths === "image") {
-      const id = urlParts.at(-1);
-      if (
-        id !== undefined &&
-        isValidMetadataImageId(id) &&
-        matchMetadataRoutePattern(urlParts.slice(0, -1), patternParts)
-      ) {
-        return route;
-      }
-      continue;
-    }
-    if (matchMetadataRoutePattern(urlParts, patternParts)) return route;
   }
   return null;
 }
