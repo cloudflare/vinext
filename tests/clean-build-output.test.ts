@@ -203,28 +203,70 @@ describe("cleanBuildOutput", () => {
     },
   );
 
-  it.each(["GIT_DIR", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"])(
-    "refuses an outDir in the Git directory %s names",
-    (name) => {
-      const gitDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-git-dir-"));
-      const previous = process.env[name];
-      try {
-        const head = writeFile(gitDir, "HEAD", "ref: refs/heads/main\n");
-        // Git uses the variable instead of finding a .git above the project.
-        process.env[name] = gitDir;
-        fs.symlinkSync(gitDir, path.join(tmpDir, "dist"));
+  it.each([
+    "GIT_DIR",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  ])("refuses an outDir in the Git directory %s names", (name) => {
+    const gitDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-git-dir-"));
+    const previous = process.env[name];
+    try {
+      const head = writeFile(gitDir, "HEAD", "ref: refs/heads/main\n");
+      // Git uses the variable instead of finding a .git above the project.
+      process.env[name] = gitDir;
+      fs.symlinkSync(gitDir, path.join(tmpDir, "dist"));
 
+      expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(head)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env[name];
+      else process.env[name] = previous;
+      fs.rmSync(gitDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an outDir that holds the index GIT_INDEX_FILE names", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-index-"));
+    const previous = process.env.GIT_INDEX_FILE;
+    try {
+      const index = writeFile(store, "index", "DIRC");
+      process.env.GIT_INDEX_FILE = index;
+      fs.symlinkSync(store, path.join(tmpDir, "dist"));
+
+      expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(index)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_INDEX_FILE;
+      else process.env.GIT_INDEX_FILE = previous;
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an outDir in an alternate object directory the repository reads", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-alternates-"));
+    try {
+      // .git/objects lists a relative alternate, which lists another.
+      writeFile(tmpDir, ".git/objects/info/alternates", `# shared\n${path.join(store, "first")}\n`);
+      writeFile(store, "first/info/alternates", "../second\n");
+      const pack = writeFile(store, "second/pack/objects.pack", "PACK");
+
+      for (const target of ["first", "second"]) {
+        fs.rmSync(path.join(tmpDir, "dist"), { force: true });
+        fs.symlinkSync(path.join(store, target), path.join(tmpDir, "dist"));
         expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
           "overlaps the project's Git directory",
         );
-        expect(fs.existsSync(head)).toBe(true);
-      } finally {
-        if (previous === undefined) delete process.env[name];
-        else process.env[name] = previous;
-        fs.rmSync(gitDir, { recursive: true, force: true });
       }
-    },
-  );
+      expect(fs.existsSync(pack)).toBe(true);
+    } finally {
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
 
   it("follows a GIT_DIR that names a gitfile", () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-gitfile-"));

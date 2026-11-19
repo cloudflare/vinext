@@ -433,32 +433,16 @@ describe("build.outDir", () => {
     expect(fs.existsSync(source)).toBe(true);
   });
 
-  it("accepts any build.outDir for a build that doesn't write", async () => {
+  it("checks build.outDir for a build that doesn't write", async () => {
     const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
 
-    const builder = await createBuilder({
-      root: fixtureDir,
-      configFile: false,
-      plugins: [vinext({ appDir: fixtureDir })],
-      build: { outDir: "app", write: false },
-      logLevel: "silent",
-      [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
-    } as Parameters<typeof createBuilder>[0]);
-
-    expect(builder.config.build.write).toBe(false);
-  });
-
-  it("rejects a build.outDir over the app directory when an environment still writes", async () => {
-    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
-
+    // vinext's own hooks still write their files with build.write: false.
     await expect(
       createBuilder({
         root: fixtureDir,
         configFile: false,
         plugins: [vinext({ appDir: fixtureDir })],
         build: { outDir: "app", write: false },
-        // The RSC environment writes, and with it vinext's server metadata.
-        environments: { rsc: { build: { write: true, outDir: "out/rsc" } } },
         logLevel: "silent",
         [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
       } as Parameters<typeof createBuilder>[0]),

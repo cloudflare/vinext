@@ -2702,22 +2702,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // cleanup empties build.outDir, so none of them may hold the project
         // or its sources. Check the resolved values, after every config and
         // configEnvironment hook. With `build.outDir: "."` the derived
-        // server/ and client/ would be the app's own directories. An
-        // environment with `build.write: false` writes and empties nothing,
-        // but any that writes also writes vinext's server metadata under
-        // build.outDir.
+        // server/ and client/ would be the app's own directories. They're
+        // checked with `build.write: false` too, since vinext's own hooks
+        // still write to them.
         const safety = {
           root,
           protectedDirs: { app: appDir, pages: pagesDir, public: config.publicDir },
         };
-        if (
-          config.build.write ||
-          Object.values(config.environments).some((environment) => environment.build.write)
-        ) {
-          assertOutputDirIsSafe("build.outDir", buildOutDir, safety);
-        }
+        assertOutputDirIsSafe("build.outDir", buildOutDir, safety);
         for (const [name, environment] of Object.entries(config.environments)) {
-          if (!environment.build.write) continue;
           for (const outputDir of resolveEnvironmentOutputDirs(root, environment.build)) {
             assertOutputDirIsSafe(`${name} output directory`, outputDir, safety);
           }
