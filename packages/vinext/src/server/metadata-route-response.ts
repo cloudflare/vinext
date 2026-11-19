@@ -51,6 +51,7 @@ import {
   recordRouteCacheability,
 } from "vinext/shims/cacheability-classification";
 import {
+  applyCdnResponseBuildIdentityHeaders,
   applyCdnResponseHeaders,
   hasCdnResponsePolicy,
   NEVER_CACHE_CONTROL,
@@ -1015,6 +1016,16 @@ async function writeMetadataRouteMiss(
 }
 
 export async function handleMetadataRouteRequest(
+  requestOptions: MetadataRouteRequestOptions,
+): Promise<Response | null> {
+  // Like a Route Handler response, a metadata route response carries the
+  // adapter's build identity, which deploy warm-up checks against the staged
+  // version.
+  const response = await renderMetadataRouteRequest(requestOptions);
+  return response ? applyCdnResponseBuildIdentityHeaders(response) : null;
+}
+
+async function renderMetadataRouteRequest(
   requestOptions: MetadataRouteRequestOptions,
 ): Promise<Response | null> {
   // Serve a rewrite like a direct request to its destination: match, key and

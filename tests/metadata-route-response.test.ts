@@ -11,6 +11,11 @@ import {
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import {
+  DefaultCdnCacheAdapter,
+  getCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 import { addCollectedRequestTags } from "../packages/vinext/src/shims/fetch-cache.js";
 import { _setRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
@@ -218,6 +223,36 @@ describe("handleMetadataRouteRequest", () => {
     expect(generateSitemaps).not.toHaveBeenCalled();
     expect(generateImageMetadata).not.toHaveBeenCalled();
     expect(generateStaticParams).not.toHaveBeenCalled();
+  });
+
+  it("stamps the adapter's build identity on metadata route responses", async () => {
+    // No Next.js test port applies: deploy warm-up checks this vinext header
+    // against the staged Worker version, as it does for Route Handlers.
+    const previousAdapter = getCdnCacheAdapter();
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter("build-a"));
+    try {
+      const response = await handleMetadataRouteRequest({
+        cleanPathname: "/robots.txt",
+        makeThenableParams,
+        metadataRoutes: [
+          {
+            type: "robots",
+            isDynamic: true,
+            filePath: "/tmp/app/robots.ts",
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/robots.txt",
+            contentType: "text/plain",
+            module: { default: () => ({ rules: { userAgent: "*" } }) },
+          },
+        ],
+      });
+
+      expect(response?.status).toBe(200);
+      expect(response?.headers.get("X-Vinext-Build-Id")).toBe("build-a");
+    } finally {
+      setCdnCacheAdapter(previousAdapter);
+    }
   });
 
   it("publishes collected cache tags and cache life for prerender seeding", async () => {
