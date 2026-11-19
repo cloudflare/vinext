@@ -136,6 +136,29 @@ describe("cleanBuildOutput", () => {
     expect(fs.existsSync(head)).toBe(true);
   });
 
+  it("refuses a symlinked outDir that points at a worktree's Git directories", () => {
+    // A worktree's .git file names its Git directory, whose commondir file
+    // names the repository's.
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-worktree-repo-"));
+    try {
+      const head = writeFile(repo, ".git/HEAD", "ref: refs/heads/main\n");
+      writeFile(repo, ".git/worktrees/site/commondir", "../..\n");
+      const worktreeGitDir = path.join(repo, ".git/worktrees/site");
+      writeFile(tmpDir, ".git", `gitdir: ${worktreeGitDir}\n`);
+
+      for (const target of [worktreeGitDir, path.join(repo, ".git")]) {
+        fs.rmSync(path.join(tmpDir, "dist"), { force: true });
+        fs.symlinkSync(target, path.join(tmpDir, "dist"));
+        expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+          "is inside the project's .git directory",
+        );
+      }
+      expect(fs.existsSync(head)).toBe(true);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("refuses an outDir inside the project's .git directory", () => {
     const object = writeFile(tmpDir, ".git/objects/ab/cdef", "blob\n");
 

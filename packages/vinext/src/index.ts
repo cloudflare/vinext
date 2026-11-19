@@ -8775,17 +8775,16 @@ export const loadServerActionClient = ${
           // the last production build's <build.outDir>/server, including the
           // prerender secret in vinext-server.json. Vite serves the client in
           // dev, so drop that entry before Nitro creates its dev server. Nitro
-          // registers it just before it calls build:before.
+          // registers it after its modules are set up, as a root-level
+          // fallthrough directory with maxAge 0.
           if (nitro.options.dev) {
+            const configuredAssets = new Set(nitro.options.publicAssets);
             nitro.hooks.hook("build:before", () => {
-              const viteOutput = nitro.options.publicAssets?.at(-1);
-              if (
-                viteOutput?.baseURL === "/" &&
-                viteOutput.fallthrough === true &&
-                viteOutput.maxAge === 0
-              ) {
-                nitro.options.publicAssets!.pop();
-              }
+              nitro.options.publicAssets = nitro.options.publicAssets?.filter(
+                (asset) =>
+                  configuredAssets.has(asset) ||
+                  !(asset.baseURL === "/" && asset.fallthrough === true && asset.maxAge === 0),
+              );
             });
           }
           nitroBuildDir = nitro.options.buildDir

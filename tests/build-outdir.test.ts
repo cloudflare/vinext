@@ -518,7 +518,24 @@ describe("build.outDir", () => {
         vinext({ appDir: fixtureDir }),
         // A plugin's config hook sets the build.outDir that Nitro publishes.
         { name: "set-outdir", config: () => ({ build: { outDir } }) },
-        nitroModule.nitro({ buildDir: path.join(fixtureDir, ".nitro") }),
+        nitroModule.nitro({
+          buildDir: path.join(fixtureDir, ".nitro"),
+          // A module set up before vinext's publishes another directory
+          // after Nitro registers build.outDir.
+          modules: [
+            (nitro: {
+              options: { publicAssets: { dir: string; baseURL: string }[] };
+              hooks: { hook(name: string, handler: () => void): void };
+            }) => {
+              nitro.hooks.hook("build:before", () => {
+                nitro.options.publicAssets.push({
+                  dir: path.join(fixtureDir, "other"),
+                  baseURL: "/other",
+                });
+              });
+            },
+          ],
+        }),
       ],
       server: { port: 0, host: "127.0.0.1" },
       logLevel: "silent",

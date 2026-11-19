@@ -17,6 +17,30 @@ type CleanBuildOutputResult = {
   outDir: string;
 };
 
+/**
+ * The project's Git directories, symlinks resolved. In a worktree or
+ * submodule `.git` is a file naming the Git directory, which names the
+ * repository's shared directory in its `commondir` file.
+ */
+function resolveGitDirs(root: string): string[] {
+  const dotGit = path.join(root, ".git");
+  let gitDir = dotGit;
+  try {
+    const target = /^gitdir: *(.+?)\s*$/m.exec(fs.readFileSync(dotGit, "utf8"))?.[1];
+    if (target) gitDir = path.resolve(root, target);
+  } catch {
+    // No .git file: .git is a directory, or missing.
+  }
+  const dirs = [dotGit, gitDir];
+  try {
+    const commonDir = fs.readFileSync(path.join(gitDir, "commondir"), "utf8").trim();
+    if (commonDir) dirs.push(path.resolve(gitDir, commonDir));
+  } catch {
+    // Not a worktree.
+  }
+  return dirs.map(resolveRealPath);
+}
+
 function resolveOutDir(root: string, outDir: string | undefined): string {
   const resolvedRoot = path.resolve(root);
   if (!outDir) return path.join(resolvedRoot, "dist");
@@ -45,8 +69,7 @@ export function assertOutputDirIsSafe(
         "as the default dist.",
     );
   }
-  const realGitDir = resolveRealPath(path.join(root, ".git"));
-  if (isPathInsideOrEqual(realGitDir, realOutDir)) {
+  if (resolveGitDirs(root).some((gitDir) => isPathInsideOrEqual(gitDir, realOutDir))) {
     throw new Error(
       `[vinext] The ${label} "${shown(realOutDir)}" is inside the project's .git directory. ` +
         "Building there would delete the repository. Choose a build.outDir outside it, such " +
