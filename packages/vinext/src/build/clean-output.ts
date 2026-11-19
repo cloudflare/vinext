@@ -46,7 +46,7 @@ export function assertOutputDirIsSafe(
     );
   }
   const realGitDir = resolveRealPath(path.join(root, ".git"));
-  if (isPathInsideOrEqual(realOutDir, realGitDir)) {
+  if (isPathInsideOrEqual(realGitDir, realOutDir)) {
     throw new Error(
       `[vinext] The ${label} "${shown(realOutDir)}" is inside the project's .git directory. ` +
         "Building there would delete the repository. Choose a build.outDir outside it, such " +

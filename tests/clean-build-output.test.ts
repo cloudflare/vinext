@@ -136,6 +136,15 @@ describe("cleanBuildOutput", () => {
     expect(fs.existsSync(head)).toBe(true);
   });
 
+  it("refuses an outDir inside the project's .git directory", () => {
+    const object = writeFile(tmpDir, ".git/objects/ab/cdef", "blob\n");
+
+    expect(() => cleanBuildOutput({ root: tmpDir, outDir: ".git/objects" })).toThrow(
+      'The build.outDir ".git/objects" is inside the project\'s .git directory',
+    );
+    expect(fs.existsSync(object)).toBe(true);
+  });
+
   it("refuses a symlinked server directory in an outDir that isn't emptied", () => {
     const buildId = writeFile(tmpDir, "app/RSC_BUILD_ID", "not build output\n");
     fs.mkdirSync(path.join(tmpDir, "dist"));
