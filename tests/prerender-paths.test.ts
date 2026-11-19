@@ -1315,6 +1315,106 @@ describe("prerender path manifest", () => {
     expect(manifest?.excludedWarmPaths).toEqual(["/icon"]);
   });
 
+  it("lets afterFiles rewrites skip every metadata path, as the runtime serves them first", async () => {
+    // No Next.js test port applies: vinext's runtime serves metadata routes
+    // before its afterFiles rewrites.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile(
+      "app/gallery/opengraph-image.tsx",
+      "export function generateImageMetadata() { return []; }\nexport default function Image() {}",
+    );
+    writeFile(
+      "next.config.mjs",
+      [
+        "export default {",
+        "  rewrites: async () => ({",
+        "    afterFiles: [{ source: '/gallery/:path*', destination: '/' }],",
+        "  }),",
+        "};",
+      ].join("\n"),
+    );
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          { paths: ["/gallery/opengraph-image/small"], routePattern: "/gallery/opengraph-image" },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.routeHandlerPaths).toEqual(["/gallery/opengraph-image/small"]);
+    expect(manifest?.excludedWarmPaths ?? []).toEqual([]);
+  });
+
+  it("gives a traffic-picked path to the first metadata route the runtime matches", async () => {
+    // No Next.js test port applies: traffic-aware warming is vinext-specific.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile(
+      "app/[slug]/opengraph-image.tsx",
+      "export const dynamic = 'force-static';\nexport default function Image() {}",
+    );
+    writeFile("app/foo/opengraph-image.tsx", "export default function Image() {}");
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          { generatedPaths: "params", routePattern: "/:slug/opengraph-image" },
+          {
+            paths: ["/foo/opengraph-image"],
+            routePattern: "/foo/opengraph-image",
+            search: "?foo-hash",
+          },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      candidatePaths: ["/foo/opengraph-image"],
+      candidatePathsOnly: true,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    expect(manifest?.routeHandlerPaths).toEqual(["/foo/opengraph-image"]);
+    expect(manifest?.routePatterns?.["/foo/opengraph-image"]).toMatchObject({
+      metadataRoute: true,
+      pattern: "/:slug/opengraph-image",
+    });
+    expect(manifest?.routePatterns?.["/foo/opengraph-image"]?.metadataSearch).toBeUndefined();
+  });
+
   it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {
     // No Next.js test port applies: staged Worker version overrides and
     // cloudflare:workers bindings are Cloudflare-specific.

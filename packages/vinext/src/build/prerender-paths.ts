@@ -1028,19 +1028,18 @@ async function collectMetadataRoutePaths(options: {
   secretHeaders: Record<string, string>;
 }): Promise<{
   matchers: MetadataPathMatcher[];
-  nonDynamicPaths: string[];
   routes: Map<string, MetadataWarmRoute>;
 }> {
   const metadataRoutes = scanMetadataFiles(options.appDir);
   const routes = new Map<string, MetadataWarmRoute>();
   const matchers: MetadataPathMatcher[] = [];
-  const nonDynamicPaths: string[] = [];
+  // The server lists routes in the runtime's match order, and the runtime
+  // serves a path with the first route that matches it.
   const addMetadataPath = (pathname: string, route: MetadataWarmRoute): void => {
-    if (routes.has(pathname)) return;
+    if (routes.has(pathname) || matchMetadataWarmPath(pathname, matchers)) return;
     routes.set(pathname, route);
-    if (pathname === route.pattern) nonDynamicPaths.push(pathname);
   };
-  if (metadataRoutes.length === 0) return { matchers, nonDynamicPaths, routes };
+  if (metadataRoutes.length === 0) return { matchers, routes };
   if (!options.baseUrl || !options.secretHeaders[VINEXT_PRERENDER_SECRET_HEADER]) {
     // No server to ask: the build embeds these files and links each with this
     // hash.
@@ -1052,7 +1051,7 @@ async function collectMetadataRoutePaths(options: {
       });
       addMetadataPath(route.servedUrl, { pattern: route.servedUrl, ...(search ? { search } : {}) });
     }
-    return { matchers, nonDynamicPaths, routes };
+    return { matchers, routes };
   }
 
   const query = new URLSearchParams({ warm: "1" });
@@ -1111,7 +1110,7 @@ async function collectMetadataRoutePaths(options: {
       throwDiscoveryFailure(routePattern, error);
     }
   }
-  return { matchers, nonDynamicPaths, routes };
+  return { matchers, routes };
 }
 
 async function resolveAppWarmPaths(options: {
@@ -1708,10 +1707,9 @@ export async function discoverPrerenderPathManifest(
         });
         metadataRoutes = metadataPathResult.routes;
         metadataPathMatchers = metadataPathResult.matchers;
+        // The runtime serves every metadata path before afterFiles rewrites.
         for (const pathname of metadataRoutes.keys()) {
           addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
-        }
-        for (const pathname of metadataPathResult.nonDynamicPaths) {
           discoveredNonDynamicPathSet.add(pathname);
         }
       }
@@ -1763,6 +1761,7 @@ export async function discoverPrerenderPathManifest(
     if (metadataRoute) {
       metadataRoutes.set(pathname, metadataRoute);
       candidateOnlyPathSet.add(pathname);
+      discoveredNonDynamicPathSet.add(pathname);
       addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
       continue;
     }
