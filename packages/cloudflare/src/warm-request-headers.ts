@@ -36,6 +36,7 @@ const RESERVED_HEADER_PREFIXES = ["next-", "x-middleware-", "x-nextjs-", "x-vine
 // Node's fetch() throws for these at request time, after the version is staged.
 const FETCH_REJECTED_HEADER_NAMES = new Set([
   "connection",
+  "content-length",
   "expect",
   "keep-alive",
   "transfer-encoding",
@@ -80,25 +81,39 @@ function parseHeaderLine(line: string, source: string): [string, string] {
   return [name, value];
 }
 
-/**
- * Combine `VINEXT_WARM_CACHE_HEADERS` with repeated `--warm-cache-header`
- * flags. A later entry replaces an earlier one with the same name, so a flag
- * overrides the env var.
- */
-export function parseWarmCacheRequestHeaders(
-  flagValues: readonly string[] | undefined,
-  envValue: string | undefined,
+// A later entry replaces an earlier one with the same name.
+function mergeHeaders(
+  entries: readonly (readonly [string, string])[],
 ): WarmCacheRequestHeaders | undefined {
-  const headers = new Map<string, [string, string]>();
-  const add = (header: [string, string]) => headers.set(header[0].toLowerCase(), header);
-  for (const [index, line] of (envValue ?? "").split(/\r?\n/).entries()) {
-    if (line.trim() === "") continue;
-    add(parseHeaderLine(line, `${VINEXT_WARM_CACHE_HEADERS_ENV} line ${index + 1}`));
-  }
-  for (const value of flagValues ?? []) {
-    add(parseHeaderLine(value, "--warm-cache-header"));
-  }
+  const headers = new Map(entries.map((header) => [header[0].toLowerCase(), header]));
   return headers.size === 0 ? undefined : [...headers.values()];
+}
+
+/** Parse repeated `--warm-cache-header "Name: value"` flags. */
+export function parseWarmCacheHeaderFlags(
+  flagValues: readonly string[] | undefined,
+): WarmCacheRequestHeaders | undefined {
+  return mergeHeaders(
+    (flagValues ?? []).map((value) => parseHeaderLine(value, "--warm-cache-header")),
+  );
+}
+
+/**
+ * Combine `VINEXT_WARM_CACHE_HEADERS` with the parsed flags. A flag replaces an
+ * env entry with the same name.
+ */
+export function resolveWarmCacheRequestHeaders(
+  envValue: string | undefined,
+  flagHeaders: WarmCacheRequestHeaders | undefined,
+): WarmCacheRequestHeaders | undefined {
+  const envHeaders = (envValue ?? "")
+    .split(/\r?\n/)
+    .flatMap((line, index) =>
+      line.trim() === ""
+        ? []
+        : [parseHeaderLine(line, `${VINEXT_WARM_CACHE_HEADERS_ENV} line ${index + 1}`)],
+    );
+  return mergeHeaders([...envHeaders, ...(flagHeaders ?? [])]);
 }
 
 /**

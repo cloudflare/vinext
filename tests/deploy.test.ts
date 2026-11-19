@@ -33,6 +33,7 @@ import {
   wranglerSupportsVersionAnnotations,
 } from "../packages/cloudflare/src/deploy.js";
 import { parsePreviewsDeployArgs } from "../packages/cloudflare/src/previews-deploy.js";
+import { resolveWarmCacheRequestHeaders } from "../packages/cloudflare/src/warm-request-headers.js";
 import {
   detectPackageManager,
   detectPackageManagerName,
@@ -255,6 +256,42 @@ describe("buildWranglerDeployArgs", () => {
 });
 
 describe("deploy environment validation", () => {
+  describe("VINEXT_WARM_CACHE_HEADERS from .env files", () => {
+    beforeEach(() => {
+      // Restored by unstubAllEnvs after loadDotenv writes it.
+      vi.stubEnv("VINEXT_WARM_CACHE_HEADERS", undefined);
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("reads the deploy's .env files before a warming deploy starts", async () => {
+      writeFile(
+        tmpDir,
+        ".env.production.local",
+        "VINEXT_WARM_CACHE_HEADERS=s3cret-without-colon\n",
+      );
+
+      await expect(deploy({ root: tmpDir, warmCdnCache: true, dryRun: true })).rejects.toThrow(
+        'VINEXT_WARM_CACHE_HEADERS line 1 expects "Name: value", but the entry has no colon.',
+      );
+    });
+
+    it("ignores the env var for a deploy that does not warm", async () => {
+      writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
+      writeFile(
+        tmpDir,
+        ".env.production.local",
+        "VINEXT_WARM_CACHE_HEADERS=s3cret-without-colon\n",
+      );
+
+      await expect(deploy({ root: tmpDir, dryRun: true })).rejects.toThrow(
+        "Run `vinext init --platform=cloudflare` first.",
+      );
+    });
+  });
+
   it("keeps the typed Cloudflare config authoritative for the Worker name", async () => {
     writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
 
@@ -1146,24 +1183,21 @@ describe("parseDeployArgs", () => {
     });
 
     it("reads VINEXT_WARM_CACHE_HEADERS lines and lets a flag replace an entry", () => {
-      vi.stubEnv(
-        "VINEXT_WARM_CACHE_HEADERS",
-        "CF-Access-Client-Id: id.access\r\n\nCF-Access-Client-Secret: env-secret\n",
-      );
-      const parsed = parseDeployArgs([
+      const flags = parseDeployArgs([
         "--traffic-aware-warm-cache",
         "--warm-cache-header",
         "cf-access-client-secret: flag-secret",
-      ]);
-      expect(parsed.warmCdnHeaders).toEqual([
+      ]).warmCdnHeaders;
+      expect(
+        resolveWarmCacheRequestHeaders(
+          "CF-Access-Client-Id: id.access\r\n\nCF-Access-Client-Secret: env-secret\n",
+          flags,
+        ),
+      ).toEqual([
         ["CF-Access-Client-Id", "id.access"],
         ["cf-access-client-secret", "flag-secret"],
       ]);
-    });
-
-    it("ignores VINEXT_WARM_CACHE_HEADERS when the deploy does not warm", () => {
-      vi.stubEnv("VINEXT_WARM_CACHE_HEADERS", "not a header");
-      expect(parseDeployArgs([]).warmCdnHeaders).toBeUndefined();
+      expect(resolveWarmCacheRequestHeaders(undefined, undefined)).toBeUndefined();
     });
 
     it("requires CDN warming for --warm-cache-header", () => {
@@ -1194,14 +1228,18 @@ describe("parseDeployArgs", () => {
       );
     });
 
-    it.each(["Connection", "Expect", "Keep-Alive", "Transfer-Encoding", "upgrade"])(
-      "rejects %s because fetch() does not allow it",
-      (name) => {
-        expect(() =>
-          parseDeployArgs(["--warm-cache", "--warm-cache-header", `${name}: x`]),
-        ).toThrow(`--warm-cache-header cannot set "${name}": fetch() does not allow it.`);
-      },
-    );
+    it.each([
+      "Connection",
+      "Content-Length",
+      "Expect",
+      "Keep-Alive",
+      "Transfer-Encoding",
+      "upgrade",
+    ])("rejects %s because fetch() does not allow it", (name) => {
+      expect(() => parseDeployArgs(["--warm-cache", "--warm-cache-header", `${name}: x`])).toThrow(
+        `--warm-cache-header cannot set "${name}": fetch() does not allow it.`,
+      );
+    });
 
     it.each([
       ["s3cret-without-colon", '--warm-cache-header expects "Name: value"'],
@@ -1222,8 +1260,7 @@ describe("parseDeployArgs", () => {
     });
 
     it("names the env line of a malformed entry without printing it", () => {
-      vi.stubEnv("VINEXT_WARM_CACHE_HEADERS", "X-Key: ok\ns3cret");
-      expect(() => parseDeployArgs(["--warm-cache"])).toThrow(
+      expect(() => resolveWarmCacheRequestHeaders("X-Key: ok\ns3cret", undefined)).toThrow(
         'VINEXT_WARM_CACHE_HEADERS line 2 expects "Name: value", but the entry has no colon.',
       );
     });

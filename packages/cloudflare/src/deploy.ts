@@ -69,7 +69,8 @@ import { resolveTPRRoutes, selectRoutes, type TrafficEntry } from "./tpr.js";
 import { parseWranglerConfig } from "./wrangler-config.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
-  parseWarmCacheRequestHeaders,
+  parseWarmCacheHeaderFlags,
+  resolveWarmCacheRequestHeaders,
   validateWarmCacheRequestHeader,
   VINEXT_WARM_CACHE_HEADERS_ENV,
   withWarmCacheRequestHeaders,
@@ -455,14 +456,7 @@ export function parseDeployArgs(args: string[]) {
       values["warm-cache-target"] === undefined
         ? undefined
         : validateCdnWarmTarget(values["warm-cache-target"]),
-    // The env var applies only to deploys that warm, so a CI-wide value cannot
-    // break an ordinary deploy.
-    warmCdnHeaders: warming
-      ? parseWarmCacheRequestHeaders(
-          values["warm-cache-header"],
-          process.env[VINEXT_WARM_CACHE_HEADERS_ENV],
-        )
-      : undefined,
+    warmCdnHeaders: parseWarmCacheHeaderFlags(values["warm-cache-header"]),
     warmCdnConcurrency:
       values["warm-cache-concurrency"] === undefined
         ? undefined
@@ -2349,6 +2343,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // (fumadocs-mdx starts a file watcher and the deploy never exits).
   if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
   loadDotenv({ root, mode: viteMode });
+  // Read after loadDotenv so a .env file can hold the secret headers. Only a
+  // deploy that warms reads it, so a CI-wide value cannot break other deploys.
+  const warmCdnHeaders =
+    options.warmCdnCache || options.experimentalTPR
+      ? resolveWarmCacheRequestHeaders(
+          process.env[VINEXT_WARM_CACHE_HEADERS_ENV],
+          options.warmCdnHeaders,
+        )
+      : options.warmCdnHeaders;
 
   // The Preview flag must be present before Vite loads the configuration,
   // including the eager metadata pass, and while the multi-environment build runs.
@@ -2704,7 +2707,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         statusSource: warmupStatusSource,
         warmCdnConcurrency: options.warmCdnConcurrency,
         warmCdnTarget: warmCdnTarget ?? tpr?.targetUrl,
-        warmCdnHeaders: options.warmCdnHeaders,
+        warmCdnHeaders,
         warmCdnTimeout: options.warmCdnTimeout,
         warmCdnRetries: options.warmCdnRetries,
         warmCdnDiscoveryTimeout: options.warmCdnDiscoveryTimeout,
