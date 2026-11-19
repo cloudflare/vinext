@@ -573,13 +573,19 @@ export function createBuilder(config) {
       JSON.stringify({ name: "vite", type: "module", main: "index.js" }),
     );
     // A plugin's config hook set build.outDir, which the config file doesn't
-    // show, and moved Vite's root; vinext reports where it wrote its output.
+    // show, and moved Vite's root; vinext reports where it wrote its
+    // metadata, and the bundles are under Vite's outDir.
     writeFile(
       "node_modules/vite/index.js",
       `export * from ${JSON.stringify(viteUrl)};
 export function createBuilder(config) {
   return {
     config: { root: config.root + "/elsewhere", build: { outDir: "out" } },
+    environments: {
+      rsc: { config: { build: { outDir: "out/server" } } },
+      ssr: { config: { build: { outDir: "out/server/ssr" } } },
+      client: { config: { build: { outDir: "out/client" } } },
+    },
     async buildApp() { config.__vinextBuildLifecycle.onComplete(config.root + "/site/out"); },
   };
 }
@@ -591,7 +597,11 @@ export function createBuilder(config) {
 
     expect(runPrerenderMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        routeRootConfig: expect.objectContaining({ outDir: path.join(tmpDir, "site", "out") }),
+        routeRootConfig: expect.objectContaining({
+          outDir: path.join(tmpDir, "site", "out"),
+          rscOutDir: path.join(tmpDir, "elsewhere", "out", "server"),
+          clientOutDir: path.join(tmpDir, "elsewhere", "out", "client"),
+        }),
       }),
     );
   });

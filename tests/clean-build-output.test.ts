@@ -529,6 +529,50 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it("finds a bare repository through GIT_COMMON_DIR before its commondir file", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-bare-common-"));
+    const previous = process.env.GIT_COMMON_DIR;
+    try {
+      // The commondir file is stale; Git reads GIT_COMMON_DIR instead.
+      fs.mkdirSync(path.join(store, "objects"));
+      fs.mkdirSync(path.join(store, "refs"));
+      process.env.GIT_COMMON_DIR = store;
+      writeFile(tmpDir, "HEAD", "ref: refs/heads/main\n");
+      writeFile(tmpDir, "commondir", "missing\n");
+      const ref = writeFile(tmpDir, "refs/worktree/active", "0".repeat(40) + "\n");
+      const root = path.join(tmpDir, "site");
+      fs.mkdirSync(root);
+
+      expect(() => cleanBuildOutput({ root, outDir: "../refs", emptyOutDir: true })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(ref)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_COMMON_DIR;
+      else process.env.GIT_COMMON_DIR = previous;
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
+  it("protects the common directory a bare repository's commondir names", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-bare-commondir-"));
+    try {
+      fs.mkdirSync(path.join(store, "objects"));
+      const ref = writeFile(store, "refs/heads/main", "0".repeat(40) + "\n");
+      writeFile(tmpDir, "HEAD", "ref: refs/heads/main\n");
+      writeFile(tmpDir, "commondir", `${store}\n`);
+      const root = path.join(tmpDir, "site");
+      fs.mkdirSync(root);
+
+      expect(() =>
+        cleanBuildOutput({ root, outDir: path.join(store, "refs"), emptyOutDir: true }),
+      ).toThrow("overlaps the project's Git directory");
+      expect(fs.existsSync(ref)).toBe(true);
+    } finally {
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
   it("keeps searching above a folder that only looks like a bare repository", () => {
     const head = writeFile(tmpDir, ".git/HEAD", "ref: refs/heads/main\n");
     // container has HEAD, objects and refs, but its HEAD isn't a Git HEAD.
