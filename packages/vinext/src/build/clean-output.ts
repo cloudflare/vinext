@@ -19,10 +19,10 @@ type CleanBuildOutputResult = {
 
 /**
  * The project's Git directories, symlinks resolved: the `.git` in the project
- * root or, as Git finds it, the nearest one above it, and any that GIT_DIR and
- * GIT_COMMON_DIR name. In a worktree or submodule `.git` is a file naming the
- * Git directory, which names the repository's shared directory in its
- * `commondir` file.
+ * root or, as Git finds it, the nearest one above it, and any that GIT_DIR,
+ * GIT_COMMON_DIR and GIT_OBJECT_DIRECTORY name. In a worktree or submodule
+ * `.git` (or GIT_DIR) is a gitfile naming the Git directory, which names the
+ * repository's shared directory in its `commondir` file.
  */
 function resolveGitDirs(root: string): string[] {
   // Git strips only trailing CR and LF from these files; a path may end in
@@ -37,16 +37,22 @@ function resolveGitDirs(root: string): string[] {
     }
   };
   const gitDirs: string[] = [];
+  // A Git directory or a gitfile naming one, and the repository's shared
+  // directory.
   const addGitDir = (dir: string) => {
-    const gitDir = resolveRealPath(dir);
+    gitDirs.push(resolveRealPath(dir));
+    const target = readPathFile(dir, "gitdir: ");
+    const gitDir = resolveRealPath(target ? path.resolve(path.dirname(dir), target) : dir);
     gitDirs.push(gitDir);
     const commonDir = readPathFile(path.join(gitDir, "commondir"));
     if (commonDir) gitDirs.push(resolveRealPath(path.resolve(gitDir, commonDir)));
   };
   // Relative to the working directory, as Git reads them.
-  const { GIT_DIR, GIT_COMMON_DIR } = process.env;
+  const { GIT_DIR, GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY } = process.env;
   if (GIT_DIR) addGitDir(path.resolve(GIT_DIR));
-  if (GIT_COMMON_DIR) gitDirs.push(resolveRealPath(path.resolve(GIT_COMMON_DIR)));
+  for (const dir of [GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY]) {
+    if (dir) gitDirs.push(resolveRealPath(path.resolve(dir)));
+  }
 
   let repoRoot = root;
   while (!fs.existsSync(path.join(repoRoot, ".git"))) {
@@ -55,10 +61,7 @@ function resolveGitDirs(root: string): string[] {
     if (parent === repoRoot) return gitDirs;
     repoRoot = parent;
   }
-  const dotGit = path.join(repoRoot, ".git");
-  gitDirs.push(resolveRealPath(dotGit));
-  const target = readPathFile(dotGit, "gitdir: ");
-  addGitDir(target ? path.resolve(repoRoot, target) : dotGit);
+  addGitDir(path.join(repoRoot, ".git"));
   return gitDirs;
 }
 

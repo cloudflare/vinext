@@ -448,6 +448,23 @@ describe("build.outDir", () => {
     expect(builder.config.build.write).toBe(false);
   });
 
+  it("rejects a build.outDir over the app directory when an environment still writes", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        build: { outDir: "app", write: false },
+        // The RSC environment writes, and with it vinext's server metadata.
+        environments: { rsc: { build: { write: true, outDir: "out/rsc" } } },
+        logLevel: "silent",
+        [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
+      } as Parameters<typeof createBuilder>[0]),
+    ).rejects.toThrow('The build.outDir "app" overlaps the app directory "app"');
+  });
+
   it("rejects an environment outDir inside the public directory", async () => {
     const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
     const asset = path.join(fixtureDir, "public", "assets", "logo.svg");
