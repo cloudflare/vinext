@@ -34,6 +34,17 @@ checks fail is fixed first (below), and BigBonk is asked about the push.
 Clanky isn't asked here: it reviews a push by itself, or says it waits to be
 asked, and is asked then (below).
 
+## An assigned issue
+
+Assigning the issue hands the fix to a person. Each of the three triggers
+lets a round through only while the issue has no assignee, as it is when the
+round starts: **Nobody assigned?** after a review or comment, and the same
+condition in **On the head, nobody assigned?** after checks and **Still in
+review, nobody assigned?** after BigBonk says nothing. A round on an assigned
+issue does nothing, and BigBonk is neither asked nor asked again. Unassigning
+the issue lets the next round go on. It needs an Alcora that gives
+`trigger.issue.assignees`.
+
 ## When BigBonk says nothing
 
 **BigBonk didn't answer** (a No reply trigger) starts a round when BigBonk
@@ -48,10 +59,10 @@ starts while another round of the workflow is queued or running for the pull
 request.
 
 **Still unanswered?** BigBonk may have answered while the round waited for
-the one ahead, and **Still in review?** leaves a fix alone once it is ready or
-stalled. Then BigBonk is asked again, as when it says it timed out, within the
-same cap of 2 times since the head last moved (**Asked again fewer than 2
-times?**). After that, the fix stalls.
+the one ahead, and **Still in review, nobody assigned?** leaves a fix alone
+once it is ready, stalled or assigned. Then BigBonk is asked again, as when it
+says it timed out, within the same cap of 2 times since the head last moved
+(**Asked again fewer than 2 times?**). After that, the fix stalls.
 
 ## A review or a comment
 
