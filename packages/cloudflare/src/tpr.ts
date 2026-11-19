@@ -44,6 +44,8 @@ export type TPROptions = {
 };
 
 export type TPRRouteResult = {
+  /** Requests only a metadata route may serve (filterMetadataTrafficPaths). */
+  metadataCandidates?: TrafficEntry[];
   routes: TrafficEntry[];
   /** Custom-domain origin from typed Build Output for staged pre-warming. */
   targetUrl?: string;
@@ -225,35 +227,57 @@ function isStaticAssetPath(assetPaths: Set<string>, pathname: string, basePath =
   );
 }
 
-/** The served name of a static metadata image file (scanMetadataFiles). */
-const STATIC_METADATA_FILE_PATH =
-  /\/(?:favicon\.ico|(?:icon|apple-icon|opengraph-image|twitter-image)\d?\.(?:ico|jpe?g|png|svg|gif))$/;
+type TrafficPathKind = "candidate" | "metadata-candidate" | null;
+
+function classifyTrafficPath(
+  pathname: string,
+  assetPaths: Set<string> | undefined,
+  basePath: string | undefined,
+): TrafficPathKind {
+  if (!pathname.startsWith("/")) return null;
+  // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
+  if (pathname.startsWith("/cdn-cgi/")) return null;
+  if (assetPaths && isStaticAssetPath(assetPaths, pathname, basePath)) return null;
+  // Internal routes
+  if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return null;
+  // Static asset extensions and API routes aren't pages, but the Worker serves
+  // file-based metadata such as app/favicon.ico or app/api/opengraph-image.tsx
+  // at such paths, so only a metadata route may claim them.
+  if (
+    /\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(pathname) ||
+    pathname.startsWith("/api/")
+  ) {
+    return "metadata-candidate";
+  }
+  return "candidate";
+}
+
+function filterTrafficPathsByKind(
+  entries: TrafficEntry[],
+  kind: Exclude<TrafficPathKind, null>,
+  options: { assetsDir?: string; basePath?: string },
+): TrafficEntry[] {
+  const assetPaths = options.assetsDir ? readStaticAssetPaths(options.assetsDir) : undefined;
+  return entries.filter((e) => classifyTrafficPath(e.path, assetPaths, options.basePath) === kind);
+}
 
 /** Filter out non-page requests (static assets, API routes, internal routes). */
 export function filterTrafficPaths(
   entries: TrafficEntry[],
   options: { assetsDir?: string; basePath?: string } = {},
 ): TrafficEntry[] {
-  const assetPaths = options.assetsDir ? readStaticAssetPaths(options.assetsDir) : undefined;
-  return entries.filter((e) => {
-    if (!e.path.startsWith("/")) return false;
-    // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
-    if (e.path.startsWith("/cdn-cgi/")) return false;
-    // Static assets. The Worker serves static metadata files such as
-    // app/favicon.ico and app/blog/opengraph-image.png, so those names are
-    // left to the built-assets check.
-    if (
-      /\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path) &&
-      !STATIC_METADATA_FILE_PATH.test(e.path)
-    )
-      return false;
-    if (assetPaths && isStaticAssetPath(assetPaths, e.path, options.basePath)) return false;
-    // API routes
-    if (e.path.startsWith("/api/")) return false;
-    // Internal routes
-    if (e.path.startsWith("/_next/") || e.path.startsWith("/__vinext/")) return false;
-    return true;
-  });
+  return filterTrafficPathsByKind(entries, "candidate", options);
+}
+
+/**
+ * The requests {@link filterTrafficPaths} drops only for their asset extension
+ * or `/api/` prefix: no page renders them, but a metadata route may.
+ */
+export function filterMetadataTrafficPaths(
+  entries: TrafficEntry[],
+  options: { assetsDir?: string; basePath?: string } = {},
+): TrafficEntry[] {
+  return filterTrafficPathsByKind(entries, "metadata-candidate", options);
 }
 
 // ─── Route Selection ─────────────────────────────────────────────────────────
@@ -362,11 +386,12 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
       `analytics query failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  traffic = filterTrafficPaths(traffic, {
-    assetsDir: options.assetsDir,
-    basePath: options.basePath,
-  });
-  if (traffic.length === 0) return skip("no traffic data available (first deploy?)");
+  const filterOptions = { assetsDir: options.assetsDir, basePath: options.basePath };
+  const metadataCandidates = filterMetadataTrafficPaths(traffic, filterOptions);
+  traffic = filterTrafficPaths(traffic, filterOptions);
+  if (traffic.length === 0 && metadataCandidates.length === 0) {
+    return skip("no traffic data available (first deploy?)");
+  }
 
-  return { routes: traffic, targetUrl };
+  return { metadataCandidates, routes: traffic, targetUrl };
 }

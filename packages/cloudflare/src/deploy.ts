@@ -2508,6 +2508,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     : null;
   if (tpr?.skipped) console.log(`  TPR: Skipped (${tpr.skipped})`);
   const tprRoutes = tpr?.routes ?? [];
+  const tprMetadataCandidates = tpr?.metadataCandidates ?? [];
   const wranglerOptions = {
     env: deploymentTool === "cf" ? viteMode : deployEnv,
     name: deploymentTool === "cf" ? readBuildOutputWorkerName(root) : options.name,
@@ -2516,7 +2517,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     deploymentTool,
     ...versionAnnotations,
   };
-  let shouldWarmTpr = tprRoutes.length > 0;
+  let shouldWarmTpr = tprRoutes.length + tprMetadataCandidates.length > 0;
   if (shouldWarmTpr && !options.warmCdnCache) {
     try {
       const deployment = runDeploymentStatus(root, wranglerOptions);
@@ -2622,13 +2623,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
     try {
       url = await deployWithCdnWarmup(root, [], {
         ...wranglerOptions,
-        allowEmptyWarmPlan: tprRoutes.length > 0 && !options.warmCdnCache,
+        allowEmptyWarmPlan:
+          tprRoutes.length + tprMetadataCandidates.length > 0 && !options.warmCdnCache,
         cacheabilityProbe: needsCacheabilityProbeManifest,
         discoverWarmPlan: async ({ headers, targetUrl }) => {
           const discovery = await discoverPrerenderPathManifest({
             root: info.root,
             candidatePaths: tprRoutes.map(({ path }) => path),
             candidatePathsOnly,
+            metadataCandidatePaths: tprMetadataCandidates.map(({ path }) => path),
             nextConfig,
             buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
             includeCanonicalRsc: hasCanonicalRscWarmup,
@@ -2656,7 +2659,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
           ? (plan) =>
               selectTPRWarmPlan(
                 plan,
-                tprRoutes,
+                [...tprRoutes, ...tprMetadataCandidates],
                 Math.max(1, Math.min(100, options.tprCoverage ?? 90)),
                 Math.max(1, options.tprLimit ?? 1000),
               )

@@ -1150,6 +1150,10 @@ describe("prerender path manifest", () => {
       "export function generateStaticParams() { return []; }\nexport default function Image() {}",
     );
     writeFile(
+      "app/api/[id]/opengraph-image.tsx",
+      "export function generateStaticParams() { return []; }\nexport default function Image() {}",
+    );
+    writeFile(
       "app/products/sitemap.ts",
       "export function generateSitemaps() { return []; }\nexport default function sitemap() { return []; }",
     );
@@ -1162,6 +1166,7 @@ describe("prerender path manifest", () => {
           { generatedPaths: "image", routePattern: "/docs/opengraph-image", search: "?docs-hash" },
           { generatedPaths: "params", routePattern: "/blog/:slug/opengraph-image" },
           { generatedPaths: "sitemap", routePattern: "/products/sitemap.xml" },
+          { generatedPaths: "params", routePattern: "/api/:id/opengraph-image" },
         ]);
       }
       return defaultFetch(input, init);
@@ -1179,10 +1184,14 @@ describe("prerender path manifest", () => {
         "/blog/post/opengraph-image/extra",
       ],
       candidatePathsOnly: true,
+      // Traffic no page renders (asset extensions, /api/) is matched only to
+      // metadata routes, not to the /docs catch-all page.
+      metadataCandidatePaths: ["/api/a/opengraph-image", "/docs/old-chunk.js"],
       pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
     });
 
     expect([...(manifest?.routeHandlerPaths ?? [])].sort()).toEqual([
+      "/api/a/opengraph-image",
       "/blog/post/opengraph-image",
       "/docs/opengraph-image/small",
       "/products/sitemap/2.xml",

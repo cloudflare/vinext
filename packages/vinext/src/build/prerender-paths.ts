@@ -175,6 +175,8 @@ type PrerenderPathDiscoveryOptions = {
   candidatePaths?: readonly string[];
   /** Resolve only candidate paths instead of enumerating dynamic route hooks. */
   candidatePathsOnly?: boolean;
+  /** Additional concrete public paths that only a metadata route may claim. */
+  metadataCandidatePaths?: readonly string[];
   /** Fully resolved Next.js config. Loaded from disk when omitted. */
   nextConfig?: ResolvedNextConfig;
   appDir?: string | null;
@@ -1738,7 +1740,10 @@ export async function discoverPrerenderPathManifest(
     }
   });
 
-  for (const publicPathname of options.candidatePaths ?? []) {
+  for (const [publicPathname, metadataOnly] of [
+    ...(options.candidatePaths ?? []).map((pathname) => [pathname, false] as const),
+    ...(options.metadataCandidatePaths ?? []).map((pathname) => [pathname, true] as const),
+  ]) {
     let pathname = normalizePathTrailingSlash(
       new URL(publicPathname, "http://vinext.local").pathname,
       false,
@@ -1757,6 +1762,7 @@ export async function discoverPrerenderPathManifest(
       addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
       continue;
     }
+    if (metadataOnly) continue;
     if (!seen.has(pathname)) candidateOnlyPathSet.add(pathname);
     addPath(paths, seen, pathname);
     if (pagesDir) addPath(discoveredPagesPaths, seenPagesPaths, pathname);
