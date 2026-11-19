@@ -1016,10 +1016,8 @@ export function selectTPRWarmPlan(
   // Only paths the plan still requests can be selected: the cacheability
   // probe prunes request lists but leaves their route patterns.
   const requested = new Set([
-    ...(plan.appPaths ?? []),
     ...plan.loadingShellPaths,
     ...(plan.pagesDataPaths ?? []),
-    ...(plan.pagesPaths ?? []),
     ...plan.paths,
     ...(plan.routeHandlerPaths ?? []),
     ...plan.rscPaths,

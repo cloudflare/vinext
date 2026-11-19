@@ -435,12 +435,17 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
     const selected = selectTPRWarmPlan(
       {
+        // appPaths and pagesPaths record ownership, not requests: the probe
+        // pruned the request-dynamic /dashboard from paths and rscPaths only.
+        appPaths: ["/dashboard"],
         loadingShellPaths: [],
+        pagesPaths: ["/dashboard"],
         paths: [],
         // The probe pruned the request-dynamic /opengraph-image, but its
         // pattern stays in the plan.
         routeHandlerPaths: ["/icon"],
         routePatterns: {
+          "/dashboard": { kind: "app-page", pattern: "/dashboard" },
           "/opengraph-image": {
             kind: "app-route",
             metadataRoute: true,
@@ -451,6 +456,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         rscPaths: [],
       },
       [
+        { path: "/dashboard", requests: 200 },
         { path: "/opengraph-image", requests: 95 },
         { path: "/icon", requests: 5 },
       ],
@@ -458,6 +464,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       1,
     );
 
+    expect(selected.paths).toEqual([]);
     expect(selected.routeHandlerPaths).toEqual(["/icon"]);
   });
 
