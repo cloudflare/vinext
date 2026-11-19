@@ -155,10 +155,28 @@ const GIT_DIR_ENTRIES = [
 ];
 
 /**
+ * Whether `dir` is a Git directory, as Git checks one: it has `objects` and
+ * `refs` folders, and its HEAD names a ref or holds an object ID.
+ */
+function isGitDirectory(dir: string): boolean {
+  try {
+    for (const entry of ["objects", "refs"]) {
+      if (!fs.statSync(path.join(dir, entry)).isDirectory()) return false;
+    }
+    const head = path.join(dir, "HEAD");
+    if (fs.lstatSync(head).isSymbolicLink()) return fs.readlinkSync(head).startsWith("refs/");
+    const content = fs.readFileSync(head, "utf8");
+    return /^ref:\s*refs\//.test(content) || /^(?:[0-9a-f]{64}|[0-9a-f]{40})/i.test(content);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The project's Git storage, as given, each link on the way and resolved: the
- * `.git` in the project root or, as Git finds it, the nearest one above it or
- * a bare repository holding the project, and any directory or index that
- * Git's environment variables name. In a worktree or submodule `.git` (or
+ * `.git` in the project root and every one above it, any bare repository
+ * holding the project, and any directory or index that Git's environment
+ * variables name. In a worktree or submodule `.git` (or
  * GIT_DIR) is a gitfile naming the Git directory, which names the
  * repository's shared directory in its `commondir` file. Each object
  * directory's `info/alternates` lists more object directories it reads.
@@ -199,24 +217,23 @@ function resolveGitDirs(root: string): string[] {
   // Relative to the working directory, as Git reads them.
   const env = process.env;
   if (env.GIT_DIR) addGitDir(env.GIT_DIR);
-  const objectDirs = [
+  if (env.GIT_COMMON_DIR) repoDirs.push(protect(env.GIT_COMMON_DIR));
+  if (env.GIT_INDEX_FILE) protect(env.GIT_INDEX_FILE);
+  // Each object directory and the directory its path is relative to.
+  const objectDirs: Array<{ dir: string; base?: string }> = [
     env.GIT_OBJECT_DIRECTORY,
     ...splitGitPathList(env.GIT_ALTERNATE_OBJECT_DIRECTORIES ?? "", path.delimiter),
-  ].flatMap((dir) => (dir ? [walkPath(dir).real] : []));
-  for (const file of [env.GIT_COMMON_DIR, env.GIT_INDEX_FILE]) {
-    if (file) protect(file);
-  }
+  ].flatMap((dir) => (dir ? [{ dir }] : []));
 
   // A symlinked root (kept with resolve.preserveSymlinks) may sit in another
-  // repository than its target, so search from every form of it.
+  // repository than its target, so search from every form of it. Git uses the
+  // nearest repository, but emptying any one above the project destroys it,
+  // so every one is protected.
   const rootForms = pathForms(root);
   for (const form of rootForms) {
     for (let dir = form; ; dir = path.dirname(dir)) {
-      if (fs.existsSync(path.join(dir, ".git"))) {
-        addGitDir(path.join(dir, ".git"));
-        break;
-      }
-      if (["HEAD", "objects", "refs"].every((entry) => fs.existsSync(path.join(dir, entry)))) {
+      if (fs.existsSync(path.join(dir, ".git"))) addGitDir(path.join(dir, ".git"));
+      if (isGitDirectory(dir)) {
         // A bare repository holds the project: protect its Git directories,
         // apart from any the project is in.
         repoDirs.push(walkPath(dir).real);
@@ -224,19 +241,17 @@ function resolveGitDirs(root: string): string[] {
           const file = path.join(dir, entry);
           if (!rootForms.some((rootForm) => isPathInsideOrEqual(file, rootForm))) protect(file);
         }
-        break;
       }
-      // Not in a repository.
       if (path.dirname(dir) === dir) break;
     }
   }
 
-  objectDirs.push(...repoDirs.map((dir) => walkPath(path.join(dir, "objects")).real));
+  objectDirs.push(...repoDirs.map((dir) => ({ dir: path.join(dir, "objects") })));
   // Git reads alternates of alternates; each line is a path relative to the
   // object directory whose file lists it.
   const seen = new Set<string>();
   for (let i = 0; i < objectDirs.length; i++) {
-    const objectDir = protect(objectDirs[i]!);
+    const objectDir = protect(objectDirs[i]!.dir, objectDirs[i]!.base);
     if (seen.has(objectDir)) continue;
     seen.add(objectDir);
     const alternates = readPathFile(path.join(objectDir, "info", "alternates"));
@@ -244,7 +259,7 @@ function resolveGitDirs(root: string): string[] {
     for (const line of alternates?.split(/\r?\n/) ?? []) {
       if (!line || line.startsWith("#")) continue;
       const [entry] = splitGitPathList(line, "\n");
-      if (entry) objectDirs.push(walkPath(entry, objectDir).real);
+      if (entry) objectDirs.push({ dir: entry, base: objectDir });
     }
   }
   return gitDirs;

@@ -507,6 +507,63 @@ describe("cleanBuildOutput", () => {
     expect(cleanBuildOutput({ root }).cleaned).toBe(true);
   });
 
+  it("keeps searching above a folder that only looks like a bare repository", () => {
+    const head = writeFile(tmpDir, ".git/HEAD", "ref: refs/heads/main\n");
+    // container has HEAD, objects and refs, but its HEAD isn't a Git HEAD.
+    writeFile(tmpDir, "container/HEAD", "not a ref\n");
+    fs.mkdirSync(path.join(tmpDir, "container/objects"));
+    fs.mkdirSync(path.join(tmpDir, "container/refs"));
+    const root = path.join(tmpDir, "container/site");
+    fs.mkdirSync(root);
+
+    expect(() =>
+      cleanBuildOutput({ root, outDir: path.join(tmpDir, ".git"), emptyOutDir: true }),
+    ).toThrow("overlaps the project's Git directory");
+    expect(fs.existsSync(head)).toBe(true);
+  });
+
+  it("refuses an outDir that holds a link on the way to GIT_OBJECT_DIRECTORY", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-objects-link-"));
+    const previous = process.env.GIT_OBJECT_DIRECTORY;
+    try {
+      writeFile(store, "external/pack/objects.pack", "PACK");
+      const link = path.join(store, "holder", "active-objects");
+      fs.mkdirSync(path.dirname(link));
+      fs.symlinkSync(path.join(store, "external"), link);
+      process.env.GIT_OBJECT_DIRECTORY = link;
+      fs.symlinkSync(path.dirname(link), path.join(tmpDir, "dist"));
+
+      expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_OBJECT_DIRECTORY;
+      else process.env.GIT_OBJECT_DIRECTORY = previous;
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
+  it("follows the alternates of GIT_COMMON_DIR's object directory", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-common-alternates-"));
+    const previous = process.env.GIT_COMMON_DIR;
+    try {
+      writeFile(store, "common/objects/info/alternates", `${path.join(store, "alternate")}\n`);
+      const pack = writeFile(store, "alternate/pack/objects.pack", "PACK");
+      process.env.GIT_COMMON_DIR = path.join(store, "common");
+      fs.symlinkSync(path.join(store, "alternate"), path.join(tmpDir, "dist"));
+
+      expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(pack)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_COMMON_DIR;
+      else process.env.GIT_COMMON_DIR = previous;
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
   it("refuses an outDir inside the project's .git directory", () => {
     const object = writeFile(tmpDir, ".git/objects/ab/cdef", "blob\n");
 
