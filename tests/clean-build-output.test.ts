@@ -184,6 +184,19 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it("refuses an outDir in the Git directory of a repository the project is nested in", () => {
+    const head = writeFile(tmpDir, ".git/HEAD", "ref: refs/heads/main\n");
+    const root = path.join(tmpDir, "apps/site");
+    fs.mkdirSync(root, { recursive: true });
+
+    for (const outDir of ["../../.git", "../../.git/objects"]) {
+      expect(() => cleanBuildOutput({ root, outDir, emptyOutDir: true })).toThrow(
+        "overlaps the project's Git directory",
+      );
+    }
+    expect(fs.existsSync(head)).toBe(true);
+  });
+
   it("refuses an outDir inside the project's .git directory", () => {
     const object = writeFile(tmpDir, ".git/objects/ab/cdef", "blob\n");
 

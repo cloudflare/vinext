@@ -18,7 +18,8 @@ type CleanBuildOutputResult = {
 };
 
 /**
- * The project's Git directories, symlinks resolved. In a worktree or
+ * The project's Git directories, symlinks resolved: the `.git` in the project
+ * root or, as Git finds it, the nearest one above it. In a worktree or
  * submodule `.git` is a file naming the Git directory, which names the
  * repository's shared directory in its `commondir` file.
  */
@@ -33,9 +34,16 @@ function resolveGitDirs(root: string): string[] {
       return undefined;
     }
   };
-  const dotGit = resolveRealPath(path.join(root, ".git"));
+  let repoRoot = root;
+  while (!fs.existsSync(path.join(repoRoot, ".git"))) {
+    const parent = path.dirname(repoRoot);
+    // Not in a repository.
+    if (parent === repoRoot) return [];
+    repoRoot = parent;
+  }
+  const dotGit = resolveRealPath(path.join(repoRoot, ".git"));
   const target = readPathFile(dotGit, "gitdir: ");
-  const gitDir = target ? resolveRealPath(path.resolve(root, target)) : dotGit;
+  const gitDir = target ? resolveRealPath(path.resolve(repoRoot, target)) : dotGit;
   const commonDir = readPathFile(path.join(gitDir, "commondir"));
   return [dotGit, gitDir, ...(commonDir ? [resolveRealPath(path.resolve(gitDir, commonDir))] : [])];
 }
