@@ -369,10 +369,11 @@ describe("deploy prerender config wiring", () => {
         experimentalTPR: true,
         warmCdnCertify: true,
         warmCdnTarget: "not-an-origin",
+        warmCdnHeaders: [["X-Key", "value"]],
         warmCdnPromote: false,
       }),
     ).rejects.toThrow(
-      "Worker Preview deployments do not support: preview, warmCdnCache, warmCdnTarget, warmCdnCertify, warmCdnPromote, experimentalTPR.",
+      "Worker Preview deployments do not support: preview, warmCdnCache, warmCdnTarget, warmCdnHeaders, warmCdnCertify, warmCdnPromote, experimentalTPR.",
     );
     expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
     expect(execFileSync).not.toHaveBeenCalled();

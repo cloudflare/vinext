@@ -2289,6 +2289,7 @@ function assertPreviewDeployOptions(options: DeployOptions): void {
     tag: options.tag !== undefined,
     warmCdnCache: options.warmCdnCache,
     warmCdnTarget: options.warmCdnTarget !== undefined,
+    warmCdnHeaders: options.warmCdnHeaders !== undefined,
     warmCdnCertify: options.warmCdnCertify,
     warmCdnPromote: options.warmCdnPromote === false,
     experimentalTPR: options.experimentalTPR,
@@ -2305,6 +2306,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (isPreview) assertPreviewDeployOptions(options);
   if (options.warmCdnTarget !== undefined && !options.warmCdnCache && !options.experimentalTPR) {
     throw new Error("--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.");
+  }
+  if (options.warmCdnHeaders !== undefined && !options.warmCdnCache && !options.experimentalTPR) {
+    throw new Error("--warm-cache-header requires --warm-cache or --traffic-aware-warm-cache.");
   }
   const warmCdnTarget =
     options.warmCdnTarget === undefined ? undefined : validateCdnWarmTarget(options.warmCdnTarget);

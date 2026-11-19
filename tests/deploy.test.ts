@@ -278,6 +278,12 @@ describe("deploy environment validation", () => {
       );
     });
 
+    it("rejects programmatic warm-up headers for a deploy that does not warm", async () => {
+      await expect(
+        deploy({ root: tmpDir, warmCdnHeaders: [["X-Key", "value"]], dryRun: true }),
+      ).rejects.toThrow("--warm-cache-header requires --warm-cache or --traffic-aware-warm-cache.");
+    });
+
     it("ignores the env var for a deploy that does not warm", async () => {
       writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
       writeFile(
@@ -1228,6 +1234,8 @@ describe("parseDeployArgs", () => {
       "if-none-match",
       "If-Modified-Since",
       "If-Unmodified-Since",
+      "x-prerender-revalidate",
+      "X-Prerender-Revalidate-If-Generated",
     ])("rejects %s because vinext controls it", (name) => {
       expect(() => parseDeployArgs(["--warm-cache", "--warm-cache-header", `${name}: 1`])).toThrow(
         `--warm-cache-header cannot set "${name}": vinext controls this header on warm-up requests.`,
@@ -1239,6 +1247,7 @@ describe("parseDeployArgs", () => {
       "Content-Length",
       "Expect",
       "Keep-Alive",
+      "Sec-Fetch-Mode",
       "Transfer-Encoding",
       "upgrade",
     ])("rejects %s because fetch() does not allow it", (name) => {

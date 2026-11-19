@@ -18,8 +18,9 @@ const INVALID_HEADER_VALUE = /[^\t\x20-\x7e\x80-\xff]/;
 // Headers vinext sets, or deliberately omits, to choose what each request asks
 // for: the representation (Accept, RSC and Next-Router-*), the Worker version,
 // the prerender secret, the deployment ID, and cache revalidation. Server
-// action and middleware headers make the Worker treat a request as uncacheable,
-// and conditional or range headers turn a full fill into a 304 or 206. A user
+// action, middleware and on-demand revalidation headers make the Worker skip
+// the shared cache, and conditional or range headers turn a full fill into a
+// 304 or 206. A user
 // value would change which cache entry is filled or which Worker answers, so
 // these names are rejected rather than silently overridden.
 const RESERVED_HEADER_NAMES = new Set([
@@ -39,13 +40,21 @@ const RESERVED_HEADER_NAMES = new Set([
   "x-deployment-id",
   "x-rsc-action",
 ]);
-const RESERVED_HEADER_PREFIXES = ["next-", "x-middleware-", "x-nextjs-", "x-vinext-"];
-// Node's fetch() throws for these at request time, after the version is staged.
+const RESERVED_HEADER_PREFIXES = [
+  "next-",
+  "x-middleware-",
+  "x-nextjs-",
+  "x-prerender-revalidate",
+  "x-vinext-",
+];
+// Node's fetch() throws for these at request time, after the version is
+// staged, or replaces the value (Sec-Fetch-Mode is always "cors").
 const FETCH_REJECTED_HEADER_NAMES = new Set([
   "connection",
   "content-length",
   "expect",
   "keep-alive",
+  "sec-fetch-mode",
   "transfer-encoding",
   "upgrade",
 ]);
