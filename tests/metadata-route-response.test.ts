@@ -303,6 +303,52 @@ describe("handleMetadataRouteRequest", () => {
     );
   });
 
+  it("fails discovery when a generator result isn't iterable", async () => {
+    // No Next.js test port applies: the generateStaticParams Next.js' metadata
+    // loader adds iterates these results, so `next build` fails on them.
+    const route = (servedUrl: string, type: string, module: Record<string, unknown>) =>
+      ({
+        type,
+        isDynamic: true,
+        filePath: `/tmp/app${servedUrl}.tsx`,
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl,
+        contentType: type === "sitemap" ? "application/xml" : "image/png",
+        module,
+      }) satisfies MetadataFileRoute;
+    const sitemap = route("/sitemap.xml", "sitemap", {
+      default: markUseCache(async () => []),
+      generateSitemaps: async () => ({ id: "a" }),
+    });
+    const image = route("/opengraph-image", "opengraph-image", {
+      default: async () => new Response("image"),
+      generateImageMetadata: () => undefined,
+    });
+
+    await expect(
+      getWarmableMetadataRoutes([sitemap], { enumerateDynamicPaths: true }),
+    ).rejects.toThrow("generateSitemaps() must return an array");
+    await expect(getPrerenderableMetadataRoutePaths([sitemap])).rejects.toThrow(
+      "generateSitemaps() must return an array",
+    );
+    await expect(
+      getWarmableMetadataRoutes([image], { enumerateDynamicPaths: true }),
+    ).rejects.toThrow("generateImageMetadata() must return an array");
+    // An iterable result is read like Next.js' for...of.
+    await expect(
+      getWarmableMetadataRoutes(
+        [
+          {
+            ...sitemap,
+            module: { ...sitemap.module, generateSitemaps: async () => new Set([{ id: "a" }]) },
+          },
+        ],
+        { enumerateDynamicPaths: true },
+      ),
+    ).resolves.toEqual([{ paths: ["/sitemap/a.xml"], routePattern: "/sitemap.xml" }]);
+  });
+
   it("stamps the adapter's build identity on metadata route responses", async () => {
     // No Next.js test port applies: deploy warm-up checks this vinext header
     // against the staged Worker version, as it does for Route Handlers.

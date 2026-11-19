@@ -349,11 +349,22 @@ function runMetadataRouteGenerator<T>(
   );
 }
 
+/**
+ * The items a generator returned. Next.js' generated generateStaticParams
+ * iterates them with `for...of`, so a result that isn't iterable fails the
+ * build.
+ */
+function generatorItems(result: unknown, generator: string): Iterable<unknown> {
+  if (result == null || typeof Reflect.get(Object(result), Symbol.iterator) !== "function") {
+    throw new TypeError(`${generator}() must return an array`);
+  }
+  return result as Iterable<unknown>;
+}
+
 function generatedSitemapPaths(route: MetadataRuntimeRoute, entries: unknown): string[] {
-  if (!Array.isArray(entries)) return [];
   const sitemapPrefix = route.servedUrl.slice(0, -4);
   const paths: string[] = [];
-  for (const entry of entries) {
+  for (const entry of generatorItems(entries, "generateSitemaps")) {
     if (!isObject(entry) || Reflect.get(entry, "id") == null) {
       throw new Error("id property is required for every item returned from generateSitemaps");
     }
@@ -365,9 +376,8 @@ function generatedSitemapPaths(route: MetadataRuntimeRoute, entries: unknown): s
 }
 
 function generatedImagePaths(route: MetadataRuntimeRoute, imageMetadata: unknown): string[] {
-  if (!Array.isArray(imageMetadata)) return [];
   const paths: string[] = [];
-  for (const item of imageMetadata) {
+  for (const item of generatorItems(imageMetadata, "generateImageMetadata")) {
     if (!isObject(item) || Reflect.get(item, "id") == null) {
       throw new Error("id property is required for every item returned from generateImageMetadata");
     }
