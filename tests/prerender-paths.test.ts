@@ -1450,6 +1450,52 @@ describe("prerender path manifest", () => {
     });
   });
 
+  it("matches traffic-picked paths to on-demand metadata routes while enumerating", async () => {
+    // No Next.js test port applies: traffic-aware warming is vinext-specific.
+    // Probe-enabled traffic-aware warming enumerates, which lists no path for
+    // a force-static route under a dynamic segment.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile(
+      "app/[slug]/opengraph-image.tsx",
+      "export const dynamic = 'force-static';\nexport default function Image() {}",
+    );
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json(
+          url.searchParams.get("dynamicPaths") === "0"
+            ? [{ generatedPaths: "params", routePattern: "/:slug/opengraph-image" }]
+            : [],
+        );
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      candidatePaths: ["/hot/opengraph-image"],
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    expect(manifest?.routeHandlerPaths).toEqual(["/hot/opengraph-image"]);
+    expect(manifest?.routePatterns?.["/hot/opengraph-image"]).toMatchObject({
+      metadataRoute: true,
+      pattern: "/:slug/opengraph-image",
+    });
+  });
+
   it("gives a traffic-picked path to the first metadata route the runtime matches", async () => {
     // No Next.js test port applies: traffic-aware warming is vinext-specific.
     writeFile("package.json", JSON.stringify({ type: "module" }));
@@ -1549,7 +1595,9 @@ describe("prerender path manifest", () => {
       metadataSearch: "?small-hash",
       pattern: "/small/opengraph-image",
     });
-    expect(manifest?.routePatterns?.["/%73mall/opengraph-image/one"]?.metadataRoute).toBeUndefined();
+    expect(
+      manifest?.routePatterns?.["/%73mall/opengraph-image/one"]?.metadataRoute,
+    ).toBeUndefined();
   });
 
   it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {

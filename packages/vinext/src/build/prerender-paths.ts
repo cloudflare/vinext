@@ -1051,6 +1051,8 @@ function matchMetadataWarmPath(
 async function collectMetadataRoutePaths(options: {
   appDir: string;
   baseUrl: string | null;
+  /** Also describe the routes whose paths need generating, for traffic paths. */
+  describeGeneratedPaths: boolean;
   enumerateDynamicPaths: boolean;
   retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
@@ -1082,18 +1084,29 @@ async function collectMetadataRoutePaths(options: {
     return { matchers, routes };
   }
 
-  const query = new URLSearchParams({ warm: "1" });
-  if (!options.enumerateDynamicPaths) query.set("dynamicPaths", "0");
-  const text = await fetchDiscoveryEndpoint(
-    `${options.baseUrl}${VINEXT_PRERENDER_METADATA_ROUTES_PATH}?${query}`,
-    options.secretHeaders,
-    options.retryOptions,
-  );
-  const entries = text === null ? [] : (JSON.parse(text) as unknown);
-  if (!Array.isArray(entries)) {
-    throw new Error("[vinext] Invalid metadata route warmup discovery response");
-  }
-  for (const entry of entries) {
+  const fetchEntries = async (enumerateDynamicPaths: boolean) => {
+    const query = new URLSearchParams({ warm: "1" });
+    if (!enumerateDynamicPaths) query.set("dynamicPaths", "0");
+    const text = await fetchDiscoveryEndpoint(
+      `${options.baseUrl}${VINEXT_PRERENDER_METADATA_ROUTES_PATH}?${query}`,
+      options.secretHeaders,
+      options.retryOptions,
+    );
+    const entries = text === null ? [] : (JSON.parse(text) as unknown);
+    if (!Array.isArray(entries)) {
+      throw new Error("[vinext] Invalid metadata route warmup discovery response");
+    }
+    return entries;
+  };
+  const entries = await fetchEntries(options.enumerateDynamicPaths);
+  // Enumeration lists no path for an on-demand route (`force-static` under a
+  // dynamic segment, or a generator listing none), so traffic paths also match
+  // the routes' descriptions. Listed paths are matched first.
+  const describedEntries =
+    options.enumerateDynamicPaths && options.describeGeneratedPaths
+      ? (await fetchEntries(false)).filter((entry) => entry?.generatedPaths !== undefined)
+      : [];
+  for (const entry of [...entries, ...describedEntries]) {
     const routePattern: unknown = entry?.routePattern;
     const search: unknown = entry?.search;
     if (
@@ -1729,6 +1742,9 @@ export async function discoverPrerenderPathManifest(
         const metadataPathResult = await collectMetadataRoutePaths({
           appDir,
           baseUrl,
+          describeGeneratedPaths:
+            (options.metadataCandidatePaths?.length ?? 0) > 0 ||
+            (options.candidatePaths?.length ?? 0) > 0,
           enumerateDynamicPaths: options.candidatePathsOnly !== true,
           retryOptions: pathDiscoveryRetryOptions,
           secretHeaders,
