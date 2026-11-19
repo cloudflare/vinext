@@ -2173,6 +2173,41 @@ describe("Cloudflare CDN warmup", () => {
     );
   });
 
+  it("applies basePath to a metadata route under a _next/data folder", async () => {
+    // No Next.js test port applies: the folder only looks like a Pages data
+    // path; app/foo/_next/data/icon.png is an ordinary metadata file.
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "/docs",
+        buildId: "build-a",
+        paths: [],
+        routeHandlerPaths: ["/foo/_next/data/icon.png"],
+        routePatterns: {
+          "/foo/_next/data/icon.png": {
+            kind: "app-route",
+            metadataRoute: true,
+            metadataSearch: "?icon-hash",
+            pattern: "/foo/_next/data/icon.png",
+          },
+        },
+      }),
+    );
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => cacheablePagesData());
+
+    await expect(
+      warmCdnCacheFromPrerender({
+        fetchImpl: fetchImpl as typeof fetch,
+        root: tmpDir,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 1, warmed: 1 });
+    expect(requestHref(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://app.example.com/docs/foo/_next/data/icon.png?icon-hash",
+    );
+  });
+
   it("requires an explicit opt-out for adapters without a build identity header", async () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(

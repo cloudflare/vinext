@@ -304,7 +304,9 @@ export function createPrerenderWarmPlan(
   const routePatterns = manifest.routePatterns
     ? Object.fromEntries(
         Object.entries(manifest.routePatterns).map(([pathname, route]) => [
-          pathname.includes("/_next/data/") ? pathname : applyRouteHandlerConfig(pathname),
+          pathname.includes("/_next/data/") && !route.metadataRoute
+            ? pathname
+            : applyRouteHandlerConfig(pathname),
           route,
         ]),
       )
