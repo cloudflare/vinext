@@ -573,6 +573,48 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it("refuses an outDir that holds a link on the way to a bare repository's common directory", () => {
+    const links = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-bare-common-link-"));
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-bare-common-target-"));
+    try {
+      fs.mkdirSync(path.join(store, "objects"));
+      fs.mkdirSync(path.join(store, "refs"));
+      fs.symlinkSync(store, path.join(links, "common"));
+      writeFile(tmpDir, "HEAD", "ref: refs/heads/main\n");
+      writeFile(tmpDir, "commondir", `${path.join(links, "common")}\n`);
+      const root = path.join(tmpDir, "site");
+      fs.mkdirSync(root);
+
+      expect(() => cleanBuildOutput({ root, outDir: links, emptyOutDir: true })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.lstatSync(path.join(links, "common")).isSymbolicLink()).toBe(true);
+    } finally {
+      fs.rmSync(links, { recursive: true, force: true });
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an outDir that holds the target of a bare repository's symlinked packed-refs", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-bare-packed-refs-"));
+    try {
+      const packedRefs = writeFile(store, "packed-refs", "# pack-refs with: peeled\n");
+      writeFile(tmpDir, "HEAD", "ref: refs/heads/main\n");
+      fs.mkdirSync(path.join(tmpDir, "objects"));
+      fs.mkdirSync(path.join(tmpDir, "refs"));
+      fs.symlinkSync(packedRefs, path.join(tmpDir, "packed-refs"));
+      const root = path.join(tmpDir, "site");
+      fs.mkdirSync(root);
+
+      expect(() => cleanBuildOutput({ root, outDir: store, emptyOutDir: true })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(packedRefs)).toBe(true);
+    } finally {
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
   it("keeps searching above a folder that only looks like a bare repository", () => {
     const head = writeFile(tmpDir, ".git/HEAD", "ref: refs/heads/main\n");
     // container has HEAD, objects and refs, but its HEAD isn't a Git HEAD.

@@ -657,7 +657,7 @@ async function runBuild(
   env: string | undefined,
   mode: string,
   configFile: string | undefined,
-): Promise<VinextRouteRootConfig> {
+): Promise<string> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
   const { createBuilder } = await loadProjectViteApi(info.root);
@@ -670,16 +670,13 @@ async function runBuild(
   // .wrangler/deploy/config.json. A plain build() call bypasses cloudflare()'s
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
-  let outDir: string | undefined;
-  let bundleDirs: VinextRouteRootConfig = {};
-  await withCloudflareEnv(env, async () => {
+  let completed = false;
+  const outDir = await withCloudflareEnv(env, async () => {
     const invocation: BuildLifecycleInvocation = {
       // Deploy decides platform-specific finalization only after TPR and staged
-      // warmup selection. The steps after the build read the server metadata
-      // from the outDir vinext wrote it under, which stays under vinext's root
-      // when a later plugin moves Vite's.
-      onComplete(builtOutDir) {
-        outDir = builtOutDir;
+      // warmup selection.
+      onComplete() {
+        completed = true;
       },
     };
     const builder = await createBuilder({
@@ -689,28 +686,11 @@ async function runBuild(
       [VINEXT_BUILD_LIFECYCLE_CONFIG]: invocation,
     } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
-    // A plugin that moved Vite's root moved the bundles with it, under Vite's
-    // outDir rather than the one vinext wrote its metadata under. A hybrid
-    // build's Pages Router bundle stays with the metadata.
-    const viteOutDir = path.resolve(builder.config.root, builder.config.build.outDir);
-    if (outDir === undefined || viteOutDir === path.resolve(outDir)) return;
-    const environmentOutDir = (name: string) => {
-      const dir = builder.environments[name]?.config.build.outDir;
-      return dir === undefined ? undefined : path.resolve(builder.config.root, dir);
-    };
-    const rscOutDir = environmentOutDir("rsc");
-    const ssrOutDir = rscOutDir === undefined ? environmentOutDir("ssr") : undefined;
-    const clientOutDir = environmentOutDir("client");
-    bundleDirs = {
-      ...(rscOutDir && { rscOutDir }),
-      ...(ssrOutDir && { ssrOutDir }),
-      ...(clientOutDir && { clientOutDir }),
-    };
+    // Vite resolves a relative outDir against the resolved root.
+    return path.resolve(builder.config.root, builder.config.build.outDir);
   });
-  if (outDir === undefined) {
-    throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
-  }
-  return { ...bundleDirs, outDir };
+  if (!completed) throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
+  return outDir;
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
@@ -2513,12 +2493,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
   // Step 5: Build
   if (!options.skipBuild) {
-    const builtDirs = await withBuildContext(() =>
+    const outDir = await withBuildContext(() =>
       runBuild(info, cloudflareEnv, viteMode, viteConfigFile),
     );
     // A plugin's config hook may set `build.outDir`, which the config file
     // alone does not show.
-    viteConfigMetadata.routeRootConfig = { ...viteConfigMetadata.routeRootConfig, ...builtDirs };
+    viteConfigMetadata.routeRootConfig = { ...viteConfigMetadata.routeRootConfig, outDir };
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }

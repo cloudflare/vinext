@@ -137,9 +137,16 @@ function splitGitPathList(list: string, separator: string): string[] {
   return entries.filter(Boolean);
 }
 
-// The directories in a Git directory, after gitrepository-layout(5), and Git
-// LFS's object store.
+// The entries in a Git directory, after gitrepository-layout(5), and Git LFS's
+// object store. Any of them may be a symlink to storage elsewhere.
 const GIT_DIR_ENTRIES = [
+  "HEAD",
+  "config",
+  "config.worktree",
+  "packed-refs",
+  "index",
+  "shallow",
+  "commondir",
   "objects",
   "refs",
   "reftable",
@@ -155,25 +162,25 @@ const GIT_DIR_ENTRIES = [
 ];
 
 /**
- * The common directory of `dir` if `dir` is a Git directory, as Git checks
- * one. The common directory is GIT_COMMON_DIR when set, else the one `dir`'s
+ * The common directory of `dir`, each link on its way and resolved, if `dir`
+ * is a Git directory, as Git checks one. The common directory is GIT_COMMON_DIR when set, else the one `dir`'s
  * `commondir` file names, else `dir`. It must hold the object directory
  * (GIT_OBJECT_DIRECTORY when set) and a `refs` folder, and `dir`'s HEAD must
  * name a ref or hold an object ID.
  */
-function findGitCommonDir(dir: string): string | undefined {
+function findGitCommonDir(dir: string): { links: string[]; real: string } | undefined {
   try {
-    let commonDir = walkPath(dir).real;
+    let commonDir = walkPath(dir);
     if (process.env.GIT_COMMON_DIR) {
-      commonDir = walkPath(process.env.GIT_COMMON_DIR).real;
+      commonDir = walkPath(process.env.GIT_COMMON_DIR);
     } else if (fs.existsSync(path.join(dir, "commondir"))) {
       const named = fs.readFileSync(path.join(dir, "commondir"), "utf8").replace(/[\r\n]+$/, "");
-      commonDir = walkPath(named, dir).real;
+      commonDir = walkPath(named, dir);
     }
     const objectDir = process.env.GIT_OBJECT_DIRECTORY
       ? walkPath(process.env.GIT_OBJECT_DIRECTORY).real
-      : path.join(commonDir, "objects");
-    for (const entry of [objectDir, path.join(commonDir, "refs")]) {
+      : path.join(commonDir.real, "objects");
+    for (const entry of [objectDir, path.join(commonDir.real, "refs")]) {
       if (!fs.statSync(entry).isDirectory()) return undefined;
     }
     const head = path.join(dir, "HEAD");
@@ -217,6 +224,17 @@ function resolveGitDirs(root: string): string[] {
     gitDirs.push(...links, real);
     return real;
   };
+  const rootForms = pathForms(root);
+  // A repository's Git directory, or only its Git entries (apart from any the
+  // project is in) when the project sits inside it. Each entry is protected
+  // as a path too, so a symlinked one keeps its target.
+  const protectRepository = (dir: string) => {
+    if (!rootForms.some((rootForm) => isPathInsideOrEqual(dir, rootForm))) protect(dir);
+    for (const entry of GIT_DIR_ENTRIES) {
+      const file = path.join(dir, entry);
+      if (!rootForms.some((rootForm) => isPathInsideOrEqual(file, rootForm))) protect(file);
+    }
+  };
   // A Git directory or a gitfile naming one, and the repository's shared
   // directory.
   const addGitDir = (dir: string) => {
@@ -225,13 +243,23 @@ function resolveGitDirs(root: string): string[] {
     const target = readPathFile(gitDir, "gitdir: ");
     if (target) gitDir = protect(target, path.dirname(dir));
     repoDirs.push(gitDir);
+    protectRepository(gitDir);
     const commonDir = readPathFile(path.join(gitDir, "commondir"));
-    if (commonDir) repoDirs.push(protect(commonDir, gitDir));
+    if (commonDir) {
+      const common = protect(commonDir, gitDir);
+      repoDirs.push(common);
+      protectRepository(common);
+    }
   };
   // Relative to the working directory, as Git reads them.
   const env = process.env;
   if (env.GIT_DIR) addGitDir(env.GIT_DIR);
-  if (env.GIT_COMMON_DIR) repoDirs.push(protect(env.GIT_COMMON_DIR));
+  if (env.GIT_COMMON_DIR) {
+    const { links, real } = walkPath(env.GIT_COMMON_DIR);
+    gitDirs.push(...links);
+    repoDirs.push(real);
+    protectRepository(real);
+  }
   if (env.GIT_INDEX_FILE) protect(env.GIT_INDEX_FILE);
   // Each object directory and the directory its path is relative to.
   const objectDirs: Array<{ dir: string; base?: string }> = [
@@ -239,19 +267,6 @@ function resolveGitDirs(root: string): string[] {
     ...splitGitPathList(env.GIT_ALTERNATE_OBJECT_DIRECTORIES ?? "", path.delimiter),
   ].flatMap((dir) => (dir ? [{ dir }] : []));
 
-  const rootForms = pathForms(root);
-  // A repository's Git directory, or only its Git directories (apart from any
-  // the project is in) when the project sits inside it.
-  const protectRepository = (dir: string) => {
-    if (!rootForms.some((rootForm) => isPathInsideOrEqual(dir, rootForm))) {
-      protect(dir);
-      return;
-    }
-    for (const entry of GIT_DIR_ENTRIES) {
-      const file = path.join(dir, entry);
-      if (!rootForms.some((rootForm) => isPathInsideOrEqual(file, rootForm))) protect(file);
-    }
-  };
   // A symlinked root (kept with resolve.preserveSymlinks) may sit in another
   // repository than its target, so search from every form of it. Git uses the
   // nearest repository, but emptying any one above the project destroys it,
@@ -264,9 +279,10 @@ function resolveGitDirs(root: string): string[] {
         // A bare repository holds the project: protect it and the common
         // directory it keeps its refs and objects in.
         const gitDir = walkPath(dir).real;
-        repoDirs.push(gitDir, commonDir);
+        repoDirs.push(gitDir, commonDir.real);
+        gitDirs.push(...commonDir.links);
         protectRepository(dir);
-        if (commonDir !== gitDir) protectRepository(commonDir);
+        if (commonDir.real !== gitDir) protectRepository(commonDir.real);
       }
       if (path.dirname(dir) === dir) break;
     }

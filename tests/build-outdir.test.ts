@@ -468,34 +468,7 @@ describe("build.outDir", () => {
     ).rejects.toThrow('The build.outDir "app" overlaps the app directory "app"');
   });
 
-  it("reports the outDir it wrote the server metadata under when a plugin moves Vite's root", async () => {
-    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
-    fs.rmSync(path.join(fixtureDir, "pages"), { recursive: true });
-    fs.mkdirSync(path.join(fixtureDir, "nested"));
-    let reported: string | undefined;
-
-    const builder = await createBuilder({
-      root: fixtureDir,
-      configFile: false,
-      plugins: [
-        vinext({ appDir: fixtureDir }),
-        { name: "move-root", config: () => ({ root: path.join(fixtureDir, "nested") }) },
-      ],
-      build: { outDir: "out" },
-      logLevel: "silent",
-      [VINEXT_BUILD_LIFECYCLE_CONFIG]: {
-        onComplete(outDir: string) {
-          reported = outDir;
-        },
-      },
-    } as Parameters<typeof createBuilder>[0]);
-    await builder.buildApp();
-
-    expect(reported).toBeDefined();
-    expect(fs.existsSync(path.join(reported!, "server", "BUILD_ID"))).toBe(true);
-  }, 180_000);
-
-  it("checks output directories against the root a later plugin moves Vite to", async () => {
+  it("rejects a plugin that moves Vite's root after vinext read it", async () => {
     const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-moved-root-repo-"));
     temporaryDirs.push(repo);
@@ -503,7 +476,7 @@ describe("build.outDir", () => {
     fs.writeFileSync(path.join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
     fs.mkdirSync(path.join(repo, "site"));
 
-    // The project isn't in a repository, but the root Vite builds from is.
+    // The root Vite would build from is in a repository vinext never checked.
     await expect(
       createBuilder({
         root: fixtureDir,
@@ -515,7 +488,7 @@ describe("build.outDir", () => {
         build: { outDir: path.join(repo, ".git") },
         logLevel: "silent",
       }),
-    ).rejects.toThrow("overlaps the project's Git directory");
+    ).rejects.toThrow("A plugin moved Vite's root");
     expect(fs.existsSync(path.join(repo, ".git", "HEAD"))).toBe(true);
   });
 

@@ -56,8 +56,7 @@ export type BuildLifecycleContext = {
 export const VINEXT_BUILD_LIFECYCLE_CONFIG = "__vinextBuildLifecycle";
 
 export type BuildLifecycleInvocation = {
-  /** Called with the build.outDir vinext wrote its server metadata under. */
-  onComplete?: (outDir: string) => void;
+  onComplete?: () => void;
 };
 
 async function loadProjectViteApi(root: string): Promise<ProjectViteApi> {

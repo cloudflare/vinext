@@ -236,14 +236,10 @@ export default ({ mode }) => {
   recordContext("vite", { mode, isPreview: process.env.CLOUDFLARE_PREVIEW_BUILD === "true" });
   ${failure === "config" ? 'throw new Error("Preview config failed");' : ""}
   let lifecycle;
-  let outDir;
   return {
     plugins: [cloudflare(), {
       name: "test-build-lifecycle",
-      configResolved(config) {
-        lifecycle = config.__vinextBuildLifecycle;
-        outDir = config.root + "/" + config.build.outDir;
-      },
+      configResolved(config) { lifecycle = config.__vinextBuildLifecycle; },
       buildStart() {
         recordContext("build", {
           mode,
@@ -252,7 +248,7 @@ export default ({ mode }) => {
         });
         ${failure === "build" ? 'throw new Error("Preview build failed");' : ""}
       },
-      closeBundle() { lifecycle?.onComplete(outDir); },
+      closeBundle() { lifecycle?.onComplete(); },
     }],
   };
 };
@@ -545,7 +541,7 @@ describe("deploy prerender config wiring", () => {
 export function createBuilder(config) {
   return {
     config: { root: config.root, build: { outDir: "dist" } },
-    async buildApp() { config.__vinextBuildLifecycle.onComplete(config.root + "/dist"); },
+    async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
   };
 }
 `,
@@ -564,7 +560,7 @@ export function createBuilder(config) {
     },
   );
 
-  it("reads the build output from the outDir the build lifecycle reports", async () => {
+  it("reads the build output from the build.outDir the build resolved", async () => {
     writeProject("true");
     writeFile("next.config.mjs", 'export default { output: "export" };\n');
     const viteUrl = pathToFileURL(createRequire(import.meta.url).resolve("vite")).href;
@@ -572,21 +568,15 @@ export function createBuilder(config) {
       "node_modules/vite/package.json",
       JSON.stringify({ name: "vite", type: "module", main: "index.js" }),
     );
-    // A plugin's config hook set build.outDir, which the config file doesn't
-    // show, and moved Vite's root; vinext reports where it wrote its
-    // metadata, and the bundles are under Vite's outDir.
+    // A plugin's config hook set build.outDir and root, which the config file
+    // doesn't show. Vite resolves the outDir against the root.
     writeFile(
       "node_modules/vite/index.js",
       `export * from ${JSON.stringify(viteUrl)};
 export function createBuilder(config) {
   return {
-    config: { root: config.root + "/elsewhere", build: { outDir: "out" } },
-    environments: {
-      rsc: { config: { build: { outDir: "out/server" } } },
-      ssr: { config: { build: { outDir: "out/server/ssr" } } },
-      client: { config: { build: { outDir: "out/client" } } },
-    },
-    async buildApp() { config.__vinextBuildLifecycle.onComplete(config.root + "/site/out"); },
+    config: { root: config.root + "/site", build: { outDir: "out" } },
+    async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
   };
 }
 `,
@@ -597,11 +587,7 @@ export function createBuilder(config) {
 
     expect(runPrerenderMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        routeRootConfig: expect.objectContaining({
-          outDir: path.join(tmpDir, "site", "out"),
-          rscOutDir: path.join(tmpDir, "elsewhere", "out", "server"),
-          clientOutDir: path.join(tmpDir, "elsewhere", "out", "client"),
-        }),
+        routeRootConfig: expect.objectContaining({ outDir: path.join(tmpDir, "site", "out") }),
       }),
     );
   });
