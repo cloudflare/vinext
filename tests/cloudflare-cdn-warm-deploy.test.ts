@@ -430,6 +430,37 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(selected.paths).toEqual(["/hot", "/cold"]);
   });
 
+  it("selects only routes the plan still requests after cacheability pruning", async () => {
+    const { selectTPRWarmPlan } = await import("../packages/cloudflare/src/deploy.js");
+
+    const selected = selectTPRWarmPlan(
+      {
+        loadingShellPaths: [],
+        paths: [],
+        // The probe pruned the request-dynamic /opengraph-image, but its
+        // pattern stays in the plan.
+        routeHandlerPaths: ["/icon"],
+        routePatterns: {
+          "/opengraph-image": {
+            kind: "app-route",
+            metadataRoute: true,
+            pattern: "/opengraph-image",
+          },
+          "/icon": { kind: "app-route", metadataRoute: true, pattern: "/icon" },
+        },
+        rscPaths: [],
+      },
+      [
+        { path: "/opengraph-image", requests: 95 },
+        { path: "/icon", requests: 5 },
+      ],
+      90,
+      1,
+    );
+
+    expect(selected.routeHandlerPaths).toEqual(["/icon"]);
+  });
+
   it("rejects promotion delays that Node timers cannot represent before deploying", async () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 

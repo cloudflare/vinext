@@ -1013,10 +1013,21 @@ export function selectTPRWarmPlan(
   limit: number,
 ): PrerenderWarmPlan {
   const canonical = (pathname: string): string => normalizePathTrailingSlash(pathname, false);
+  // Only paths the plan still requests can be selected: the cacheability
+  // probe prunes request lists but leaves their route patterns.
+  const requested = new Set([
+    ...(plan.appPaths ?? []),
+    ...plan.loadingShellPaths,
+    ...(plan.pagesDataPaths ?? []),
+    ...(plan.pagesPaths ?? []),
+    ...plan.paths,
+    ...(plan.routeHandlerPaths ?? []),
+    ...plan.rscPaths,
+  ]);
   const resolved = new Set(
-    Object.entries(plan.routePatterns ?? {}).map(([pathname, route]) =>
-      canonical(route.cacheabilityProbe?.concretePathname ?? pathname),
-    ),
+    Object.entries(plan.routePatterns ?? {})
+      .filter(([pathname]) => requested.has(pathname))
+      .map(([pathname, route]) => canonical(route.cacheabilityProbe?.concretePathname ?? pathname)),
   );
   const requestsByPath = new Map<string, number>();
   for (const { path, requests } of traffic) {
