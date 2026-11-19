@@ -1222,9 +1222,15 @@ describe("parseDeployArgs", () => {
       "x-vinext-prerender-secret",
       "x-rsc-action",
       "x-middleware-prefetch",
-    ])("rejects %s because vinext sets it itself", (name) => {
+      "Range",
+      "If-Range",
+      "If-Match",
+      "if-none-match",
+      "If-Modified-Since",
+      "If-Unmodified-Since",
+    ])("rejects %s because vinext controls it", (name) => {
       expect(() => parseDeployArgs(["--warm-cache", "--warm-cache-header", `${name}: 1`])).toThrow(
-        `--warm-cache-header cannot set "${name}": vinext sets this header itself on warm-up requests.`,
+        `--warm-cache-header cannot set "${name}": vinext controls this header on warm-up requests.`,
       );
     });
 

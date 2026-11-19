@@ -18,15 +18,22 @@ const INVALID_HEADER_VALUE = /[^\t\x20-\x7e\x80-\xff]/;
 // Headers vinext sets, or deliberately omits, to choose what each request asks
 // for: the representation (Accept, RSC and Next-Router-*), the Worker version,
 // the prerender secret, the deployment ID, and cache revalidation. Server
-// action and middleware headers make the Worker treat a request as uncacheable.
-// A user value would change which cache entry is filled or which Worker
-// answers, so these names are rejected rather than silently overridden.
+// action and middleware headers make the Worker treat a request as uncacheable,
+// and conditional or range headers turn a full fill into a 304 or 206. A user
+// value would change which cache entry is filled or which Worker answers, so
+// these names are rejected rather than silently overridden.
 const RESERVED_HEADER_NAMES = new Set([
   "accept",
   "cache-control",
   "cloudflare-workers-version-overrides",
   "host",
+  "if-match",
+  "if-modified-since",
+  "if-none-match",
+  "if-range",
+  "if-unmodified-since",
   "pragma",
+  "range",
   "rsc",
   "user-agent",
   "x-deployment-id",
@@ -61,7 +68,7 @@ export function validateWarmCacheRequestHeader(name: string, value: string, sour
   }
   if (isReservedHeaderName(name)) {
     throw new Error(
-      `${source} cannot set "${name}": vinext sets this header itself on warm-up requests.`,
+      `${source} cannot set "${name}": vinext controls this header on warm-up requests.`,
     );
   }
   if (INVALID_HEADER_VALUE.test(value)) {
