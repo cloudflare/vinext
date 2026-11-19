@@ -357,6 +357,38 @@ describe("handleMetadataRouteRequest", () => {
     ).resolves.toEqual([{ paths: ["/sitemap/a.xml"], routePattern: "/sitemap.xml" }]);
   });
 
+  it("serves the sitemap children an iterable generateSitemaps result lists", async () => {
+    // Next.js' generated sitemap GET reads generateSitemaps() with for...of,
+    // as its generateStaticParams does.
+    const route = {
+      type: "sitemap",
+      isDynamic: true,
+      filePath: "/tmp/app/sitemap.ts",
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl: "/sitemap.xml",
+      contentType: "application/xml",
+      module: {
+        default: () => [{ url: "https://example.com/a" }],
+        generateSitemaps: async () => new Set([{ id: "a" }, { id: "b" }]),
+      },
+    } satisfies MetadataFileRoute;
+    const request = (cleanPathname: string) =>
+      handleMetadataRouteRequest({ cleanPathname, makeThenableParams, metadataRoutes: [route] });
+
+    expect((await request("/sitemap/b.xml"))?.status).toBe(200);
+    expect((await request("/sitemap/c.xml"))?.status).toBe(404);
+    await expect(
+      handleMetadataRouteRequest({
+        cleanPathname: "/sitemap/a.xml",
+        makeThenableParams,
+        metadataRoutes: [
+          { ...route, module: { ...route.module, generateSitemaps: async () => ({ id: "a" }) } },
+        ],
+      }),
+    ).rejects.toThrow("generateSitemaps() must return an array");
+  });
+
   it("stamps the adapter's build identity on metadata route responses", async () => {
     // No Next.js test port applies: deploy warm-up checks this vinext header
     // against the staged Worker version, as it does for Route Handlers.

@@ -818,22 +818,16 @@ function metadataRouteRawParams(
   return params;
 }
 
+/** Like Next.js' generated sitemap GET, which reads every item with `for...of`. */
 function findGeneratedSitemapId(entries: unknown, rawId: string): string | null {
-  if (!Array.isArray(entries)) {
-    return null;
-  }
-
-  for (const entry of entries) {
+  let found: string | null = null;
+  for (const entry of generatorItems(entries, "generateSitemaps")) {
     if (!isObject(entry) || Reflect.get(entry, "id") == null) {
       throw new Error("id property is required for every item returned from generateSitemaps");
     }
-    const id = Reflect.get(entry, "id");
-    if (String(id) === rawId) {
-      return rawId;
-    }
+    if (String(Reflect.get(entry, "id")) === rawId) found = rawId;
   }
-
-  return null;
+  return found;
 }
 
 function makeThenableMetadataRouteId(id: string) {
