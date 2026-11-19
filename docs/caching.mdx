@@ -363,6 +363,24 @@ The default warmup makes one fill request per admitted cache identity. Add `--wa
 
 Only discoverable, cacheable route identities are warmed; dynamic parameters and query variants are not all enumerated automatically. HTML, RSC, and Pages Router data use separate requests where applicable. For Workers Cache, a warm request does not guarantee a cache hit in every region. See [Cloudflare's Workers Caching documentation](https://developers.cloudflare.com/workers/cache/).
 
+### Sites behind an auth proxy
+
+Every discovery, readiness, warm-up, and probe request goes to the deployed Worker through its production URL. If [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) or another auth proxy sits in front of it, those requests get the proxy's sign-in redirect and the deploy fails. Give the deploy the headers the proxy accepts, such as the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers of an Access [service token](https://developers.cloudflare.com/cloudflare-one/identity/service-tokens/).
+
+Set `VINEXT_WARM_CACHE_HEADERS` to one `Name: value` header per line, so secrets stay out of shell history and process listings. In GitHub Actions:
+
+```yaml
+- run: npx @vinext/cloudflare deploy --warm-cache
+  env:
+    VINEXT_WARM_CACHE_HEADERS: |
+      CF-Access-Client-Id: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF-Access-Client-Secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+```
+
+For headers that are not secret, pass `--warm-cache-header "Name: value"`, once per header. A flag replaces an env entry with the same name. The deploy logs the configured header names, never their values, and sends the headers only to the Worker, not to the Cloudflare API. Warm-up requests do not follow redirects, so the headers never reach another origin.
+
+The deploy rejects names that vinext sets itself to choose what each request asks for: `Accept`, `Cache-Control`, `Pragma`, `User-Agent`, `Host`, `RSC`, `Cloudflare-Workers-Version-Overrides`, `X-Deployment-Id`, and names starting with `Next-`, `X-Nextjs-`, or `X-Vinext-`. If a response varies on one of your headers, the warmed entry is stored under that header's value.
+
 ### Traffic-aware warming
 
 For apps with many routes, use traffic-aware warming to prioritize pages people actually visit:

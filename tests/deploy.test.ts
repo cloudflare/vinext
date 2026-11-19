@@ -1031,6 +1031,7 @@ describe("parseDeployArgs", () => {
       "warmCdnReadinessTimeout",
       "warmCdnReadinessRetries",
       "warmCdnTarget",
+      "warmCdnHeaders",
     ]) {
       expect(cliSource).toContain(`${option}: parsed.${option}`);
     }
@@ -1125,6 +1126,98 @@ describe("parseDeployArgs", () => {
     },
   );
 
+  describe("warm-up request headers", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("parses repeated --warm-cache-header flags", () => {
+      const parsed = parseDeployArgs([
+        "--warm-cache",
+        "--warm-cache-header",
+        "CF-Access-Client-Id: id.access",
+        "--warm-cache-header=X-Bot-Key:  a:b ",
+      ]);
+      expect(parsed.warmCdnHeaders).toEqual([
+        ["CF-Access-Client-Id", "id.access"],
+        ["X-Bot-Key", "a:b"],
+      ]);
+      expect(parseDeployArgs(["--warm-cache"]).warmCdnHeaders).toBeUndefined();
+    });
+
+    it("reads VINEXT_WARM_CACHE_HEADERS lines and lets a flag replace an entry", () => {
+      vi.stubEnv(
+        "VINEXT_WARM_CACHE_HEADERS",
+        "CF-Access-Client-Id: id.access\r\n\nCF-Access-Client-Secret: env-secret\n",
+      );
+      const parsed = parseDeployArgs([
+        "--traffic-aware-warm-cache",
+        "--warm-cache-header",
+        "cf-access-client-secret: flag-secret",
+      ]);
+      expect(parsed.warmCdnHeaders).toEqual([
+        ["CF-Access-Client-Id", "id.access"],
+        ["cf-access-client-secret", "flag-secret"],
+      ]);
+    });
+
+    it("ignores VINEXT_WARM_CACHE_HEADERS when the deploy does not warm", () => {
+      vi.stubEnv("VINEXT_WARM_CACHE_HEADERS", "not a header");
+      expect(parseDeployArgs([]).warmCdnHeaders).toBeUndefined();
+    });
+
+    it("requires CDN warming for --warm-cache-header", () => {
+      expect(() => parseDeployArgs(["--warm-cache-header", "X-Key: value"])).toThrow(
+        "--warm-cache-header requires --warm-cache or --traffic-aware-warm-cache.",
+      );
+    });
+
+    it.each([
+      "Accept",
+      "cache-control",
+      "Pragma",
+      "User-Agent",
+      "Host",
+      "RSC",
+      "Next-Router-Prefetch",
+      "Next-Url",
+      "x-nextjs-data",
+      "X-Deployment-Id",
+      "Cloudflare-Workers-Version-Overrides",
+      "X-Vinext-Expected-Worker-Version",
+      "x-vinext-prerender-secret",
+    ])("rejects %s because vinext sets it itself", (name) => {
+      expect(() => parseDeployArgs(["--warm-cache", "--warm-cache-header", `${name}: 1`])).toThrow(
+        `--warm-cache-header cannot set "${name}": vinext sets this header itself on warm-up requests.`,
+      );
+    });
+
+    it.each([
+      ["s3cret-without-colon", '--warm-cache-header expects "Name: value"'],
+      ["Bad s3cret: value", "--warm-cache-header has an invalid header name."],
+      [": s3cret", "--warm-cache-header has an invalid header name."],
+      ["X-Key: s3cret\u0000", '--warm-cache-header has an invalid value for header "X-Key".'],
+      ["X-Key: s3\u2028cret", '--warm-cache-header has an invalid value for header "X-Key".'],
+    ])("rejects a malformed flag without printing its value", (entry, message) => {
+      let error: unknown;
+      try {
+        parseDeployArgs(["--warm-cache", "--warm-cache-header", entry]);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(message);
+      expect((error as Error).message).not.toContain("s3cret");
+    });
+
+    it("names the env line of a malformed entry without printing it", () => {
+      vi.stubEnv("VINEXT_WARM_CACHE_HEADERS", "X-Key: ok\ns3cret");
+      expect(() => parseDeployArgs(["--warm-cache"])).toThrow(
+        'VINEXT_WARM_CACHE_HEADERS line 2 expects "Name: value", but the entry has no colon.',
+      );
+    });
+  });
+
   it("parses --env with space-separated value", () => {
     expect(parseDeployArgs(["--env", "staging"]).env).toBe("staging");
   });
@@ -1174,6 +1267,8 @@ describe("parseDeployArgs", () => {
     expect(help).toContain("--traffic-aware-warm-cache");
     expect(help).toContain("--warm-cache");
     expect(help).toContain("--warm-cache-target");
+    expect(help).toContain("--warm-cache-header");
+    expect(help).toContain("VINEXT_WARM_CACHE_HEADERS");
     expect(help).toContain("--dangerously-promote-on-warm-cache-error");
     expect(help).not.toContain("--dangerously-promote-on-cdn-warm-error");
     expect(help).not.toContain("--experimental-");
