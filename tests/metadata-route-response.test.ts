@@ -169,6 +169,12 @@ describe("handleMetadataRouteRequest", () => {
         "opengraph-image",
       ]),
       route(
+        "/news/[slug]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateStaticParams: () => undefined },
+        ["news", ":slug", "opengraph-image"],
+      ),
+      route(
         "/shop/[id]/opengraph-image",
         "opengraph-image",
         { default: image, generateImageMetadata },
@@ -193,6 +199,8 @@ describe("handleMetadataRouteRequest", () => {
         routePattern: "/blog/:slug/opengraph-image",
         staticParams: [{ slug: "first" }, { slug: "second" }],
       },
+      // Discovery reports that generateStaticParams must return an array.
+      { routePattern: "/news/:slug/opengraph-image", staticParams: null },
     ]);
     expect(generateImageMetadata).toHaveBeenCalledTimes(1);
     expect(generateImageMetadata).toHaveBeenCalledWith({ params: {} });

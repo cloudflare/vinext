@@ -391,7 +391,9 @@ export async function getWarmableMetadataRoutes(
     } else if (route.patternParts) {
       if (!options.enumerateDynamicPaths || !functions.generateStaticParams) continue;
       const staticParams = await functions.generateStaticParams({ params: {} });
-      routes.push({ routePattern, staticParams });
+      // JSON drops an undefined value, so send null to keep the route named in
+      // the discovery error.
+      routes.push({ routePattern, staticParams: staticParams ?? null });
     } else {
       routes.push({ paths: [route.servedUrl], routePattern });
     }
