@@ -1059,6 +1059,18 @@ describe("prerender path manifest", () => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.pathname === "/__vinext/prerender/metadata-routes") {
         return Response.json([
+          // The staged build lists its static files with the hash it links.
+          { paths: ["/favicon.ico"], routePattern: "/favicon.ico", search: "?built-hash" },
+          {
+            paths: ["/opengraph-image.png"],
+            routePattern: "/opengraph-image.png",
+            search: "?og-hash",
+          },
+          {
+            paths: ["/shop/-/twitter-image.png"],
+            routePattern: "/shop/-/twitter-image.png",
+            search: "?twitter-hash",
+          },
           { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
           {
             paths: ["/docs/opengraph-image/one", "/docs/opengraph-image/two"],
@@ -1106,11 +1118,12 @@ describe("prerender path manifest", () => {
         metadataSearch: "?docs-hash",
         pattern: "/docs/opengraph-image",
       },
-      // Pages link a static image with the build's hash of the file.
+      // Pages link a static image with the deployed build's hash of the
+      // file, which `--skip-build` keeps after the source file changes.
       "/favicon.ico": {
         kind: "app-route",
         metadataRoute: true,
-        metadataSearch: `?${createHash("sha1").update("icon").digest("hex").slice(0, 16)}`,
+        metadataSearch: "?built-hash",
         pattern: "/favicon.ico",
       },
       "/sitemap.xml": { kind: "app-route", metadataRoute: true, pattern: "/sitemap.xml" },
@@ -1127,6 +1140,29 @@ describe("prerender path manifest", () => {
     expect(new Headers(metadataRequest?.[1]?.headers).get("x-vinext-prerender-secret")).toBe(
       "staged-discovery-secret",
     );
+  });
+
+  it("hashes static metadata files itself when no server is running", async () => {
+    // No Next.js test port applies: the hash matches the links vinext's build
+    // writes.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/favicon.ico", "icon");
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest?.routeHandlerPaths).toEqual(["/favicon.ico"]);
+    expect(manifest?.routePatterns?.["/favicon.ico"]).toMatchObject({
+      metadataRoute: true,
+      metadataSearch: `?${createHash("sha1").update("icon").digest("hex").slice(0, 16)}`,
+      pattern: "/favicon.ico",
+    });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 
   it("matches traffic-picked paths to metadata routes whose paths it doesn't enumerate", async () => {

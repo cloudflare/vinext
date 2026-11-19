@@ -404,7 +404,8 @@ function generatedImagePaths(route: MetadataRuntimeRoute, imageMetadata: unknown
  * described instead, so a traffic-picked path can be matched to it, including
  * one the runtime stores on demand (isMetadataRouteStaticGenEnabled).
  *
- * Static metadata files need no module, so the build lists them itself.
+ * Static metadata files are always static, at the hash this build links them
+ * with.
  */
 export async function getWarmableMetadataRoutes(
   metadataRoutes: readonly MetadataRuntimeRoute[],
@@ -413,15 +414,18 @@ export async function getWarmableMetadataRoutes(
   const routes: WarmableMetadataRoute[] = [];
 
   for (const route of metadataRoutes) {
-    if (!route.isDynamic) continue;
-    if (route.module?.dynamic === "force-dynamic" || route.module?.revalidate === 0) continue;
-    const functions = getMetadataRouteFunctions(route);
-    if (!functions.defaultExport) continue;
     const search = metadataRouteLinkSearch(route);
     const base = {
       routePattern: metadataRouteCacheabilityPattern(route),
       ...(search ? { search } : {}),
     };
+    if (!route.isDynamic) {
+      routes.push({ ...base, paths: [route.servedUrl] });
+      continue;
+    }
+    if (route.module?.dynamic === "force-dynamic" || route.module?.revalidate === 0) continue;
+    const functions = getMetadataRouteFunctions(route);
+    if (!functions.defaultExport) continue;
 
     if (route.type === "sitemap" && functions.generateSitemaps) {
       if (route.patternParts) continue;

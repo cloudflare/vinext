@@ -1014,9 +1014,11 @@ function matchMetadataWarmPath(
  * Collect the file-based metadata routes Next.js prerenders, keyed by path to
  * the Route Handler pattern their responses record. Every static file is
  * static, at one URL even under a dynamic segment (`/shop/-/icon.png`). The
- * server lists code-generated ones from their modules
- * (getWarmableMetadataRoutes), or, without `enumerateDynamicPaths`, describes
- * the ones whose paths need generating as `matchers`.
+ * server lists them all (getWarmableMetadataRoutes): static files with the
+ * hash the deployed build links them with, which `--skip-build` keeps even
+ * after the source changes, and code-generated ones from their modules, or,
+ * without `enumerateDynamicPaths`, as `matchers` for the ones whose paths
+ * need generating.
  */
 async function collectMetadataRoutePaths(options: {
   appDir: string;
@@ -1038,16 +1040,18 @@ async function collectMetadataRoutePaths(options: {
     routes.set(pathname, route);
     if (pathname === route.pattern) nonDynamicPaths.push(pathname);
   };
-  for (const route of metadataRoutes) {
-    if (route.isDynamic) continue;
-    // The build links the file with the same hash.
-    const search = metadataRouteLinkSearch({
-      contentHash: createMetadataRouteContentHash(route),
-      type: route.type,
-    });
-    addMetadataPath(route.servedUrl, { pattern: route.servedUrl, ...(search ? { search } : {}) });
-  }
-  if (!options.baseUrl || !metadataRoutes.some((route) => route.isDynamic)) {
+  if (metadataRoutes.length === 0) return { matchers, nonDynamicPaths, routes };
+  if (!options.baseUrl || !options.secretHeaders[VINEXT_PRERENDER_SECRET_HEADER]) {
+    // No server to ask: the build embeds these files and links each with this
+    // hash.
+    for (const route of metadataRoutes) {
+      if (route.isDynamic) continue;
+      const search = metadataRouteLinkSearch({
+        contentHash: createMetadataRouteContentHash(route),
+        type: route.type,
+      });
+      addMetadataPath(route.servedUrl, { pattern: route.servedUrl, ...(search ? { search } : {}) });
+    }
     return { matchers, nonDynamicPaths, routes };
   }
 

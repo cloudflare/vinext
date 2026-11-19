@@ -153,6 +153,11 @@ describe("handleMetadataRouteRequest", () => {
     const generateImageMetadata = vi.fn(() => [{ id: "small" }, { id: "large" }, { id: "a/b" }]);
     const generateStaticParams = vi.fn(() => [{ slug: "first" }, { slug: "second" }]);
     const routes = [
+      {
+        ...route("/shop/-/icon.png", "icon", {}),
+        contentHash: "built-icon-hash",
+        isDynamic: false,
+      },
       route("/sitemap.xml", "sitemap", { default: () => [] }),
       route("/robots.txt", "robots", { default: () => ({}), revalidate: 60 }),
       route("/twitter-image", "twitter-image", { default: image, dynamic: "force-dynamic" }),
@@ -193,6 +198,8 @@ describe("handleMetadataRouteRequest", () => {
     await expect(
       getWarmableMetadataRoutes(routes, { enumerateDynamicPaths: true }),
     ).resolves.toEqual([
+      // A static file is linked with the hash of the file this build embeds.
+      { paths: ["/shop/-/icon.png"], routePattern: "/shop/-/icon.png", search: "?built-icon-hash" },
       { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
       { paths: ["/robots.txt"], routePattern: "/robots.txt" },
       {
@@ -224,6 +231,7 @@ describe("handleMetadataRouteRequest", () => {
     await expect(
       getWarmableMetadataRoutes(routes, { enumerateDynamicPaths: false }),
     ).resolves.toEqual([
+      { paths: ["/shop/-/icon.png"], routePattern: "/shop/-/icon.png", search: "?built-icon-hash" },
       { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
       { paths: ["/robots.txt"], routePattern: "/robots.txt" },
       { generatedPaths: "sitemap", routePattern: "/products/sitemap.xml" },
