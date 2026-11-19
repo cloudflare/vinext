@@ -17,7 +17,7 @@ The issue keeps its **fix: in progress** label while rounds go on, until the
 fix is ready, when **fix: ready** takes its place, or stalls. A fix that goes
 back in review is **fix: in progress** again.
 
-Both triggers take the tracked pull requests of every workflow by default:
+Its triggers take the tracked pull requests of every workflow by default:
 those a sandbox step opened and kept its sandbox for. **Pull requests opened
 by** on each picks the workflows whose pull requests they take, such as Fix
 triaged issues alone.
@@ -33,6 +33,25 @@ checks fail is fixed first (below), and BigBonk is asked about the push.
 
 Clanky isn't asked here: it reviews a push by itself, or says it waits to be
 asked, and is asked then (below).
+
+## When BigBonk says nothing
+
+**BigBonk didn't answer** (a No reply trigger) starts a round when BigBonk
+has posted nothing on the pull request for 15 minutes since the workflow last
+asked it, by any of its **Ask BigBonk** steps or **Ask BigBonk again**. BigBonk
+can go quiet without a word: a run that times out edits the comment it posted
+when it last timed out, rather than posting another, and a run that never
+starts, or is cancelled, says nothing at all. No GitHub event comes of either,
+so Alcora looks for the silence itself, every five minutes, from what it
+recorded of the pull request. Each ask starts one round at most, and none
+starts while another round of the workflow is queued or running for the pull
+request.
+
+**Still unanswered?** BigBonk may have answered while the round waited for
+the one ahead, and **Still in review?** leaves a fix alone once it is ready or
+stalled. Then BigBonk is asked again, as when it says it timed out, within the
+same cap of 2 times since the head last moved (**Asked again fewer than 2
+times?**). After that, the fix stalls.
 
 ## A review or a comment
 
@@ -83,7 +102,8 @@ the pull request, and every step of it is in the graph:
      by itself, and says to comment `clanky review`: the workflow does.
    - Each is asked again at most 2 times since the head last moved
      (`trigger.pull_request.posted.<step id>` of **Ask BigBonk again** and
-     **Ask Clanky again**); after that, the fix stalls.
+     **Ask Clanky again**), BigBonk's counting the times it said nothing
+     (above); after that, the fix stalls.
    - Anything else from a bot, such as an error or a missing permission ("User
      … does not have write permissions"), stalls the fix for a person to see
      why. A person's comment that isn't a review, such as thanks, does
