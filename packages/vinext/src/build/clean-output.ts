@@ -25,9 +25,10 @@ function resolveOutDir(root: string, outDir: string | undefined): string {
 
 /**
  * Throw if `outDir`, which Vite or vinext empties, would take the project
- * with it: it may not contain the project root, nor contain or sit inside
- * one of `protectedDirs` (the app, pages and public directories). Paths are
- * compared after resolving symlinks, so an alias of the project counts too.
+ * with it: it may not contain the project root or sit inside its `.git`, nor
+ * contain or sit inside one of `protectedDirs` (the app, pages and public
+ * directories). Paths are compared after resolving symlinks, so an alias of
+ * the project counts too.
  */
 export function assertOutputDirIsSafe(
   label: string,
@@ -41,6 +42,14 @@ export function assertOutputDirIsSafe(
     throw new Error(
       `[vinext] The ${label} "${shown(realOutDir)}" contains the project root. Building there ` +
         "would delete the project. Choose a build.outDir below or outside the project, such " +
+        "as the default dist.",
+    );
+  }
+  const realGitDir = resolveRealPath(path.join(root, ".git"));
+  if (isPathInsideOrEqual(realOutDir, realGitDir)) {
+    throw new Error(
+      `[vinext] The ${label} "${shown(realOutDir)}" is inside the project's .git directory. ` +
+        "Building there would delete the repository. Choose a build.outDir outside it, such " +
         "as the default dist.",
     );
   }
@@ -122,8 +131,11 @@ export function cleanBuildOutput(options: CleanBuildOutputOptions): CleanBuildOu
     // in Vite, or with emptyOutDir: false) mustn't keep the previous build's
     // prerendered output, or the server would serve its pages.
     assertOutputDirIsSafe("build.outDir", outDir, options);
+    const serverDir = path.join(outDir, "server");
+    // server/ may itself be a symlink.
+    assertOutputDirIsSafe("server output directory", serverDir, options);
     for (const file of BUILD_PRERENDER_FILES) {
-      fs.rmSync(path.join(outDir, "server", file), { recursive: true, force: true });
+      fs.rmSync(path.join(serverDir, file), { recursive: true, force: true });
     }
     return { cleaned: false, outDir };
   }

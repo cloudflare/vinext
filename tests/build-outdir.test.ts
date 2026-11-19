@@ -516,9 +516,10 @@ describe("build.outDir", () => {
       configFile: false,
       plugins: [
         vinext({ appDir: fixtureDir }),
+        // A plugin's config hook sets the build.outDir that Nitro publishes.
+        { name: "set-outdir", config: () => ({ build: { outDir } }) },
         nitroModule.nitro({ buildDir: path.join(fixtureDir, ".nitro") }),
       ],
-      build: { outDir },
       server: { port: 0, host: "127.0.0.1" },
       logLevel: "silent",
     });

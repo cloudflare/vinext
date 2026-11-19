@@ -126,6 +126,31 @@ describe("cleanBuildOutput", () => {
     expect(fs.lstatSync(path.join(tmpDir, "dist"), { throwIfNoEntry: false })).toBeUndefined();
   });
 
+  it("refuses a symlinked outDir that points at the project's .git directory", () => {
+    const head = writeFile(tmpDir, ".git/HEAD", "ref: refs/heads/main\n");
+    fs.symlinkSync(path.join(tmpDir, ".git"), path.join(tmpDir, "dist"));
+
+    expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+      'The build.outDir ".git" is inside the project\'s .git directory',
+    );
+    expect(fs.existsSync(head)).toBe(true);
+  });
+
+  it("refuses a symlinked server directory in an outDir that isn't emptied", () => {
+    const buildId = writeFile(tmpDir, "app/RSC_BUILD_ID", "not build output\n");
+    fs.mkdirSync(path.join(tmpDir, "dist"));
+    fs.symlinkSync(path.join(tmpDir, "app"), path.join(tmpDir, "dist", "server"));
+
+    expect(() =>
+      cleanBuildOutput({
+        root: tmpDir,
+        emptyOutDir: false,
+        protectedDirs: { app: path.join(tmpDir, "app") },
+      }),
+    ).toThrow('The server output directory "app" overlaps the app directory "app"');
+    expect(fs.existsSync(buildId)).toBe(true);
+  });
+
   it("refuses a symlinked outDir that points into a protected source directory", () => {
     const page = writeFile(tmpDir, "src/app/page.tsx", "export default 1;\n");
     fs.symlinkSync(path.join(tmpDir, "src/app"), path.join(tmpDir, "dist"));

@@ -589,29 +589,36 @@ export function createBuilder(config) {
     );
   });
 
-  it("reads a --skip-build deploy's output from the Vite config's build.outDir", async () => {
-    writeProject("true");
-    writeFile("next.config.mjs", 'export default { output: "export" };\n');
-    const viteConfig = path.join(tmpDir, "vite.config.ts");
-    fs.writeFileSync(
-      viteConfig,
-      fs
-        .readFileSync(viteConfig, "utf8")
-        .replace(
-          "export default defineConfig({",
-          'export default defineConfig({\n  build: { outDir: "out" },',
-        ),
-    );
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+  it.each([
+    ["", path.join("out")],
+    ['root: "site", ', path.join("site", "out")],
+  ])(
+    "reads a --skip-build deploy's output from the Vite config's build.outDir (%s)",
+    async (root, expected) => {
+      writeProject("true");
+      writeFile("next.config.mjs", 'export default { output: "export" };\n');
+      const viteConfig = path.join(tmpDir, "vite.config.ts");
+      fs.writeFileSync(
+        viteConfig,
+        fs
+          .readFileSync(viteConfig, "utf8")
+          .replace(
+            "export default defineConfig({",
+            `export default defineConfig({\n  ${root}build: { outDir: "out" },`,
+          ),
+      );
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await deploy({ root: tmpDir, skipBuild: true });
+      await deploy({ root: tmpDir, skipBuild: true });
 
-    expect(runPrerenderMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        routeRootConfig: expect.objectContaining({ outDir: "out" }),
-      }),
-    );
-  });
+      // A relative outDir is relative to the config's root, as in Vite.
+      expect(runPrerenderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeRootConfig: expect.objectContaining({ outDir: path.join(tmpDir, expected) }),
+        }),
+      );
+    },
+  );
 
   it("loads Vite config even when the prerender-all flag already decides prerendering", async () => {
     writeProject("true");
