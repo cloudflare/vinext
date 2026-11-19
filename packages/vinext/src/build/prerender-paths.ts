@@ -965,7 +965,15 @@ async function collectAppPaths(options: {
 }
 
 /** A metadata route warm target: its Route Handler pattern and link query. */
-type MetadataWarmRoute = { pattern: string; search?: string };
+type MetadataWarmRoute = {
+  pattern: string;
+  /**
+   * A rewrite, not the path itself, reaches a metadata route, so the path
+   * takes the request's ordinary trailingSlash handling.
+   */
+  rewriteOnly?: true;
+  search?: string;
+};
 
 /** A metadata route whose paths a traffic-picked candidate can match. */
 type MetadataPathMatcher = { generatedPaths: "image" | "params" | "sitemap" } & MetadataWarmRoute;
@@ -1084,29 +1092,22 @@ async function collectMetadataRoutePaths(options: {
     return { matchers, routes };
   }
 
-  const fetchEntries = async (enumerateDynamicPaths: boolean) => {
-    const query = new URLSearchParams({ warm: "1" });
-    if (!enumerateDynamicPaths) query.set("dynamicPaths", "0");
-    const text = await fetchDiscoveryEndpoint(
-      `${options.baseUrl}${VINEXT_PRERENDER_METADATA_ROUTES_PATH}?${query}`,
-      options.secretHeaders,
-      options.retryOptions,
-    );
-    const entries = text === null ? [] : (JSON.parse(text) as unknown);
-    if (!Array.isArray(entries)) {
-      throw new Error("[vinext] Invalid metadata route warmup discovery response");
-    }
-    return entries;
-  };
-  const entries = await fetchEntries(options.enumerateDynamicPaths);
+  const query = new URLSearchParams({ warm: "1" });
+  if (!options.enumerateDynamicPaths) query.set("dynamicPaths", "0");
   // Enumeration lists no path for an on-demand route (`force-static` under a
   // dynamic segment, or a generator listing none), so traffic paths also match
-  // the routes' descriptions. Listed paths are matched first.
-  const describedEntries =
-    options.enumerateDynamicPaths && options.describeGeneratedPaths
-      ? (await fetchEntries(false)).filter((entry) => entry?.generatedPaths !== undefined)
-      : [];
-  for (const entry of [...entries, ...describedEntries]) {
+  // the routes' descriptions, which follow their listed paths in match order.
+  else if (options.describeGeneratedPaths) query.set("generatedPaths", "1");
+  const text = await fetchDiscoveryEndpoint(
+    `${options.baseUrl}${VINEXT_PRERENDER_METADATA_ROUTES_PATH}?${query}`,
+    options.secretHeaders,
+    options.retryOptions,
+  );
+  const entries = text === null ? [] : (JSON.parse(text) as unknown);
+  if (!Array.isArray(entries)) {
+    throw new Error("[vinext] Invalid metadata route warmup discovery response");
+  }
+  for (const entry of entries) {
     const routePattern: unknown = entry?.routePattern;
     const search: unknown = entry?.search;
     if (
@@ -1205,6 +1206,11 @@ async function resolveAppWarmPaths(options: {
   for (const pathname of options.paths) {
     // A metadata route is served before App and Pages routes are matched.
     const metadataRoute = options.metadataRoutes.get(pathname);
+    if (metadataRoute?.rewriteOnly) {
+      appRoutePaths.push(pathname);
+      routePatterns[pathname] = { kind: "app-route", pattern: metadataRoute.pattern };
+      continue;
+    }
     if (metadataRoute !== undefined) {
       appRoutePaths.push(pathname);
       routePatterns[pathname] = {
@@ -1822,10 +1828,10 @@ export async function discoverPrerenderPathManifest(
             ...config.rewrites.afterFiles,
             ...config.rewrites.fallback,
           ].filter((rewrite) => !isExternalUrl(rewrite.destination)),
-          warmPathMatchConfig(config, true),
+          config,
         )
       ) {
-        metadataRoutes.set(pathname, { pattern: pathname });
+        metadataRoutes.set(pathname, { pattern: pathname, rewriteOnly: true });
         candidateOnlyPathSet.add(pathname);
         addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
       }
@@ -1844,11 +1850,15 @@ export async function discoverPrerenderPathManifest(
     ? extractMiddlewareMatcherConfig(middlewarePath)
     : undefined;
   const configuredMatcher = middlewareMatcher as MatcherConfig | undefined;
+  const servedAsMetadataRoute = (pathname: string): boolean => {
+    const metadataRoute = metadataRoutes.get(pathname);
+    return metadataRoute !== undefined && !metadataRoute.rewriteOnly;
+  };
   const routedWarmPaths = [...paths, ...discoveredRouteHandlerPaths];
   const excludedWarmPathSet = new Set(
     options.responseVary && !hasStagedRequestRouting
       ? routedWarmPaths.filter((pathname) => {
-          const pathConfig = warmPathMatchConfig(config, metadataRoutes.has(pathname));
+          const pathConfig = warmPathMatchConfig(config, servedAsMetadataRoute(pathname));
           return (
             configuredRulesAffectWarmPath(pathname, config.redirects, pathConfig) ||
             configuredRewritesCanReplaceWarmPath(
@@ -1929,7 +1939,7 @@ export async function discoverPrerenderPathManifest(
           ? pagesDataRequestsGetTrailingSlash
           : undefined,
       skipProxyUrlNormalize: config.skipProxyUrlNormalize,
-      trailingSlash: warmPathMatchConfig(config, metadataRoutes.has(pathname)).trailingSlash,
+      trailingSlash: warmPathMatchConfig(config, servedAsMetadataRoute(pathname)).trailingSlash,
     });
   const routeMayResolveWarmPathSet = new Set(
     hasStagedRequestRouting
@@ -1940,7 +1950,7 @@ export async function discoverPrerenderPathManifest(
               pathname,
               config.rewrites,
               discoveredNonDynamicPathSet.has(pathname),
-              warmPathMatchConfig(config, metadataRoutes.has(pathname)),
+              warmPathMatchConfig(config, servedAsMetadataRoute(pathname)),
               (rewrite) => !isExternalUrl(rewrite.destination),
             ),
         )
@@ -1949,7 +1959,7 @@ export async function discoverPrerenderPathManifest(
   const requestStageMayTerminateWarmPathSet = new Set(
     hasStagedRequestRouting
       ? routedWarmPaths.filter((pathname) => {
-          const pathConfig = warmPathMatchConfig(config, metadataRoutes.has(pathname));
+          const pathConfig = warmPathMatchConfig(config, servedAsMetadataRoute(pathname));
           return (
             middlewareMatchesWarmPath(pathname) ||
             configuredRulesAffectWarmPath(pathname, config.redirects, pathConfig) ||

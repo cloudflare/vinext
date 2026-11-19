@@ -1440,14 +1440,53 @@ describe("prerender path manifest", () => {
     expect(manifest?.paths).toEqual(["/"]);
     expect(manifest?.routeHandlerPaths).toContain("/legacy.png");
     expect(manifest?.routeHandlerPaths).not.toContain("/unrelated.png");
+    // The path itself isn't a metadata route, so it keeps the request's
+    // trailingSlash handling.
     expect(manifest?.routePatterns?.["/legacy.png"]).toMatchObject({
       kind: "app-route",
-      metadataRoute: true,
       pattern: "/legacy.png",
     });
+    expect(manifest?.routePatterns?.["/legacy.png"]?.metadataRoute).toBeUndefined();
     expect(manifest?.routePatterns?.["/legacy.png"]?.cacheabilityProbe).toMatchObject({
       routeMayResolve: true,
     });
+  });
+
+  it("warms a rewritten /api/ path with its trailingSlash redirect target", async () => {
+    // No Next.js test port applies: traffic-aware warming is vinext-specific.
+    // The runtime redirects /api/legacy to /api/legacy/ before rewriting it,
+    // as the path itself isn't a metadata route.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/opengraph-image.tsx", "export default function Image() {}");
+    const nextConfig = await resolveNextConfig(
+      {
+        trailingSlash: true,
+        rewrites: () => ({
+          beforeFiles: [],
+          afterFiles: [{ source: "/api/legacy/", destination: "/opengraph-image" }],
+          fallback: [],
+        }),
+      },
+      tmpDir,
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      candidatePathsOnly: true,
+      metadataCandidatePaths: ["/api/legacy"],
+      nextConfig,
+      requestRouting: "uncached-stage",
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.routeHandlerPaths).toContain("/api/legacy");
+    expect(manifest?.routePatterns?.["/api/legacy"]?.metadataRoute).toBeUndefined();
   });
 
   it("matches traffic-picked paths to on-demand metadata routes while enumerating", async () => {
@@ -1472,9 +1511,18 @@ describe("prerender path manifest", () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        // Described in match order: the runtime serves /foo/opengraph-image
+        // from the earlier on-demand route.
         return Response.json(
-          url.searchParams.get("dynamicPaths") === "0"
-            ? [{ generatedPaths: "params", routePattern: "/:slug/opengraph-image" }]
+          url.searchParams.get("generatedPaths") === "1"
+            ? [
+                { generatedPaths: "params", routePattern: "/:slug/opengraph-image" },
+                {
+                  paths: ["/foo/opengraph-image"],
+                  routePattern: "/foo/opengraph-image",
+                  search: "?foo-hash",
+                },
+              ]
             : [],
         );
       }
@@ -1485,15 +1533,18 @@ describe("prerender path manifest", () => {
       await import("../packages/vinext/src/build/prerender-paths.js");
     const manifest = await discoverPrerenderPathManifest({
       root: tmpDir,
-      candidatePaths: ["/hot/opengraph-image"],
+      candidatePaths: ["/hot/opengraph-image", "/foo/opengraph-image"],
       pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
     });
 
-    expect(manifest?.routeHandlerPaths).toEqual(["/hot/opengraph-image"]);
-    expect(manifest?.routePatterns?.["/hot/opengraph-image"]).toMatchObject({
-      metadataRoute: true,
-      pattern: "/:slug/opengraph-image",
-    });
+    expect(manifest?.routeHandlerPaths).toEqual(["/hot/opengraph-image", "/foo/opengraph-image"]);
+    for (const pathname of ["/hot/opengraph-image", "/foo/opengraph-image"]) {
+      expect(manifest?.routePatterns?.[pathname]).toMatchObject({
+        metadataRoute: true,
+        pattern: "/:slug/opengraph-image",
+      });
+      expect(manifest?.routePatterns?.[pathname]?.metadataSearch).toBeUndefined();
+    }
   });
 
   it("gives a traffic-picked path to the first metadata route the runtime matches", async () => {

@@ -409,9 +409,12 @@ function generatedImagePaths(route: MetadataRuntimeRoute, imageMetadata: unknown
  */
 export async function getWarmableMetadataRoutes(
   metadataRoutes: readonly MetadataRuntimeRoute[],
-  options: { enumerateDynamicPaths: boolean },
+  options: { describeGeneratedPaths?: boolean; enumerateDynamicPaths: boolean },
 ): Promise<WarmableMetadataRoute[]> {
   const routes: WarmableMetadataRoute[] = [];
+  // Describing a route after its listed paths keeps the runtime's match order
+  // for traffic paths that enumeration doesn't list.
+  const describe = !options.enumerateDynamicPaths || options.describeGeneratedPaths === true;
 
   for (const route of metadataRoutes) {
     const search = metadataRouteLinkSearch(route);
@@ -429,42 +432,35 @@ export async function getWarmableMetadataRoutes(
 
     if (route.type === "sitemap" && functions.generateSitemaps) {
       if (route.patternParts) continue;
-      if (!options.enumerateDynamicPaths) {
-        routes.push({ ...base, generatedPaths: "sitemap" });
-        continue;
+      if (options.enumerateDynamicPaths) {
+        const generateSitemaps = functions.generateSitemaps;
+        const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}));
+        routes.push({ ...base, paths: generatedSitemapPaths(route, sitemaps) });
       }
-      const generateSitemaps = functions.generateSitemaps;
-      const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}));
-      const paths = generatedSitemapPaths(route, sitemaps);
-      routes.push({ ...base, paths });
+      if (describe) routes.push({ ...base, generatedPaths: "sitemap" });
     } else if (functions.generateImageMetadata) {
-      if (!options.enumerateDynamicPaths) {
-        routes.push({ ...base, generatedPaths: "image" });
-        continue;
+      if (options.enumerateDynamicPaths && !route.patternParts) {
+        // Next.js's generated generateStaticParams passes its plain params.
+        const generateImageMetadata = functions.generateImageMetadata;
+        const imageMetadata = await runMetadataRouteGenerator(route, async () =>
+          generateImageMetadata({ params: {} }),
+        );
+        routes.push({ ...base, paths: generatedImagePaths(route, imageMetadata) });
       }
-      if (route.patternParts) continue;
-      // Next.js's generated generateStaticParams passes its plain params.
-      const generateImageMetadata = functions.generateImageMetadata;
-      const imageMetadata = await runMetadataRouteGenerator(route, async () =>
-        generateImageMetadata({ params: {} }),
-      );
-      const paths = generatedImagePaths(route, imageMetadata);
-      routes.push({ ...base, paths });
+      if (describe) routes.push({ ...base, generatedPaths: "image" });
     } else if (route.patternParts) {
-      if (!options.enumerateDynamicPaths) {
-        if (isMetadataRouteStaticGenEnabled(route)) {
-          routes.push({ ...base, generatedPaths: "params" });
-        }
-        continue;
-      }
       const generateStaticParams = functions.generateStaticParams;
-      if (!generateStaticParams) continue;
-      const staticParams = await runMetadataRouteGenerator(route, async () =>
-        generateStaticParams({ params: {} }),
-      );
-      // JSON drops an undefined value, so send null to keep the route named in
-      // the discovery error.
-      routes.push({ ...base, staticParams: staticParams ?? null });
+      if (options.enumerateDynamicPaths && generateStaticParams) {
+        const staticParams = await runMetadataRouteGenerator(route, async () =>
+          generateStaticParams({ params: {} }),
+        );
+        // JSON drops an undefined value, so send null to keep the route named
+        // in the discovery error.
+        routes.push({ ...base, staticParams: staticParams ?? null });
+      }
+      if (describe && isMetadataRouteStaticGenEnabled(route)) {
+        routes.push({ ...base, generatedPaths: "params" });
+      }
     } else {
       routes.push({ ...base, paths: [route.servedUrl] });
     }

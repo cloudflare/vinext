@@ -213,13 +213,16 @@ describe("App prerender endpoint helpers", () => {
       );
 
     await expect((await request(""))?.json()).resolves.toEqual([
-      { enumerateDynamicPaths: true, warm: false },
+      { describeGeneratedPaths: false, enumerateDynamicPaths: true, warm: false },
     ]);
     await expect((await request("?warm=1"))?.json()).resolves.toEqual([
-      { enumerateDynamicPaths: true, warm: true },
+      { describeGeneratedPaths: false, enumerateDynamicPaths: true, warm: true },
     ]);
     await expect((await request("?warm=1&dynamicPaths=0"))?.json()).resolves.toEqual([
-      { enumerateDynamicPaths: false, warm: true },
+      { describeGeneratedPaths: false, enumerateDynamicPaths: false, warm: true },
+    ]);
+    await expect((await request("?warm=1&generatedPaths=1"))?.json()).resolves.toEqual([
+      { describeGeneratedPaths: true, enumerateDynamicPaths: true, warm: true },
     ]);
   });
 

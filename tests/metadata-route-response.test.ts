@@ -247,6 +247,42 @@ describe("handleMetadataRouteRequest", () => {
     expect(generateSitemaps).not.toHaveBeenCalled();
     expect(generateImageMetadata).not.toHaveBeenCalled();
     expect(generateStaticParams).not.toHaveBeenCalled();
+
+    // Enumerating for traffic-picked paths, each description follows its
+    // route's listed paths, in the runtime's match order.
+    await expect(
+      getWarmableMetadataRoutes(routes, {
+        describeGeneratedPaths: true,
+        enumerateDynamicPaths: true,
+      }),
+    ).resolves.toEqual([
+      { paths: ["/shop/-/icon.png"], routePattern: "/shop/-/icon.png", search: "?built-icon-hash" },
+      { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
+      { paths: ["/robots.txt"], routePattern: "/robots.txt" },
+      {
+        paths: ["/products/sitemap/0.xml", "/products/sitemap/one.xml"],
+        routePattern: "/products/sitemap.xml",
+      },
+      { generatedPaths: "sitemap", routePattern: "/products/sitemap.xml" },
+      {
+        paths: ["/gallery/opengraph-image/small", "/gallery/opengraph-image/large"],
+        routePattern: "/gallery/opengraph-image",
+        search: "?gallery-hash",
+      },
+      {
+        generatedPaths: "image",
+        routePattern: "/gallery/opengraph-image",
+        search: "?gallery-hash",
+      },
+      {
+        routePattern: "/blog/:slug/opengraph-image",
+        staticParams: [{ slug: "first" }, { slug: "second" }],
+      },
+      { generatedPaths: "params", routePattern: "/blog/:slug/opengraph-image" },
+      { routePattern: "/news/:slug/opengraph-image", staticParams: null },
+      { generatedPaths: "params", routePattern: "/news/:slug/opengraph-image" },
+      { generatedPaths: "image", routePattern: "/shop/:id/opengraph-image" },
+    ]);
   });
 
   it("runs discovery generators without the discovery request's headers", async () => {
