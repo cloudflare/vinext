@@ -111,4 +111,27 @@ describe("reactServerDomAsyncHookOptimizeDepsPlugin", () => {
       otherHook.disable();
     }
   });
+
+  // Vite environment names are arbitrary keys.
+  it.each([['custom"env'], ["custom$&env"], ["custom\\'env`"]])(
+    "keeps the owner of an environment named %s, and disables its hook on close",
+    async (name) => {
+      const environment = devEnvironment(name);
+      let inits = 0;
+      const hook = environment
+        .loadAsyncHooks()
+        .createHook({ init: () => void inits++ })
+        .enable();
+      try {
+        await nextTask();
+        expect(inits).toBeGreaterThan(0);
+        environment.close();
+        const afterClose = inits;
+        await nextTask();
+        expect(inits).toBe(afterClose);
+      } finally {
+        hook.disable();
+      }
+    },
+  );
 });

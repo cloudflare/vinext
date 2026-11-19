@@ -17,6 +17,7 @@ const ACTIVE_HOOKS = Symbol.for("vinext.reactServerDomAsyncHooks");
 // pre-bundle is shared by every server that uses the same cache directory, so
 // each server's transform writes its own.
 const OWNER_PLACEHOLDER = "__VINEXT_REACT_SERVER_DOM_ASYNC_HOOK_OWNER__";
+const OWNER_PLACEHOLDER_LITERAL = new RegExp(`(["'\`])${OWNER_PLACEHOLDER}\\1`, "g");
 
 type ActiveHooks = Map<string, { disable(): unknown }>;
 
@@ -89,10 +90,10 @@ export function createReactServerDomAsyncHookOwnerPlugin(): Plugin {
     transform: {
       filter: { code: OWNER_PLACEHOLDER },
       handler(code) {
-        return {
-          code: code.replaceAll(OWNER_PLACEHOLDER, `${server}:${this.environment.name}`),
-          map: null,
-        };
+        // Replaces the whole string literal, in whichever quotes the optimizer
+        // wrote it, so any environment name stays one literal, as written.
+        const owner = JSON.stringify(`${server}:${this.environment.name}`);
+        return { code: code.replace(OWNER_PLACEHOLDER_LITERAL, () => owner), map: null };
       },
     },
     closeBundle() {
