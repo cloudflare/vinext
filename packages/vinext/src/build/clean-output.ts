@@ -17,6 +17,26 @@ type CleanBuildOutputResult = {
   outDir: string;
 };
 
+/**
+ * Every path that reaches `file`: with the symlinks in each of its ancestors
+ * resolved in turn, from none to all, then its own target. Emptying any of
+ * them, or a directory holding one, removes `file` or a link on its way.
+ */
+function pathForms(file: string): string[] {
+  const forms = new Set<string>();
+  let prefix = path.resolve(file);
+  let suffix = "";
+  for (;;) {
+    forms.add(suffix ? path.join(resolveRealPath(prefix), suffix) : resolveRealPath(prefix));
+    const parent = path.dirname(prefix);
+    if (parent === prefix) break;
+    suffix = suffix ? path.join(path.basename(prefix), suffix) : path.basename(prefix);
+    prefix = parent;
+  }
+  forms.add(path.resolve(file));
+  return [...forms];
+}
+
 // The byte each escape in a C-style quoted path stands for.
 const GIT_QUOTE_ESCAPES: Record<string, number> = {
   a: 7,
@@ -100,11 +120,10 @@ function resolveGitDirs(root: string): string[] {
     }
   };
   const gitDirs: string[] = [];
-  // Both the path Git uses, which may be a symlink, and its target.
+  // The path Git uses in every form, and its target.
   const protect = (file: string) => {
-    const target = resolveRealPath(file);
-    gitDirs.push(path.join(resolveRealPath(path.dirname(file)), path.basename(file)), target);
-    return target;
+    gitDirs.push(...pathForms(file));
+    return resolveRealPath(file);
   };
   // A Git directory or a gitfile naming one, and the repository's shared
   // directory.
@@ -164,8 +183,9 @@ function resolveOutDir(root: string, outDir: string | undefined): string {
  * Throw if `outDir`, which Vite or vinext empties, would take the project
  * with it: it may not contain the project root or sit inside its `.git`, nor
  * contain or sit inside one of `protectedDirs` (the app, pages and public
- * directories). Paths are compared after resolving symlinks, so an alias of
- * the project counts too.
+ * directories). `outDir` is compared after resolving symlinks, as it is
+ * emptied, and each protected path in every form that reaches it, so neither
+ * an alias of the project nor a link on the way to it can be emptied.
  */
 export function assertOutputDirIsSafe(
   label: string,
@@ -175,7 +195,7 @@ export function assertOutputDirIsSafe(
   const root = resolveRealPath(options.root);
   const realOutDir = resolveRealPath(path.resolve(options.root, outDir));
   const shown = (dir: string) => toSlash(path.relative(root, dir)) || ".";
-  if (isPathInsideOrEqual(realOutDir, root)) {
+  if (pathForms(options.root).some((form) => isPathInsideOrEqual(realOutDir, form))) {
     throw new Error(
       `[vinext] The ${label} "${shown(realOutDir)}" contains the project root. Building there ` +
         "would delete the project. Choose a build.outDir below or outside the project, such " +
@@ -197,7 +217,10 @@ export function assertOutputDirIsSafe(
   for (const [name, dir] of Object.entries(options.protectedDirs ?? {})) {
     if (!dir) continue;
     const realDir = resolveRealPath(path.resolve(options.root, dir));
-    if (isPathInsideOrEqual(realOutDir, realDir) || isPathInsideOrEqual(realDir, realOutDir)) {
+    const overlaps = pathForms(path.resolve(options.root, dir)).some(
+      (form) => isPathInsideOrEqual(realOutDir, form) || isPathInsideOrEqual(form, realOutDir),
+    );
+    if (overlaps) {
       throw new Error(
         `[vinext] The ${label} "${shown(realOutDir)}" overlaps the ${name} directory ` +
           `"${shown(realDir)}". Building there would delete or overwrite its files. Choose ` +

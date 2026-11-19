@@ -254,6 +254,46 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it("refuses an outDir that holds a symlink to a protected directory", () => {
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-linked-app-"));
+    try {
+      writeFile(target, "page.tsx", "export default function Page() {}\n");
+      fs.mkdirSync(path.join(tmpDir, "src"));
+      fs.symlinkSync(target, path.join(tmpDir, "src", "app"));
+
+      expect(() =>
+        cleanBuildOutput({ root: tmpDir, outDir: "src", protectedDirs: { app: "src/app" } }),
+      ).toThrow('The build.outDir "src" overlaps the app directory');
+      expect(fs.lstatSync(path.join(tmpDir, "src", "app")).isSymbolicLink()).toBe(true);
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an outDir that holds a symlinked folder on the way to GIT_INDEX_FILE", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-index-folder-"));
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-index-target-"));
+    const previous = process.env.GIT_INDEX_FILE;
+    try {
+      writeFile(target, "index", "DIRC");
+      // Only the folder is a link, and its target is outside the outDir.
+      const link = path.join(store, "linked");
+      fs.symlinkSync(target, link);
+      process.env.GIT_INDEX_FILE = path.join(link, "index");
+      fs.symlinkSync(store, path.join(tmpDir, "dist"));
+
+      expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_INDEX_FILE;
+      else process.env.GIT_INDEX_FILE = previous;
+      fs.rmSync(store, { recursive: true, force: true });
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  });
+
   it("refuses an outDir that holds a symlinked GIT_INDEX_FILE", () => {
     const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-index-link-"));
     const previous = process.env.GIT_INDEX_FILE;
