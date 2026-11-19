@@ -255,7 +255,10 @@ import {
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
-import { reactServerDomAsyncHookOptimizeDepsPlugin } from "./plugins/react-server-dom-async-hook.js";
+import {
+  createReactServerDomAsyncHookOwnerPlugin,
+  reactServerDomAsyncHookOptimizeDepsPlugin,
+} from "./plugins/react-server-dom-async-hook.js";
 import { createNitroDevDepsOptimizerGatePlugin } from "./plugins/nitro-dev-deps-optimizer-gate.js";
 import { createClientCompileHintsPlugin } from "./plugins/client-compile-hints.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
@@ -6155,6 +6158,8 @@ export const loadServerActionClient = ${
     ),
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
+    // One React Flight async hook per dev server environment, while it runs.
+    createReactServerDomAsyncHookOwnerPlugin(),
     createInstrumentationClientTransformPlugin(
       () => instrumentationClientPath,
       () => nextConfig.instrumentationClientRouteManifest,
