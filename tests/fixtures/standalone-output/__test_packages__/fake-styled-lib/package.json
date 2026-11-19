@@ -1,0 +1,17 @@
+{
+  "name": "fake-styled-lib",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js"
+  },
+  "peerDependencies": {
+    "fake-style-engine": "*"
+  },
+  "peerDependenciesMeta": {
+    "fake-style-engine": {
+      "optional": true
+    }
+  }
+}

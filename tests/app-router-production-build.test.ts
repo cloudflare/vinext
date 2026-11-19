@@ -1353,7 +1353,9 @@ export function GET(request) {
       const externals = JSON.parse(
         fs.readFileSync(path.join(tmpDir, "dist", "server", "vinext-externals.json"), "utf-8"),
       ) as string[];
-      expect(externals).toContain("typescript");
+      expect(externals).toEqual(
+        expect.arrayContaining(["typescript/unstable/sync", "typescript/unstable/fs"]),
+      );
 
       const built: { default?: unknown } = await import(
         `${pathToFileURL(path.join(tmpDir, "dist", "server", "index.js")).href}?t=${Date.now()}`

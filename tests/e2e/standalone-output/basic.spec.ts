@@ -108,6 +108,29 @@ test.describe("Standalone Output", () => {
     expect(data.html).toContain("answer");
   });
 
+  test("server external package loads its peer dependency from isolated standalone output", async ({
+    request,
+  }) => {
+    // fake-styled-lib is a serverExternalPackages entry that imports its
+    // optional peer fake-style-engine, which no page imports. Next.js ships the
+    // peer because its file tracing follows the external's imports.
+    const response = await request.get(`${BASE}/peer-dependency`);
+    expect(response.status()).toBe(200);
+    expect(await response.text()).toContain("Peer dependency page (styled by fake-style-engine)");
+  });
+
+  test("CommonJS server external requires its peer through #imports from isolated standalone output", async ({
+    request,
+  }) => {
+    // fake-cjs-theme-lib requires "#theme" (a conditional imports entry), which
+    // requires its optional peer through the peer's "./*" pattern export.
+    const response = await request.get(`${BASE}/cjs-peer-dependency`);
+    expect(response.status()).toBe(200);
+    expect(await response.text()).toContain(
+      "CommonJS peer dependency page (themed fake-theme-tokens teal)",
+    );
+  });
+
   test("404 page for non-existent route", async ({ page }) => {
     const response = await page.goto(`${BASE}/nonexistent`);
     expect(response?.status()).toBe(404);

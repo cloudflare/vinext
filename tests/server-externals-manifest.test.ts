@@ -45,7 +45,10 @@ describe("createServerExternalsManifestPlugin", () => {
         fs.readFileSync(path.join(outDir, "vinext-externals.json"), "utf-8"),
       ) as string[];
 
-      expect(manifest.sort()).toEqual(["@scope/pkg", "ipaddr.js", "react", "react-dom"].sort());
+      // Full specifiers, so standalone output can trace the files they load.
+      expect(manifest.sort()).toEqual(
+        ["@scope/pkg/subpath", "ipaddr.js", "react", "react-dom/server.edge"].sort(),
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -1,0 +1,24 @@
+{
+  "name": "fake-cjs-theme-lib",
+  "version": "1.0.0",
+  "private": true,
+  "imports": {
+    "#theme": {
+      "node": {
+        "require": "./lib/theme.js"
+      },
+      "default": "./lib/unused.js"
+    }
+  },
+  "exports": {
+    ".": "./index.js"
+  },
+  "peerDependencies": {
+    "fake-theme-tokens": "*"
+  },
+  "peerDependenciesMeta": {
+    "fake-theme-tokens": {
+      "optional": true
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "fixture-standalone-bundled-react",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "vinext": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-rsc": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

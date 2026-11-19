@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "fake-cjs-theme-lib": "file:./__test_packages__/fake-cjs-theme-lib",
+    "fake-style-engine": "file:./__test_packages__/fake-style-engine",
+    "fake-styled-lib": "file:./__test_packages__/fake-styled-lib",
+    "fake-theme-tokens": "file:./__test_packages__/fake-theme-tokens",
     "react": "catalog:",
     "react-dom": "catalog:",
     "shiki": "catalog:",
