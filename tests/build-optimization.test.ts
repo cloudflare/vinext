@@ -1301,10 +1301,11 @@ describe("optimizeDeps.exclude for vinext", () => {
           resolve: { conditions: ["node"] },
           optimizeDeps: { include: ["@vitejs/plugin-rsc/vendor/react-server-dom/static.edge"] },
         };
+        // An edge Flight server the SSR environment includes itself stays.
         const ssr = {
           consumer: "server",
           resolve: { conditions: ssrConditions },
-          optimizeDeps: { include: [] },
+          optimizeDeps: { include: ["react-server-dom-webpack/server.edge"] },
         };
         await (mainPlugin as any).configResolved({
           cacheDir: path.join(root, ".vite"),
@@ -1315,6 +1316,7 @@ describe("optimizeDeps.exclude for vinext", () => {
           plugins: [],
         });
         expect(rsc.optimizeDeps.include).toEqual([flightEntry]);
+        expect(ssr.optimizeDeps.include).toEqual(["react-server-dom-webpack/server.edge"]);
       } finally {
         await fsp.rm(root, { recursive: true, force: true }).catch(() => {});
       }
@@ -4427,6 +4429,7 @@ describe("vinext:react-server-dom-node", () => {
     id: string,
     conditions: string[],
     ssrConditions: string[] | null = conditions,
+    environmentName = "rsc",
   ) {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugin = (vinext() as any[])
@@ -4436,6 +4439,7 @@ describe("vinext:react-server-dom-node", () => {
     await (plugin.resolveId as { handler: ResolveIdHandler }).handler.call(
       {
         environment: {
+          name: environmentName,
           config: { consumer: "server", resolve: { conditions } },
           getTopLevelConfig: () => ({
             environments: ssrConditions ? { ssr: { resolve: { conditions: ssrConditions } } } : {},
@@ -4499,6 +4503,12 @@ describe("vinext:react-server-dom-node", () => {
     expect(await resolvedFlightEntry(SERVER, ["node"], null)).toBe(
       "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
     );
+  });
+
+  // plugin-rsc imports the Flight server in the RSC environment only.
+  it("keeps an edge Flight server import in any other server environment", async () => {
+    expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "ssr")).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["node"], ["node"], "custom")).toBeUndefined();
   });
 });
 

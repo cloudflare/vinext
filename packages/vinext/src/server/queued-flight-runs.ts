@@ -24,6 +24,12 @@ export type QueuedFlightRuns = {
    * source.
    */
   currentRunConsumed(): Promise<void>;
+  /**
+   * Settles as `root` does, once the run it settled in has been consumed:
+   * the Flight root, decoded from {@link stream}. A root that fails to decode
+   * waits too, so a consumer that stopped reading releases the source.
+   */
+  afterCurrentRun<T>(root: PromiseLike<T>): Promise<T>;
 };
 
 /**
@@ -168,15 +174,26 @@ export function trackQueuedFlightRuns(stream: ReadableStream<Uint8Array>): Queue
     { highWaterMark: 0 },
   );
 
+  const currentRunConsumed = (): Promise<void> => {
+    const consumed = openRun();
+    if (settleRun !== noop) {
+      runWaitedFor = true;
+      watchForStall();
+    }
+    return consumed;
+  };
+
   return {
     stream: tracked,
-    currentRunConsumed() {
-      const consumed = openRun();
-      if (settleRun !== noop) {
-        runWaitedFor = true;
-        watchForStall();
-      }
-      return consumed;
+    currentRunConsumed,
+    afterCurrentRun(root) {
+      return Promise.resolve(root).then(
+        (value) => currentRunConsumed().then(() => value),
+        (error: unknown) =>
+          currentRunConsumed().then(() => {
+            throw error;
+          }),
+      );
     },
   };
 }

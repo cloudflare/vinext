@@ -623,9 +623,9 @@ export async function handleSsr(
             // queued with the one that completed it, so the tree it renders
             // doesn't stop at a chunk of the same flush (#4770).
             const flight = trackQueuedFlightRuns(ssrStream);
-            flightRoot = Promise.resolve(
+            flightRoot = flight.afterCurrentRun(
               createFromReadableStream<AppWireElements>(flight.stream, SSR_FLIGHT_OPTIONS),
-            ).then((elements) => flight.currentRunConsumed().then(() => elements));
+            );
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);

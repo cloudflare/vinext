@@ -132,6 +132,23 @@ describe("trackQueuedFlightRuns", () => {
     expect(await cancelled).toBeInstanceOf(Error);
   });
 
+  it("cancels the source when the Flight client fails to decode the root itself", async () => {
+    const { createFromReadableStream } = loadCacheFlightCodec();
+    const encoder = new TextEncoder();
+    const { cancelled, controller, stream } = cancellableStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const root = flight.afterCurrentRun(
+      createFromReadableStream(flight.stream) as Promise<unknown>,
+    );
+    root.catch(() => {});
+
+    // A root error row the client fails to parse, then a row it never reads.
+    controller.enqueue(encoder.encode("0:E{not json\n"));
+    controller.enqueue(encoder.encode('1:"after"\n'));
+    await expect(root).rejects.toBeInstanceOf(Error);
+    expect(await cancelled).toBeInstanceOf(Error);
+  });
+
   it("does not cancel the source of a consumer that keeps reading", async () => {
     let cancelledWith: unknown = "not cancelled";
     let controller!: ReadableStreamDefaultController<Uint8Array>;

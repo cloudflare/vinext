@@ -4875,7 +4875,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // Pre-bundle the Flight server build that vinext:react-server-dom-node
             // resolves its imports to. The optimizer resolves includes without
             // that plugin.
-            if (optimizer.include && !isClient && !hasCloudflarePlugin) {
+            if (optimizer.include && name === "rsc" && !hasCloudflarePlugin) {
               optimizer.include = optimizer.include.map(
                 (id) =>
                   reactServerDomNodeEntry(
@@ -5721,13 +5721,15 @@ export const loadServerActionClient = ${
       // that builds itself from its children rendered only part of them
       // (#4770). Next.js pairs the two builds on both runtimes. Resolve the
       // Flight server to its Node build wherever react-dom's map picks the
-      // Node build of the matching Fizz entry, in the SSR environment.
+      // Node build of the matching Fizz entry, in the SSR environment. Only
+      // in the RSC environment, where plugin-rsc imports it: an edge import
+      // in any other environment keeps the build it asks for.
       name: "vinext:react-server-dom-node",
       enforce: "pre",
       resolveId: {
         filter: { id: REACT_SERVER_DOM_EDGE_ENTRY },
         handler(id, importer, options) {
-          if (hasCloudflarePlugin || this.environment?.config.consumer !== "server") return;
+          if (hasCloudflarePlugin || this.environment?.name !== "rsc") return;
           const nodeEntry = reactServerDomNodeEntry(
             id,
             fizzConditions(
