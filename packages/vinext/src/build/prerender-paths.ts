@@ -12,6 +12,7 @@ import {
   matchAppRoute,
 } from "../routing/app-router.js";
 import { apiRouter, matchRoute, pagesRouter } from "../routing/pages-router.js";
+import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import {
   normalizeStaticPathname,
   normalizeStaticPathsEntry,
@@ -980,11 +981,22 @@ function warmPathMatchConfig<T extends { trailingSlash: boolean }>(
   return metadataRoute && config.trailingSlash ? { ...config, trailingSlash: false } : config;
 }
 
-/** Match a candidate path to a described metadata route, as the runtime serves it. */
+/**
+ * Match a candidate path to a described metadata route, as the runtime serves
+ * it: on its segment-decoded pathname. The caller keeps the requested spelling
+ * as the warm target.
+ */
 function matchMetadataWarmPath(
-  pathname: string,
+  requestPathname: string,
   matchers: readonly MetadataPathMatcher[],
 ): MetadataWarmRoute | null {
+  let pathname: string;
+  try {
+    pathname = normalizePathnameForRouteMatchStrict(requestPathname);
+  } catch {
+    // The runtime rejects malformed encoding before routing.
+    return null;
+  }
   const urlParts = pathname.split("/").filter(Boolean);
   for (const { generatedPaths, ...route } of matchers) {
     if (generatedPaths === "sitemap") {

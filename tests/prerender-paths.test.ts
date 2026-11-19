@@ -1454,6 +1454,57 @@ describe("prerender path manifest", () => {
     expect(manifest?.routePatterns?.["/foo/opengraph-image"]?.metadataSearch).toBeUndefined();
   });
 
+  it("matches a traffic-picked path to a metadata route on its decoded pathname", async () => {
+    // No Next.js test port applies: traffic-aware warming is vinext-specific.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile(
+      "app/small/opengraph-image.tsx",
+      "export function generateImageMetadata() { return []; }\nexport default function Image() {}",
+    );
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          {
+            generatedPaths: "image",
+            routePattern: "/small/opengraph-image",
+            search: "?small-hash",
+          },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      // The runtime decodes /%73mall to /small before matching.
+      candidatePaths: ["/%73mall/opengraph-image/one"],
+      candidatePathsOnly: true,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    // Warmed at the spelling visitors requested, which the cache keys on.
+    expect(manifest?.routeHandlerPaths).toEqual(["/%73mall/opengraph-image/one"]);
+    expect(manifest?.routePatterns?.["/%73mall/opengraph-image/one"]).toMatchObject({
+      metadataRoute: true,
+      metadataSearch: "?small-hash",
+      pattern: "/small/opengraph-image",
+    });
+    expect(manifest?.paths).toEqual(["/"]);
+  });
+
   it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {
     // No Next.js test port applies: staged Worker version overrides and
     // cloudflare:workers bindings are Cloudflare-specific.
