@@ -117,7 +117,11 @@ export function createReactServerDomAsyncHookOwnerPlugin(): Plugin {
     apply: "serve",
     transform: {
       filter: { code: OWNER_PLACEHOLDER },
-      handler(code) {
+      handler(code, id) {
+        // Only the optimizer's pre-bundles carry the generated module; app
+        // code that happens to hold the same text is left alone.
+        const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
+        if (!toSlash(id).startsWith(cacheDir)) return null;
         // Replaces the whole string literal, in whichever quotes the optimizer
         // wrote it, so any environment name stays one literal, as written.
         const owner = JSON.stringify(ownerOf(this.environment));

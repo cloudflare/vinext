@@ -8,11 +8,18 @@ import {
 
 type ResolveIdHandler = (id: string, importer: string | undefined) => string | undefined;
 type LoadHandler = (id: string) => string;
-type EnvironmentContext = { environment: { name: string } };
-type TransformHandler = (this: EnvironmentContext, code: string) => { code: string };
+type EnvironmentContext = { environment: { name: string; config: { cacheDir: string } } };
+type TransformHandler = (
+  this: EnvironmentContext,
+  code: string,
+  id: string,
+) => { code: string } | null;
 type CloseBundle = (this: EnvironmentContext) => void;
 const resolveId = plugin.resolveId as { handler: ResolveIdHandler };
 const load = plugin.load as { handler: LoadHandler };
+
+const CACHE_DIR = "/app/node_modules/.vite";
+const PRE_BUNDLE = `${CACHE_DIR}/deps_rsc/@vitejs_plugin-rsc_vendor_react-server-dom_static__node.js`;
 
 const DEVELOPMENT_BUILD =
   "/app/node_modules/@vitejs/plugin-rsc/dist/vendor/react-server-dom/cjs/react-server-dom-webpack-server.node.development.js";
@@ -20,7 +27,9 @@ const DEVELOPMENT_BUILD =
 // A dev server's environment, with the owner plugin its vinext() adds. A
 // restarted server passes the plugin of the server it replaces.
 function devEnvironment(name = "rsc", owner = createReactServerDomAsyncHookOwnerPlugin()) {
-  const context: EnvironmentContext = { environment: { name } };
+  const context: EnvironmentContext = {
+    environment: { name, config: { cacheDir: CACHE_DIR } },
+  };
   // Transforms the module the development build gets, as the environment does,
   // and returns a function that evaluates it.
   const transformAsyncHooks = () => {
@@ -28,7 +37,8 @@ function devEnvironment(name = "rsc", owner = createReactServerDomAsyncHookOwner
     const { code } = (owner.transform as { handler: TransformHandler }).handler.call(
       context,
       load.handler.call(undefined, id),
-    );
+      PRE_BUNDLE,
+    )!;
     return (): typeof import("node:async_hooks") => {
       const module = { exports: {} as typeof import("node:async_hooks") };
       compileFunction(code, ["require", "module"])(createRequire(import.meta.url), module);
@@ -116,6 +126,19 @@ describe("reactServerDomAsyncHookOptimizeDepsPlugin", () => {
       liveHook.disable();
       otherHook.disable();
     }
+  });
+
+  it("leaves the owner placeholder alone outside the optimizer's pre-bundles", () => {
+    const owner = createReactServerDomAsyncHookOwnerPlugin();
+    const context: EnvironmentContext = {
+      environment: { name: "rsc", config: { cacheDir: CACHE_DIR } },
+    };
+    const code = 'export const marker = "__VINEXT_REACT_SERVER_DOM_ASYNC_HOOK_OWNER__";';
+    const transform = owner.transform as { handler: TransformHandler };
+    expect(transform.handler.call(context, code, "/app/app/page.tsx")).toBeNull();
+    expect(transform.handler.call(context, code, PRE_BUNDLE)?.code).not.toContain(
+      "__VINEXT_REACT_SERVER_DOM_ASYNC_HOOK_OWNER__",
+    );
   });
 
   // Vite closes an environment's plugins before its module runner, which does
