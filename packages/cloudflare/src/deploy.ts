@@ -670,13 +670,15 @@ async function runBuild(
   // .wrangler/deploy/config.json. A plain build() call bypasses cloudflare()'s
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
-  let completed = false;
-  const outDir = await withCloudflareEnv(env, async () => {
+  let outDir: string | undefined;
+  await withCloudflareEnv(env, async () => {
     const invocation: BuildLifecycleInvocation = {
       // Deploy decides platform-specific finalization only after TPR and staged
-      // warmup selection.
-      onComplete() {
-        completed = true;
+      // warmup selection. The steps after the build read the server metadata
+      // from the outDir vinext wrote it under, which stays under vinext's root
+      // when a later plugin moves Vite's.
+      onComplete(builtOutDir) {
+        outDir = builtOutDir;
       },
     };
     const builder = await createBuilder({
@@ -686,10 +688,10 @@ async function runBuild(
       [VINEXT_BUILD_LIFECYCLE_CONFIG]: invocation,
     } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
-    // Vite resolves a relative outDir against the resolved root.
-    return path.resolve(builder.config.root, builder.config.build.outDir);
   });
-  if (!completed) throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
+  if (outDir === undefined) {
+    throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
+  }
   return outDir;
 }
 

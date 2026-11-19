@@ -2576,7 +2576,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         (!builder.config.build.watch &&
           !builder.config.build.ssr &&
           getBuildBundlerOptions(builder.config.build)?.input === undefined)),
-    onComplete: () => buildLifecycleInvocation?.onComplete?.(),
+    onComplete: () => buildLifecycleInvocation?.onComplete?.(path.resolve(root, buildOutDir)),
     shouldDeferPostBuild: () => buildLifecycleInvocation !== undefined,
     shouldPrepare: (config) =>
       buildLifecycleEnabled &&
@@ -8808,8 +8808,9 @@ export const loadServerActionClient = ${
                 if (nitro.options.dev) {
                   nitro.options.publicAssets!.pop();
                 } else {
+                  // Nitro reads a relative dir from the working directory.
                   nitro.options.ignore ??= [];
-                  nitro.options.ignore.push(`${path.resolve(root, viteOutput.dir, "server")}/**`);
+                  nitro.options.ignore.push(`${path.resolve(viteOutput.dir, "server")}/**`);
                 }
               }
             }

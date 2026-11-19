@@ -155,13 +155,23 @@ const GIT_DIR_ENTRIES = [
 ];
 
 /**
- * Whether `dir` is a Git directory, as Git checks one: it has `objects` and
- * `refs` folders, and its HEAD names a ref or holds an object ID.
+ * Whether `dir` is a Git directory, as Git checks one: it has an object
+ * directory (GIT_OBJECT_DIRECTORY when set) and a `refs` folder, both in the
+ * directory its `commondir` names if it has one, and its HEAD names a ref or
+ * holds an object ID.
  */
 function isGitDirectory(dir: string): boolean {
   try {
-    for (const entry of ["objects", "refs"]) {
-      if (!fs.statSync(path.join(dir, entry)).isDirectory()) return false;
+    let commonDir = dir;
+    if (fs.existsSync(path.join(dir, "commondir"))) {
+      const named = fs.readFileSync(path.join(dir, "commondir"), "utf8").replace(/[\r\n]+$/, "");
+      commonDir = walkPath(named, dir).real;
+    }
+    const objectDir = process.env.GIT_OBJECT_DIRECTORY
+      ? walkPath(process.env.GIT_OBJECT_DIRECTORY).real
+      : path.join(commonDir, "objects");
+    for (const entry of [objectDir, path.join(commonDir, "refs")]) {
+      if (!fs.statSync(entry).isDirectory()) return false;
     }
     const head = path.join(dir, "HEAD");
     if (fs.lstatSync(head).isSymbolicLink()) return fs.readlinkSync(head).startsWith("refs/");

@@ -468,6 +468,33 @@ describe("build.outDir", () => {
     ).rejects.toThrow('The build.outDir "app" overlaps the app directory "app"');
   });
 
+  it("reports the outDir it wrote the server metadata under when a plugin moves Vite's root", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    fs.rmSync(path.join(fixtureDir, "pages"), { recursive: true });
+    fs.mkdirSync(path.join(fixtureDir, "nested"));
+    let reported: string | undefined;
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        { name: "move-root", config: () => ({ root: path.join(fixtureDir, "nested") }) },
+      ],
+      build: { outDir: "out" },
+      logLevel: "silent",
+      [VINEXT_BUILD_LIFECYCLE_CONFIG]: {
+        onComplete(outDir: string) {
+          reported = outDir;
+        },
+      },
+    } as Parameters<typeof createBuilder>[0]);
+    await builder.buildApp();
+
+    expect(reported).toBeDefined();
+    expect(fs.existsSync(path.join(reported!, "server", "BUILD_ID"))).toBe(true);
+  }, 180_000);
+
   it("checks output directories against the root a later plugin moves Vite to", async () => {
     const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-moved-root-repo-"));
@@ -583,6 +610,42 @@ describe("build.outDir", () => {
         },
       ],
       build: { outDir: nitroOutDir },
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "server"))).toBe(false);
+  }, 180_000);
+
+  it("ignores the server metadata where Nitro reads a relative build.outDir", async () => {
+    const fixtureDir = await isolatedFixture(
+      NITRO_PAGES_FIXTURE_SOURCE_DIR,
+      path.join(NITRO_PAGES_FIXTURE_SOURCE_DIR, "node_modules"),
+    );
+    // Nitro reads a relative build.outDir from the working directory, not
+    // from Vite's root.
+    const nitroOutDir = path.join(fixtureDir, "out");
+    fs.mkdirSync(path.join(nitroOutDir, "server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(nitroOutDir, "server", "vinext-server.json"),
+      '{"prerenderSecret":"last-build-secret"}',
+    );
+    const nitroModule = (await import(
+      pathToFileURL(path.join(fixtureDir, "node_modules/nitro/dist/vite.mjs")).href
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        nitroModule.nitro({ buildDir: path.join(fixtureDir, ".nitro") }),
+        {
+          name: "move-outdir",
+          config: () => ({ build: { outDir: path.join(fixtureDir, "final") } }),
+        },
+      ],
+      build: { outDir: path.relative(process.cwd(), nitroOutDir) },
       logLevel: "silent",
     });
     await builder.buildApp();

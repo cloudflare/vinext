@@ -507,6 +507,28 @@ describe("cleanBuildOutput", () => {
     expect(cleanBuildOutput({ root }).cleaned).toBe(true);
   });
 
+  it("finds a bare repository whose objects GIT_OBJECT_DIRECTORY holds", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-bare-objects-"));
+    const previous = process.env.GIT_OBJECT_DIRECTORY;
+    try {
+      // The bare repository has no objects folder of its own.
+      writeFile(tmpDir, "HEAD", "ref: refs/heads/main\n");
+      const ref = writeFile(tmpDir, "refs/heads/main", "0".repeat(40) + "\n");
+      process.env.GIT_OBJECT_DIRECTORY = store;
+      const root = path.join(tmpDir, "site");
+      fs.mkdirSync(root);
+
+      expect(() => cleanBuildOutput({ root, outDir: "../refs", emptyOutDir: true })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(ref)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_OBJECT_DIRECTORY;
+      else process.env.GIT_OBJECT_DIRECTORY = previous;
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
   it("keeps searching above a folder that only looks like a bare repository", () => {
     const head = writeFile(tmpDir, ".git/HEAD", "ref: refs/heads/main\n");
     // container has HEAD, objects and refs, but its HEAD isn't a Git HEAD.
