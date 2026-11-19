@@ -203,6 +203,29 @@ describe("cleanBuildOutput", () => {
     },
   );
 
+  it.each(["GIT_DIR", "GIT_COMMON_DIR"])(
+    "refuses an outDir in the Git directory %s names",
+    (name) => {
+      const gitDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-git-dir-"));
+      const previous = process.env[name];
+      try {
+        const head = writeFile(gitDir, "HEAD", "ref: refs/heads/main\n");
+        // Git uses the variable instead of finding a .git above the project.
+        process.env[name] = gitDir;
+        fs.symlinkSync(gitDir, path.join(tmpDir, "dist"));
+
+        expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+          "overlaps the project's Git directory",
+        );
+        expect(fs.existsSync(head)).toBe(true);
+      } finally {
+        if (previous === undefined) delete process.env[name];
+        else process.env[name] = previous;
+        fs.rmSync(gitDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("refuses an outDir in the Git directory of a repository the project is nested in", () => {
     const head = writeFile(tmpDir, ".git/HEAD", "ref: refs/heads/main\n");
     const root = path.join(tmpDir, "apps/site");

@@ -433,6 +433,21 @@ describe("build.outDir", () => {
     expect(fs.existsSync(source)).toBe(true);
   });
 
+  it("accepts any build.outDir for a build that doesn't write", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [vinext({ appDir: fixtureDir })],
+      build: { outDir: "app", write: false },
+      logLevel: "silent",
+      [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
+    } as Parameters<typeof createBuilder>[0]);
+
+    expect(builder.config.build.write).toBe(false);
+  });
+
   it("rejects an environment outDir inside the public directory", async () => {
     const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
     const asset = path.join(fixtureDir, "public", "assets", "logo.svg");
@@ -523,13 +538,15 @@ describe("build.outDir", () => {
         nitroModule.nitro({
           buildDir: path.join(fixtureDir, ".nitro"),
           // A module set up before vinext's publishes another root directory,
-          // shaped like Nitro's build.outDir entry, after Nitro registers it.
+          // shaped like Nitro's build.outDir entry, after Nitro registers it
+          // and before build:before's handlers run.
           modules: [
             (nitro: {
               options: { publicAssets: Record<string, unknown>[] };
-              hooks: { hook(name: string, handler: () => void): void };
+              hooks: { beforeEach(handler: (event: { name: string }) => void): void };
             }) => {
-              nitro.hooks.hook("build:before", () => {
+              nitro.hooks.beforeEach(({ name }) => {
+                if (name !== "build:before") return;
                 nitro.options.publicAssets.push({
                   dir: path.join(fixtureDir, "other"),
                   baseURL: "/",

@@ -19,11 +19,11 @@ type NitroSetupTarget = {
     routeRules?: Record<string, Record<string, unknown>>;
     traceDeps?: string[];
   };
-  hooks?: { beforeEach(handler: (event: { name: string }) => void): () => void };
+  hooks?: { callHook(name: string, ...args: unknown[]): Promise<unknown> };
 };
 
 // Nitro's hooks, for a dev setup.
-const devHooks = { beforeEach: () => () => {} };
+const devHooks = { callHook: async () => {} };
 
 type NitroSetupPlugin = {
   nitro?: {

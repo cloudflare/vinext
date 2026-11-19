@@ -19,9 +19,10 @@ type CleanBuildOutputResult = {
 
 /**
  * The project's Git directories, symlinks resolved: the `.git` in the project
- * root or, as Git finds it, the nearest one above it. In a worktree or
- * submodule `.git` is a file naming the Git directory, which names the
- * repository's shared directory in its `commondir` file.
+ * root or, as Git finds it, the nearest one above it, and any that GIT_DIR and
+ * GIT_COMMON_DIR name. In a worktree or submodule `.git` is a file naming the
+ * Git directory, which names the repository's shared directory in its
+ * `commondir` file.
  */
 function resolveGitDirs(root: string): string[] {
   // Git strips only trailing CR and LF from these files; a path may end in
@@ -35,18 +36,30 @@ function resolveGitDirs(root: string): string[] {
       return undefined;
     }
   };
+  const gitDirs: string[] = [];
+  const addGitDir = (dir: string) => {
+    const gitDir = resolveRealPath(dir);
+    gitDirs.push(gitDir);
+    const commonDir = readPathFile(path.join(gitDir, "commondir"));
+    if (commonDir) gitDirs.push(resolveRealPath(path.resolve(gitDir, commonDir)));
+  };
+  // Relative to the working directory, as Git reads them.
+  const { GIT_DIR, GIT_COMMON_DIR } = process.env;
+  if (GIT_DIR) addGitDir(path.resolve(GIT_DIR));
+  if (GIT_COMMON_DIR) gitDirs.push(resolveRealPath(path.resolve(GIT_COMMON_DIR)));
+
   let repoRoot = root;
   while (!fs.existsSync(path.join(repoRoot, ".git"))) {
     const parent = path.dirname(repoRoot);
     // Not in a repository.
-    if (parent === repoRoot) return [];
+    if (parent === repoRoot) return gitDirs;
     repoRoot = parent;
   }
-  const dotGit = resolveRealPath(path.join(repoRoot, ".git"));
+  const dotGit = path.join(repoRoot, ".git");
+  gitDirs.push(resolveRealPath(dotGit));
   const target = readPathFile(dotGit, "gitdir: ");
-  const gitDir = target ? resolveRealPath(path.resolve(repoRoot, target)) : dotGit;
-  const commonDir = readPathFile(path.join(gitDir, "commondir"));
-  return [dotGit, gitDir, ...(commonDir ? [resolveRealPath(path.resolve(gitDir, commonDir))] : [])];
+  addGitDir(target ? path.resolve(repoRoot, target) : dotGit);
+  return gitDirs;
 }
 
 function resolveOutDir(root: string, outDir: string | undefined): string {

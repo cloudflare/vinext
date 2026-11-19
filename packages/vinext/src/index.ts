@@ -1861,7 +1861,7 @@ type NitroSetupContext = {
     publicAssets?: { dir: string; baseURL?: string; fallthrough?: boolean; maxAge?: number }[];
     traceDeps?: string[];
   };
-  hooks: { beforeEach(handler: (event: { name: string }) => void): () => void };
+  hooks: { callHook(name: string, ...args: unknown[]): Promise<unknown> };
 };
 
 function createServerEnvironmentFileNameResolver(
@@ -2702,13 +2702,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // cleanup empties build.outDir, so none of them may hold the project
         // or its sources. Check the resolved values, after every config and
         // configEnvironment hook. With `build.outDir: "."` the derived
-        // server/ and client/ would be the app's own directories.
+        // server/ and client/ would be the app's own directories. A build
+        // with `build.write: false` writes and empties nothing.
         const safety = {
           root,
           protectedDirs: { app: appDir, pages: pagesDir, public: config.publicDir },
         };
-        assertOutputDirIsSafe("build.outDir", buildOutDir, safety);
+        if (config.build.write) assertOutputDirIsSafe("build.outDir", buildOutDir, safety);
         for (const [name, environment] of Object.entries(config.environments)) {
+          if (!environment.build.write) continue;
           for (const outputDir of resolveEnvironmentOutputDirs(root, environment.build)) {
             assertOutputDirIsSafe(`${name} output directory`, outputDir, safety);
           }
@@ -8775,21 +8777,25 @@ export const loadServerActionClient = ${
           // the last production build's <build.outDir>/server, including the
           // prerender secret in vinext-server.json. Vite serves the client in
           // dev, so drop that entry before Nitro creates its dev server. Nitro
-          // adds it as the last public asset just before it calls
-          // build:before, so take it before any build:before handler runs.
+          // adds it as the last public asset and then calls build:before, so
+          // take it as that call starts, before any other module's hooks
+          // (including beforeEach callbacks) can add assets.
           if (nitro.options.dev) {
-            const unsubscribe = nitro.hooks.beforeEach(({ name }) => {
-              if (name !== "build:before") return;
-              unsubscribe();
-              const viteOutput = nitro.options.publicAssets?.at(-1);
-              if (
-                viteOutput?.baseURL === "/" &&
-                viteOutput.fallthrough === true &&
-                viteOutput.maxAge === 0
-              ) {
-                nitro.options.publicAssets!.pop();
+            const callHook = nitro.hooks.callHook.bind(nitro.hooks);
+            nitro.hooks.callHook = (name, ...args) => {
+              if (name === "build:before") {
+                nitro.hooks.callHook = callHook;
+                const viteOutput = nitro.options.publicAssets?.at(-1);
+                if (
+                  viteOutput?.baseURL === "/" &&
+                  viteOutput.fallthrough === true &&
+                  viteOutput.maxAge === 0
+                ) {
+                  nitro.options.publicAssets!.pop();
+                }
               }
-            });
+              return callHook(name, ...args);
+            };
           }
           nitroBuildDir = nitro.options.buildDir
             ? path.resolve(root, nitro.options.buildDir)
