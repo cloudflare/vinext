@@ -7,7 +7,7 @@ const secretHeader = "X-Vinext-Prerender-Secret";
 function prerenderSecret(): string {
   const manifest = JSON.parse(
     fs.readFileSync(
-      "tests/e2e/cacheability-components/fixture/dist/server/vinext-server.json",
+      "tests/e2e/cacheability-components/fixture/out/server/vinext-server.json",
       "utf8",
     ),
   ) as { prerenderSecret: string };

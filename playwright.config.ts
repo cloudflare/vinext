@@ -574,7 +574,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4186" },
     server: {
       command:
-        "cd ../../.. && npx vp run vinext#build && cd tests/fixtures/use-params-app-pages && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4186",
+        "cd ../../.. && npx vp run vinext#build && cd tests/fixtures/use-params-app-pages && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4186 --outDir out",
       cwd: "./tests/fixtures/use-params-app-pages",
       port: 4186,
       reuseExistingServer: !process.env.CI,
@@ -598,7 +598,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4209" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/ppr-impact-demo/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && npx wrangler dev --config dist/server/wrangler.json --port 4209",
+        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/ppr-impact-demo/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && npx wrangler dev --config out/server/wrangler.json --port 4209",
       cwd: "./tests/e2e/cacheability-components/fixture",
       port: 4209,
       reuseExistingServer: !process.env.CI,
