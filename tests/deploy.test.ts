@@ -284,6 +284,12 @@ describe("deploy environment validation", () => {
       ).rejects.toThrow("--warm-cache-header requires --warm-cache or --traffic-aware-warm-cache.");
     });
 
+    it("validates programmatic warm-up headers before a dry run returns", async () => {
+      await expect(
+        deploy({ root: tmpDir, warmCdnCache: true, warmCdnHeaders: [["RSC", "1"]], dryRun: true }),
+      ).rejects.toThrow('warmCdnHeaders cannot set "RSC"');
+    });
+
     it("ignores the env var for a deploy that does not warm", async () => {
       writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
       writeFile(

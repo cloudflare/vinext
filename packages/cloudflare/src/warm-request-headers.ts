@@ -115,8 +115,9 @@ export function parseWarmCacheHeaderFlags(
 }
 
 /**
- * Combine `VINEXT_WARM_CACHE_HEADERS` with the parsed flags. A flag replaces an
- * env entry with the same name.
+ * Combine `VINEXT_WARM_CACHE_HEADERS` with the parsed flags or programmatic
+ * `warmCdnHeaders`, validating both. A flag replaces an env entry with the
+ * same name.
  */
 export function resolveWarmCacheRequestHeaders(
   envValue: string | undefined,
@@ -129,6 +130,9 @@ export function resolveWarmCacheRequestHeaders(
         ? []
         : [parseHeaderLine(line, `${VINEXT_WARM_CACHE_HEADERS_ENV} line ${index + 1}`)],
     );
+  for (const [name, value] of flagHeaders ?? []) {
+    validateWarmCacheRequestHeader(name, value, "warmCdnHeaders");
+  }
   return mergeHeaders([...envHeaders, ...(flagHeaders ?? [])]);
 }
 
