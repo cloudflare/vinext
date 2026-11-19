@@ -143,7 +143,6 @@ export type PrerenderableMetadataRoute = {
 export type WarmableMetadataRoute = { routePattern: string; search?: string } & (
   | { paths: string[] }
   | { staticParams: unknown }
-  | { generatedPaths: "image" | "params" | "sitemap" }
 );
 
 type RenderedMetadataRoute = {
@@ -400,21 +399,17 @@ function generatedImagePaths(route: MetadataRuntimeRoute, imageMetadata: unknown
  * prefix; under a dynamic segment their ids lack the segment's params, so none
  * is prerendered. Probed on next@16.2.7 with webpack and Turbopack.
  *
- * Without `enumerateDynamicPaths`, a route whose paths need generating is
- * described instead, so a traffic-picked path can be matched to it, including
- * one the runtime stores on demand (isMetadataRouteStaticGenEnabled).
+ * Without `enumerateDynamicPaths` (traffic-aware warming), a route whose paths
+ * need generating is skipped.
  *
  * Static metadata files are always static, at the hash this build links them
  * with.
  */
 export async function getWarmableMetadataRoutes(
   metadataRoutes: readonly MetadataRuntimeRoute[],
-  options: { describeGeneratedPaths?: boolean; enumerateDynamicPaths: boolean },
+  options: { enumerateDynamicPaths: boolean },
 ): Promise<WarmableMetadataRoute[]> {
   const routes: WarmableMetadataRoute[] = [];
-  // Describing a route after its listed paths keeps the runtime's match order
-  // for traffic paths that enumeration doesn't list.
-  const describe = !options.enumerateDynamicPaths || options.describeGeneratedPaths === true;
 
   for (const route of metadataRoutes) {
     const search = metadataRouteLinkSearch(route);
@@ -430,37 +425,36 @@ export async function getWarmableMetadataRoutes(
     const functions = getMetadataRouteFunctions(route);
     if (!functions.defaultExport) continue;
 
+    const generatesPaths =
+      (route.type === "sitemap" && functions.generateSitemaps) ||
+      functions.generateImageMetadata ||
+      route.patternParts;
+    // Without enumeration (traffic-aware warming), only one-URL routes are
+    // listed; generating the others' paths is left to request time.
+    if (generatesPaths && !options.enumerateDynamicPaths) continue;
+
     if (route.type === "sitemap" && functions.generateSitemaps) {
       if (route.patternParts) continue;
-      if (options.enumerateDynamicPaths) {
-        const generateSitemaps = functions.generateSitemaps;
-        const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}));
-        routes.push({ ...base, paths: generatedSitemapPaths(route, sitemaps) });
-      }
-      if (describe) routes.push({ ...base, generatedPaths: "sitemap" });
+      const generateSitemaps = functions.generateSitemaps;
+      const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}));
+      routes.push({ ...base, paths: generatedSitemapPaths(route, sitemaps) });
     } else if (functions.generateImageMetadata) {
-      if (options.enumerateDynamicPaths && !route.patternParts) {
-        // Next.js's generated generateStaticParams passes its plain params.
-        const generateImageMetadata = functions.generateImageMetadata;
-        const imageMetadata = await runMetadataRouteGenerator(route, async () =>
-          generateImageMetadata({ params: {} }),
-        );
-        routes.push({ ...base, paths: generatedImagePaths(route, imageMetadata) });
-      }
-      if (describe) routes.push({ ...base, generatedPaths: "image" });
+      if (route.patternParts) continue;
+      // Next.js's generated generateStaticParams passes its plain params.
+      const generateImageMetadata = functions.generateImageMetadata;
+      const imageMetadata = await runMetadataRouteGenerator(route, async () =>
+        generateImageMetadata({ params: {} }),
+      );
+      routes.push({ ...base, paths: generatedImagePaths(route, imageMetadata) });
     } else if (route.patternParts) {
       const generateStaticParams = functions.generateStaticParams;
-      if (options.enumerateDynamicPaths && generateStaticParams) {
-        const staticParams = await runMetadataRouteGenerator(route, async () =>
-          generateStaticParams({ params: {} }),
-        );
-        // JSON drops an undefined value, so send null to keep the route named
-        // in the discovery error.
-        routes.push({ ...base, staticParams: staticParams ?? null });
-      }
-      if (describe && isMetadataRouteStaticGenEnabled(route)) {
-        routes.push({ ...base, generatedPaths: "params" });
-      }
+      if (!generateStaticParams) continue;
+      const staticParams = await runMetadataRouteGenerator(route, async () =>
+        generateStaticParams({ params: {} }),
+      );
+      // JSON drops an undefined value, so send null to keep the route named in
+      // the discovery error.
+      routes.push({ ...base, staticParams: staticParams ?? null });
     } else {
       routes.push({ ...base, paths: [route.servedUrl] });
     }

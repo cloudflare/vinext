@@ -763,7 +763,6 @@ export function createBuilder(config) {
       expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
         expect.objectContaining({
           candidatePathsOnly: true,
-          metadataCandidatePaths: ["/api/opengraph-image"],
           pathDiscoveryTarget: expect.objectContaining({
             baseUrl: warmCdnTarget ? new URL(warmCdnTarget).origin : "https://vinext.dev",
           }),

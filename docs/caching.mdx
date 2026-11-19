@@ -370,7 +370,7 @@ File-based [metadata routes](https://nextjs.org/docs/app/api-reference/file-conv
 - A code route under a dynamic segment, for each path its own `generateStaticParams()` returns. Like Next.js, vinext does not use the page's `generateStaticParams()` for it; without its own, the route renders on request.
 - Each id from `generateSitemaps()` or `generateImageMetadata()`, when the route is not under a dynamic segment.
 
-A route that reads `headers()`, `cookies()`, or another request-time API renders dynamically and is skipped at warm time, like a dynamic Route Handler. Image and icon routes are warmed at the `?<hash>` URL that rendered `<link>` and `<meta>` tags use, which is the entry Workers Cache serves them from; the Response Store and KV key them without the query. With traffic-aware warming, a visited metadata path, such as an id from `generateImageMetadata()`, is warmed as a metadata route.
+A route that reads `headers()`, `cookies()`, or another request-time API renders dynamically and is skipped at warm time, like a dynamic Route Handler. Image and icon routes are warmed at the `?<hash>` URL that rendered `<link>` and `<meta>` tags use, which is the entry Workers Cache serves them from; the Response Store and KV key them without the query. Traffic-aware warming doesn't run generators, so it warms only visited metadata routes with a single URL; paths from `generateStaticParams()`, `generateSitemaps()`, or `generateImageMetadata()` are left to request time.
 
 ### Traffic-aware warming
 

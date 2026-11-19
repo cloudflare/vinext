@@ -25,8 +25,6 @@ type AppPrerenderPageRoute = {
 
 /** `warm` asks for CDN warm-up's metadata routes instead of prerender's. */
 export type AppPrerenderMetadataRoutePathsRequest = {
-  /** Also describe the routes whose paths need generating (`generatedPaths=1`). */
-  describeGeneratedPaths: boolean;
   enumerateDynamicPaths: boolean;
   warm: boolean;
 };
@@ -76,7 +74,6 @@ async function handleMetadataRoutesEndpoint(
 
   const url = new URL(request.url);
   const pathsRequest = {
-    describeGeneratedPaths: url.searchParams.get("generatedPaths") === "1",
     enumerateDynamicPaths: url.searchParams.get("dynamicPaths") !== "0",
     warm: url.searchParams.get("warm") === "1",
   };

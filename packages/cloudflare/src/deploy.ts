@@ -2640,7 +2640,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
             root: info.root,
             candidatePaths: tprRoutes.map(({ path }) => path),
             candidatePathsOnly,
-            metadataCandidatePaths: tprMetadataCandidates.map(({ path }) => path),
             nextConfig,
             buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
             includeCanonicalRsc: hasCanonicalRscWarmup,

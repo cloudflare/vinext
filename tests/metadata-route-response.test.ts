@@ -226,63 +226,18 @@ describe("handleMetadataRouteRequest", () => {
     generateSitemaps.mockClear();
     generateImageMetadata.mockClear();
     generateStaticParams.mockClear();
-    // Without enumeration, a route whose paths need generating is described
-    // for traffic-picked paths, including one the runtime stores on demand.
+    // Without enumeration (traffic-aware warming), only one-URL routes are
+    // listed and no generator runs.
     await expect(
       getWarmableMetadataRoutes(routes, { enumerateDynamicPaths: false }),
     ).resolves.toEqual([
       { paths: ["/shop/-/icon.png"], routePattern: "/shop/-/icon.png", search: "?built-icon-hash" },
       { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
       { paths: ["/robots.txt"], routePattern: "/robots.txt" },
-      { generatedPaths: "sitemap", routePattern: "/products/sitemap.xml" },
-      {
-        generatedPaths: "image",
-        routePattern: "/gallery/opengraph-image",
-        search: "?gallery-hash",
-      },
-      { generatedPaths: "params", routePattern: "/blog/:slug/opengraph-image" },
-      { generatedPaths: "params", routePattern: "/news/:slug/opengraph-image" },
-      { generatedPaths: "image", routePattern: "/shop/:id/opengraph-image" },
     ]);
     expect(generateSitemaps).not.toHaveBeenCalled();
     expect(generateImageMetadata).not.toHaveBeenCalled();
     expect(generateStaticParams).not.toHaveBeenCalled();
-
-    // Enumerating for traffic-picked paths, each description follows its
-    // route's listed paths, in the runtime's match order.
-    await expect(
-      getWarmableMetadataRoutes(routes, {
-        describeGeneratedPaths: true,
-        enumerateDynamicPaths: true,
-      }),
-    ).resolves.toEqual([
-      { paths: ["/shop/-/icon.png"], routePattern: "/shop/-/icon.png", search: "?built-icon-hash" },
-      { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
-      { paths: ["/robots.txt"], routePattern: "/robots.txt" },
-      {
-        paths: ["/products/sitemap/0.xml", "/products/sitemap/one.xml"],
-        routePattern: "/products/sitemap.xml",
-      },
-      { generatedPaths: "sitemap", routePattern: "/products/sitemap.xml" },
-      {
-        paths: ["/gallery/opengraph-image/small", "/gallery/opengraph-image/large"],
-        routePattern: "/gallery/opengraph-image",
-        search: "?gallery-hash",
-      },
-      {
-        generatedPaths: "image",
-        routePattern: "/gallery/opengraph-image",
-        search: "?gallery-hash",
-      },
-      {
-        routePattern: "/blog/:slug/opengraph-image",
-        staticParams: [{ slug: "first" }, { slug: "second" }],
-      },
-      { generatedPaths: "params", routePattern: "/blog/:slug/opengraph-image" },
-      { routePattern: "/news/:slug/opengraph-image", staticParams: null },
-      { generatedPaths: "params", routePattern: "/news/:slug/opengraph-image" },
-      { generatedPaths: "image", routePattern: "/shop/:id/opengraph-image" },
-    ]);
   });
 
   it("runs discovery generators without the discovery request's headers", async () => {
