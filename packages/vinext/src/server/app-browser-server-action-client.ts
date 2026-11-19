@@ -89,7 +89,14 @@ type ActionRedirect =
   | { kind: "document"; href: string }
   | { kind: "blocked" };
 
-function resolveActionRedirect(response: Response, basePath: string): ActionRedirect | null {
+// Relative targets resolve against the URL the action was posted from, as
+// Next.js resolves them against its action queue state's canonicalUrl: a queued
+// action can run on a navigation's destination before that URL commits.
+function resolveActionRedirect(
+  response: Response,
+  basePath: string,
+  actionHref: string,
+): ActionRedirect | null {
   const actionRedirect = response.headers.get(ACTION_REDIRECT_HEADER);
   if (!actionRedirect) return null;
 
@@ -101,9 +108,9 @@ function resolveActionRedirect(response: Response, basePath: string): ActionRedi
   try {
     let redirectUrl: URL;
     if (actionRedirect.startsWith("/") || /^[a-z]+:/i.test(actionRedirect)) {
-      redirectUrl = new URL(actionRedirect, window.location.href);
+      redirectUrl = new URL(actionRedirect, actionHref);
     } else {
-      const baseParsed = new URL(window.location.href);
+      const baseParsed = new URL(actionHref);
       let baseDir = baseParsed.pathname;
       if (!baseDir.endsWith("/")) baseDir += "/";
       redirectUrl = new URL(actionRedirect, `${baseParsed.origin}${baseDir}${baseParsed.search}`);
@@ -187,7 +194,7 @@ export async function invokeClientServerAction(
 
   throwOnServerActionNotFound(fetchResponse, id);
 
-  const actionRedirect = resolveActionRedirect(fetchResponse, deps.basePath);
+  const actionRedirect = resolveActionRedirect(fetchResponse, deps.basePath, actionInitiation.href);
   if (actionRedirect?.kind === "blocked") return undefined;
   const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
   // A navigation that superseded the action owns what loads next: as in

@@ -125,6 +125,90 @@ describe("app browser server action client", () => {
     },
   );
 
+  // A queued action runs on a navigation's destination before its URL commits,
+  // so a relative redirect resolves against the destination, as Next.js
+  // resolves it against the action queue state's canonicalUrl.
+  it("resolves a relative action redirect against the URL the action was posted from", async () => {
+    const wireElements = AppElementsWire.createMetadataEntries({
+      interception: null,
+      interceptionContext: null,
+      layoutIds: [AppElementsWire.encodeLayoutId("/")],
+      rootLayoutTreePath: "/",
+      routeId: AppElementsWire.encodeRouteId("/destination/subpage", null),
+      slotBindings: [],
+    });
+    const elements = normalizeAppElements(wireElements);
+    const routerState: AppRouterState = {
+      activeOperation: null,
+      bfcacheIds: {},
+      elements,
+      interception: null,
+      interceptionContext: null,
+      layoutIds: [AppElementsWire.encodeLayoutId("/")],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/destination",
+        {},
+      ),
+      previousNextUrl: null,
+      renderId: 0,
+      rootLayoutTreePath: "/",
+      routeId: AppElementsWire.encodeRouteId("/destination", null),
+      slotBindings: [],
+      visibleCommitVersion: 0,
+    };
+    // The navigation to /destination has not committed its URL yet.
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("flight", {
+          status: 303,
+          headers: {
+            [ACTION_REDIRECT_HEADER]: "./subpage",
+            "content-type": "text/x-component",
+          },
+        }),
+      ),
+    );
+    vi.mocked(createFromFetch).mockResolvedValueOnce(wireElements);
+    const renderRedirectPayload = vi.fn();
+
+    await expect(
+      invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/destination",
+          navigationId: 1,
+          routerState,
+        }),
+        {
+          basePath: "",
+          clearClientNavigationCaches: vi.fn(),
+          clearDynamicClientNavigationCaches: vi.fn(),
+          clientRscCompatibilityId: null,
+          commitSameUrlNavigatePayload: vi.fn(),
+          navigationPlanner,
+          notifyDiscardedServerActionRevalidation: vi.fn(),
+          ownsRouterForServerAction: () => true,
+          performHardNavigation: vi.fn(),
+          renderRedirectPayload,
+          syncCurrentHistoryState: vi.fn(),
+          syncServerActionHttpFallbackHead: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;push;/destination/subpage;307;" });
+
+    expect(renderRedirectPayload).toHaveBeenCalledWith(
+      elements,
+      expect.objectContaining({ href: "https://example.com/destination/subpage" }),
+      expect.any(Object),
+      "none",
+    );
+  });
+
   it("uses action state captured before the lazy client loads", async () => {
     const elements = normalizeAppElements(
       AppElementsWire.createMetadataEntries({
