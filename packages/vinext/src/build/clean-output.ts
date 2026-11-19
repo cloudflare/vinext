@@ -17,14 +17,7 @@ type CleanBuildOutputResult = {
   outDir: string;
 };
 
-/**
- * The project's Git storage, symlinks resolved: the `.git` in the project root
- * or, as Git finds it, the nearest one above it, and any directory or index
- * that Git's environment variables name. In a worktree or submodule `.git` (or
- * GIT_DIR) is a gitfile naming the Git directory, which names the
- * repository's shared directory in its `commondir` file. Each object
- * directory's `info/alternates` lists more object directories it reads.
- */
+// The byte each escape in a C-style quoted path stands for.
 const GIT_QUOTE_ESCAPES: Record<string, number> = {
   a: 7,
   b: 8,
@@ -85,6 +78,15 @@ function splitGitPathList(list: string, separator: string): string[] {
   return entries.filter(Boolean);
 }
 
+/**
+ * The project's Git storage, as given and with symlinks resolved: the `.git` in
+ * the project root or, as Git finds it, the nearest one above it, and any
+ * directory or index that Git's environment variables name. In a worktree or
+ * submodule `.git` (or GIT_DIR) is a gitfile naming the Git directory, which
+ * names the repository's shared directory in its `commondir` file. Each
+ * object directory's `info/alternates` lists more object directories it
+ * reads.
+ */
 function resolveGitDirs(root: string): string[] {
   // Git strips only trailing CR and LF from these files; a path may end in
   // spaces.

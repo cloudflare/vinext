@@ -237,7 +237,7 @@ describe("cleanBuildOutput", () => {
       writeFile(fromEnv, "pack/objects.pack", "PACK");
       const pack = writeFile(fromFile, "pack/objects.pack", "PACK");
       process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES = `"${fromEnv}"`;
-      writeFile(tmpDir, ".git/objects/info/alternates", `"${fromFile.replace("\t", "\\t")}"\n`);
+      writeFile(tmpDir, ".git/objects/info/alternates", `"${fromFile.replaceAll("\t", "\\t")}"\n`);
 
       for (const target of [fromEnv, fromFile]) {
         fs.rmSync(path.join(tmpDir, "dist"), { force: true });
