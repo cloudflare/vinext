@@ -42,8 +42,15 @@ function pathForms(file: string): string[] {
  * a `..` after a symlink leaves the link's target, not the link.
  */
 function resolveGitPath(base: string, file: string): string {
-  let current = path.isAbsolute(file) ? path.parse(path.resolve(file)).root : path.resolve(base);
-  for (const part of file.split(/[\\/]+/)) {
+  let current = path.resolve(base);
+  let rest = file;
+  if (path.isAbsolute(file)) {
+    // The root is a drive or UNC share on Windows, so walk only what follows.
+    // Resolving the whole path would drop each `..` before its link.
+    current = path.parse(file).root;
+    rest = file.slice(current.length);
+  }
+  for (const part of rest.split(/[\\/]+/)) {
     if (!part || part === ".") continue;
     current = part === ".." ? path.dirname(resolveRealPath(current)) : path.join(current, part);
   }

@@ -394,6 +394,29 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it("resolves an absolute GIT_DIR through the links it names", () => {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-git-link-"));
+    const previous = process.env.GIT_DIR;
+    try {
+      // Git reads <store>/link/../meta as <store>/inner/meta: the .. leaves
+      // the link's target, <store>/inner/deeper.
+      const head = writeFile(store, "inner/meta/HEAD", "ref: refs/heads/main\n");
+      fs.mkdirSync(path.join(store, "inner/deeper"));
+      fs.symlinkSync(path.join(store, "inner/deeper"), path.join(store, "link"));
+      process.env.GIT_DIR = `${store}/link/../meta`;
+      fs.symlinkSync(path.join(store, "inner/meta"), path.join(tmpDir, "dist"));
+
+      expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(head)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previous;
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
   it("follows a GIT_DIR that names a gitfile", () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-env-gitfile-"));
     const previous = process.env.GIT_DIR;
