@@ -2705,20 +2705,27 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // server/ and client/ would be the app's own directories. They're
         // checked with `build.write: false` too, since vinext's own hooks
         // still write to them.
-        const safety = {
-          root,
-          protectedDirs: { app: appDir, pages: pagesDir, public: config.publicDir },
-        };
-        assertOutputDirIsSafe("build.outDir", buildOutDir, safety);
+        // A later plugin may have moved Vite's root: Vite empties output
+        // directories under config.root, while vinext's sources and its
+        // cleanup stay under the root vinext read. Check both.
+        const outputDirs: Array<[label: string, dir: string]> = [
+          ["build.outDir", path.resolve(root, buildOutDir)],
+          ["build.outDir", path.resolve(config.root, buildOutDir)],
+        ];
         for (const [name, environment] of Object.entries(config.environments)) {
           // vinext's own hooks write to build.outDir even when every bundler
           // output has its own dir.
-          const outputDirs = new Set([
-            path.resolve(root, environment.build.outDir),
-            ...resolveEnvironmentOutputDirs(root, environment.build),
-          ]);
-          for (const outputDir of outputDirs) {
-            assertOutputDirIsSafe(`${name} output directory`, outputDir, safety);
+          for (const outputDir of new Set([
+            path.resolve(config.root, environment.build.outDir),
+            ...resolveEnvironmentOutputDirs(config.root, environment.build),
+          ])) {
+            outputDirs.push([`${name} output directory`, outputDir]);
+          }
+        }
+        const protectedDirs = { app: appDir, pages: pagesDir, public: config.publicDir };
+        for (const projectRoot of new Set([root, config.root])) {
+          for (const [label, outputDir] of outputDirs) {
+            assertOutputDirIsSafe(label, outputDir, { root: projectRoot, protectedDirs });
           }
         }
       },

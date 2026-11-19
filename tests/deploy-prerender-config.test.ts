@@ -593,11 +593,12 @@ export function createBuilder(config) {
   });
 
   it.each([
-    ["", path.join("out")],
-    ['root: "site", ', path.join("site", "out")],
+    ['build: { outDir: "out" },', path.join("out")],
+    ['root: "site", build: { outDir: "out" },', path.join("site", "out")],
+    ['root: "site",', path.join("site", "dist")],
   ])(
     "reads a --skip-build deploy's output from the Vite config's build.outDir (%s)",
-    async (root, expected) => {
+    async (config, expected) => {
       writeProject("true");
       writeFile("next.config.mjs", 'export default { output: "export" };\n');
       const viteConfig = path.join(tmpDir, "vite.config.ts");
@@ -605,10 +606,7 @@ export function createBuilder(config) {
         viteConfig,
         fs
           .readFileSync(viteConfig, "utf8")
-          .replace(
-            "export default defineConfig({",
-            `export default defineConfig({\n  ${root}build: { outDir: "out" },`,
-          ),
+          .replace("export default defineConfig({", `export default defineConfig({\n  ${config}`),
       );
       const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 

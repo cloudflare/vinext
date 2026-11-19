@@ -468,6 +468,30 @@ describe("build.outDir", () => {
     ).rejects.toThrow('The build.outDir "app" overlaps the app directory "app"');
   });
 
+  it("checks output directories against the root a later plugin moves Vite to", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-moved-root-repo-"));
+    temporaryDirs.push(repo);
+    fs.mkdirSync(path.join(repo, ".git"));
+    fs.writeFileSync(path.join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.mkdirSync(path.join(repo, "site"));
+
+    // The project isn't in a repository, but the root Vite builds from is.
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [
+          vinext({ appDir: fixtureDir }),
+          { name: "move-root", config: () => ({ root: path.join(repo, "site") }) },
+        ],
+        build: { outDir: path.join(repo, ".git") },
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow("overlaps the project's Git directory");
+    expect(fs.existsSync(path.join(repo, ".git", "HEAD"))).toBe(true);
+  });
+
   it("rejects an environment outDir inside the public directory", async () => {
     const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
     const asset = path.join(fixtureDir, "public", "assets", "logo.svg");

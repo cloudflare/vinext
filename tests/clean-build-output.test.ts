@@ -564,6 +564,19 @@ describe("cleanBuildOutput", () => {
     }
   });
 
+  it("refuses an outDir that is a file, such as a bare repository's HEAD", () => {
+    const head = writeFile(tmpDir, "HEAD", "ref: refs/heads/main\n");
+    fs.mkdirSync(path.join(tmpDir, "objects"));
+    fs.mkdirSync(path.join(tmpDir, "refs"));
+    const root = path.join(tmpDir, "site");
+    fs.mkdirSync(root);
+
+    expect(() => cleanBuildOutput({ root, outDir: "../HEAD", emptyOutDir: true })).toThrow(
+      'The build.outDir "../HEAD" is a file, not a directory',
+    );
+    expect(fs.existsSync(head)).toBe(true);
+  });
+
   it("refuses an outDir inside the project's .git directory", () => {
     const object = writeFile(tmpDir, ".git/objects/ab/cdef", "blob\n");
 

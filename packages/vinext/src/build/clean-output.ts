@@ -273,8 +273,8 @@ function resolveOutDir(root: string, outDir: string | undefined): string {
 
 /**
  * Throw if `outDir`, which Vite or vinext empties, would take the project
- * with it: it may not contain the project root or sit inside its `.git`, nor
- * contain or sit inside one of `protectedDirs` (the app, pages and public
+ * with it: it may not be a file, contain the project root or overlap its Git
+ * storage, nor contain or sit inside one of `protectedDirs` (the app, pages and public
  * directories). `outDir` is compared after resolving symlinks, as it is
  * emptied, and each protected path in every form that reaches it, so neither
  * an alias of the project nor a link on the way to it can be emptied.
@@ -287,6 +287,15 @@ export function assertOutputDirIsSafe(
   const root = resolveRealPath(options.root);
   const realOutDir = resolveRealPath(path.resolve(options.root, outDir));
   const shown = (dir: string) => toSlash(path.relative(root, dir)) || ".";
+  // An outDir must be a directory, or not exist yet: emptying a file removes
+  // it, whether it's the project's or Git's (a bare repository's HEAD).
+  if (fs.statSync(realOutDir, { throwIfNoEntry: false })?.isDirectory() === false) {
+    throw new Error(
+      `[vinext] The ${label} "${shown(realOutDir)}" is a file, not a directory. Building ` +
+        "there would delete it. Choose a build.outDir that is a directory or doesn't exist " +
+        "yet, such as the default dist.",
+    );
+  }
   if (pathForms(options.root).some((form) => isPathInsideOrEqual(realOutDir, form))) {
     throw new Error(
       `[vinext] The ${label} "${shown(realOutDir)}" contains the project root. Building there ` +
@@ -356,10 +365,6 @@ function emptyDir(dir: string): void {
   if (!stat) {
     // A symlink to a directory that no longer exists: remove the link, so the
     // build creates the directory.
-    fs.rmSync(dir, { force: true });
-    return;
-  }
-  if (!stat.isDirectory()) {
     fs.rmSync(dir, { force: true });
     return;
   }

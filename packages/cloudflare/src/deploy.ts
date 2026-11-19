@@ -634,12 +634,14 @@ async function loadDeployViteConfigMetadata(
   // The build writes BUILD_ID, vinext-server.json and the prerender output
   // below Vite's `build.outDir`; the steps after it read them from there.
   // runBuild replaces this with the value its resolved config used. Like
-  // Vite, resolve a relative outDir against the config's root.
+  // Vite, resolve a relative outDir, or the default dist, against the
+  // config's root.
+  const configRoot = loaded?.config.root;
   const configOutDir = loaded?.config.build?.outDir;
   const outDir =
-    configOutDir === undefined
+    configOutDir === undefined && configRoot === undefined
       ? undefined
-      : path.resolve(root, loaded?.config.root ?? ".", configOutDir);
+      : path.resolve(root, configRoot ?? ".", configOutDir ?? "dist");
   return {
     // The executed Vite config is authoritative. Source scans cannot see
     // imported or composed cache objects and must not suppress valid metadata.
