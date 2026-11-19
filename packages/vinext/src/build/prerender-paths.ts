@@ -1461,7 +1461,7 @@ export async function discoverPrerenderPathManifest(
       readPrerenderSecret(bundleServerDir) ?? readPrerenderSecret(manifestDir);
     if (needsServer && options.pathDiscoveryTarget && !prerenderSecret) {
       throw new Error(
-        "Cannot discover warmup paths from the staged Worker because dist/server/vinext-server.json does not contain a prerender secret. Rebuild the app before deploying.",
+        `Cannot discover warmup paths from the staged Worker because ${path.relative(root, path.join(manifestDir, "vinext-server.json"))} does not contain a prerender secret. Rebuild the app before deploying.`,
       );
     }
     const secretHeaders: Record<string, string> = Object.fromEntries(
