@@ -23,22 +23,21 @@ type CleanBuildOutputResult = {
  * repository's shared directory in its `commondir` file.
  */
 function resolveGitDirs(root: string): string[] {
-  const dotGit = path.join(root, ".git");
-  let gitDir = dotGit;
-  try {
-    const target = /^gitdir: *(.+?)\s*$/m.exec(fs.readFileSync(dotGit, "utf8"))?.[1];
-    if (target) gitDir = path.resolve(root, target);
-  } catch {
-    // No .git file: .git is a directory, or missing.
-  }
-  const dirs = [dotGit, gitDir];
-  try {
-    const commonDir = fs.readFileSync(path.join(gitDir, "commondir"), "utf8").trim();
-    if (commonDir) dirs.push(path.resolve(gitDir, commonDir));
-  } catch {
-    // Not a worktree.
-  }
-  return dirs.map(resolveRealPath);
+  // Git strips only the line ending from these files; a path may end in spaces.
+  const readPathFile = (file: string, prefix = ""): string | undefined => {
+    try {
+      const content = fs.readFileSync(file, "utf8");
+      if (!content.startsWith(prefix)) return undefined;
+      return content.slice(prefix.length).replace(/\r?\n$/, "") || undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const dotGit = resolveRealPath(path.join(root, ".git"));
+  const target = readPathFile(dotGit, "gitdir: ");
+  const gitDir = target ? resolveRealPath(path.resolve(root, target)) : dotGit;
+  const commonDir = readPathFile(path.join(gitDir, "commondir"));
+  return [dotGit, gitDir, ...(commonDir ? [resolveRealPath(path.resolve(gitDir, commonDir))] : [])];
 }
 
 function resolveOutDir(root: string, outDir: string | undefined): string {
@@ -69,9 +68,14 @@ export function assertOutputDirIsSafe(
         "as the default dist.",
     );
   }
-  if (resolveGitDirs(root).some((gitDir) => isPathInsideOrEqual(gitDir, realOutDir))) {
+  const gitDirs = resolveGitDirs(root);
+  if (
+    gitDirs.some(
+      (gitDir) => isPathInsideOrEqual(gitDir, realOutDir) || isPathInside(realOutDir, gitDir),
+    )
+  ) {
     throw new Error(
-      `[vinext] The ${label} "${shown(realOutDir)}" is inside the project's .git directory. ` +
+      `[vinext] The ${label} "${shown(realOutDir)}" overlaps the project's Git directory. ` +
         "Building there would delete the repository. Choose a build.outDir outside it, such " +
         "as the default dist.",
     );

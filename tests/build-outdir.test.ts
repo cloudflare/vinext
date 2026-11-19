@@ -507,6 +507,8 @@ describe("build.outDir", () => {
       path.join(outDir, "server", "vinext-server.json"),
       '{"prerenderSecret":"last-build-secret"}',
     );
+    fs.mkdirSync(path.join(fixtureDir, "other"), { recursive: true });
+    fs.writeFileSync(path.join(fixtureDir, "other", "other.txt"), "other asset");
     const nitroModule = (await import(
       pathToFileURL(path.join(fixtureDir, "node_modules/nitro/dist/vite.mjs")).href
     )) as { nitro(config?: Record<string, unknown>): Plugin[] };
@@ -520,17 +522,19 @@ describe("build.outDir", () => {
         { name: "set-outdir", config: () => ({ build: { outDir } }) },
         nitroModule.nitro({
           buildDir: path.join(fixtureDir, ".nitro"),
-          // A module set up before vinext's publishes another directory
-          // after Nitro registers build.outDir.
+          // A module set up before vinext's publishes another root directory,
+          // shaped like Nitro's build.outDir entry, after Nitro registers it.
           modules: [
             (nitro: {
-              options: { publicAssets: { dir: string; baseURL: string }[] };
+              options: { publicAssets: Record<string, unknown>[] };
               hooks: { hook(name: string, handler: () => void): void };
             }) => {
               nitro.hooks.hook("build:before", () => {
                 nitro.options.publicAssets.push({
                   dir: path.join(fixtureDir, "other"),
-                  baseURL: "/other",
+                  baseURL: "/",
+                  fallthrough: true,
+                  maxAge: 0,
                 });
               });
             },
@@ -547,6 +551,8 @@ describe("build.outDir", () => {
       const response = await fetch(`http://127.0.0.1:${address.port}/server/vinext-server.json`);
 
       expect(await response.text()).not.toContain("last-build-secret");
+      const other = await fetch(`http://127.0.0.1:${address.port}/other.txt`);
+      expect(await other.text()).toBe("other asset");
     } finally {
       await server.close();
     }

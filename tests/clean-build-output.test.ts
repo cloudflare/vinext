@@ -131,7 +131,7 @@ describe("cleanBuildOutput", () => {
     fs.symlinkSync(path.join(tmpDir, ".git"), path.join(tmpDir, "dist"));
 
     expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
-      'The build.outDir ".git" is inside the project\'s .git directory',
+      'The build.outDir ".git" overlaps the project\'s Git directory',
     );
     expect(fs.existsSync(head)).toBe(true);
   });
@@ -150,9 +150,34 @@ describe("cleanBuildOutput", () => {
         fs.rmSync(path.join(tmpDir, "dist"), { force: true });
         fs.symlinkSync(target, path.join(tmpDir, "dist"));
         expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
-          "is inside the project's .git directory",
+          "overlaps the project's Git directory",
         );
       }
+      fs.rmSync(path.join(tmpDir, "dist"), { force: true });
+      // An outDir that contains the repository's Git directory.
+      expect(() => cleanBuildOutput({ root: tmpDir, outDir: repo, emptyOutDir: true })).toThrow(
+        "overlaps the project's Git directory",
+      );
+      expect(fs.existsSync(head)).toBe(true);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a gitfile path that ends in spaces, and a symlinked Git directory's commondir", () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-gitfile-"));
+    try {
+      const head = writeFile(repo, "main.git/HEAD", "ref: refs/heads/main\n");
+      writeFile(repo, "main.git/worktrees/site/commondir", "../..\n");
+      // The worktree's Git directory is reached through a symlink, and its
+      // path ends in a space.
+      fs.symlinkSync(path.join(repo, "main.git/worktrees/site"), path.join(repo, "link "));
+      writeFile(tmpDir, ".git", `gitdir: ${path.join(repo, "link ")}\n`);
+      fs.symlinkSync(path.join(repo, "main.git"), path.join(tmpDir, "dist"));
+
+      expect(() => cleanBuildOutput({ root: tmpDir })).toThrow(
+        "overlaps the project's Git directory",
+      );
       expect(fs.existsSync(head)).toBe(true);
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
@@ -163,7 +188,7 @@ describe("cleanBuildOutput", () => {
     const object = writeFile(tmpDir, ".git/objects/ab/cdef", "blob\n");
 
     expect(() => cleanBuildOutput({ root: tmpDir, outDir: ".git/objects" })).toThrow(
-      'The build.outDir ".git/objects" is inside the project\'s .git directory',
+      'The build.outDir ".git/objects" overlaps the project\'s Git directory',
     );
     expect(fs.existsSync(object)).toBe(true);
   });
