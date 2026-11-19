@@ -118,16 +118,16 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 ### CLI reference
 
-| Command                            | Description                                                             |
-| ---------------------------------- | ----------------------------------------------------------------------- |
-| `vite dev`                         | Start dev server with HMR                                               |
-| `vite build`                       | Production build (multi-environment for App Router: RSC + SSR + client) |
-| `vinext start`                     | Start local production server for testing                               |
-| `npx @vinext/cloudflare deploy`    | Build and deploy to Cloudflare Workers                                  |
-| `vp exec vinext-cloudflare deploy` | Build and deploy to Cloudflare Workers with Vite+                       |
-| `vinext init`                      | Migrate a Next.js project to run under vinext                           |
-| `vinext check`                     | Scan your Next.js app for compatibility issues before migrating         |
-| `vinext lint`                      | Delegate to eslint or oxlint                                            |
+| Command                            | Description                                                                                        |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `vite dev`                         | Start dev server with HMR                                                                          |
+| `vite build`                       | Production build (multi-environment for App Router: RSC + SSR + client)                            |
+| `vinext start`                     | Start local production server for testing. Pass `--outDir <dir>` when Vite's `build.outDir` is set |
+| `npx @vinext/cloudflare deploy`    | Build and deploy to Cloudflare Workers                                                             |
+| `vp exec vinext-cloudflare deploy` | Build and deploy to Cloudflare Workers with Vite+                                                  |
+| `vinext init`                      | Migrate a Next.js project to run under vinext                                                      |
+| `vinext check`                     | Scan your Next.js app for compatibility issues before migrating                                    |
+| `vinext lint`                      | Delegate to eslint or oxlint                                                                       |
 
 `vinext dev` and `vinext build` remain as thin aliases for the project-local Vite commands.
 They require a Vite config; if one is missing, run `vinext init`. Vite owns their options,

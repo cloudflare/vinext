@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -30,11 +31,11 @@ async function findFreePort(): Promise<number> {
   return address.port;
 }
 
-async function readServedBuild(root: string): Promise<string> {
+async function readServedBuild(root: string, args: string[]): Promise<string> {
   const port = await findFreePort();
   const child: ChildProcess = spawn(
     process.execPath,
-    [cliPath, "start", "--port", String(port), "--hostname", "127.0.0.1"],
+    [cliPath, "start", "--port", String(port), "--hostname", "127.0.0.1", ...args],
     { cwd: root, stdio: "ignore" },
   );
   cleanups.push(() => child.kill());
@@ -52,19 +53,14 @@ async function readServedBuild(root: string): Promise<string> {
   throw new Error("vinext start did not answer in time");
 }
 
-describe("vinext start build.outDir", () => {
-  it("serves the build output under the Vite config's build.outDir, not a stale dist", async () => {
-    // Inside the repository, so the project resolves the workspace's Vite.
-    const root = fs.mkdtempSync(path.join(import.meta.dirname, "..", ".tmp-vinext-start-outdir-"));
+describe("vinext start --outDir", () => {
+  it("serves the build output in --outDir, and dist without it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-start-outdir-"));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
-    fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
-    fs.writeFileSync(
-      path.join(root, "vite.config.mjs"),
-      'export default { build: { outDir: "out" } };\n',
-    );
     writeBuild(root, "dist", 'export default () => new Response("dist");');
     writeBuild(root, "out", 'export default () => new Response("out");');
 
-    expect(await readServedBuild(root)).toBe("out");
-  }, 20_000);
+    expect(await readServedBuild(root, ["--outDir", "out"])).toBe("out");
+    expect(await readServedBuild(root, [])).toBe("dist");
+  }, 40_000);
 });

@@ -26,7 +26,6 @@ import { runCheck, formatReport } from "./check.js";
 import { init as runInit } from "./init.js";
 import { resolveInitOptions } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { readViteConfigOutDir } from "./build/vite-config-outdir.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { parseArgs } from "./cli-args.js";
 import { generateRouteTypes } from "./typegen.js";
@@ -184,8 +183,7 @@ async function start() {
   await startProdServer({
     port,
     host,
-    // The build writes under the Vite config's build.outDir, dist/ by default.
-    outDir: (await readViteConfigOutDir(process.cwd())) ?? path.resolve(process.cwd(), "dist"),
+    outDir: path.resolve(process.cwd(), parsed.outDir ?? "dist"),
   });
 }
 
@@ -338,6 +336,8 @@ function printHelp(cmd?: string) {
   Options:
     -p, --port <port>        Port to listen on (default: 3000, or PORT env)
     -H, --hostname <host>    Hostname to bind to (default: 0.0.0.0)
+    --outDir <dir>           Build output to serve, when Vite's build.outDir
+                             is set (default: dist)
     -h, --help               Show this help
 `);
     return;
