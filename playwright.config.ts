@@ -109,6 +109,7 @@ const projectServers = {
       "app-router-prod/client-reference-flight-chunks.spec.ts",
       "app-router-prod/cookie-notice-chunk-names.spec.ts",
       "app-router-prod/same-origin-absolute-href-prefetch.spec.ts",
+      "app-router-prod/middleware-rewrite-prefetch.spec.ts",
       "app-router-prod/middleware-external-rewrite-host.spec.ts",
       "app-router-prod/hybrid-route-handler-exposure.spec.ts",
       "app-router-prod/settled-prefetch-suspense.spec.ts",
