@@ -5807,8 +5807,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               classifyDynamicRoutes
                 ? {
                     route: (route) => isAppPageRouteRenderedDynamically(route, readMdxEsm),
-                    intercept: (intercept, layoutPaths) =>
-                      isAppInterceptRenderedDynamically(intercept, layoutPaths, readMdxEsm),
+                    intercept: (intercept, layoutPaths, slotDefaultPaths) =>
+                      isAppInterceptRenderedDynamically(
+                        intercept,
+                        layoutPaths,
+                        readMdxEsm,
+                        slotDefaultPaths,
+                      ),
                   }
                 : undefined,
             );

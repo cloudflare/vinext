@@ -487,8 +487,18 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           (entry.ownerIsInterceptingRoute &&
             concreteSourceRouteIndex !== entry.sourceRouteIndex &&
             ownerRoute !== undefined);
+        // The whole intercepting route takes every param of the intercepting
+        // route from the source, as the interception rewrite captures them,
+        // including those of the slot's folders above the marker, such as
+        // `[album]` in `@modal/[album]/(.)pics/[id]`.
         const renderedSourceParams = rendersOwnerRoute
-          ? matchSlotOwnerSourceParams(sourceParts, ownerRoute.patternParts, true)
+          ? matchSlotOwnerSourceParams(
+              sourceParts,
+              rendersWholeInterceptingRoute && entry.sourceMatchPatternParts !== null
+                ? entry.sourceMatchPatternParts
+                : ownerRoute.patternParts,
+              true,
+            )
           : matchedSourceParams;
         if (rendersOwnerRoute && renderedSourceParams) {
           canonicalizeAppPageParams(renderedSourceParams);
@@ -805,8 +815,15 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             : null;
           // Prefer the route whose pattern matches sourceMatchPattern (the actual
           // slot-owner route). Fall back to routeIndex when no match is found.
-          const ownerRouteIndex =
-            sourceMatchPattern !== null
+          // With slot folders above the marker, as in
+          // `@modal/[album]/(.)pics/[id]`, that pattern names a deeper path,
+          // so the route holding the slot's directory is the owner itself.
+          const ownerRouteIndex = isSlotOwnerRoute(
+            route.routeSegments,
+            intercept.sourcePageSegments,
+          )
+            ? routeIndex
+            : sourceMatchPattern !== null
               ? (patternToIndex.get(sourceMatchPattern) ?? routeIndex)
               : routeIndex;
           interceptLookup.push({

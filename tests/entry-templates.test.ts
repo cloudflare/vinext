@@ -671,6 +671,13 @@ describe("App Router generated manifest construction", () => {
       write("deck/@modal/default.tsx");
       write("deck/@modal/(..)slides/[id]/page.tsx", gsp);
       write("slides/[id]/page.tsx", gsp);
+      // A slot beside the intercepted one whose default renders dynamically.
+      write("shelf/page.tsx");
+      write("shelf/@aside/page.tsx");
+      write("shelf/@aside/default.tsx", `${forceDynamic}${page}`);
+      write("shelf/@modal/default.tsx");
+      write("shelf/@modal/(..)books/[id]/page.tsx", gsp);
+      write("books/[id]/page.tsx", gsp);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const classifier = {
@@ -678,7 +685,8 @@ describe("App Router generated manifest construction", () => {
         intercept: (
           intercept: AppRoute["siblingIntercepts"][number],
           layoutPaths: readonly string[],
-        ) => isAppInterceptRenderedDynamically(intercept, layoutPaths, null),
+          slotDefaultPaths: readonly (string | null)[],
+        ) => isAppInterceptRenderedDynamically(intercept, layoutPaths, null, slotDefaultPaths),
       };
       const byPattern = new Map(
         toLinkPrefetchRoutes(graph.routes, classifier).map((route) => [
@@ -713,6 +721,9 @@ describe("App Router generated manifest construction", () => {
       // The intercepting route renders the owner's default in its children.
       expect(summarize("slides/:id")).toEqual([undefined, [["deck", "slides/:id", true]]]);
       expect(summarize("deck")).toEqual([undefined, undefined]);
+      // And every other slot's default beside the intercept.
+      expect(summarize("books/:id")).toEqual([undefined, [["shelf", "books/:id", true]]]);
+      expect(summarize("shelf")).toEqual([undefined, undefined]);
       expect(summarize("feed")).toEqual([undefined, undefined]);
       expect(toLinkPrefetchRoutes(graph.routes).some((route) => route.intercepts)).toBe(false);
     } finally {

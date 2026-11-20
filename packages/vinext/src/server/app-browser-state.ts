@@ -454,6 +454,7 @@ function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshot {
       routeId: state.routeId,
     }),
     slotBindings: state.slotBindings,
+    wholeInterceptionSource: AppElementsWire.readMetadata(state.elements).wholeInterceptionSource,
   };
 }
 
@@ -477,6 +478,8 @@ function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnap
       routeId: pending.routeId,
     }),
     slotBindings: pending.action.slotBindings,
+    wholeInterceptionSource: AppElementsWire.readMetadata(pending.action.elements)
+      .wholeInterceptionSource,
   };
 }
 

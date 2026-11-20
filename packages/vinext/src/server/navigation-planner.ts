@@ -60,6 +60,8 @@ export type RouteSnapshot = {
   displayUrl: string;
   matchedUrl: string;
   slotBindings: readonly ParallelSlotBindingSnapshot[];
+  /** The source a payload renders the whole intercepting route for. */
+  wholeInterceptionSource: string | null;
 };
 
 export type InterceptionSnapshot = {
@@ -960,10 +962,13 @@ function resolveRouteTopologySnapshot(options: {
     return { kind: "unknown" };
   }
 
-  // Intercepted targets carry the source route's tree topology, not the direct
-  // target route's, so direct-target manifest slot bindings do not apply.
+  // Intercepted targets carry the source route's tree topology, and the whole
+  // intercepting route its own, not the direct target route's, so direct-target
+  // manifest slot bindings do not apply.
   const shouldUseManifestSlotBindings =
-    options.slotBindingSource === "manifestTarget" && options.snapshot.interception === null;
+    options.slotBindingSource === "manifestTarget" &&
+    options.snapshot.interception === null &&
+    options.snapshot.wholeInterceptionSource === null;
 
   return {
     kind: "known",
