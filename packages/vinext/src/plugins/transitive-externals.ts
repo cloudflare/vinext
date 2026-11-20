@@ -69,6 +69,17 @@ function resolveTransitiveExternal(
  *
  * Reference: packages/next/src/build/handle-externals.ts in Next.js.
  */
+/**
+ * Resolution `meta` key marking a nested server-external copy that this plugin
+ * forces into the bundle, so other plugins can tell it from a user plugin's
+ * resolution of the same file.
+ */
+export const TRANSITIVE_EXTERNAL_META_KEY = "vinext:transitive-externals";
+
+function bundledCopy(id: string | null): Rollup.PartialResolvedId | null {
+  return id === null ? null : { id, meta: { [TRANSITIVE_EXTERNAL_META_KEY]: true } };
+}
+
 export function createTransitiveExternalsPlugin(options: {
   getRoot: () => string | undefined;
   getExternalPackages: () => readonly string[];
@@ -134,14 +145,16 @@ export function createTransitiveExternalsPlugin(options: {
             // Node's resolver models require() accurately, but must not be used
             // for ESM imports because doing so can select a require-only export.
             return mode === "require"
-              ? resolveTransitiveExternal(source, cleanImporter, rootResolver)
+              ? bundledCopy(resolveTransitiveExternal(source, cleanImporter, rootResolver))
               : null;
           }
 
           const rootResolution = await resolver(this.environment, source, rootImporter);
-          return compareTransitiveExternalResolutions(
-            importerResolution,
-            rootResolution && path.isAbsolute(rootResolution) ? rootResolution : null,
+          return bundledCopy(
+            compareTransitiveExternalResolutions(
+              importerResolution,
+              rootResolution && path.isAbsolute(rootResolution) ? rootResolution : null,
+            ),
           );
         })();
       },
