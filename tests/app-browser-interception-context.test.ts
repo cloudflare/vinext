@@ -61,6 +61,20 @@ const rootPhotoInterception: RouteManifestInterception = {
   targetRouteId: "route:/photos/:id",
 };
 
+// A root-level sibling intercept (`app/(.)photos/[id]`), which needs no
+// slot on the root layout.
+const rootSiblingPhotoInterception: RouteManifestInterception = {
+  id: "interception:slot:__vinext_sibling_intercept:/->/photos/:id",
+  interceptingRouteId: "route:/",
+  ownerLayoutId: "layout:/",
+  slotId: "slot:__vinext_sibling_intercept:/",
+  sourcePattern: "/",
+  sourcePatternParts: [],
+  targetPattern: "/photos/:id",
+  targetPatternParts: ["photos", ":id"],
+  targetRouteId: "route:/photos/:id",
+};
+
 const slugPhotoInterception: RouteManifestInterception = {
   id: "interception:slot:modal:/:slug->/photos/:id",
   interceptingRouteId: "route:/:slug",
@@ -176,11 +190,11 @@ describe("resolveManifestNavigationInterceptionContext", () => {
     ).toBeNull();
   });
 
-  // Next.js's client keeps the not-found page in place of a root-owned
-  // intercept's tree, so only an intercept owned beneath the root applies.
-  it("sends /_not-found from a not-found page for sources beneath the root that match it", () => {
+  // Next.js's interception rewrite applies to any source matching
+  // /_not-found, a root-level one too, and shows it softly.
+  it("sends /_not-found from a not-found page for sources that match it", () => {
     for (const [interception, context] of [
-      [rootPhotoInterception, null],
+      [rootSiblingPhotoInterception, "/_not-found"],
       [slugPhotoInterception, "/_not-found"],
       [catchAllPhotoInterception, "/_not-found"],
     ] as const) {
@@ -393,9 +407,9 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
     ).toBeNull();
   });
 
-  it("sends /_not-found from a not-found page for sources beneath the root that match it", () => {
+  it("sends /_not-found from a not-found page for sources that match it", () => {
     for (const [interception, context] of [
-      [rootPhotoInterception, null],
+      [rootSiblingPhotoInterception, "/_not-found"],
       [slugPhotoInterception, "/_not-found"],
       [catchAllPhotoInterception, "/_not-found"],
     ] as const) {
