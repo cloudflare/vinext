@@ -68,6 +68,15 @@ test.describe("workbench chunk scenarios", () => {
     await expect(page.getByTestId("trend-legend").locator("li")).toHaveCount(5);
 
     const pill = page.getByTestId("status-pill-breakdown");
+    // The React.lazy boundary hydrates once its chunk loads, after the desk;
+    // a click before then is lost.
+    await expect
+      .poll(() =>
+        pill.evaluate((element) =>
+          Object.keys(element).some((key) => key.startsWith("__reactProps$")),
+        ),
+      )
+      .toBe(true);
     await pill.click();
     await expect(pill).toHaveAttribute("data-tone", "busy");
   });
