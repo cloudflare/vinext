@@ -248,10 +248,31 @@ export type Metadata = {
     faxNumbers?: string | string[];
     locale?: string;
     alternateLocale?: string | string[];
+    determiner?: string;
+    countryName?: string;
+    ttl?: number;
     type?: string;
     publishedTime?: string;
     modifiedTime?: string;
-    authors?: string[];
+    expirationTime?: string;
+    authors?: OGList<string | URL>;
+    section?: string | null;
+    tags?: OGList<string>;
+    isbn?: string | null;
+    releaseDate?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    username?: string | null;
+    gender?: string | null;
+    duration?: number | null;
+    albums?: OGList<string | URL | OGMusicEntry>;
+    songs?: OGList<string | URL | OGMusicEntry>;
+    musicians?: OGList<string | URL>;
+    creators?: OGList<string | URL>;
+    actors?: OGList<string | URL | OGActor>;
+    directors?: OGList<string | URL>;
+    writers?: OGList<string | URL>;
+    series?: string | URL | null;
   } | null;
   twitter?: {
     card?: string;
@@ -373,8 +394,15 @@ type OGAudioDescriptor = {
 
 type OGAudio = string | URL | OGAudioDescriptor;
 
+type OGList<T> = T | T[] | null;
+
+type OGMusicEntry = { url: string | URL; disc?: number; track?: number };
+
+type OGActor = { url: string | URL; role?: string };
+
 type SocialImageDescriptor = {
   url: string | URL;
+  secureUrl?: string | URL;
   alt?: string;
   width?: number;
   height?: number;
@@ -899,6 +927,98 @@ function resolveMetadataUrl(
   }
 }
 
+type OpenGraphMetadata = NonNullable<Metadata["openGraph"]>;
+
+function toList<T>(value: OGList<T> | undefined): T[] {
+  return value == null ? [] : Array.isArray(value) ? value : [value];
+}
+
+/**
+ * The tags Next.js renders for an Open Graph type, in its order
+ * (createMetadataElements in packages/next/src/lib/metadata/metadata.tsx).
+ * Next.js renders the article fields only for `type: "article"`; vinext has
+ * always rendered the times and authors without it, and still does.
+ */
+function openGraphTypeTags(og: OpenGraphMetadata): [property: string, content: string][] {
+  const tags: [string, string][] = [];
+  const tag = (property: string, value: string | number | URL | null | undefined) => {
+    if (value != null && value !== "") tags.push([property, String(value)]);
+  };
+  const each = (property: string, values: OGList<string | URL> | undefined) => {
+    for (const value of toList(values)) tag(property, value);
+  };
+  const entries = (
+    property: string,
+    values: OGList<string | URL | OGMusicEntry | OGActor> | undefined,
+  ) => {
+    for (const value of toList(values)) {
+      if (typeof value === "string" || value instanceof URL) {
+        tag(property, value);
+        continue;
+      }
+      tag(property, value.url);
+      if ("disc" in value) tag(`${property}:disc`, value.disc);
+      if ("track" in value) tag(`${property}:track`, value.track);
+      if ("role" in value) tag(`${property}:role`, value.role);
+    }
+  };
+
+  switch (og.type) {
+    case "book":
+      tag("book:isbn", og.isbn);
+      tag("book:release_date", og.releaseDate);
+      each("book:author", og.authors);
+      each("book:tag", og.tags);
+      break;
+    case "profile":
+      tag("profile:first_name", og.firstName);
+      tag("profile:last_name", og.lastName);
+      tag("profile:username", og.username);
+      tag("profile:gender", og.gender);
+      break;
+    case "music.song":
+      tag("music:duration", og.duration);
+      entries("music:album", og.albums);
+      each("music:musician", og.musicians);
+      break;
+    case "music.album":
+      entries("music:song", og.songs);
+      each("music:musician", og.musicians);
+      tag("music:release_date", og.releaseDate);
+      break;
+    case "music.playlist":
+      entries("music:song", og.songs);
+      each("music:creator", og.creators);
+      break;
+    case "music.radio_station":
+      each("music:creator", og.creators);
+      break;
+    case "video.movie":
+    case "video.episode":
+      entries("video:actor", og.actors);
+      each("video:director", og.directors);
+      each("video:writer", og.writers);
+      tag("video:duration", og.duration);
+      tag("video:release_date", og.releaseDate);
+      each("video:tag", og.tags);
+      if (og.type === "video.episode") tag("video:series", og.series);
+      break;
+    case undefined:
+    default: {
+      const isArticle = og.type === "article";
+      tag("article:published_time", og.publishedTime);
+      tag("article:modified_time", og.modifiedTime);
+      if (isArticle) tag("article:expiration_time", og.expirationTime);
+      each("article:author", og.authors);
+      if (isArticle) {
+        tag("article:section", og.section);
+        each("article:tag", og.tags);
+      }
+    }
+  }
+  return tags;
+}
+
 function resolveCanonicalUrl(
   url: string | URL,
   metadataBase: URL | null | undefined,
@@ -1165,6 +1285,8 @@ export function MetadataHead({
   // Open Graph
   if (metadata.openGraph) {
     const og = metadata.openGraph;
+    if (og.determiner)
+      elements.push(<meta key={key++} property="og:determiner" content={og.determiner} />);
     const ogTitle = renderedTitle(og.title);
     if (ogTitle) elements.push(<meta key={key++} property="og:title" content={ogTitle} />);
     if (og.description)
@@ -1182,18 +1304,12 @@ export function MetadataHead({
       elements.push(<meta key={key++} property="og:site_name" content={og.siteName} />);
     if (og.type) elements.push(<meta key={key++} property="og:type" content={og.type} />);
     if (og.locale) elements.push(<meta key={key++} property="og:locale" content={og.locale} />);
-    if (og.publishedTime)
-      elements.push(
-        <meta key={key++} property="article:published_time" content={og.publishedTime} />,
-      );
-    if (og.modifiedTime)
-      elements.push(
-        <meta key={key++} property="article:modified_time" content={og.modifiedTime} />,
-      );
-    if (og.authors) {
-      for (const author of og.authors) {
-        elements.push(<meta key={key++} property="article:author" content={author} />);
-      }
+    if (og.countryName)
+      elements.push(<meta key={key++} property="og:country_name" content={og.countryName} />);
+    if (og.ttl != null)
+      elements.push(<meta key={key++} property="og:ttl" content={String(og.ttl)} />);
+    for (const [property, content] of openGraphTypeTags(og)) {
+      elements.push(<meta key={key++} property={property} content={content} />);
     }
     if (og.images) {
       const imgList =
@@ -1207,6 +1323,14 @@ export function MetadataHead({
           <meta key={key++} property="og:image" content={resolveSocialImageUrl(img, base)} />,
         );
         if (typeof img !== "string" && !(img instanceof URL)) {
+          if (img.secureUrl)
+            elements.push(
+              <meta
+                key={key++}
+                property="og:image:secure_url"
+                content={stringifyUrl(img.secureUrl)}
+              />,
+            );
           if (img.width)
             elements.push(
               <meta key={key++} property="og:image:width" content={String(img.width)} />,
@@ -1308,6 +1432,15 @@ export function MetadataHead({
           <meta key={key++} name="twitter:image" content={resolveSocialImageUrl(img, base)} />,
         );
         if (typeof img !== "string" && !(img instanceof URL)) {
+          if (img.secureUrl) {
+            elements.push(
+              <meta
+                key={key++}
+                name="twitter:image:secure_url"
+                content={stringifyUrl(img.secureUrl)}
+              />,
+            );
+          }
           if (img.type) {
             elements.push(<meta key={key++} name="twitter:image:type" content={img.type} />);
           }
