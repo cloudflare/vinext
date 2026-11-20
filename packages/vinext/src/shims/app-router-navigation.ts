@@ -37,7 +37,10 @@ import {
 } from "../client/app-nav-failure-handler.js";
 import { INITIAL_BFCACHE_ID } from "../server/app-bfcache-id.js";
 import { AppElementsWire, type AppElements } from "../server/app-elements.js";
-import { resolveManifestNavigationInterceptionContext } from "../server/app-browser-interception-context.js";
+import {
+  ROUTE_MISS_DOCUMENT_NAVIGATION,
+  resolveManifestNavigationInterceptionContext,
+} from "../server/app-browser-interception-context.js";
 import {
   createExternalHistoryStatePreservingMetadata,
   createHashOnlyHistoryStatePreservingNavigationMetadata,
@@ -304,13 +307,16 @@ export function getPrefetchInterceptionContext(
   }
 
   const currentSource = source ?? getPrefetchInterceptionSource();
-  return resolveManifestNavigationInterceptionContext({
+  const interceptionContext = resolveManifestNavigationInterceptionContext({
     basePath: __basePath,
     currentPathname: currentSource.pathname,
     currentRenderIsRouteMiss: currentSource.routeMiss,
     routeManifest: getNavigationRuntime()?.bootstrap.routeManifest ?? null,
     targetPathname: targetUrl.pathname,
   });
+  // A navigation to that target loads its document, so it never uses this
+  // prefetch, which stays a plain one without a context.
+  return interceptionContext === ROUTE_MISS_DOCUMENT_NAVIGATION ? null : interceptionContext;
 }
 
 export function getCurrentNextUrl(): string {

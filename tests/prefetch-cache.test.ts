@@ -664,6 +664,65 @@ describe("prefetch cache eviction", () => {
     ).toBe("/feed/missing");
   });
 
+  // A navigation to that target loads its document, so its prefetch keeps no
+  // context when the root layout has a slot besides `children`.
+  it("router.prefetch sends no interception context from a not-found page when the root layout has a slot", async () => {
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const location = (globalThis as any).window.location;
+    location.pathname = "/feed/missing";
+    location.href = "http://localhost/feed/missing";
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: {
+        routeManifest: decodeBrowserRouteManifest({
+          graphVersion: "graph:test",
+          routes: [],
+          layouts: [],
+          slotBindings: [
+            {
+              id: "route:/photos/:id::slot:modal:/",
+              ownerLayoutId: "layout:/",
+              routeId: "route:/photos/:id",
+              routeSegments: null,
+              slotId: "slot:modal:/",
+              state: "default",
+            },
+          ],
+          interceptions: [
+            {
+              id: "interception:slot:modal:/:slug->/photos/:id",
+              ownerLayoutId: "layout:/:slug",
+              slotId: "slot:modal:/:slug",
+              sourcePatternParts: [":slug"],
+              targetPatternParts: ["photos", ":id"],
+              targetRouteId: "route:/photos/:id",
+            },
+          ],
+          interceptionsBySlotId: [],
+          rootBoundaries: [],
+        }),
+        rsc: undefined,
+      },
+      functions: {
+        getPrefetchRouterState: () => ({
+          pathAndSearch: "/feed/missing",
+          routeId: "route:/feed/missing",
+          routeMiss: true,
+        }),
+        navigate: vi.fn(),
+      },
+    };
+
+    appRouterInstance.prefetch("/photos/42", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    expect(
+      new Headers(fetch.mock.calls[0]![1]?.headers).get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
+    ).toBeNull();
+  });
+
   it("router.prefetch skips the request when the route manifest fails to load", async () => {
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>

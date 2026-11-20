@@ -104,6 +104,7 @@ import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.j
 import { createAppRouteTree } from "./app-route-tree.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
+  ROUTE_MISS_DOCUMENT_NAVIGATION,
   resolveManifestNavigationInterceptionContext,
   resolveMiddlewareRewriteNavigationInterceptionContext,
 } from "./app-browser-interception-context.js";
@@ -1255,6 +1256,8 @@ function clientNavigationSnapshotHref(snapshot: ClientNavigationRenderSnapshot):
 }
 
 type NavigationRequestState = {
+  /** Load the target's document, as Next.js does, instead of fetching it. */
+  documentNavigation?: true;
   interceptionContext: string | null;
   previousNextUrl: string | null;
 };
@@ -1319,6 +1322,9 @@ function getRequestState(
         routeManifest: getBrowserRouteManifest(),
         targetPathname,
       });
+      if (manifestInterceptionContext === ROUTE_MISS_DOCUMENT_NAVIGATION) {
+        return { documentNavigation: true, interceptionContext: null, previousNextUrl: null };
+      }
       if (manifestInterceptionContext !== null) {
         return {
           interceptionContext: manifestInterceptionContext,
@@ -1346,6 +1352,9 @@ function getRequestState(
           routeManifest: getBrowserRouteManifest(),
           targetPathname,
         });
+      if (middlewareRewriteInterceptionContext === ROUTE_MISS_DOCUMENT_NAVIGATION) {
+        return { documentNavigation: true, interceptionContext: null, previousNextUrl: null };
+      }
       if (middlewareRewriteInterceptionContext !== null) {
         return {
           interceptionContext: middlewareRewriteInterceptionContext,
@@ -2418,6 +2427,10 @@ function bootstrapHydration(
           currentPrevNextUrl,
           activeTraversalIntent?.historyState,
         );
+        if (requestState.documentNavigation === true) {
+          performHardNavigationForScrollIntent(currentHref);
+          return;
+        }
         const requestInterceptionContext = requestState.interceptionContext;
         const requestPreviousNextUrl = requestState.previousNextUrl;
         const shouldSupplementVisibleBranches =
