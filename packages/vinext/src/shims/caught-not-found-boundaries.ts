@@ -166,7 +166,10 @@ function collectRejections(roots: readonly unknown[], digest: string): Set<unkno
       } else if (status === "fulfilled") {
         pending.push(Reflect.get(value, "value"));
       }
-    } else if (Array.isArray(value)) {
+    } else if (Array.isArray(value) || value instanceof Set || value instanceof Map) {
+      // Flight keeps a Set or a Map of children, which renders as an array,
+      // a Map's entries as [key, value] arrays. An iterator it keeps reads
+      // only once, so the walk leaves it unread.
       for (const item of value) pending.push(item);
     } else {
       const prototype: unknown = Object.getPrototypeOf(value);

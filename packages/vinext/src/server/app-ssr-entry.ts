@@ -889,9 +889,10 @@ export async function handleSsr(
             try {
               htmlStream = await prerenderFallbackShell(caughtRoot);
             } catch {
-              // A caught document that can't render, from a caught boundary
-              // that throws or an error outside the caught boundaries, leaves
-              // the shell's own error to its fallback, which keeps its status.
+              // A caught document that can't render leaves the shell's own
+              // error to its fallback document. An error outside the caught
+              // boundaries keeps that error's status there, and a caught
+              // boundary that redirects or throws does so there again.
               throw error;
             }
             caughtShellError = error;
@@ -924,9 +925,10 @@ export async function handleSsr(
                 );
                 if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
               } catch {
-                // A caught document that can't render, from a caught boundary
-                // that throws or an error outside the caught boundaries, leaves
-                // the shell's own error to its fallback, which keeps its status.
+                // A caught document that can't render leaves the shell's own
+                // error to its fallback document. An error outside the caught
+                // boundaries keeps that error's status there, and a caught
+                // boundary that redirects or throws does so there again.
                 void caughtHtmlStream?.cancel().catch(() => {});
                 throw error;
               }

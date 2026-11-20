@@ -900,6 +900,20 @@ describe("the page entry the document renders", () => {
       }),
     ).toEqual({ count: 1, copies: 2, caught: null });
 
+    // Flight keeps a Set or a Map of children in the page's subtree.
+    const SetPage = () => content("page", new Set([h(Thrower, { status: 404 })]));
+    const MapPage = () => content("page", new Map([["child", h(AsyncThrower, { status: 403 })]]));
+    expect(await renderDocument(404, { page: h(SetPage), layout: null, sidebar: null })).toEqual({
+      count: 1,
+      copies: 1,
+      caught: ["page"],
+    });
+    expect(await renderDocument(403, { page: h(MapPage), layout: null, sidebar: null })).toEqual({
+      count: 1,
+      copies: 1,
+      caught: ["page:403"],
+    });
+
     // An element the layout and the page share renders one copy in both.
     const shared = h(Thrower, { status: 404 });
     const SharingPage = () => content("page", shared);
