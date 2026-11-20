@@ -5174,6 +5174,26 @@ describe("buildPageElements", () => {
         ]);
       });
 
+      // Next.js fills the param after the marker of a marker-prefixed dynamic
+      // segment and keeps the marker: `@modal/(...)[id]` heads by `/(...)1/`.
+      it("fills a dynamic file below a marker-prefixed dynamic segment", async () => {
+        const { options } = createSourceFixture({ sourcePageFirst: false });
+        const elements = await buildPageElements({
+          ...options,
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal", "(...)[id]"], {
+              servedUrl: "/members/(...)[id]/opengraph-image-abc",
+            }),
+          ],
+          pageRequest: interceptOpts(options, ["members", "@modal", "(...)[id]"]),
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual(["/members/(...)1/opengraph-image-abc"]);
+      });
+
       // A source URL without a page of its own renders the route whole, where
       // the intercept still heads the route.
       it("fills the intercepting page's files when the route renders whole", async () => {

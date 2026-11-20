@@ -102,12 +102,37 @@ test.describe("metadata files of an intercepting page", () => {
     }
   });
 
+  // Below a marker-prefixed dynamic segment, `@modal/first/(.)[id]`, Next.js
+  // keeps the marker and fills the param after it: `/first/(.)7/`.
+  test("a dynamic file below a marker-prefixed dynamic segment keeps the marker", async ({
+    page,
+  }) => {
+    await openFirst(page);
+
+    await page.getByRole("link", { name: "Clip 7" }).click();
+    await expect(page).toHaveURL(new RegExp(`${ROOT}/first/7$`));
+    await expect(page.locator("#intercept-metadata-files-clip-modal")).toHaveText("Clip modal: 7");
+    await expectSoftNavigation(page);
+
+    const ogImage = page.locator('meta[property="og:image"]');
+    await expect(ogImage).toHaveCount(1);
+    await expect(ogImage).toHaveAttribute(
+      "content",
+      /\/nextjs-compat\/intercept-metadata-files\/first\/\(\.\)7\/opengraph-image-eo3mgi(\?[^/]+)?$/,
+    );
+    await expectServedImages(page, 'meta[property="og:image"]');
+    const { pathname, search } = new URL((await ogImage.getAttribute("content")) ?? "", page.url());
+    const response = await page.request.get(new URL(`${pathname}${search}`, page.url()).href);
+    expect(await response.text()).toBe("clip:7");
+  });
+
   test("the intercepted pages loaded directly read none of the intercepting pages' files", async ({
     page,
   }) => {
     for (const { pathname, selector } of [
       { pathname: "/photo/1", selector: "#intercept-metadata-files-photo-page" },
       { pathname: "/shot/2", selector: "#intercept-metadata-files-shot-page" },
+      { pathname: "/first/7", selector: "#intercept-metadata-files-clip-page" },
     ]) {
       await page.goto(`${BASE}${ROOT}${pathname}`);
       await expect(page.locator(selector)).toBeVisible();
@@ -115,7 +140,7 @@ test.describe("metadata files of an intercepting page", () => {
         page,
         'meta[property="og:image"], meta[name="twitter:image"]',
       )) {
-        expect(content).not.toMatch(/\/\(\.\)(photo|shot)\//);
+        expect(content).not.toMatch(/\/\(\.\)(photo|shot|7)\//);
         expect(content).not.toMatch(GROUP_TWITTER_IMAGE);
       }
     }

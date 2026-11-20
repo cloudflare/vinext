@@ -36,6 +36,7 @@ import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
 import {
+  interceptionMarkerPatternParam,
   normalizeStaticPathname,
   normalizeStaticPathsEntry,
   type StaticPathsEntry,
@@ -493,6 +494,8 @@ export function buildUrlFromParams(
   const result: string[] = [];
 
   for (const part of parts) {
+    // A marker-prefixed segment, `(.):id`, keeps its marker before the value.
+    const markerParam = interceptionMarkerPatternParam(part);
     if (part.endsWith("+") || part.endsWith("*")) {
       const paramName = part.slice(1, -1);
       const value = params[paramName];
@@ -501,8 +504,8 @@ export function buildUrlFromParams(
       } else if (value) {
         result.push(encodeURIComponent(String(value)));
       }
-    } else if (part.startsWith(":")) {
-      const paramName = part.slice(1);
+    } else if (markerParam || part.startsWith(":")) {
+      const paramName = markerParam?.name ?? part.slice(1);
       const value = params[paramName];
       if (value === undefined || value === null) {
         throw new Error(
@@ -510,7 +513,7 @@ export function buildUrlFromParams(
             `Check that generateStaticParams (or getStaticPaths) returns an object with a "${paramName}" key.`,
         );
       }
-      result.push(encodeURIComponent(String(value)));
+      result.push(`${markerParam?.marker ?? ""}${encodeURIComponent(String(value))}`);
     } else {
       result.push(part);
     }
@@ -673,6 +676,10 @@ type DynamicPatternParam = { name: string; optional: boolean; repeat: boolean };
 function getDynamicPatternParams(pattern: string): DynamicPatternParam[] {
   return pattern
     .split("/")
+    .map((segment) => {
+      const markerParam = interceptionMarkerPatternParam(segment);
+      return markerParam ? `:${markerParam.name}` : segment;
+    })
     .filter((segment) => segment.startsWith(":"))
     .map((segment) => ({
       name: segment.slice(1, segment.endsWith("+") || segment.endsWith("*") ? -1 : undefined),
