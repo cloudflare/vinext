@@ -524,6 +524,10 @@ describe("Next.js compat: not-found", () => {
     ["unauth", 401, "notfound-sibling-slots-unauthorized"],
     // A not-found beside the page catches it in the page's own segment.
     ["own", 404, "notfound-sibling-slots-own-nf"],
+    // A Server Component the page renders throws to the page's boundary too.
+    ["nested-missing", 404, "notfound-sibling-slots-nf"],
+    ["nested-denied", 403, "notfound-sibling-slots-forbidden"],
+    ["nested-unauth", 401, "notfound-sibling-slots-unauthorized"],
   ])(
     "the access boundary document keeps the layout's parallel slots (%s)",
     async (path, status, boundaryId) => {

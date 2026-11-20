@@ -789,3 +789,186 @@ describe("NotFoundBoundary caught in the document", () => {
     expect([...caught.rendered]).toEqual(["page:403", "page:401"]);
   });
 });
+
+describe("the page entry the document renders", () => {
+  it("counts the shell error's copies only the page's subtree renders", async () => {
+    // Next.js wraps the whole children subtree in the page's boundary, so a
+    // Server Component the page renders throws to it as the page does. The
+    // RSC render can't tell that copy from a layout's child's or a slot's,
+    // so the document counts the copies only the page's entry renders, and
+    // the page's boundary catches only when every copy is one of them.
+    const React = await import("react");
+    const { renderToReadableStream } = await import("react-dom/server.edge");
+    const { loadCacheFlightCodec } = await import("./helpers/cache-flight-codec.js");
+    const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+    const { countPageEntryRejections, withRenderedPageEntry } =
+      await import("../packages/vinext/src/shims/caught-not-found-boundaries.js");
+    const { resolveAppPageCaughtAccessBoundaries } =
+      await import("../packages/vinext/src/server/app-page-execution.js");
+    const codec = loadCacheFlightCodec();
+    const h = React.createElement;
+    const signal = (status: number) => {
+      const digest = `NEXT_HTTP_ERROR_FALLBACK;${status}`;
+      throw Object.assign(new Error(digest), { digest });
+    };
+    const Thrower = ({ status }: { status: number }) => signal(status);
+    const AsyncThrower = async ({ status }: { status: number }) => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      return signal(status);
+    };
+    const content = (id: string, child: React.ReactNode) =>
+      h("section", { id }, h("p", null, id), child);
+
+    const renderDocument = async (
+      status: number,
+      record: { page: React.ReactNode; layout: React.ReactNode; sidebar: React.ReactNode },
+    ) => {
+      const copies: unknown[] = [];
+      const elements = (await codec.createFromReadableStream(
+        codec.renderToReadableStream(record, {
+          onError: (error: unknown) => {
+            copies.push(error);
+            return (error as { digest?: string }).digest;
+          },
+        }),
+      )) as Record<string, unknown>;
+      const pageEntry: { id?: string; elements?: Record<string, unknown> } = {};
+      const document = withRenderedPageEntry(
+        pageEntry,
+        h(
+          ElementsContext.Provider,
+          { value: elements as never },
+          h(Slot, { id: "page", page: true }),
+          h(Slot, { id: "layout" }),
+          h(Slot, { id: "sidebar" }),
+        ),
+      );
+      const shellError = await renderToReadableStream(document, { onError() {} }).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(shellError).toMatchObject({ digest: `NEXT_HTTP_ERROR_FALLBACK;${status}` });
+      expect(pageEntry).toEqual({ id: "page", elements });
+      const count = countPageEntryRejections(pageEntry, shellError);
+      return {
+        count,
+        copies: copies.length,
+        caught: resolveAppPageCaughtAccessBoundaries(shellError, copies, {
+          catchesRouteSignals: true,
+          countPageRejections: () => count,
+        }),
+      };
+    };
+    const renderThrower = (thrower: "page" | "page-async" | "layout" | "sidebar") => {
+      const status = { page: 404, "page-async": 403, layout: 401, sidebar: 404 }[thrower];
+      const child = (at: string) =>
+        thrower === at
+          ? h(Thrower, { status })
+          : thrower === `${at}-async`
+            ? h(AsyncThrower, { status })
+            : null;
+      const Page = async () => content("page", child("page"));
+      return renderDocument(status, {
+        page: h(Page),
+        layout: content("layout", child("layout")),
+        sidebar: content("sidebar", child("sidebar")),
+      });
+    };
+
+    expect(await renderThrower("page")).toEqual({ count: 1, copies: 1, caught: ["page"] });
+    expect(await renderThrower("page-async")).toEqual({
+      count: 1,
+      copies: 1,
+      caught: ["page:403"],
+    });
+    // A layout's child component and a sibling slot's subtree render
+    // outside the page's entry.
+    expect(await renderThrower("layout")).toEqual({ count: 0, copies: 1, caught: null });
+    expect(await renderThrower("sidebar")).toEqual({ count: 0, copies: 1, caught: null });
+
+    // A layout's child inside a Suspense boundary leaves the shell to the
+    // page's copy, but it is a copy the page's entry doesn't render.
+    const Page = () => content("page", h(Thrower, { status: 404 }));
+    expect(
+      await renderDocument(404, {
+        page: h(Page),
+        layout: content(
+          "layout",
+          h(React.Suspense, { fallback: null }, h(Thrower, { status: 404 })),
+        ),
+        sidebar: null,
+      }),
+    ).toEqual({ count: 1, copies: 2, caught: null });
+
+    // An element the layout and the page share renders one copy in both.
+    const shared = h(Thrower, { status: 404 });
+    const SharingPage = () => content("page", shared);
+    const sharing = await renderDocument(404, {
+      page: h(SharingPage),
+      layout: content("layout", shared),
+      sidebar: null,
+    });
+    expect(sharing).toEqual({ count: 0, copies: 1, caught: null });
+  });
+
+  it("counts nothing it can't read, and walks a deep or cyclic payload", async () => {
+    const { countPageEntryRejections } =
+      await import("../packages/vinext/src/shims/caught-not-found-boundaries.js");
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const error = Object.assign(new Error(digest), { digest });
+    // A settled chunk, as the Flight client marks a rejected one.
+    const rejected = Object.assign(Promise.reject(error), { status: "rejected", reason: error });
+    rejected.catch(() => {});
+    let deep: unknown = rejected;
+    for (let depth = 0; depth < 100_000; depth++) deep = [{ children: deep }];
+    const cyclic: Record<string, unknown> = { rejected };
+    cyclic.self = cyclic;
+    const unreadable = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("unreadable");
+        },
+      },
+    );
+
+    expect(countPageEntryRejections({ id: "page", elements: { page: deep } }, error)).toBe(1);
+    expect(countPageEntryRejections({ id: "page", elements: { page: cyclic } }, error)).toBe(1);
+    expect(
+      countPageEntryRejections({ id: "page", elements: { page: cyclic, layout: rejected } }, error),
+    ).toBe(0);
+    expect(
+      countPageEntryRejections({ id: "page", elements: { page: [unreadable, rejected] } }, error),
+    ).toBe(0);
+    expect(countPageEntryRejections({}, error)).toBe(0);
+  });
+
+  it("records only the Slot that renders the route's page", async () => {
+    const React = await import("react");
+    const { renderToString } = await import("react-dom/server");
+    const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+    const { withRenderedPageEntry } =
+      await import("../packages/vinext/src/shims/caught-not-found-boundaries.js");
+    const h = React.createElement;
+    const elements = { layout: h("p", null, "layout"), page: h("p", null, "page") };
+    const pageEntry: { id?: string; elements?: Record<string, unknown> } = {};
+    renderToString(
+      withRenderedPageEntry(
+        pageEntry,
+        h(ElementsContext.Provider, { value: elements as never }, h(Slot, { id: "layout" })),
+      ),
+    );
+    expect(pageEntry).toEqual({});
+    renderToString(
+      withRenderedPageEntry(
+        pageEntry,
+        h(
+          ElementsContext.Provider,
+          { value: elements as never },
+          h(Slot, { id: "page", page: true }),
+        ),
+      ),
+    );
+    expect(pageEntry).toEqual({ id: "page", elements });
+  });
+});

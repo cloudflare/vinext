@@ -66,7 +66,10 @@ export type RenderAppPageCacheArtifactsOptions = {
     caughtDocument?: { html: string; linkHeader?: string },
   ) => Promise<AppPageCacheSpecialErrorDocument | null>;
   /** The slot or route boundaries that catch a shell error. See handleSsr. */
-  resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
+  resolveCaughtNotFoundBoundaries?: (
+    error: unknown,
+    countPageRejections: () => number,
+  ) => readonly string[] | null;
   renderToReadableStream: (
     element: AppPageRenderableElement,
     options: { onError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown },

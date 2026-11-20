@@ -969,7 +969,15 @@ test.describe("Access boundaries beside parallel slots", () => {
     },
   ];
 
-  for (const { path, status, boundaryId } of cases) {
+  // A Server Component the page renders throws to the page's boundary too,
+  // as Next.js wraps the whole children subtree in it.
+  const nestedCases = [
+    { path: "nested-missing", status: 404, boundaryId: "notfound-sibling-slots-nf" },
+    { path: "nested-denied", status: 403, boundaryId: "notfound-sibling-slots-forbidden" },
+    { path: "nested-unauth", status: 401, boundaryId: "notfound-sibling-slots-unauthorized" },
+  ];
+
+  for (const { path, status, boundaryId } of [...cases, ...nestedCases]) {
     test(`the ${path} document keeps the sidebar slot beside the boundary`, async ({
       page,
       request,
@@ -994,6 +1002,7 @@ test.describe("Access boundaries beside parallel slots", () => {
       expect(pageResponse?.status()).toBe(status);
       await waitForAppRouterHydration(page);
       await expect(page.locator(`#notfound-sibling-slots-children #${boundaryId}`)).toBeVisible();
+      await expect(page.locator("#notfound-sibling-slots-nested")).toHaveCount(0);
       const sidebar = page.locator(
         "#notfound-sibling-slots-layout #notfound-sibling-slots-sidebar",
       );

@@ -408,18 +408,23 @@ export function resolveAppPageShellSpecialError(
  * slot's, that fallback renders.
  *
  * With `catchesRouteSignals`, as for a route with parallel slots, the page's
- * boundary also catches a signal only the page's own component threw, as it
- * wraps only the `children` of its segment and leaves the slots beside it
- * rendering. A layout's, a template's or a copy nothing tags takes the
- * fallback: the flat payload still renders the entries below a layout that
- * threw, which Next.js never renders, so the document must not carry it. A
- * slot's forbidden() or unauthorized() takes it too, as slots have only
- * not-found boundaries.
+ * boundary also catches a signal only the page's subtree threw, as it wraps
+ * only the `children` of its segment and leaves the slots beside it
+ * rendering. The page's own component tags its copies. One a component in
+ * the page's subtree threw has no tag, so the document counts the copies
+ * that only the page's entry renders (`countPageRejections`), and every
+ * copy, tagged or not, must be one of them. A layout's, a template's or
+ * another copy nothing tags takes the fallback: the flat
+ * payload still renders the entries below a layout that threw, which Next.js
+ * never renders, so the document must not carry it. A template that throws
+ * renders none of the page's entry below it, so its copy rejects the shell
+ * before any of the page's does. A slot's forbidden() or unauthorized()
+ * takes the fallback too, as slots have only not-found boundaries.
  */
 export function resolveAppPageCaughtAccessBoundaries(
   error: unknown,
   renderedSpecialErrors: readonly unknown[],
-  options?: { catchesRouteSignals?: boolean },
+  options?: { catchesRouteSignals?: boolean; countPageRejections?: () => number },
 ): readonly string[] | null {
   const specialError = resolveAppPageSpecialError(error);
   if (specialError?.kind !== "http-access-fallback") return null;
@@ -429,6 +434,7 @@ export function resolveAppPageCaughtAccessBoundaries(
   if (isThrownNavigationError(error) || renderedSpecialErrors.length === 0) return null;
   const boundaries = new Set<string>();
   let caughtInSlot = false;
+  let pageCopies = 0;
   let untagged = false;
   for (const rendered of renderedSpecialErrors) {
     if (resolveAppPageSpecialError(rendered)?.fromMetadata === true) return null;
@@ -440,12 +446,15 @@ export function resolveAppPageCaughtAccessBoundaries(
       boundaries.add(boundary);
     } else if (getAppPageSlotErrorLayoutIndex(rendered) === null) {
       if (!isAppPagePageError(rendered)) untagged = true;
+      pageCopies++;
       boundaries.add(getAppPageAccessBoundaryCatcherId(statusCode));
     } else {
       return null;
     }
   }
-  return caughtInSlot || (catchesRouteSignals && !untagged) ? Array.from(boundaries) : null;
+  const caughtInPage =
+    catchesRouteSignals && (!untagged || (options?.countPageRejections?.() ?? 0) >= pageCopies);
+  return caughtInSlot || caughtInPage ? Array.from(boundaries) : null;
 }
 
 /**

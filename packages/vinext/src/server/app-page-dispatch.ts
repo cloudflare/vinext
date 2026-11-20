@@ -1143,12 +1143,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               // A regeneration of an RSC variant's entry alone needs no
               // document for its shell's special error.
               resolveCaughtNotFoundBoundaries: renderDocument
-                ? (error) =>
+                ? (error, countPageRejections) =>
                     resolveAppPageCaughtAccessBoundaries(
                       error,
                       rscErrorTracker.getCapturedSpecialErrors(error),
                       {
                         catchesRouteSignals: catchesAppPageRouteSignals(revalidationTarget.route),
+                        countPageRejections,
                       },
                     )
                 : undefined,
