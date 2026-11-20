@@ -2926,6 +2926,32 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain("email=no");
   });
 
+  it("builds robots directives like Next.js resolveRobotsValue", () => {
+    // Ported from Next.js: packages/next/src/lib/metadata/resolvers/resolve-basics.ts
+    // index and follow come first, the other directives follow in a fixed
+    // order, and a directive set to false is left out.
+    const html = renderMetadataToHtml(
+      {
+        robots: {
+          "max-snippet": 10,
+          notranslate: true,
+          nosnippet: false,
+          noarchive: true,
+          follow: false,
+          index: true,
+          unavailable_after: "25 Jun 2027 15:00:00 PST",
+          "max-video-preview": "standard",
+          googleBot: { index: false, follow: false, noarchive: false, nocache: true },
+        },
+      },
+      "/",
+    );
+    expect(html).toBe(
+      '<meta name="robots" content="index, nofollow, noarchive, notranslate, unavailable_after:25 Jun 2027 15:00:00 PST, max-video-preview:standard, max-snippet:10">' +
+        '<meta name="googlebot" content="noindex, nofollow, nocache">',
+    );
+  });
+
   it("renders googlebot meta tag separately from robots", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {
