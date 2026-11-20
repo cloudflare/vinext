@@ -416,6 +416,13 @@ type AppRscRouteMatch<TRoute> = {
    */
   authorizationParams?: AppPageParams;
   authorizationRoute?: TRoute;
+  /**
+   * Whether a direct request to the target renders every layout the
+   * intercepted render takes from the source, with the same params.
+   */
+  interceptionRendersTargetLayouts?: boolean;
+  /** The same for the raw match, which draft mode and server actions render. */
+  interceptionRawRendersTargetLayouts?: boolean;
   interceptionSourceIsConcrete?: boolean;
   /**
    * The source has no slot to render the intercept into. Only a source rewrite
@@ -1935,13 +1942,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // the subsequent page dispatch. Document requests remain direct-route-only.
   const directPreActionMatch = filesystemRouteEligible ? matchCleanPathname() : null;
   const preActionRoutePathname = cleanPathnameIsRequestPathname ? requestPathname : cleanPathname;
-  // Interception renders the *source* route's tree for this request. Next.js
-  // never does that: its generated rewrite points at the intercepting route and
-  // the client keeps the segments it already holds, so only the requested target
-  // is rendered server-side. Because vinext renders the source tree instead, one
-  // request reaches a second route that the middleware run above never saw, since
-  // that run received the target's cleanPathname. The source pathname arrives in
-  // a client header, so authorize it before anything downstream renders from it.
+  // An intercepted render renders the source route's layouts down to the
+  // intercepting route, with the source's params, and leaves the rest of the
+  // source to the client. Unless the target's own route renders those layouts
+  // too, they belong to a second route that the middleware run above never
+  // saw, since that run received the target's cleanPathname. Next.js renders
+  // them under the target's request alone. The source pathname arrives in a
+  // client header, so authorize it before anything downstream renders from it.
   // Authorization takes the steps a direct request to the source takes, in
   // order: trailing-slash canonicalization, config redirects, middleware,
   // beforeFiles rewrites, then afterFiles rewrites for a dynamic source.
@@ -1991,11 +1998,42 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     bypassInterceptionContextCache = true;
     setInterceptionResponseUncacheable(true);
   };
+  // `matchRequestRoute` answers an encoded request such as `/%61`, which
+  // reaches `/[slug]` raw, with the static `/a` whose prerender Next.js
+  // serves, and routing (rewrites, Pages arbitration) treats it as `/a`, as
+  // Next.js's filesystem check does. Draft mode and server actions skip that
+  // cache in Next.js, so they render the raw-matched page.
+  const rendersRawRequestMatch =
+    options.matchRawRequestRoute !== undefined &&
+    (isPossibleAppRouteActionRequest(request) ||
+      isDraftModeRequest(request, options.draftModeSecret) ||
+      isDraftModeEnabled());
+  // A direct request to the target renders every layout the intercepted render
+  // takes from the source, with the same params, so the target's own request
+  // authorized them. Next.js renders an intercepting route under the target's
+  // request alone, never the source's.
+  // The proof is the one for the target the request renders: the raw match
+  // for a request that renders it, one whose pathname no rewrite has changed
+  // yet, as `usesRawRequestMatch()` decides. Unlike that check, this one does
+  // not exempt an interception-only target, which renders no raw match: it
+  // then requires the raw proof too, which can only refuse more.
+  const mayRenderRawRequestMatch = () => rendersRawRequestMatch && cleanPathnameIsRequestPathname;
+  const rendersTargetLayoutsFor = (
+    match: {
+      interceptionRendersTargetLayouts?: boolean;
+      interceptionRawRendersTargetLayouts?: boolean;
+    } | null,
+  ): boolean =>
+    mayRenderRawRequestMatch()
+      ? match?.interceptionRawRendersTargetLayouts === true
+      : match?.interceptionRendersTargetLayouts === true;
+  const rendersTargetLayouts = rendersTargetLayoutsFor(interceptionSourceMatch);
   if (
     interceptionSourceMatch !== null &&
     interceptionContextHeader !== null &&
     interceptionSourcePathname !== null &&
-    !isSameInterceptionSource(interceptionSourceMatch, directPreActionMatch)
+    !isSameInterceptionSource(interceptionSourceMatch, directPreActionMatch) &&
+    !rendersTargetLayouts
   ) {
     // A direct request to a non-canonical spelling redirects to the canonical
     // one first, so every later step sees that. The client can legitimately
@@ -2281,16 +2319,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : null;
   const preActionMatch = directPreActionMatch ?? interceptionPreActionMatch;
   const isInterceptionMatch = interceptionPreActionMatch !== null;
-  // `matchRequestRoute` answers an encoded request such as `/%61`, which
-  // reaches `/[slug]` raw, with the static `/a` whose prerender Next.js
-  // serves, and routing (rewrites, Pages arbitration) treats it as `/a`, as
-  // Next.js's filesystem check does. Draft mode and server actions skip that
-  // cache in Next.js, so they render the raw-matched page.
-  const rendersRawRequestMatch =
-    options.matchRawRequestRoute !== undefined &&
-    (isPossibleAppRouteActionRequest(request) ||
-      isDraftModeRequest(request, options.draftModeSecret) ||
-      isDraftModeEnabled());
   // Middleware can enable or disable draft mode for this request.
   const isActiveDraftMode = () =>
     getActiveDraftModeState() ?? isDraftModeRequest(request, options.draftModeSecret);
@@ -2803,7 +2831,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         isSameInterceptionSource(finalInterceptionSourceMatch, {
           params: interceptionSourceMatch.authorizationParams ?? interceptionSourceMatch.params,
           route: interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route,
-        });
+        }) &&
+        // A source left unauthorized for the target it was matched with must
+        // still share its layouts with the target a later rewrite reached.
+        (!rendersTargetLayouts || rendersTargetLayoutsFor(finalInterceptionSourceMatch));
       if (interceptionIdHeader !== null && !hasVerifiedFinalInterceptionSource) {
         options.clearRequestContext();
         setInterceptionResponseUncacheable(true);

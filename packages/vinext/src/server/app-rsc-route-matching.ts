@@ -143,6 +143,18 @@ type AppRscInterceptMatch = AppRscInterceptLookupEntry & {
    */
   authorizationSourceRouteIndex: number;
   authorizationSourceParams: AppRscRouteParams;
+  /**
+   * Whether a direct request to the target renders the layouts the
+   * intercepted render takes from the source, down to the intercepting route,
+   * from the same directories with the same params. The target's own request
+   * authorized those, so the source adds nothing it must authorize.
+   */
+  rendersTargetLayouts: boolean;
+  /**
+   * The same for the raw match, which draft mode and server actions render
+   * instead.
+   */
+  rawRendersTargetLayouts: boolean;
 };
 
 type AppRscInterceptLoadState = {
@@ -465,9 +477,34 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           renderedSourceParams && entry.sourceMatchPatternParts !== null
             ? pickPatternParams(renderedSourceParams, entry.sourceMatchPatternParts)
             : (renderedSourceParams ?? createRouteParams());
+        const renderedSourceSegments =
+          routes[rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex]
+            ?.routeSegments;
         const match = {
           ...entry,
           page: entry.__loadState.page,
+          // A source without the slot never skips source authorization, since
+          // only a rewrite of it can reach a source that renders the intercept.
+          rendersTargetLayouts:
+            !sourceRouteLacksSlot &&
+            rendersTargetLayouts(
+              entry,
+              renderedSourceSegments,
+              sourceParts,
+              sourceParams,
+              params,
+              matchRequestParts(urlParts),
+            ),
+          rawRendersTargetLayouts:
+            !sourceRouteLacksSlot &&
+            rendersTargetLayouts(
+              entry,
+              renderedSourceSegments,
+              sourceParts,
+              sourceParams,
+              params,
+              matchRawRequestParts(urlParts),
+            ),
           sourceRouteIsConcrete: concreteSourceRoute !== null,
           sourceRouteLacksSlot,
           sourceRouteIndex: rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex,
@@ -486,6 +523,16 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   };
 }
 
+// The interception markers the route graph recognizes. A route group such as
+// `(....)` only looks like one.
+const INTERCEPTION_MARKER_PREFIXES = ["(...)", "(..)(..)", "(..)", "(.)"] as const;
+
+function findInterceptionMarkerIndex(segments: readonly string[]): number {
+  return segments.findIndex((segment) =>
+    INTERCEPTION_MARKER_PREFIXES.some((prefix) => segment.startsWith(prefix)),
+  );
+}
+
 /**
  * Whether a sibling intercept's owner route is the intercepting route: its
  * page lives in the directory that holds the interception marker. An owner
@@ -496,11 +543,76 @@ function isInterceptingRoute(
   sourcePageSegments: readonly string[] | null | undefined,
 ): boolean {
   if (!routeSegments || !sourcePageSegments) return false;
-  const markerIndex = sourcePageSegments.findIndex((segment) => /^\(\.+\)/.test(segment));
+  const markerIndex = findInterceptionMarkerIndex(sourcePageSegments);
   return (
     markerIndex === routeSegments.length &&
     routeSegments.every((segment, index) => segment === sourcePageSegments[index])
   );
+}
+
+/**
+ * Whether the target's own route renders the intercepting route's layouts with
+ * the source's params. A slot intercept takes from the source only the layouts
+ * down to the slot's owner; the client keeps the rest, and everything from the
+ * slot down is the intercepting branch, like the intercepting page. When the
+ * owner's directories are the ones the target's route starts with, and every
+ * param down to the marker holds the target's value, a direct request to the
+ * target renders those layouts too. A sibling intercept renders its whole
+ * source route.
+ *
+ * The values are the ones the interception rewrite captures from the source
+ * and target paths, since a static route beside a dynamic folder binds none.
+ * Wherever the routes that render bind the param, they must agree too.
+ */
+function rendersTargetLayouts(
+  entry: AppRscInterceptLookupEntry,
+  renderedSegments: readonly string[] | null | undefined,
+  sourceParts: readonly string[],
+  sourceParams: AppRscRouteParams,
+  targetCaptures: AppRscRouteParams,
+  target: { route: { routeSegments?: readonly string[] | null }; params: AppRscRouteParams } | null,
+): boolean {
+  const { sourcePageSegments, sourceMatchPatternParts } = entry;
+  const targetSegments = target?.route.routeSegments;
+  if (!sourcePageSegments || !sourceMatchPatternParts || !renderedSegments || !targetSegments) {
+    return false;
+  }
+  const markerIndex = findInterceptionMarkerIndex(sourcePageSegments);
+  const slotIndex = sourcePageSegments.findIndex((segment) => segment.startsWith("@"));
+  if (markerIndex === -1 || slotIndex === -1 || slotIndex > markerIndex) return false;
+  // A slot nested in another renders beneath that slot's own branch, which
+  // the target's request may not render.
+  if (
+    sourcePageSegments.slice(slotIndex + 1, markerIndex).some((segment) => segment.startsWith("@"))
+  ) {
+    return false;
+  }
+  const ownerSegments = sourcePageSegments.slice(0, slotIndex);
+  const startsWithOwner = (segments: readonly string[]) =>
+    ownerSegments.every((segment, index) => segment === segments[index]);
+  if (!startsWithOwner(renderedSegments) || !startsWithOwner(targetSegments)) return false;
+  const sourceCaptures = matchSlotOwnerSourceParams(sourceParts, sourceMatchPatternParts, true);
+  if (!sourceCaptures) return false;
+  canonicalizeAppPageParams(sourceCaptures);
+  const targetParams = Object.assign(createRouteParams(), target.params);
+  canonicalizeAppPageParams(targetParams);
+  return sourcePageSegments.slice(0, markerIndex).every((segment) => {
+    const name = /^\[{1,2}(?:\.\.\.)?([^\]]+)\]{1,2}$/.exec(segment)?.[1];
+    if (name === undefined) return true;
+    const value = targetCaptures[name];
+    if (value === undefined || !sameParam(sourceCaptures[name], value)) return false;
+    return [sourceParams[name], targetParams[name]].every(
+      (bound) => bound === undefined || sameParam(bound, value),
+    );
+  });
+}
+
+function sameParam(value: string | string[] | undefined, other: string | string[]): boolean {
+  return Array.isArray(value)
+    ? Array.isArray(other) &&
+        value.length === other.length &&
+        value.every((part, index) => part === other[index])
+    : value === other;
 }
 
 /**

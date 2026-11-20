@@ -18,9 +18,24 @@ export function middleware(request: NextRequest) {
   if (pathname.startsWith("/viewers/")) {
     return request.headers.get("x-trusted-viewer") === "1" ? NextResponse.next() : blocked();
   }
+  // The gallery's, albums' and each team's pics, and the shelf's items, are public;
+  // their pages are not.
+  if (/^\/(?:gallery|albums|teams\/[^/]+(?:\/nested)?)\/pics\//.test(pathname)) {
+    return NextResponse.next();
+  }
+  if (pathname.startsWith("/shelf/item/")) return NextResponse.next();
   return blocked();
 }
 
 export const config = {
-  matcher: ["/feed/:path*", "/vault", "/photos/:path*", "/viewers/:path*"],
+  matcher: [
+    "/feed/:path*",
+    "/vault",
+    "/photos/:path*",
+    "/viewers/:path*",
+    "/gallery/:path*",
+    "/albums/:path*",
+    "/teams/:path*",
+    "/shelf/:path*",
+  ],
 };

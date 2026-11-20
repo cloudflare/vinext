@@ -6461,6 +6461,143 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  // A slot intercept that renders only layouts the target's own request
+  // renders needs no source authorization, as in Next.js. Draft mode and
+  // server actions render the raw match instead, so only its proof counts for
+  // them.
+  it("authorizes the source only for a request whose rendered target lacks its layouts", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const request = async (cookie?: string, pathname = "/photos/1", rawProof = false) => {
+      const middlewarePaths: string[] = [];
+      const handler = createHandler({
+        configHeaders: [],
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/feed/secret"
+            ? {
+                interceptionRawRendersTargetLayouts: rawProof,
+                interceptionRendersTargetLayouts: !rawProof,
+                params: {},
+                route: sourceRoute,
+              }
+            : null,
+        matchRawRequestRoute: (pathname: string) =>
+          pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+        matchRoute: (pathname: string) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/feed/secret") return { params: {}, route: sourceRoute };
+          return null;
+        },
+        async runMiddleware({ cleanPathname }) {
+          middlewarePaths.push(cleanPathname);
+          if (cleanPathname === "/open") {
+            return {
+              kind: "continue",
+              cleanPathname: "/photos/1",
+              matched: true,
+              rewritten: true,
+              search: null,
+            };
+          }
+          return cleanPathname.startsWith("/feed/secret")
+            ? { kind: "response", matched: true, response: new Response("denied", { status: 401 }) }
+            : { kind: "continue", cleanPathname, matched: true, rewritten: false, search: null };
+        },
+      });
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
+      if (cookie) headers.set("Cookie", cookie);
+      const rscUrl = await createRscRequestUrl(`/docs${pathname}`, headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+      return { middlewarePaths, status: response.status };
+    };
+
+    expect(await request()).toEqual({ middlewarePaths: ["/photos/1"], status: 200 });
+    expect(await request("__prerender_bypass=test-draft-secret")).toEqual({
+      middlewarePaths: ["/photos/1", "/feed/secret"],
+      status: 401,
+    });
+    // A rewritten pathname renders the request match even in draft mode.
+    expect(await request("__prerender_bypass=test-draft-secret", "/open")).toEqual({
+      middlewarePaths: ["/open"],
+      status: 200,
+    });
+    // A raw match that renders the source's layouts proves them for the
+    // request that renders it, whatever the request match renders.
+    expect(await request(undefined, "/photos/1", true)).toEqual({
+      middlewarePaths: ["/photos/1", "/feed/secret"],
+      status: 401,
+    });
+    expect(await request("__prerender_bypass=test-draft-secret", "/photos/1", true)).toEqual({
+      middlewarePaths: ["/photos/1"],
+      status: 200,
+    });
+  });
+
+  // An afterFiles rewrite leaves draft mode rendering the request match, so a
+  // raw match it no longer renders doesn't decide the rewritten target.
+  it("keeps an intercept a draft request is rewritten to after files", async () => {
+    const targetRoute = createPageRoute({
+      isDynamic: true,
+      params: ["id"],
+      pattern: "/photos/:id",
+      routeSegments: ["photos", "[id]"],
+    });
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const middlewarePaths: string[] = [];
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [],
+        afterFiles: [{ source: "/photos/1", destination: "/photos/2" }],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      matchInterceptRoute: (pathname, sourcePathname) =>
+        sourcePathname === "/feed/secret" && (pathname === "/photos/1" || pathname === "/photos/2")
+          ? {
+              interceptionRawRendersTargetLayouts: pathname === "/photos/1",
+              interceptionRendersTargetLayouts: true,
+              interceptionSourceIsConcrete: true,
+              params: {},
+              route: sourceRoute,
+            }
+          : null,
+      matchRawRequestRoute: (pathname: string) =>
+        pathname.startsWith("/photos/")
+          ? { params: { id: pathname.slice(8) }, route: targetRoute }
+          : null,
+      matchRoute: (pathname: string) => {
+        if (pathname.startsWith("/photos/")) {
+          return { params: { id: pathname.slice(8) }, route: targetRoute };
+        }
+        if (pathname === "/feed/secret") {
+          return { params: {} as Record<string, string>, route: sourceRoute };
+        }
+        return null;
+      },
+      async runMiddleware({ cleanPathname }) {
+        middlewarePaths.push(cleanPathname);
+        return cleanPathname.startsWith("/feed/secret")
+          ? { kind: "response", matched: true, response: new Response("denied", { status: 401 }) }
+          : { kind: "continue", cleanPathname, matched: true, rewritten: false, search: null };
+      },
+    });
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
+    headers.set("Cookie", "__prerender_bypass=test-draft-secret");
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(middlewarePaths).toEqual(["/photos/1"]);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: "/feed/secret" }),
+    );
+  });
+
   // Issue #4702: the source's middleware response also ends in the uncached
   // request stage, so a staged deployment labels it BYPASS.
   it("labels an interception source response that middleware answers itself BYPASS", async () => {
