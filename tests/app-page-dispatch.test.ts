@@ -174,7 +174,7 @@ type TestRoute = {
         loadingTreePositions?: readonly number[] | null;
         name?: string;
         ownerTreePosition?: number | null;
-        page?: { default?: unknown; generateMetadata?: unknown } | null;
+        page?: { default?: unknown; dynamic?: unknown; generateMetadata?: unknown } | null;
         routeSegments?: readonly string[] | null;
         slotParamNames?: readonly string[] | null;
         slotPatternParts?: readonly string[] | null;
@@ -3958,6 +3958,92 @@ describe("app page dispatch", () => {
     expect(staticResponse.response.headers.get("cache-control")).toBeNull();
 
     const { options, response } = await dispatchWithFeedLayout({
+      default: () => null,
+      dynamic: "force-dynamic",
+    });
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    const productionResponse = await dispatchAppPage({ ...options, isProduction: true });
+    expect(productionResponse.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    await productionResponse.text();
+  });
+
+  // A source without the slot renders the whole intercepting route: the
+  // owner's default in its children and the other slots' defaults, whatever
+  // the owner's own pathname matches there. Their segment config is the
+  // interception's, and its response is never stored.
+  it("classifies a whole intercepting route by the segments it renders", async () => {
+    const dispatchWithOwnerDefault = async (ownerDefault: TestRoute["layouts"][number]) => {
+      const isrSet = vi.fn(async () => {});
+      const ownerRoute = createRoute({
+        isDynamic: true,
+        layouts: [{ default: () => null }],
+        layoutTreePositions: [2],
+        page: { default: () => null, dynamic: "force-dynamic" },
+        params: ["slug"],
+        pattern: "/club/[slug]",
+        routeSegments: ["club", "[slug]"],
+        slots: {
+          "modal@app/club/[slug]/@modal": {
+            default: { default: () => null },
+            layoutIndex: 0,
+            ownerTreePosition: 2,
+          },
+          "sidebar@app/club/[slug]/@sidebar": {
+            default: { default: () => null },
+            layoutIndex: 0,
+            ownerTreePosition: 2,
+            page: { default: () => null, dynamic: "force-dynamic" },
+          },
+        },
+      });
+      const { options } = createDispatchOptions({
+        async buildPageElement(route) {
+          return route.pattern;
+        },
+        cleanPathname: "/club/static/pics/1",
+        findIntercept: () => ({
+          interceptBranchSegments: ["(.)pics", "[id]"],
+          matchedParams: { id: "1", slug: "static" },
+          ownerDefault,
+          page: {
+            default: "pic-modal",
+            generateStaticParams: async () => [{ slug: "static", id: "1" }],
+          },
+          rendersWholeInterceptingRoute: true,
+          slotKey: "modal@app/club/[slug]/@modal",
+          sourceMatchedParams: { slug: "static" },
+          sourceRouteIndex: 1,
+        }),
+        getSourceRoute(sourceRouteIndex) {
+          return sourceRouteIndex === 1 ? ownerRoute : undefined;
+        },
+        interceptionContext: "/club/static",
+        isProduction: false,
+        isRscRequest: true,
+        isrSet,
+        renderToReadableStream(element) {
+          return createStream([typeof element === "string" ? element : "unexpected-element"]);
+        },
+        route: createRoute({
+          isDynamic: true,
+          params: ["slug", "id"],
+          pattern: "/club/[slug]/pics/[id]",
+          routeSegments: ["club", "[slug]", "pics", "[id]"],
+        }),
+      });
+      const response = await dispatchAppPage(options);
+      await expect(response.text()).resolves.toBe("/club/[slug]");
+      expect(isrSet).not.toHaveBeenCalled();
+      return { options, response };
+    };
+
+    // The owner's page and its sidebar page aren't part of it.
+    const staticResponse = await dispatchWithOwnerDefault({ default: () => null });
+    expect(staticResponse.response.headers.get("cache-control")).toBeNull();
+
+    const { options, response } = await dispatchWithOwnerDefault({
       default: () => null,
       dynamic: "force-dynamic",
     });

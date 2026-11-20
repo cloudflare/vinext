@@ -250,6 +250,16 @@ export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModul
    * for the intercepting route, and leaves the rest for the client to keep.
    */
   rendersInterceptionSource?: boolean;
+  /**
+   * With `rendersInterceptionSource`, the source shares none of the
+   * intercepting route's tree, as a page in a sibling route group does. The
+   * route is then the slot's owner, and renders that tree whole, as Next.js
+   * does: its `default` (`interceptOwnerDefault`) in its children, the other
+   * slots' defaults, and the intercepting route's head, with nothing left for
+   * the client to keep.
+   */
+  rendersWholeInterceptingRoute?: boolean;
+  interceptOwnerDefault?: TModule | null;
   interceptSlotKey?: string | null;
   interceptSourceMatchedUrl?: string | null;
   interceptSourcePageSegments?: readonly string[] | null;
@@ -356,7 +366,6 @@ export async function buildPageElements<
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 >(options: BuildPageElementsOptions<TModule, TErrorModule>): Promise<AppElements> {
   const {
-    route,
     params,
     routePath,
     displayPathname = routePath,
@@ -367,6 +376,14 @@ export async function buildPageElements<
     rootUnauthorizedModule,
     metadataRoutes,
   } = options;
+  const rendersWholeInterceptingRoute =
+    options.pageRequest.opts?.rendersInterceptionSource === true &&
+    options.pageRequest.opts.rendersWholeInterceptingRoute === true;
+  // The intercepting route's tree shows every slot but the intercepted one in
+  // its default state, whatever the owner's own pathname matches there.
+  const route = rendersWholeInterceptingRoute
+    ? withDefaultSlotsBesideIntercept(options.route, options.pageRequest.opts?.interceptSlotKey)
+    : options.route;
   const slotParamOverrides = resolveSlotParamOverrides(
     route,
     resolveSlotParamsPathname(routePath, options.pageRequest.opts),
@@ -398,7 +415,9 @@ export async function buildPageElements<
     opts?.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY && !!opts?.interceptPage;
   const effectivePageModule = isSiblingIntercept
     ? (opts!.interceptPage as AppPageModule | null | undefined)
-    : pageModule;
+    : rendersWholeInterceptingRoute
+      ? opts?.interceptOwnerDefault
+      : pageModule;
   // Resolve the component that will actually render. For a sibling intercept
   // this is the intercepting page's own default export — we deliberately do
   // NOT fall back to the source route's page component. Silently rendering a
@@ -425,19 +444,26 @@ export async function buildPageElements<
       : null
     : undefined;
 
-  const hasPageModule = !!pageModule;
+  const hasPageModule = !!pageModule && !rendersWholeInterceptingRoute;
   const renderIdentity = createAppPageRenderIdentity({
     displayPathname,
     matchedRoutePathname: routePath,
     targetMatchedPathname: routePath,
     interceptionContext: opts?.interceptionContext ?? null,
-    interceptSourceMatchedUrl: opts?.interceptSourceMatchedUrl ?? null,
+    // The whole intercepting route keeps nothing of its source, so it is the
+    // target's own render, which the client commits as a normal navigation.
+    // Its source's pathname names another route, whose entries it never
+    // shares.
+    interceptSourceMatchedUrl: rendersWholeInterceptingRoute
+      ? null
+      : (opts?.interceptSourceMatchedUrl ?? null),
     // Sibling intercepts are full-page replacements with no slot proof.
     // Passing null here makes the payload carry interception:null so the
     // client planner commits the result as a normal navigation rather than
     // attempting slot-preservation validation (which would fail — the
     // synthetic __page slot has no real slot binding in the component tree).
-    interceptSlotId: isSiblingIntercept ? null : (opts?.interceptSlotId ?? null),
+    interceptSlotId:
+      isSiblingIntercept || rendersWholeInterceptingRoute ? null : (opts?.interceptSlotId ?? null),
   });
 
   // Surface a clear "no default export" error for whichever page will render:
@@ -698,7 +724,8 @@ export async function buildPageElements<
           parallelRoutes: [retainedSourceInterceptInput.head],
         }
       : sourceHeadOptions;
-  const retainsInterceptionSource = headOptions !== sourceHeadOptions;
+  const retainsInterceptionSource =
+    headOptions !== sourceHeadOptions && !rendersWholeInterceptingRoute;
   const retainsSourceHead = retainsInterceptionSource && keepsSourceHead;
   const hasDynamicMetadata = hasAppPageDynamicMetadata(headOptions);
   const { pageSearchParams } = collectAppPageSearchParams(searchParams);
@@ -1104,7 +1131,12 @@ export async function buildPageElements<
               pageRenderDependency,
               tagAppPagePageError,
             )
-          : null,
+          : rendersWholeInterceptingRoute
+            ? // Without a `default`, Next.js renders nothing in the
+              // intercepting route's children. The keyed fragment keeps the
+              // entry apart from a loading shell's, which carries no page.
+              createElement(Fragment, { key: "default" })
+            : null,
       renderElementWithMetadataOutlet:
         isSiblingIntercept && EffectivePageComponent ? createSiblingInterceptElement : null,
       createPageElement(component, props, slotLayoutIndex, slotNotFoundBoundary) {
@@ -1167,8 +1199,34 @@ export async function buildPageElements<
       slotOverrides,
       renderMode,
       trailingSlash: options.trailingSlash,
+      wholeInterceptionSource: rendersWholeInterceptingRoute
+        ? renderIdentity.interceptionContext
+        : null,
     });
   });
+}
+
+/**
+ * The route with every slot but the intercepted one showing its default, as
+ * the slots of a whole intercepting route's tree do.
+ */
+function withDefaultSlotsBesideIntercept<
+  TModule extends AppPageModule,
+  TErrorModule extends AppPageErrorModule,
+>(
+  route: AppPageBuildRoute<TModule, TErrorModule>,
+  interceptSlotKey: string | null | undefined,
+): AppPageBuildRoute<TModule, TErrorModule> {
+  if (!route.slots) return route;
+  return {
+    ...route,
+    slots: Object.fromEntries(
+      Object.entries(route.slots).map(([slotKey, slot]) => [
+        slotKey,
+        slotKey === interceptSlotKey ? slot : { ...slot, page: null },
+      ]),
+    ),
+  };
 }
 
 /**

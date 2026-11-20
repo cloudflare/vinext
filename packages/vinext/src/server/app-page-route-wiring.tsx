@@ -443,6 +443,12 @@ type BuildAppPageElementsOptions<
    */
   routeTreeOnlyPrefetchShell?: boolean;
   renderMode?: AppRscRenderMode;
+  /**
+   * The interception source the render shows the whole intercepting route
+   * for, when that source shares none of its tree (see
+   * app-page-element-builder.ts).
+   */
+  wholeInterceptionSource?: string | null;
   routePath: string;
   semanticPageIdentity?: Readonly<{
     boundSegmentKey: string;
@@ -1451,6 +1457,7 @@ export function buildAppPageElements<
     routeId,
     sourcePage: createAppPageSourcePage(options.sourcePageSegments ?? routeSegments),
     slotBindings,
+    wholeInterceptionSource: options.wholeInterceptionSource ?? null,
   });
   if (isPrefetchEmpty) {
     return {

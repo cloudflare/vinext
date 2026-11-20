@@ -370,6 +370,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
           slot.interceptingRoutes.flatMap((intercept) => [
             ...intercept.layoutPaths,
             intercept.pagePath,
+            intercept.ownerDefaultPath,
           ]),
         ),
         ...route.siblingIntercepts.flatMap((intercept) => [
@@ -670,6 +671,7 @@ const __requestHandler = createAppRscRequestHandler({
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
       interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+      interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
       interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
       interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
       route,
@@ -2199,6 +2201,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
       interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+      interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
       interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
       interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
       route,

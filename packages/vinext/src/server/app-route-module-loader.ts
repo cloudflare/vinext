@@ -43,6 +43,8 @@ type LazyLoadableIntercept = {
   __pageLoader?: LazyModuleThunk | null;
   notFound?: unknown;
   __loadNotFound?: LazyModuleThunk | null;
+  ownerDefault?: unknown;
+  __loadOwnerDefault?: LazyModuleThunk | null;
   interceptLayouts?: readonly unknown[] | null;
   __loadInterceptLayouts?: LazyModuleLoaderArray | null;
   interceptLoadings?: readonly unknown[] | null;
@@ -60,6 +62,8 @@ type LazyLoadableIntercept = {
     pageLoading?: Promise<unknown> | null;
     notFound?: unknown;
     notFoundLoading?: Promise<unknown> | null;
+    ownerDefault?: unknown;
+    ownerDefaultLoading?: Promise<unknown> | null;
     interceptLayoutsLoading: Promise<readonly unknown[]> | null;
   };
 };
@@ -185,8 +189,8 @@ function pushArrayLoads(
 async function hydrateInterceptModule(
   intercept: LazyLoadableIntercept,
   loader: LazyModuleThunk | null | undefined,
-  field: "page" | "notFound",
-  loadingField: "pageLoading" | "notFoundLoading",
+  field: "page" | "notFound" | "ownerDefault",
+  loadingField: "pageLoading" | "notFoundLoading" | "ownerDefaultLoading",
 ): Promise<void> {
   const loadState = intercept.__loadState;
   const cached = loadState?.[field];
@@ -226,6 +230,20 @@ export function loadAppInterceptPage(intercept: LazyLoadableIntercept): Promise<
 /** Hydrate an intercepting route's not-found boundary onto `intercept.notFound`. */
 export function loadAppInterceptNotFound(intercept: LazyLoadableIntercept): Promise<void> {
   return hydrateInterceptModule(intercept, intercept.__loadNotFound, "notFound", "notFoundLoading");
+}
+
+/**
+ * Hydrate the `default` file of the directory holding an intercepting route's
+ * slot onto `intercept.ownerDefault`, which a render of the whole intercepting
+ * route shows in the owner's children.
+ */
+export function loadAppInterceptOwnerDefault(intercept: LazyLoadableIntercept): Promise<void> {
+  return hydrateInterceptModule(
+    intercept,
+    intercept.__loadOwnerDefault,
+    "ownerDefault",
+    "ownerDefaultLoading",
+  );
 }
 
 export function loadAppInterceptLayouts(

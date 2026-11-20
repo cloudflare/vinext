@@ -37,9 +37,11 @@ export type AppPageInterceptSegmentConfigOptions = {
   interceptBranchSegments?: readonly string[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptLayouts?: readonly unknown[] | null;
+  interceptOwnerDefault?: unknown;
   interceptPage?: unknown;
   interceptSlotKey: string;
   interceptSourcePageSegments?: readonly string[] | null;
+  rendersWholeInterceptingRoute?: boolean;
 };
 
 export type AppPageInterceptSegmentConfig = {
@@ -63,7 +65,9 @@ export type AppPageInterceptSegmentConfig = {
  * its segment config comes from those modules alone. A sibling intercept's
  * branch takes the children position below its owner folder; a slot
  * intercept's branch takes its slot, beside the other slots of the owner's
- * layouts, and children renders the owner's default.
+ * layouts, and children renders the owner's default. Rendered whole, for a
+ * source that shares none of that tree, the other slots show their defaults
+ * too, and the owner's default is one of its segments.
  */
 export function resolveAppPageInterceptSegmentConfig(
   route: AppPageInterceptSegmentConfigRoute,
@@ -101,27 +105,45 @@ export function resolveAppPageInterceptSegmentConfig(
   );
   const ownerSegments = routeSegments.slice(0, ownerPosition);
   const page = interceptOpts.interceptPage as SegmentModule | null | undefined;
+  const rendersWholeInterceptingRoute =
+    !isSiblingIntercept && interceptOpts.rendersWholeInterceptingRoute === true;
   // The other slots of the owner's layouts render beside the interception:
   // a matched one with its own layouts and page, one without a page as a
   // lone `__DEFAULT__` segment, without the slot's layouts.
-  const retainedBranches = Object.entries(route.slots ?? {}).flatMap(([slotKey, slot]) =>
-    slotKey !== interceptOpts.interceptSlotKey &&
-    (slot.ownerTreePosition ?? route.layoutTreePositions?.[slot.layoutIndex ?? 0] ?? 0) <=
-      ownerPosition
-      ? [
-          {
-            configLayouts: slot.page ? slot.configLayouts : null,
-            configLayoutTreePositions: slot.page ? slot.configLayoutTreePositions : null,
-            isDefault: !slot.page,
-            layout: slot.page ? slot.layout : null,
-            name: slot.name,
-            ownerTreePosition: slot.ownerTreePosition,
-            page: slot.page ?? slot.default,
-            routeSegments: slot.routeSegments,
-          },
-        ]
-      : [],
-  );
+  const retainedBranches = Object.entries(route.slots ?? {}).flatMap(([slotKey, slot]) => {
+    if (
+      slotKey === interceptOpts.interceptSlotKey ||
+      (slot.ownerTreePosition ?? route.layoutTreePositions?.[slot.layoutIndex ?? 0] ?? 0) >
+        ownerPosition
+    ) {
+      return [];
+    }
+    const slotPage = rendersWholeInterceptingRoute ? null : slot.page;
+    return [
+      {
+        configLayouts: slotPage ? slot.configLayouts : null,
+        configLayoutTreePositions: slotPage ? slot.configLayoutTreePositions : null,
+        isDefault: !slotPage,
+        layout: slotPage ? slot.layout : null,
+        name: slot.name,
+        ownerTreePosition: slot.ownerTreePosition,
+        page: slotPage ?? slot.default,
+        routeSegments: slot.routeSegments,
+      },
+    ];
+  });
+  if (rendersWholeInterceptingRoute) {
+    retainedBranches.push({
+      configLayouts: null,
+      configLayoutTreePositions: null,
+      isDefault: true,
+      layout: null,
+      name: "children",
+      ownerTreePosition: ownerPosition,
+      page: (interceptOpts.interceptOwnerDefault as SegmentModule | null | undefined) ?? null,
+      routeSegments: [],
+    });
+  }
   const tree = isSiblingIntercept
     ? {
         layouts: [...ownerLayouts, ...interceptLayouts],

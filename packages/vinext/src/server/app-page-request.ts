@@ -16,6 +16,7 @@ import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-pat
 import {
   loadAppInterceptLayouts,
   loadAppInterceptNotFound,
+  loadAppInterceptOwnerDefault,
   loadAppInterceptPage,
 } from "./app-route-module-loader.js";
 
@@ -115,13 +116,22 @@ type AppPageInterceptMatch<TPage = unknown> = {
   interceptErrors?: readonly unknown[] | null;
   interceptErrorTreePositions?: readonly number[] | null;
   __loadInterceptErrors?: readonly (() => Promise<unknown>)[] | null;
+  ownerDefault?: unknown;
+  __loadOwnerDefault?: (() => Promise<unknown>) | null;
   __loadState?: {
     page: TPage;
     pageLoading: Promise<TPage> | null;
     notFound?: unknown;
     notFoundLoading?: Promise<unknown> | null;
+    ownerDefault?: unknown;
+    ownerDefaultLoading?: Promise<unknown> | null;
     interceptLayoutsLoading: Promise<readonly unknown[]> | null;
   };
+  /**
+   * The source shares none of the intercepting route's tree, so the render is
+   * of that tree whole (see app-rsc-route-matching.ts).
+   */
+  rendersWholeInterceptingRoute?: boolean;
   slotId?: string | null;
   slotKey: string;
   sourceRouteIndex: number;
@@ -852,6 +862,7 @@ export async function resolveAppPageInterceptState<TRoute, TPage>(
 
   await loadAppInterceptPage(intercept);
   await loadAppInterceptNotFound(intercept);
+  if (intercept.rendersWholeInterceptingRoute) await loadAppInterceptOwnerDefault(intercept);
   if (
     intercept.__loadInterceptLayouts ||
     intercept.__loadInterceptLoadings ||
@@ -878,12 +889,22 @@ export async function resolveAppPageInterceptState<TRoute, TPage>(
 /**
  * Marks the opts of a render of the source route beneath its intercepted
  * target, which renders only the intercepting route's tree (see
- * app-page-element-builder.ts).
+ * app-page-element-builder.ts). Without a source that shares that tree, the
+ * render is of the tree whole, with the slot owner's `default` as its children.
  */
-function markInterceptionSourceRender<TInterceptOpts>(opts: TInterceptOpts): TInterceptOpts {
-  return typeof opts === "object" && opts !== null
-    ? { ...opts, rendersInterceptionSource: true }
-    : opts;
+function markInterceptionSourceRender<TInterceptOpts, TPage>(
+  opts: TInterceptOpts,
+  intercept: AppPageInterceptMatch<TPage>,
+): TInterceptOpts {
+  if (typeof opts !== "object" || opts === null) return opts;
+  return intercept.rendersWholeInterceptingRoute
+    ? {
+        ...opts,
+        interceptOwnerDefault: intercept.ownerDefault ?? null,
+        rendersInterceptionSource: true,
+        rendersWholeInterceptingRoute: true,
+      }
+    : { ...opts, rendersInterceptionSource: true };
 }
 
 export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TInterceptOpts>(
@@ -904,6 +925,7 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     return {
       interceptOpts: markInterceptionSourceRender(
         options.toInterceptOpts(interceptState.intercept),
+        interceptState.intercept,
       ),
       navigationParams: {
         ...sourceMatchedParams,
@@ -928,6 +950,7 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
       ),
       interceptOpts: markInterceptionSourceRender(
         options.toInterceptOpts(interceptState.intercept),
+        interceptState.intercept,
       ),
       route: options.currentRoute,
     };
@@ -992,6 +1015,7 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
     const renderRoute = interceptState.sourceRoute;
     const interceptOpts = markInterceptionSourceRender(
       options.toInterceptOpts(interceptState.intercept),
+      interceptState.intercept,
     );
     const sourceMatchedParams =
       interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams;
@@ -1048,6 +1072,7 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
       ),
       interceptOpts: markInterceptionSourceRender(
         options.toInterceptOpts(interceptState.intercept),
+        interceptState.intercept,
       ),
       response: null,
     };
