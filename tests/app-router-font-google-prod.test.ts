@@ -262,6 +262,34 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     }
   });
 
+  it("does not preload a local font declared with preload: false", async () => {
+    // Next.js defaults `preload` to true and passes it to `emitFontFile`, so
+    // a `preload: false` file is left out of the preload manifest while its
+    // @font-face rule still ships:
+    // packages/font/src/local/validate-local-font-function-call.ts
+    // packages/font/src/local/loader.ts
+    const res = await fetch(`${fontBaseUrl}/local-font-no-preload`);
+    expect(res.status).toBe(200);
+    const link = res.headers.get("link") ?? "";
+    const html = await res.text();
+    expect(html).toContain("Local font without preload");
+
+    const styleContent = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/)![1];
+    const noPreloadHref = styleContent.match(
+      /url\('(\/_next\/static\/media\/local\.[^']+\.woff2)'\)/,
+    )?.[1];
+    expect(noPreloadHref).toBeDefined();
+
+    const preloadHrefs = [
+      ...html.matchAll(/<link rel="preload"[^>]*href="([^"]+)"[^>]*as="font"/g),
+    ].map((m) => m[1]);
+    // The other fonts on the page are still preloaded.
+    expect(preloadHrefs.length).toBeGreaterThan(0);
+    expect(preloadHrefs).not.toContain(noPreloadHref);
+    expect(link).toMatch(/rel=preload; as=font/);
+    expect(link).not.toContain(noPreloadHref!);
+  });
+
   it("self-hosts an extensionless Google font URL as WOFF2 with matching preloads", async () => {
     // Ported from Next.js:
     // https://github.com/vercel/next.js/blob/98a73ead5bf711183e07398983c5c943f86328e7/test/e2e/app-dir/next-font-extensionless/next-font-extensionless.test.ts
