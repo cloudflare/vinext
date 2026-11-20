@@ -13,6 +13,7 @@ export const PAGES = [
   "reversed",
   "epsilon",
   "note",
+  "later",
 ] as const;
 
 export function Nav() {

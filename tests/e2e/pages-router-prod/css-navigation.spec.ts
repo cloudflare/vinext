@@ -38,6 +38,7 @@ const EXPECTED: Record<string, Record<string, string>> = {
   lazy: { title: BLUE, text: BLUE },
   epsilon: { title: BLUE, text: GREEN, note: RED },
   note: { title: BLUE, note: RED },
+  later: { title: BLUE, text: GREEN },
 };
 
 let fixtureRoot: string;
@@ -226,6 +227,17 @@ test("client navigations keep each page's full-load cascade", async ({ page }) =
     await expectPage(page, name);
     await expectPageStylesheets(page, name);
   }
+});
+
+test("a dynamic import after a client navigation keeps the page's cascade", async ({ page }) => {
+  await page.goto(`${baseUrl}/bare`);
+  await waitForHydration(page);
+
+  await navigate(page, "later");
+  await page.getByRole("button", { name: "Open" }).click();
+  await expect(page.locator('[data-probe="note"]')).toBeVisible();
+  expect(await probeColors(page)).toEqual({ ...EXPECTED.later, note: RED });
+  await expectPageStylesheets(page, "later");
 });
 
 test("the first client navigation hands the page's stylesheets to <style> tags", async ({

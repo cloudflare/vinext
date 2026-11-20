@@ -19,6 +19,7 @@ export type PagesStylesheet = { href: string; text: string };
 
 const stylesheetTexts = new Map<string, Promise<PagesStylesheet>>();
 let removableLinkPaths: Set<string> | undefined;
+let sharedLinkPaths: Set<string> | undefined;
 
 function fetchStylesheet(href: string): Promise<PagesStylesheet> {
   let text = stylesheetTexts.get(href);
@@ -97,12 +98,14 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
 
   // The `<style>` tags hold page stylesheets now, so their server-rendered
   // `<link>`s, ahead of the marker, go, except for stylesheets that other
-  // dynamic imports load too. Links that Vite adds later, after it, stay, but
-  // one to a stylesheet of this page moves ahead of the marker, where a full
-  // load links it, or it would apply again after the page's own stylesheets.
-  if (!removableLinkPaths) {
+  // dynamic imports load too. Those are linked ahead of the marker, as on a
+  // full load: Vite's preload helper then finds the link when a dynamic import
+  // loads one, rather than adding another after the page's own stylesheets,
+  // and a link it added on an earlier page moves there.
+  if (!removableLinkPaths || !sharedLinkPaths) {
     const manifest = window.__VINEXT_PAGE_STYLESHEETS__;
-    const shared = new Set(manifest?.shared.map(pathOf));
+    sharedLinkPaths = new Set(manifest?.shared.map(pathOf));
+    const shared = sharedLinkPaths;
     removableLinkPaths = new Set(
       Object.values(manifest?.routes ?? {})
         .flat()
@@ -110,14 +113,26 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
         .filter((path) => !shared.has(path)),
     );
   }
-  const pagePaths = new Set(stylesheets.map(({ href }) => pathOf(href)));
+  const isAheadOfMarker = (link: Element) =>
+    (marker.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+  const links = new Map<string, HTMLLinkElement>();
   for (const link of document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')) {
     const path = pathOf(link.href);
-    const isServerLink = marker.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_PRECEDING;
-    if (!isServerLink) {
-      if (pagePaths.has(path)) marker.parentNode!.insertBefore(link, marker);
-    } else if (removableLinkPaths.has(path)) {
-      link.remove();
+    if (isAheadOfMarker(link) && removableLinkPaths.has(path)) link.remove();
+    else links.set(path, link);
+  }
+  const nonce = marker.getAttribute("data-n-css");
+  for (const { href } of stylesheets) {
+    const path = pathOf(href);
+    let link = links.get(path);
+    if (link && isAheadOfMarker(link)) continue;
+    if (!link) {
+      if (!sharedLinkPaths.has(path)) continue;
+      link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.setAttribute("href", href);
+      if (nonce) link.setAttribute("nonce", nonce);
     }
+    marker.parentNode!.insertBefore(link, marker);
   }
 }
