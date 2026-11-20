@@ -1714,7 +1714,7 @@ type AstNode = ESTree.Node & { start: number; end: number };
 type AstObject = ESTree.ObjectExpression & AstNode;
 type AstProperty = Extract<AstObject["properties"][number], { type: "Property" }>;
 
-function parseViteConfig(filePath: string, code: string): ESTree.Program {
+export function parseViteConfig(filePath: string, code: string): ESTree.Program {
   let parseSync: typeof import("vite").parseSync;
   try {
     ({ parseSync } = require("vite") as typeof import("vite"));
