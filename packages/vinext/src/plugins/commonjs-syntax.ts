@@ -1,6 +1,6 @@
 // `require` as a whole identifier followed, through closing parentheses, by a
 // call, an optional call, or a comment before either.
-const COMMONJS_REQUIRE_CALL_RE = /(?<![\w$])require(?![\w$])[\s)]*(?:\/[*/]|\(|\?\.)/;
+export const COMMONJS_REQUIRE_CALL_RE = /(?<![\w$])require(?![\w$])[\s)]*(?:\/[*/]|\(|\?\.)/;
 
 // `module` / `exports` as a whole identifier (not a property name after a
 // single `.`, while a `...` spread still counts) followed, through closing
