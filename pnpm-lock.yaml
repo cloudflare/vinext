@@ -1509,6 +1509,8 @@ importers:
         specifier: 'catalog:'
         version: 1.7.0(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.1.0(vitest@5.1.0))(@vitest/ui@5.1.0(vitest@5.1.0))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.63.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
 
+  tests/fixtures/app-build-outdir: {}
+
   tests/fixtures/app-cjs-output-scope: {}
 
   tests/fixtures/app-cjs-package-scope: {}
@@ -1669,6 +1671,8 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 1.7.0(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.1.0(vitest@5.1.0))(@vitest/ui@5.1.0(vitest@5.1.0))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.63.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
+  tests/fixtures/cf-app-build-outdir: {}
 
   tests/fixtures/cf-app-cjs-package-scope: {}
 
@@ -2342,6 +2346,8 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 1.7.0(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.1.0(vitest@5.1.0))(@vitest/ui@5.1.0(vitest@5.1.0))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.63.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
+  tests/fixtures/pages-build-outdir: {}
 
   tests/fixtures/pages-cjs-package-scope: {}
 
