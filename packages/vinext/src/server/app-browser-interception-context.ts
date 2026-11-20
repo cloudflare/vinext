@@ -8,10 +8,19 @@ import { normalizePathnameForRouteMatch, splitPathnameForRouteMatch } from "../r
 import { stripBasePath } from "../utils/base-path.js";
 import { normalizePath } from "./normalize-path.js";
 
+const ROUTE_MISS_SOURCE_PARTS = ["_not-found"];
+
 type ResolveManifestNavigationInterceptionContextOptions = {
   basePath: string;
   currentMatchedPathname?: string | null;
   currentPathname: string;
+  /**
+   * The committed render matched no route (an unmatched URL's not-found
+   * page). Next.js builds `Next-Url` from the rendered router tree rather than
+   * the browser URL, and that tree is then /_not-found, so only an
+   * interception whose source matches /_not-found applies.
+   */
+  currentRenderIsRouteMiss?: boolean;
   routeManifest: BrowserRouteManifest | null;
   targetPathname: string;
 };
@@ -38,6 +47,7 @@ export function resolveManifestNavigationInterceptionContext(
   const targetParts = splitPathnameForRouteMatch(targetPathname);
 
   for (const interception of options.routeManifest.segmentGraph.interceptions.values()) {
+    if (!isInterceptionSourceRendered(interception.sourcePatternParts, options)) continue;
     if (!matchRoutePatternPrefix(sourceParts, interception.sourcePatternParts)) continue;
     if (matchRoutePattern(targetParts, interception.targetPatternParts) === null) continue;
     return currentPathname;
@@ -63,6 +73,7 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
   const targetParts = splitPathnameForRouteMatch(targetPathname);
 
   for (const interception of options.routeManifest.segmentGraph.interceptions.values()) {
+    if (!isInterceptionSourceRendered(interception.sourcePatternParts, options)) continue;
     if (
       !matchRoutePatternWithOptionalDynamicSegments(targetParts, interception.targetPatternParts)
     ) {
@@ -82,6 +93,19 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
   }
 
   return null;
+}
+
+// A route miss renders /_not-found, so only a source matching it (the root, or
+// a top-level dynamic segment) applies. The context stays the browser URL: the
+// server replays the source's redirects and middleware on it.
+function isInterceptionSourceRendered(
+  sourcePatternParts: readonly string[],
+  options: ResolveManifestNavigationInterceptionContextOptions,
+): boolean {
+  return (
+    options.currentRenderIsRouteMiss !== true ||
+    matchRoutePatternPrefix(ROUTE_MISS_SOURCE_PARTS, sourcePatternParts)
+  );
 }
 
 /**

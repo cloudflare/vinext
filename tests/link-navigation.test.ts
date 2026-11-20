@@ -109,6 +109,7 @@ function createTestNavigationRuntime(
       getPrefetchRouterState: () => ({
         pathAndSearch: "/current",
         routeId: "route:/current",
+        routeMiss: false,
       }),
       navigate,
     },

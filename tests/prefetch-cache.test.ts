@@ -28,7 +28,10 @@ import {
   VINEXT_RSC_REDIRECT_TYPE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
-import { VINEXT_INTERCEPTION_CONTEXT_HEADER } from "../packages/vinext/src/server/app-rsc-vary.js";
+import {
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+} from "../packages/vinext/src/server/app-rsc-vary.js";
 import { decodeBrowserRouteManifest } from "../packages/vinext/src/routing/browser-route-manifest.js";
 import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/app-router-navigation.js";
 
@@ -600,6 +603,65 @@ describe("prefetch cache eviction", () => {
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
     const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
     expect(headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)).toBe("/feed");
+  });
+
+  it("router.prefetch sends no interception context from an unmatched URL's not-found page", async () => {
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const location = (globalThis as any).window.location;
+    location.pathname = "/feed/missing";
+    location.href = "http://localhost/feed/missing";
+    let routeMiss = true;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: {
+        routeManifest: decodeBrowserRouteManifest({
+          graphVersion: "graph:test",
+          routes: [],
+          layouts: [],
+          slotBindings: [],
+          interceptions: [
+            {
+              id: "interception:slot:modal:/feed->/photos/:id",
+              ownerLayoutId: "layout:/feed",
+              slotId: "slot:modal:/feed",
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["photos", ":id"],
+              targetRouteId: "route:/photos/:id",
+            },
+          ],
+          interceptionsBySlotId: [],
+          rootBoundaries: [],
+        }),
+        rsc: undefined,
+      },
+      functions: {
+        getPrefetchRouterState: () => ({
+          pathAndSearch: "/feed/missing",
+          routeId: "route:/feed/missing",
+          routeMiss,
+        }),
+        navigate: vi.fn(),
+      },
+    };
+
+    appRouterInstance.prefetch("/photos/42", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
+    expect(headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)).toBeNull();
+    expect(JSON.parse(decodeURIComponent(headers.get(NEXT_ROUTER_STATE_TREE_HEADER)!))).toEqual({
+      pathAndSearch: "/feed/missing",
+      routeId: "route:/feed/missing",
+    });
+
+    routeMiss = false;
+    appRouterInstance.prefetch("/photos/43", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+    expect(
+      new Headers(fetch.mock.calls[1]![1]?.headers).get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
+    ).toBe("/feed/missing");
   });
 
   it("router.prefetch skips the request when the route manifest fails to load", async () => {

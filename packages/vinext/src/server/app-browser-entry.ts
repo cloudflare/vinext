@@ -469,7 +469,11 @@ let clientNavigationCacheGeneration = 0;
 // the HMR handler to distinguish "still hydrating" (wait) from "was up, then
 // torn down by a render error" (full reload to recover).
 let browserRouterStateHasEverCommitted = false;
-let initialPrefetchRouterState: { pathAndSearch: string; routeId: string } | null = null;
+let initialPrefetchRouterState: {
+  pathAndSearch: string;
+  routeId: string;
+  routeMiss: boolean;
+} | null = null;
 const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
 // Next.js loads every hard navigation through the router's MPA state, which
@@ -1254,6 +1258,12 @@ type NavigationRequestState = {
   previousNextUrl: string | null;
 };
 
+// A render without a source page is the not-found page of a URL that matched
+// no route; a matched route's own notFound() keeps its route's segments.
+function isRouteMissRender(elements: AppElements): boolean {
+  return AppElementsWire.readMetadata(elements).sourcePage === null;
+}
+
 function getCurrentMatchedRoutePathname(): string | null {
   const routeKey = AppElementsWire.parseElementKey(getBrowserRouterState().routeId);
   return routeKey?.kind === "route" ? routeKey.path : null;
@@ -1283,7 +1293,8 @@ function getRequestState(
   // 3. otherwise, send no interception context.
   switch (navigationKind) {
     case "navigate": {
-      const currentPreviousNextUrl = getBrowserRouterState().previousNextUrl;
+      const currentRouterState = getBrowserRouterState();
+      const currentPreviousNextUrl = currentRouterState.previousNextUrl;
       if (currentPreviousNextUrl !== null) {
         return {
           interceptionContext: resolveInterceptionContextFromPreviousNextUrl(
@@ -1293,9 +1304,11 @@ function getRequestState(
           previousNextUrl: currentPreviousNextUrl,
         };
       }
+      const currentRenderIsRouteMiss = isRouteMissRender(currentRouterState.elements);
       const manifestInterceptionContext = resolveManifestNavigationInterceptionContext({
         basePath: __basePath,
         currentPathname: window.location.pathname,
+        currentRenderIsRouteMiss,
         routeManifest: getBrowserRouteManifest(),
         targetPathname,
       });
@@ -1322,6 +1335,7 @@ function getRequestState(
           basePath: __basePath,
           currentMatchedPathname: getCurrentMatchedRoutePathname(),
           currentPathname: window.location.pathname,
+          currentRenderIsRouteMiss,
           routeManifest: getBrowserRouteManifest(),
           targetPathname,
         });
@@ -2117,6 +2131,7 @@ function bootstrapHydration(
     initialPrefetchRouterState = {
       pathAndSearch: initialPathAndSearch,
       routeId: AppElementsWire.readMetadata(elements).routeId,
+      routeMiss: isRouteMissRender(elements),
     };
     return elements;
   });
@@ -3290,6 +3305,7 @@ function bootstrapHydration(
       return {
         pathAndSearch: createSnapshotPathAndSearch(state.navigationSnapshot),
         routeId: state.routeId,
+        routeMiss: isRouteMissRender(state.elements),
       };
     },
     navigate: navigateRsc,
