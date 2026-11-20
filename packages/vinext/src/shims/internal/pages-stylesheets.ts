@@ -23,6 +23,8 @@ let sharedLinkPaths: Set<string> | undefined;
 // Links of a dynamic import's stylesheets that a page's commit put ahead of
 // the marker.
 const linksAheadOfMarker = new Set<HTMLLinkElement>();
+// Where Vite added each of those links, among the dynamic imports' others.
+const linkSlots = new WeakMap<HTMLLinkElement, Comment>();
 
 function fetchStylesheet(href: string): Promise<PagesStylesheet> {
   let text = stylesheetTexts.get(href);
@@ -137,8 +139,14 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
     if (pagePaths.has(pathOf(link.href))) continue;
     linksAheadOfMarker.delete(link);
     if (!link.isConnected) continue;
-    reference.after(link);
-    reference = link;
+    const slot = linkSlots.get(link);
+    linkSlots.delete(link);
+    if (slot?.isConnected) {
+      slot.replaceWith(link);
+    } else {
+      reference.after(link);
+      reference = link;
+    }
   }
   const nonce = marker.getAttribute("data-n-css");
   for (const { href } of stylesheets) {
@@ -151,6 +159,11 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
       link.rel = "stylesheet";
       link.setAttribute("href", href);
       if (nonce) link.setAttribute("nonce", nonce);
+    }
+    if (link.isConnected) {
+      const slot = document.createComment("");
+      link.replaceWith(slot);
+      linkSlots.set(link, slot);
     }
     marker.parentNode!.insertBefore(link, marker);
     linksAheadOfMarker.add(link);

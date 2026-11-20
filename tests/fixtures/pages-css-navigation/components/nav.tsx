@@ -15,6 +15,8 @@ export const PAGES = [
   "note",
   "later",
   "host",
+  "combo",
+  "chip",
 ] as const;
 
 export function Nav() {

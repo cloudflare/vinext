@@ -20,6 +20,7 @@ const GREEN = "rgb(0, 128, 0)";
 const BLUE = "rgb(0, 0, 255)";
 const PURPLE = "rgb(128, 0, 128)";
 const ORANGE = "rgb(255, 165, 0)";
+const TEAL = "rgb(0, 128, 128)";
 
 // Each page's colours on a full load. Page stylesheets come after `_app`'s,
 // and a page's own after those of the components it imports. `/ordered` and
@@ -40,6 +41,8 @@ const EXPECTED: Record<string, Record<string, string>> = {
   note: { title: BLUE, note: RED },
   later: { title: BLUE, text: GREEN },
   host: { title: BLUE },
+  combo: { title: BLUE },
+  chip: { title: BLUE, text: TEAL },
 };
 
 let fixtureRoot: string;
@@ -253,6 +256,22 @@ test("a dynamic import after a client navigation keeps the page's cascade", asyn
   await page.getByRole("button", { name: "Open" }).click();
   await expect(page.locator('[data-probe="note"]')).toBeVisible();
   expect(await probeColors(page)).toEqual({ ...EXPECTED.host, note: RED });
+});
+
+test("dynamic import stylesheets keep their order once a page has listed one", async ({ page }) => {
+  await page.goto(`${baseUrl}/combo`);
+  await waitForHydration(page);
+  const open = async () => {
+    await page.getByRole("button", { name: "Open" }).click();
+    await expect(page.locator('[data-probe="note"]')).toBeVisible();
+    expect(await probeColors(page)).toEqual({ ...EXPECTED.combo, note: TEAL });
+  };
+  await open();
+
+  // `/chip` lists the chip's stylesheet, which the note loads after the badge's.
+  await navigate(page, "chip");
+  await navigate(page, "combo");
+  await open();
 });
 
 test("the first client navigation hands the page's stylesheets to <style> tags", async ({
