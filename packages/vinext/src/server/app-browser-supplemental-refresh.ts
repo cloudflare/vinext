@@ -175,6 +175,10 @@ export function mergeRefreshedParallelSlot(
       if (promotedBindings.length === 1) {
         merged[promotedBindings[0].slotId] = refreshedElements[refreshedChildrenBindings[0].slotId];
       }
+      // The layouts and templates the refreshed URL rendered stay its own, as
+      // they would on a hard load of that URL: the source's render fills only
+      // the ones it left out.
+      keepRenderedLayoutElements(merged, currentElements);
       copyRefreshedBranchElements(merged, currentElements, {
         overwrite: currentMetadata.retainedElementIds.length > 0,
       });
@@ -307,6 +311,31 @@ function copySlotIdentities(
     AppElementsWire.readMetadata(slotElements).bfcacheSegmentIdentities,
   )) {
     if (isSlotSegment(id)) identities[id] = identity;
+  }
+  if (Object.keys(identities).length > 0) target[APP_BFCACHE_SEGMENT_IDENTITIES_KEY] = identities;
+  else delete target[APP_BFCACHE_SEGMENT_IDENTITIES_KEY];
+}
+
+// A layout or template and its BFCache segment entry are one unit, so the
+// rendered payload's identity travels with its element.
+function keepRenderedLayoutElements(
+  target: Record<string, AppElements[keyof AppElements]>,
+  renderedElements: AppElements,
+): void {
+  const renderedIdentities =
+    AppElementsWire.readMetadata(renderedElements).bfcacheSegmentIdentities;
+  const identities: Record<string, string> = {
+    ...AppElementsWire.readMetadata(target).bfcacheSegmentIdentities,
+  };
+  for (const [elementId, element] of Object.entries(renderedElements)) {
+    const kind = AppElementsWire.parseElementKey(elementId)?.kind;
+    if (kind !== "layout" && kind !== "template") continue;
+    target[elementId] = element;
+    if (Object.hasOwn(renderedIdentities, elementId)) {
+      identities[elementId] = renderedIdentities[elementId];
+    } else {
+      delete identities[elementId];
+    }
   }
   if (Object.keys(identities).length > 0) target[APP_BFCACHE_SEGMENT_IDENTITIES_KEY] = identities;
   else delete target[APP_BFCACHE_SEGMENT_IDENTITIES_KEY];
