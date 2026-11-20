@@ -148,11 +148,20 @@ type BrowserNavigationPayloadOptions = {
 };
 
 type BrowserNavigationController = {
-  beginNavigation(): number;
+  beginNavigation(options?: { refresh?: boolean }): number;
   getActiveNavigationId(): number;
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
   isCurrentNavigation(navId: number): boolean;
+  /**
+   * Whether no navigation other than a router.refresh() has started since
+   * `navId`. A refresh keeps the scroll position (Next.js's
+   * ScrollBehavior.NoScroll), so it does not end a back/forward navigation's
+   * scroll restore.
+   */
+  isLatestNonRefreshNavigation(navId: number): boolean;
+  /** The refresh `navId` leaves the page it refreshed (it followed a redirect). */
+  markNonRefreshNavigation(navId: number): void;
   performHardNavigation(href: string, mode?: HardNavigationMode): boolean;
   waitForBrowserRouterStateReady(): Promise<void>;
   attachBrowserRouterState(
@@ -337,6 +346,7 @@ export function createAppBrowserNavigationController(
   // and causing hooks to prefer stale snapshot values indefinitely.
   let nextNavigationRenderId = 0;
   let activeNavigationId = 0;
+  let latestNonRefreshNavigationId = 0;
   let pendingUserNavigationId: number | null = null;
   let pendingUserNavigationLane: OperationLane | null = null;
   // Set between a navigation render's insertion and layout effects, while
@@ -410,12 +420,15 @@ export function createAppBrowserNavigationController(
     resolveReady?.();
   }
 
-  function beginNavigation(): number {
+  function beginNavigation(options?: { refresh?: boolean }): number {
     // User navigation owns the next visible result. Revoke any HMR payload
     // already suspended on RSC resolution so it cannot commit first and make
     // the still-current navigation look stale by advancing visible state.
     latestHmrUpdateId += 1;
     activeNavigationId += 1;
+    if (!options?.refresh) {
+      latestNonRefreshNavigationId = activeNavigationId;
+    }
     pendingUserNavigationId = activeNavigationId;
     pendingUserNavigationLane = null;
     pendingUserNavigationCommitStarted = false;
@@ -439,6 +452,15 @@ export function createAppBrowserNavigationController(
 
   function isCurrentNavigation(navId: number): boolean {
     return navId === activeNavigationId;
+  }
+
+  function isLatestNonRefreshNavigation(navId: number): boolean {
+    return navId === latestNonRefreshNavigationId;
+  }
+
+  function markNonRefreshNavigation(navId: number): void {
+    // Ids only grow, so this never moves the mark back past a newer navigation.
+    latestNonRefreshNavigationId = Math.max(latestNonRefreshNavigationId, navId);
   }
 
   function beginPendingBrowserRouterState(): PendingBrowserRouterState {
@@ -546,6 +568,7 @@ export function createAppBrowserNavigationController(
     }
 
     activeNavigationId += 1;
+    latestNonRefreshNavigationId = activeNavigationId;
     pendingUserNavigationId = null;
     pendingUserNavigationLane = null;
     // The discarded destination never shows, so neither its hash target nor
@@ -1330,6 +1353,8 @@ export function createAppBrowserNavigationController(
     hasBrowserRouterState,
     getBrowserRouterState,
     isCurrentNavigation,
+    isLatestNonRefreshNavigation,
+    markNonRefreshNavigation,
     performHardNavigation,
     waitForBrowserRouterStateReady,
     attachBrowserRouterState,
