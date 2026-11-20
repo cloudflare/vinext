@@ -240,7 +240,7 @@ export function mergeRefreshedParallelSlot(
 
 // The source an intercepted payload was rendered for, when `sourceElements` is
 // that page's render from its own URL, or null when it isn't.
-export function resolveSuppliedInterceptionSource(
+function resolveSuppliedInterceptionSource(
   currentElements: AppElements,
   sourceElements: AppElements,
 ): InterceptionSourceIdentity | null {
