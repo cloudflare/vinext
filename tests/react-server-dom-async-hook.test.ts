@@ -15,13 +15,18 @@ afterEach(() => {
 describe("dev server console layers", () => {
   // Each module replaces one console method, as React's Flight build and
   // vinext's hook warning suppression do.
+  const calls: string[] = [];
   function evaluate(owner: object, kind: string, method: "log" | "info") {
     const registry = devServerRegistry();
     const layer = registry.scope.run(owner as never, () => registry.consoleLayer(kind));
     const replaced = console[method];
-    console[method] = (...args: unknown[]) => replaced(...args);
+    const wrapper = (...args: unknown[]) => {
+      calls.push(kind);
+      replaced(...args);
+    };
+    console[method] = wrapper;
     layer?.record();
-    return console[method];
+    return wrapper;
   }
 
   it("keeps a reloaded module's layers while another server's are above the old ones", () => {
@@ -43,5 +48,25 @@ describe("dev server console layers", () => {
     expect(console.info).toBe(aInfo);
     expect(console.info).not.toBe(bInfo);
     expect(registry.consoleLayers.filter((layer) => !layer.retired)).toHaveLength(4);
+  });
+
+  it("takes the layers of alternating reloads out of the chain", () => {
+    const registry = devServerRegistry();
+    const a = { closed: false, hooks: new Map() };
+    const b = { closed: false, hooks: new Map() };
+    registry.live.add(a);
+    registry.live.add(b);
+    console.log = () => {};
+    for (let reload = 0; reload < 25; reload += 1) {
+      for (const owner of [a, b]) {
+        evaluate(owner, "flight", "log");
+        evaluate(owner, "hook-warning", "log");
+      }
+    }
+
+    expect(registry.consoleLayers).toHaveLength(4);
+    calls.length = 0;
+    console.log("message");
+    expect(calls).toEqual(["hook-warning", "flight", "hook-warning", "flight"]);
   });
 });

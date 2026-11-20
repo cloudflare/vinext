@@ -42,13 +42,20 @@ type DevServerOwner = {
 
 type ConsoleMethods = Record<string, unknown>;
 
+/**
+ * What a module's replacement of a console method calls: it captured a
+ * function that calls `target`, the method it replaced, so the methods of a
+ * layer below that is retired can be taken out of the chain.
+ */
+type ConsoleLink = { target: unknown; forward: unknown };
+
 /** The console methods a module evaluated for a dev server replaced. */
 type ConsoleLayer = {
   owner: DevServerOwner;
   kind: string;
   // Its server closed, or evaluated the module again.
   retired: boolean;
-  before: ConsoleMethods;
+  links: Map<string, ConsoleLink>;
   after: ConsoleMethods;
 };
 
@@ -88,16 +95,33 @@ export function devServerRegistry(): DevServerRegistry {
         const again = new Set(this.consoleLayers.slice(first));
         retireConsoleLayers(this, (layer) => layer.owner === owner && again.has(layer));
       }
-      const before: ConsoleMethods = { ...console };
+      const target = console as unknown as ConsoleMethods;
+      const links = new Map<string, ConsoleLink>();
+      for (const [name, method] of Object.entries(target)) {
+        if (typeof method !== "function") continue;
+        const link: ConsoleLink = { target: method, forward: undefined };
+        link.forward = function (this: unknown, ...args: unknown[]): unknown {
+          return (link.target as (...args: unknown[]) => unknown).apply(this, args);
+        };
+        // React names its wrapper after the method it replaced.
+        Object.defineProperty(link.forward, "name", { value: method.name });
+        Object.defineProperty(target, name, { value: link.forward });
+        links.set(name, link);
+      }
       return {
         owner,
         record: () => {
           const after: ConsoleMethods = {};
-          for (const [name, method] of Object.entries(console)) {
-            if (method !== before[name]) after[name] = method;
+          for (const [name, link] of links) {
+            if (target[name] !== link.forward) {
+              after[name] = target[name];
+              continue;
+            }
+            Object.defineProperty(target, name, { value: link.target });
+            links.delete(name);
           }
           if (Object.keys(after).length === 0) return;
-          this.consoleLayers.push({ owner, kind, retired: false, before, after });
+          this.consoleLayers.push({ owner, kind, retired: false, links, after });
           if (owner.closed) retireConsoleLayers(this, (layer) => layer.owner === owner);
         },
       };
@@ -118,26 +142,36 @@ function ownerOfModule(registry: DevServerRegistry): DevServerOwner | undefined 
 }
 
 /**
- * Retires the matching layers, and puts back each retired layer's methods
- * while they are still the current ones. From the latest down, so a retired
- * layer below comes back to the methods it replaced too. One below a layer
- * still in use stays until that one is retired.
+ * Retires the matching layers, and takes each retired layer's methods out of
+ * the chain: where they are the current ones, the methods they replaced are
+ * put back, and where a layer above calls them, it calls those instead. A
+ * method something else replaced after it stays until the layer is retired
+ * again.
  */
 function retireConsoleLayers(
   registry: DevServerRegistry,
   matches: (layer: ConsoleLayer) => boolean,
 ): void {
   const target = console as unknown as ConsoleMethods;
-  for (let index = registry.consoleLayers.length - 1; index >= 0; index -= 1) {
-    const layer = registry.consoleLayers[index];
+  const layers = registry.consoleLayers;
+  for (let index = layers.length - 1; index >= 0; index -= 1) {
+    const layer = layers[index];
     if (matches(layer)) layer.retired = true;
     if (!layer.retired) continue;
-    for (const name of Object.keys(layer.after)) {
-      if (target[name] !== layer.after[name]) continue;
-      Object.defineProperty(target, name, { value: layer.before[name] });
+    for (const [name, method] of Object.entries(layer.after)) {
+      const replaced = layer.links.get(name)!.target;
+      if (target[name] === method) {
+        Object.defineProperty(target, name, { value: replaced });
+      } else {
+        const above = layers
+          .slice(index + 1)
+          .find((upper) => upper.links.get(name)?.target === method);
+        if (!above) continue;
+        above.links.get(name)!.target = replaced;
+      }
       delete layer.after[name];
     }
-    if (Object.keys(layer.after).length === 0) registry.consoleLayers.splice(index, 1);
+    if (Object.keys(layer.after).length === 0) layers.splice(index, 1);
   }
 }
 

@@ -4424,12 +4424,14 @@ describe("vinext:react-server-dom-node", () => {
 
   // Returns the id the Flight server entry is resolved to in a server
   // environment with these conditions, whose SSR environment (where Fizz
-  // renders) has `ssrConditions`, or undefined when it is left alone.
+  // renders) has `ssrConditions` and `ssrExternal`, or undefined when it is
+  // left alone.
   async function resolvedFlightEntry(
     id: string,
     conditions: string[],
     ssrConditions: string[] | null = conditions,
     environmentName = "rsc",
+    ssrExternal: true | string[] = [],
   ) {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugin = (vinext() as any[])
@@ -4442,7 +4444,9 @@ describe("vinext:react-server-dom-node", () => {
           name: environmentName,
           config: { consumer: "server", resolve: { conditions } },
           getTopLevelConfig: () => ({
-            environments: ssrConditions ? { ssr: { resolve: { conditions: ssrConditions } } } : {},
+            environments: ssrConditions
+              ? { ssr: { resolve: { conditions: ssrConditions, external: ssrExternal } } }
+              : {},
           }),
         },
         resolve: async (target: string) => {
@@ -4502,6 +4506,16 @@ describe("vinext:react-server-dom-node", () => {
     // Without an SSR environment, the environment's own conditions decide.
     expect(await resolvedFlightEntry(SERVER, ["node"], null)).toBe(
       "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+  });
+
+  // As in Node dev, where vinext externalizes React for the SSR environment.
+  it("follows Node's own resolution of an externalized react-dom", async () => {
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"], "rsc", ["react-dom"]),
+    ).toBe("@vitejs/plugin-rsc/vendor/react-server-dom/server.node");
+    expect(await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"], "rsc", true)).toBe(
+      "react-server-dom-webpack/static.node",
     );
   });
 

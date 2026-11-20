@@ -505,13 +505,27 @@ const REACT_SERVER_DOM_EDGE_ENTRY =
 /**
  * The conditions `react-dom/server` and `react-dom/static` resolve with: the
  * SSR environment's, where Fizz renders, falling back to the environment's
- * own when there is no SSR environment.
+ * own when there is no SSR environment. Where the SSR environment
+ * externalizes react-dom, as Node dev does, the runtime resolves it with its
+ * own conditions.
  */
 function fizzConditions(
   config: Pick<ResolvedConfig, "environments">,
   environmentConditions: readonly string[],
 ): readonly string[] {
-  return config.environments.ssr?.resolve.conditions ?? environmentConditions;
+  const ssr = config.environments.ssr?.resolve;
+  if (!ssr) return environmentConditions;
+  const external = ssr.external;
+  if (
+    external === true ||
+    (Array.isArray(external) &&
+      (external.includes("react-dom") || external.includes("react-dom/server")))
+  ) {
+    if (process.versions.bun) return ["bun", "node"];
+    if (process.versions.deno) return ["deno", "node"];
+    return ["node"];
+  }
+  return ssr.conditions;
 }
 
 /** The Node build of the Flight server entry `id`, if Fizz's is Node too. */
