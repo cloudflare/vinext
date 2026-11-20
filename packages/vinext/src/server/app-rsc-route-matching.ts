@@ -66,6 +66,9 @@ type AppRscInterceptForMatching = {
   interceptErrors?: readonly unknown[];
   interceptErrorTreePositions?: readonly number[];
   __loadInterceptErrors?: readonly (() => Promise<unknown>)[] | null;
+  /** The `default` file of the directory holding the slot, if any. */
+  ownerDefault?: unknown;
+  __loadOwnerDefault?: (() => Promise<unknown>) | null;
   params: readonly string[];
 };
 
@@ -129,11 +132,20 @@ type AppRscInterceptMatch = AppRscInterceptLookupEntry & {
   matchedParams: AppRscRouteParams;
   sourceRouteIsConcrete: boolean;
   /**
-   * The source route has no slot to render a slot intercept into. Returned
-   * only to a caller that accepts such a source, which a source rewrite can
-   * still turn into one that has the slot.
+   * The source route has no slot to render a slot intercept into. Unless the
+   * request renders the whole intercepting route, returned only to a caller
+   * that accepts such a source, which a source rewrite can still turn into one
+   * that has the slot.
    */
   sourceRouteLacksSlot: boolean;
+  /**
+   * A source without the slot, such as a static page in a sibling route
+   * group, shares none of the intercepting route's tree below the root. Like
+   * Next.js's interception rewrite, the request then renders that tree whole:
+   * the slot owner's route, with the owner's `default` in its children, and
+   * the source's values for the owner's params.
+   */
+  rendersWholeInterceptingRoute: boolean;
   sourceMatchedParams: AppRscRouteParams;
   /**
    * The source route and params the request's interception context names,
@@ -162,6 +174,8 @@ type AppRscInterceptLoadState = {
   pageLoading: Promise<unknown> | null;
   notFound: unknown;
   notFoundLoading: Promise<unknown> | null;
+  ownerDefault: unknown;
+  ownerDefaultLoading: Promise<unknown> | null;
   interceptLayoutsLoading: Promise<readonly unknown[]> | null;
 };
 
@@ -205,6 +219,8 @@ type AppRscInterceptLookupEntry = {
   interceptErrors?: readonly unknown[];
   interceptErrorTreePositions?: readonly number[];
   __loadInterceptErrors?: readonly (() => Promise<unknown>)[] | null;
+  ownerDefault?: unknown;
+  __loadOwnerDefault?: (() => Promise<unknown>) | null;
   __loadState: AppRscInterceptLoadState;
   params: readonly string[];
   slotId: string | null;
@@ -435,25 +451,42 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         }
         // A slot intercept renders into its owner's slot within the source
         // route. A source outside the owner's tree, such as a static sibling in
-        // another route group, has no such slot, so the request renders the
-        // target directly, as for a source that matches no page. A caller that
-        // authorizes the source first can accept one, since its middleware can
-        // rewrite it to a route that has the slot.
+        // another route group, has no such slot. Next.js's interception rewrite
+        // still applies to it, and renders the intercepting route's tree whole,
+        // which takes the slot owner's own route. Without one, the request
+        // renders the target directly, as for a source that matches no page. A
+        // caller that authorizes the source first can accept that source
+        // anyway, since its middleware can rewrite it to a route with the slot.
         const sourceRouteLacksSlot =
           entry.slotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
           sourceRoute?.slots?.[entry.slotKey] === undefined;
-        if (sourceRouteLacksSlot && (!acceptsSourceWithoutSlot || slotlessSourceMatch !== null)) {
+        const ownerRoute = routes[entry.sourceRouteIndex];
+        const rendersWholeInterceptingRoute =
+          sourceRouteLacksSlot &&
+          ownerRoute !== undefined &&
+          !isAppRouteHandlerRoute(ownerRoute) &&
+          ownerRoute.slots?.[entry.slotKey] !== undefined &&
+          isSlotOwnerRoute(ownerRoute.routeSegments, entry.sourcePageSegments);
+        // Among sources without the slot, the first whole intercepting route
+        // wins over an earlier intercept that only a rewrite can give a slot.
+        if (
+          sourceRouteLacksSlot &&
+          ((!rendersWholeInterceptingRoute && !acceptsSourceWithoutSlot) ||
+            (slotlessSourceMatch !== null &&
+              (slotlessSourceMatch.rendersWholeInterceptingRoute ||
+                !rendersWholeInterceptingRoute)))
+        ) {
           continue;
         }
         // A sibling intercept renders the intercepting route itself, whatever
         // the source: Next.js rewrites it to the fixed intercepting route, so
         // its layouts come from the owner, never from a deeper source page.
         // The source the context names is still the one authorized.
-        const ownerRoute = routes[entry.sourceRouteIndex];
         const rendersOwnerRoute =
-          entry.ownerIsInterceptingRoute &&
-          concreteSourceRouteIndex !== entry.sourceRouteIndex &&
-          ownerRoute !== undefined;
+          rendersWholeInterceptingRoute ||
+          (entry.ownerIsInterceptingRoute &&
+            concreteSourceRouteIndex !== entry.sourceRouteIndex &&
+            ownerRoute !== undefined);
         const renderedSourceParams = rendersOwnerRoute
           ? matchSlotOwnerSourceParams(sourceParts, ownerRoute.patternParts, true)
           : matchedSourceParams;
@@ -483,8 +516,10 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         const match = {
           ...entry,
           page: entry.__loadState.page,
+          ownerDefault: entry.__loadState.ownerDefault,
           // A source without the slot never skips source authorization, since
-          // only a rewrite of it can reach a source that renders the intercept.
+          // its middleware can rewrite it to a route with the slot, which then
+          // renders as the source instead.
           rendersTargetLayouts:
             !sourceRouteLacksSlot &&
             rendersTargetLayouts(
@@ -507,8 +542,13 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
             ),
           sourceRouteIsConcrete: concreteSourceRoute !== null,
           sourceRouteLacksSlot,
+          rendersWholeInterceptingRoute,
           sourceRouteIndex: rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex,
-          matchedParams: mergeMatchedParams(sourceParams, params),
+          // The owner's params above the interception marker take the values
+          // the interception rewrite captures from the source pathname.
+          matchedParams: rendersWholeInterceptingRoute
+            ? mergeMatchedParams(params, sourceParams)
+            : mergeMatchedParams(sourceParams, params),
           sourceMatchedParams: renderedSourceParams ?? createRouteParams(),
           authorizationSourceRouteIndex: concreteSourceRouteIndex,
           authorizationSourceParams: matchedSourceParams ?? createRouteParams(),
@@ -546,6 +586,22 @@ function isInterceptingRoute(
   const markerIndex = findInterceptionMarkerIndex(sourcePageSegments);
   return (
     markerIndex === routeSegments.length &&
+    routeSegments.every((segment, index) => segment === sourcePageSegments[index])
+  );
+}
+
+/**
+ * Whether a route's directory is the one holding a slot intercept's `@slot`
+ * directory, so the route is the slot's owner itself.
+ */
+function isSlotOwnerRoute(
+  routeSegments: readonly string[] | null | undefined,
+  sourcePageSegments: readonly string[] | null | undefined,
+): boolean {
+  if (!routeSegments || !sourcePageSegments) return false;
+  const slotIndex = sourcePageSegments.findIndex((segment) => segment.startsWith("@"));
+  return (
+    slotIndex === routeSegments.length &&
     routeSegments.every((segment, index) => segment === sourcePageSegments[index])
   );
 }
@@ -798,11 +854,15 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             interceptErrors: intercept.interceptErrors,
             interceptErrorTreePositions: intercept.interceptErrorTreePositions,
             __loadInterceptErrors: intercept.__loadInterceptErrors,
+            ownerDefault: intercept.ownerDefault,
+            __loadOwnerDefault: intercept.__loadOwnerDefault,
             __loadState: {
               page: intercept.page,
               pageLoading: null,
               notFound: intercept.notFound,
               notFoundLoading: null,
+              ownerDefault: intercept.ownerDefault,
+              ownerDefaultLoading: null,
               interceptLayoutsLoading: null,
             },
             params: intercept.params,
@@ -862,6 +922,8 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             pageLoading: null,
             notFound: intercept.notFound,
             notFoundLoading: null,
+            ownerDefault: null,
+            ownerDefaultLoading: null,
             interceptLayoutsLoading: null,
           },
           params: intercept.params,

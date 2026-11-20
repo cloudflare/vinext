@@ -74,6 +74,7 @@ function renderedRouteFiles(route: ClientReferenceGroupRoute): string[] {
 function interceptEntryIds(intercept: ClientReferenceGroupIntercept): string[] {
   return [
     intercept.pagePath,
+    intercept.ownerDefaultPath,
     ...intercept.layoutPaths,
     ...(intercept.loadingPaths ?? []),
     intercept.notFoundPath,

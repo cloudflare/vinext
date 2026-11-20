@@ -137,8 +137,9 @@ const INTERCEPTION_MARKER_RE = /^(?:\(\.\.\.\)|\(\.\.\)\(\.\.\)|\(\.\.\)|\(\.\))
  * Whether Next.js renders an intercepted page on every request. Next.js builds
  * the intercepting page as its own route (`/feed/(.)photos/[id]`): the
  * layouts of every folder from `app/` down to the intercepting page, then the
- * page. `layoutPaths` are the candidate layouts; those outside the page's
- * folder chain are ignored. An unreadable source counts as not dynamic.
+ * page, with a slot intercept's owner default in the owner's children.
+ * `layoutPaths` are the candidate layouts; those outside the page's folder
+ * chain are ignored. An unreadable source counts as not dynamic.
  */
 export function isAppInterceptRenderedDynamically(
   intercept: AppRouteIntercept,
@@ -163,8 +164,10 @@ export function isAppInterceptRenderedDynamically(
     const { isUnreadable, read } = createSegmentConfigReader(readMdxEsm);
     const layouts = layoutTreePositions.map((position) => read(layoutsByPosition.get(position)));
     const page = read(intercept.pagePath);
+    // A slot intercept's route renders the owner's default in its children.
+    const parallelSegments = intercept.ownerDefaultPath ? [read(intercept.ownerDefaultPath)] : [];
     if (isUnreadable()) return false;
-    const tree = { layouts, layoutTreePositions, page, routeSegments };
+    const tree = { layouts, layoutTreePositions, page, parallelSegments, routeSegments };
     const segmentConfig = resolveAppPageSegmentConfig(tree);
     return !isAppPageStaticEligible({
       dynamicConfig: segmentConfig.dynamicConfig,

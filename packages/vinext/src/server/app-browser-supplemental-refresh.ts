@@ -66,10 +66,19 @@ export type SupplementalRefreshHandle = {
   signal: AbortSignal;
 };
 
+/**
+ * Whether a payload renders the whole intercepting route, which keeps nothing
+ * of its source or of any other render, as Next.js renders that tree alone.
+ */
+export function rendersWholeInterceptingRoute(elements: AppElements): boolean {
+  return AppElementsWire.readMetadata(elements).wholeInterceptionSource !== null;
+}
+
 export function mergeRefreshedParallelSlot(
   currentElements: AppElements,
   refreshedElements: AppElements,
 ): AppElements {
+  if (rendersWholeInterceptingRoute(currentElements)) return currentElements;
   const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
   const interception = refreshedMetadata.interception;
   if (interception === null) {
@@ -337,7 +346,8 @@ export function resolvePersistedSourcePageRefreshes(options: {
   activeRoutePaths?: readonly string[];
   basePath: string;
   refreshUrl: URL;
-  state: Pick<AppRouterState, "previousNextUrl" | "slotBindings">;
+  state: Pick<AppRouterState, "previousNextUrl" | "slotBindings"> &
+    Partial<Pick<AppRouterState, "elements">>;
 }): string[] {
   const sourceUrlsByPathname = new Map<string, URL>();
   const refreshRoutePathname = removeTrailingSlash(
@@ -345,7 +355,11 @@ export function resolvePersistedSourcePageRefreshes(options: {
       normalizePathnameForRouteMatch(stripBasePath(options.refreshUrl.pathname, options.basePath)),
     ),
   );
-  if (options.state.previousNextUrl !== null) {
+  // A state showing the whole intercepting route holds nothing of its source.
+  if (
+    options.state.previousNextUrl !== null &&
+    (options.state.elements === undefined || !rendersWholeInterceptingRoute(options.state.elements))
+  ) {
     const sourceUrl = new URL(options.state.previousNextUrl, options.refreshUrl);
     sourceUrlsByPathname.set(sourceUrl.pathname, sourceUrl);
   }
@@ -493,6 +507,8 @@ export function createSupplementalRefreshCoordinator(): {
 
 export async function resolveSupplementalRefreshes<T>(options: {
   merge: (current: Awaited<T>, supplemental: Awaited<T>) => Awaited<T>;
+  /** Whether the primary takes the supplemental renders at all. */
+  mergesInto?: (primary: Awaited<T>) => boolean;
   primary: Promise<T>;
   signal: AbortSignal;
   supplemental: ReadonlyArray<(signal: AbortSignal) => Promise<T>>;
@@ -518,11 +534,18 @@ export async function resolveSupplementalRefreshes<T>(options: {
     if (controller.signal.aborted) {
       return { degraded: true, reason: "aborted", value: await options.primary };
     }
-    const supplemental = options.supplemental.map((load) => load(controller.signal));
-    const [primary, supplementalValues] = await Promise.all([
-      options.primary,
-      Promise.all(supplemental),
-    ]);
+    const supplemental = Promise.all(options.supplemental.map((load) => load(controller.signal)));
+    if (options.mergesInto) {
+      // The primary decides first, so a supplemental render it doesn't take
+      // can neither fail nor delay it.
+      void supplemental.catch(() => {});
+      const primary = await options.primary;
+      if (!options.mergesInto(primary)) {
+        controller.abort();
+        return { degraded: false, value: primary };
+      }
+    }
+    const [primary, supplementalValues] = await Promise.all([options.primary, supplemental]);
     let value = primary;
     for (const supplementalValue of supplementalValues) {
       value = options.merge(value, supplementalValue);

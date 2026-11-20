@@ -117,6 +117,7 @@ import {
 import {
   createSupplementalRefreshCoordinator,
   mergeRefreshedParallelSlot,
+  rendersWholeInterceptingRoute,
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
@@ -981,6 +982,7 @@ async function commitSameUrlNavigatePayload(
       }
       nextElements = resolveSupplementalRefreshes({
         merge: mergeRefreshedParallelSlot,
+        mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
         primary: nextElements,
         signal: supplementalHandle.signal,
         supplemental,
@@ -2889,6 +2891,7 @@ function bootstrapHydration(
           }
           rscPayload = resolveSupplementalRefreshes({
             merge: mergeRefreshedParallelSlot,
+            mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
             primary: Promise.resolve(rscPayload),
             signal: navigationAbortHandle.signal,
             supplemental,

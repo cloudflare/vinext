@@ -665,6 +665,12 @@ describe("App Router generated manifest construction", () => {
       write("feed/@modal/(..)[name]/crossed/x/page.tsx");
       write("[name]/crossed/x/page.tsx", gsp);
       write("foo/[id]/x/page.tsx", gsp);
+      // A slot owner whose default renders dynamically.
+      write("deck/page.tsx");
+      write("deck/default.tsx", `${forceDynamic}${page}`);
+      write("deck/@modal/default.tsx");
+      write("deck/@modal/(..)slides/[id]/page.tsx", gsp);
+      write("slides/[id]/page.tsx", gsp);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const classifier = {
@@ -704,6 +710,9 @@ describe("App Router generated manifest construction", () => {
       // The intercepted response also renders the dynamic source route's branches.
       expect(summarize("cards/:id")).toEqual([undefined, [["board", "cards/:id", true]]]);
       expect(summarize("foo/:id/x")).toEqual([undefined, [["feed", ":name/crossed/x", true]]]);
+      // The intercepting route renders the owner's default in its children.
+      expect(summarize("slides/:id")).toEqual([undefined, [["deck", "slides/:id", true]]]);
+      expect(summarize("deck")).toEqual([undefined, undefined]);
       expect(summarize("feed")).toEqual([undefined, undefined]);
       expect(toLinkPrefetchRoutes(graph.routes).some((route) => route.intercepts)).toBe(false);
     } finally {
