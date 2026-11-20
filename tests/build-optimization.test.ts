@@ -4501,6 +4501,23 @@ describe("vinext:react-server-dom-node", () => {
     ).toBe("react-server-dom-webpack/static.node");
   });
 
+  // Vite's default externalConditions name no runtime, so the one building
+  // stands in for it, but an explicit target decides.
+  it("follows the building runtime only where externalConditions are Vite's default", async () => {
+    Object.defineProperty(process.versions, "bun", { value: "1.3.0", configurable: true });
+    try {
+      expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true)).toBeUndefined();
+      expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true, ["node"])).toBe(
+        "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+      );
+    } finally {
+      Reflect.deleteProperty(process.versions, "bun");
+    }
+    expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true)).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+  });
+
   // plugin-rsc imports the Flight server in the RSC environment only.
   it("keeps an edge Flight server import in any other server environment", async () => {
     expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "ssr")).toBeUndefined();

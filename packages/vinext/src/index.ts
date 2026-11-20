@@ -16,6 +16,7 @@ import type {
 import {
   createIdResolver,
   createLogger,
+  defaultExternalConditions,
   esmExternalRequirePlugin,
   isRunnableDevEnvironment,
   transformWithOxc,
@@ -504,9 +505,9 @@ const REACT_SERVER_DOM_EDGE_ENTRY =
  * SSR environment's, where Fizz renders, falling back to the environment's
  * own when there is no SSR environment. Where the SSR environment
  * externalizes the entry, the server runtime resolves it with its own
- * conditions: those of the runtime building it, unless the SSR environment's
- * `externalConditions`, which Vite says the server should run with, name
- * another one. react-dom's map then picks the first that applies.
+ * conditions: the SSR environment's `externalConditions`, which Vite says the
+ * server should run with. Vite's default names no runtime, so the one
+ * building stands in for it.
  */
 function fizzConditions(
   config: Pick<ResolvedConfig, "environments">,
@@ -521,12 +522,16 @@ function fizzConditions(
     (Array.isArray(external) &&
       (external.includes("react-dom") || external.includes(`react-dom/${entry}`)))
   ) {
-    const runtime = process.versions.bun
-      ? ["bun", "node"]
-      : process.versions.deno
-        ? ["deno", "node"]
-        : ["node"];
-    return [...runtime, ...ssr.externalConditions];
+    const target = ssr.externalConditions;
+    if (
+      target.length !== defaultExternalConditions.length ||
+      target.some((condition, index) => condition !== defaultExternalConditions[index])
+    ) {
+      return target;
+    }
+    if (process.versions.bun) return ["bun", "node"];
+    if (process.versions.deno) return ["deno", "node"];
+    return ["node"];
   }
   return ssr.conditions;
 }
