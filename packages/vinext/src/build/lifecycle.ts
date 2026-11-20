@@ -135,6 +135,11 @@ async function loadHybridUserConfig(
   };
 }
 
+/** Root of the build output: Vite's `build.outDir`, "dist" by default. */
+function resolveBuildOutDir(context: BuildLifecycleContext): string {
+  return path.resolve(context.root, context.routeRootConfig?.outDir ?? "dist");
+}
+
 async function buildHybridPagesBundle(
   builder: ViteBuilder,
   context: BuildLifecycleContext,
@@ -153,9 +158,10 @@ async function buildHybridPagesBundle(
   const { build: _userSsrBuild, ...pagesEnvironment } = userSsrEnvironment ?? {};
   const mergedBuild = vite.mergeConfig(userConfig.build ?? {}, userSsrEnvironment?.build ?? {});
   const userOutput = mergedBuild.rolldownOptions?.output;
+  const serverOutDir = path.join(resolveBuildOutDir(context), "server");
   const appAssetsPath = path.resolve(
     context.root,
-    builder.environments.rsc?.config.build.outDir ?? "dist/server",
+    builder.environments.rsc?.config.build.outDir ?? serverOutDir,
     PAGES_CLIENT_ASSETS_MODULE,
   );
   const pagesClientAssetsModule = fs.existsSync(appAssetsPath)
@@ -163,7 +169,7 @@ async function buildHybridPagesBundle(
     : null;
   const pagesBuild = {
     ...mergedBuild,
-    outDir: "dist/server",
+    outDir: serverOutDir,
     emptyOutDir: false,
     // The primary App build owns the shared server manifest. Emitting another
     // one here would replace its RSC entries with the auxiliary Pages graph.
@@ -184,6 +190,21 @@ async function buildHybridPagesBundle(
     plugins: [
       ...(userConfig.plugins ?? []),
       ...context.createPagesOnlyPlugins(pagesClientAssetsModule),
+      {
+        // The replayed user hooks may set build.outDir or emptyOutDir (e.g. a
+        // plugin returning `{ build: { outDir } }`). Listed last and ordered
+        // post, this runs after them, so the Pages server stays in
+        // <outDir>/server and the App Router output already there is kept.
+        name: "vinext:hybrid-pages-outdir",
+        enforce: "post",
+        configEnvironment: {
+          order: "post",
+          handler(name) {
+            if (name !== "ssr") return;
+            return { build: { outDir: serverOutDir, emptyOutDir: false } };
+          },
+        },
+      },
     ],
     builder: {
       ...userConfig.builder,
@@ -238,7 +259,7 @@ export function prepareBuildOutput(
 
   cleanBuildOutput({
     root: context.root,
-    outDir: path.resolve(context.root, "dist"),
+    outDir: resolveBuildOutDir(context),
     emptyOutDir,
   });
 }
@@ -297,6 +318,7 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     if (context.nextConfig.output !== "export") {
       await finalizeCacheAdapterPrerenderOutput(context.cacheConfig, context.root, {
         clientOutDir: buildOutput.clientOutDir,
+        outDir: buildOutput.outDir,
       });
     }
     await emitPrerenderPathManifest({
@@ -321,12 +343,18 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     const { emitStandaloneOutput } = await import("./standalone.js");
     const standalone = emitStandaloneOutput({
       root: context.root,
-      outDir: path.resolve(context.root, "dist"),
+      outDir: resolveBuildOutDir(context),
     });
-    console.log(
-      `  Generated standalone output in ${path.relative(context.root, standalone.standaloneDir)}/`,
-    );
-    console.log("  Start it with: node dist/standalone/server.js\n");
+    const standaloneDir = path.relative(context.root, standalone.standaloneDir);
+    console.log(`  Generated standalone output in ${standaloneDir}/`);
+    const scriptPath = path.join(standaloneDir, "server.js");
+    // node would read a leading "-" as an option.
+    const serverScript = scriptPath.startsWith("-") ? `./${scriptPath}` : scriptPath;
+    // Single-quote any path a POSIX shell would split or expand.
+    const serverArg = /^[\w@%+=:,./-]+$/.test(serverScript)
+      ? serverScript
+      : `'${serverScript.replaceAll("'", "'\\''")}'`;
+    console.log(`  Start it with: node ${serverArg}\n`);
     return;
   }
 
@@ -385,7 +413,11 @@ export function createBuildLifecyclePlugins(options: {
         handler(config) {
           if (outputPrepared || !options.shouldPrepare(config)) return;
           const context = createContext();
-          if (config.build.emptyOutDir === false) context.emptyOutDir = false;
+          // A raw `emptyOutDir: false` stays the escape hatch; otherwise follow
+          // the resolved value, which later config hooks may have set.
+          if (context.emptyOutDir !== false && typeof config.build.emptyOutDir === "boolean") {
+            context.emptyOutDir = config.build.emptyOutDir;
+          }
           // Report a missing standalone prerequisite before onPrepare runs its checks.
           checkStandaloneBuildPrerequisite(context);
           options.onPrepare?.();

@@ -2675,6 +2675,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     if (nextConfig.output !== "export") {
       await finalizeCacheAdapterPrerenderOutput(viteConfigMetadata.cacheConfig, info.root, {
         clientOutDir: prerenderOutputDirs?.clientOutDir,
+        outDir: prerenderOutputDirs?.outDir,
       });
     }
   }

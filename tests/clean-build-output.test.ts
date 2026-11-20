@@ -63,4 +63,17 @@ describe("cleanBuildOutput", () => {
       fs.rmSync(externalOutDir, { recursive: true, force: true });
     }
   });
+
+  it("never removes the project root or a directory containing it", () => {
+    const source = writeFile(tmpDir, "app/page.tsx", "export default 1;\n");
+
+    for (const options of [
+      { root: tmpDir, outDir: "." },
+      { root: tmpDir, outDir: tmpDir, emptyOutDir: true },
+      { root: tmpDir, outDir: "..", emptyOutDir: true },
+    ]) {
+      expect(cleanBuildOutput(options).cleaned).toBe(false);
+    }
+    expect(fs.existsSync(source)).toBe(true);
+  });
 });

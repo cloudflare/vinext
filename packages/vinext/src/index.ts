@@ -1715,21 +1715,22 @@ export type VinextOptions = {
   /**
    * Override the output directory for the RSC server bundle.
    * Absolute paths are used as-is; relative paths are resolved from the
-   * Vite root. Defaults to "dist/server".
+   * Vite root. Defaults to "<build.outDir>/server", "dist/server" unless
+   * Vite's `build.outDir` is set.
    * Intended for tests that need to build multiple fixtures in parallel
    * without clobbering each other's output.
    */
   rscOutDir?: string;
   /**
    * Override the output directory for the SSR bundle.
-   * Defaults to "dist/server/ssr".
+   * Defaults to "<build.outDir>/server/ssr" ("dist/server/ssr").
    */
   ssrOutDir?: string;
   /**
    * Override the output directory for the client bundle.
-   * Defaults to "dist/client". Like rscOutDir and ssrOutDir, it is not
-   * supported by `vinext start` or `output: "standalone"`, which expect the
-   * default dist/ layout.
+   * Defaults to "<build.outDir>/client" ("dist/client"). Like rscOutDir and
+   * ssrOutDir, it is not supported by `vinext start` or `output: "standalone"`,
+   * which expect the default dist/ layout.
    */
   clientOutDir?: string;
   /**
@@ -1841,6 +1842,8 @@ export type VinextOptions = {
 type InternalVinextOptions = VinextOptions & {
   __skipBuildLifecycle?: boolean;
   __pagesClientAssetsModule?: string | null;
+  /** Build output root of the parent build, for the auxiliary Pages build. */
+  __buildOutDir?: string;
 };
 
 type InternalUserConfig = UserConfig & {
@@ -1953,6 +1956,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let buildEmptyOutDir: boolean | undefined;
+  // Root of the build layout: Vite's `build.outDir`, "dist" by default. The
+  // default RSC, SSR and client output directories and the server metadata
+  // (BUILD_ID, vinext-server.json, prerender output) live below it.
+  let buildOutDir = internalOptions.__buildOutDir ?? "dist";
+  let hasUserBuildOutDir = internalOptions.__buildOutDir !== undefined;
   let buildLifecycleEnabled = false;
   let hasPlainPagesBuildEnvironments = false;
   let originalPlainPagesEnvironments: UserConfig["environments"] | undefined;
@@ -1968,7 +1976,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // readable native import.meta.filename and retain environment-relative
       // chunk names as the compatibility fallback.
       const outputRoot =
-        config.environments.rsc?.build.outDir ?? options.rscOutDir ?? "dist/server";
+        config.environments.rsc?.build.outDir ??
+        options.rscOutDir ??
+        path.join(buildOutDir, "server");
       return createServerEnvironmentFileNameResolver(config, outputRoot);
     },
   });
@@ -2624,6 +2634,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           prerender: undefined,
           __skipBuildLifecycle: true,
           __pagesClientAssetsModule: pagesClientAssetsModule,
+          __buildOutDir: buildOutDir,
         } as InternalVinextOptions),
       emptyOutDir: buildEmptyOutDir,
       hasAppDir,
@@ -2638,6 +2649,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       routeRootConfig: {
         appDir: options.appDir,
         disableAppRouter: options.disableAppRouter,
+        outDir: buildOutDir,
         rscOutDir: options.rscOutDir,
         ssrOutDir: options.ssrOutDir,
       },
@@ -2649,6 +2661,86 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   const plugins: PluginOption[] = [
     buildLifecyclePlugins[0],
+    {
+      // The main config hook runs early (enforce: "pre") and derives the
+      // default output directories from the `build.outDir` it sees then. A
+      // later plugin may still set `build.outDir`, so move the defaults to
+      // the final output root once every other config hook has run.
+      name: "vinext:build-outdir",
+      // `vite preview` resolves the config again and serves the
+      // environments' outDirs, so they have to match the build's.
+      apply: (_config, env) => env.command === "build" || env.isPreview === true,
+      enforce: "post",
+      config: {
+        order: "post",
+        handler(config, env) {
+          if (internalOptions.__buildOutDir !== undefined) return;
+          const environments: Record<string, { build: { outDir: string } }> = {};
+          const finalOutDir = toSlash(config.build?.outDir ?? "dist");
+          if (finalOutDir !== buildOutDir) {
+            // Output directories set explicitly through vinext's options win.
+            const explicitOutDirs: Record<string, string | undefined> = {
+              client: options.clientOutDir,
+              rsc: options.rscOutDir,
+              ssr: hasAppDir ? options.ssrOutDir : undefined,
+            };
+            for (const [name, environment] of Object.entries(config.environments ?? {})) {
+              const outDir = environment?.build?.outDir;
+              if (outDir === undefined || explicitOutDirs[name] !== undefined) continue;
+              const subdir = ["client", "server", "server/ssr"].find(
+                (candidate) => toSlash(outDir) === path.join(buildOutDir, candidate),
+              );
+              if (subdir !== undefined) {
+                environments[name] = { build: { outDir: path.join(finalOutDir, subdir) } };
+              }
+            }
+            buildOutDir = finalOutDir;
+          }
+          if (env.command === "build") {
+            const effectiveOutDir = (name: string) =>
+              environments[name]?.build.outDir ?? config.environments?.[name]?.build?.outDir;
+            // The client build runs last and empties its outDir, whether vinext,
+            // @vitejs/plugin-rsc, a platform plugin or the user chose it.
+            assertClientOutDirIsSeparate(root, {
+              clientOutDir: effectiveOutDir("client"),
+              rscOutDir: effectiveOutDir("rsc"),
+              ssrOutDir: effectiveOutDir("ssr"),
+              outDir: buildOutDir,
+            });
+          }
+          return Object.keys(environments).length > 0 ? { environments } : undefined;
+        },
+      },
+      configResolved(config) {
+        if (config.command !== "build") return;
+        // Vite empties each environment's outDir on its own, so one at or
+        // above the project root (e.g. `build.outDir: ".."` in a project
+        // named "server") would delete the project's source. Check the
+        // resolved values, after every config and configEnvironment hook.
+        for (const name of ["client", "rsc", "ssr"]) {
+          const outDir = config.environments[name]?.build.outDir;
+          if (outDir === undefined || !isPathInsideOrEqual(path.resolve(root, outDir), root)) {
+            continue;
+          }
+          const shownOutDir = toSlash(path.relative(root, path.resolve(root, outDir))) || ".";
+          throw new Error(
+            `[vinext] The ${name} output directory "${shownOutDir}" contains the project root. ` +
+              "Building there would delete the project. Choose a build.outDir that does not " +
+              "contain the project.",
+          );
+        }
+        // Vite leaves an outDir equal to the root alone, but vinext derives
+        // <outDir>/server and <outDir>/client from it, which Vite would empty:
+        // with `build.outDir: "."` that is the app's own server/ or client/.
+        if (path.relative(root, path.resolve(root, buildOutDir)) === "") {
+          throw new Error(
+            `[vinext] build.outDir "${buildOutDir}" is the project root. vinext would write ` +
+              "and empty its server/ and client/ directories there. Choose a build.outDir " +
+              "below or outside the project, such as the default dist.",
+          );
+        }
+      },
+    },
     {
       // ── Dev request origin check ─────────────────────────────────────
       // Vite registers pre plugins' middlewares first, so listing this pre
@@ -2898,7 +2990,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           path.resolve(toSlash(process.cwd()), config.root ?? "."),
           config.resolve?.preserveSymlinks,
         );
-        if (env.command === "build") assertClientOutDirIsSeparate(root, options);
+        if (internalOptions.__buildOutDir === undefined) {
+          hasUserBuildOutDir = config.build?.outDir !== undefined;
+          buildOutDir = toSlash(config.build?.outDir ?? "dist");
+        }
         const devCliLifecycleEnabled =
           env.command === "serve" &&
           env.isPreview !== true &&
@@ -3667,6 +3762,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           !hasAppDir && !hasCloudflarePlugin && !isSSR && !hasBuildInput && !config.build?.lib;
         const hasClientBuildEnvironment =
           hasAppDir || hasCloudflarePlugin || hasNitroPlugin || shouldInjectPlainPagesEnvironments;
+        // @vitejs/plugin-rsc defaults the client output to a fixed
+        // "dist/client", so a `build.outDir` has to be carried over here. A
+        // client outDir another plugin or the user set stays as it is.
+        const clientOutDirConfig = options.clientOutDir
+          ? { outDir: options.clientOutDir }
+          : hasUserBuildOutDir && config.environments?.client?.build?.outDir === undefined
+            ? { outDir: path.join(buildOutDir, "client") }
+            : {};
         const clientAssetsDir = resolveAssetsDir(nextConfig.assetPrefix ?? "");
         // Next emits CSS url() deps as files, not inlined data URLs. A user's
         // explicit `build.assetsInlineLimit` always wins.
@@ -4430,7 +4533,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                outDir: options.rscOutDir ?? "dist/server",
+                outDir: options.rscOutDir ?? path.join(buildOutDir, "server"),
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_RSC_ENTRY },
                   // Split React (and the RSC flight runtime) into a dedicated
@@ -4513,7 +4616,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                outDir: options.ssrOutDir ?? "dist/server/ssr",
+                outDir: options.ssrOutDir ?? path.join(buildOutDir, "server", "ssr"),
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_APP_SSR_ENTRY },
                 }),
@@ -4569,7 +4672,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // that should be preloaded when a dynamic boundary renders.
                 // Cloudflare builds also use it to inject lazy chunk metadata
                 // into the Worker entry.
-                ...(options.clientOutDir ? { outDir: options.clientOutDir } : {}),
+                ...clientOutDirConfig,
                 manifest: true,
                 ...(hasPagesDir ? { ssrManifest: true } : {}),
                 // Client-scoped so RSC/SSR keep their normal asset handling
@@ -4597,7 +4700,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                ...(options.clientOutDir ? { outDir: options.clientOutDir } : {}),
+                ...clientOutDirConfig,
                 manifest: true,
                 ssrManifest: true,
                 assetsInlineLimit: clientAssetsInlineLimit,
@@ -4627,7 +4730,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                outDir: options.clientOutDir ?? "dist/client",
+                outDir: options.clientOutDir ?? path.join(buildOutDir, "client"),
                 manifest: true,
                 ssrManifest: true,
                 assetsInlineLimit: clientAssetsInlineLimit,
@@ -4662,7 +4765,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                outDir: "dist/server",
+                outDir: path.join(buildOutDir, "server"),
                 ...withBuildBundlerOptions({
                   // Nitro dispatches the SSR service as a WinterCG fetch handler;
                   // the Node server instead consumes the generated context bag.
@@ -8469,7 +8572,7 @@ export const loadServerActionClient = ${
           if (this.environment?.name !== "client") return;
           const clientOutDir = outputOptions.dir
             ? path.resolve(root, outputOptions.dir)
-            : path.resolve(root, options.clientOutDir ?? "dist/client");
+            : path.resolve(root, options.clientOutDir ?? path.join(buildOutDir, "client"));
           const assetsDir = resolveAssetsDir(nextConfig.assetPrefix);
           const activeImagePaths = new Set(
             Array.from(staticImageImportsByModule.values()).flatMap((imports) => [...imports]),
@@ -8546,7 +8649,8 @@ export const loadServerActionClient = ${
     // createBuilder().buildApp() pipeline used for App Router production builds,
     // so the file was silently never written for pure App Router apps. writeBundle
     // fires for every emitted bundle, so the guard captures the first one. The path is always
-    // dist/server/BUILD_ID — derived from root, not from the per-environment
+    // <build.outDir>/server/BUILD_ID (dist/server/BUILD_ID by default) —
+    // derived from the build output root, not from the per-environment
     // options.dir — so it works for all router types.
     (() => {
       let buildIdWritten = false;
@@ -8560,7 +8664,7 @@ export const loadServerActionClient = ${
           handler() {
             if (buildIdWritten || !isServerEnvironment(this.environment)) return;
             buildIdWritten = true;
-            const outDir = path.join(root, "dist", "server");
+            const outDir = path.resolve(root, buildOutDir, "server");
             fs.mkdirSync(outDir, { recursive: true });
             fs.writeFileSync(path.join(outDir, "BUILD_ID"), nextConfig!.buildId);
             if (rscBuildIdentity) {
@@ -8624,7 +8728,7 @@ export const loadServerActionClient = ${
           // platform-independent server directory. An adapter may emit either
           // router's executable graph elsewhere, so retain an adjacent copy
           // and also publish the canonical copy.
-          const canonicalServerDir = path.join(root, "dist", "server");
+          const canonicalServerDir = path.resolve(root, buildOutDir, "server");
           if (selectedMultiStageOutput) {
             if (readPrerenderSecret(canonicalServerDir) === prerenderSecret) {
               for (const runtimeOutputDir of readServerRuntimeOutputDirs(
@@ -8991,7 +9095,7 @@ export const loadServerActionClient = ${
           const manifest = collectInlineCssManifest(clientDir, nextConfig.assetPrefix);
           const rscOutDir = path.resolve(
             buildRoot,
-            options.rscOutDir ?? path.join("dist", "server"),
+            options.rscOutDir ?? path.join(buildOutDir, "server"),
           );
           for (const entryFile of ["index.js", "index.mjs"]) {
             if (injectInlineCssManifestGlobal(path.join(rscOutDir, entryFile), manifest)) break;
@@ -9010,10 +9114,16 @@ export const loadServerActionClient = ${
         if (hasAppDir || hasCloudflarePlugin || hasNitroPlugin) return;
         if (nextConfig?.output === "export") return;
         const { createPagesPreviewHandler } = await import("./server/prod-server.js");
-        const { environments, preview, root } = server.config;
+        const { build, environments, preview, root } = server.config;
         const handler = await createPagesPreviewHandler({
-          clientDir: path.resolve(root, environments.client?.build.outDir ?? "dist/client"),
-          serverDir: path.resolve(root, environments.ssr?.build.outDir ?? "dist/server"),
+          clientDir: path.resolve(
+            root,
+            environments.client?.build.outDir ?? path.join(build.outDir, "client"),
+          ),
+          serverDir: path.resolve(
+            root,
+            environments.ssr?.build.outDir ?? path.join(build.outDir, "server"),
+          ),
           host: typeof preview.host === "string" ? preview.host : "localhost",
           port: preview.port ?? 4173,
         });
