@@ -3,6 +3,7 @@ import path from "node:path";
 import { createBuilder, createServer, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { flightHookRegistry } from "../packages/vinext/src/plugins/react-server-dom-async-hook.js";
 import { createIsolatedFixture } from "./helpers.js";
 
 const FIXTURE_SOURCE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-ssr-collection");
@@ -85,18 +86,25 @@ describe("App Router dev SSR of a collection built from its children", () => {
   let fixtureDir = "";
   let server: ViteDevServer | undefined;
 
-  beforeAll(async () => {
-    fixtureDir = await createIsolatedFixture(FIXTURE_SOURCE_DIR, "vinext-ssr-collection-dev-");
-    server = await createServer({
+  async function startDevServer(): Promise<{ server: ViteDevServer; baseUrl: string }> {
+    const devServer = await createServer({
       root: fixtureDir,
       configFile: false,
       plugins: [vinext({ appDir: fixtureDir })],
       server: { host: "127.0.0.1", port: 0 },
       logLevel: "silent",
     });
-    await server.listen();
-    const address = server.httpServer?.address();
-    baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+    await devServer.listen();
+    const address = devServer.httpServer?.address();
+    return {
+      server: devServer,
+      baseUrl: `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`,
+    };
+  }
+
+  beforeAll(async () => {
+    fixtureDir = await createIsolatedFixture(FIXTURE_SOURCE_DIR, "vinext-ssr-collection-dev-");
+    ({ server, baseUrl } = await startDevServer());
   }, 120_000);
 
   afterAll(async () => {
@@ -115,4 +123,42 @@ describe("App Router dev SSR of a collection built from its children", () => {
       expect(table).toContain(`cell-${CELL_COUNT - 1}-`);
     }
   });
+
+  // React's Node development Flight server enables an async_hooks hook each
+  // time a dev server evaluates it, and never disables it. Each running server
+  // keeps its own, and a closed server's hook is disabled.
+  it("keeps one Flight async hook per running dev server", async () => {
+    const registry = flightHookRegistry();
+    await renderedCells(new URL("/", baseUrl));
+    expect(registry.live.size).toBe(1);
+    const [first] = registry.live;
+    expect(first.hook).toBeDefined();
+
+    // Same root, so the same pre-bundled build.
+    const second = await startDevServer();
+    const secondOwner = [...registry.live].find((owner) => owner !== first)!;
+    try {
+      const { count } = await renderedCells(new URL("/", second.baseUrl));
+      expect(count).toBe(CELL_COUNT);
+      expect(secondOwner.hook).toBeDefined();
+      expect(secondOwner.hook).not.toBe(first.hook);
+    } finally {
+      await second.server.close();
+    }
+    expect(secondOwner).toMatchObject({ closed: true, hook: undefined });
+    expect([...registry.live]).toEqual([first]);
+    expect(first.hook).toBeDefined();
+
+    // A restart closes the server it replaces.
+    await server!.restart();
+    const { count } = await renderedCells(new URL("/", baseUrl));
+    expect(count).toBe(CELL_COUNT);
+    expect(first).toMatchObject({ closed: true, hook: undefined });
+    expect(registry.live.size).toBe(1);
+    expect([...registry.live][0].hook).toBeDefined();
+
+    await server!.close();
+    server = undefined;
+    expect(registry.live.size).toBe(0);
+  }, 120_000);
 });

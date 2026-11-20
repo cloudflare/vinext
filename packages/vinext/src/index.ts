@@ -255,6 +255,10 @@ import {
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
+import {
+  createReactServerDomAsyncHookOwnerPlugin,
+  reactServerDomAsyncHookOptimizeDepsPlugin,
+} from "./plugins/react-server-dom-async-hook.js";
 import { createNitroDevDepsOptimizerGatePlugin } from "./plugins/nitro-dev-deps-optimizer-gate.js";
 import { createClientCompileHintsPlugin } from "./plugins/client-compile-hints.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
@@ -4787,6 +4791,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 : []),
             importMetaUrlCapability.optimizeDepsPlugin,
             createShimRequirePlugin(),
+            reactServerDomAsyncHookOptimizeDepsPlugin,
           ];
           // Covers server environments vinext does not create, such as other
           // plugins' Worker environments.
@@ -6225,6 +6230,8 @@ export const loadServerActionClient = ${
     ),
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
+    // One React Flight async hook per running dev server.
+    createReactServerDomAsyncHookOwnerPlugin(),
     createInstrumentationClientTransformPlugin(
       () => instrumentationClientPath,
       () => nextConfig.instrumentationClientRouteManifest,
