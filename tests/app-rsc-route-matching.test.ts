@@ -1469,6 +1469,62 @@ describe("App RSC route matching", () => {
       });
     });
 
+    // Next.js's interception rewrites are tried in order, and a root-level
+    // intercept's header regex matches any `Next-Url`, /_not-found included.
+    // Over a shared target, the earlier root-level intercept wins from an
+    // unmatched URL's not-found page as from any matched page.
+    it("selects the earlier root-level intercept over a shared target from an unmatched URL's not-found page", () => {
+      const rootRoute = {
+        ids: { route: "graph-route:/" },
+        pattern: "/",
+        patternParts: [],
+        routeSegments: [],
+        siblingIntercepts: [
+          {
+            targetPattern: "/photos/:id",
+            sourceMatchPattern: "/",
+            sourcePageSegments: ["(.)photos", "[id]"],
+            slotId: "slot:__vinext_sibling_intercept:/",
+            interceptLayouts: [],
+            page: "root-photos-intercept",
+            params: ["id"],
+          },
+        ],
+      };
+      const matcher = createAppRscRouteMatcher([
+        rootRoute,
+        {
+          ...route("/:slug", [":slug"], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/:slug",
+                  sourcePageSegments: ["[slug]", "@modal", "(..)photos", "[id]"],
+                  targetPattern: "/photos/:id",
+                  interceptLayouts: [],
+                  page: "slug-photos-modal",
+                  params: ["id"],
+                },
+              ],
+            },
+          }),
+          routeSegments: ["[slug]"],
+        },
+      ] as any);
+
+      for (const sourcePathname of ["/_not-found", "/acme"]) {
+        expect(matcher.findIntercept("/photos/1", sourcePathname)).toMatchObject({
+          page: "root-photos-intercept",
+          slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+          sourceRouteIndex: 0,
+          matchedParams: { id: "1" },
+        });
+      }
+      expect(
+        createAppRscRouteMatcher([rootRoute] as any).findIntercept("/photos/1", "/_not-found"),
+      ).toMatchObject({ page: "root-photos-intercept", sourceRouteIndex: 0 });
+    });
+
     // A page in a route group below the slot's directory, such as
     // `club/[slug]/(children)/page.tsx`, is the slot owner's own route, as the
     // route graph places the slot at its URL level. A route a visible segment
