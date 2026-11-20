@@ -25,6 +25,9 @@ let sharedLinkPaths: Set<string> | undefined;
 const linksAheadOfMarker = new Set<HTMLLinkElement>();
 // Where Vite added each of those links, among the dynamic imports' others.
 const linkSlots = new WeakMap<HTMLLinkElement, Comment>();
+// Where a link that the next commit creates for a stylesheet would have been
+// added: as the page's stylesheets load, before its dynamic imports' ones.
+const createdLinkSlots = new Map<string, Comment>();
 
 function fetchStylesheet(href: string): Promise<PagesStylesheet> {
   let text = stylesheetTexts.get(href);
@@ -50,8 +53,47 @@ export function loadPagesRouteStylesheets(route: string): Promise<PagesStyleshee
   return Promise.all((manifest.routes[route] ?? []).map(fetchStylesheet));
 }
 
+function pathOf(href: string): string {
+  try {
+    return new URL(href, document.baseURI).pathname;
+  } catch {
+    return href;
+  }
+}
+
+function linkPaths(): { removable: Set<string>; shared: Set<string> } {
+  if (!removableLinkPaths || !sharedLinkPaths) {
+    const manifest = window.__VINEXT_PAGE_STYLESHEETS__;
+    const shared = new Set(manifest?.shared.map(pathOf));
+    sharedLinkPaths = shared;
+    removableLinkPaths = new Set(
+      Object.values(manifest?.routes ?? {})
+        .flat()
+        .map(pathOf)
+        .filter((path) => !shared.has(path)),
+    );
+  }
+  return { removable: removableLinkPaths, shared: sharedLinkPaths };
+}
+
 /** Adds the stylesheets that the document lacks, turned off. */
 export function insertPagesStylesheets(stylesheets: readonly PagesStylesheet[]): void {
+  for (const slot of createdLinkSlots.values()) slot.remove();
+  createdLinkSlots.clear();
+  const { shared } = linkPaths();
+  const linked = new Set(
+    Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'), (link) =>
+      pathOf(link.href),
+    ),
+  );
+  for (const { href } of stylesheets) {
+    const path = pathOf(href);
+    if (!shared.has(path) || linked.has(path)) continue;
+    const slot = document.createComment("");
+    document.head.appendChild(slot);
+    createdLinkSlots.set(path, slot);
+  }
+
   const current = new Set(
     Array.from(document.querySelectorAll("style[data-n-href]"), (tag) =>
       tag.getAttribute("data-n-href"),
@@ -66,14 +108,6 @@ export function insertPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
     if (nonce) tag.setAttribute("nonce", nonce);
     document.head.appendChild(tag);
     tag.appendChild(document.createTextNode(text));
-  }
-}
-
-function pathOf(href: string): string {
-  try {
-    return new URL(href, document.baseURI).pathname;
-  } catch {
-    return href;
   }
 }
 
@@ -109,17 +143,7 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
   // and a link it added on an earlier page moves there. On a page that doesn't
   // load the stylesheet, such a link goes back after the page's own, where
   // Vite adds a dynamic import's stylesheets.
-  if (!removableLinkPaths || !sharedLinkPaths) {
-    const manifest = window.__VINEXT_PAGE_STYLESHEETS__;
-    sharedLinkPaths = new Set(manifest?.shared.map(pathOf));
-    const shared = sharedLinkPaths;
-    removableLinkPaths = new Set(
-      Object.values(manifest?.routes ?? {})
-        .flat()
-        .map(pathOf)
-        .filter((path) => !shared.has(path)),
-    );
-  }
+  const { removable, shared } = linkPaths();
   const isAheadOfMarker = (link: Element) =>
     (marker.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
   const pagePaths = new Set(stylesheets.map(({ href }) => pathOf(href)));
@@ -127,13 +151,13 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
   for (const link of document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')) {
     const path = pathOf(link.href);
     const isAhead = isAheadOfMarker(link);
-    if (isAhead && removableLinkPaths.has(path)) {
+    if (isAhead && removable.has(path)) {
       link.remove();
       continue;
     }
     links.set(path, link);
     // As the server links them.
-    if (isAhead && sharedLinkPaths.has(path)) linksAheadOfMarker.add(link);
+    if (isAhead && shared.has(path)) linksAheadOfMarker.add(link);
   }
   for (const link of linksAheadOfMarker) {
     if (pagePaths.has(pathOf(link.href))) continue;
@@ -154,13 +178,17 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
     let link = links.get(path);
     if (link && isAheadOfMarker(link)) continue;
     if (!link) {
-      if (!sharedLinkPaths.has(path)) continue;
+      if (!shared.has(path)) continue;
       link = document.createElement("link");
       link.rel = "stylesheet";
       link.setAttribute("href", href);
       if (nonce) link.setAttribute("nonce", nonce);
-    }
-    if (link.isConnected) {
+      const slot = createdLinkSlots.get(path);
+      if (slot?.isConnected) {
+        linkSlots.set(link, slot);
+        createdLinkSlots.delete(path);
+      }
+    } else if (link.isConnected) {
       const slot = document.createComment("");
       link.replaceWith(slot);
       linkSlots.set(link, slot);
@@ -168,4 +196,6 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
     marker.parentNode!.insertBefore(link, marker);
     linksAheadOfMarker.add(link);
   }
+  for (const slot of createdLinkSlots.values()) slot.remove();
+  createdLinkSlots.clear();
 }

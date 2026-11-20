@@ -272,6 +272,16 @@ test("dynamic import stylesheets keep their order once a page has listed one", a
   await navigate(page, "chip");
   await navigate(page, "combo");
   await open();
+
+  // `/chip` links the chip's stylesheet after the badge's, which `/host`'s
+  // note loaded.
+  await page.goto(`${baseUrl}/host`);
+  await waitForHydration(page);
+  await page.getByRole("button", { name: "Open" }).click();
+  await expect(page.locator('[data-probe="note"]')).toBeVisible();
+  await navigate(page, "chip");
+  await navigate(page, "combo");
+  await open();
 });
 
 test("the first client navigation hands the page's stylesheets to <style> tags", async ({
