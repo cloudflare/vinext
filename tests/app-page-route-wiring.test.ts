@@ -11,6 +11,10 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 import { notFound, useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
@@ -2565,6 +2569,49 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain("Slot loading");
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
     expect(Object.hasOwn(elements, "__vinext_streaming_metadata_body:route:/dashboard")).toBe(true);
+  });
+
+  // In development, React's Node Flight server keeps a component's props for as
+  // long as a promise the component created is alive. A head resolver in the
+  // props would keep the head's own promises, and with them the render, alive.
+  it("names the head by an id within a request, not by its resolver", async () => {
+    const resolveHead = (): AppPageRouteHead => ({
+      metadata: Promise.resolve({ title: "Dashboard" }),
+      outlet: Promise.resolve(null),
+      viewport: Promise.resolve({}),
+    });
+    await runWithRequestContext(createRequestContext(), async () => {
+      const elements = buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        metadataPlacement: "body",
+        resolveHead,
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["dashboard"],
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard",
+        rootNotFoundModule: null,
+      });
+      const bodyId = "__vinext_streaming_metadata_body:route:/dashboard";
+      const outletId = "__vinext_streaming_metadata_outlet:route:/dashboard";
+      for (const id of [bodyId, outletId]) {
+        const element = elements[id] as ReactElement<{ head: unknown }>;
+        expect(typeof element.props.head).toBe("string");
+      }
+      expect(await renderRouteEntry(elements, bodyId)).toContain("<title>Dashboard</title>");
+    });
   });
 
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {

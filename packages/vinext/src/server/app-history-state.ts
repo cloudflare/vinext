@@ -1,4 +1,4 @@
-import { AppElementsWire } from "./app-elements.js";
+import { AppElementsWire, isSameOriginRefreshPathname } from "./app-elements.js";
 import type { TraverseDirection } from "./navigation-planner.js";
 import { isNonNegativeSafeInteger } from "../utils/number.js";
 import { isBfcacheSegmentId } from "./app-bfcache-identity.js";
@@ -377,25 +377,23 @@ export function readHistoryStateActiveRoutePaths(state: unknown): readonly strin
   if (!Array.isArray(value)) return null;
   const paths: string[] = [];
   for (const entry of value) {
-    if (
-      typeof entry !== "string" ||
-      !entry.startsWith("/") ||
-      entry.startsWith("//") ||
-      entry.includes("?") ||
-      entry.includes("#") ||
-      entry.includes("\\") ||
-      entry.includes("\0")
-    ) {
-      return null;
-    }
+    if (!isSameOriginRefreshPathname(entry)) return null;
     paths.push(entry);
   }
   return paths.length > 0 ? [...new Set(paths)] : null;
 }
 
+/**
+ * The pathnames, without basePath, at which a refresh or traversal refetches
+ * the active slots: the URL of the navigation that rendered each slot, which
+ * the client records on its binding. The slots the current page rendered carry
+ * its own URL, which the refresh request already covers. A binding without
+ * one falls back to its route path.
+ */
 export function resolveActiveRoutePaths(
   slotBindings: readonly {
     activeRouteId?: string | null;
+    refreshPathname?: string;
     state: string;
   }[],
 ): string[] {
@@ -403,7 +401,9 @@ export function resolveActiveRoutePaths(
   for (const binding of slotBindings) {
     if (binding.state !== "active" || binding.activeRouteId == null) continue;
     const route = AppElementsWire.parseElementKey(binding.activeRouteId);
-    if (route?.kind === "route" && route.interceptionContext === null) paths.add(route.path);
+    if (route?.kind === "route" && route.interceptionContext === null) {
+      paths.add(binding.refreshPathname ?? route.path);
+    }
   }
   return [...paths];
 }

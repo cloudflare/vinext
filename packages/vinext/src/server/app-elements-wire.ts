@@ -101,9 +101,56 @@ export type AppElementsSlotBinding = Readonly<{
   interceptionId?: string | null;
   interceptionSourceMatchedUrl?: string | null;
   ownerLayoutId: string | null;
+  /**
+   * The browser pathname, without basePath, of the navigation whose response
+   * rendered this active slot. The client sets it when it commits or merges a
+   * response, never the server, so a cached payload holds no request's
+   * spelling. A refresh refetches a slot an earlier page left at this URL, as
+   * Next.js refetches a reused segment at the URL of the route it came from.
+   * Ref: packages/next/src/client/components/router-reducer/ppr-navigations.ts
+   * (reuseActiveSegmentInDefaultSlot)
+   */
+  refreshPathname?: string;
   slotId: string;
   state: AppElementsSlotBindingState;
 }>;
+
+/**
+ * Whether a pathname can only name a path on the current origin: one leading
+ * slash, no `?` or `#`, no backslash (a URL parser reads it as `/`), and no
+ * control character (a URL parser drops tabs and newlines, so `/\t/x` would
+ * become `//x`).
+ */
+export function isSameOriginRefreshPathname(value: unknown): value is string {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f || value[index] === "?" || value[index] === "#") return false;
+    if (value[index] === "\\") return false;
+  }
+  return true;
+}
+
+/**
+ * Records the pathname a response was fetched for on each active slot it
+ * rendered. Slots that already carry one keep it: they came from an earlier
+ * response through a client merge. Returns the same elements when nothing
+ * changes, and a shallow copy otherwise, so a cached payload is not mutated.
+ */
+export function bindAppElementsSlotRefreshPathname(
+  elements: AppElements,
+  refreshPathname: string,
+): AppElements {
+  const bindings = elements[APP_SLOT_BINDINGS_KEY];
+  if (!Array.isArray(bindings) || !isSameOriginRefreshPathname(refreshPathname)) return elements;
+  let changed = false;
+  const bound = (bindings as readonly AppElementsSlotBinding[]).map((binding) => {
+    if (binding.state !== "active" || binding.refreshPathname !== undefined) return binding;
+    changed = true;
+    return { ...binding, refreshPathname };
+  });
+  return changed ? { ...elements, [APP_SLOT_BINDINGS_KEY]: bound } : elements;
+}
 
 export type AppElementsInterception = Readonly<{
   sourceMatchedUrl: string;
@@ -509,11 +556,19 @@ function parseSlotBindings(
       parseInterceptionMatchedUrl(interceptionSourceMatchedUrl);
     }
 
+    const refreshPathname = entry.refreshPathname;
+    if (refreshPathname !== undefined && !isSameOriginRefreshPathname(refreshPathname)) {
+      throw new Error(
+        "[vinext] Invalid __slotBindings in App Router payload: expected refresh pathnames",
+      );
+    }
+
     slotBindings.push({
       ...(activeRouteId !== undefined ? { activeRouteId } : {}),
       ...(interceptionId !== undefined ? { interceptionId } : {}),
       ...(interceptionSourceMatchedUrl !== undefined ? { interceptionSourceMatchedUrl } : {}),
       ownerLayoutId,
+      ...(refreshPathname !== undefined ? { refreshPathname } : {}),
       slotId,
       state,
     });

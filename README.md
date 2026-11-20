@@ -832,6 +832,11 @@ upload and makes one final cache-fill request per admitted identity by default.
 Add `--warm-cache-certify` only to opt into a second, header-only request that
 must prove every planned entry reusable before promotion.
 
+For a site behind Cloudflare Access or another auth proxy, set
+`VINEXT_WARM_CACHE_HEADERS` to the headers it accepts, one `Name: value` per
+line (or pass `--warm-cache-header "Name: value"`). See
+[Sites behind an auth proxy](https://vinext.dev/docs/guides/caching#sites-behind-an-auth-proxy).
+
 While the data adapter can store entries and serve HIT/STALE itself, the CDN adapter delegates serving to Cloudflare's edge: the origin renders fresh responses and tags them with `Cache-Tag`, and `revalidateTag()` / `revalidatePath()` purge the edge through `ctx.cache.purge({ tags })`. See [examples/response-store-demo](examples/response-store-demo) for the Workers Response Store adapter.
 
 The response entrypoint adds a transport-only digest of the complete stage

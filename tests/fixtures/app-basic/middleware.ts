@@ -171,6 +171,13 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       return NextResponse.rewrite(target);
     }
   }
+  // Adds a version segment to the path, as a deployment-pinning rewrite does.
+  // Coverage: tests/e2e/app-router/mw-rewrite-slot-refresh.spec.ts
+  if (pathname.startsWith("/mw-rewrite-slot-refresh/p/")) {
+    const target = request.nextUrl.clone();
+    target.pathname = pathname.replace("/mw-rewrite-slot-refresh/", "/mw-rewrite-slot-refresh/v1/");
+    return NextResponse.rewrite(target);
+  }
   if (pathname.startsWith("/encoded-parity/rewrite-any/")) {
     const target = request.nextUrl.clone();
     target.pathname = pathname.replace("/encoded-parity/rewrite-any/", "/encoded-parity/");
@@ -702,6 +709,7 @@ export const config = {
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
     "/encoded-parity/rewrite-any/:path*",
+    "/mw-rewrite-slot-refresh/:path*",
     "/nextjs-compat/optimistic-rewrite/:path*",
     "/encoded-parity/sibling/:path*",
     "/middleware-throw",

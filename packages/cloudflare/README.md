@@ -86,6 +86,11 @@ makes one final fill request per admitted identity. Add `--warm-cache-certify`
 only when you want an opt-in second, header-only request that must prove every
 planned entry reusable before promotion.
 
+For a site behind Cloudflare Access or another auth proxy, set
+`VINEXT_WARM_CACHE_HEADERS` to the headers it accepts, one `Name: value` per
+line (or pass `--warm-cache-header "Name: value"`). See
+[Sites behind an auth proxy](https://vinext.dev/docs/guides/caching#sites-behind-an-auth-proxy).
+
 The response entrypoint hashes the complete transport identity into its
 Workers Cache URL, independently of zone Cache Rules, so distinct
 representation, rewrite and interception variants cannot collide. For App

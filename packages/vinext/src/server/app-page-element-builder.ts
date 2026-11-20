@@ -64,6 +64,11 @@ import {
   makeObservedAppPageSearchParamsThenable,
 } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
+import {
+  createAppPageRouteHeadRef,
+  resolveAppPageRouteHeadRef,
+  type AppPageRouteHeadRef,
+} from "./app-page-route-head-ref.js";
 import { resolveAppPageBranchParams } from "./app-page-params.js";
 import {
   createAppPageRenderDependency,
@@ -146,9 +151,9 @@ function countSharedLeadingLayouts(
 }
 
 async function AppPageInterceptMetadataOutlet(props: {
-  resolveHead: () => { interceptOutlet: Promise<null> };
+  head: AppPageRouteHeadRef<{ interceptOutlet: Promise<null> }>;
 }): Promise<null> {
-  return props.resolveHead().interceptOutlet;
+  return resolveAppPageRouteHeadRef(props.head).interceptOutlet;
 }
 AppPageInterceptMetadataOutlet.displayName = "Vinext.InterceptMetadataOutlet";
 
@@ -822,7 +827,9 @@ export async function buildPageElements<
   const interceptMetadataOutlet =
     hiddenParallelRoutes || outletParallelRouteIndex !== null
       ? (() => {
-          const outlet = createElement(AppPageInterceptMetadataOutlet, { resolveHead });
+          const outlet = createElement(AppPageInterceptMetadataOutlet, {
+            head: createAppPageRouteHeadRef(resolveHead),
+          });
           return streamGeneratedHead ? createElement(Suspense, { fallback: null }, outlet) : outlet;
         })()
       : null;

@@ -20,7 +20,7 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "vinext/internal/server/headers";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "./cache/cdn-build-id.js";
-import type { CdnWarmTarget } from "./cdn-warm.js";
+import { buildWarmupUrl, type CdnWarmTarget } from "./cdn-warm.js";
 import {
   cacheabilityManifestByteLimitError,
   MAX_CACHEABILITY_MANIFEST_BYTES,
@@ -236,7 +236,7 @@ async function probeTarget(options: {
     let timedOutBy: "phase" | "request" | null = null;
     let retryUntilDeadline = false;
     try {
-      const url = new URL(options.target.pathname, options.targetUrl);
+      const url = buildWarmupUrl(options.targetUrl, options.target.pathname);
       url.searchParams.set(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM, `${probeId}-${attempt}`);
       const request = (async () => {
         const response = await options.fetchImpl(url, {
@@ -650,7 +650,7 @@ export async function probeStagedWorkerCacheability(options: {
       return "done";
     }
     const target = group.primary;
-    const request = new Request(new URL(target.pathname, options.targetUrl), {
+    const request = new Request(buildWarmupUrl(options.targetUrl, target.pathname), {
       headers: target.headers,
     });
     const identity = cacheabilityRequestIdentity(request);
