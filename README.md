@@ -127,7 +127,12 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 | `vp exec vinext-cloudflare deploy` | Build and deploy to Cloudflare Workers with Vite+                       |
 | `vinext init`                      | Migrate a Next.js project to run under vinext                           |
 | `vinext check`                     | Scan your Next.js app for compatibility issues before migrating         |
+| `vinext typegen [directory]`       | Generate App Router route helper types without a full build             |
 | `vinext lint`                      | Delegate to eslint or oxlint                                            |
+
+Run `vinext typegen` before a standalone TypeScript check if your App Router project uses
+`PageProps`, `LayoutProps`, or `RouteContext`. It writes `.next/types/routes.d.ts` and creates or
+updates `next-env.d.ts` in the target project. The directory defaults to the current working directory.
 
 `vinext dev` and `vinext build` remain as thin aliases for the project-local Vite commands.
 They require a Vite config; if one is missing, run `vinext init`. Vite owns their options,
