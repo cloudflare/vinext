@@ -48,6 +48,8 @@ export type NavigationRuntimeVisibleCommitMode = "transition" | "synchronous";
 type NavigationRuntimePrefetchRouterState = {
   pathAndSearch: string;
   routeId: string;
+  /** The committed render is the not-found page of an unmatched URL. */
+  routeMiss: boolean;
 };
 
 type NavigationRuntimeTraversalIntent = {

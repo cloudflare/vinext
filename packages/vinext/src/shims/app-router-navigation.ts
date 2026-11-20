@@ -272,9 +272,25 @@ export function getCurrentInterceptionContext(): string | null {
   return stripBasePath(window.location.pathname, __basePath);
 }
 
+type PrefetchInterceptionSource = {
+  pathname: string;
+  routeMiss: boolean;
+};
+
+/**
+ * The page a prefetch originates from: the current URL and whether the
+ * committed render is an unmatched URL's not-found page.
+ */
+export function getPrefetchInterceptionSource(): PrefetchInterceptionSource {
+  return {
+    pathname: window.location.pathname,
+    routeMiss: getNavigationRuntime()?.functions.getPrefetchRouterState?.()?.routeMiss === true,
+  };
+}
+
 export function getPrefetchInterceptionContext(
   targetHref: string,
-  currentPathname?: string,
+  source?: PrefetchInterceptionSource,
 ): string | null {
   if (isServer) {
     return null;
@@ -287,9 +303,11 @@ export function getPrefetchInterceptionContext(
     return null;
   }
 
+  const currentSource = source ?? getPrefetchInterceptionSource();
   return resolveManifestNavigationInterceptionContext({
     basePath: __basePath,
-    currentPathname: currentPathname ?? window.location.pathname,
+    currentPathname: currentSource.pathname,
+    currentRenderIsRouteMiss: currentSource.routeMiss,
     routeManifest: getNavigationRuntime()?.bootstrap.routeManifest ?? null,
     targetPathname: targetUrl.pathname,
   });
@@ -310,12 +328,16 @@ export function createAppPrefetchRequestHeaders(options: {
   prefetchKind?: "auto" | "full";
   renderMode?: AppRscRenderMode;
 }): Headers {
-  const prefetchRouterState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
+  const routerState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
   return createRscRequestHeaders({
     ...options,
     nextUrl: getCurrentNextUrl(),
     includePrefetchHeader: options.prefetchKind !== "full",
-    prefetchRouterState,
+    // The route-miss flag only steers the interception context.
+    prefetchRouterState: routerState && {
+      pathAndSearch: routerState.pathAndSearch,
+      routeId: routerState.routeId,
+    },
   });
 }
 
@@ -2504,8 +2526,8 @@ const _appRouter: AppRouterInstance = {
     // must not make this prefetch look as though it originated from the target
     // route, and an intervening route change must not change its interception
     // or mounted-slot key.
-    const currentPathname = window.location.pathname;
-    let interceptionContext = getPrefetchInterceptionContext(fullHref, currentPathname);
+    const interceptionSource = getPrefetchInterceptionSource();
+    let interceptionContext = getPrefetchInterceptionContext(fullHref, interceptionSource);
     const mountedSlotsHeader = getMountedSlotsHeader();
     const headers = createAppPrefetchRequestHeaders({
       fetchPriority: "low",
@@ -2521,7 +2543,7 @@ const _appRouter: AppRouterInstance = {
       if (routeManifestLoad !== null) {
         // Without the manifest the prefetch would miss its interception context.
         if (!(await routeManifestLoad) || setup.cancelled) return;
-        interceptionContext = getPrefetchInterceptionContext(fullHref, currentPathname);
+        interceptionContext = getPrefetchInterceptionContext(fullHref, interceptionSource);
         if (interceptionContext !== null) {
           headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);
         }

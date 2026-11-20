@@ -40,6 +40,30 @@ const feedPhotoInterception: RouteManifestInterception = {
   targetRouteId: "route:/photos/:id",
 };
 
+const rootPhotoInterception: RouteManifestInterception = {
+  id: "interception:slot:modal:/->/photos/:id",
+  interceptingRouteId: "route:/",
+  ownerLayoutId: "layout:/",
+  slotId: "slot:modal:/",
+  sourcePattern: "/",
+  sourcePatternParts: [],
+  targetPattern: "/photos/:id",
+  targetPatternParts: ["photos", ":id"],
+  targetRouteId: "route:/photos/:id",
+};
+
+const slugPhotoInterception: RouteManifestInterception = {
+  id: "interception:slot:modal:/:slug->/photos/:id",
+  interceptingRouteId: "route:/:slug",
+  ownerLayoutId: "layout:/:slug",
+  slotId: "slot:modal:/:slug",
+  sourcePattern: "/:slug",
+  sourcePatternParts: [":slug"],
+  targetPattern: "/photos/:id",
+  targetPatternParts: ["photos", ":id"],
+  targetRouteId: "route:/photos/:id",
+};
+
 const localePhotoInterception: RouteManifestInterception = {
   id: "interception:slot:modal:/interception-mw/:locale->/interception-mw/:locale/:username/p/:id",
   interceptingRouteId: "route:/interception-mw/:locale",
@@ -93,6 +117,34 @@ describe("resolveManifestNavigationInterceptionContext", () => {
         targetPathname: "/about",
       }),
     ).toBeNull();
+  });
+
+  it("sends no interception context from an unmatched URL's not-found page", () => {
+    const options = {
+      basePath: "",
+      currentPathname: "/feed/missing",
+      routeManifest: createRouteManifest([feedPhotoInterception]),
+      targetPathname: "/photos/42",
+    };
+
+    expect(resolveManifestNavigationInterceptionContext(options)).toBe("/feed/missing");
+    expect(
+      resolveManifestNavigationInterceptionContext({ ...options, currentRenderIsRouteMiss: true }),
+    ).toBeNull();
+  });
+
+  it("keeps the context from a not-found page for sources that match /_not-found", () => {
+    for (const interception of [rootPhotoInterception, slugPhotoInterception]) {
+      expect(
+        resolveManifestNavigationInterceptionContext({
+          basePath: "",
+          currentPathname: "/feed/missing",
+          currentRenderIsRouteMiss: true,
+          routeManifest: createRouteManifest([feedPhotoInterception, interception]),
+          targetPathname: "/photos/42",
+        }),
+      ).toBe("/feed/missing");
+    }
   });
 });
 
@@ -217,5 +269,40 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
         targetPathname: "/x/interception-mw/foo/p/1",
       }),
     ).toBeNull();
+  });
+
+  it("sends no interception context from an unmatched URL's not-found page", () => {
+    const options = {
+      basePath: "",
+      currentMatchedPathname: "/interception-mw/en/missing",
+      currentPathname: "/interception-mw/en/missing",
+      routeManifest: createRouteManifest([localePhotoInterception]),
+      targetPathname: "/interception-mw/foo/p/1",
+    };
+
+    expect(resolveMiddlewareRewriteNavigationInterceptionContext(options)).toBe(
+      "/interception-mw/en/missing",
+    );
+    expect(
+      resolveMiddlewareRewriteNavigationInterceptionContext({
+        ...options,
+        currentRenderIsRouteMiss: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the context from a not-found page for sources that match /_not-found", () => {
+    for (const interception of [rootPhotoInterception, slugPhotoInterception]) {
+      expect(
+        resolveMiddlewareRewriteNavigationInterceptionContext({
+          basePath: "",
+          currentMatchedPathname: "/feed/missing",
+          currentPathname: "/feed/missing",
+          currentRenderIsRouteMiss: true,
+          routeManifest: createRouteManifest([feedPhotoInterception, interception]),
+          targetPathname: "/photos/42",
+        }),
+      ).toBe("/feed/missing");
+    }
   });
 });
