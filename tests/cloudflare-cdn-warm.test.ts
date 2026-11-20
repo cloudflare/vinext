@@ -226,6 +226,66 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
+  it("warms metadata routes at their served path, without a trailing slash", () => {
+    // Metadata routes bypass the trailingSlash redirect, and their <head>
+    // links use the path as served.
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    const metadataRoute = (pattern: string) => ({
+      cacheabilityProbe: { canPrunePattern: true },
+      kind: "app-route",
+      metadataRoute: true,
+      pattern,
+    });
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "/docs",
+        buildId: "build-a",
+        paths: [],
+        routeHandlerPaths: ["/api/data", "/opengraph-image", "/products/sitemap/0.xml"],
+        routePatterns: {
+          "/api/data": {
+            cacheabilityProbe: { canPrunePattern: true },
+            kind: "app-route",
+            pattern: "/api/data",
+          },
+          "/opengraph-image": { ...metadataRoute("/opengraph-image"), metadataSearch: "?og-hash" },
+          "/products/sitemap/0.xml": metadataRoute("/products/sitemap.xml"),
+        },
+        trailingSlash: true,
+      }),
+    );
+
+    const plan = readPrerenderWarmPlan(tmpDir, { strict: true });
+    expect(plan.routeHandlerPaths).toEqual([
+      "/docs/api/data/",
+      "/docs/opengraph-image",
+      "/docs/products/sitemap/0.xml",
+    ]);
+    expect(Object.keys(plan.routePatterns ?? {})).toEqual(plan.routeHandlerPaths);
+    expect(plan.routePatterns?.["/docs/opengraph-image"]).toMatchObject({
+      metadataRoute: true,
+      metadataSearch: "?og-hash",
+    });
+  });
+
+  it.each([
+    { kind: "app-page", metadataRoute: true, pattern: "/" },
+    { kind: "app-route", metadataSearch: "?hash", pattern: "/" },
+    { kind: "app-route", metadataRoute: true, metadataSearch: "hash", pattern: "/" },
+  ])("rejects a metadata route marker on a non-metadata Route Handler: %o", (route) => {
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/"], routePatterns: { "/": route } }),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(() => readPrerenderWarmPlan(tmpDir, { strict: true })).toThrow(
+      "prerender path manifest not found",
+    );
+  });
+
   it("disables RSC variants for adapters without strict response Vary", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
@@ -478,6 +538,114 @@ describe("Cloudflare CDN warmup", () => {
     expect(log).toHaveBeenCalledWith("    Route pattern    Kind      Warmed  Skipped  Failed");
     expect(log).toHaveBeenCalledWith("    /products/:slug  App page     1/3        1       1");
     expect(log).toHaveBeenCalledWith("  CDN warmup: 1 warmed, 1 skipped, 1 failed.");
+  });
+
+  it("labels metadata routes in the route report", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const metadataRoute = (pattern: string) => ({
+      cacheabilityProbe: { canPrunePattern: true },
+      kind: "app-route" as const,
+      metadataRoute: true as const,
+      pattern,
+    });
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (new URL(requestHref(input)!).pathname === "/sitemap.xml") {
+        return new Response("<urlset />", {
+          headers: {
+            "cache-control": "no-store",
+            "cf-cache-status": "BYPASS",
+            "content-type": "application/xml",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          },
+        });
+      }
+      return cacheablePagesData();
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: [],
+        routeHandlerPaths: ["/blog/a/opengraph-image", "/blog/b/opengraph-image", "/sitemap.xml"],
+        routePatterns: {
+          "/blog/a/opengraph-image": {
+            ...metadataRoute("/blog/:slug/opengraph-image"),
+            metadataSearch: "?a-hash",
+          },
+          "/blog/b/opengraph-image": metadataRoute("/blog/:slug/opengraph-image"),
+          "/sitemap.xml": metadataRoute("/sitemap.xml"),
+        },
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ skipped: 1, warmed: 2 });
+    // A metadata image is warmed at the URL pages link it with.
+    expect(fetchImpl.mock.calls.map(([input]) => requestHref(input))).toContain(
+      "https://app.example.com/blog/a/opengraph-image?a-hash",
+    );
+
+    expect(log).toHaveBeenCalledWith(
+      "    Route pattern                Kind            Warmed  Skipped  Failed",
+    );
+    expect(log).toHaveBeenCalledWith(
+      "    /blog/:slug/opengraph-image  Metadata route     2/2        0       0",
+    );
+    expect(log).toHaveBeenCalledWith(
+      "    /sitemap.xml                 Metadata route     0/1        1       0",
+    );
+    expect(log).toHaveBeenCalledWith(
+      expect.stringMatching(/^ {2}CDN warmup skipped \/sitemap\.xml \(Metadata route\): /),
+    );
+  });
+
+  it("keeps metadata link searches in the warmed and retry plans", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const route = (search: string) => ({
+      cacheabilityProbe: { canPrunePattern: true },
+      kind: "app-route" as const,
+      metadataRoute: true as const,
+      metadataSearch: search,
+      pattern: "/blog/:slug/opengraph-image",
+    });
+    const routePatterns = {
+      "/blog/a/opengraph-image": route("?a-hash"),
+      "/blog/b/opengraph-image": route("?b-hash"),
+    };
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) =>
+      new URL(requestHref(input)!).pathname === "/blog/b/opengraph-image"
+        ? new Response("failed", { status: 500 })
+        : cacheablePagesData(),
+    );
+
+    const result = await warmCdnCache({
+      expectedBuildId: "build-a",
+      fetchImpl: fetchImpl as typeof fetch,
+      paths: [],
+      retries: 0,
+      routeHandlerPaths: ["/blog/a/opengraph-image", "/blog/b/opengraph-image"],
+      routePatterns,
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result.warmedPlan.routePatterns).toEqual({
+      "/blog/a/opengraph-image": routePatterns["/blog/a/opengraph-image"],
+    });
+    expect(result.retryPlan.routePatterns).toEqual({
+      "/blog/b/opengraph-image": routePatterns["/blog/b/opengraph-image"],
+    });
+
+    fetchImpl.mockClear();
+    await warmCdnCache({
+      ...result.retryPlan,
+      expectedBuildId: "build-a",
+      fetchImpl: fetchImpl as typeof fetch,
+      retries: 0,
+      targetUrl: "https://app.example.com",
+    });
+    expect(fetchImpl.mock.calls.map(([input]) => requestHref(input))).toEqual([
+      "https://app.example.com/blog/b/opengraph-image?b-hash",
+    ]);
   });
 
   it("caps route reports without listing concrete paths for large apps", async () => {
@@ -1971,6 +2139,73 @@ describe("Cloudflare CDN warmup", () => {
         targetUrl: "https://app.example.com",
       }),
     ).resolves.toMatchObject({ total: 1, warmed: 1, skipped: 0, failed: 0 });
+  });
+
+  it("warms metadata routes from the discovery manifest at their linked URL", async () => {
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: [],
+        routeHandlerPaths: ["/opengraph-image"],
+        routePatterns: {
+          "/opengraph-image": {
+            kind: "app-route",
+            metadataRoute: true,
+            metadataSearch: "?og-hash",
+            pattern: "/opengraph-image",
+          },
+        },
+      }),
+    );
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => cacheablePagesData());
+
+    await expect(
+      warmCdnCacheFromPrerender({
+        fetchImpl: fetchImpl as typeof fetch,
+        root: tmpDir,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 1, warmed: 1 });
+    expect(requestHref(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://app.example.com/opengraph-image?og-hash",
+    );
+  });
+
+  it("applies basePath to a metadata route under a _next/data folder", async () => {
+    // No Next.js test port applies: the folder only looks like a Pages data
+    // path; app/foo/_next/data/icon.png is an ordinary metadata file.
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "/docs",
+        buildId: "build-a",
+        paths: [],
+        routeHandlerPaths: ["/foo/_next/data/icon.png"],
+        routePatterns: {
+          "/foo/_next/data/icon.png": {
+            kind: "app-route",
+            metadataRoute: true,
+            metadataSearch: "?icon-hash",
+            pattern: "/foo/_next/data/icon.png",
+          },
+        },
+      }),
+    );
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => cacheablePagesData());
+
+    await expect(
+      warmCdnCacheFromPrerender({
+        fetchImpl: fetchImpl as typeof fetch,
+        root: tmpDir,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 1, warmed: 1 });
+    expect(requestHref(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://app.example.com/docs/foo/_next/data/icon.png?icon-hash",
+    );
   });
 
   it("requires an explicit opt-out for adapters without a build identity header", async () => {

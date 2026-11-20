@@ -79,6 +79,7 @@ import {
 } from "./middleware-response-headers.js";
 import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 import type {
+  AppPrerenderMetadataRoutePathsRequest,
   AppPrerenderRootParamNamesMap,
   AppPrerenderStaticParamsMap,
 } from "./app-prerender-endpoints.js";
@@ -797,7 +798,9 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     routePathname: string,
   ) => Promise<Response | null>;
   isMetadataRoutePath?: (cleanPathname: string) => boolean | Promise<boolean>;
-  getPrerenderMetadataRoutePaths?: () => Promise<unknown>;
+  getPrerenderMetadataRoutePaths?: (
+    request: AppPrerenderMetadataRoutePathsRequest,
+  ) => Promise<unknown>;
   createPprFallbackShells?: (
     route: Pick<AppRscHandlerRoute, "params" | "pattern" | "rootParamNames">,
     params: AppPageParams,
