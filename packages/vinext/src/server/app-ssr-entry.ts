@@ -40,8 +40,11 @@ import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { withAppRouterTree } from "vinext/shims/app-router-tree-context";
 import {
   CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL,
+  countPageEntryRejections,
   withCaughtNotFoundBoundaries,
+  withRenderedPageEntry,
   type CaughtNotFoundBoundaries,
+  type RenderedPageEntry,
 } from "vinext/shims/caught-not-found-boundaries";
 import {
   BeforeInteractiveContext,
@@ -473,8 +476,14 @@ export async function handleSsr(
      * The boundaries that catch the error that rejected the shell, a parallel
      * slot's not-found or the route's own, or null when none catches it. The
      * document then renders again from the same payload with them caught.
+     * `countPageRejections` counts the error's copies that only the route's
+     * page entry rendered, from the page's component or any component in its
+     * subtree.
      */
-    resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
+    resolveCaughtNotFoundBoundaries?: (
+      error: unknown,
+      countPageRejections: () => number,
+    ) => readonly string[] | null;
     dynamicStaleTimeSeconds?: number;
     getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   },
@@ -694,8 +703,11 @@ export async function handleSsr(
           { value: registerBeforeInteractiveInlineScript },
           ssrTree,
         );
+        // The page entry the document renders, so a shell error can be traced
+        // to the page's subtree.
+        const renderedPageEntry: RenderedPageEntry = {};
         const ssrRoot = withScriptNonce(
-          withAppRouterTree(treeWithBeforeInteractive),
+          withAppRouterTree(withRenderedPageEntry(renderedPageEntry, treeWithBeforeInteractive)),
           options?.scriptNonce,
         );
 
@@ -817,7 +829,9 @@ export async function handleSsr(
         // server component runs again.
         const prepareCaughtNotFoundRoot = (error: unknown): ReactElement | null => {
           const caughtNotFoundBoundaries =
-            options?.resolveCaughtNotFoundBoundaries?.(error) ?? null;
+            options?.resolveCaughtNotFoundBoundaries?.(error, () =>
+              countPageEntryRejections(renderedPageEntry, error),
+            ) ?? null;
           if (!caughtNotFoundBoundaries || caughtNotFoundBoundaries.length === 0) return null;
           // Decode the payload again inside this render, so that it hints the
           // client references' stylesheets and modules to this document, like

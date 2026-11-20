@@ -2168,7 +2168,7 @@ export function buildAppPageElements<
         providerId={pageElementId}
         segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}
       >
-        <Slot id={pageElementId} />
+        <Slot id={pageElementId} page />
       </LayoutSegmentProvider>
       {renderElementWithMetadataOutlet ? null : streamingMetadataOutlet}
     </>

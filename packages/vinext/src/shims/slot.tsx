@@ -21,6 +21,7 @@ import {
   isNestedBfcacheSlotSegmentIdFor,
 } from "../server/bfcache-identity.js";
 import type { CacheEntryReuseProof } from "../server/cache-proof.js";
+import { RenderedPageEntryContext } from "./caught-not-found-boundaries.js";
 import {
   getBfcacheIdMapContext,
   getBfcacheSegmentIdContext,
@@ -840,12 +841,16 @@ export function Slot({
   id,
   children,
   parallelSlots,
+  page,
 }: {
   id: string;
   children?: React.ReactNode;
   parallelSlots?: Readonly<Record<string, React.ReactNode>>;
+  /** Whether this renders the route's page entry, which the document records. */
+  page?: boolean;
 }) {
   const elements = React.useContext(ElementsContext);
+  const recordPageEntry = React.useContext(RenderedPageEntryContext!);
 
   if (!Object.hasOwn(elements, id)) {
     // A head whose render placed its streamed tags in the head leaves no body
@@ -874,6 +879,7 @@ export function Slot({
   if (element === null) {
     return null;
   }
+  if (page === true) recordPageEntry?.(id, elements);
 
   const content = (
     <RenderedSearchContext.Provider value={getElementRenderedSearch(element)}>

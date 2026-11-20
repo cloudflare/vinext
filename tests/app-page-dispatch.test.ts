@@ -708,6 +708,7 @@ describe("app page dispatch", () => {
       userAgent: string,
       tag: (error: Error) => Error,
       slots: TestRoute["slots"],
+      pageRejections = 0,
     ) => {
       let caught: readonly string[] | null | undefined;
       const { options } = createDispatchOptions({
@@ -727,6 +728,7 @@ describe("app page dispatch", () => {
           async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
             caught = ssrOptions?.resolveCaughtNotFoundBoundaries?.(
               Object.assign(new Error(digest), { digest }),
+              () => pageRejections,
             );
             return createStream(["<html>page</html>"]);
           },
@@ -748,6 +750,12 @@ describe("app page dispatch", () => {
         await resolveCaught(userAgent, (error) => tagAppPageLayoutError(error, 1), slots),
       ).toBeNull();
       expect(await resolveCaught(userAgent, (error) => error, slots)).toBeNull();
+      // One a component in the page's subtree threw, which only the page's
+      // entry renders, is the page's too.
+      expect(await resolveCaught(userAgent, (error) => error, slots, 1)).toEqual(["page:403"]);
+      expect(
+        await resolveCaught(userAgent, (error) => tagAppPageLayoutError(error, 1), slots, 1),
+      ).toBeNull();
     }
     // Without named slots, the fallback document renders.
     expect(await resolveCaught(browser, tagAppPagePageError, undefined)).toBeNull();

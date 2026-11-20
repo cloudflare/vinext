@@ -459,6 +459,100 @@ describe("app page execution helpers", () => {
     ).toBeNull();
   });
 
+  it("catches a signal from a component in the page's subtree that only the page's entry renders", () => {
+    // Next.js wraps the whole children subtree in the page's boundary, so a
+    // child Server Component's notFound(), forbidden() or unauthorized() is
+    // caught there too. Nothing tags its copy: the document counts the copies
+    // only the page's entry renders, and every copy must be one of them.
+    const signal = (status: 401 | 403 | 404) => {
+      const digest = `NEXT_HTTP_ERROR_FALLBACK;${status}`;
+      return Object.assign(new Error(digest), { digest });
+    };
+    const inPage = (count: number) => ({
+      catchesRouteSignals: true,
+      countPageRejections: () => count,
+    });
+
+    expect(resolveAppPageCaughtAccessBoundaries(signal(404), [signal(404)], inPage(1))).toEqual([
+      APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+    ]);
+    expect(resolveAppPageCaughtAccessBoundaries(signal(403), [signal(403)], inPage(1))).toEqual([
+      "page:403",
+    ]);
+    expect(resolveAppPageCaughtAccessBoundaries(signal(401), [signal(401)], inPage(1))).toEqual([
+      "page:401",
+    ]);
+    expect(
+      resolveAppPageCaughtAccessBoundaries(
+        signal(403),
+        [tagAppPagePageError(signal(403)), signal(403)],
+        inPage(2),
+      ),
+    ).toEqual(["page:403"]);
+    // A copy the page's entry doesn't render alone, from a layout's child
+    // component, a sibling slot's subtree, a template, or an element a
+    // layout shares with the page, takes the fallback, even beside one from
+    // the page's subtree, and even inside a Suspense boundary that leaves
+    // the document's shell to render.
+    for (const status of [401, 403, 404] as const) {
+      expect(
+        resolveAppPageCaughtAccessBoundaries(signal(status), [signal(status)], inPage(0)),
+      ).toBeNull();
+      expect(
+        resolveAppPageCaughtAccessBoundaries(
+          signal(status),
+          [signal(status), signal(status)],
+          inPage(1),
+        ),
+      ).toBeNull();
+      expect(
+        resolveAppPageCaughtAccessBoundaries(
+          signal(status),
+          [tagAppPagePageError(signal(status)), signal(status)],
+          inPage(1),
+        ),
+      ).toBeNull();
+    }
+    // The page's own copies need no count.
+    const countPageRejections = vi.fn(() => 0);
+    expect(
+      resolveAppPageCaughtAccessBoundaries(signal(403), [tagAppPagePageError(signal(403))], {
+        catchesRouteSignals: true,
+        countPageRejections,
+      }),
+    ).toEqual(["page:403"]);
+    expect(countPageRejections).not.toHaveBeenCalled();
+    // A layout's own signal, a slot's forbidden() and generateMetadata()'s
+    // keep the fallback whatever the page's entry renders.
+    expect(
+      resolveAppPageCaughtAccessBoundaries(
+        signal(404),
+        [signal(404), tagAppPageLayoutError(signal(404), 1)],
+        inPage(2),
+      ),
+    ).toBeNull();
+    expect(
+      resolveAppPageCaughtAccessBoundaries(
+        signal(403),
+        [signal(403), tagAppPageSlotError(signal(403), 1, "slot:team:/:0")],
+        inPage(2),
+      ),
+    ).toBeNull();
+    expect(
+      resolveAppPageCaughtAccessBoundaries(
+        signal(404),
+        [signal(404), tagAppPageMetadataError(signal(404))],
+        inPage(2),
+      ),
+    ).toBeNull();
+    // Without parallel slots, the page's fallback renders.
+    expect(
+      resolveAppPageCaughtAccessBoundaries(signal(403), [signal(403)], {
+        countPageRejections: () => 1,
+      }),
+    ).toBeNull();
+  });
+
   it("parses redirect and access-fallback digests", () => {
     expect(
       resolveAppPageSpecialError({

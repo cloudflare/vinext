@@ -182,7 +182,10 @@ export type AppPageSsrHandler = {
       /** Whether the RSC render threw the given shell error. See handleSsr. */
       isServerComponentError?: (error: unknown) => boolean;
       /** The slot or route boundaries that catch a shell error. See handleSsr. */
-      resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
+      resolveCaughtNotFoundBoundaries?: (
+        error: unknown,
+        countPageRejections: () => number,
+      ) => readonly string[] | null;
       dynamicStaleTimeSeconds?: number;
       getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
     },
@@ -246,7 +249,10 @@ type RenderAppPageHtmlStreamOptions = {
   /** Whether the RSC render threw the given shell error. See handleSsr. */
   isServerComponentError?: (error: unknown) => boolean;
   /** The slot or route boundaries that catch a shell error. See handleSsr. */
-  resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
+  resolveCaughtNotFoundBoundaries?: (
+    error: unknown,
+    countPageRejections: () => number,
+  ) => readonly string[] | null;
   /** Dev-only: original server error to surface in the browser overlay. */
   initialDevServerError?: unknown;
   /** Report an SSR/Fizz render failure through instrumentation. */

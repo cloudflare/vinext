@@ -1531,11 +1531,11 @@ async function renderAppPageLifecycleImpl(
         // Next.js's `self.__next_f` Flight transport, as the boundary's own
         // document does.
         mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
-        resolveCaughtNotFoundBoundaries: (error) =>
+        resolveCaughtNotFoundBoundaries: (error, countPageRejections) =>
           resolveAppPageCaughtAccessBoundaries(
             error,
             rscErrorTracker.getCapturedSpecialErrors(error),
-            { catchesRouteSignals: options.catchesRouteSignals },
+            { catchesRouteSignals: options.catchesRouteSignals, countPageRejections },
           ),
       });
     },
