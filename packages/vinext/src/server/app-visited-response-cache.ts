@@ -23,6 +23,11 @@ export type VisitedResponseCacheEntry = {
    */
   navigationReuseRevoked?: true;
   params: Record<string, string | string[]>;
+  /**
+   * The source URL, with its search, a committed tree for an intercepted route
+   * was committed over. The cache key names only the source's pathname.
+   */
+  previousNextUrl?: string;
   response: CachedRscResponse;
   reuseAfterHistoryRestore: boolean;
 };
@@ -45,6 +50,7 @@ export function createVisitedResponseCacheEntry(options: {
   now: number;
   mountedSlotsHeader?: string | null;
   params: Record<string, string | string[]>;
+  previousNextUrl?: string | null;
   response: CachedRscResponse;
   reuseAfterHistoryRestore?: boolean;
 }): VisitedResponseCacheEntry {
@@ -59,9 +65,25 @@ export function createVisitedResponseCacheEntry(options: {
     ...(options.fromHydration === true ? { fromHydration: true as const } : {}),
     mountedSlotsHeader: options.mountedSlotsHeader ?? null,
     params: options.params,
+    ...(options.previousNextUrl ? { previousNextUrl: options.previousNextUrl } : {}),
     response: options.response,
     reuseAfterHistoryRestore: options.reuseAfterHistoryRestore === true,
   };
+}
+
+/**
+ * Whether a traversal back to a history entry naming `previousNextUrl` can
+ * reuse this entry. A tree committed for an intercepted route shows the source
+ * it was committed over, search included, as Next.js restores the entry's own
+ * tree; a traversal to an entry that names another source URL renders afresh.
+ */
+export function isVisitedResponseCacheEntryForPreviousNextUrl(
+  entry: VisitedResponseCacheEntry,
+  previousNextUrl: string | null,
+): boolean {
+  if (entry.elements === undefined) return true;
+  if (AppElementsWire.readMetadata(entry.elements).interception === null) return true;
+  return entry.previousNextUrl === previousNextUrl;
 }
 
 export function isVisitedResponseCacheEntryFresh(
