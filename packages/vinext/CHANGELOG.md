@@ -1,5 +1,46 @@
 # vinext
 
+## 1.5.0
+
+### Features
+
+- **App Router:** keep the elements an intercepted payload retains (#4649)
+
+### Bug Fixes
+
+#### App Router
+
+- authorize a slot intercept by the target when it renders the target's layouts (#4782)
+- render only the intercepting tree beneath a slot intercept (#4650)
+- keep request context when the client cancels a document (#4790)
+- name the page head by a request-scoped id in head component props (#4786)
+- skip the refetch of a rewritten page's own route on refresh (#4760)
+- don't learn optimistic route shells from rewritten URLs (#4720)
+- answer 404 for params a static export doesn't list (#4708)
+- link a page's client component CSS in the shell under loading.js (#4707)
+
+#### Build
+
+- guard every output directory that vinext or Vite empties (#4778)
+- write the build output under Vite's build.outDir (#4774)
+- ship the client assets module once when ssr is nested in the rsc output (#4775)
+- keep server output ESM under a CommonJS package scope (#4738)
+
+#### Misc
+
+- **Cloudflare:** warm file-based metadata routes (#4788)
+- **Init:** install a @cloudflare/vite-plugin version that cf accepts (#4776)
+- **Pages Router:** give useRouter() the new route on the first render after a client navigation (#4749)
+- **Use Cache:** key File arguments by name and MIME type (#4737)
+- **Prerender:** render the 404 page without matching a top-level dynamic route (#4709)
+- **Image:** serve data: and blob: sources unoptimized and eager (#4725)
+- **Cloudflare:** skip warming paths a next.config redirect or external rewrite answers (#4706)
+
+### Contributors
+
+- @edmundhung
+- @james-elicx
+
 ## 1.4.6
 
 ### Bug Fixes
