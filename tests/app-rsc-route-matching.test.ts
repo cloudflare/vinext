@@ -1525,6 +1525,91 @@ describe("App RSC route matching", () => {
       ).toMatchObject({ page: "root-photos-intercept", sourceRouteIndex: 0 });
     });
 
+    // A root-level sibling intercept without a root page is owned by a stand-in
+    // route. From /_not-found it would render through that route, or through
+    // the top-level `[slug]` route /_not-found matches, neither of which
+    // Next.js shows, so the target renders directly.
+    it("renders the target directly for a root-level sibling intercept with a stand-in owner from an unmatched URL's not-found page", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          ids: { route: "graph-route:/plain" },
+          pattern: "/plain",
+          patternParts: ["plain"],
+          routeSegments: ["plain"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/photos/:id",
+              sourceMatchPattern: "/",
+              sourcePageSegments: ["(.)photos", "[id]"],
+              slotId: "slot:__vinext_sibling_intercept:/",
+              interceptLayouts: [],
+              page: "root-photos-intercept",
+              params: ["id"],
+            },
+          ],
+        },
+        { ...route("/:slug", [":slug"]), routeSegments: ["[slug]"] },
+      ] as any);
+
+      expect(matcher.findIntercept("/photos/1", "/_not-found")).toBeNull();
+      expect(matcher.findIntercept("/photos/1", "/plain")).not.toBeNull();
+    });
+
+    // From /_not-found the first intercept whose source and target match
+    // decides, as Next.js's first matching interception rewrite does: a route
+    // group's slot intercept wins over a later `[slug]` one, and when the group
+    // has no page of its own to render it, the target renders directly rather
+    // than the later intercept.
+    it("never falls through to a later intercept from an unmatched URL's not-found page", () => {
+      const groupModal = {
+        gmodal: {
+          intercepts: [
+            {
+              sourceMatchPattern: "/",
+              sourcePageSegments: ["(g)", "@gmodal", "(.)photos", "[id]"],
+              targetPattern: "/photos/:id",
+              interceptLayouts: [],
+              page: "group-photos-modal",
+              params: ["id"],
+            },
+          ],
+        },
+      };
+      const slugRoute = {
+        ...route("/:slug", [":slug"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/:slug",
+                sourcePageSegments: ["[slug]", "@modal", "(..)photos", "[id]"],
+                targetPattern: "/photos/:id",
+                interceptLayouts: [],
+                page: "slug-photos-modal",
+                params: ["id"],
+              },
+            ],
+          },
+        }),
+        routeSegments: ["[slug]"],
+      };
+
+      const withGroupPage = createAppRscRouteMatcher([
+        { ...route("/", [], groupModal), routeSegments: ["(g)"] },
+        slugRoute,
+      ]);
+      expect(withGroupPage.findIntercept("/photos/1", "/_not-found")).toMatchObject({
+        page: "group-photos-modal",
+        sourceRouteIndex: 0,
+        rendersWholeInterceptingRoute: true,
+      });
+
+      const withoutGroupPage = createAppRscRouteMatcher([
+        { ...route("/home", ["home"], groupModal), routeSegments: ["(g)", "home"] },
+        slugRoute,
+      ]);
+      expect(withoutGroupPage.findIntercept("/photos/1", "/_not-found")).toBeNull();
+    });
+
     // A page in a route group below the slot's directory, such as
     // `club/[slug]/(children)/page.tsx`, is the slot owner's own route, as the
     // route graph places the slot at its URL level. A route a visible segment
