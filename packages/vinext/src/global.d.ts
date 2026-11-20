@@ -109,6 +109,13 @@ declare global {
      */
     __VINEXT_PAGE_PATTERNS__: string[] | undefined;
 
+    /**
+     * Each Pages Router route's own stylesheet URLs, in load order, without
+     * `_app`'s. Appended to the production client entry; client navigations
+     * turn these stylesheets on and off, as Next.js does.
+     */
+    __VINEXT_PAGE_STYLESHEETS__: Record<string, string[]> | undefined;
+
     /** Pages Router patterns whose modules export `getStaticProps`. */
     __VINEXT_PAGES_SSG_PATTERNS__: string[] | undefined;
 

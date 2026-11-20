@@ -82,6 +82,17 @@ describe("Pages Document asset props", () => {
     expect(applied).not.toContain("next-script-nonce");
   });
 
+  // Ported from Next.js: test/production/css-features/css-rendering.test.ts (CSP nonce)
+  // https://github.com/vercel/next.js/blob/canary/test/production/css-features/css-rendering.test.ts
+  it("gives the page stylesheet marker Head's nonce", () => {
+    expect(
+      applyDocumentAssetProps('<noscript data-n-css="script-nonce"></noscript>', {
+        headNonce: "head-nonce",
+        scriptNonce: "script-nonce",
+      }),
+    ).toBe('<noscript data-n-css="head-nonce"></noscript>');
+  });
+
   it("replaces an existing attribute value without expanding $ patterns", () => {
     expect(
       applyDocumentAssetProps('<script nonce="old" src="/a.js"></script>', {

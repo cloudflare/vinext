@@ -124,6 +124,12 @@ describe("renderVinextBuiltUrl", () => {
     );
   });
 
+  it("versions stylesheets for JavaScript hosts, as the server links them", () => {
+    expect(renderVinextBuiltUrl("_next/static/css/page.css", "", "dpl_123", "js")).toBe(
+      "/_next/static/css/page.css?dpl=dpl_123",
+    );
+  });
+
   it("versions worker entries and worker-owned assets without versioning app chunks", () => {
     expect(
       renderVinextBuiltUrl(

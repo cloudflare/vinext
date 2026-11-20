@@ -33,6 +33,7 @@ import {
   apiRouter,
   invalidateRouteCache,
   matchRoute,
+  patternToNextFormat as pagesPatternToNextFormat,
 } from "./routing/pages-router.js";
 import {
   generatePagesRequestEntry as _generatePagesRequestEntry,
@@ -253,6 +254,10 @@ import {
   assertNoPublicNextRequestConflict,
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
+import {
+  collectPagesPageStylesheets,
+  withoutPreloadedStylesheets,
+} from "./build/pages-page-stylesheets.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { createNitroDevDepsOptimizerGatePlugin } from "./plugins/nitro-dev-deps-optimizer-gate.js";
 import { createClientCompileHintsPlugin } from "./plugins/client-compile-hints.js";
@@ -9425,6 +9430,51 @@ export const loadServerActionClient = ${
       // The client chunks exist now. A plain Pages Router SSR build inherits
       // the top-level client output, so it must not group `_app`'s imports.
       if (this.environment?.name === "client") pagesAppChunkRoots.clear();
+    },
+  });
+  plugins.push({
+    name: "vinext:pages-client-stylesheets",
+    apply: "build",
+    generateBundle: {
+      // After vite:css-post records each chunk's stylesheets.
+      order: "post",
+      async handler(_options, bundle) {
+        const environment = this.environment;
+        if (environment?.name !== "client" || environment.config.build.lib || !hasPagesDir) return;
+
+        const entry = Object.values(bundle).find(
+          (item) => item.type === "chunk" && item.facadeModuleId === RESOLVED_CLIENT_ENTRY,
+        );
+        if (entry?.type !== "chunk") return;
+
+        const routes = new Map<string, string>();
+        for (const route of await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher)) {
+          routes.set(canonicalize(route.filePath), pagesPatternToNextFormat(route.pattern));
+        }
+        const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
+        if (errorFilePath) routes.set(canonicalize(errorFilePath), "/_error");
+        const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+        const appId = appFilePath ? canonicalize(appFilePath) : undefined;
+
+        const stylesheets = collectPagesPageStylesheets(bundle, {
+          routeOf: (id) => routes.get(canonicalize(id)),
+          isAlwaysLoaded: (id) => id === RESOLVED_CLIENT_ENTRY || canonicalize(id) === appId,
+        });
+        // The URLs Vite loads these from, with the deployment ID query that
+        // Next.js adds to stylesheets.
+        const url = (file: string) =>
+          nextConfig.assetPrefix || nextConfig.deploymentId
+            ? renderVinextBuiltUrl(file, nextConfig.assetPrefix, nextConfig.deploymentId)
+            : environment.config.base + file;
+        const urls = Object.fromEntries(
+          Object.entries(stylesheets).map(([route, files]) => [route, files.map(url)]),
+        );
+        // The page loaders' dynamic imports leave page stylesheets to the
+        // router, which turns them on as each page renders.
+        entry.code = withoutPreloadedStylesheets(entry, new Set(Object.values(stylesheets).flat()));
+        // Appended, so the entry's source map still lines up.
+        entry.code += `\nwindow.__VINEXT_PAGE_STYLESHEETS__=${JSON.stringify(urls)};`;
+      },
     },
   });
   plugins.push({

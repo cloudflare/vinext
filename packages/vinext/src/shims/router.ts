@@ -55,6 +55,12 @@ import {
   getPagesStaticDataCache,
 } from "./internal/pages-data-fetch-dedup.js";
 import { resolveDirectHybridClientRouteOwner } from "./internal/hybrid-client-route-owner-direct.js";
+import {
+  commitPagesStylesheets,
+  insertPagesStylesheets,
+  loadPagesRouteStylesheets,
+  type PagesStylesheet,
+} from "./internal/pages-stylesheets.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isExternalUrl } from "../utils/external-url.js";
@@ -162,6 +168,7 @@ function PagesRouterCommitBoundaryHelper({
 function renderPagesRouterElement(
   element: ReactElement,
   scroll?: ScrollPosition | null,
+  stylesheets?: readonly PagesStylesheet[],
 ): Promise<void> {
   const root = window.__VINEXT_ROOT__;
   if (!root) {
@@ -195,10 +202,12 @@ function renderPagesRouterElement(
       }
     };
 
+    if (stylesheets) insertPagesStylesheets(stylesheets);
     root.render(
       wrapWithRouterContext(
         element,
         () => {
+          if (stylesheets && isCurrent()) commitPagesStylesheets(stylesheets);
           void (async () => {
             if (!isCurrent()) return;
 
@@ -2191,11 +2200,26 @@ async function loadTargetPageModule(
   url: string,
   failurePrefix: string,
 ): Promise<{ default?: unknown; [key: string]: unknown }> {
+  // Fetch the page's stylesheets alongside its module; rendering awaits them.
+  loadPagesRouteStylesheets(target.pattern)?.catch(() => {});
   try {
     return await target.loader();
   } catch (err) {
     console.error("[vinext] Page loader threw during navigation:", err);
     scheduleHardNavigationAndThrow(url, `${failurePrefix}: page loader threw`);
+  }
+}
+
+/** The stylesheets of the page that renders `route`; reloads the page if one fails. */
+async function loadNavigationStylesheets(
+  route: string,
+  url: string,
+): Promise<PagesStylesheet[] | undefined> {
+  try {
+    return await loadPagesRouteStylesheets(route);
+  } catch (err) {
+    console.error("[vinext] Page stylesheet failed to load during navigation:", err);
+    scheduleHardNavigationAndThrow(url, "Navigation failed: page stylesheet failed to load");
   }
 }
 
@@ -2292,10 +2316,15 @@ async function renderPagesNavigationTarget(
   preloaded?: {
     appComponent?: PagesAppComponent;
     pageModule?: { default?: unknown; [key: string]: unknown };
+    /** The route of `pageModule` when it is not the target's. */
+    pageRoute?: string;
   },
 ): Promise<void> {
   const pageModule =
     preloaded?.pageModule ?? (await loadTargetPageModule(target, url, "Navigation failed"));
+  assertStillCurrent();
+
+  const stylesheets = await loadNavigationStylesheets(preloaded?.pageRoute ?? target.pattern, url);
   assertStillCurrent();
 
   const PageComponent = pageModule.default;
@@ -2333,7 +2362,7 @@ async function renderPagesNavigationTarget(
   options.beforeHistoryChange?.();
   window.__NEXT_DATA__ = nextData;
   applyVinextLocaleGlobals(window, nextData);
-  await renderPagesRouterElement(element, options.scroll);
+  await renderPagesRouterElement(element, options.scroll, stylesheets);
   assertStillCurrent();
 }
 
@@ -2511,6 +2540,7 @@ async function navigateClientData(
         await renderPagesNavigationTarget(url, initialTarget, props, options, assertStillCurrent, {
           appComponent,
           pageModule,
+          pageRoute: errorTarget.pattern,
         });
         return;
       }
@@ -2751,6 +2781,8 @@ async function navigateClientHtml(
   }
 
   let pageModule: { default?: unknown; [key: string]: unknown };
+  // Fetch the page's stylesheets alongside its module; rendering awaits them.
+  loadPagesRouteStylesheets(nextData.page)?.catch(() => {});
   const loader = window.__VINEXT_PAGE_LOADERS__?.[nextData.page];
   if (loader) {
     // Prefer the generated route loader when it exists, even on the HTML
@@ -2777,6 +2809,9 @@ async function navigateClientHtml(
     // Dynamically import the new page module
     pageModule = await import(/* @vite-ignore */ pageModuleUrl);
   }
+  assertStillCurrent();
+
+  const stylesheets = await loadNavigationStylesheets(nextData.page, browserUrl);
   assertStillCurrent();
 
   const PageComponent = pageModule.default;
@@ -2850,7 +2885,7 @@ async function navigateClientHtml(
   const committedNextData = nextDataRouteState ? { ...nextData, ...nextDataRouteState } : nextData;
   window.__NEXT_DATA__ = committedNextData;
   applyVinextLocaleGlobals(window, committedNextData);
-  await renderPagesRouterElement(element, options.scroll);
+  await renderPagesRouterElement(element, options.scroll, stylesheets);
   assertStillCurrent();
 }
 
