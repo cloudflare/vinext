@@ -3,6 +3,7 @@ import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js"
 import { mergeElements } from "vinext/shims/slot";
 import { resolveAppPageRouteStateKey } from "./app-page-segment-state.js";
 import {
+  APP_ROUTE_HEAD_ID_PREFIX,
   AppElementsWire,
   normalizeAppElementsSlotBindings,
   type AppElements,
@@ -239,12 +240,23 @@ function reduceApprovedVisibleCommitState(
               }),
             )
           : [];
-      const hmrPreserveElementIds =
+      const hmrPreservesRoute =
         action.operation.lane === "hmr" &&
         state.routeId === action.routeId &&
-        Object.hasOwn(state.elements, state.routeId)
-          ? [state.routeId, ...hmrPreservedSlotOwnerLayoutIds]
-          : hmrPreservedSlotOwnerLayoutIds;
+        Object.hasOwn(state.elements, state.routeId);
+      // The kept route renders its head from a separate entry, so a payload
+      // without one (a boundary error's) keeps the head the route had.
+      const hmrRouteHeadId = `${APP_ROUTE_HEAD_ID_PREFIX}${state.routeId}`;
+      const hmrPreserveElementIds = hmrPreservesRoute
+        ? [
+            state.routeId,
+            ...(!Object.hasOwn(action.elements, hmrRouteHeadId) &&
+            Object.hasOwn(state.elements, hmrRouteHeadId)
+              ? [hmrRouteHeadId]
+              : []),
+            ...hmrPreservedSlotOwnerLayoutIds,
+          ]
+        : hmrPreservedSlotOwnerLayoutIds;
       const hmrUniquePreserveElementIds =
         hmrPreserveElementIds.length > 1
           ? [...new Set(hmrPreserveElementIds)]

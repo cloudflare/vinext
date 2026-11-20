@@ -81,6 +81,7 @@ import {
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
+  APP_ROUTE_HEAD_ID_PREFIX,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   UNMATCHED_SLOT,
   getMountedSlotIds,
@@ -2915,6 +2916,68 @@ describe("app browser entry state helpers", () => {
     const nextState = applyApprovedVisibleCommit(currentState, approvedCommit);
     expect(nextState.elements[routeId]).toBe(currentRouteShell);
     expect(nextState.elements[rootLayoutId]).toBe(nextRootLayout);
+  });
+
+  it("keeps the route head across an HMR replacement that carries none", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const routeId = AppElementsWire.encodeRouteId("/hmr-head", null);
+    const routeHeadId = `${APP_ROUTE_HEAD_ID_PREFIX}${routeId}`;
+    const currentHead = React.createElement("title", null, "current head");
+    const nextHead = React.createElement("title", null, "next head");
+    const currentState = createState({
+      bfcacheIds: { [rootLayoutId]: "0" },
+      elements: createResolvedElements(
+        routeId,
+        "/",
+        null,
+        {
+          [rootLayoutId]: React.createElement("section", null, "layout"),
+          [routeId]: React.createElement("div", null, "route shell"),
+          [routeHeadId]: currentHead,
+          "page:/hmr-head": React.createElement("main", null, "page"),
+        },
+        [rootLayoutId],
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/hmr-head", {}),
+      routeId,
+    });
+    const commitHmr = async (extra: Record<string, React.ReactNode>) => {
+      const pending = await createPendingNavigationCommit({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        currentState,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            routeId,
+            "/",
+            null,
+            {
+              [rootLayoutId]: React.createElement("section", null, "layout error"),
+              [routeId]: React.createElement("div", null, "boundary route"),
+              ...extra,
+            },
+            [rootLayoutId],
+          ),
+        ),
+        navigationSnapshot: currentState.navigationSnapshot,
+        operationLane: "hmr",
+        renderId: 16,
+        type: "replace",
+      });
+      const { approvedCommit } = approveHmrVisibleCommit({
+        currentState,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+        targetHref: "https://example.com/hmr-head",
+      });
+      if (!approvedCommit) throw new Error("Expected HMR visible commit approval");
+      return applyApprovedVisibleCommit(currentState, approvedCommit);
+    };
+
+    // A boundary error's payload carries its head inline in the route it
+    // renders, which HMR replaces with the route the client holds.
+    expect((await commitHmr({})).elements[routeHeadId]).toBe(currentHead);
+    expect((await commitHmr({ [routeHeadId]: nextHead })).elements[routeHeadId]).toBe(nextHead);
   });
 
   it("preserves planner-approved named slot state across HMR replacement", async () => {
