@@ -50,6 +50,11 @@ type NavigationRuntimePrefetchRouterState = {
   routeId: string;
   /** The committed render is the not-found page of an unmatched URL. */
   routeMiss: boolean;
+  /**
+   * The interception context the committed entry keeps from the source it was
+   * opened from, which its navigations send whatever their target.
+   */
+  sourceInterceptionContext: string | null;
 };
 
 type NavigationRuntimeTraversalIntent = {
