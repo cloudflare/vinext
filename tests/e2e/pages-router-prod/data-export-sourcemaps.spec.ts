@@ -7,8 +7,9 @@ const BASE = "http://localhost:4175";
 const FIXTURE_DIR = path.resolve(process.cwd(), "tests/fixtures/pages-basic");
 const CLIENT_DIR = path.join(FIXTURE_DIR, "dist/client");
 
-// Text that only the Pages data exports on /sourcemap-data/* use.
+// Text that only the Pages data exports on /sourcemap-data/* and _app use.
 const DATA_EXPORT_TEXT = [
+  "SOURCEMAP_APP_STATIC_PROPS",
   "SOURCEMAP_IMPORTED_SERVER_MODULE",
   "SOURCEMAP_SERVER_HELPER",
   "SOURCEMAP_SERVER_PROPS",
@@ -55,6 +56,9 @@ test("keeps Pages data exports out of emitted client sourcemaps", async () => {
   );
   expect(contentOf("sourcemap-data/[slug].jsx")).toEqual([
     expect.stringContaining("SOURCEMAP_STATIC_COMPONENT"),
+  ]);
+  expect(contentOf("pages/_app.tsx")).toEqual([
+    expect.stringContaining('<nav data-testid="global-nav">'),
   ]);
 });
 

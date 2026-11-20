@@ -10,3 +10,9 @@ export default function MyApp({ Component, pageProps }: AppProps) {
     </div>
   );
 }
+
+// Next.js never calls data exports from _app; the client build strips them as
+// it does a page's.
+export async function getStaticProps() {
+  return { props: { value: "SOURCEMAP_APP_STATIC_PROPS" } };
+}
