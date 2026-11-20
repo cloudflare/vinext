@@ -2248,6 +2248,126 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
     }
   });
 
+  // Next.js never runs a force-dynamic (or revalidate = 0) page during the
+  // build, even when generateStaticParams() lists paths for it: static
+  // generation bails out before the page component is rendered. The params
+  // themselves are still collected.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/create-component-tree.tsx#L296-L311
+  it("does not render a dynamically configured route for its generateStaticParams paths", async () => {
+    const root = tmpDir("vinext-prerender-dynamic-gsp-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    const gsp = "export function generateStaticParams() { return [{ slug: 'a' }, { slug: 'b' }]; }";
+    const page = "export default function Page() { return null; }";
+    const pages: Record<string, string> = {
+      "live/[slug]": `export const dynamic = 'force-dynamic';\n${gsp}\n${page}\n`,
+      "zero/[slug]": `export const revalidate = 0;\n${gsp}\n${page}\n`,
+    };
+    for (const [dir, source] of Object.entries(pages)) {
+      fs.mkdirSync(path.join(appDir, dir), { recursive: true });
+      fs.writeFileSync(path.join(appDir, dir, "page.tsx"), source);
+    }
+
+    const requestedPagePaths: string[] = [];
+    let staticParamsRequests = 0;
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/static-params") {
+        staticParamsRequests++;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify([{ slug: "a" }, { slug: "b" }]));
+        return;
+      }
+      if (url.pathname.startsWith("/live/") || url.pathname.startsWith("/zero/")) {
+        requestedPagePaths.push(url.pathname);
+      }
+      res.statusCode = 500;
+      res.end("a dynamically configured route should not render at build time");
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await appRouter(appDir);
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes,
+        outDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { port },
+      });
+
+      expect(requestedPagePaths).toEqual([]);
+      // The params are still collected, as in Next.js; only the renders are skipped.
+      expect(staticParamsRequests).toBe(2);
+      expect(result.routes.filter((r) => r.route === "/live/:slug")).toEqual([
+        { route: "/live/:slug", status: "skipped", reason: "dynamic" },
+      ]);
+      expect(result.routes.filter((r) => r.route === "/zero/:slug")).toEqual([
+        { route: "/zero/:slug", status: "skipped", reason: "dynamic" },
+      ]);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Next.js still collects static params for a dynamically configured route
+  // (build/utils.ts isPageStatic calls buildAppStaticPaths regardless of
+  // `dynamic`), so a throwing generateStaticParams() fails the build there too.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/utils.ts#L837-L870
+  it("still fails a dynamically configured route whose generateStaticParams throws", async () => {
+    const root = tmpDir("vinext-prerender-dynamic-gsp-error-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    const pageDir = path.join(appDir, "live", "[slug]");
+    fs.mkdirSync(pageDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pageDir, "page.tsx"),
+      "export const dynamic = 'force-dynamic';\nexport function generateStaticParams() { throw new Error('boom'); }\nexport default function Page() { return null; }\n",
+    );
+
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/static-params") {
+        res.statusCode = 500;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ error: "Error: boom from generateStaticParams" }));
+        return;
+      }
+      res.statusCode = 500;
+      res.end("a dynamically configured route should not render at build time");
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { port },
+      });
+
+      const route = result.routes.find((r) => r.route === "/live/:slug");
+      expect(route).toMatchObject({ status: "error", fatal: true });
+      if (route?.status !== "error") {
+        throw new Error("expected the throwing generateStaticParams route to fail prerender");
+      }
+      expect(route.error).toContain("boom from generateStaticParams");
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces a thrown getStaticPaths error instead of silently skipping the route", async () => {
     const root = tmpDir("vinext-prerender-pages-gsp-error-");
     const outDir = path.join(root, "out");
