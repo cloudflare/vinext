@@ -648,6 +648,7 @@ const __requestHandler = createAppRscRequestHandler({
   i18nConfig: ${JSON.stringify(config?.i18n ?? null)},
   imageConfig: ${JSON.stringify(config?.imageConfig)},
   isMetadataRoute: __isMetadataPath,
+  metadataRouteAnswersPath: __isMetadataPath,
   isDev: process.env.NODE_ENV !== "production",
   hasInterceptionId,
   matchRoute,
@@ -2164,6 +2165,11 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     const { isMetadataRouteRequestPath: __isMetadataRouteRequestPath } =
       await __loadMetadataRouteResponse();
     return __isMetadataRouteRequestPath(metadataRoutes, cleanPathname);
+  },
+  async metadataRouteAnswersPath(pathname) {
+    const { metadataRouteAnswersRewrittenPath: __metadataRouteAnswersRewrittenPath } =
+      await __loadMetadataRouteResponse();
+    return __metadataRouteAnswersRewrittenPath(metadataRoutes, pathname);
   },`
       : ""
   }

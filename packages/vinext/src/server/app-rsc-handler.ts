@@ -839,6 +839,11 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   i18nConfig: NextI18nConfig | null;
   imageConfig?: ImageConfig;
   isMetadataRoute?: (pathname: string) => boolean;
+  /**
+   * Whether a metadata route answers a rewrite destination rather than leaving
+   * it to later routing, without running the route.
+   */
+  metadataRouteAnswersPath?: (pathname: string) => boolean | Promise<boolean>;
   isDev: boolean;
   hasInterceptionId: (interceptionId: string) => boolean;
   loadPrerenderPagesRoutes?: () => Promise<unknown>;
@@ -2397,11 +2402,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // reaches serves itself instead of the source. Each ends routing as a
       // static route does; a dynamic metadata route would take later rules
       // too, but stopping there only leaves the target to render directly.
+      // The base of a sitemap with generateSitemaps, a child of a sitemap
+      // without it, and an image child without generateImageMetadata get no
+      // metadata response, so a direct request takes later rules there. The
+      // request stage, which does not load the route modules, treats every
+      // such candidate as answering, so the source is refused there.
       const reachesFilesystemOutput = async (): Promise<boolean> =>
         isImageOptimizationPath(sourceRulesPathname) ||
-        (options.isMetadataRoute
-          ? options.isMetadataRoute(sourceRulesPathname)
-          : ((await options.isMetadataRoutePath?.(sourceRulesPathname)) ?? false)) ||
+        ((await options.metadataRouteAnswersPath?.(sourceRulesPathname)) ?? false) ||
         options.publicFiles.has(normalizePathnameForRouteMatch(sourceRulesPathname));
       const reachedByDirectRequest = async () =>
         didRewriteSource && (await reachesFilesystemOutput())

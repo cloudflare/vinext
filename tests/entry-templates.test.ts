@@ -2574,6 +2574,39 @@ describe("App Router entry templates", () => {
     expect(globalsImportIndex).toBeLessThan(firstUserImportIndex);
   });
 
+  it("generateRscEntry decides rewritten metadata paths from the loaded route modules", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-entry-metadata-"));
+    const filePath = path.join(tmpDir, "sitemap.ts");
+    fs.writeFileSync(filePath, "export default function sitemap() { return []; }");
+    const metadataRoutes: MetadataFileRoute[] = [
+      {
+        type: "sitemap",
+        isDynamic: true,
+        filePath,
+        routePrefix: "",
+        servedUrl: "/sitemap.xml",
+        contentType: "application/xml",
+      },
+    ];
+
+    try {
+      const code = generateRscEntry(
+        "/tmp/test/app",
+        minimalAppRoutes,
+        null,
+        metadataRoutes,
+        null,
+        "",
+        false,
+      );
+      expect(code).toContain(
+        "async metadataRouteAnswersPath(pathname) {\n    const { metadataRouteAnswersRewrittenPath: __metadataRouteAnswersRewrittenPath } =\n      await __loadMetadataRouteResponse();\n    return __metadataRouteAnswersRewrittenPath(metadataRoutes, pathname);",
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("generateRscEntry fails with a path-specific error when a static metadata file cannot be read", () => {
     const metadataRoutes: MetadataFileRoute[] = [
       {
