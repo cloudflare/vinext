@@ -218,6 +218,75 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(route.slots?.["@modal"].loadings).toEqual([nestedSlotLoading]);
     expect(route.slots?.["@modal"].notFounds).toEqual([nestedSlotNotFound]);
   });
+
+  // Like Next.js's intercepting route, whose tree holds neither the owner's
+  // page nor another slot's branch, a render of the whole intercepting route
+  // never imports those, so a module of theirs that throws can't fail it.
+  it("loads only what a render of the whole intercepting route shows", async () => {
+    const throwing = (name: string) =>
+      vi.fn(async () => {
+        throw new Error(`${name} module throws`);
+      });
+    const layout = { default: () => null };
+    const asideDefault = { default: () => null };
+    const modalLayout = { default: () => null };
+    const modalLoading = { default: () => null };
+    const __loadPage = throwing("owner page");
+    const __loadAsidePage = throwing("aside page");
+    const __loadAsideLayout = throwing("aside layout");
+    const __loadAsideConfigLayout = throwing("aside branch layout");
+    const __loadModalBranchLoading = throwing("modal branch loading");
+    const route: LazyLoadableRoute = {
+      page: null,
+      __loadPage,
+      layouts: [null],
+      __loadLayouts: [async () => layout],
+      slots: {
+        aside: {
+          page: null,
+          default: null,
+          layout: null,
+          configLayouts: [null],
+          __loadPage: __loadAsidePage,
+          __loadDefault: async () => asideDefault,
+          __loadLayout: __loadAsideLayout,
+          __loadConfigLayouts: [__loadAsideConfigLayout],
+        },
+        modal: {
+          page: null,
+          layout: null,
+          loadings: [null, null],
+          loadingTreePositions: [0, 2],
+          __loadPage: throwing("modal page"),
+          __loadLayout: async () => modalLayout,
+          __loadLoadings: [async () => modalLoading, __loadModalBranchLoading],
+        },
+      },
+    };
+
+    await ensureAppRouteModulesLoaded(route, {
+      interceptSlotKey: "modal",
+      rendersInterceptionSource: true,
+      rendersWholeInterceptingRoute: true,
+    });
+
+    expect(route.layouts).toEqual([layout]);
+    expect(route.slots?.aside.default).toBe(asideDefault);
+    expect(route.slots?.modal.layout).toBe(modalLayout);
+    expect(route.slots?.modal.loadings).toEqual([modalLoading, null]);
+    for (const loader of [
+      __loadPage,
+      __loadAsidePage,
+      __loadAsideLayout,
+      __loadAsideConfigLayout,
+      __loadModalBranchLoading,
+    ]) {
+      expect(loader).not.toHaveBeenCalled();
+    }
+    // The route's own render still loads everything.
+    expect(route.__loaded).toBeFalsy();
+    await expect(ensureAppRouteModulesLoaded(route)).rejects.toThrow("module throws");
+  });
 });
 
 describe("loadAppInterceptLayouts", () => {
@@ -391,6 +460,18 @@ describe("lazy hydration request lifetime", () => {
         ensureAppRouteModulesLoaded({ page: null, __loadPage: load } as LazyLoadableRoute),
     ],
     [
+      "a render of the whole intercepting route",
+      (load: () => Promise<unknown>) =>
+        ensureAppRouteModulesLoaded(
+          { layouts: [null], __loadLayouts: [load] } as LazyLoadableRoute,
+          {
+            interceptSlotKey: "modal",
+            rendersInterceptionSource: true,
+            rendersWholeInterceptingRoute: true,
+          },
+        ),
+    ],
+    [
       "intercept layouts",
       (load: () => Promise<unknown>) =>
         loadAppInterceptLayouts({
@@ -427,6 +508,40 @@ describe("lazy hydration request lifetime", () => {
     await creator.waitUntil.mock.calls[0][0];
     expect(kept).toBe(true);
   });
+
+  it.each([true, false])(
+    "fully loads a route whose own load overlaps a whole intercepting route's (own first: %s)",
+    async (ownFirst) => {
+      const layoutLoad = deferred<unknown>();
+      const pageLoad = deferred<unknown>();
+      const route: LazyLoadableRoute = {
+        page: null,
+        __loadPage: () => pageLoad.promise,
+        layouts: [null],
+        __loadLayouts: [() => layoutLoad.promise],
+      };
+      const loadWhole = () =>
+        ensureAppRouteModulesLoaded(route, {
+          interceptSlotKey: "modal",
+          rendersInterceptionSource: true,
+          rendersWholeInterceptingRoute: true,
+        });
+      const loads = (
+        ownFirst
+          ? [ensureAppRouteModulesLoaded(route), loadWhole()]
+          : [loadWhole(), ensureAppRouteModulesLoaded(route)]
+      ).map((loading) => Promise.resolve(loading));
+      const layout = { default: () => null };
+      const page = { default: () => null };
+      layoutLoad.resolve(layout);
+      pageLoad.resolve(page);
+      await Promise.all(loads);
+
+      expect(route.__loaded).toBe(true);
+      expect(route.layouts).toEqual([layout]);
+      expect(route.page).toBe(page);
+    },
+  );
 
   it("does not extend a request that joins a load already in flight", async () => {
     const load = deferred<unknown>();

@@ -1159,6 +1159,94 @@ describe("navigationPlanner root-boundary decisions", () => {
     expect(decision.proposal.preservePreviousSlotIds).toEqual([asideSlot]);
   });
 
+  // The whole intercepting route renders the slot owner's tree, whose layouts
+  // and root layout the direct target route need not share.
+  it("plans the whole intercepting route by the layouts and root layout it rendered", () => {
+    const sourceSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/", ["layout:/"]),
+      displayUrl: "https://example.com/club/static",
+      matchedUrl: "/club/static",
+      routeId: "route:/club/static",
+    };
+    const ownerLayoutIds = ["layout:/", "layout:/(shared)/club/[slug]"];
+    const wholeSnapshot = (id: string): RouteSnapshot => ({
+      ...createRouteSnapshot("/", ownerLayoutIds),
+      displayUrl: `https://example.com/club/static/pics/${id}`,
+      interceptionContext: "/club/static",
+      matchedUrl: `/club/static/pics/${id}`,
+      routeId: `route:/club/static/pics/${id}`,
+      wholeInterceptionSource: "/club/static",
+    });
+    const routeManifest = (directLayoutIds: readonly string[], directRoot: string) =>
+      createTestRouteManifest([
+        {
+          id: "route:/club/static",
+          layoutIds: ["layout:/"],
+          pattern: "/club/static",
+          rootBoundaryId: "root-boundary:/",
+        },
+        ...["1", "2"].map((id) => ({
+          id: `route:/club/static/pics/${id}`,
+          layoutIds: directLayoutIds,
+          pattern: `/club/static/pics/${id}`,
+          rootBoundaryId: directRoot,
+        })),
+      ]);
+
+    // A direct target under another root layout.
+    const fromSource = planFlightResponseFromSnapshots({
+      currentSnapshot: sourceSnapshot,
+      routeManifest: routeManifest(["layout:/(direct)"], "root-boundary:/(direct)"),
+      targetSnapshot: wholeSnapshot("1"),
+    });
+    expect(fromSource.kind).toBe("proposeCommit");
+    if (fromSource.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+    expect(fromSource.proposal.reason).toBe("currentRootBoundary");
+    expect(fromSource.proposal.preserveElementIds).toEqual(["layout:/"]);
+
+    // A direct target under other nested layouts.
+    const betweenTargets = planFlightResponseFromSnapshots({
+      currentSnapshot: wholeSnapshot("1"),
+      routeManifest: routeManifest(
+        ["layout:/", "layout:/(direct)/club/[slug]/pics/[id]"],
+        "root-boundary:/",
+      ),
+      targetSnapshot: wholeSnapshot("2"),
+    });
+    expect(betweenTargets.kind).toBe("proposeCommit");
+    if (betweenTargets.kind !== "proposeCommit") {
+      throw new Error("Expected proposeCommit decision");
+    }
+    expect(betweenTargets.proposal.preserveElementIds).toEqual(ownerLayoutIds);
+
+    // A root layout that doesn't head the layouts proves nothing.
+    const unproven = planFlightResponseFromSnapshots({
+      currentSnapshot: sourceSnapshot,
+      routeManifest: routeManifest(["layout:/"], "root-boundary:/"),
+      targetSnapshot: { ...wholeSnapshot("1"), layoutIds: ["layout:/(shared)/club/[slug]"] },
+    });
+    expect(unproven.kind).toBe("proposeCommit");
+    if (unproven.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+    expect(unproven.proposal.reason).toBe("unprovenTopologyFallback");
+    expect(unproven.proposal.preserveElementIds).toEqual([]);
+
+    // Nor does a root layout the manifest doesn't know.
+    const underUnknownRoot = (id: string): RouteSnapshot => ({
+      ...wholeSnapshot(id),
+      layoutIds: ["layout:/(other)", "layout:/(other)/club/[slug]"],
+      rootBoundaryId: "/(other)",
+    });
+    const unknownRoot = planFlightResponseFromSnapshots({
+      currentSnapshot: underUnknownRoot("1"),
+      routeManifest: routeManifest(["layout:/"], "root-boundary:/"),
+      targetSnapshot: underUnknownRoot("2"),
+    });
+    expect(unknownRoot.kind).toBe("proposeCommit");
+    if (unknownRoot.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+    expect(unknownRoot.proposal.reason).toBe("unprovenTopologyFallback");
+    expect(unknownRoot.proposal.preserveElementIds).toEqual([]);
+  });
+
   it("does not preserve default target slots when their owner layout is not retained", () => {
     const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(

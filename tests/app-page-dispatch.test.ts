@@ -3976,6 +3976,7 @@ describe("app page dispatch", () => {
   it("classifies a whole intercepting route by the segments it renders", async () => {
     const dispatchWithOwnerDefault = async (ownerDefault: TestRoute["layouts"][number]) => {
       const isrSet = vi.fn(async () => {});
+      const ensureRouteLoaded = vi.fn();
       const ownerRoute = createRoute({
         isDynamic: true,
         layouts: [{ default: () => null }],
@@ -4003,6 +4004,7 @@ describe("app page dispatch", () => {
           return route.pattern;
         },
         cleanPathname: "/club/static/pics/1",
+        ensureRouteLoaded,
         findIntercept: () => ({
           interceptBranchSegments: ["(.)pics", "[id]"],
           matchedParams: { id: "1", slug: "static" },
@@ -4036,6 +4038,11 @@ describe("app page dispatch", () => {
       const response = await dispatchAppPage(options);
       await expect(response.text()).resolves.toBe("/club/[slug]");
       expect(isrSet).not.toHaveBeenCalled();
+      // It loads only the modules it renders.
+      expect(ensureRouteLoaded).toHaveBeenCalledWith(
+        ownerRoute,
+        expect.objectContaining({ rendersWholeInterceptingRoute: true }),
+      );
       return { options, response };
     };
 

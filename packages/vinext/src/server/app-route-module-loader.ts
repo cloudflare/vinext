@@ -33,6 +33,7 @@
  */
 
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
+import { isUnknownRecord } from "../utils/record.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
 
 type LazyModuleThunk = () => Promise<unknown>;
@@ -79,6 +80,7 @@ type LazyLoadableSlot = {
   errors?: readonly unknown[];
   notFound?: unknown;
   notFounds?: readonly unknown[];
+  loadingTreePositions?: readonly number[] | null;
   __loadPage?: LazyModuleThunk | null;
   __loadDefault?: LazyModuleThunk | null;
   __loadLayout?: LazyModuleThunk | null;
@@ -284,8 +286,16 @@ export function loadAppInterceptLayouts(
  */
 export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   route: TRoute | null | undefined,
+  interceptOpts?: unknown,
 ): TRoute | Promise<TRoute> {
   if (!route || route.__loaded) return route as TRoute;
+  if (
+    isUnknownRecord(interceptOpts) &&
+    interceptOpts.rendersInterceptionSource === true &&
+    interceptOpts.rendersWholeInterceptingRoute === true
+  ) {
+    return loadWholeInterceptingRouteModules(route, interceptOpts.interceptSlotKey);
+  }
   if (route.__loading) return route.__loading as Promise<TRoute>;
 
   const loadPage = route.__loadPage;
@@ -294,22 +304,7 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
 
   pushFieldLoad(loads, route as Record<string, unknown>, "page", loadPage);
   pushFieldLoad(loads, route as Record<string, unknown>, "routeHandler", loadRouteHandler);
-  pushFieldLoad(loads, route as Record<string, unknown>, "loading", route.__loadLoading);
-  pushFieldLoad(loads, route as Record<string, unknown>, "error", route.__loadError);
-  pushFieldLoad(loads, route as Record<string, unknown>, "notFound", route.__loadNotFound);
-  pushFieldLoad(loads, route as Record<string, unknown>, "forbidden", route.__loadForbidden);
-  pushFieldLoad(loads, route as Record<string, unknown>, "unauthorized", route.__loadUnauthorized);
-  pushArrayLoads(loads, route.layouts, route.__loadLayouts);
-  pushArrayLoads(loads, route.templates, route.__loadTemplates);
-  pushArrayLoads(loads, route.loadings, route.__loadLoadings);
-  pushArrayLoads(loads, route.errors, route.__loadErrors);
-  pushArrayLoads(loads, route.errorPaths, route.__loadErrorPaths);
-  pushArrayLoads(loads, route.notFounds, route.__loadNotFounds);
-  pushArrayLoads(loads, route.forbiddens, route.__loadForbiddens);
-  pushArrayLoads(loads, route.unauthorizeds, route.__loadUnauthorizeds);
-  pushArrayLoads(loads, route.segmentNotFounds, route.__loadSegmentNotFounds);
-  pushArrayLoads(loads, route.segmentForbiddens, route.__loadSegmentForbiddens);
-  pushArrayLoads(loads, route.segmentUnauthorizeds, route.__loadSegmentUnauthorizeds);
+  pushRouteSegmentLoads(loads, route);
 
   for (const slot of Object.values(route.slots ?? {})) {
     pushFieldLoad(loads, slot as Record<string, unknown>, "page", slot.__loadPage);
@@ -350,4 +345,63 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
 
   route.__loading = loading;
   return loading;
+}
+
+/**
+ * A render of the whole intercepting route (see app-page-element-builder.ts)
+ * shows the slot owner's layouts and segment files, every other slot's
+ * default and the intercepted slot's own files, but never the owner's page or
+ * another slot's branch. Like Next.js, whose intercepting route imports only
+ * its own tree, it loads only those, so a module it doesn't show can't fail
+ * it. The route stays unloaded for a render of its own.
+ */
+function loadWholeInterceptingRouteModules<TRoute extends LazyLoadableRoute>(
+  route: TRoute,
+  interceptSlotKey: unknown,
+): TRoute | Promise<TRoute> {
+  const loads: Promise<unknown>[] = [];
+  pushRouteSegmentLoads(loads, route);
+  for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
+    if (slotKey !== interceptSlotKey) {
+      pushFieldLoad(loads, slot as Record<string, unknown>, "default", slot.__loadDefault);
+      continue;
+    }
+    pushFieldLoad(loads, slot as Record<string, unknown>, "layout", slot.__loadLayout);
+    pushFieldLoad(loads, slot as Record<string, unknown>, "loading", slot.__loadLoading);
+    // Only the slot root's loading wraps an interception (see
+    // app-page-route-wiring.tsx).
+    pushArrayLoads(
+      loads,
+      slot.loadings,
+      slot.__loadLoadings?.map((loader, index) =>
+        slot.loadingTreePositions?.[index] === 0 ? loader : null,
+      ),
+    );
+    pushFieldLoad(loads, slot as Record<string, unknown>, "error", slot.__loadError);
+    pushFieldLoad(loads, slot as Record<string, unknown>, "notFound", slot.__loadNotFound);
+  }
+  if (loads.length === 0) return route;
+  // Like the route's own load, its imports outlive the request that starts
+  // them (see isolate-shared-promise.ts).
+  return shareIsolatePromise(Promise.all(loads).then(() => route));
+}
+
+/** Queue the loads of a route's layouts, templates and segment boundaries. */
+function pushRouteSegmentLoads(loads: Promise<unknown>[], route: LazyLoadableRoute): void {
+  pushFieldLoad(loads, route as Record<string, unknown>, "loading", route.__loadLoading);
+  pushFieldLoad(loads, route as Record<string, unknown>, "error", route.__loadError);
+  pushFieldLoad(loads, route as Record<string, unknown>, "notFound", route.__loadNotFound);
+  pushFieldLoad(loads, route as Record<string, unknown>, "forbidden", route.__loadForbidden);
+  pushFieldLoad(loads, route as Record<string, unknown>, "unauthorized", route.__loadUnauthorized);
+  pushArrayLoads(loads, route.layouts, route.__loadLayouts);
+  pushArrayLoads(loads, route.templates, route.__loadTemplates);
+  pushArrayLoads(loads, route.loadings, route.__loadLoadings);
+  pushArrayLoads(loads, route.errors, route.__loadErrors);
+  pushArrayLoads(loads, route.errorPaths, route.__loadErrorPaths);
+  pushArrayLoads(loads, route.notFounds, route.__loadNotFounds);
+  pushArrayLoads(loads, route.forbiddens, route.__loadForbiddens);
+  pushArrayLoads(loads, route.unauthorizeds, route.__loadUnauthorizeds);
+  pushArrayLoads(loads, route.segmentNotFounds, route.__loadSegmentNotFounds);
+  pushArrayLoads(loads, route.segmentForbiddens, route.__loadSegmentForbiddens);
+  pushArrayLoads(loads, route.segmentUnauthorizeds, route.__loadSegmentUnauthorizeds);
 }

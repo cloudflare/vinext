@@ -678,6 +678,27 @@ describe("App Router generated manifest construction", () => {
       write("shelf/@modal/default.tsx");
       write("shelf/@modal/(..)books/[id]/page.tsx", gsp);
       write("books/[id]/page.tsx", gsp);
+      // A slot owner whose default runs on the edge runtime.
+      write("rack/page.tsx");
+      write("rack/default.tsx", `export const runtime = "edge";\n${page}`);
+      write("rack/@modal/default.tsx");
+      write("rack/@modal/(..)crates/[id]/page.tsx", gsp);
+      write("crates/[id]/page.tsx", gsp);
+      // A slot whose default has generateStaticParams, beside an intercept
+      // with a dynamic segment below the owner and none.
+      write("tray/page.tsx");
+      write("tray/@zone/page.tsx");
+      write("tray/@zone/default.tsx", gsp);
+      write("tray/@modal/default.tsx");
+      write("tray/@modal/(..)cups/[id]/page.tsx");
+      write("cups/[id]/page.tsx", gsp);
+      // The same beside an intercept whose last dynamic segment is the owner's.
+      write("vault/[vid]/page.tsx", gsp);
+      write("vault/[vid]/@zone/page.tsx");
+      write("vault/[vid]/@zone/default.tsx", gsp);
+      write("vault/[vid]/@modal/default.tsx");
+      write("vault/[vid]/@modal/(.)coins/page.tsx");
+      write("vault/[vid]/coins/page.tsx", gsp);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const classifier = {
@@ -724,6 +745,15 @@ describe("App Router generated manifest construction", () => {
       // And every other slot's default beside the intercept.
       expect(summarize("books/:id")).toEqual([undefined, [["shelf", "books/:id", true]]]);
       expect(summarize("shelf")).toEqual([undefined, undefined]);
+      // Their runtime and generateStaticParams count too. Next.js walks the
+      // tree breadth-first, so a default beside the slot comes before the
+      // intercept's own deeper segments, and after the owner's.
+      expect(summarize("crates/:id")).toEqual([undefined, [["rack", "crates/:id", true]]]);
+      expect(summarize("cups/:id")).toEqual([undefined, [["tray", "cups/:id", true]]]);
+      expect(summarize("vault/:vid/coins")).toEqual([
+        undefined,
+        [["vault/:vid", "vault/:vid/coins", undefined]],
+      ]);
       expect(summarize("feed")).toEqual([undefined, undefined]);
       expect(toLinkPrefetchRoutes(graph.routes).some((route) => route.intercepts)).toBe(false);
     } finally {

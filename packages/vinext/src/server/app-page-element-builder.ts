@@ -1166,7 +1166,9 @@ export async function buildPageElements<
           }
         : null,
       mountedLayouts,
-      mountedSlotIds,
+      // The whole intercepting route keeps nothing the client holds, so its
+      // slots' defaults render even where the client has the slot mounted.
+      mountedSlotIds: rendersWholeInterceptingRoute ? null : mountedSlotIds,
       makeThenableParams,
       matchedParams: params,
       pageRenderDependency,
@@ -1228,9 +1230,9 @@ function withDefaultSlotsBesideIntercept<
 }
 
 /**
- * A slot showing its default as Next.js's lone `__DEFAULT__` segment, as the
- * route graph gives a slot without a page: none of the layouts, loading files
- * and segments of the branch its page would take.
+ * A slot showing its default as Next.js's lone `__DEFAULT__` segment: none of
+ * the layouts, loading, error and not-found files and segments of the branch
+ * its page would take, the slot directory's own included.
  */
 function toDefaultSlot<TSlot extends NonNullable<AppPageBuildRoute["slots"]>[string]>(
   slot: TSlot,
@@ -1239,8 +1241,17 @@ function toDefaultSlot<TSlot extends NonNullable<AppPageBuildRoute["slots"]>[str
     ...slot,
     configLayouts: null,
     configLayoutTreePositions: null,
+    error: null,
+    errors: null,
+    errorTreePositions: null,
+    layout: null,
+    loading: null,
     loadings: null,
     loadingTreePositions: null,
+    notFound: null,
+    notFoundTreePosition: null,
+    notFounds: null,
+    notFoundTreePositions: null,
     page: null,
     routeSegments: null,
     slotParamNames: null,

@@ -1390,7 +1390,7 @@ function hasInterceptionId(interceptionId) {
 
 async function buildPageElements(route, params, routePath, pageRequest, displayPathname = routePath, scriptNonce) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
-  await __ensureRouteLoaded(route);
+  await __ensureRouteLoaded(route, pageRequest.opts);
   return __buildPageElements({
     ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
     route,
