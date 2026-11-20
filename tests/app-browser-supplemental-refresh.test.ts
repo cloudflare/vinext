@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  createInterceptionSourceRefreshMerge,
   createSupplementalRefreshCoordinator,
+  mergeInterceptionSourceRefresh,
   mergeRefreshedParallelSlot,
   rendersWholeInterceptingRoute,
   requireCompleteSupplementalRefresh,
@@ -9,6 +11,7 @@ import {
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
   SupplementalRefreshError,
+  supplyInterceptionSourceElements,
   supplyRetainedElements,
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
 import {
@@ -16,6 +19,7 @@ import {
   bindAppElementsSlotRefreshPathname,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
+import { holdsInterceptionSourceTree } from "../packages/vinext/src/server/app-retained-elements.js";
 import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
 import type {
   BrowserRouteManifest,
@@ -1410,6 +1414,273 @@ describe("parallel route supplemental refreshes", () => {
     };
 
     expect(mergeRefreshedParallelSlot(primary, other)).toBe(primary);
+  });
+
+  describe("a traversal's render of its intercepted source page", () => {
+    const interception = {
+      sourceMatchedUrl: "/members/7",
+      sourceRouteId: "route:/members/7",
+      slotId: "slot:modal:/members",
+      targetMatchedUrl: "/photos/1",
+      targetRouteId: "route:/photos/1",
+    };
+    const source: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/members"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/members/7",
+        slotBindings: [
+          {
+            activeRouteId: "route:/members/7",
+            ownerLayoutId: "layout:/",
+            slotId: "slot:children:/",
+            state: "active",
+          },
+          { ownerLayoutId: "layout:/members", slotId: "slot:modal:/members", state: "default" },
+        ],
+      }),
+      "layout:/members": "members layout",
+      "page:/members/7": "member page",
+      "route:/members/7": "source route",
+      "slot:children:/": "members children",
+      "slot:modal:/members": "modal default",
+    };
+
+    function createIntercepted(overrides: Partial<typeof interception> = {}): AppElements {
+      return {
+        ...AppElementsWire.createMetadataEntries({
+          interception: { ...interception, ...overrides },
+          interceptionContext: "/members/7",
+          layoutIds: ["layout:/", "layout:/members"],
+          rootLayoutTreePath: "/",
+          routeId: overrides.sourceRouteId ?? interception.sourceRouteId,
+          slotBindings: [
+            {
+              activeRouteId: "route:/photos/1",
+              interceptionId: "interception:modal",
+              interceptionSourceMatchedUrl: "/members/7",
+              ownerLayoutId: "layout:/members",
+              slotId: "slot:modal:/members",
+              state: "active",
+            },
+          ],
+        }),
+        [AppElementsWire.keys.retainedElementIds]: ["page:/members/7", "slot:children:/"],
+        "route:/members/7": "intercepted route",
+        "slot:modal:/members": "photo modal",
+      };
+    }
+
+    it("goes beneath the intercept the server rendered for that source", () => {
+      const result = mergeInterceptionSourceRefresh(createIntercepted(), source);
+
+      expect(result.source).toEqual({ matchedUrl: "/members/7", routeId: "route:/members/7" });
+      expect(result.elements["page:/members/7"]).toBe("member page");
+      expect(result.elements["slot:children:/"]).toBe("members children");
+      expect(result.elements["slot:modal:/members"]).toBe("photo modal");
+      expect(AppElementsWire.readMetadata(result.elements).interception).toEqual(interception);
+    });
+
+    // The server renders the target whole when it doesn't intercept it from
+    // the entry's source, as when the history entry names another source.
+    it("leaves a payload the server rendered without the intercept as it was", () => {
+      const primary: AppElements = {
+        ...AppElementsWire.createMetadataEntries({
+          interceptionContext: null,
+          layoutIds: ["layout:/"],
+          rootLayoutTreePath: "/",
+          routeId: "route:/photos/1",
+          slotBindings: [
+            {
+              activeRouteId: "route:/photos/1",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:children:/",
+              state: "active",
+            },
+          ],
+        }),
+        "page:/photos/1": "photo page",
+        "route:/photos/1": "photo route",
+        "slot:children:/": "photo children",
+      };
+
+      const result = mergeInterceptionSourceRefresh(primary, source);
+
+      expect(result.source).toBeNull();
+      expect(result.elements).toBe(primary);
+    });
+
+    it("leaves an intercept proved for another source as it was", () => {
+      const primary = createIntercepted({
+        sourceMatchedUrl: "/members/8",
+        sourceRouteId: "route:/members/8",
+      });
+
+      const result = mergeInterceptionSourceRefresh(primary, source);
+
+      expect(result.source).toBeNull();
+      expect(result.elements).toBe(primary);
+    });
+
+    // A traversal whose payload reached another state fetches the source page
+    // for only the elements the payload left out.
+    it("supplies a traversal's left-out elements from the source it was rendered for", () => {
+      const result = supplyInterceptionSourceElements(createIntercepted(), source);
+
+      expect(result.source).toEqual({ matchedUrl: "/members/7", routeId: "route:/members/7" });
+      expect(result.elements["page:/members/7"]).toBe("member page");
+      expect(result.elements["slot:children:/"]).toBe("members children");
+      expect(result.elements["route:/members/7"]).toBe("intercepted route");
+    });
+
+    it("supplies nothing to an intercept proved for another source", () => {
+      const primary = createIntercepted({
+        sourceMatchedUrl: "/members/8",
+        sourceRouteId: "route:/members/8",
+      });
+
+      const result = supplyInterceptionSourceElements(primary, source);
+
+      expect(result.source).toBeNull();
+      expect(result.elements).toBe(primary);
+    });
+
+    // A refresh, a server action's re-render and a traversal each fan out to
+    // the source page an intercepted state names, its previousNextUrl.
+    describe("in a refresh fan-out", () => {
+      const refreshUrl = new URL("https://example.com/photos/1");
+      const photoPage: AppElements = {
+        ...AppElementsWire.createMetadataEntries({
+          interceptionContext: null,
+          layoutIds: ["layout:/"],
+          rootLayoutTreePath: "/",
+          routeId: "route:/photos/1",
+          slotBindings: [
+            {
+              activeRouteId: "route:/photos/1",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:children:/",
+              state: "active",
+            },
+          ],
+        }),
+        "page:/photos/1": "photo page",
+        "route:/photos/1": "photo route",
+        "slot:children:/": "photo children",
+      };
+
+      it("puts the source page beneath the intercept the server rendered for it", () => {
+        const onSource = vi.fn();
+        const fanOut = createInterceptionSourceRefreshMerge({
+          onSource,
+          previousNextUrl: "/members/7",
+          refreshUrl,
+        });
+
+        const result = fanOut.merge(createIntercepted(), fanOut.track("/members/7", source));
+
+        expect(result["page:/members/7"]).toBe("member page");
+        expect(result["slot:modal:/members"]).toBe("photo modal");
+        expect(onSource).toHaveBeenCalledWith({
+          matchedUrl: "/members/7",
+          routeId: "route:/members/7",
+        });
+      });
+
+      it.each([
+        ["the server didn't intercept", () => photoPage],
+        [
+          "the server intercepted from another source",
+          () =>
+            createIntercepted({
+              sourceMatchedUrl: "/members/8",
+              sourceRouteId: "route:/members/8",
+            }),
+        ],
+      ])("leaves the payload as it was when %s", (_case, createPrimary) => {
+        const onSource = vi.fn();
+        const fanOut = createInterceptionSourceRefreshMerge({
+          onSource,
+          previousNextUrl: "/members/7",
+          refreshUrl,
+        });
+        const primary = createPrimary();
+
+        expect(fanOut.merge(primary, fanOut.track("/members/7", source))).toBe(primary);
+        expect(onSource).toHaveBeenCalledWith(null);
+      });
+
+      it("merges the other branches it keeps as before", () => {
+        const fanOut = createInterceptionSourceRefreshMerge({
+          previousNextUrl: "/members/7",
+          refreshUrl,
+        });
+        const branch = fanOut.track("/members/7/sidebar", source);
+
+        expect(fanOut.merge(photoPage, branch)).toEqual(
+          mergeRefreshedParallelSlot(photoPage, branch),
+        );
+      });
+    });
+  });
+
+  describe("an intercepted payload's own source tree", () => {
+    function createPayload(options: {
+      elements?: AppElements;
+      skippedLayoutIds?: readonly string[];
+    }): AppElements {
+      return {
+        ...AppElementsWire.createMetadataEntries({
+          interception: {
+            sourceMatchedUrl: "/feed",
+            sourceRouteId: "route:/feed",
+            slotId: "slot:modal:/feed",
+            targetMatchedUrl: "/photos/42",
+            targetRouteId: "route:/photos/42",
+          },
+          interceptionContext: "/feed",
+          layoutIds: ["layout:/", "layout:/feed"],
+          rootLayoutTreePath: "/",
+          routeId: "route:/feed",
+          slotBindings: [
+            {
+              activeRouteId: "route:/photos/42",
+              ownerLayoutId: "layout:/feed",
+              slotId: "slot:modal:/feed",
+              state: "active",
+            },
+          ],
+        }),
+        [AppElementsWire.keys.retainedElementIds]: ["page:/feed"],
+        [AppElementsWire.keys.skippedLayoutIds]: options.skippedLayoutIds ?? [],
+        "route:/feed": "intercepted route",
+        "slot:modal:/feed": "photo modal",
+        ...options.elements,
+      };
+    }
+
+    it("is held once the payload carries the slot's layout and every retained element", () => {
+      expect(
+        holdsInterceptionSourceTree(
+          createPayload({ elements: { "layout:/feed": "feed layout", "page:/feed": "feed" } }),
+        ),
+      ).toBe(true);
+    });
+
+    it.each([
+      ["a retained element", { elements: { "layout:/feed": "feed layout" } }],
+      ["the slot's layout", { elements: { "page:/feed": "feed" } }],
+      [
+        "a skipped layout",
+        {
+          elements: { "layout:/feed": "feed layout", "page:/feed": "feed" },
+          skippedLayoutIds: ["layout:/"],
+        },
+      ],
+    ])("is not held without %s", (_missing, options) => {
+      expect(holdsInterceptionSourceTree(createPayload(options))).toBe(false);
+    });
   });
 
   it("merges all successful active branches", async () => {

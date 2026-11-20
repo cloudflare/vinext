@@ -164,6 +164,9 @@ export type FlightResult = {
   cacheEntryReuseProof?: CacheEntryReuseProof;
   href: string;
   restoredHistorySnapshot?: boolean;
+  // The source a traversal rendered from its own URL beneath its intercepted
+  // payload, when the visible state shows another route.
+  suppliedInterceptionSource?: InterceptionSourceIdentity;
   targetSnapshot: RouteSnapshot;
 };
 
@@ -1305,7 +1308,7 @@ function resolveInterceptedSourceSlotPersistenceForLayouts(options: {
   return preservedSlotIds.sort(compareAppElementsSlotIds);
 }
 
-type VisibleInterceptionSourceIdentity = {
+export type InterceptionSourceIdentity = {
   matchedUrl: string;
   routeId: string;
 };
@@ -1324,7 +1327,7 @@ type InterceptedPreservationValidation =
 function getVisibleInterceptionSourceIdentity(
   snapshot: RouteSnapshot,
   routeManifest: BrowserRouteManifest | null,
-): VisibleInterceptionSourceIdentity {
+): InterceptionSourceIdentity {
   if (snapshot.interception) {
     return {
       matchedUrl: snapshot.interception.sourceMatchedUrl,
@@ -1477,6 +1480,7 @@ function validateInterceptedPreservation(options: {
   lane: OperationLane;
   restoredHistorySnapshot: boolean;
   routeManifest: BrowserRouteManifest | null;
+  suppliedSource: InterceptionSourceIdentity | null;
   targetSnapshot: RouteSnapshot;
   targetTopology: RouteTopologySnapshot;
 }): InterceptedPreservationValidation {
@@ -1495,10 +1499,12 @@ function validateInterceptedPreservation(options: {
     };
   }
 
-  const sourceIdentity = getVisibleInterceptionSourceIdentity(
-    options.currentSnapshot,
-    options.routeManifest,
-  );
+  // A traversal whose payload carries a render of its source from that page's
+  // own URL shows the source it rendered, not the visible state's.
+  const sourceIdentity =
+    options.lane === "traverse" && options.suppliedSource !== null
+      ? options.suppliedSource
+      : getVisibleInterceptionSourceIdentity(options.currentSnapshot, options.routeManifest);
   if (
     !options.restoredHistorySnapshot &&
     (proof.sourceMatchedUrl !== sourceIdentity.matchedUrl ||
@@ -1532,7 +1538,15 @@ function validateInterceptedPreservation(options: {
     };
   }
 
-  const preservedLayoutIdSet = new Set(preservedLayoutIds);
+  // The slot renders in a layout of the source tree the commit shows: the one
+  // the visible state keeps, or, for a traversal that restores its own tree or
+  // renders its source from that page's URL, the source's own layouts.
+  const showsOwnSourceTree =
+    options.lane === "traverse" &&
+    (options.restoredHistorySnapshot || options.suppliedSource !== null);
+  const sourceTreeLayoutIdSet = new Set(
+    showsOwnSourceTree ? options.targetTopology.layoutIds : preservedLayoutIds,
+  );
   const targetSlotBinding = options.targetTopology.slotBindings.find(
     (binding) => binding.slotId === proof.slotId,
   );
@@ -1540,7 +1554,7 @@ function validateInterceptedPreservation(options: {
     !targetSlotBinding ||
     targetSlotBinding.state !== "active" ||
     targetSlotBinding.ownerLayoutId === null ||
-    !preservedLayoutIdSet.has(targetSlotBinding.ownerLayoutId)
+    !sourceTreeLayoutIdSet.has(targetSlotBinding.ownerLayoutId)
   ) {
     return {
       kind: "rejected",
@@ -1557,11 +1571,17 @@ function validateInterceptedPreservation(options: {
     };
   }
 
-  const preserveDefaultOrUnmatchedSlotIds = resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
-    currentSlotBindings: options.currentTopology.slotBindings,
-    preservedLayoutIds,
-    targetSlotBindings: options.targetTopology.slotBindings,
-  }).filter((slotId) => slotId !== proof.slotId);
+  // A traversal that renders its source from that page's URL restores the
+  // entry's own tree, so it keeps no slot the visible state shows, as a
+  // traversal without an intercept keeps none.
+  const preserveDefaultOrUnmatchedSlotIds =
+    options.lane === "traverse" && options.suppliedSource !== null
+      ? []
+      : resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
+          currentSlotBindings: options.currentTopology.slotBindings,
+          preservedLayoutIds,
+          targetSlotBindings: options.targetTopology.slotBindings,
+        }).filter((slotId) => slotId !== proof.slotId);
   const preserveSourceSlotIds =
     options.lane === "navigation"
       ? resolveInterceptedSourceSlotPersistenceForLayouts({
@@ -1703,6 +1723,7 @@ function planFlightResponseArrived(options: {
       lane: options.event.token.lane,
       restoredHistorySnapshot: options.event.result.restoredHistorySnapshot === true,
       routeManifest: options.routeManifest,
+      suppliedSource: options.event.result.suppliedInterceptionSource ?? null,
       targetSnapshot,
       targetTopology: targetTopology.topology,
     });
