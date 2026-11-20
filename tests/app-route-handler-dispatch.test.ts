@@ -44,6 +44,7 @@ import {
 import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
 import { VINEXT_ROUTE_MISS_HEADER } from "../packages/vinext/src/server/headers.js";
+import { hasRouteHandlerCachePolicyHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import { after, connection } from "../packages/vinext/src/shims/server.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
@@ -521,45 +522,139 @@ describe("app route handler dispatch", () => {
     expect(didClearRequestContext).toBe(true);
   });
 
-  it("keeps route-identity-divergent handlers out of origin and CDN caches", async () => {
-    const isrGet = vi.fn(async () => buildISRCacheEntry(buildCachedRouteValue("victim")));
-    const isrSet = vi.fn();
-    const handlerSpy = vi.fn(
-      () =>
-        new Response("encoded catch-all", {
-          headers: { "Cache-Control": "public, s-maxage=3600" },
-        }),
-    );
+  describe("route-identity-divergent handlers", () => {
+    const dispatchDivergent = (handler: () => Response) => {
+      const isrGet = vi.fn(async () => buildISRCacheEntry(buildCachedRouteValue("victim")));
+      const isrSet = vi.fn();
+      const response = dispatchAppRouteHandler({
+        bypassSharedCache: true,
+        cleanPathname: "/api/about",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        isrGet,
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        isrSet,
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: { slug: ["about"] },
+        request: new Request("https://example.com/api/%61bout"),
+        route: {
+          pattern: "/api/:slug+",
+          routeHandler: { GET: handler, revalidate: 3600 },
+          routeSegments: ["api", "[...slug]"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      return { isrGet, isrSet, response };
+    };
 
-    const response = await dispatchAppRouteHandler({
-      bypassSharedCache: true,
-      cleanPathname: "/api/about",
-      clearRequestContext() {},
-      draftModeSecret: "test-draft-secret",
-      i18n: null,
-      isDevelopment: false,
-      isProduction: true,
-      isrGet,
-      isrRouteKey: (pathname) => `route:${pathname}`,
-      isrSet,
-      middlewareContext: { headers: null, status: null },
-      middlewareRequestHeaders: null,
-      params: { slug: ["about"] },
-      request: new Request("https://example.com/api/%61bout"),
-      route: {
-        pattern: "/api/:slug+",
-        routeHandler: { GET: handlerSpy, revalidate: 3600 },
-        routeSegments: ["api", "[...slug]"],
-      },
-      scheduleBackgroundRegeneration() {},
-      searchParams: new URLSearchParams(),
+    it("keeps a handler without its own policy out of origin and CDN caches", async () => {
+      const { isrGet, isrSet, response } = dispatchDivergent(
+        () => new Response("encoded catch-all"),
+      );
+      const resolved = await response;
+
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(isrSet).not.toHaveBeenCalled();
+      // Not the route's revalidate policy: shared caches would store it under another identity.
+      expect(resolved.headers.get("Cache-Control")).toContain("no-store");
+      expect(hasRouteHandlerCachePolicyHeaders(resolved.headers)).toBe(false);
+      await expect(resolved.text()).resolves.toBe("encoded catch-all");
     });
 
-    expect(isrGet).not.toHaveBeenCalled();
-    expect(isrSet).not.toHaveBeenCalled();
-    expect(handlerSpy).toHaveBeenCalledOnce();
-    expect(response.headers.get("Cache-Control")).toContain("no-store");
-    await expect(response.text()).resolves.toBe("encoded catch-all");
+    // Narrower than Next.js, which sends the handler's value unchanged
+    // (packages/next/src/build/templates/app-route.ts): a shared cache in
+    // front could store this response under another spelling of its path.
+    it.each([
+      ["public, max-age=31536000, immutable", "private, max-age=31536000, immutable"],
+      ["public, max-age=60, s-maxage=3600", "private, max-age=60"],
+    ])("sends the browser-only form of the handler's %s", async (handlerValue, sent) => {
+      const { isrGet, isrSet, response } = dispatchDivergent(
+        () => new Response("encoded catch-all", { headers: { "Cache-Control": handlerValue } }),
+      );
+      const resolved = await response;
+
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(isrSet).not.toHaveBeenCalled();
+      expect(resolved.headers.get("Cache-Control")).toBe(sent);
+      expect(hasRouteHandlerCachePolicyHeaders(resolved.headers)).toBe(true);
+      await expect(resolved.text()).resolves.toBe("encoded catch-all");
+    });
+
+    it("keeps a shared-cache-only handler policy out of the browser cache too", async () => {
+      const { response } = dispatchDivergent(
+        () =>
+          new Response("encoded catch-all", {
+            headers: { "Cache-Control": "public, s-maxage=3600" },
+          }),
+      );
+      const resolved = await response;
+
+      expect(resolved.headers.get("Cache-Control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(hasRouteHandlerCachePolicyHeaders(resolved.headers)).toBe(false);
+    });
+
+    it("keeps the handler's value byte for byte when the paths do not differ", async () => {
+      const value = "public,  max-age=60, S-MAXAGE=3600";
+      const response = await dispatchAppRouteHandler({
+        cleanPathname: "/api/about",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        isrGet: async () => null,
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        isrSet: async () => {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: { slug: ["about"] },
+        request: new Request("https://example.com/api/about"),
+        route: {
+          pattern: "/api/:slug+",
+          routeHandler: {
+            GET: () => new Response("about", { headers: { "Cache-Control": value } }),
+            revalidate: 3600,
+          },
+          routeSegments: ["api", "[...slug]"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+
+      expect(response.headers.get("Cache-Control")).toBe(value);
+      expect(hasRouteHandlerCachePolicyHeaders(response.headers)).toBe(false);
+    });
+
+    it("keeps the handler's browser-only policy out of the Cloudflare CDN cache", async () => {
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+      try {
+        const { response } = dispatchDivergent(
+          () =>
+            new Response("encoded catch-all", {
+              headers: {
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "CDN-Cache-Control": "public, max-age=3600",
+                "Cloudflare-CDN-Cache-Control": "public, max-age=3600",
+              },
+            }),
+        );
+        const resolved = await response;
+
+        expect(resolved.headers.get("Cache-Control")).toBe("private, max-age=31536000, immutable");
+        expect(resolved.headers.get("CDN-Cache-Control")).toBeNull();
+        expect(resolved.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+        expect(resolved.headers.get("Cache-Tag")).toBeNull();
+      } finally {
+        setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      }
+    });
   });
 
   it("keeps mixed-method handlers out of the normal ISR cache path", async () => {

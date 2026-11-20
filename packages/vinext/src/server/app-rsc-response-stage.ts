@@ -18,6 +18,7 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import type { AppRscHandlerRoute, CreateAppRscHandlerOptions } from "./app-rsc-handler.js";
+import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
 import {
   APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER,
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
@@ -460,5 +461,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
     await closeAfterResponse(requestContext);
     throw error;
   }
-  return closeAfterResponseWithBody(response, requestContext);
+  const closedResponse = closeAfterResponseWithBody(response, requestContext);
+  copyLinkHeaderProvenance(response.headers, closedResponse.headers);
+  return closedResponse;
 }

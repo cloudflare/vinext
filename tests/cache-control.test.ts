@@ -8,6 +8,7 @@ import {
   hasExplicitNonCacheableResponsePolicy,
   reconcileCdnResponseHeadersAfterOuterPolicy,
   shouldUseNextDeployCacheControl,
+  toBrowserOnlyCacheControl,
   validateCdnRequest,
 } from "../packages/vinext/src/server/cache-control.js";
 import {
@@ -432,4 +433,40 @@ describe("applyCdnResponseHeaders", () => {
 
     await expect(validateCdnRequest(request)).resolves.toBe(rejected);
   });
+});
+
+describe("toBrowserOnlyCacheControl", () => {
+  it.each([
+    ["public, max-age=31536000, immutable", "private, max-age=31536000, immutable"],
+    ["public, max-age=60, s-maxage=3600", "private, max-age=60"],
+    [
+      "PUBLIC,  Max-Age=60 ,S-MAXAGE=3600, proxy-revalidate, must-revalidate",
+      "private, Max-Age=60, must-revalidate",
+    ],
+    [
+      "public, no-cache, stale-while-revalidate=30, stale-if-error=60",
+      "private, no-cache, stale-while-revalidate=30, stale-if-error=60",
+    ],
+    ['private="set-cookie", max-age=60', "private, max-age=60"],
+    ['max-age=60, x-ext="a, s-maxage=1"', "private, max-age=60"],
+  ])("keeps only the private-cache directives of %s", (value, expected) => {
+    expect(toBrowserOnlyCacheControl(value)).toBe(expected);
+  });
+
+  it.each([
+    "private, max-age=60, s-maxage=3600",
+    "public, no-store",
+    "no-store, must-revalidate",
+    "private, no-cache, no-store, max-age=0, must-revalidate",
+  ])("returns %s unchanged", (value) => {
+    expect(toBrowserOnlyCacheControl(value)).toBe(value);
+  });
+
+  // The handler gave a browser no lifetime: the caller keeps its never-cache policy.
+  it.each([null, "", "public", "public, s-maxage=3600", "s-maxage=60, stale-while-revalidate"])(
+    "gives no browser-only form for %s",
+    (value) => {
+      expect(toBrowserOnlyCacheControl(value)).toBeUndefined();
+    },
+  );
 });
