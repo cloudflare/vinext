@@ -130,6 +130,7 @@ function createBlogElements(): AppElements {
       interceptionContext: null,
       layoutIds: ["layout:/"],
       rootLayoutTreePath: "/",
+      routeGraphId: "route:/blog/:slug",
       routeId,
     }),
     [pageId]: createElement("article", null, "Post 1"),
@@ -141,7 +142,10 @@ function createBlogElements(): AppElements {
   };
 }
 
-function createBlogLoadingShellElements(renderedPath = "/blog/post-1"): AppElements {
+function createBlogLoadingShellElements(
+  renderedPath = "/blog/post-1",
+  routeGraphId = "route:/blog/:slug",
+): AppElements {
   const routeId = AppElementsWire.encodeRouteId(renderedPath, null);
   const pageId = AppElementsWire.encodePageId(renderedPath, null);
   return {
@@ -149,6 +153,7 @@ function createBlogLoadingShellElements(renderedPath = "/blog/post-1"): AppEleme
       interceptionContext: null,
       layoutIds: ["layout:/"],
       rootLayoutTreePath: "/",
+      routeGraphId,
       routeId,
     }),
     [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
@@ -176,6 +181,7 @@ function createSettingsLoadingShellElements(): AppElements {
       interceptionContext: null,
       layoutIds: ["layout:/"],
       rootLayoutTreePath: "/",
+      routeGraphId: "route:/settings",
       routeId,
     }),
     [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
@@ -301,10 +307,12 @@ describe("App Router optimistic routing", () => {
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
   });
 
-  // Learns a template for `learnedHref` whose page identity is keyed by
-  // `segmentKeys`, then renders it optimistically for `targetHref`.
+  // Learns a template for `learnedHref`, which `routeGraphId` renders, whose
+  // page identity is keyed by `segmentKeys`, then renders it optimistically
+  // for `targetHref`.
   function reifyLearnedTemplate(options: {
     learnedHref: string;
+    routeGraphId: string;
     routeManifest: RouteManifest;
     segmentKeys: (href: string) => readonly string[];
     targetHref: string;
@@ -324,6 +332,7 @@ describe("App Router optimistic routing", () => {
         interceptionContext: null,
         layoutIds: ["layout:/"],
         rootLayoutTreePath: "/",
+        routeGraphId: options.routeGraphId,
         routeId,
       }),
       [pageId]: createElement("article", null, "Page"),
@@ -373,6 +382,7 @@ describe("App Router optimistic routing", () => {
     // over post-1's retained entry.
     const { elements, pageId, pageIdentity, payload, routeId, template } = reifyLearnedTemplate({
       learnedHref: "/blog/post-1",
+      routeGraphId: "route:/blog/:slug",
       routeManifest: blogManifest(),
       segmentKeys: (href) => ["blog", `slug|${href.slice("/blog/".length)}|d`],
       targetHref: "/blog/post-2",
@@ -407,12 +417,14 @@ describe("App Router optimistic routing", () => {
     const segmentKeys = (href: string) => ["docs", `parts|${href.slice("/docs/".length)}|oc`];
     reifyLearnedTemplate({
       learnedHref: "/docs",
+      routeGraphId: "route:/docs/:parts*",
       routeManifest,
       segmentKeys,
       targetHref: "/docs/a/b",
     });
     reifyLearnedTemplate({
       learnedHref: "/docs/a/b",
+      routeGraphId: "route:/docs/:parts*",
       routeManifest,
       segmentKeys,
       targetHref: "/docs",
@@ -431,6 +443,7 @@ describe("App Router optimistic routing", () => {
     ]);
     reifyLearnedTemplate({
       learnedHref: "/blog/post-1",
+      routeGraphId: "route:/blog/:a|b",
       routeManifest,
       segmentKeys: (href) => ["blog", `a|b|${href.slice("/blog/".length)}|d`],
       targetHref: "/blog/post-2",
@@ -467,7 +480,10 @@ describe("App Router optimistic routing", () => {
         },
       ],
     );
-    const elements = createBlogLoadingShellElements("/vercel/sub/folder");
+    const elements = createBlogLoadingShellElements(
+      "/vercel/sub/folder",
+      "route:/:teamID/sub/:folder",
+    );
     const template = createOptimisticRouteTemplate({
       allowLoadingShell: true,
       basePath: "",
@@ -536,6 +552,7 @@ describe("App Router optimistic routing", () => {
         interceptionContext: null,
         layoutIds: ["layout:/", "layout:/blog"],
         rootLayoutTreePath: "/",
+        routeGraphId: "route:/blog/:slug",
         routeId,
       }),
       [childrenSlotId]: createElement("article", null, "Post 1"),
@@ -607,6 +624,7 @@ describe("App Router optimistic routing", () => {
       interceptionContext: null,
       layoutIds: ["layout:/"],
       rootLayoutTreePath: "/",
+      routeGraphId: "route:/:locale/datasets/:id",
       routeId: renderedRouteId,
     });
     const pageId = AppElementsWire.encodePageId("/ja/datasets/x", null);
@@ -678,13 +696,16 @@ describe("App Router optimistic routing", () => {
     expect(template?.params).toEqual({ slug: "post-1" });
   });
 
-  it("matches a rewritten payload's route like the server, past a static dead end", () => {
+  it("reads a rewritten payload's route from the server, past a static dead end", () => {
     // The server renders `/dashboard/settings/profile` with the catch-all, as
     // it falls back from the static `settings` branch.
     const template = createOptimisticRouteTemplate({
       allowLoadingShell: true,
       basePath: "",
-      elements: createBlogLoadingShellElements("/dashboard/settings/profile"),
+      elements: createBlogLoadingShellElements(
+        "/dashboard/settings/profile",
+        "route:/dashboard/:catchall+",
+      ),
       href: "/dashboard/foo",
       interceptionContext: null,
       mountedSlotsHeader: null,
@@ -695,7 +716,7 @@ describe("App Router optimistic routing", () => {
     expect(template?.params).toEqual({ catchall: ["foo"] });
   });
 
-  it("does not decode a rewritten payload's route path again", () => {
+  it("reads a rewritten payload's route from the server, not its route path", () => {
     const routeManifest = manifest([
       route({ id: "route:/a", isDynamic: false, pattern: "/a", patternParts: ["a"] }),
       route({
@@ -712,7 +733,7 @@ describe("App Router optimistic routing", () => {
       createOptimisticRouteTemplate({
         allowLoadingShell: true,
         basePath: "",
-        elements: createBlogLoadingShellElements("/%61"),
+        elements: createBlogLoadingShellElements("/%61", "route:/:slug"),
         href,
         interceptionContext: null,
         mountedSlotsHeader: null,
@@ -723,6 +744,26 @@ describe("App Router optimistic routing", () => {
     expect(learn("/a")?.routeId ?? null).toBeNull();
   });
 
+  it("does not learn a template from a payload that names no route", () => {
+    // Like a payload a boundary rendered, such as a not-found page.
+    const elements = Object.fromEntries(
+      Object.entries(createBlogLoadingShellElements()).filter(
+        ([key]) => key !== AppElementsWire.keys.routeGraphId,
+      ),
+    );
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: blogManifest(),
+    });
+
+    expect(template).toBeNull();
+  });
+
   it("does not learn routes without a loading boundary", () => {
     const routeManifest = blogManifest();
     const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
@@ -731,6 +772,7 @@ describe("App Router optimistic routing", () => {
         interceptionContext: null,
         layoutIds: ["layout:/"],
         rootLayoutTreePath: "/",
+        routeGraphId: "route:/blog/:slug",
         routeId,
       }),
       [routeId]: createElement("main", null, "No loading boundary"),
@@ -865,6 +907,7 @@ describe("App Router optimistic routing", () => {
         interceptionContext: null,
         layoutIds: [rootLayoutId, sharedLayoutId],
         rootLayoutTreePath: "/",
+        routeGraphId: "route:/projects/:projectId/activity",
         routeId: "route:/projects/alpha/activity",
       }),
       [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
@@ -987,6 +1030,7 @@ describe("App Router optimistic routing", () => {
         interceptionContext: null,
         layoutIds: [rootLayoutId],
         rootLayoutTreePath: "/",
+        routeGraphId: "route:/docs/:parts+",
         routeId: "route:/docs/source",
       }),
       [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
@@ -1094,6 +1138,7 @@ describe("App Router optimistic routing", () => {
           interceptionContext: null,
           layoutIds: [rootLayoutId],
           rootLayoutTreePath: "/",
+          routeGraphId: "route:/:slug",
           routeId: `route:/${sourceSlug}`,
         }),
         [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
@@ -1220,6 +1265,7 @@ describe("App Router optimistic routing", () => {
           interceptionContext: null,
           layoutIds: [rootLayoutId],
           rootLayoutTreePath: "/",
+          routeGraphId: routeId,
           routeId: "route:/beta",
         }),
         [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
@@ -1288,6 +1334,7 @@ describe("App Router optimistic routing", () => {
         interceptionContext: null,
         layoutIds: [rootLayoutId],
         rootLayoutTreePath: "/",
+        routeGraphId: routeId,
         routeId: `route:/rooms/${id}`,
       }),
       [rootLayoutId]: createElement("div", null, "root"),
@@ -1405,6 +1452,7 @@ describe("App Router optimistic routing", () => {
       interceptionContext: null,
       layoutIds: [rootLayoutId],
       rootLayoutTreePath: "/",
+      routeGraphId: routeId,
       routeId,
     });
     const currentElements: AppElements = {
