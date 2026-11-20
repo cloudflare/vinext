@@ -1517,12 +1517,23 @@ describe("App RSC route matching", () => {
           page: "root-photos-intercept",
           slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
           sourceRouteIndex: 0,
+          sourceRouteIsConcrete: true,
+          rendersRootOwnerFromRouteMiss: false,
           matchedParams: { id: "1" },
         });
       }
-      expect(
-        createAppRscRouteMatcher([rootRoute] as any).findIntercept("/photos/1", "/_not-found"),
-      ).toMatchObject({ page: "root-photos-intercept", sourceRouteIndex: 0 });
+      // Where no route matches /_not-found, the root page stands in for it.
+      const rootOnly = createAppRscRouteMatcher([rootRoute] as any);
+      expect(rootOnly.findIntercept("/photos/1", "/_not-found")).toMatchObject({
+        page: "root-photos-intercept",
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: false,
+        rendersRootOwnerFromRouteMiss: true,
+      });
+      expect(rootOnly.findIntercept("/photos/1", "/missing")).toMatchObject({
+        sourceRouteIsConcrete: false,
+        rendersRootOwnerFromRouteMiss: false,
+      });
     });
 
     // A root-level sibling intercept without a root page is owned by a stand-in
@@ -1602,6 +1613,17 @@ describe("App RSC route matching", () => {
         page: "group-photos-modal",
         sourceRouteIndex: 0,
         rendersWholeInterceptingRoute: true,
+        rendersRootOwnerFromRouteMiss: false,
+      });
+      expect(
+        createAppRscRouteMatcher([
+          { ...route("/", [], groupModal), routeSegments: ["(g)"] },
+        ]).findIntercept("/photos/1", "/_not-found"),
+      ).toMatchObject({
+        page: "group-photos-modal",
+        sourceRouteIsConcrete: false,
+        rendersWholeInterceptingRoute: true,
+        rendersRootOwnerFromRouteMiss: true,
       });
 
       const withoutGroupPage = createAppRscRouteMatcher([

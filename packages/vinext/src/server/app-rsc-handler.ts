@@ -435,6 +435,11 @@ type AppRscRouteMatch<TRoute> = {
   interceptionRawRendersTargetLayouts?: boolean;
   interceptionSourceIsConcrete?: boolean;
   /**
+   * /_not-found names no route, so a root-level intercept's own owner stands
+   * in for it, for that context alone.
+   */
+  interceptionRendersRootOwnerFromRouteMiss?: boolean;
+  /**
    * The source has no slot to render the intercept into. Unless the request
    * renders the whole intercepting route, only a source rewrite to a route
    * that has the slot can still make the request intercept.
@@ -1252,7 +1257,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return false;
     }
     if (sourceMatch.interceptionSourceIsConcrete !== undefined) {
-      return sourceMatch.interceptionSourceIsConcrete;
+      return (
+        sourceMatch.interceptionSourceIsConcrete ||
+        (sourceContext === ROUTE_MISS_INTERCEPTION_CONTEXT &&
+          sourceMatch.interceptionRendersRootOwnerFromRouteMiss === true)
+      );
     }
     // Backward-compatible fallback for custom/older entry glue. Route identity
     // proves existence; match the raw context like a direct request to it.
@@ -2122,7 +2131,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       const rewrittenSourceMatch = options.matchRoute(rewrittenSourcePathname);
       return (
         interceptionSourceMatch !== null &&
-        isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch)
+        (isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch) ||
+          (isRouteMissSource &&
+            rewrittenSourceMatch === null &&
+            interceptionSourceMatch.interceptionRendersRootOwnerFromRouteMiss === true))
       );
     };
     const dropsRefusedSource = (): boolean => {

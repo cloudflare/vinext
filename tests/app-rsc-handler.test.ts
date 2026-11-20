@@ -8921,6 +8921,158 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  // A root-level intercept is reached from /_not-found even where no route
+  // matches it: its own owner, the root page for a sibling intercept or a root
+  // route group's page for its slot, renders as Next.js's interception rewrite
+  // does. The source pass still decides, and another context with no route of
+  // its own still renders the target directly, or is refused with an id.
+  it.each([
+    { owner: "group slot", context: "/_not-found", outcome: "none" },
+    { owner: "group slot", context: "/_not-found", outcome: "same-path rewrite" },
+    { owner: "group slot", context: "/_not-found", outcome: "redirect" },
+    { owner: "group slot", context: "/missing", outcome: "none" },
+    { owner: "sibling", context: "/_not-found", outcome: "none" },
+    { owner: "sibling", context: "/_not-found", outcome: "same-path rewrite" },
+    { owner: "sibling", context: "/_not-found", outcome: "redirect" },
+    { owner: "sibling", context: "/missing", outcome: "none" },
+  ])(
+    "intercepts a root-level $owner from /_not-found without a route of its own (context: $context, source: $outcome)",
+    async ({ owner, context, outcome }) => {
+      const ownerMatcherRoute =
+        owner === "group slot"
+          ? {
+              params: [],
+              pattern: "/",
+              patternParts: [],
+              routeSegments: ["(g)"],
+              slots: {
+                modal: {
+                  id: "slot:modal:/(g)",
+                  intercepts: [
+                    {
+                      sourceMatchPattern: "/",
+                      sourcePageSegments: ["(g)", "@modal", "(.)photos", "[id]"],
+                      targetPattern: "/photos/:id",
+                      interceptLayouts: [],
+                      page: "group-photos-modal",
+                      params: ["id"],
+                    },
+                  ],
+                },
+              },
+            }
+          : {
+              ids: { route: "graph-route:/" },
+              params: [],
+              pattern: "/",
+              patternParts: [],
+              routeSegments: [],
+              siblingIntercepts: [
+                {
+                  id: "interception:/(.)photos/[id]",
+                  targetPattern: "/photos/:id",
+                  sourceMatchPattern: "/",
+                  sourcePageSegments: ["(.)photos", "[id]"],
+                  slotId: "slot:__vinext_sibling_intercept:/",
+                  interceptLayouts: [],
+                  page: "root-photos-intercept",
+                  params: ["id"],
+                },
+              ],
+            };
+      const matcherRoutes = [
+        ownerMatcherRoute,
+        {
+          params: ["id"],
+          pattern: "/photos/:id",
+          patternParts: ["photos", ":id"],
+          routeSegments: ["photos", "[id]"],
+        },
+      ];
+      const matcher = createAppRscRouteMatcher(matcherRoutes as any);
+      const ownerRoute = createPageRoute({
+        pattern: "/",
+        routeSegments: ownerMatcherRoute.routeSegments,
+      });
+      const targetRoute = createPageRoute({
+        isDynamic: true,
+        params: ["id"],
+        pattern: "/photos/:id",
+        routeSegments: ["photos", "[id]"],
+      });
+      const handlerRoutes = new Map<string, TestRoute>([
+        ["/", ownerRoute],
+        ["/photos/:id", targetRoute],
+      ]);
+      const toHandlerMatch = (
+        result: { route: { pattern: string }; params: Record<string, string | string[]> } | null,
+      ) =>
+        result ? { params: result.params, route: handlerRoutes.get(result.route.pattern)! } : null;
+      const interceptionId = matcher.findIntercept("/photos/1", "/_not-found")?.interceptionId;
+      if (!interceptionId) throw new Error("Expected a graph-owned interception id");
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        hasInterceptionId: (id) => matcher.hasInterceptionId(id),
+        matchInterceptRoute(pathname, sourcePathname, id, acceptsSourceWithoutSlot) {
+          const intercept = matcher.findIntercept(
+            pathname,
+            sourcePathname,
+            id,
+            acceptsSourceWithoutSlot,
+          );
+          if (!intercept) return null;
+          return {
+            interceptionRendersRootOwnerFromRouteMiss: intercept.rendersRootOwnerFromRouteMiss,
+            interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
+            interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
+            interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+            interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+            params: intercept.sourceMatchedParams,
+            route: handlerRoutes.get(matcherRoutes[intercept.sourceRouteIndex].pattern)!,
+          };
+        },
+        matchRoute: (pathname: string) => toHandlerMatch(matcher.matchRoute(pathname)),
+        middlewareModule: {
+          default(request: NextRequest) {
+            if (request.nextUrl.pathname === context && outcome === "redirect") {
+              return Response.redirect("https://example.test/docs/login", 307);
+            }
+            if (request.nextUrl.pathname === context && outcome === "same-path rewrite") {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": request.nextUrl.href },
+              });
+            }
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+      });
+      const request = async (id?: string) => {
+        const headers = createRscRequestHeaders({
+          interceptionContext: context,
+          interceptionId: id,
+        });
+        const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+        return handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+      };
+
+      const intercepts = context === "/_not-found" && outcome !== "redirect";
+      const withId = await request(interceptionId);
+      expect(withId.status).toBe(intercepts ? 200 : 400);
+      const response = await request();
+      expect(response.status).toBe(200);
+      expect(response.headers.get("location")).toBeNull();
+      expect(dispatchMatchedPage).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: !intercepts,
+          interceptionContext: intercepts ? "/_not-found" : null,
+          route: targetRoute,
+        }),
+      );
+    },
+  );
+
   // A sibling intercept opened from a deeper source renders the intercepting
   // route itself, but the deeper source is what a source rewrite reaches, so
   // it is the source the handler authorizes.
