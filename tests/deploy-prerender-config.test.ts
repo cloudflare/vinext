@@ -728,6 +728,7 @@ export function createBuilder(config) {
       writeFile("dist/server/RSC_BUILD_ID", "build-a\n");
       writeFile("dist/server/index.js", "export default {};\n");
       resolveTPRRoutesMock.mockResolvedValueOnce({
+        metadataCandidates: [{ path: "/api/opengraph-image", requests: 5 }],
         routes: [{ path: "/missing", requests: 10 }],
         targetUrl: "https://vinext.dev",
       });

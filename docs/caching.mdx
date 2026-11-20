@@ -363,6 +363,15 @@ The default warmup makes one fill request per admitted cache identity. Add `--wa
 
 Only discoverable, cacheable route identities are warmed; dynamic parameters and query variants are not all enumerated automatically. HTML, RSC, and Pages Router data use separate requests where applicable. For Workers Cache, a warm request does not guarantee a cache hit in every region. See [Cloudflare's Workers Caching documentation](https://developers.cloudflare.com/workers/cache/).
 
+File-based [metadata routes](https://nextjs.org/docs/app/api-reference/file-conventions/metadata) are warmed where Next.js prerenders them, and the warm report lists them as `Metadata route`:
+
+- Static files such as `favicon.ico`, `robots.txt`, or `opengraph-image.png`, including ones under a dynamic segment (served at a `-` path, for example `/shop/-/opengraph-image.png`).
+- Code routes such as `sitemap.ts`, `robots.ts`, or `opengraph-image.tsx`, unless they export `dynamic = "force-dynamic"` or `revalidate = 0`.
+- A code route under a dynamic segment, for each path its own `generateStaticParams()` returns. Like Next.js, vinext does not use the page's `generateStaticParams()` for it; without its own, the route renders on request.
+- Each id from `generateSitemaps()` or `generateImageMetadata()`, when the route is not under a dynamic segment.
+
+A route that reads `headers()`, `cookies()`, or another request-time API renders dynamically and is skipped at warm time, like a dynamic Route Handler. Image and icon routes are warmed at the `?<hash>` URL that rendered `<link>` and `<meta>` tags use, which is the entry Workers Cache serves them from; the Response Store and KV key them without the query. Traffic-aware warming doesn't run generators, so it warms only visited metadata routes with a single URL; paths from `generateStaticParams()`, `generateSitemaps()`, or `generateImageMetadata()` are left to request time.
+
 ### Sites behind an auth proxy
 
 Every discovery, readiness, warm-up, and probe request goes to the deployed Worker through its production URL. If [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) or another auth proxy sits in front of it, those requests get the proxy's sign-in redirect and the deploy fails. Give the deploy the headers the proxy accepts, such as the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers of an Access [service token](https://developers.cloudflare.com/cloudflare-one/identity/service-tokens/).

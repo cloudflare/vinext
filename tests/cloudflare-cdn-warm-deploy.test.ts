@@ -430,6 +430,75 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(selected.paths).toEqual(["/hot", "/cold"]);
   });
 
+  it("selects only metadata routes for asset-named and /api/ traffic", async () => {
+    const { selectTPRWarmPlan } = await import("../packages/cloudflare/src/deploy.js");
+
+    const selected = selectTPRWarmPlan(
+      {
+        loadingShellPaths: [],
+        paths: [],
+        routeHandlerPaths: ["/api/report", "/api/opengraph-image"],
+        routePatterns: {
+          "/api/report": { kind: "app-route", pattern: "/api/report" },
+          "/api/opengraph-image": {
+            kind: "app-route",
+            metadataRoute: true,
+            pattern: "/api/opengraph-image",
+          },
+        },
+        rscPaths: [],
+      },
+      [],
+      100,
+      10,
+      [
+        { path: "/api/report", requests: 50 },
+        { path: "/api/opengraph-image", requests: 5 },
+      ],
+    );
+
+    // The page filter rejects /api/ traffic for Route Handlers, as before.
+    expect(selected.routeHandlerPaths).toEqual(["/api/opengraph-image"]);
+  });
+
+  it("selects only routes the plan still requests after cacheability pruning", async () => {
+    const { selectTPRWarmPlan } = await import("../packages/cloudflare/src/deploy.js");
+
+    const selected = selectTPRWarmPlan(
+      {
+        // appPaths and pagesPaths record ownership, not requests: the probe
+        // pruned the request-dynamic /dashboard from paths and rscPaths only.
+        appPaths: ["/dashboard"],
+        loadingShellPaths: [],
+        pagesPaths: ["/dashboard"],
+        paths: [],
+        // The probe pruned the request-dynamic /opengraph-image, but its
+        // pattern stays in the plan.
+        routeHandlerPaths: ["/icon"],
+        routePatterns: {
+          "/dashboard": { kind: "app-page", pattern: "/dashboard" },
+          "/opengraph-image": {
+            kind: "app-route",
+            metadataRoute: true,
+            pattern: "/opengraph-image",
+          },
+          "/icon": { kind: "app-route", metadataRoute: true, pattern: "/icon" },
+        },
+        rscPaths: [],
+      },
+      [
+        { path: "/dashboard", requests: 200 },
+        { path: "/opengraph-image", requests: 95 },
+        { path: "/icon", requests: 5 },
+      ],
+      90,
+      1,
+    );
+
+    expect(selected.paths).toEqual([]);
+    expect(selected.routeHandlerPaths).toEqual(["/icon"]);
+  });
+
   it("rejects promotion delays that Node timers cannot represent before deploying", async () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
