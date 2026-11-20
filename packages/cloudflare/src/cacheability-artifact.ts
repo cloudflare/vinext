@@ -155,13 +155,16 @@ function hasStaticModuleSpecifier(source: string, expected: string): boolean {
 function resolveGeneratedWranglerArtifact(
   root: string,
   configuredPath: string | undefined,
+  outDir = "dist",
 ): GeneratedWorkerArtifact {
-  const distDirectory = path.join(root, "dist");
-  const configPath = path.resolve(root, configuredPath ?? "dist/server/wrangler.json");
+  const distDirectory = path.resolve(root, outDir);
+  const defaultConfigPath = path.join(distDirectory, "server", "wrangler.json");
+  const configPath = configuredPath ? path.resolve(root, configuredPath) : defaultConfigPath;
   const relativeConfigPath = path.relative(distDirectory, configPath);
   if (relativeConfigPath.startsWith("..") || path.isAbsolute(relativeConfigPath)) {
+    const shownDistDirectory = path.relative(root, distDirectory) || ".";
     throw new Error(
-      "Two-stage CDN warming requires a generated Wrangler config under dist/. Pass --config dist/server/wrangler.json (or another generated dist config).",
+      `Two-stage CDN warming requires a generated Wrangler config under ${shownDistDirectory}/. Pass --config ${path.relative(root, defaultConfigPath)} (or another generated config there).`,
     );
   }
   if (!fs.existsSync(configPath) || !fs.lstatSync(configPath).isFile()) {
@@ -292,11 +295,13 @@ export function writeCacheabilityManifestArtifact(
   configuredPath: string | undefined,
   manifest: CacheabilityManifest,
   deploymentTool: CloudflareDeploymentTool = "wrangler",
+  /** Vite's `build.outDir`, "dist" by default. */
+  outDir?: string,
 ): string {
   const artifact =
     deploymentTool === "cf"
       ? resolveBuildOutputArtifact(root)
-      : resolveGeneratedWranglerArtifact(root, configuredPath);
+      : resolveGeneratedWranglerArtifact(root, configuredPath, outDir);
   assertModuleReachable(artifact, CACHEABILITY_MANIFEST_MODULE);
   const { configPath, serverDirectory } = artifact;
   const manifestPath = path.join(serverDirectory, CACHEABILITY_MANIFEST_MODULE);

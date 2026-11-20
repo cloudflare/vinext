@@ -176,7 +176,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // Framework manifests and prerendered routes have one canonical location,
   // independent of where an adapter asks Vite to emit the executable RSC
   // graph: <outDir>/server, where outDir is Vite's `build.outDir` ("dist" by
-  // default). Consumers such as cache prewarming read them from dist/server.
+  // default). Consumers such as cache prewarming read them from there.
   const buildOutDir = path.resolve(root, options.routeRootConfig?.outDir ?? "dist");
   const manifestDir = path.join(buildOutDir, "server");
   const configuredRscServerDir = path.resolve(

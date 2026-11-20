@@ -5,7 +5,7 @@ import fs from "node:fs";
 // oxlint-disable-next-line no-restricted-imports
 import path from "node:path";
 import { createRequire } from "node:module";
-import { isPathInsideOrEqual } from "../utils/path.js";
+import { assertOutputDirIsSafe } from "./clean-output.js";
 import { readJsonFile } from "../utils/safe-json-file.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 
@@ -265,12 +265,7 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
   const standaloneDir = path.join(outDir, "standalone");
   // The standalone directory is deleted and rebuilt; with a `build.outDir`
   // above the project root it could be the project itself.
-  if (isPathInsideOrEqual(standaloneDir, root)) {
-    throw new Error(
-      `[vinext] The standalone output directory ${standaloneDir} contains the project root. ` +
-        "Choose a build.outDir that does not contain the project.",
-    );
-  }
+  assertOutputDirIsSafe("standalone output directory", standaloneDir, { root });
   const standaloneDistDir = path.join(standaloneDir, "dist");
   const standaloneNodeModulesDir = path.join(standaloneDir, "node_modules");
 

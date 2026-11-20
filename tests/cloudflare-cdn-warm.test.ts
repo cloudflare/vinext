@@ -234,6 +234,21 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
+  it("reads the warm plan from a custom build.outDir's server directory", () => {
+    writeFile("out/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "out/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/dashboard"] }),
+    );
+
+    expect(readPrerenderWarmPlan(tmpDir, { serverDir: path.join(tmpDir, "out/server") })).toEqual({
+      buildId: "build-a",
+      loadingShellPaths: [],
+      paths: ["/dashboard"],
+      rscPaths: [],
+    });
+  });
+
   it("warms metadata routes at their served path, without a trailing slash", () => {
     // Metadata routes bypass the trailingSlash redirect, and their <head>
     // links use the path as served.

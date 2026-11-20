@@ -78,6 +78,8 @@ const STAGED_READINESS_QUERY_PARAM = "__vinext_cdn_warm_readiness";
 
 export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
   root: string;
+  /** Holds BUILD_ID and the prerender path manifest; `<root>/dist/server` by default. */
+  serverDir?: string;
   /** Use the manifest build identity unless the configured adapter cannot expose it. */
   validateBuildIdentity?: boolean;
 };
@@ -134,9 +136,13 @@ function applyWarmPathConfig(
   return new URL(normalized, "http://vinext.local").pathname;
 }
 
-function readBuiltBuildId(root: string): string | null {
+function resolveServerDir(root: string, serverDir: string | undefined): string {
+  return serverDir ?? path.join(root, "dist", "server");
+}
+
+function readBuiltBuildId(serverDir: string): string | null {
   try {
-    const buildId = fs.readFileSync(path.join(root, "dist", "server", "BUILD_ID"), "utf-8").trim();
+    const buildId = fs.readFileSync(path.join(serverDir, "BUILD_ID"), "utf-8").trim();
     return buildId.length > 0 ? buildId : null;
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
@@ -248,18 +254,20 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
 
 type PrerenderWarmPlanOptions = {
   includeCanonicalRsc?: boolean;
+  /** Holds BUILD_ID and the prerender path manifest; `<root>/dist/server` by default. */
+  serverDir?: string;
   strict?: boolean;
 };
 
 function createPrerenderPathWarmPaths(
   root: string,
   manifest: PrerenderPathManifest,
-  options?: { strict?: boolean },
+  options?: { serverDir?: string; strict?: boolean },
 ): { manifest: PrerenderPathManifest; pagesPaths: string[]; paths: string[] } | null {
-  const builtBuildId = readBuiltBuildId(root);
+  const buildIdPath = path.join(resolveServerDir(root, options?.serverDir), "BUILD_ID");
+  const builtBuildId = readBuiltBuildId(path.dirname(buildIdPath));
   if (!manifest.buildId || !builtBuildId || manifest.buildId !== builtBuildId) {
-    const message =
-      "[vinext] CDN warmup skipped: prerender path manifest buildId does not match dist/server/BUILD_ID.";
+    const message = `[vinext] CDN warmup skipped: prerender path manifest buildId does not match ${path.relative(root, buildIdPath)}.`;
     if (options?.strict) throw new Error(message);
     console.warn(message);
     return null;
@@ -343,7 +351,7 @@ export function readPrerenderWarmPlan(
   options?: PrerenderWarmPlanOptions,
 ): PrerenderWarmPlan {
   const manifest = readPrerenderPathManifest(
-    path.join(root, "dist", "server", PRERENDER_PATHS_MANIFEST),
+    path.join(resolveServerDir(root, options?.serverDir), PRERENDER_PATHS_MANIFEST),
   );
   if (!manifest) {
     const message = "[vinext] CDN warmup skipped: prerender path manifest not found.";
@@ -1754,7 +1762,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 export async function warmCdnCacheFromPrerender(
   options: PrerenderCdnWarmOptions,
 ): Promise<CdnWarmResult> {
-  const plan = readPrerenderWarmPlan(options.root, { strict: options.strict });
+  const plan = readPrerenderWarmPlan(options.root, {
+    serverDir: options.serverDir,
+    strict: options.strict,
+  });
   const warmPlan = {
     deploymentId: plan.deploymentId,
     loadingShellPaths: plan.loadingShellPaths,

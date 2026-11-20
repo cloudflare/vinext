@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
-import { createBuilder, resolveConfig, type Plugin } from "vite";
+import { createBuilder, createServer, resolveConfig, type Plugin } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
 import { emitPrerenderPathManifest } from "../packages/vinext/src/build/prerender-paths.js";
@@ -31,6 +31,10 @@ const CF_APP_FIXTURE_SOURCE_DIR = path.resolve(
 const CF_NODE_MODULES_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/cf-app-basic/node_modules",
+);
+const NITRO_PAGES_FIXTURE_SOURCE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/pages-router-nitro",
 );
 
 const temporaryDirs: string[] = [];
@@ -288,10 +292,12 @@ describe("build.outDir", () => {
       logLevel: "silent",
     });
 
+    // vinext resolves the root through symlinks (macOS's /var is /private/var).
+    const realRoot = fs.realpathSync(fixtureDir);
     const outDirs = Object.fromEntries(
       ["rsc", "ssr", "client"].map((name) => [
         name,
-        toSlash(path.relative(fixtureDir, builder.environments[name]!.config.build.outDir)),
+        toSlash(path.relative(realRoot, builder.environments[name]!.config.build.outDir)),
       ]),
     );
     expect(outDirs).toEqual({ rsc: "dist/server", ssr: "out/server/ssr", client: "out/client" });
@@ -360,7 +366,7 @@ describe("build.outDir", () => {
         build: { outDir: "..", emptyOutDir: true },
         logLevel: "silent",
       }),
-    ).rejects.toThrow('The rsc output directory "." contains the project root');
+    ).rejects.toThrow('The build.outDir ".." contains the project root');
     expect(fs.existsSync(source)).toBe(true);
   });
 
@@ -436,7 +442,258 @@ describe("build.outDir", () => {
         build: { outDir: "." },
         logLevel: "silent",
       }),
-    ).rejects.toThrow('build.outDir "." is the project root');
+    ).rejects.toThrow('The build.outDir "." contains the project root');
     expect(fs.existsSync(source)).toBe(true);
   });
+
+  it("rejects a build.outDir that holds the app directory before cleaning it", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    const source = path.join(fixtureDir, "app", "page.tsx");
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        build: { outDir: "app" },
+        logLevel: "silent",
+        [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
+      } as Parameters<typeof createBuilder>[0]),
+    ).rejects.toThrow('The build.outDir "app" overlaps the app directory "app"');
+    expect(fs.existsSync(source)).toBe(true);
+  });
+
+  it("checks an environment's build.outDir when each bundler output has its own dir", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        environments: {
+          client: {
+            build: { outDir: "app", rolldownOptions: { output: { dir: "out/client" } } },
+          },
+        },
+        logLevel: "silent",
+        [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
+      } as Parameters<typeof createBuilder>[0]),
+    ).rejects.toThrow('The client output directory "app" overlaps the app directory "app"');
+  });
+
+  it("checks build.outDir for a build that doesn't write", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+
+    // vinext's own hooks still write their files with build.write: false.
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        build: { outDir: "app", write: false },
+        logLevel: "silent",
+        [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
+      } as Parameters<typeof createBuilder>[0]),
+    ).rejects.toThrow('The build.outDir "app" overlaps the app directory "app"');
+  });
+
+  it("rejects an environment outDir inside the public directory", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    const asset = path.join(fixtureDir, "public", "assets", "logo.svg");
+    fs.mkdirSync(path.dirname(asset), { recursive: true });
+    fs.writeFileSync(asset, "<svg/>");
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir, clientOutDir: "public/assets" })],
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow(
+      'The client output directory "public/assets" overlaps the public directory "public"',
+    );
+    expect(fs.existsSync(asset)).toBe(true);
+  });
+
+  it("rejects a bundler output dir that overlaps the app directory", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+
+    await expect(
+      createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        environments: { rsc: { build: { rolldownOptions: { output: { dir: "app" } } } } },
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow('The rsc output directory "app" overlaps the app directory "app"');
+    expect(fs.existsSync(path.join(fixtureDir, "app", "page.tsx"))).toBe(true);
+  });
+
+  it("keeps the server metadata under build.outDir out of Nitro's public output", async () => {
+    const fixtureDir = await isolatedFixture(
+      NITRO_PAGES_FIXTURE_SOURCE_DIR,
+      path.join(NITRO_PAGES_FIXTURE_SOURCE_DIR, "node_modules"),
+    );
+    // Nitro publishes Vite's build.outDir as static files.
+    const outDir = path.join(fixtureDir, "out");
+    const nitroModule = (await import(
+      pathToFileURL(path.join(fixtureDir, "node_modules/nitro/dist/vite.mjs")).href
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        nitroModule.nitro({ buildDir: path.join(fixtureDir, ".nitro") }),
+      ],
+      build: { outDir },
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    expect(fs.existsSync(path.join(outDir, "server", "vinext-server.json"))).toBe(true);
+    expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "hello.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "server"))).toBe(false);
+  }, 180_000);
+
+  it("keeps an earlier build.outDir's server metadata out of Nitro's public output", async () => {
+    const fixtureDir = await isolatedFixture(
+      NITRO_PAGES_FIXTURE_SOURCE_DIR,
+      path.join(NITRO_PAGES_FIXTURE_SOURCE_DIR, "node_modules"),
+    );
+    // Nitro publishes the build.outDir it sees, which a later build left its
+    // server metadata in, before a plugin after Nitro moves build.outDir.
+    const nitroOutDir = path.join(fixtureDir, "out");
+    fs.mkdirSync(path.join(nitroOutDir, "server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(nitroOutDir, "server", "vinext-server.json"),
+      '{"prerenderSecret":"last-build-secret"}',
+    );
+    const nitroModule = (await import(
+      pathToFileURL(path.join(fixtureDir, "node_modules/nitro/dist/vite.mjs")).href
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        nitroModule.nitro({ buildDir: path.join(fixtureDir, ".nitro") }),
+        {
+          name: "move-outdir",
+          config: () => ({ build: { outDir: path.join(fixtureDir, "final") } }),
+        },
+      ],
+      build: { outDir: nitroOutDir },
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "server"))).toBe(false);
+  }, 180_000);
+
+  it("ignores the server metadata where Nitro reads a relative build.outDir", async () => {
+    const fixtureDir = await isolatedFixture(
+      NITRO_PAGES_FIXTURE_SOURCE_DIR,
+      path.join(NITRO_PAGES_FIXTURE_SOURCE_DIR, "node_modules"),
+    );
+    // Nitro reads a relative build.outDir from the working directory, not
+    // from Vite's root.
+    const nitroOutDir = path.join(fixtureDir, "out");
+    fs.mkdirSync(path.join(nitroOutDir, "server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(nitroOutDir, "server", "vinext-server.json"),
+      '{"prerenderSecret":"last-build-secret"}',
+    );
+    const nitroModule = (await import(
+      pathToFileURL(path.join(fixtureDir, "node_modules/nitro/dist/vite.mjs")).href
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        nitroModule.nitro({ buildDir: path.join(fixtureDir, ".nitro") }),
+        {
+          name: "move-outdir",
+          config: () => ({ build: { outDir: path.join(fixtureDir, "final") } }),
+        },
+      ],
+      build: { outDir: path.relative(process.cwd(), nitroOutDir) },
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    expect(fs.existsSync(path.join(fixtureDir, ".output", "public", "server"))).toBe(false);
+  }, 180_000);
+
+  it("keeps the last build's server metadata out of Nitro's dev server", async () => {
+    const fixtureDir = await isolatedFixture(
+      NITRO_PAGES_FIXTURE_SOURCE_DIR,
+      path.join(NITRO_PAGES_FIXTURE_SOURCE_DIR, "node_modules"),
+    );
+    // A previous production build left its server metadata under build.outDir.
+    const outDir = path.join(fixtureDir, "out");
+    fs.mkdirSync(path.join(outDir, "server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(outDir, "server", "vinext-server.json"),
+      '{"prerenderSecret":"last-build-secret"}',
+    );
+    fs.mkdirSync(path.join(fixtureDir, "other"), { recursive: true });
+    fs.writeFileSync(path.join(fixtureDir, "other", "other.txt"), "other asset");
+    const nitroModule = (await import(
+      pathToFileURL(path.join(fixtureDir, "node_modules/nitro/dist/vite.mjs")).href
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
+
+    const server = await createServer({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: fixtureDir }),
+        // A plugin's config hook sets the build.outDir that Nitro publishes.
+        { name: "set-outdir", config: () => ({ build: { outDir } }) },
+        nitroModule.nitro({
+          buildDir: path.join(fixtureDir, ".nitro"),
+          // A module set up before vinext's publishes another root directory,
+          // shaped like Nitro's build.outDir entry, after Nitro registers it
+          // and before build:before's handlers run.
+          modules: [
+            (nitro: {
+              options: { publicAssets: Record<string, unknown>[] };
+              hooks: { beforeEach(handler: (event: { name: string }) => void): void };
+            }) => {
+              nitro.hooks.beforeEach(({ name }) => {
+                if (name !== "build:before") return;
+                nitro.options.publicAssets.push({
+                  dir: path.join(fixtureDir, "other"),
+                  baseURL: "/",
+                  fallthrough: true,
+                  maxAge: 0,
+                });
+              });
+            },
+          ],
+        }),
+      ],
+      server: { port: 0, host: "127.0.0.1" },
+      logLevel: "silent",
+    });
+    try {
+      await server.listen();
+      const address = server.httpServer?.address();
+      if (!address || typeof address === "string") throw new Error("dev server has no address");
+      const response = await fetch(`http://127.0.0.1:${address.port}/server/vinext-server.json`);
+
+      expect(await response.text()).not.toContain("last-build-secret");
+      const other = await fetch(`http://127.0.0.1:${address.port}/other.txt`);
+      expect(await other.text()).toBe("other asset");
+    } finally {
+      await server.close();
+    }
+  }, 120_000);
 });

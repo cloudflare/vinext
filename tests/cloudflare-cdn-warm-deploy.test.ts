@@ -10,6 +10,7 @@ import {
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
 import { writeCacheabilityManifestArtifact } from "../packages/cloudflare/src/cacheability-artifact.js";
+import { VINEXT_PRERENDER_SECRET_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
 import {
   CACHEABILITY_MANIFEST_MODULE,
   CACHEABILITY_REQUEST_PROJECTION_MODULE,
@@ -530,6 +531,24 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toThrow(`Worker graph to statically import ${CACHEABILITY_MANIFEST_MODULE}`);
   });
 
+  it("writes a cacheability manifest into a custom build.outDir's generated config", () => {
+    writeTwoStageWorkerArtifact();
+    fs.renameSync(path.join(tmpDir, "dist"), path.join(tmpDir, "out"));
+
+    expect(
+      writeCacheabilityManifestArtifact(
+        tmpDir,
+        undefined,
+        { buildId: "build-a", routes: {}, version: 1 },
+        "wrangler",
+        "out",
+      ),
+    ).toBe("out/server/wrangler.json");
+    expect(
+      fs.readFileSync(path.join(tmpDir, "out/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
+    ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
+  });
+
   it("writes a cacheability manifest into the cf Build Output bundle", () => {
     writeBuildOutputWorkerArtifact();
 
@@ -983,7 +1002,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         expect(init?.method).toBe("POST");
         expect(headers.get("accept")).toBe("text/html");
         expect(headers.get("rsc")).toBeNull();
-        expect(headers.get("x-vinext-prerender-secret")).toBe("test-prerender-secret");
+        expect(headers.get(VINEXT_PRERENDER_SECRET_HEADER)).toBe("test-prerender-secret");
         return readinessResponse();
       }
       const cacheKey = `${pathname}${isRsc ? "?_rsc" : ""}`;
@@ -1244,6 +1263,52 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         cacheabilityManifestRouteKey("app-page", "/cold"),
       ]),
     );
+  });
+
+  it("reads a custom build.outDir's artifacts in each step of a cacheability-probed deploy", async () => {
+    writeTwoStageWorkerArtifact();
+    fs.renameSync(path.join(tmpDir, "dist"), path.join(tmpDir, "out"));
+    const wrangler = mockTwoStageWrangler();
+    const probed: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const pathname = new URL(formatFetchUrl(input)).pathname;
+      const headers = new Headers(init?.headers);
+      if (headers.get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        // The probe authenticates with the secret from out/server/vinext-server.json.
+        expect(headers.get("x-vinext-prerender-secret")).toBe("test-prerender-secret");
+        probed.push(pathname);
+        return appPageProbeResponse("static-candidate", pathname);
+      }
+      if (isReadinessFetch(input)) return readinessResponse();
+      return cacheableHtml();
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, [], {
+      cacheabilityProbe: true,
+      config: "out/server/wrangler.json",
+      discoverWarmPlan: async () => ({
+        appPaths: ["/hot"],
+        buildId: "app-build-a",
+        buildIdentity: "app-build-a",
+        loadingShellPaths: [],
+        paths: ["/hot"],
+        routePatterns: appPageRoutePatterns(["/hot"], "/hot"),
+        rscPaths: [],
+      }),
+      outDir: "out",
+      warmCdnConcurrency: 1,
+      warmCdnPromotionDelay: 0,
+      warmCdnReadinessProbes: 1,
+      warmCdnRetries: 0,
+    });
+
+    expect(probed).toEqual(["/hot"]);
+    expect(wrangler.finalManifestSource).toBeDefined();
+    expect(
+      fs.readFileSync(path.join(tmpDir, "out/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
+    ).toBe(wrangler.finalManifestSource);
+    expect(fs.existsSync(path.join(tmpDir, "dist"))).toBe(false);
   });
 
   it("uses an explicit warm target for both stages of a cacheability-probed deploy", async () => {

@@ -20,7 +20,7 @@ import {
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
-import { cleanBuildOutput } from "./clean-output.js";
+import { cleanBuildOutput, type ProtectedSourceDirs } from "./clean-output.js";
 import { PAGES_CLIENT_ASSETS_MODULE } from "./pages-client-assets-module.js";
 import { runWithPreviewBuildCredentials } from "./preview-credentials.js";
 
@@ -41,6 +41,8 @@ export type BuildLifecycleContext = {
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
   prerenderConcurrency?: number;
   prerenderSecret: string;
+  /** Source directories the build output may not overlap. */
+  protectedDirs?: ProtectedSourceDirs;
   previewBuildCredentials?: Parameters<typeof runWithPreviewBuildCredentials>[1];
   revalidateSecret: string;
   root: string;
@@ -261,6 +263,7 @@ export function prepareBuildOutput(
     root: context.root,
     outDir: resolveBuildOutDir(context),
     emptyOutDir,
+    protectedDirs: context.protectedDirs,
   });
 }
 
@@ -413,6 +416,7 @@ export function createBuildLifecyclePlugins(options: {
         handler(config) {
           if (outputPrepared || !options.shouldPrepare(config)) return;
           const context = createContext();
+          context.protectedDirs = { ...context.protectedDirs, public: config.publicDir };
           // A raw `emptyOutDir: false` stays the escape hatch; otherwise follow
           // the resolved value, which later config hooks may have set.
           if (context.emptyOutDir !== false && typeof config.build.emptyOutDir === "boolean") {

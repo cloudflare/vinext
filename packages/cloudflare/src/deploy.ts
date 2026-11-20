@@ -645,13 +645,25 @@ async function loadDeployViteConfigMetadata(
   const vite = await loadProjectViteApi(root);
   const loaded = await vite.loadConfigFromFile({ command: "build", mode }, configFile, root);
   const plugins = loaded?.config.plugins;
+  const routeRootConfig = await findVinextRouteRootConfigInPlugins(plugins);
+  // The build writes BUILD_ID, vinext-server.json and the prerender output
+  // below Vite's `build.outDir`; the steps after it read them from there.
+  // runBuild replaces this with the value its resolved config used. Like
+  // Vite, resolve a relative outDir, or the default dist, against the
+  // config's root.
+  const configRoot = loaded?.config.root;
+  const configOutDir = loaded?.config.build?.outDir;
+  const outDir =
+    configOutDir === undefined && configRoot === undefined
+      ? undefined
+      : path.resolve(root, configRoot ?? ".", configOutDir ?? "dist");
   return {
     // The executed Vite config is authoritative. Source scans cannot see
     // imported or composed cache objects and must not suppress valid metadata.
     cacheConfig: await findVinextCacheConfigInPlugins(plugins),
     nextConfig: await findVinextNextConfigInPlugins(plugins),
     prerenderConfig: await findVinextPrerenderConfigInPlugins(plugins),
-    routeRootConfig: await findVinextRouteRootConfigInPlugins(plugins),
+    routeRootConfig: outDir === undefined ? routeRootConfig : { ...routeRootConfig, outDir },
   };
 }
 
@@ -660,7 +672,7 @@ async function runBuild(
   env: string | undefined,
   mode: string,
   configFile: string | undefined,
-): Promise<void> {
+): Promise<string> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
   const { createBuilder } = await loadProjectViteApi(info.root);
@@ -674,7 +686,7 @@ async function runBuild(
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
   let completed = false;
-  await withCloudflareEnv(env, async () => {
+  const outDir = await withCloudflareEnv(env, async () => {
     const invocation: BuildLifecycleInvocation = {
       // Deploy decides platform-specific finalization only after TPR and staged
       // warmup selection.
@@ -689,8 +701,11 @@ async function runBuild(
       [VINEXT_BUILD_LIFECYCLE_CONFIG]: invocation,
     } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
+    // Vite resolves a relative outDir against the resolved root.
+    return path.resolve(builder.config.root, builder.config.build.outDir);
   });
   if (!completed) throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
+  return outDir;
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
@@ -1146,6 +1161,8 @@ type CdnWarmDeployOptions = Pick<
     | "statusSource"
   > & {
     deploymentTool?: DeploymentTool;
+    /** Vite's `build.outDir`, which holds the build metadata; "dist" by default. */
+    outDir?: string;
     /** Allow optional route selection to discover no warmable requests. */
     allowEmptyWarmPlan?: boolean;
     /** Probe a staged Worker and upload the resulting manifest as a second version. */
@@ -1906,7 +1923,8 @@ async function deployWithCacheabilityProbe(
     );
   }
 
-  const prerenderSecret = readPrerenderSecret(root);
+  const serverDir = path.resolve(root, options.outDir ?? "dist", "server");
+  const prerenderSecret = readPrerenderSecret(root, serverDir);
 
   const probeUpload = runVersionUpload(root, options);
   const wranglerOptions = resolveDeploymentControlPlaneOptions(options, probeUpload);
@@ -1981,7 +1999,7 @@ async function deployWithCacheabilityProbe(
     const discovered = await options.discoverWarmPlan({ headers, targetUrl });
     if (!discovered.buildId) {
       throw new Error(
-        "Two-stage CDN warming requires the staged discovery result to match dist/server/BUILD_ID.",
+        `Two-stage CDN warming requires the staged discovery result to match ${path.relative(root, path.join(serverDir, "BUILD_ID"))}.`,
       );
     }
     if (!discovered.buildIdentity) {
@@ -2075,6 +2093,7 @@ async function deployWithCacheabilityProbe(
     try {
       probe = await probeStagedWorkerCacheability({
         buildId: discovered.buildId,
+        serverDir,
         concurrency: options.warmCdnConcurrency,
         expectedResponseBuildId: plan.buildIdentity,
         fallbackRoutePatterns: plan.fallbackRoutePatterns,
@@ -2142,6 +2161,7 @@ async function deployWithCacheabilityProbe(
       options.config,
       probe.manifest,
       options.deploymentTool,
+      options.outDir,
     );
     const finalUpload = runVersionUpload(root, {
       ...options,
@@ -2546,7 +2566,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
   // Step 5: Build
   if (!options.skipBuild) {
-    await withBuildContext(() => runBuild(info, cloudflareEnv, viteMode, viteConfigFile));
+    const outDir = await withBuildContext(() =>
+      runBuild(info, cloudflareEnv, viteMode, viteConfigFile),
+    );
+    // A plugin's config hook may set `build.outDir`, which the config file
+    // alone does not show.
+    viteConfigMetadata.routeRootConfig = { ...viteConfigMetadata.routeRootConfig, outDir };
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
@@ -2574,7 +2599,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
         hostname: warmCdnTarget ? new URL(warmCdnTarget).hostname : undefined,
         typedConfig: deploymentTool === "cf",
         window: Math.max(1, options.tprWindow ?? 24),
-        assetsDir: path.resolve(info.root, prerenderOutputDirs?.clientOutDir ?? "dist/client"),
+        assetsDir: path.resolve(
+          info.root,
+          prerenderOutputDirs?.clientOutDir ??
+            path.join(prerenderOutputDirs?.outDir ?? "dist", "client"),
+        ),
         basePath: nextConfig.basePath,
       })
     : null;
@@ -2698,6 +2727,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         ...wranglerOptions,
         allowEmptyWarmPlan:
           tprRoutes.length + tprMetadataCandidates.length > 0 && !options.warmCdnCache,
+        outDir: viteConfigMetadata.routeRootConfig?.outDir,
         cacheabilityProbe: needsCacheabilityProbeManifest,
         discoverWarmPlan: async ({ headers, targetUrl }) => {
           const discovery = await discoverPrerenderPathManifest({
@@ -2724,6 +2754,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
           if (!discovery) return { loadingShellPaths: [], paths: [], rscPaths: [] };
           return createPrerenderWarmPlan(root, discovery, {
             includeCanonicalRsc: hasCanonicalRscWarmup,
+            serverDir: path.resolve(
+              info.root,
+              viteConfigMetadata.routeRootConfig?.outDir ?? "dist",
+              "server",
+            ),
             strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
           });
         },

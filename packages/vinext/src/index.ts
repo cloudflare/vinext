@@ -354,6 +354,7 @@ import {
   getBuildBundlerOptions,
   withBuildBundlerOptions,
 } from "./build/client-build-config.js";
+import { assertOutputDirIsSafe, resolveEnvironmentOutputDirs } from "./build/clean-output.js";
 import {
   collectClientReferenceChunks,
   collectClientReferenceSources,
@@ -1856,8 +1857,11 @@ type NitroSetupContext = {
   options: NitroPublicFilesOptions & {
     buildDir?: string;
     exportConditions?: string[];
+    ignore?: string[];
+    publicAssets?: { dir: string; baseURL?: string; fallthrough?: boolean; maxAge?: number }[];
     traceDeps?: string[];
   };
+  hooks: { callHook(name: string, ...args: unknown[]): Promise<unknown> };
 };
 
 function createServerEnvironmentFileNameResolver(
@@ -1900,6 +1904,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
   let nitroBuildDir: string | undefined;
+  let nitroOptions: NitroSetupContext["options"] | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let canonicalMiddlewarePath: string | null = null;
@@ -2644,6 +2649,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       prerenderConcurrency: prerenderConfig?.concurrency,
       prerenderSecret,
       previewBuildCredentials,
+      protectedDirs: { app: appDir, pages: pagesDir },
       revalidateSecret: revalidateSecret!,
       root,
       routeRootConfig: {
@@ -2713,31 +2719,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
       configResolved(config) {
         if (config.command !== "build") return;
-        // Vite empties each environment's outDir on its own, so one at or
-        // above the project root (e.g. `build.outDir: ".."` in a project
-        // named "server") would delete the project's source. Check the
-        // resolved values, after every config and configEnvironment hook.
-        for (const name of ["client", "rsc", "ssr"]) {
-          const outDir = config.environments[name]?.build.outDir;
-          if (outDir === undefined || !isPathInsideOrEqual(path.resolve(root, outDir), root)) {
-            continue;
+        // Vite empties each environment's output directories and the build
+        // cleanup empties build.outDir, so none of them may hold the project
+        // or its sources. Check the resolved values, after every config and
+        // configEnvironment hook. With `build.outDir: "."` the derived
+        // server/ and client/ would be the app's own directories. They're
+        // checked with `build.write: false` too, since vinext's own hooks
+        // still write to them.
+        const safety = {
+          root,
+          protectedDirs: { app: appDir, pages: pagesDir, public: config.publicDir },
+        };
+        assertOutputDirIsSafe("build.outDir", buildOutDir, safety);
+        for (const [name, environment] of Object.entries(config.environments)) {
+          // vinext's own hooks write to build.outDir even when every bundler
+          // output has its own dir.
+          const outputDirs = new Set([
+            path.resolve(root, environment.build.outDir),
+            ...resolveEnvironmentOutputDirs(root, environment.build),
+          ]);
+          for (const outputDir of outputDirs) {
+            assertOutputDirIsSafe(`${name} output directory`, outputDir, safety);
           }
-          const shownOutDir = toSlash(path.relative(root, path.resolve(root, outDir))) || ".";
-          throw new Error(
-            `[vinext] The ${name} output directory "${shownOutDir}" contains the project root. ` +
-              "Building there would delete the project. Choose a build.outDir that does not " +
-              "contain the project.",
-          );
-        }
-        // Vite leaves an outDir equal to the root alone, but vinext derives
-        // <outDir>/server and <outDir>/client from it, which Vite would empty:
-        // with `build.outDir: "."` that is the app's own server/ or client/.
-        if (path.relative(root, path.resolve(root, buildOutDir)) === "") {
-          throw new Error(
-            `[vinext] build.outDir "${buildOutDir}" is the project root. vinext would write ` +
-              "and empty its server/ and client/ directories there. Choose a build.outDir " +
-              "below or outside the project, such as the default dist.",
-          );
         }
       },
     },
@@ -8772,6 +8775,15 @@ export const loadServerActionClient = ${
       name: "vinext:nitro-setup",
       configResolved(config) {
         nitroPublicDir = config.publicDir;
+        // Nitro publishes Vite's `build.outDir` as static files, and vinext
+        // keeps its server metadata (the prerender secret in
+        // vinext-server.json) and the hybrid Pages server bundle in
+        // <outDir>/server. Nitro's ignore patterns also apply to its public
+        // assets.
+        if (nitroOptions && !nitroOptions.dev) {
+          nitroOptions.ignore ??= [];
+          nitroOptions.ignore.push(`${path.resolve(root, buildOutDir, "server")}/**`);
+        }
       },
       // Nitro points the client build at its static output, so Vite's build
       // metadata (`.vite/`) lands there, and vinext reads it during the build.
@@ -8791,6 +8803,38 @@ export const loadServerActionClient = ${
       },
       nitro: {
         setup: (nitro: NitroSetupContext) => {
+          nitroOptions = nitro.options;
+          // Nitro publishes Vite's build.outDir as static files, and its dev
+          // server serves them without its ignore patterns, so it would serve
+          // the last production build's <build.outDir>/server, including the
+          // prerender secret in vinext-server.json. Vite serves the client in
+          // dev, so drop that entry before Nitro creates its dev server. A
+          // build ignores its <dir>/server, which is the build.outDir Nitro
+          // saw and may differ from the final one. Nitro adds the entry as the
+          // last public asset and then calls build:before, so take it as that
+          // call starts, before any other module's hooks (including
+          // beforeEach callbacks) can add assets.
+          const callHook = nitro.hooks.callHook.bind(nitro.hooks);
+          nitro.hooks.callHook = (name, ...args) => {
+            if (name === "build:before") {
+              nitro.hooks.callHook = callHook;
+              const viteOutput = nitro.options.publicAssets?.at(-1);
+              if (
+                viteOutput?.baseURL === "/" &&
+                viteOutput.fallthrough === true &&
+                viteOutput.maxAge === 0
+              ) {
+                if (nitro.options.dev) {
+                  nitro.options.publicAssets!.pop();
+                } else {
+                  // Nitro reads a relative dir from the working directory.
+                  nitro.options.ignore ??= [];
+                  nitro.options.ignore.push(`${path.resolve(viteOutput.dir, "server")}/**`);
+                }
+              }
+            }
+            return callHook(name, ...args);
+          };
           nitroBuildDir = nitro.options.buildDir
             ? path.resolve(root, nitro.options.buildDir)
             : undefined;
