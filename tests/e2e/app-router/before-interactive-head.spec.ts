@@ -40,23 +40,73 @@ test.describe("inline beforeInteractive head ordering", () => {
     void consoleErrors;
   });
 
-  test("inline beforeInteractive data containing <!--<script> keeps the document intact", async ({
+  test("markup in inline beforeInteractive data stays inside the script", async ({
     page,
     consoleErrors,
   }) => {
     await page.goto(`${BASE}/beforeinteractive-script-data`);
 
-    // Before the fix, `<!--<script>` in the hoisted script's body put the HTML
-    // tokenizer in the double-escaped script state: the script's own
-    // `</script>` no longer closed it, the markup that followed became its
-    // text, and the script threw a SyntaxError.
+    // The fixture's data holds `<!--<script>`, `</head>` and `</body></html>`.
+    // Each one used to split the hoisted script: the data after it became
+    // document markup and the script threw a SyntaxError.
     const scriptData = await page.evaluate(
-      () => (self as unknown as { __vinextScriptData?: { name: string } }).__vinextScriptData,
+      () => (self as unknown as { __vinextScriptData?: unknown }).__vinextScriptData,
     );
-    expect(scriptData).toEqual({ name: "<!--<script>" });
+    expect(scriptData).toEqual({
+      name: "<!--<script>",
+      bio: '</head><p id="profile-bio">bio</p></body></html>',
+    });
+    await expect(page.locator("#profile-bio")).toHaveCount(0);
     await expect(page.locator("#script-data-heading")).toHaveText("beforeInteractive script data");
     await expect(page.locator("main")).toHaveCount(1);
 
+    // The loader swapped itself for the real script element, which keeps the
+    // author's body verbatim and sits first in <head>.
+    const script = await page.evaluate(() => {
+      const element = document.getElementById("vinext-test-script-data");
+      return {
+        parent: element?.parentElement?.tagName,
+        isFirstHeadScript: document.head.querySelector("script") === element,
+        text: element?.textContent,
+        marker: element?.getAttribute("data-nscript"),
+      };
+    });
+    expect(script).toEqual({
+      parent: "HEAD",
+      isFirstHeadScript: true,
+      text: `self.__vinextScriptData = ${JSON.stringify({
+        name: "<!--<script>",
+        bio: '</head><p id="profile-bio">bio</p></body></html>',
+      })};`,
+      marker: "beforeInteractive",
+    });
+
     void consoleErrors;
+  });
+
+  test("inline beforeInteractive script runs under a nonce-based CSP", async ({
+    page,
+    consoleErrors,
+  }) => {
+    const response = await page.goto(
+      `${BASE}/beforeinteractive-head-ordering?csp-nonce=before-interactive-nonce`,
+    );
+    expect(response?.headers()["content-security-policy"]).toBe(
+      "script-src 'nonce-before-interactive-nonce' 'strict-dynamic';",
+    );
+
+    const themeInitRan = await page.evaluate(
+      () => (self as unknown as { __vinextThemeInitRan?: boolean }).__vinextThemeInitRan,
+    );
+    expect(themeInitRan).toBe(true);
+    // 'strict-dynamic' would also admit a created script without a nonce, so
+    // check the nonce itself: a nonce-only policy needs it.
+    const nonce = await page.evaluate(
+      () => (document.getElementById("vinext-test-theme-init") as HTMLScriptElement | null)?.nonce,
+    );
+    expect(nonce).toBe("before-interactive-nonce");
+    expect(consoleErrors.filter((message) => message.includes("Content Security Policy"))).toEqual(
+      [],
+    );
   });
 });
