@@ -49,9 +49,10 @@ describe("default loader emits /_next/image URLs (issue #1513)", () => {
     );
   });
 
-  async function importWithRouterEnv(basePath: string, trailingSlash: boolean) {
+  async function importWithRouterEnv(basePath: string, trailingSlash: boolean, imagePath?: string) {
     vi.stubEnv("__NEXT_ROUTER_BASEPATH", basePath);
     vi.stubEnv("__VINEXT_TRAILING_SLASH", String(trailingSlash));
+    vi.stubEnv("__VINEXT_IMAGE_PATH", imagePath);
     vi.resetModules();
     return import("../packages/vinext/src/shims/image.js");
   }
@@ -87,6 +88,21 @@ describe("default loader emits /_next/image URLs (issue #1513)", () => {
       vi.resetModules();
     }
   });
+
+  it.each(["/media/image", "/media/image/"])(
+    "applies trailingSlash once and skips basePath for the custom path %s",
+    async (imagePath) => {
+      try {
+        const { imageOptimizationUrl } = await importWithRouterEnv("/docs", true, imagePath);
+        expect(imageOptimizationUrl("/docs/test.jpg", 828)).toBe(
+          "/media/image/?url=%2Fdocs%2Ftest.jpg&w=828&q=75",
+        );
+      } finally {
+        vi.unstubAllEnvs();
+        vi.resetModules();
+      }
+    },
+  );
 
   it("Image SSR src starts with /_next/image, not /_vinext/image", () => {
     const html = ReactDOMServer.renderToString(

@@ -352,6 +352,8 @@ export type NextConfig = {
   headers?: () => Promise<NextHeader[]> | NextHeader[];
   /** Image optimization config */
   images?: {
+    /** URL prefix emitted by next/image. The server optimizer stays at `/_next/image` under basePath. */
+    path?: string;
     remotePatterns?: Array<
       | URL
       | {
