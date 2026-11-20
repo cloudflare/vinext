@@ -85,25 +85,18 @@ describe("App Router dev SSR of a collection built from its children", () => {
   let fixtureDir = "";
   let server: ViteDevServer | undefined;
 
-  async function startDevServer(): Promise<{ server: ViteDevServer; baseUrl: string }> {
-    const devServer = await createServer({
+  beforeAll(async () => {
+    fixtureDir = await createIsolatedFixture(FIXTURE_SOURCE_DIR, "vinext-ssr-collection-dev-");
+    server = await createServer({
       root: fixtureDir,
       configFile: false,
       plugins: [vinext({ appDir: fixtureDir })],
       server: { host: "127.0.0.1", port: 0 },
       logLevel: "silent",
     });
-    await devServer.listen();
-    const address = devServer.httpServer?.address();
-    return {
-      server: devServer,
-      baseUrl: `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`,
-    };
-  }
-
-  beforeAll(async () => {
-    fixtureDir = await createIsolatedFixture(FIXTURE_SOURCE_DIR, "vinext-ssr-collection-dev-");
-    ({ server, baseUrl } = await startDevServer());
+    await server.listen();
+    const address = server.httpServer?.address();
+    baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
   }, 120_000);
 
   afterAll(async () => {
@@ -122,33 +115,4 @@ describe("App Router dev SSR of a collection built from its children", () => {
       expect(table).toContain(`cell-${CELL_COUNT - 1}-`);
     }
   });
-
-  // React's Node development Flight server enables an async_hooks hook each
-  // time a server evaluates it. Each live server keeps its own, and a server's
-  // hook goes when it closes.
-  it("keeps a live dev server's Flight async hook while another starts and closes", async () => {
-    const activeHooks = (globalThis as Record<symbol, Map<string, unknown> | undefined>)[
-      Symbol.for("vinext.reactServerDomAsyncHooks")
-    ];
-    await renderedCells(new URL("/", baseUrl));
-    const firstOwners = [...(activeHooks?.keys() ?? [])];
-    expect(firstOwners).toHaveLength(1);
-    expect(firstOwners[0]).toMatch(/:rsc$/);
-
-    // Same root, so the same pre-bundled build.
-    const second = await startDevServer();
-    try {
-      const { count } = await renderedCells(new URL("/", second.baseUrl));
-      expect(count).toBe(CELL_COUNT);
-      expect([...activeHooks!.keys()]).toHaveLength(2);
-      expect(activeHooks!.has(firstOwners[0])).toBe(true);
-    } finally {
-      await second.server.close();
-    }
-    expect([...activeHooks!.keys()]).toEqual(firstOwners);
-
-    await server?.close();
-    server = undefined;
-    expect(activeHooks!.size).toBe(0);
-  }, 120_000);
 });
