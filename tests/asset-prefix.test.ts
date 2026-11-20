@@ -585,7 +585,7 @@ describe("assetPrefix end-to-end build", () => {
     };
     collectFiles(clientDir);
     for (const file of builtFiles.filter((file) => /\.[cm]?js$/.test(file))) {
-      expect(fs.readFileSync(file, "utf8"), file).not.toContain("?dpl=dpl_123");
+      expect(fs.readFileSync(file, "utf8"), file).not.toMatch(/\.js\?dpl=/);
     }
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
@@ -610,6 +610,10 @@ describe("assetPrefix end-to-end build", () => {
       expect(bootstrapModuleUrl).not.toContain("dpl=");
       for (const assetUrl of assetUrls.filter((url) => /\.js(?:[?#]|$)/.test(url))) {
         expect(assetUrl).not.toContain("dpl=");
+      }
+      // Stylesheets keep the query, as do the ones dynamic imports load.
+      for (const assetUrl of assetUrls.filter((url) => /\.css(?:[?#]|$)/.test(url))) {
+        expect(assetUrl).toContain("?dpl=dpl_123");
       }
     } finally {
       server.close();
