@@ -249,9 +249,13 @@ describe("App Router Production build", () => {
     // The Flight server is its Node build too, so both schedule their work the
     // same way (#4770), and plugin-rsc's runtime shares it instead of bundling
     // the edge build beside it.
+    // Every build of the Flight server exports decodeReplyFromAsyncIterable,
+    // and only the Node build exports decodeReplyFromBusboy.
     const rscJs = readAllJs(path.join(outDir, "server"), ["ssr"]);
-    expect(rscJs).toContain("renderToPipeableStream");
-    expect(rscJs.split("Refs cannot be used in Server Components").length - 1).toBe(1);
+    const flightExports = rscJs.match(/\.decodeReplyFromAsyncIterable\s*=/g)?.length ?? 0;
+    const nodeFlightExports = rscJs.match(/\.decodeReplyFromBusboy\s*=/g)?.length ?? 0;
+    expect(nodeFlightExports).toBeGreaterThan(0);
+    expect(flightExports).toBe(nodeFlightExports);
 
     // Asset manifest should be generated
     expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);

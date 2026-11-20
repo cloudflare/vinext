@@ -4,7 +4,8 @@ const NOT_QUEUED = Symbol("not queued");
 
 // The microtask turns a read may take to return a chunk already queued
 // upstream. Through up to three tees it took at most four, in Node and in
-// workerd. The rest is margin: a chunk that isn't queued only waits this long.
+// workerd, and three in Node with the search params gate after them. The rest
+// is margin: a chunk that isn't queued only waits this long.
 const QUEUED_READ_TURNS = 8;
 
 function afterQueuedReadTurns(): Promise<typeof NOT_QUEUED> {

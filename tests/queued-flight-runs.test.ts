@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import { startCandidateSearchParamsGate } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
 import { trackQueuedFlightRuns } from "../packages/vinext/src/server/queued-flight-runs.js";
 import { loadCacheFlightCodec } from "./helpers/cache-flight-codec.js";
 
@@ -60,6 +61,34 @@ describe("trackQueuedFlightRuns", () => {
 
     controller.close();
     await finished;
+  });
+
+  it("settles a run once every chunk queued with it has been read through tees and the search params gate", async () => {
+    const { controller, stream } = controlledStream();
+    // As on a cache-candidate request: the RSC stream is teed for the
+    // embedded payload and the cache, then wrapped by the search params gate.
+    let ssrStream = stream;
+    const sides: ReadableStream<Uint8Array>[] = [];
+    for (let tee = 0; tee < 3; tee++) {
+      const [ssr, side] = ssrStream.tee();
+      ssrStream = ssr;
+      sides.push(side);
+    }
+    const sideReads = sides.map((side) => consume(side));
+    const flight = trackQueuedFlightRuns(
+      startCandidateSearchParamsGate().settleWhenConsumed(ssrStream),
+    );
+    const { chunks, finished } = consume(flight.stream);
+
+    const written = Array.from({ length: 300 }, (_, i) => new Uint8Array(4096).fill(i % 256));
+    for (const chunk of written) controller.enqueue(chunk);
+    await Promise.resolve();
+    await flight.currentRunConsumed();
+    expect(chunks).toEqual(written);
+
+    controller.close();
+    await finished;
+    await Promise.all(sideReads.map((side) => side.finished));
   });
 
   it("does not wait for a chunk that is not queued yet", async () => {
