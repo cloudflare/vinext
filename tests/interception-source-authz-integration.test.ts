@@ -245,16 +245,24 @@ describe.each([
     expect(memberDirect.status).toBe(200);
     expect(await memberDirect.text()).toContain(GUARDED_MEMBER_MARKER);
 
+    // The anonymous client shows the login page the rule served, which does
+    // not intercept the photo, so it navigates to the photo page itself.
     const anonymous = await fetch(`${baseUrl}/photos/1`, {
       headers: interceptionHeaders("/members/7"),
     });
     const anonymousBody = await anonymous.text();
     expect({
       status: anonymous.status,
+      rendersPhoto: anonymousBody.includes("Refresh"),
+      rendersModal: anonymousBody.includes("MEMBERS-PHOTO-MODAL"),
       exposedGuardedContent: anonymousBody.includes(GUARDED_MEMBER_MARKER),
+      retainsSource: retainedElementIds(anonymousBody).includes("page:/members/7"),
     }).toEqual({
-      status: 404,
+      status: 200,
+      rendersPhoto: true,
+      rendersModal: false,
       exposedGuardedContent: false,
+      retainsSource: false,
     });
 
     // The client keeps the member page it shows beneath the modal, so the
