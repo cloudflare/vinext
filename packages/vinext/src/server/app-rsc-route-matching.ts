@@ -133,6 +133,13 @@ type AppRscInterceptMatch = AppRscInterceptLookupEntry & {
   matchedParams: AppRscRouteParams;
   sourceRouteIsConcrete: boolean;
   /**
+   * /_not-found, which names no route, reaches a root-level intercept whose
+   * owner is the intercepting route's own: the root page for a sibling
+   * intercept, a root route group's page for its slot. That owner stands in
+   * for the source route.
+   */
+  rendersRootOwnerFromRouteMiss: boolean;
+  /**
    * The source route has no slot to render a slot intercept into. Unless the
    * request renders the whole intercepting route, returned only to a caller
    * that accepts such a source, which a source rewrite can still turn into one
@@ -579,6 +586,10 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
               matchRawRequestParts(urlParts),
             ),
           sourceRouteIsConcrete: concreteSourceRoute !== null,
+          rendersRootOwnerFromRouteMiss:
+            isRouteMissSource &&
+            concreteSourceRoute === null &&
+            entry.sourceMatchPatternParts?.length === 0,
           sourceRouteLacksSlot,
           rendersWholeInterceptingRoute,
           sourceRouteIndex: rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex,
