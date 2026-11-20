@@ -2645,27 +2645,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   });
 
   const plugins: PluginOption[] = [
-    {
-      // vinext hands Vite the root it read in its config hook, reads the app
-      // from it and writes its own output under it. A later plugin that moves
-      // Vite's root (even to a symlink of it) would have Vite build and empty
-      // output directories somewhere else, so reject it before the build
-      // lifecycle empties anything.
-      name: "vinext:root-check",
-      apply: "build",
-      enforce: "pre",
-      configResolved: {
-        order: "pre",
-        handler(config) {
-          if (path.resolve(config.root) === path.resolve(root)) return;
-          throw new Error(
-            `[vinext] A plugin moved Vite's root from "${root}" to "${config.root}" after ` +
-              "vinext read it. vinext builds the app from the root it read, so set root in " +
-              "the Vite config instead.",
-          );
-        },
-      },
-    },
     buildLifecyclePlugins[0],
     {
       // The main config hook runs early (enforce: "pre") and derives the
