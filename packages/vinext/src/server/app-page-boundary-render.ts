@@ -33,6 +33,7 @@ import {
   hasAppPageDynamicMetadata,
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
+  resolveInterceptHeadFileMetadata,
   resolveInterceptLayoutsBesidePage,
   slotInterceptKeepsSourceHead,
   resolveAppPageHead,
@@ -739,6 +740,42 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
         { slots: options.route?.slots ?? null },
         routePathname,
       );
+      // Like the intercepted render's own head, a head the intercepting tree
+      // heads reads that tree's metadata files. A slot intercept that keeps the
+      // source route's head keeps its files too; a whole intercepting route is
+      // headed by the intercepting tree, as its render is.
+      const rendersWholeInterceptingRoute =
+        intercept?.rendersInterceptionSource === true &&
+        intercept.rendersWholeInterceptingRoute === true;
+      const slotInterceptKey =
+        intercept?.interceptPage != null && !isSiblingIntercept
+          ? (intercept.interceptSlotKey ?? null)
+          : null;
+      const headFileMetadata = resolveInterceptHeadFileMetadata({
+        interceptParams: intercept?.interceptParams ?? null,
+        interceptSourcePageSegments: intercept?.interceptSourcePageSegments ?? null,
+        interceptSlotKey:
+          slotInterceptKey !== null &&
+          options.route &&
+          (rendersWholeInterceptingRoute ||
+            !slotInterceptKeepsSourceHead({
+              interceptSlotKey: slotInterceptKey,
+              route: options.route,
+              sourceParallelRoutes: resolveActiveParallelRouteHeadInputs({
+                layoutTreePositions: options.route.layoutTreePositions,
+                params: options.matchedParams,
+                routeSegments: options.route.routeSegments ?? [],
+                slotParams,
+                slots: options.route.slots ?? null,
+              }),
+            }))
+            ? slotInterceptKey
+            : null,
+        isSiblingIntercept,
+        metadataRoutes: options.metadataRoutes,
+        params: effectiveParams,
+        route: options.route ?? {},
+      });
       const parallelBranches = resolveActiveParallelRouteHeadInputs({
         interceptBranchSegments: intercept?.interceptBranchSegments ?? null,
         interceptLayouts: intercept?.interceptLayouts ?? null,
@@ -842,7 +879,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
             applyFileBasedMetadata: options.applyFileBasedMetadata,
             basePath: options.basePath ?? "",
             ...fallbackHeadOptions,
-            metadataRoutes: options.metadataRoutes,
+            ...headFileMetadata,
             routePath: options.route?.pattern ?? pathname,
           }),
         );
@@ -917,8 +954,6 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
             intercept.rendersWholeInterceptingRoute === true
               ? resolveInterceptionSourceHead({
                   interceptSlotKey,
-                  interceptSourcePageSegments: intercept.interceptSourcePageSegments,
-                  metadataRoutes: options.metadataRoutes,
                   parallelRouteHeadInputs: resolveInterceptParallelBranches(interceptSlotKey),
                   route: { ...route, layouts: routeLayoutModules },
                 })
@@ -941,7 +976,6 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
               ? sourceParallelBranches
               : resolveInterceptParallelBranches(interceptSlotKey);
           })();
-          const headMetadataRoutes = wholeRouteHead?.metadataRoutes ?? options.metadataRoutes;
           const headOptions = {
             applyFileBasedMetadata: options.applyFileBasedMetadata,
             basePath: options.basePath ?? "",
@@ -949,7 +983,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
             layoutTreePositions: wholeRouteHead
               ? wholeRouteHead.layoutTreePositions
               : route.layoutTreePositions,
-            metadataRoutes: headMetadataRoutes,
+            ...headFileMetadata,
             pageModule: isSiblingIntercept ? null : (route.page ?? null),
             parallelRoutes: [
               ...(routePrimaryParallelBranch ? [routePrimaryParallelBranch.head] : []),
@@ -971,7 +1005,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
           const recoveredHead = recoverAppPageRouteHead(prepareAppPageHead(headOptions), {
             applyFileBasedMetadata: options.applyFileBasedMetadata,
             basePath: options.basePath ?? "",
-            metadataRoutes: headMetadataRoutes,
+            ...headFileMetadata,
             resolvePlanOptions: () =>
               createRouteNotFoundHeadPlanOptions({
                 parallelBranches: routeParallelBranches,

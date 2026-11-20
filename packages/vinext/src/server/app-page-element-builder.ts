@@ -16,6 +16,7 @@ import {
   hasAppPageDynamicMetadata,
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
+  resolveInterceptHeadFileMetadata,
   resolveInterceptLayoutsBesidePage,
   slotInterceptKeepsSourceHead,
   type ActiveParallelRouteHeadInput,
@@ -62,7 +63,6 @@ import { tagAppPagePageError, tagAppPageSlotError } from "./app-page-execution.j
 import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { resolveSlotParamOverrides } from "./app-page-navigation-params.js";
-import { filterMetadataRoutesForSegments } from "./metadata-route-segments.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
@@ -681,8 +681,6 @@ export async function buildPageElements<
     opts?.rendersInterceptionSource === true && interceptSlotKey !== null
       ? resolveInterceptionSourceHead({
           interceptSlotKey,
-          interceptSourcePageSegments: opts.interceptSourcePageSegments,
-          metadataRoutes,
           parallelRouteHeadInputs: activeParallelRouteHeadInputs,
           route,
         })
@@ -695,13 +693,24 @@ export async function buildPageElements<
   const metadataSearchParamsObserver = createAppPageMetadataSearchParamsObserver(
     observeMetadataSearchParamsAccess,
   );
+  const headFileMetadata = resolveInterceptHeadFileMetadata({
+    interceptParams: opts?.interceptParams ?? null,
+    interceptSourcePageSegments: opts?.interceptSourcePageSegments ?? null,
+    isSiblingIntercept,
+    // Beneath its source, the render is of the intercepting tree; rendered
+    // whole, the intercept's tree heads the route only when no page comes first.
+    interceptSlotKey: retainedSourceHead || !keepsSourceHead ? interceptSlotKey : null,
+    metadataRoutes,
+    params: effectiveParams,
+    route,
+  });
   const sourceHeadOptions = {
     applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
+    ...headFileMetadata,
     hiddenParallelRoutes,
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
-    metadataRoutes,
     outletParallelRouteIndex,
     pageModule: isSiblingIntercept ? null : (effectivePageModule ?? null),
     parallelRoutes,
@@ -715,7 +724,6 @@ export async function buildPageElements<
   const headOptions = retainedSourceHead
     ? {
         ...sourceHeadOptions,
-        metadataRoutes: retainedSourceHead.metadataRoutes,
         hiddenParallelRoutes: null,
         layoutModules: retainedSourceHead.layoutModules,
         layoutTreePositions: retainedSourceHead.layoutTreePositions,
@@ -755,7 +763,7 @@ export async function buildPageElements<
     const recoveredHead = recoverAppPageRouteHead(preparedHead, {
       applyFileBasedMetadata: options.applyFileBasedMetadata,
       basePath: options.basePath ?? "",
-      metadataRoutes: headOptions.metadataRoutes,
+      ...headFileMetadata,
       // The not-found head recovers from the same branches as the visible
       // head: the source tree's, when a slot intercept keeps the source head.
       resolvePlanOptions: () =>
@@ -1354,31 +1362,6 @@ export function resolveSiblingInterceptSegmentKeys(
   });
 }
 
-/**
- * The segments whose metadata files head a slot intercept: the owner's, then
- * the slot's folders down to the interception marker. The intercepting page's
- * own folders are left out.
- */
-function resolveInterceptSlotHeadSegments(
-  ownerSegments: readonly string[],
-  slotSegment: string,
-  interceptSourcePageSegments: readonly string[] | null | undefined,
-): string[] {
-  const markerIndex =
-    interceptSourcePageSegments?.findIndex((segment) =>
-      APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.some(({ prefix }) => segment.startsWith(prefix)),
-    ) ?? -1;
-  if (
-    !interceptSourcePageSegments ||
-    markerIndex <= ownerSegments.length ||
-    interceptSourcePageSegments[ownerSegments.length] !== slotSegment ||
-    ownerSegments.some((segment, index) => segment !== interceptSourcePageSegments[index])
-  ) {
-    return [...ownerSegments, slotSegment];
-  }
-  return interceptSourcePageSegments.slice(0, markerIndex);
-}
-
 export const APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS = [
   { prefix: "(...)", levels: Number.POSITIVE_INFINITY },
   { prefix: "(..)(..)", levels: 2 },
@@ -1558,9 +1541,7 @@ type InterceptionSourceHeadRoute<TModule> = {
  * target (`rendersInterceptionSource`), which Next.js resolves from the
  * intercepting route's tree: the layouts down to the slot's owner and the
  * intercepted slot's branch, not the segments and the other slots the client
- * keeps. It reads the metadata files of the segments down to the owner and of
- * the slot's folders above the interception marker, and its not-found head
- * recovers from that branch and the not-found files at or above the owner. A
+ * keeps. Its not-found head recovers from that branch and the not-found files at or above the owner. A
  * whole intercepting route's fallbacks head with it too, when its render threw
  * before its own head started. Null when the route doesn't have the slot.
  */
@@ -1569,8 +1550,6 @@ export function resolveInterceptionSourceHead<
   TRoute extends InterceptionSourceHeadRoute<TModule>,
 >(options: {
   interceptSlotKey: string;
-  interceptSourcePageSegments: readonly string[] | null | undefined;
-  metadataRoutes: readonly MetadataFileRoute[];
   /** The route's slot branches with the intercept in its slot (resolveActiveParallelRouteHeadInputs). */
   parallelRouteHeadInputs: readonly ActiveParallelRouteHeadInput<TModule>[];
   route: TRoute;
@@ -1578,7 +1557,6 @@ export function resolveInterceptionSourceHead<
   interceptInput: ActiveParallelRouteHeadInput<TModule>;
   layoutModules: TRoute["layouts"];
   layoutTreePositions: readonly number[] | null;
-  metadataRoutes: readonly MetadataFileRoute[];
   notFoundRoute: TRoute;
   ownerTreePosition: number | undefined;
 } | null {
@@ -1599,17 +1577,6 @@ export function resolveInterceptionSourceHead<
     interceptInput,
     layoutModules,
     layoutTreePositions,
-    metadataRoutes:
-      ownerTreePosition === undefined
-        ? options.metadataRoutes
-        : filterMetadataRoutesForSegments(
-            options.metadataRoutes,
-            resolveInterceptSlotHeadSegments(
-              (route.routeSegments ?? []).slice(0, ownerTreePosition),
-              `@${slot?.name ?? interceptSlotKey}`,
-              options.interceptSourcePageSegments,
-            ),
-          ),
     notFoundRoute: {
       ...route,
       ...resolveRetainedSourceNotFound(route, ownerTreePosition),
