@@ -27,6 +27,9 @@ const nextConfig = {
       { pathname: "/heart.png", search: "?v=listed" },
       { pathname: "/logo.svg", search: "?.png" },
     ],
+    // Small enough for a checked-in source to pass it; too-large-svg.png
+    // does. Coverage: tests/e2e/pages-router-prod/image-middleware.spec.ts
+    maximumResponseBody: 2_000_000,
   },
   async redirects() {
     return [
