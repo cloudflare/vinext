@@ -81,4 +81,49 @@ describe("next/image fill leaves object-fit to the caller (issue #3238)", () => 
     });
     expect(props.style?.objectFit).toBe("contain");
   });
+
+  it("deprecated objectFit/objectPosition props style a fill image", () => {
+    const { props } = getImageProps({
+      alt: "fill",
+      src: "/bg.png",
+      fill: true,
+      objectFit: "cover",
+      objectPosition: "top",
+    });
+    expect(props.style?.objectFit).toBe("cover");
+    expect(props.style?.objectPosition).toBe("top");
+    expect(props).not.toHaveProperty("objectFit");
+    expect(props).not.toHaveProperty("objectPosition");
+
+    for (const src of ["/logo.png", "https://images.unsplash.com/photo-fill"]) {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(Image, { alt: "fill", src, fill: true, objectFit: "cover" }),
+      );
+      expect(html).toContain("object-fit:cover");
+      expect(html).not.toContain('objectFit="cover"');
+    }
+  });
+
+  it("caller style wins over the deprecated objectFit prop", () => {
+    const { props } = getImageProps({
+      alt: "fill",
+      src: "/bg.png",
+      fill: true,
+      objectFit: "cover",
+      style: { objectFit: "contain" },
+    });
+    expect(props.style?.objectFit).toBe("contain");
+  });
+
+  it("deprecated objectFit prop is dropped for non-fill images", () => {
+    const { props } = getImageProps({
+      alt: "sized",
+      src: "/bg.png",
+      width: 100,
+      height: 100,
+      objectFit: "cover",
+    });
+    expect(props.style).not.toHaveProperty("objectFit");
+    expect(props).not.toHaveProperty("objectFit");
+  });
 });

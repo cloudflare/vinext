@@ -181,20 +181,25 @@ export function isSvgUrl(src: string): boolean {
 
 /**
  * Inline style for `fill` images. Like Next.js `get-img-props.js` (`imgStyle`),
- * it sets no `object-fit`: the caller's `style` or stylesheet decides it.
+ * it sets no `object-fit` of its own: the deprecated `objectFit` and
+ * `objectPosition` props, the caller's `style` or a stylesheet decide it.
  */
 export function getFillStyle(
   style?: React.CSSProperties,
   backgroundStyle?: React.CSSProperties,
+  legacy?: { objectFit?: string; objectPosition?: string },
 ): React.CSSProperties {
-  return {
+  const fillStyle: React.CSSProperties = {
     position: "absolute",
     inset: 0,
     width: "100%",
     height: "100%",
-    ...backgroundStyle,
-    ...style,
   };
+  if (legacy?.objectFit !== undefined) {
+    fillStyle.objectFit = legacy.objectFit as React.CSSProperties["objectFit"];
+  }
+  if (legacy?.objectPosition !== undefined) fillStyle.objectPosition = legacy.objectPosition;
+  return { ...fillStyle, ...backgroundStyle, ...style };
 }
 
 /**
@@ -383,6 +388,9 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
     unoptimized: _unoptimized,
     overrideSrc,
     loading,
+    // Deprecated props: Next.js consumes them and applies them to fill images only.
+    objectFit,
+    objectPosition,
     ...rest
   } = props;
 
@@ -418,7 +426,9 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
       fetchPriority: priority ? ("high" as const) : undefined,
       decoding: "async" as const,
       className,
-      style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
+      style: fill
+        ? getFillStyle(style, blurStyle, { objectFit, objectPosition })
+        : { ...blurStyle, ...style },
       ...rest,
       // Next.js generateImgAttrs() returns `sizes: undefined` for inline sources.
       sizes: isInlineSrc ? undefined : (sizes ?? (fill ? "100vw" : undefined)),
@@ -491,7 +501,9 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
     srcSet,
     sizes: sizes ?? (fill ? "100vw" : undefined),
     className,
-    style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
+    style: fill
+      ? getFillStyle(style, blurStyle, { objectFit, objectPosition })
+      : { ...blurStyle, ...style },
     ...rest,
   };
   return { props: Object.assign(imageProps, { "data-nimg": fill ? "fill" : "1" }) };
