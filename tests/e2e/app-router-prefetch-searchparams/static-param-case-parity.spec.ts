@@ -84,4 +84,17 @@ test.describe("generated App param case parity in production", () => {
       expect((await request.get(pathname)).status(), pathname).toBe(404);
     }
   });
+
+  test("rejects a route param that no parallel generator returned", async ({ request }) => {
+    for (const pathname of [
+      "/parallel-slot-params/slot-omits-team/acme/public",
+      "/parallel-slot-params/slot-owns-team/other/public",
+      "/parallel-slot-params/slot-owns-team/acme/private",
+    ]) {
+      expect((await request.get(pathname)).status(), pathname).toBe(404);
+    }
+    expect((await request.get("/parallel-slot-params/slot-owns-team/acme/public")).status()).toBe(
+      200,
+    );
+  });
 });
