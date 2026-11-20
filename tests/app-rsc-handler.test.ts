@@ -45,6 +45,7 @@ import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
   isMetadataRouteRequestPath,
+  metadataRouteAnswersRewrittenPath,
   type MetadataRuntimeRoute,
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MiddlewareModule } from "../packages/vinext/src/server/middleware-runtime.js";
@@ -237,6 +238,11 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
     isMetadataRoute: overrides.isMetadataRoute,
+    metadataRouteAnswersPath:
+      overrides.metadataRouteAnswersPath ??
+      (overrides.metadataRoutes
+        ? (pathname) => metadataRouteAnswersRewrittenPath(overrides.metadataRoutes!, pathname)
+        : undefined),
     isDev: overrides.isDev ?? true,
     hasInterceptionId: overrides.hasInterceptionId ?? (() => false),
     matchInterceptRoute: overrides.matchInterceptRoute,
@@ -7124,7 +7130,7 @@ describe("createAppRscHandler", () => {
     },
     {
       label: "a metadata route that afterFiles would route back",
-      isMetadataRoute: true,
+      metadataRoute: true,
       afterFiles: gateBack,
       intercepts: false,
     },
@@ -7162,8 +7168,8 @@ describe("createAppRscHandler", () => {
     fallback?: NextRewrite[];
     gateRoute?: "dynamic" | "static";
     intercepts: boolean;
-    isMetadataRoute?: boolean;
     label: string;
+    metadataRoute?: boolean;
     pagesPathname?: string;
     pagesRoute?: "dynamic" | "indeterminate" | "none" | "static";
     publicFiles?: Set<string>;
@@ -7175,7 +7181,7 @@ describe("createAppRscHandler", () => {
       fallback = [],
       gateRoute,
       intercepts,
-      isMetadataRoute,
+      metadataRoute,
       pagesPathname = "/gate/7",
       pagesRoute,
       publicFiles,
@@ -7217,7 +7223,9 @@ describe("createAppRscHandler", () => {
                   : pathname === pagesPathname && pagesRoute !== "none"
                     ? { route: { isDynamic: pagesRoute === "dynamic", pattern: pagesPathname } }
                     : null,
-        isMetadataRoute: isMetadataRoute ? (pathname: string) => pathname === "/gate/7" : undefined,
+        metadataRouteAnswersPath: metadataRoute
+          ? (pathname: string) => pathname === "/gate/7"
+          : undefined,
         publicFiles,
         renderPagesFallback: pagesRoute === undefined ? undefined : async () => null,
       });
@@ -7238,6 +7246,99 @@ describe("createAppRscHandler", () => {
           interceptionContext: intercepts ? "/members/7" : null,
         }),
       );
+    },
+  );
+
+  // Next.js serves a generated sitemap only at its children, so a direct
+  // request to its base, like one to a child a plain sitemap does not
+  // generate, takes the afterFiles rules back to the source.
+  it.each([
+    {
+      label: "a generated sitemap's base",
+      destination: "/gate/sitemap.xml",
+      generatesSitemaps: true,
+      intercepts: true,
+    },
+    {
+      label: "a generated sitemap",
+      destination: "/gate/sitemap/0.xml",
+      generatesSitemaps: true,
+      intercepts: false,
+    },
+    {
+      label: "a sitemap",
+      destination: "/gate/sitemap.xml",
+      generatesSitemaps: false,
+      intercepts: false,
+    },
+    {
+      label: "a sitemap child the sitemap does not generate",
+      destination: "/gate/sitemap/0.xml",
+      generatesSitemaps: false,
+      intercepts: true,
+    },
+  ])(
+    "follows the afterFiles rules for a source beforeFiles send to $label",
+    async ({ destination, generatesSitemaps, intercepts }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({
+        isDynamic: true,
+        pattern: "/members/:id",
+        routeSegments: ["members", ":id"],
+      });
+      const sitemap = vi.fn(() => []);
+      const generateSitemaps = vi.fn(() => [{ id: 0 }]);
+      const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [{ source: "/members/7", destination }],
+          afterFiles: [{ source: destination, destination: "/members/7" }],
+          fallback: [],
+        },
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/members/7"
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute: (pathname: string) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+          return null;
+        },
+        metadataRoutes: [
+          {
+            type: "sitemap",
+            isDynamic: true,
+            filePath: "/tmp/app/gate/sitemap.ts",
+            module: generatesSitemaps
+              ? { default: sitemap, generateSitemaps }
+              : { default: sitemap },
+            routePrefix: "/gate",
+            routeSegments: ["gate"],
+            servedUrl: "/gate/sitemap.xml",
+            contentType: "application/xml",
+          },
+        ],
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: !intercepts,
+          cleanPathname: "/photos/1",
+          interceptionContext: intercepts ? "/members/7" : null,
+        }),
+      );
+      expect(sitemap).not.toHaveBeenCalled();
+      expect(generateSitemaps).not.toHaveBeenCalled();
     },
   );
 
