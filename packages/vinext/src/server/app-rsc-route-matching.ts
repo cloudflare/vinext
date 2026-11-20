@@ -12,6 +12,7 @@ import {
   isInvisibleSegment,
   splitPathSegments,
 } from "../routing/utils.js";
+import { ROUTE_MISS_INTERCEPTION_CONTEXT } from "./app-interception-context-header.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 
@@ -466,12 +467,20 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           entry.slotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
           sourceRoute?.slots?.[entry.slotKey] === undefined;
         const ownerRoute = routes[entry.sourceRouteIndex];
+        // An unmatched URL's not-found page shows none of the intercepting
+        // route's tree, so it keeps no source segment beneath the intercept:
+        // Next.js's client then shows the intercepting route's own render,
+        // with nothing in the owner's children.
+        const rendersFromRouteMiss =
+          sourcePathname === ROUTE_MISS_INTERCEPTION_CONTEXT &&
+          entry.slotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY;
         const rendersWholeInterceptingRoute =
-          sourceRouteLacksSlot &&
+          (sourceRouteLacksSlot || rendersFromRouteMiss) &&
           ownerRoute !== undefined &&
           !isAppRouteHandlerRoute(ownerRoute) &&
           ownerRoute.slots?.[entry.slotKey] !== undefined &&
           isSlotOwnerRoute(ownerRoute.routeSegments, entry.sourcePageSegments);
+        if (rendersFromRouteMiss && !rendersWholeInterceptingRoute) continue;
         // Among sources without the slot, the first whole intercepting route
         // wins over an earlier intercept that only a rewrite can give a slot.
         if (

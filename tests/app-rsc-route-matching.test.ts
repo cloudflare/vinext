@@ -1338,6 +1338,137 @@ describe("App RSC route matching", () => {
       });
     });
 
+    // An unmatched URL's not-found page sends /_not-found and shows none of
+    // the intercepting route's tree, so the intercept renders that tree
+    // whole, as Next.js's client shows it: the owner's layouts with the
+    // params /_not-found gives them, and nothing in the owner's children.
+    it("renders the slot owner's route whole from an unmatched URL's not-found page", () => {
+      const modal = (targetPattern: string, marker: string, params: string[]) => ({
+        sourceMatchPattern: "/:slug",
+        sourcePageSegments: ["[slug]", "@modal", marker, "[id]"],
+        targetPattern,
+        interceptLayouts: [],
+        page: `${marker}-modal`,
+        params,
+      });
+      const slugRoute = {
+        ...route("/:slug", [":slug"], {
+          modal: {
+            intercepts: [
+              modal("/photos/:id", "(..)photos", ["id"]),
+              modal("/:slug/pics/:id", "(.)pics", ["slug", "id"]),
+            ],
+          },
+        }),
+        routeSegments: ["[slug]"],
+      };
+      const matcher = createAppRscRouteMatcher([slugRoute]);
+
+      expect(matcher.findIntercept("/photos/1", "/_not-found")).toMatchObject({
+        page: "(..)photos-modal",
+        sourceRouteIndex: 0,
+        sourceRouteLacksSlot: false,
+        rendersWholeInterceptingRoute: true,
+        authorizationSourceRouteIndex: 0,
+        matchedParams: { slug: "_not-found", id: "1" },
+        sourceMatchedParams: { slug: "_not-found" },
+      });
+      expect(matcher.findIntercept("/x/pics/3", "/_not-found")).toMatchObject({
+        page: "(.)pics-modal",
+        rendersWholeInterceptingRoute: true,
+        matchedParams: { slug: "_not-found", id: "3" },
+      });
+      // A page that shows the tree keeps its own segments.
+      expect(matcher.findIntercept("/photos/1", "/acme")).toMatchObject({
+        rendersWholeInterceptingRoute: false,
+        matchedParams: { slug: "acme", id: "1" },
+      });
+
+      // Without the owner's own route to render, the target renders directly.
+      const ownerless = createAppRscRouteMatcher([
+        {
+          ...slugRoute,
+          slots: {
+            modal: {
+              intercepts: [
+                { ...modal("/photos/:id", "(..)photos", ["id"]), sourcePageSegments: undefined },
+              ],
+            },
+          },
+        },
+      ]);
+      expect(ownerless.findIntercept("/photos/1", "/_not-found")).toBeNull();
+      expect(ownerless.findIntercept("/photos/1", "/acme")).not.toBeNull();
+    });
+
+    it("renders a catch-all slot owner's route whole from an unmatched URL's not-found page", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          ...route("/:rest+", [":rest+"], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/:rest+",
+                  sourcePageSegments: ["[...rest]", "@modal", "(..)photos", "[id]"],
+                  targetPattern: "/photos/:id",
+                  interceptLayouts: [],
+                  page: "photos-modal",
+                  params: ["id"],
+                },
+              ],
+            },
+          }),
+          routeSegments: ["[...rest]"],
+        },
+      ]);
+
+      expect(matcher.findIntercept("/photos/1", "/_not-found")).toMatchObject({
+        page: "photos-modal",
+        sourceRouteIndex: 0,
+        sourceRouteLacksSlot: false,
+        rendersWholeInterceptingRoute: true,
+        matchedParams: { rest: ["_not-found"], id: "1" },
+        sourceMatchedParams: { rest: ["_not-found"] },
+      });
+    });
+
+    // A sibling intercept renders the intercepting route itself, from any
+    // source, so /_not-found is simply its concrete source, as Next.js's
+    // interception rewrite captures the owner's params from `Next-Url`.
+    it("renders a sibling intercept from an unmatched URL's not-found page as its own route", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          ids: { route: "graph-route:/:slug" },
+          pattern: "/:slug",
+          patternParts: [":slug"],
+          routeSegments: ["[slug]"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/photos/:id",
+              sourceMatchPattern: "/:slug",
+              sourcePageSegments: ["[slug]", "(..)photos", "[id]"],
+              slotId: "slot:__vinext_sibling_intercept:/:slug",
+              interceptLayouts: [],
+              page: "photos-intercept",
+              params: ["id"],
+            },
+          ],
+        },
+      ] as any);
+
+      expect(matcher.findIntercept("/photos/1", "/_not-found")).toMatchObject({
+        page: "photos-intercept",
+        slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: true,
+        sourceRouteLacksSlot: false,
+        rendersWholeInterceptingRoute: false,
+        authorizationSourceRouteIndex: 0,
+        matchedParams: { slug: "_not-found", id: "1" },
+        sourceMatchedParams: { slug: "_not-found" },
+      });
+    });
+
     // A page in a route group below the slot's directory, such as
     // `club/[slug]/(children)/page.tsx`, is the slot owner's own route, as the
     // route graph places the slot at its URL level. A route a visible segment

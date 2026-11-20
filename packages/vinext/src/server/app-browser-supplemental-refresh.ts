@@ -13,6 +13,7 @@ import {
 } from "./app-elements.js";
 import type { AppRouterState } from "./app-browser-state.js";
 import { resolveActiveRoutePaths } from "./app-history-state.js";
+import { isRouteMissInterceptionSource } from "./app-interception-context-header.js";
 import { isNestedBfcacheSlotSegmentIdFor } from "./bfcache-identity.js";
 import type {
   BrowserRouteManifest,
@@ -449,9 +450,12 @@ export function resolvePersistedSourcePageRefreshes(options: {
       normalizePathnameForRouteMatch(stripBasePath(options.refreshUrl.pathname, options.basePath)),
     ),
   );
-  // A state showing the whole intercepting route holds nothing of its source.
+  // A state showing the whole intercepting route holds nothing of its source,
+  // nor does one opened from an unmatched URL's not-found page, which renders
+  // that route whole.
   if (
     options.state.previousNextUrl !== null &&
+    !isRouteMissInterceptionSource(options.state.previousNextUrl, options.basePath) &&
     (options.state.elements === undefined || !rendersWholeInterceptingRoute(options.state.elements))
   ) {
     const sourceUrl = new URL(options.state.previousNextUrl, options.refreshUrl);

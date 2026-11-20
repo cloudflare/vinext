@@ -46,6 +46,28 @@ describe("parallel route supplemental refreshes", () => {
     ).toEqual(["/refreshing?random=old"]);
   });
 
+  // An intercept opened from an unmatched URL's not-found page names
+  // /_not-found as its source, and renders the intercepting route whole: it
+  // keeps no page of that source to fetch.
+  it("fetches no source page for an intercept opened from a not-found page", () => {
+    for (const basePath of ["", "/docs"]) {
+      expect(
+        resolvePersistedSourcePageRefreshes({
+          basePath,
+          refreshUrl: new URL(`https://example.com${basePath}/photos/1`),
+          state: { previousNextUrl: `${basePath}/_not-found`, slotBindings: [] },
+        }),
+      ).toEqual([]);
+    }
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "/docs",
+        refreshUrl: new URL("https://example.com/docs/photos/1"),
+        state: { previousNextUrl: "/docs/feed", slotBindings: [] },
+      }),
+    ).toEqual(["/docs/feed"]);
+  });
+
   // The whole intercepting route renders for a source that shares none of its
   // tree. A refresh of its entry asks for that source's page too, as for an
   // intercepted entry, but none of it merges into the whole route, whose

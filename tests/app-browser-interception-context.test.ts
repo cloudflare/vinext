@@ -3,12 +3,20 @@ import {
   resolveManifestNavigationInterceptionContext,
   resolveMiddlewareRewriteNavigationInterceptionContext,
 } from "../packages/vinext/src/server/app-browser-interception-context.js";
+import {
+  getRouteMissInterceptionSourceHref,
+  isRouteMissInterceptionSource,
+} from "../packages/vinext/src/server/app-interception-context-header.js";
 import type {
   RouteManifest,
   RouteManifestInterception,
+  RouteManifestSlotBinding,
 } from "../packages/vinext/src/routing/app-route-graph.js";
 
-function createRouteManifest(interceptions: readonly RouteManifestInterception[]): RouteManifest {
+function createRouteManifest(
+  interceptions: readonly RouteManifestInterception[],
+  slotBindings: readonly RouteManifestSlotBinding[] = [],
+): RouteManifest {
   return {
     graphVersion: "test",
     segmentGraph: {
@@ -21,7 +29,7 @@ function createRouteManifest(interceptions: readonly RouteManifestInterception[]
       rootBoundaries: new Map(),
       routeHandlers: new Map(),
       routes: new Map(),
-      slotBindings: new Map(),
+      slotBindings: new Map(slotBindings.map((binding) => [binding.id, binding])),
       slots: new Map(),
       templates: new Map(),
     },
@@ -64,6 +72,18 @@ const slugPhotoInterception: RouteManifestInterception = {
   targetRouteId: "route:/photos/:id",
 };
 
+const catchAllPhotoInterception: RouteManifestInterception = {
+  id: "interception:slot:modal:/:rest+->/photos/:id",
+  interceptingRouteId: "route:/:rest+",
+  ownerLayoutId: "layout:/:rest+",
+  slotId: "slot:modal:/:rest+",
+  sourcePattern: "/:rest+",
+  sourcePatternParts: [":rest+"],
+  targetPattern: "/photos/:id",
+  targetPatternParts: ["photos", ":id"],
+  targetRouteId: "route:/photos/:id",
+};
+
 const localePhotoInterception: RouteManifestInterception = {
   id: "interception:slot:modal:/interception-mw/:locale->/interception-mw/:locale/:username/p/:id",
   interceptingRouteId: "route:/interception-mw/:locale",
@@ -74,6 +94,28 @@ const localePhotoInterception: RouteManifestInterception = {
   targetPattern: "/interception-mw/:locale/:username/p/:id",
   targetPatternParts: ["interception-mw", ":locale", ":username", "p", ":id"],
   targetRouteId: "route:/interception-mw/:locale/:username/p/:id",
+};
+
+// A parallel slot of the root layout besides `children`.
+const rootModalBinding: RouteManifestSlotBinding = {
+  defaultId: "default:slot:modal:/",
+  id: "route:/photos/:id::slot:modal:/",
+  ownerLayoutId: "layout:/",
+  routeId: "route:/photos/:id",
+  routeSegments: null,
+  slotId: "slot:modal:/",
+  state: "default",
+};
+
+// A parallel slot of a layout beneath the root.
+const slugModalBinding: RouteManifestSlotBinding = {
+  defaultId: "default:slot:modal:/:slug",
+  id: "route:/:slug::slot:modal:/:slug",
+  ownerLayoutId: "layout:/:slug",
+  routeId: "route:/:slug",
+  routeSegments: null,
+  slotId: "slot:modal:/:slug",
+  state: "default",
 };
 
 describe("resolveManifestNavigationInterceptionContext", () => {
@@ -133,18 +175,59 @@ describe("resolveManifestNavigationInterceptionContext", () => {
     ).toBeNull();
   });
 
-  it("keeps the context from a not-found page for sources that match /_not-found", () => {
-    for (const interception of [rootPhotoInterception, slugPhotoInterception]) {
+  // Next.js's client keeps the not-found page in place of a root-owned
+  // intercept's tree, so only an intercept owned beneath the root applies.
+  it("sends /_not-found from a not-found page for sources beneath the root that match it", () => {
+    for (const [interception, context] of [
+      [rootPhotoInterception, null],
+      [slugPhotoInterception, "/_not-found"],
+      [catchAllPhotoInterception, "/_not-found"],
+    ] as const) {
+      for (const [basePath, currentPathname] of [
+        ["", "/feed/missing"],
+        ["", "/"],
+        ["/docs", "/docs/feed/missing"],
+      ]) {
+        expect(
+          resolveManifestNavigationInterceptionContext({
+            basePath,
+            currentPathname,
+            currentRenderIsRouteMiss: true,
+            routeManifest: createRouteManifest([feedPhotoInterception, interception]),
+            targetPathname: `${basePath}/photos/42`,
+          }),
+        ).toBe(context);
+      }
+    }
+  });
+
+  // The not-found page's tree has only `children` at the root, so Next.js
+  // loads the document of a target whose root layout has another slot.
+  it("sends no interception context from a not-found page when the root layout has a slot", () => {
+    for (const [slotBindings, context] of [
+      [[], "/_not-found"],
+      [[slugModalBinding], "/_not-found"],
+      [[slugModalBinding, rootModalBinding], null],
+    ] as const) {
       expect(
         resolveManifestNavigationInterceptionContext({
           basePath: "",
           currentPathname: "/feed/missing",
           currentRenderIsRouteMiss: true,
-          routeManifest: createRouteManifest([feedPhotoInterception, interception]),
+          routeManifest: createRouteManifest([slugPhotoInterception], slotBindings),
           targetPathname: "/photos/42",
         }),
-      ).toBe("/feed/missing");
+      ).toBe(context);
     }
+
+    expect(
+      resolveManifestNavigationInterceptionContext({
+        basePath: "",
+        currentPathname: "/feed",
+        routeManifest: createRouteManifest([feedPhotoInterception], [rootModalBinding]),
+        targetPathname: "/photos/42",
+      }),
+    ).toBe("/feed");
   });
 });
 
@@ -291,18 +374,58 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
     ).toBeNull();
   });
 
-  it("keeps the context from a not-found page for sources that match /_not-found", () => {
-    for (const interception of [rootPhotoInterception, slugPhotoInterception]) {
+  it("sends /_not-found from a not-found page for sources beneath the root that match it", () => {
+    for (const [interception, context] of [
+      [rootPhotoInterception, null],
+      [slugPhotoInterception, "/_not-found"],
+      [catchAllPhotoInterception, "/_not-found"],
+    ] as const) {
+      for (const currentPathname of ["/feed/missing", "/"]) {
+        expect(
+          resolveMiddlewareRewriteNavigationInterceptionContext({
+            basePath: "",
+            currentMatchedPathname: currentPathname,
+            currentPathname,
+            currentRenderIsRouteMiss: true,
+            routeManifest: createRouteManifest([feedPhotoInterception, interception]),
+            targetPathname: "/photos/42",
+          }),
+        ).toBe(context);
+      }
+    }
+  });
+
+  it("sends no interception context from a not-found page when the root layout has a slot", () => {
+    for (const [slotBindings, context] of [
+      [[slugModalBinding], "/_not-found"],
+      [[slugModalBinding, rootModalBinding], null],
+    ] as const) {
       expect(
         resolveMiddlewareRewriteNavigationInterceptionContext({
           basePath: "",
           currentMatchedPathname: "/feed/missing",
           currentPathname: "/feed/missing",
           currentRenderIsRouteMiss: true,
-          routeManifest: createRouteManifest([feedPhotoInterception, interception]),
+          routeManifest: createRouteManifest([slugPhotoInterception], slotBindings),
           targetPathname: "/photos/42",
         }),
-      ).toBe("/feed/missing");
+      ).toBe(context);
     }
+  });
+});
+
+describe("isRouteMissInterceptionSource", () => {
+  it("matches the not-found source under the basePath only", () => {
+    expect(getRouteMissInterceptionSourceHref("")).toBe("/_not-found");
+    expect(getRouteMissInterceptionSourceHref("/docs")).toBe("/docs/_not-found");
+    expect(isRouteMissInterceptionSource("/_not-found", "")).toBe(true);
+    expect(isRouteMissInterceptionSource("/docs/_not-found", "/docs")).toBe(true);
+
+    expect(isRouteMissInterceptionSource(null, "")).toBe(false);
+    expect(isRouteMissInterceptionSource("/_not-found", "/docs")).toBe(false);
+    expect(isRouteMissInterceptionSource("/docs/_not-found", "")).toBe(false);
+    expect(isRouteMissInterceptionSource("/_not-found/", "")).toBe(false);
+    expect(isRouteMissInterceptionSource("/_not-found?a=1", "")).toBe(false);
+    expect(isRouteMissInterceptionSource("/feed", "")).toBe(false);
   });
 });

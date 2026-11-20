@@ -6,9 +6,9 @@ import {
 } from "../routing/route-pattern.js";
 import { normalizePathnameForRouteMatch, splitPathnameForRouteMatch } from "../routing/utils.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { AppElementsWire } from "./app-elements.js";
+import { ROUTE_MISS_INTERCEPTION_CONTEXT } from "./app-interception-context-header.js";
 import { normalizePath } from "./normalize-path.js";
-
-const ROUTE_MISS_SOURCE_PARTS = ["_not-found"];
 
 type ResolveManifestNavigationInterceptionContextOptions = {
   basePath: string;
@@ -17,8 +17,9 @@ type ResolveManifestNavigationInterceptionContextOptions = {
   /**
    * The committed render matched no route (an unmatched URL's not-found
    * page). Next.js builds `Next-Url` from the rendered router tree rather than
-   * the browser URL, and that tree is then /_not-found, so only an
-   * interception whose source matches /_not-found applies.
+   * the browser URL, and that tree is then /_not-found, so the context is
+   * /_not-found and only an interception owned beneath the root whose source
+   * matches it applies, unless the root layout has a parallel slot.
    */
   currentRenderIsRouteMiss?: boolean;
   routeManifest: BrowserRouteManifest | null;
@@ -40,14 +41,17 @@ export function resolveManifestNavigationInterceptionContext(
   options: ResolveManifestNavigationInterceptionContextOptions,
 ): string | null {
   if (options.routeManifest === null) return null;
+  if (options.currentRenderIsRouteMiss === true && rootLayoutHasSlot(options.routeManifest)) {
+    return null;
+  }
 
-  const currentPathname = stripBasePath(options.currentPathname, options.basePath);
+  const currentPathname = resolveCurrentSourcePathname(options);
   const targetPathname = stripBasePath(options.targetPathname, options.basePath);
   const sourceParts = splitPathnameForRouteMatch(currentPathname);
   const targetParts = splitPathnameForRouteMatch(targetPathname);
 
   for (const interception of options.routeManifest.segmentGraph.interceptions.values()) {
-    if (!isInterceptionSourceRendered(interception.sourcePatternParts, options)) continue;
+    if (!appliesFromCurrentRender(interception.sourcePatternParts, options)) continue;
     if (!matchRoutePatternPrefix(sourceParts, interception.sourcePatternParts)) continue;
     if (matchRoutePattern(targetParts, interception.targetPatternParts) === null) continue;
     return currentPathname;
@@ -60,11 +64,16 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
   options: ResolveManifestNavigationInterceptionContextOptions,
 ): string | null {
   if (options.routeManifest === null) return null;
+  if (options.currentRenderIsRouteMiss === true && rootLayoutHasSlot(options.routeManifest)) {
+    return null;
+  }
 
-  const currentPathname = stripBasePath(options.currentPathname, options.basePath);
-  const currentMatchedPathname = options.currentMatchedPathname
-    ? stripBasePath(options.currentMatchedPathname, options.basePath)
-    : null;
+  const currentPathname = resolveCurrentSourcePathname(options);
+  // The not-found page of an unmatched URL has no matched route pathname.
+  const currentMatchedPathname =
+    options.currentMatchedPathname && options.currentRenderIsRouteMiss !== true
+      ? stripBasePath(options.currentMatchedPathname, options.basePath)
+      : null;
   const targetPathname = stripBasePath(options.targetPathname, options.basePath);
   const sourceParts = splitPathnameForRouteMatch(currentPathname);
   const matchedSourceParts = currentMatchedPathname
@@ -73,7 +82,7 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
   const targetParts = splitPathnameForRouteMatch(targetPathname);
 
   for (const interception of options.routeManifest.segmentGraph.interceptions.values()) {
-    if (!isInterceptionSourceRendered(interception.sourcePatternParts, options)) continue;
+    if (!appliesFromCurrentRender(interception.sourcePatternParts, options)) continue;
     if (
       !matchRoutePatternWithOptionalDynamicSegments(targetParts, interception.targetPatternParts)
     ) {
@@ -95,17 +104,38 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
   return null;
 }
 
-// A route miss renders /_not-found, so only a source matching it (the root, or
-// a top-level dynamic segment) applies. The context stays the browser URL: the
-// server replays the source's redirects and middleware on it.
-function isInterceptionSourceRendered(
+// A route miss renders /_not-found, so that is the source pathname, as in
+// Next.js's `Next-Url`: a source matching it (a top-level dynamic segment)
+// applies, and the server authorizes it as a direct request to /_not-found.
+// Over a root-owned intercept, Next.js's client leaves the not-found page in
+// place with an empty slot at the target URL; that target renders directly.
+function appliesFromCurrentRender(
   sourcePatternParts: readonly string[],
   options: ResolveManifestNavigationInterceptionContextOptions,
 ): boolean {
-  return (
-    options.currentRenderIsRouteMiss !== true ||
-    matchRoutePatternPrefix(ROUTE_MISS_SOURCE_PARTS, sourcePatternParts)
-  );
+  return options.currentRenderIsRouteMiss !== true || sourcePatternParts.length > 0;
+}
+
+const ROOT_LAYOUT_ID = AppElementsWire.encodeLayoutId("/");
+
+// The not-found page of an unmatched URL holds only `children` at the root, so
+// when the root layout has another slot, Next.js loads the document of any
+// target it prefetched instead of applying it softly. Rendering the target
+// directly shows the same page.
+
+function rootLayoutHasSlot(routeManifest: BrowserRouteManifest): boolean {
+  for (const binding of routeManifest.segmentGraph.slotBindings.values()) {
+    if (binding.ownerLayoutId === ROOT_LAYOUT_ID) return true;
+  }
+  return false;
+}
+
+function resolveCurrentSourcePathname(
+  options: ResolveManifestNavigationInterceptionContextOptions,
+): string {
+  return options.currentRenderIsRouteMiss === true
+    ? ROUTE_MISS_INTERCEPTION_CONTEXT
+    : stripBasePath(options.currentPathname, options.basePath);
 }
 
 /**
