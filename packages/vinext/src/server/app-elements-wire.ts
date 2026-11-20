@@ -63,7 +63,7 @@ export const APP_STATIC_SIBLINGS_KEY = "__staticSiblings";
  * interception proof, but depends on that source as an intercepted one does,
  * so the client keeps sending it, as Next.js keeps `previousNextUrl`.
  */
-export const APP_WHOLE_INTERCEPTION_SOURCE_KEY = "__wholeInterceptionSource";
+const APP_WHOLE_INTERCEPTION_SOURCE_KEY = "__wholeInterceptionSource";
 /** Prefix of the element that streams a route's generateMetadata() tags in the body. */
 export const APP_STREAMING_METADATA_BODY_ID_PREFIX = "__vinext_streaming_metadata_body:";
 /** Prefix of the element that rethrows a route's head errors inside its boundaries. */
