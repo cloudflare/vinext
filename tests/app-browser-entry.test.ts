@@ -40,7 +40,10 @@ import {
   prepareConsumedPrefetchResponseForPublication,
   resolvePrefetchNavigationResponseUrl,
 } from "../packages/vinext/src/server/app-browser-prefetch-response.js";
-import { createVisitedResponseCacheEntry } from "../packages/vinext/src/server/app-visited-response-cache.js";
+import {
+  createVisitedResponseCacheEntry,
+  isVisitedResponseCacheEntryForPreviousNextUrl,
+} from "../packages/vinext/src/server/app-visited-response-cache.js";
 import {
   createPopstateRestoreHandler,
   restoreSynchronousPopstateScrollPosition,
@@ -113,6 +116,7 @@ import {
   createHistoryStateWithTreeSnapshotId,
   createInitialBfcacheIdMap,
   createNextBfcacheIdMap,
+  COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
@@ -130,6 +134,7 @@ import {
   resolveHistoryTraversalIntent,
   resolveServerActionRequestState,
   resolvePendingNavigationCommitDispositionDecision,
+  type AppNavigationPayloadOrigin,
   type AppRouterState,
   type OperationLane,
 } from "../packages/vinext/src/server/app-browser-state.js";
@@ -157,8 +162,14 @@ import {
   NavigationTraceTransactionCodes,
   createNavigationTrace,
 } from "../packages/vinext/src/server/navigation-trace.js";
-import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
-import { resolveHeldRetainedElementIds } from "../packages/vinext/src/server/app-retained-elements.js";
+import {
+  navigationPlanner,
+  type InterceptionSourceIdentity,
+} from "../packages/vinext/src/server/navigation-planner.js";
+import {
+  resolveCommittedInterceptionSource,
+  resolveHeldRetainedElementIds,
+} from "../packages/vinext/src/server/app-retained-elements.js";
 import { createCacheEntryReuseProof } from "../packages/vinext/src/server/cache-proof.js";
 import {
   ACTION_REVALIDATED_HEADER,
@@ -10990,8 +11001,10 @@ describe("elements an intercepted payload leaves for the client to keep", () => 
     options: {
       navigationCommitKind?: "authoritative" | "detached";
       operationLane?: OperationLane;
+      payloadOrigin?: AppNavigationPayloadOrigin;
       previousNextUrl?: string;
       reuseCurrentBfcacheIds?: boolean;
+      suppliedInterceptionSource?: InterceptionSourceIdentity | null;
       type?: "navigate" | "replace" | "traverse";
     } = {},
   ) {
@@ -11001,10 +11014,11 @@ describe("elements an intercepted payload leaves for the client to keep", () => 
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/1", {}),
       nextElements: Promise.resolve(nextElements),
       operationLane: options.operationLane ?? "navigation",
-      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      payloadOrigin: options.payloadOrigin ?? FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
       previousNextUrl: options.previousNextUrl ?? "/members/7",
       renderId: 1,
       reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds,
+      suppliedInterceptionSource: options.suppliedInterceptionSource,
       type: options.type ?? "navigate",
     });
     return approvePendingNavigationCommit({
@@ -11405,6 +11419,119 @@ describe("elements an intercepted payload leaves for the client to keep", () => 
 
     expect(approval.approvedCommit).toBeNull();
     expect(approval.decision.disposition).toBe("hard-navigate");
+  });
+
+  // A traversal whose history entry no longer holds its tree can reuse the
+  // tree this client committed for the intercept, as the visited-response
+  // cache stores it. Next.js returns softly to the intercept over its source
+  // from any page, so the committed tree shows the source it was committed
+  // with, not the page the traversal starts from.
+  describe("a traversal back to a committed intercepted tree", () => {
+    async function commitIntercept(): Promise<AppElements> {
+      const sourceState = createSourceState();
+      const approval = await approve(sourceState, createInterceptedElements());
+      if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+      const state = applyApprovedVisibleCommit(sourceState, approval.approvedCommit);
+      // The committed tree the visited-response cache stores for the entry.
+      return {
+        ...state.elements,
+        [AppElementsWire.keys.layoutIds]: state.layoutIds,
+        [AppElementsWire.keys.retainedElementIds]: [],
+        [AppElementsWire.keys.skippedLayoutIds]: [],
+        [AppElementsWire.keys.slotBindings]: state.slotBindings,
+      };
+    }
+
+    it("shows the intercept over the source it was committed with", async () => {
+      const committed = await commitIntercept();
+      const elsewhere = createState();
+
+      const approval = await approve(elsewhere, committed, {
+        operationLane: "traverse",
+        payloadOrigin: COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        suppliedInterceptionSource: resolveCommittedInterceptionSource(committed),
+        type: "traverse",
+      });
+
+      expect(approval.approvedCommit).not.toBeNull();
+      if (approval.approvedCommit === null) return;
+      const nextState = applyApprovedVisibleCommit(elsewhere, approval.approvedCommit);
+      expect(nextState.elements[PAGE_ID]).toBe(page);
+      expect(nextState.elements[MODAL_ID]).toBe("photo modal");
+      expect(nextState.interception).toEqual(interception);
+
+      // Against the page it starts from, the proof names no visible source.
+      const unsupplied = await approve(elsewhere, committed, {
+        operationLane: "traverse",
+        payloadOrigin: COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        type: "traverse",
+      });
+      expect(unsupplied.decision.disposition).toBe("hard-navigate");
+    });
+
+    it("names the proof's source only for a tree that holds the slot's layout", async () => {
+      const committed = await commitIntercept();
+      expect(resolveCommittedInterceptionSource(committed)).toEqual({
+        matchedUrl: "/members/7",
+        routeId: ROUTE_ID,
+      });
+
+      const { "layout:/members": _layout, ...withoutOwnerLayout } = committed;
+      expect(resolveCommittedInterceptionSource(withoutOwnerLayout)).toBeNull();
+      expect(resolveCommittedInterceptionSource(createInterceptedElements())).toBeNull();
+      expect(resolveCommittedInterceptionSource(createSourceState().elements)).toBeNull();
+
+      // Without the source the tree holds, the visible page is no source of
+      // the intercept and the traversal loads the document.
+      const approval = await approve(createState(), withoutOwnerLayout, {
+        operationLane: "traverse",
+        payloadOrigin: COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        suppliedInterceptionSource: resolveCommittedInterceptionSource(withoutOwnerLayout),
+        type: "traverse",
+      });
+      expect(approval.approvedCommit).toBeNull();
+      expect(approval.decision.disposition).toBe("hard-navigate");
+    });
+
+    // The cache keys an intercepted tree by its source's pathname, so a later
+    // intercept from the same page with another search replaces it. Next.js
+    // restores each history entry's own tree, so a traversal to an entry that
+    // names another source URL renders afresh instead.
+    it("is reused only for the history entry's own source URL", async () => {
+      const committed = await commitIntercept();
+      const createEntry = (elements: AppElements | undefined, previousNextUrl: string | null) =>
+        createVisitedResponseCacheEntry({
+          elements,
+          now: 0,
+          params: {},
+          previousNextUrl,
+          response: {
+            buffer: new ArrayBuffer(0),
+            contentType: "text/x-component",
+            paramsHeader: null,
+            renderedPathAndSearch: null,
+            url: "/photos/1.rsc",
+          },
+        });
+      const entry = createEntry(committed, "/members/7?tab=b");
+
+      expect(isVisitedResponseCacheEntryForPreviousNextUrl(entry, "/members/7?tab=b")).toBe(true);
+      expect(isVisitedResponseCacheEntryForPreviousNextUrl(entry, "/members/7?tab=a")).toBe(false);
+      expect(isVisitedResponseCacheEntryForPreviousNextUrl(entry, "/members/7")).toBe(false);
+      expect(
+        isVisitedResponseCacheEntryForPreviousNextUrl(createEntry(committed, null), "/members/7"),
+      ).toBe(false);
+      // Trees and responses without an intercept are the target's own render.
+      expect(
+        isVisitedResponseCacheEntryForPreviousNextUrl(
+          createEntry(createSourceState().elements, null),
+          "/members/7?tab=a",
+        ),
+      ).toBe(true);
+      expect(
+        isVisitedResponseCacheEntryForPreviousNextUrl(createEntry(undefined, null), "/members/7"),
+      ).toBe(true);
+    });
   });
 
   it("never classifies a payload that retains elements as complete", () => {

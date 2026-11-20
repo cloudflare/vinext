@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 const ROOT = `${BASE}/interception-traverse-reload`;
@@ -82,6 +82,41 @@ test.describe("going back into an intercepted entry", () => {
     await page.goBack();
 
     await expectModalOverFeed(page);
+  });
+
+  // Each push records a new history entry's tree, and the client keeps only
+  // the latest 50 (MAX_HISTORY_STATE_SNAPSHOTS in app-browser-entry.ts), while
+  // going back keeps the browser's history short. The intercepted entry's own
+  // tree is gone by then, but the tree committed for its route is still cached
+  // and renders without a request.
+  test("shows the modal over its source once its entry's tree is gone", async ({ page }) => {
+    test.setTimeout(60_000);
+    await openModalThenPlain(page);
+    await markWindow(page);
+
+    for (let i = 0; i < 55; i++) {
+      await page.evaluate(() => {
+        const router = window.next?.router;
+        if (!router || !("push" in router)) {
+          throw new Error("window.next App Router is not installed");
+        }
+        void router.push("/interception-traverse-reload/feed");
+      });
+      await expect(page.locator("#interception-traverse-reload-feed")).toBeVisible();
+      await page.goBack();
+      await expect(page.locator("#interception-traverse-reload-plain")).toBeVisible();
+    }
+
+    const photoRequests: string[] = [];
+    page.on("request", (request) => {
+      if (isAppRouterRscRequestForPath(request, "/interception-traverse-reload/photo/1")) {
+        photoRequests.push(request.url());
+      }
+    });
+    await page.goBack();
+
+    await expectModalOverFeed(page);
+    expect(photoRequests).toEqual([]);
   });
 });
 

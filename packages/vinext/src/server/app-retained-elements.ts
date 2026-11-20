@@ -8,6 +8,7 @@ import {
   AppElementsWire,
   type AppElements,
 } from "./app-elements.js";
+import type { InterceptionSourceIdentity } from "./navigation-planner.js";
 
 const ROUTE_ELEMENT_ID_PREFIXES = [
   APP_ROUTE_HEAD_ID_PREFIX,
@@ -33,6 +34,20 @@ export function holdsInterceptionSourceTree(elements: AppElements): boolean {
     Object.hasOwn(elements, ownerLayoutId) &&
     resolveMissingRetainedElementIds(elements).length === 0
   );
+}
+
+/**
+ * The source a committed tree for an intercepted route shows beneath the
+ * intercept, when it holds that source's tree. Its commit put the source the
+ * server's proof names there, so a traversal back to it shows that source
+ * again, or null when the tree doesn't hold it.
+ */
+export function resolveCommittedInterceptionSource(
+  elements: AppElements,
+): InterceptionSourceIdentity | null {
+  const interception = AppElementsWire.readMetadata(elements).interception;
+  if (interception === null || !holdsInterceptionSourceTree(elements)) return null;
+  return { matchedUrl: interception.sourceMatchedUrl, routeId: interception.sourceRouteId };
 }
 
 function resolveMissingRetainedElementIds(next: AppElements): string[] {

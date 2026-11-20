@@ -169,6 +169,7 @@ import {
   findVisitedResponseForFullPrefetch,
   hasNavigationResponseHistoryLifetime,
   revokeHistoryRestoreNavigationReuse,
+  isVisitedResponseCacheEntryForPreviousNextUrl,
   isVisitedResponseCacheEntryFresh,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
@@ -234,6 +235,7 @@ import {
 import { createMountedLayoutsHeader, holdsSkippedLayouts } from "./app-mounted-layouts.js";
 import {
   holdsInterceptionSourceTree,
+  resolveCommittedInterceptionSource,
   resolveHeldRetainedElementIds,
 } from "./app-retained-elements.js";
 import {
@@ -1079,10 +1081,16 @@ function readVisitedResponseCacheCandidate(
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
   navigationKind: NavigationKind,
+  previousNextUrl: string | null,
 ): VisitedResponseCacheCandidate {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const match = findVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext);
-  if (!match || match.entry.navigationReuseRevoked) {
+  if (
+    !match ||
+    match.entry.navigationReuseRevoked ||
+    (navigationKind === "traverse" &&
+      !isVisitedResponseCacheEntryForPreviousNextUrl(match.entry, previousNextUrl))
+  ) {
     return {
       cacheKey,
       entry: null,
@@ -1149,6 +1157,7 @@ function storeVisitedResponseSnapshot(
   prefetchSnapshot: CachedRscResponse = snapshot,
   reuseAfterHistoryRestore: boolean = false,
   fromHydration: boolean = false,
+  previousNextUrl: string | null = null,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   // Router-state fingerprints intentionally give requests for the same visible
@@ -1165,6 +1174,7 @@ function storeVisitedResponseSnapshot(
     now,
     mountedSlotsHeader: requestMountedSlotsHeader,
     params,
+    previousNextUrl,
     response: snapshot,
     reuseAfterHistoryRestore,
   });
@@ -2464,6 +2474,7 @@ function bootstrapHydration(
               requestInterceptionContext,
               mountedSlotsHeader,
               navigationKind,
+              requestPreviousNextUrl,
             );
         const visitedResponseDecision = navigationPlanner.classifyVisitedResponseCacheCandidate(
           visitedResponseCandidate.facts,
@@ -2584,6 +2595,17 @@ function bootstrapHydration(
             restoredBfcacheIds,
             reuseCurrentBfcacheIds,
             scrollIntent,
+            // A traversal back to a tree this client committed for an
+            // intercepted route shows the source that commit put beneath it,
+            // as one whose response arrives fresh shows the source it fetched.
+            // It trusts the tree as only an approved commit stores one there
+            // outside hydration.
+            suppliedInterceptionSource:
+              navigationKind === "traverse" &&
+              cachedRoute.elements &&
+              cachedRoute.fromHydration !== true
+                ? resolveCommittedInterceptionSource(cachedRoute.elements)
+                : null,
             targetHref: currentHref,
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
@@ -3190,6 +3212,8 @@ function bootstrapHydration(
               isCompleteAppPayloadMetadata(metadata),
               prefetchSnapshot,
               interceptionContext !== null || hasNavigationResponseHistoryLifetime(snapshot),
+              false,
+              state.previousNextUrl,
             );
           }
         } catch {
