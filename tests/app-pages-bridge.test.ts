@@ -47,16 +47,16 @@ describe("matchPagesFallbackRoute", () => {
     expect(matchPagesFallbackRoute(pagesEntry, "/apis", request)).toBe(pageMatch);
   });
 
-  // renderPagesFallback renders any path no App route matches for an entry
-  // without matchers.
-  it("reports an entry without matchers as rendering every unmatched path", () => {
+  // renderPagesFallback renders a path no App route matches for an entry
+  // without matchers, and leaves it to routing when that render answers 404.
+  it("reports an entry without matchers as leaving each unmatched path to its render", () => {
     const pagesEntry: PagesEntry = {
       handleApiRoute: () => new Response("api"),
       renderPage: () => new Response("page"),
     };
 
-    expect(matchPagesFallbackRoute(pagesEntry, "/about", request)).toBe("unmatched");
-    expect(matchPagesFallbackRoute(pagesEntry, "/api/users", request)).toBe("unmatched");
+    expect(matchPagesFallbackRoute(pagesEntry, "/about", request)).toBe("indeterminate");
+    expect(matchPagesFallbackRoute(pagesEntry, "/api/users", request)).toBe("indeterminate");
     expect(matchPagesFallbackRoute({}, "/about", request)).toBeNull();
     expect(matchPagesFallbackRoute({}, "/api/users", request)).toBeNull();
   });

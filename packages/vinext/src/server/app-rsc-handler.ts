@@ -420,7 +420,7 @@ export type AppRscHandlerRoute = {
 
 type PagesRouteMatchResult =
   | { route: { isDynamic: boolean; pattern: string } }
-  | "unmatched"
+  | "indeterminate"
   | null;
 
 type AppRscRouteMatch<TRoute> = {
@@ -854,8 +854,9 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   matchRawRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   /**
    * The Pages route `renderPagesFallback` renders for a raw route pathname,
-   * matched without rendering it, or `"unmatched"` when Pages renders every
-   * path no App route matches. Provided when the app has a Pages directory.
+   * matched without rendering it, or `"indeterminate"` when only rendering a
+   * path no App route matches tells whether Pages serves it. Provided when the
+   * app has a Pages directory.
    */
   matchPagesRoute?: (
     pathname: string,
@@ -2194,6 +2195,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // Raw pathname the source's config rewrites match, like `paramsPathname`
     // for the target's beforeFiles rewrites.
     let sourceRulesPathname = sourceRequestPathname;
+    // The source request shares the target's query. Later rules see the query
+    // middleware or earlier destinations left, as the target's own rewrites do.
+    let sourceRulesResolvedUrl = resolvedUrl;
+    let didRewriteSource = false;
     // The request headers source middleware left, which the source's config
     // rewrites match as they would a direct request's.
     let sourceRulesHeadersContext: ReturnType<typeof headersContextFromRequest> | null = null;
@@ -2315,43 +2320,39 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       } else {
         sourceRulesHeadersContext = sourceHeadersContext;
         if (sourceMiddlewareResult.rewritten) {
-          // Rewrites such as locale insertion are valid only when they resolve to
-          // the exact source route and params selected for interception. A
-          // different route, params, or query would authorize one identity and
-          // render another, so fail closed instead. A destination outside the
-          // basePath resolves no route at all.
-          if (
-            ((options.basePath && sourceMiddlewareResult.rewriteHadBasePath === false) ||
-              !adoptRewrittenInterceptionSource(sourceMiddlewareResult.cleanPathname) ||
-              sourceMiddlewareResult.search !== sourceUrl.search) &&
-            !dropsRefusedSource()
-          ) {
-            options.clearRequestContext();
-            return notFoundResponse();
+          // A destination outside the basePath resolves no route at all.
+          if (options.basePath && sourceMiddlewareResult.rewriteHadBasePath === false) {
+            if (!dropsRefusedSource()) {
+              options.clearRequestContext();
+              return notFoundResponse();
+            }
+          } else {
+            // A direct request takes the config rewrites from the middleware
+            // destination, so the route they leave it on decides below.
+            sourceRulesPathname = sourceMiddlewareResult.cleanPathname;
+            sourceRulesResolvedUrl =
+              sourceMiddlewareResult.cleanPathname +
+              (sourceMiddlewareResult.search ?? sourceUrl.search);
+            didRewriteSource = true;
           }
-          sourceRulesPathname = sourceMiddlewareResult.cleanPathname;
         }
       }
     }
     if (
-      HAS_CONFIG_REWRITES &&
       !droppedSource &&
-      (options.configRewrites.beforeFiles.length ||
-        options.configRewrites.afterFiles.length ||
-        options.configRewrites.fallback.length)
+      (didRewriteSource ||
+        (HAS_CONFIG_REWRITES &&
+          (options.configRewrites.beforeFiles.length ||
+            options.configRewrites.afterFiles.length ||
+            options.configRewrites.fallback.length)))
     ) {
       const { matchRewrite } = await import("../config/config-matchers.js");
-      // The source request shares the target's query. Its headers and cookies
-      // are those source middleware left, as for a direct request to it.
+      // The source request's headers and cookies are those source middleware
+      // left, as for a direct request to it.
       const sourceRulesRequestContext =
         sourceRulesHeadersContext === null
           ? buildPostMwRequestContext(userlandRequest)
           : buildPostMwRequestContext(userlandRequest, sourceRulesHeadersContext);
-      // Later rules see the query earlier destinations merged in, as the
-      // target's own rewrites do.
-      let sourceRulesResolvedUrl = resolvedUrl;
-      let didRewriteSource = false;
-      let didRewriteSourceQuery = false;
       let didRewriteSourceExternally = false;
       const unrewrittenSourceRoute =
         interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route;
@@ -2361,11 +2362,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         interceptionSourceMatch.interceptionRendersRootOwnerFromRouteMiss === true;
       // The route a direct request to the rewritten source pathname reaches,
       // in the order the target's own routing takes: a static App route, then
-      // a Pages route over the App route it outranks.
-      const sourceRulesRoute = async (): Promise<{
-        isApp: boolean;
-        route: { isDynamic: boolean };
-      } | null> => {
+      // a Pages route over the App route it outranks. A Pages entry without
+      // matchers leaves a path to its render, which answers 404 for one it
+      // does not serve, so only rendering the path could tell.
+      const sourceRulesRoute = async (): Promise<
+        { isApp: boolean; route: { isDynamic: boolean } } | "indeterminate" | null
+      > => {
         if (!didRewriteSource) {
           return unrewrittenSourceMatchesNoRoute
             ? null
@@ -2381,8 +2383,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               new Request(userlandRequest.url, { headers: sourceRulesRequestContext.headers }),
             )
           : null;
-        if (pagesMatch === "unmatched") {
-          if (appRoute === null) return { isApp: false, route: { isDynamic: false } };
+        if (pagesMatch === "indeterminate") {
+          if (appRoute === null) return "indeterminate";
         } else if (
           pagesMatch !== null &&
           pagesRouteHasPriorityOverAppRoute(pagesMatch.route, appRoute)
@@ -2427,10 +2429,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             didRewriteSourceExternally = true;
             return false;
           }
-          // A destination query would render the source with different search
-          // params, but leaves a page that does not intercept the target to
-          // render it directly.
-          if (destination.includes("?")) didRewriteSourceQuery = true;
           sourceRulesResolvedUrl = mergeRewriteQuery(sourceRulesResolvedUrl, destination);
           sourceRulesPathname = pathnameForResolvedUrl(destination);
           didRewriteSource = true;
@@ -2447,7 +2445,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       const mayInterceptRewrittenSource = async (): Promise<boolean> => {
         if (!(await rewriteSource(options.configRewrites.beforeFiles, false))) return false;
         let reached = await reachedByDirectRequest();
-        if (reached === null || reached.route.isDynamic) {
+        if (reached === null || (reached !== "indeterminate" && reached.route.isDynamic)) {
           if (!(await rewriteSource(options.configRewrites.afterFiles, true))) return false;
           reached = await reachedByDirectRequest();
           if (reached === null) {
@@ -2456,11 +2454,23 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           }
         }
         if (!didRewriteSource) return true;
-        if (reached !== null && !reached.isApp) {
+        // A path a Pages entry without matchers may serve is refused rather
+        // than rendered to find out, which leaves the target to render
+        // directly, as a page that serves the path would.
+        if (reached === "indeterminate" || (reached !== null && !reached.isApp)) {
           rewroteToNonInterceptingSource = true;
           return false;
         }
-        return adoptRewrittenInterceptionSource(sourceRulesPathname) && !didRewriteSourceQuery;
+        // Rewrites such as locale insertion are valid only when they resolve to
+        // the exact source route and params selected for interception, with
+        // the search params the target request carries. A different route,
+        // params, or query would authorize one identity and render another, so
+        // fail closed instead.
+        return (
+          adoptRewrittenInterceptionSource(sourceRulesPathname) &&
+          new URL(sourceRulesResolvedUrl, url).searchParams.toString() ===
+            new URL(resolvedUrl, url).searchParams.toString()
+        );
       };
       const mayInterceptSource = await mayInterceptRewrittenSource();
       // A source a rule proxies elsewhere never renders here, so the request
