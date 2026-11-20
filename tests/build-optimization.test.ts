@@ -10,15 +10,27 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
-import { createBuilder, createLogger, mergeConfig, parseAst, resolveConfig } from "vite";
+import {
+  createBuilder,
+  createLogger,
+  mergeConfig,
+  parseAst,
+  resolveConfig,
+  transformWithOxc,
+} from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
   EXPORT_ALL_CANDIDATE_FILTER as _EXPORT_ALL_CANDIDATE_FILTER,
   hasExportAllCandidate as _hasExportAllCandidate,
   hasServerExportCandidate as _hasServerExportCandidate,
+  serverExportRewrittenRanges as _serverExportRewrittenRanges,
   stripServerExports as _stripServerExportsImpl,
   validatePageExports as _validatePageExports,
 } from "../packages/vinext/src/plugins/strip-server-exports.js";
+import {
+  blankServerExportSource,
+  withLineFeeds,
+} from "../packages/vinext/src/plugins/page-source-content.js";
 import {
   createClientManualChunks,
   getClientTreeshakeConfig,
@@ -6594,6 +6606,186 @@ export const getStaticPaths = () => [
     expect(result).not.toBeNull();
     expect(result).not.toContain("getStaticPaths");
     expect(result).not.toContain("a;b");
+  });
+});
+
+describe("serverExportRewrittenRanges", () => {
+  const removedText = (code: string) =>
+    _serverExportRewrittenRanges(code)!.map(({ start, end }) => code.slice(start, end));
+
+  it("leaves out the source a rewrite keeps", () => {
+    const code = `import { serverA, live, serverB } from "./lib";
+export const value = live, helper = () => serverB();
+export default function Page() {
+  return value;
+}
+export function getStaticProps() {
+  return { props: { value: serverA() + helper() } };
+}
+`;
+    expect(removedText(code)).toEqual([
+      "serverA, ",
+      ", serverB",
+      ", helper = () => serverB()",
+      code.slice(code.indexOf("export function getStaticProps"), -1),
+    ]);
+  });
+
+  it("returns null for a page without data exports", () => {
+    expect(_serverExportRewrittenRanges("export default function Page() {}")).toBeNull();
+  });
+});
+
+describe("blankServerExportSource", () => {
+  async function blankPage(source: string, lang: "jsx" | "tsx"): Promise<string> {
+    const compiled = await transformWithOxc(source, `/app/pages/page.${lang}`, {
+      lang,
+      jsx: { runtime: "automatic" },
+      sourcemap: true,
+    });
+    return blankServerExportSource(source, compiled.code, compiled.map!.mappings);
+  }
+
+  it("blanks data exports and the helpers and imports only they use", async () => {
+    const source = `import { db } from "./db";
+import { useState } from "react";
+
+// Non-ASCII text before the page: ünïcödé — 日本語
+function loadValue(): string {
+  return db.query("HELPER_BODY");
+}
+type LoadValue = typeof loadValue;
+
+export default function Page({ value }: { value: string }) {
+  const [count, setCount] = useState<number>(0);
+  return <button onClick={() => setCount(count + 1)}>PAGE_BODY {value} ✓ {count}</button>;
+}
+
+export async function getServerSideProps() {
+  const load: LoadValue = loadValue;
+  return { props: { value: "DATA_EXPORT_BODY" + load() } };
+}
+`;
+    const blanked = await blankPage(source, "tsx");
+    expect(blanked).not.toMatch(/db|HELPER_BODY|loadValue|getServerSideProps|DATA_EXPORT_BODY/);
+    // Every kept line keeps its position.
+    expect(blanked.length).toBe(source.length);
+    const keptLines = source
+      .split("\n")
+      .filter((line, index) => blanked.split("\n")[index] === line);
+    expect(keptLines).toEqual([
+      'import { useState } from "react";',
+      "",
+      "// Non-ASCII text before the page: ünïcödé — 日本語",
+      "",
+      "export default function Page({ value }: { value: string }) {",
+      "  const [count, setCount] = useState<number>(0);",
+      "  return <button onClick={() => setCount(count + 1)}>PAGE_BODY {value} ✓ {count}</button>;",
+      "}",
+      "",
+      "",
+    ]);
+  });
+
+  it("keeps the specifiers and declarators a rewrite copies", async () => {
+    const source = `import { serverA, live, serverB } from "./lib";
+export const value: string = live, helper = (): string => serverB();
+export default function Page() {
+  return <p>{value}</p>;
+}
+export function getStaticProps() {
+  return { props: { value: serverA() + helper() } };
+}
+`;
+    const lines = (await blankPage(source, "tsx")).split("\n");
+    expect(lines[0]).toMatch(/^import \{ +live +\} from "\.\/lib";$/);
+    expect(lines[1]).toMatch(/^export const value: string = live {20,}/);
+    expect(lines.join("\n")).not.toMatch(/serverA|serverB|helper|getStaticProps/);
+  });
+
+  it("keeps a destructured declaration whose pattern renders values before keys", async () => {
+    const source = `import { source } from "./lib";
+export const { secret: helper, live: value } = source;
+export default function Page() {
+  return <p>{value}</p>;
+}
+export function getStaticProps() {
+  return { props: { value: helper } };
+}
+`;
+    const lines = (await blankPage(source, "jsx")).split("\n");
+    expect(lines[0]).toBe(`import { source } from "./lib";`);
+    expect(lines[1]).toMatch(/^export const \{ +live: value \} = source;$/);
+    expect(lines.join("\n")).not.toMatch(/secret|helper|getStaticProps/);
+  });
+
+  it("blanks static data exports in a JavaScript page", async () => {
+    const source = `export default function Page({ value }) {
+  return <p>PAGE_BODY {value}</p>;
+}
+
+export const getStaticPaths = () => ({ paths: ["/STATIC_PATHS_BODY"], fallback: false });
+export const getStaticProps = () => ({ props: { value: "STATIC_PROPS_BODY" } });
+`;
+    const blanked = await blankPage(source, "jsx");
+    expect(blanked).toContain("  return <p>PAGE_BODY {value}</p>;");
+    expect(blanked).not.toMatch(/STATIC_PATHS_BODY|STATIC_PROPS_BODY/);
+  });
+
+  // Oxc's maps end a line at a lone `\r`, U+2028 and U+2029 as well as `\n`.
+  it.each([
+    ["U+2028 in a string", `const label = "first\u2028second";\n`],
+    ["U+2029 in a comment", `/* first\u2029second */\n`],
+    [
+      "U+2028 in a template literal the compiled page keeps",
+      "const label = `first\u2028second`;\n",
+    ],
+  ])("places the blanked code after %s", async (_name, before) => {
+    const source = `${before}export default function Page({ value }) {
+  return <p>{label} {value}</p>;
+}
+export const getServerSideProps = withSecret("SECRET_TOKEN", async () => ({
+  props: { value: "DATA_EXPORT_BODY" },
+}));
+export function keepMe() {
+  return "KEPT_BODY";
+}
+`;
+    const blanked = await blankPage(source, "jsx");
+    expect(blanked).not.toMatch(/SECRET_TOKEN|DATA_EXPORT_BODY|getServerSideProps/);
+    expect(blanked).toContain(`${before}export default function Page({ value }) {`);
+    expect(blanked).toContain('export function keepMe() {\n  return "KEPT_BODY";\n}\n');
+  });
+
+  it("places the blanked code in a page with lone CR line endings", async () => {
+    const source = [
+      "export default function Page({ value }) {",
+      "  return <p>PAGE_BODY {value}</p>;",
+      "}",
+      "export async function getServerSideProps() {",
+      '  return { props: { value: "SECRET_TOKEN" } };',
+      "}",
+      "export function keepMe() {}",
+      "",
+    ].join("\r");
+    const blanked = await blankPage(source, "jsx");
+    expect(blanked).not.toMatch(/SECRET_TOKEN|getServerSideProps/);
+    expect(blanked).toContain("  return <p>PAGE_BODY {value}</p>;\r}\r");
+    expect(blanked).toContain("\rexport function keepMe() {}\r");
+    expect(blanked.length).toBe(source.length);
+  });
+
+  it("blanks the whole page when the map places nothing", () => {
+    const source = "export default function Page() {}\nexport function getStaticProps() {}\n";
+    expect(blankServerExportSource(source, source, "")).toBe(
+      " ".repeat(33) + "\n" + " ".repeat(35) + "\n",
+    );
+  });
+});
+
+describe("withLineFeeds", () => {
+  it("turns each line break oxc counts but MagicString does not into a line feed", () => {
+    expect(withLineFeeds("a\rb\r\nc\u2028d\u2029e\n")).toBe("a\nb\r\nc\nd\ne\n");
   });
 });
 
