@@ -16,6 +16,7 @@ import type {
 import {
   createIdResolver,
   createLogger,
+  defaultExternalConditions,
   esmExternalRequirePlugin,
   isRunnableDevEnvironment,
   transformWithOxc,
@@ -463,6 +464,96 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react/jsx-runtime",
   "react/jsx-dev-runtime",
 ]);
+
+// The builds react-dom's "./server" and "./static" entries resolve to, by
+// condition in the order its exports map (React 19.3.1) tries them, and
+// without a match. The Flight server is paired with the Fizz entry of the same
+// name: where that is React's Node build, so is the Flight server.
+const REACT_DOM_BUILDS = {
+  server: {
+    conditions: [
+      ["workerd", "edge"],
+      ["bun", "bun"],
+      ["deno", "node"],
+      ["worker", "browser"],
+      ["node", "node"],
+      ["edge-light", "edge"],
+      ["browser", "browser"],
+    ],
+    fallback: "node",
+  },
+  static: {
+    conditions: [
+      ["workerd", "edge"],
+      ["deno", "browser"],
+      ["worker", "browser"],
+      ["node", "node"],
+      ["edge-light", "edge"],
+      ["browser", "browser"],
+    ],
+    fallback: "node",
+  },
+} as const;
+
+// plugin-rsc imports the edge build of its vendored Flight server, or of an
+// installed react-server-dom-webpack, and pre-bundles it by these specifiers.
+const REACT_SERVER_DOM_EDGE_ENTRY =
+  /^((?:@vitejs\/plugin-rsc\/vendor\/react-server-dom|react-server-dom-webpack)\/(server|static))\.edge$/;
+
+/**
+ * The conditions `react-dom/server` or `react-dom/static` resolves with: the
+ * SSR environment's, where Fizz renders, falling back to the environment's
+ * own when there is no SSR environment. Where the SSR environment
+ * externalizes the entry, the server runtime resolves it with its own
+ * conditions: the SSR environment's `externalConditions`, which Vite says the
+ * server should run with. Vite's default names no runtime, so the one
+ * building stands in for it.
+ */
+function fizzConditions(
+  config: Pick<ResolvedConfig, "environments">,
+  environmentConditions: readonly string[],
+  entry: keyof typeof REACT_DOM_BUILDS,
+): readonly string[] {
+  const ssr = config.environments.ssr?.resolve;
+  if (!ssr) return environmentConditions;
+  const external = ssr.external;
+  if (
+    external === true ||
+    (Array.isArray(external) &&
+      (external.includes("react-dom") || external.includes(`react-dom/${entry}`)))
+  ) {
+    const target = ssr.externalConditions;
+    if (
+      target.length !== defaultExternalConditions.length ||
+      target.some((condition, index) => condition !== defaultExternalConditions[index])
+    ) {
+      return target;
+    }
+    if (process.versions.bun) return ["bun", "node"];
+    if (process.versions.deno) return ["deno", "node"];
+    return ["node"];
+  }
+  return ssr.conditions;
+}
+
+/**
+ * The Node build of the Flight server entry `id`, if Fizz's is Node too.
+ * `conditionsOf` gives the conditions react-dom's entry of the same name
+ * resolves with.
+ */
+function reactServerDomNodeEntry(
+  id: string,
+  conditionsOf: (entry: keyof typeof REACT_DOM_BUILDS) => readonly string[],
+): string | undefined {
+  const match = REACT_SERVER_DOM_EDGE_ENTRY.exec(id);
+  if (!match) return undefined;
+  const entry = match[2] as keyof typeof REACT_DOM_BUILDS;
+  const builds = REACT_DOM_BUILDS[entry];
+  const conditions = conditionsOf(entry);
+  const build =
+    builds.conditions.find(([condition]) => conditions.includes(condition))?.[1] ?? builds.fallback;
+  return build === "node" ? `${match[1]}.node` : undefined;
+}
 
 // vinext's cache runtime lazily imports plugin-rsc's React serializer, and the
 // next/image shim imports @unpic/react and ipaddr.js. The Worker scan never
@@ -5762,6 +5853,71 @@ export const loadServerActionClient = ${
             return;
           }
           return this.resolve(`${id}.edge`, importer, { ...options, skipSelf: true });
+        },
+      },
+    },
+    {
+      // On Node, `react-dom/server` resolves to React's Node Fizz build, which
+      // schedules its work with setImmediate. plugin-rsc imports the edge build
+      // of the Flight server by path, skipping React's exports map, and that
+      // build schedules with setTimeout. Fizz could then retry a boundary
+      // before the Flight server wrote the rest of it, and a client component
+      // that builds itself from its children rendered only part of them
+      // (#4770). Next.js pairs the two builds on both runtimes. Resolve the
+      // Flight server to its Node build wherever react-dom's map picks the
+      // Node build of the matching Fizz entry, in the SSR environment. Only
+      // in the RSC environment, where plugin-rsc imports it: an edge import
+      // in any other environment keeps the build it asks for. Only in builds:
+      // in dev, vinext:app-ssr-edge-fizz pairs the edge builds instead.
+      name: "vinext:react-server-dom-node",
+      apply: "build",
+      enforce: "pre",
+      resolveId: {
+        filter: { id: REACT_SERVER_DOM_EDGE_ENTRY },
+        handler(id, importer, options) {
+          if (hasCloudflarePlugin || this.environment?.name !== "rsc") return;
+          const environment = this.environment;
+          const nodeEntry = reactServerDomNodeEntry(id, (entry) =>
+            fizzConditions(
+              environment.getTopLevelConfig(),
+              environment.config.resolve.conditions,
+              entry,
+            ),
+          );
+          if (!nodeEntry) return;
+          return this.resolve(nodeEntry, importer, {
+            ...options,
+            skipSelf: true,
+          });
+        },
+      },
+    },
+    {
+      // React's Node development build of the Flight server enables an
+      // async_hooks hook when it is evaluated, and every promise and file
+      // read of Vite's compile in the same process then goes through it. So
+      // in dev plugin-rsc's edge Flight server stays, and the App Router's
+      // SSR entry renders with React's edge Fizz build, which schedules its
+      // work with setTimeout as that Flight server does (#4770). Cloudflare
+      // already resolves both to their edge builds.
+      name: "vinext:app-ssr-edge-fizz",
+      apply: "serve",
+      transform: {
+        filter: {
+          id: /\/server\/app-ssr-entry\.[cm]?[jt]s(?:\?|$)/,
+          code: /["']react-dom\/(?:server|static)["']/,
+        },
+        handler(code) {
+          if (hasCloudflarePlugin || this.environment?.name !== "ssr") return null;
+          const output = new MagicString(code);
+          for (const match of code.matchAll(/(["'])react-dom\/(server|static)\1/g)) {
+            output.overwrite(
+              match.index,
+              match.index + match[0].length,
+              `${match[1]}react-dom/${match[2]}.edge${match[1]}`,
+            );
+          }
+          return { code: output.toString(), map: output.generateMap({ hires: "boundary" }) };
         },
       },
     },

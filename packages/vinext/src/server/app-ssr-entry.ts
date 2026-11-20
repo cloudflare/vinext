@@ -65,6 +65,7 @@ import {
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
 import type { AppSsrRenderResult } from "./app-page-stream.js";
+import { trackQueuedFlightRuns } from "./queued-flight-runs.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
@@ -618,7 +619,13 @@ export async function handleSsr(
             } as PreloadModuleOptions);
           }
           if (!flightRoot) {
-            flightRoot = createFromReadableStream<AppWireElements>(ssrStream, SSR_FLIGHT_OPTIONS);
+            // The root renders once the Flight client has decoded every chunk
+            // queued with the one that completed it, so the tree it renders
+            // doesn't stop at a chunk of the same flush (#4770).
+            const flight = trackQueuedFlightRuns(ssrStream);
+            flightRoot = flight.afterCurrentRun(
+              createFromReadableStream<AppWireElements>(flight.stream, SSR_FLIGHT_OPTIONS),
+            );
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);

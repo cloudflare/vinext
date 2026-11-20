@@ -63,11 +63,11 @@ function clientChunkFileByName(clientDir: string, match: (name: string) => boole
   return clientChunks(clientDir).find((chunk) => match(chunk.name))?.file;
 }
 
-function readAllJs(dir: string): string {
+function readAllJs(dir: string, skipDirs: readonly string[] = []): string {
   let out = "";
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out += readAllJs(full);
+    if (entry.isDirectory()) out += skipDirs.includes(entry.name) ? "" : readAllJs(full);
     else if (entry.name.endsWith(".js")) out += fs.readFileSync(full, "utf-8");
   }
   return out;
@@ -246,6 +246,16 @@ describe("App Router Production build", () => {
     expect(ssrJs).toMatch(/from\s*["'`]react-dom\/server["'`]/);
     expect(ssrJs).not.toContain("react-dom/server.edge");
     expect(ssrJs).not.toContain("react-dom/static.edge");
+    // The Flight server is its Node build too, so both schedule their work the
+    // same way (#4770), and plugin-rsc's runtime shares it instead of bundling
+    // the edge build beside it.
+    // Every build of the Flight server exports decodeReplyFromAsyncIterable,
+    // and only the Node build exports decodeReplyFromBusboy.
+    const rscJs = readAllJs(path.join(outDir, "server"), ["ssr"]);
+    const flightExports = rscJs.match(/\.decodeReplyFromAsyncIterable\s*=/g)?.length ?? 0;
+    const nodeFlightExports = rscJs.match(/\.decodeReplyFromBusboy\s*=/g)?.length ?? 0;
+    expect(nodeFlightExports).toBeGreaterThan(0);
+    expect(flightExports).toBe(nodeFlightExports);
 
     // Asset manifest should be generated
     expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);
