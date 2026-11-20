@@ -1523,7 +1523,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
         // Background refetch — deduped so only one in-flight refetch runs
         // per cache key, preventing thundering herd on popular endpoints.
         if (!pendingRefetches.has(cacheKey)) {
-          const refetchPromise = originalFetch(input, fetchInit)
+          // A synchronous origin error must use the same cleanup path as a
+          // rejection, while the foreground request still receives stale data.
+          const refetchPromise = Promise.resolve()
+            .then(() => originalFetch(input, fetchInit))
             .then(async (freshResp) => {
               await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
                 cloneForReturn: false,
