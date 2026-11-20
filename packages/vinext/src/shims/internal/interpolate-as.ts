@@ -200,6 +200,15 @@ function getRouteMatcher({ re, groups }: RouteRegex) {
 }
 
 /**
+ * Whether `pathname` still matches the dynamic `route` pattern. Next.js'
+ * `Router.change()` re-matches the resolved `as` pathname this way before it
+ * navigates to a dynamic route.
+ */
+export function matchesDynamicRoute(route: string, pathname: string): boolean {
+  return getRouteMatcher(getRouteRegex(route))(pathname) !== false;
+}
+
+/**
  * Project a `(route, asPathname, query)` triple back into a fully-interpolated
  * browser URL. Used by the `<Link href as>` masking path in the Pages Router
  * shim: extract param values from the rendered `as` path when it differs from
