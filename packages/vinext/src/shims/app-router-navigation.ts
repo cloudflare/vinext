@@ -278,16 +278,20 @@ export function getCurrentInterceptionContext(): string | null {
 type PrefetchInterceptionSource = {
   pathname: string;
   routeMiss: boolean;
+  sourceInterceptionContext: string | null;
 };
 
 /**
- * The page a prefetch originates from: the current URL and whether the
- * committed render is an unmatched URL's not-found page.
+ * The page a prefetch originates from: the current URL, whether the committed
+ * render is an unmatched URL's not-found page, and the context its entry keeps
+ * from the source an intercept was opened from.
  */
 export function getPrefetchInterceptionSource(): PrefetchInterceptionSource {
+  const routerState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
   return {
     pathname: window.location.pathname,
-    routeMiss: getNavigationRuntime()?.functions.getPrefetchRouterState?.()?.routeMiss === true,
+    routeMiss: routerState?.routeMiss === true,
+    sourceInterceptionContext: routerState?.sourceInterceptionContext ?? null,
   };
 }
 
@@ -307,6 +311,12 @@ export function getPrefetchInterceptionContext(
   }
 
   const currentSource = source ?? getPrefetchInterceptionSource();
+  // An entry that keeps its source sends it on every navigation, so its
+  // prefetches do too, as Next.js prefetches with the `Next-Url` it navigates
+  // with.
+  if (currentSource.sourceInterceptionContext !== null) {
+    return currentSource.sourceInterceptionContext;
+  }
   const interceptionContext = resolveManifestNavigationInterceptionContext({
     basePath: __basePath,
     currentPathname: currentSource.pathname,
@@ -339,7 +349,7 @@ export function createAppPrefetchRequestHeaders(options: {
     ...options,
     nextUrl: getCurrentNextUrl(),
     includePrefetchHeader: options.prefetchKind !== "full",
-    // The route-miss flag only steers the interception context.
+    // The source fields only steer the interception context.
     prefetchRouterState: routerState && {
       pathAndSearch: routerState.pathAndSearch,
       routeId: routerState.routeId,

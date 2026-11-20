@@ -723,6 +723,68 @@ describe("prefetch cache eviction", () => {
     ).toBeNull();
   });
 
+  // An intercept opened from an unmatched URL's not-found page keeps
+  // /_not-found as its entry's source, which its navigations send whatever
+  // their target, so its prefetches send it too, as Next.js prefetches with
+  // the `Next-Url` it navigates with.
+  it("router.prefetch sends the source an intercepted entry keeps", async () => {
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const location = (globalThis as any).window.location;
+    location.pathname = "/photos/1";
+    location.href = "http://localhost/photos/1";
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: {
+        routeManifest: decodeBrowserRouteManifest({
+          graphVersion: "graph:test",
+          routes: [],
+          layouts: [],
+          slotBindings: [],
+          interceptions: [
+            {
+              id: "interception:slot:modal:/->/photos/:id",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:modal:/",
+              sourcePatternParts: [],
+              targetPatternParts: ["photos", ":id"],
+              targetRouteId: "route:/photos/:id",
+            },
+          ],
+          interceptionsBySlotId: [],
+          rootBoundaries: [],
+        }),
+        rsc: undefined,
+      },
+      functions: {
+        getPrefetchRouterState: () => ({
+          pathAndSearch: "/photos/1",
+          routeId: "route:/photos/1",
+          routeMiss: false,
+          sourceInterceptionContext: "/_not-found",
+        }),
+        navigate: vi.fn(),
+      },
+    };
+
+    appRouterInstance.prefetch("/photos/2", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
+    expect(headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)).toBe("/_not-found");
+    expect(JSON.parse(decodeURIComponent(headers.get(NEXT_ROUTER_STATE_TREE_HEADER)!))).toEqual({
+      pathAndSearch: "/photos/1",
+      routeId: "route:/photos/1",
+    });
+
+    appRouterInstance.prefetch("/about", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+    expect(
+      new Headers(fetch.mock.calls[1]![1]?.headers).get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
+    ).toBe("/_not-found");
+  });
+
   it("router.prefetch skips the request when the route manifest fails to load", async () => {
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>

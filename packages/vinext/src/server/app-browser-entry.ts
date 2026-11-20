@@ -475,6 +475,7 @@ let initialPrefetchRouterState: {
   pathAndSearch: string;
   routeId: string;
   routeMiss: boolean;
+  sourceInterceptionContext: null;
 } | null = null;
 const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
@@ -2147,6 +2148,7 @@ function bootstrapHydration(
       pathAndSearch: initialPathAndSearch,
       routeId: AppElementsWire.readMetadata(elements).routeId,
       routeMiss: isRouteMissRender(elements),
+      sourceInterceptionContext: null,
     };
     return elements;
   });
@@ -3325,6 +3327,10 @@ function bootstrapHydration(
         pathAndSearch: createSnapshotPathAndSearch(state.navigationSnapshot),
         routeId: state.routeId,
         routeMiss: isRouteMissRender(state.elements),
+        sourceInterceptionContext: resolveInterceptionContextFromPreviousNextUrl(
+          state.previousNextUrl,
+          __basePath,
+        ),
       };
     },
     navigate: navigateRsc,
