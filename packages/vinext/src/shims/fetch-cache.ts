@@ -817,6 +817,45 @@ function shouldRefreshStaleFetchInForeground(): boolean {
   return _getState().refreshStaleFetchesInForeground;
 }
 
+const DECODED_FETCH_FRAMING_HEADERS = [
+  "content-encoding",
+  "content-length",
+  "transfer-encoding",
+] as const;
+
+function bodyIsGzip(body: Uint8Array): boolean {
+  return body.byteLength >= 2 && body[0] === 0x1f && body[1] === 0x8b;
+}
+
+/**
+ * Node's fetch decodes gzip/br/deflate and leaves the compressed message's
+ * framing headers in place. A restored body is the decoded bytes, so those
+ * headers no longer describe it. A still-encoded body (workerd passthrough,
+ * or a caller who compressed the bytes) keeps them: gzip bodies start with
+ * the gzip magic and their Content-Length matches the stored bytes.
+ */
+function omitStaleDecodedFramingHeaders(headers: Headers, body: Uint8Array): void {
+  const encoding = headers.get("content-encoding");
+  if (!encoding) return;
+  const names = encoding
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => part.length > 0 && part !== "identity");
+  if (names.length === 0) return;
+
+  const declared = headers.get("content-length");
+  const declaredLength = declared === null ? null : Number(declared);
+  const lengthIsStale =
+    declaredLength !== null &&
+    Number.isFinite(declaredLength) &&
+    declaredLength !== body.byteLength;
+  const gzipHeaderOnPlainBody =
+    names.some((name) => name === "gzip" || name === "x-gzip") && !bodyIsGzip(body);
+  if (!lengthIsStale && !gzipHeaderOnPlainBody) return;
+
+  for (const name of DECODED_FETCH_FRAMING_HEADERS) headers.delete(name);
+}
+
 async function buildFetchCacheValue(
   response: Response,
   tags: string[],
@@ -826,10 +865,16 @@ async function buildFetchCacheValue(
   if (response.status !== 200) return null;
 
   const responseForCache = options?.cloneForReturn === false ? response : response.clone();
-  const body = Buffer.from(await responseForCache.arrayBuffer()).toString("base64");
-  const headers: Record<string, string> = {};
+  const bodyBytes = new Uint8Array(await responseForCache.arrayBuffer());
+  const storedHeaders = new Headers();
   responseForCache.headers.forEach((v, k) => {
     if (k.toLowerCase() === "set-cookie") return;
+    storedHeaders.append(k, v);
+  });
+  omitStaleDecodedFramingHeaders(storedHeaders, bodyBytes);
+  const body = Buffer.from(bodyBytes).toString("base64");
+  const headers: Record<string, string> = {};
+  storedHeaders.forEach((v, k) => {
     headers[k] = v;
   });
 
@@ -1140,9 +1185,14 @@ function buildCachedFetchResponse(
   data: CachedFetchValue["data"],
   input: string | URL | Request,
 ): Response {
-  const response = new Response(Buffer.from(data.body, "base64"), {
+  const body = Buffer.from(data.body, "base64");
+  const headers = new Headers(data.headers);
+  // Entries written before framing was stripped, or by another runtime that
+  // stored a decoded body, still carry the compressed message's headers.
+  omitStaleDecodedFramingHeaders(headers, body);
+  const response = new Response(body, {
     status: data.status ?? 200,
-    headers: data.headers,
+    headers,
   });
   // `data.url` is typed as required, but cached entries may cross a
   // serialization boundary (e.g. KV) where a legacy or third-party writer

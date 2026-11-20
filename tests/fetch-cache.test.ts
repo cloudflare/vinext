@@ -10,6 +10,9 @@
  * - Independent cache entries per URL
  */
 
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { gzipSync } from "node:zlib";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 
 // We need to mock fetch at the module level BEFORE fetch-cache.ts captures
@@ -35,6 +38,7 @@ const defaultFetchMockImplementation = async (
   return response;
 };
 const fetchMock = vi.fn(defaultFetchMockImplementation);
+const realFetch = globalThis.fetch.bind(globalThis);
 
 // Stub globalThis.fetch BEFORE importing modules that capture it
 vi.stubGlobal("fetch", fetchMock);
@@ -197,6 +201,70 @@ describe("fetch cache shim", () => {
     expect(new Uint8Array(await cached.arrayBuffer())).toEqual(body);
     expect(cached.headers.get("content-encoding")).toBe("gzip");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Node's fetch decodes the gzip body and leaves the compressed framing
+  // headers behind. The decoded body is what gets cached, so a replay must
+  // not describe that body with the original Content-Length / Content-Encoding.
+  // Workerd does not decode a passthrough fetch; this still has to be clean
+  // when WebSocketPair is present, because that is the signal the route
+  // handler uses to keep a still-encoded Worker body.
+  it("strips stale gzip framing from a decoded fetch cache replay", async () => {
+    const decoded = "A".repeat(200);
+    const compressed = gzipSync(decoded);
+    expect(compressed.byteLength).not.toBe(Buffer.byteLength(decoded));
+    let upstreamRequests = 0;
+    const upstream = http.createServer((_req, res) => {
+      upstreamRequests++;
+      res.writeHead(200, {
+        "content-encoding": "gzip",
+        "content-length": String(compressed.byteLength),
+        "content-type": "text/plain",
+        "x-upstream": "keep",
+      });
+      res.end(compressed);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address() as AddressInfo;
+    const url = `http://127.0.0.1:${address.port}/gzip`;
+    const globalObject = globalThis as { WebSocketPair?: unknown };
+    const previousWebSocketPair = globalObject.WebSocketPair;
+    globalObject.WebSocketPair = class WebSocketPair {};
+
+    fetchMock.mockImplementation((input) => realFetch(input as RequestInfo));
+
+    try {
+      const cold = await fetch(url, { cache: "force-cache" });
+      expect(await cold.text()).toBe(decoded);
+
+      const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+      const store = (handler as any).store as Map<
+        string,
+        { value: { data: { headers: Record<string, string> } } }
+      >;
+      for (const [, entry] of store) {
+        entry.value.data.headers["content-encoding"] = "gzip";
+        entry.value.data.headers["content-length"] = String(compressed.byteLength);
+        entry.value.data.headers["transfer-encoding"] = "chunked";
+      }
+
+      startNewFetchCacheScope();
+      const cached = await fetch(url, { cache: "force-cache" });
+      expect(cached.headers.get("content-encoding")).toBeNull();
+      expect(cached.headers.get("content-length")).toBeNull();
+      expect(cached.headers.get("transfer-encoding")).toBeNull();
+      expect(cached.headers.get("content-type")).toBe("text/plain");
+      expect(cached.headers.get("x-upstream")).toBe("keep");
+      expect(await cached.text()).toBe(decoded);
+      expect(upstreamRequests).toBe(1);
+    } finally {
+      if (previousWebSocketPair === undefined) delete globalObject.WebSocketPair;
+      else globalObject.WebSocketPair = previousWebSocketPair;
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("preserves Response.url on cached fetch responses", async () => {

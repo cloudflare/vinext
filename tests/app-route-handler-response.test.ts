@@ -1,3 +1,6 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it, afterEach, vi } from "vite-plus/test";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import {
@@ -354,6 +357,47 @@ describe("app route handler response helpers", () => {
     expect(result.statusText).toBe("Accepted");
     expect(result.headers.getSetCookie?.()).toEqual(["a=1; Path=/", "draft=1; Path=/"]);
     await expect(result.text()).resolves.toBe("");
+  });
+
+  it("drops stale gzip framing from a decoded upstream fetch", async () => {
+    const decoded = "A".repeat(200);
+    const compressed = gzipSync(decoded);
+    expect(compressed.byteLength).not.toBe(Buffer.byteLength(decoded));
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "content-encoding": "gzip",
+        "content-length": String(compressed.byteLength),
+        "content-type": "text/plain",
+        "x-upstream": "keep",
+      });
+      res.end(compressed);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const address = upstream.address() as AddressInfo;
+      const fetched = await fetch(`http://127.0.0.1:${address.port}/gzip`);
+      expect(fetched.headers.get("content-encoding")).toBe("gzip");
+      expect(fetched.headers.get("content-length")).toBe(String(compressed.byteLength));
+
+      const result = finalizeRouteHandlerResponse(fetched, {
+        pendingCookies: [],
+        draftCookie: null,
+        isHead: false,
+      });
+
+      expect(result.headers.get("content-type")).toBe("text/plain");
+      expect(result.headers.get("x-upstream")).toBe("keep");
+      expect(result.headers.has("content-encoding")).toBe(false);
+      expect(result.headers.has("content-length")).toBe(false);
+      expect(result.headers.has("transfer-encoding")).toBe(false);
+      await expect(result.text()).resolves.toBe(decoded);
+    } finally {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("drops a returned response's framing headers", async () => {
