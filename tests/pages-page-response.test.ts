@@ -195,7 +195,10 @@ describe("isPagesStreamingBot", () => {
     "handles long non-matching User-Agents without quadratic backtracking",
     { timeout: 500 },
     () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       expect(isPagesStreamingBot("a".repeat(64_000))).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
     },
   );
 

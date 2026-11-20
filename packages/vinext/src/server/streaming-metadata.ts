@@ -1,9 +1,9 @@
-import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
+import { getHtmlLimitedBotRegex, isOversizedUserAgent } from "../utils/html-limited-bots.js";
 
 export function shouldServeStreamingMetadata(
   userAgent: string,
   htmlLimitedBots: string | undefined,
 ): boolean {
-  if (!userAgent) return true;
+  if (!userAgent || isOversizedUserAgent(userAgent)) return true;
   return !getHtmlLimitedBotRegex(htmlLimitedBots).test(userAgent);
 }
