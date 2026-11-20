@@ -8748,7 +8748,8 @@ describe("createAppRscHandler", () => {
   // and renders the target directly, never the source's redirect or 404. A
   // request selecting the intercept by id is refused. A rewrite that keeps
   // the /_not-found path is a clean pass, as for any other source; one to
-  // another path never adopts that path as the source.
+  // another path never adopts that path as the source. An external rewrite
+  // drops the source without proxying.
   it.each([
     { refusal: "none", interceptionId: null },
     { refusal: "none", sameRewrite: "middleware", interceptionId: null },
@@ -8757,6 +8758,8 @@ describe("createAppRscHandler", () => {
     { refusal: "middleware redirect", interceptionId: "slug-modal" },
     { refusal: "middleware rewrite", interceptionId: null },
     { refusal: "middleware rewrite", interceptionId: "slug-modal" },
+    { refusal: "middleware external rewrite", interceptionId: null },
+    { refusal: "middleware external rewrite", interceptionId: "slug-modal" },
     { refusal: "config redirect", interceptionId: null },
     { refusal: "config redirect", interceptionId: "slug-modal" },
     { refusal: "config rewrite", interceptionId: null },
@@ -8830,6 +8833,14 @@ describe("createAppRscHandler", () => {
                 headers: { "x-middleware-rewrite": "https://example.test/docs/acme" },
               });
             }
+            if (
+              request.nextUrl.pathname === "/_not-found" &&
+              refusal === "middleware external rewrite"
+            ) {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": "https://upstream.example/acme" },
+              });
+            }
             if (request.nextUrl.pathname === "/_not-found" && sameRewrite === "middleware") {
               // A rewrite to the request's own URL that only sets a header.
               return new Response(null, {
@@ -8845,15 +8856,20 @@ describe("createAppRscHandler", () => {
         },
       });
 
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
       const headers = createRscRequestHeaders({
         interceptionContext: "/_not-found",
         interceptionId: interceptionId ?? undefined,
       });
       const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
-      const response = await handler(
-        new Request(`https://example.test${rscUrl}`, { headers }),
-        null,
-      );
+      let response: Response;
+      try {
+        fetchSpy.mockResolvedValue(new Response("upstream"));
+        response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
 
       expect(response.headers.get("location")).toBeNull();
       if (interceptionId !== null) {
