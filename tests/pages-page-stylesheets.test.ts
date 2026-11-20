@@ -163,45 +163,39 @@ describe("appendToChunkCode", () => {
 describe("builtUrlExpression", () => {
   const file = "_next/static/css/alpha.css";
   const hostId = "_next/static/chunks/entry.js";
-  const urlOf = (
-    expression: string,
-    moduleUrl = "https://example.com/_next/static/chunks/entry.js",
-  ) => new Function("url", `return ${expression.replaceAll("import.meta.url", "url")};`)(moduleUrl);
+  const relativeUrl = 'new URL("../css/alpha.css",import.meta.url).href';
 
   it("joins the base and the file", () => {
-    expect(urlOf(builtUrlExpression(file, hostId, { base: "/docs/" }))).toBe(
-      "/docs/_next/static/css/alpha.css",
+    expect(builtUrlExpression(file, hostId, { base: "/docs/" })).toBe(
+      '"/docs/_next/static/css/alpha.css"',
     );
   });
 
   // Vite resolves relative-base URLs in JavaScript against the chunk, not the page.
   it.each(["./", ""])("resolves the file against the chunk with base %j", (base) => {
-    expect(urlOf(builtUrlExpression(file, hostId, { base }))).toBe(
-      "https://example.com/_next/static/css/alpha.css",
-    );
+    expect(builtUrlExpression(file, hostId, { base })).toBe(relativeUrl);
   });
 
   it("uses what renderBuiltUrl returns", () => {
     const renderBuiltUrl = (filename: string, context: { hostId: string; hostType: string }) =>
       `https://cdn.example.com/${filename}?host=${context.hostType}:${context.hostId}`;
-    expect(urlOf(builtUrlExpression(file, hostId, { base: "/", renderBuiltUrl }))).toBe(
-      `https://cdn.example.com/${file}?host=js:${hostId}`,
+    expect(builtUrlExpression(file, hostId, { base: "/", renderBuiltUrl })).toBe(
+      JSON.stringify(`https://cdn.example.com/${file}?host=js:${hostId}`),
     );
     expect(
-      urlOf(
-        builtUrlExpression(file, hostId, {
-          base: "/",
-          renderBuiltUrl: (filename) => ({ runtime: `"/assets/"+${JSON.stringify(filename)}` }),
-        }),
-      ),
-    ).toBe(`/assets/${file}`);
+      builtUrlExpression(file, hostId, {
+        base: "/",
+        renderBuiltUrl: () => ({ runtime: "assetUrl(name)" }),
+      }),
+    ).toBe("(assetUrl(name))");
     expect(
-      urlOf(
-        builtUrlExpression(file, hostId, { base: "/", renderBuiltUrl: () => ({ relative: true }) }),
-      ),
-    ).toBe("https://example.com/_next/static/css/alpha.css");
+      builtUrlExpression(file, hostId, { base: "/", renderBuiltUrl: () => ({ relative: true }) }),
+    ).toBe(relativeUrl);
     expect(
-      urlOf(builtUrlExpression(file, hostId, { base: "/docs/", renderBuiltUrl: () => undefined })),
-    ).toBe("/docs/_next/static/css/alpha.css");
+      builtUrlExpression(file, hostId, { base: "./", renderBuiltUrl: () => ({ relative: false }) }),
+    ).toBe('"./_next/static/css/alpha.css"');
+    expect(
+      builtUrlExpression(file, hostId, { base: "/docs/", renderBuiltUrl: () => undefined }),
+    ).toBe('"/docs/_next/static/css/alpha.css"');
   });
 });
