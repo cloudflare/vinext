@@ -785,6 +785,62 @@ describe("parallel route supplemental refreshes", () => {
     ]);
   });
 
+  // A payload the server did not intercept keeps its own layouts too, and a
+  // layout it rendered without a segment identity takes none from the source.
+  it("keeps the primary payload's own layouts when it promotes a source page", () => {
+    const primary: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: { "layout:/": "primary root layout" },
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/nested"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/nested/modal",
+        slotBindings: [
+          {
+            ownerLayoutId: "layout:/nested",
+            slotId: "slot:children:/nested",
+            state: "unmatched",
+          },
+        ],
+      }),
+      "layout:/": "primary root layout",
+      "layout:/nested": "primary nested layout",
+      "slot:children:/nested": AppElementsWire.unmatchedSlotValue,
+    };
+    const sourcePage: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          "layout:/": "source root layout",
+          "layout:/nested": "source nested layout",
+        },
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/nested"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/nested",
+        slotBindings: [
+          {
+            activeRouteId: "route:/nested",
+            ownerLayoutId: "layout:/",
+            slotId: "slot:children:/",
+            state: "active",
+          },
+        ],
+      }),
+      "layout:/": "source root layout",
+      "layout:/nested": "source nested layout",
+      "slot:children:/": "fresh parent tree",
+    };
+
+    const result = mergeRefreshedParallelSlot(primary, sourcePage);
+
+    expect(result["slot:children:/nested"]).toBe("fresh parent tree");
+    expect(result["layout:/"]).toBe("primary root layout");
+    expect(result["layout:/nested"]).toBe("primary nested layout");
+    expect(AppElementsWire.readMetadata(result).bfcacheSegmentIdentities).toEqual({
+      "layout:/": "primary root layout",
+    });
+  });
+
   // Ported from Next.js:
   // test/e2e/app-dir/segment-cache/refresh/segment-cache-refresh.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/refresh/segment-cache-refresh.test.ts
