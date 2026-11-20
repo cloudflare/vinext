@@ -181,7 +181,7 @@ export type AppPageSsrHandler = {
       fallbackToErrorDocumentOnShellError?: boolean;
       /** Whether the RSC render threw the given shell error. See handleSsr. */
       isServerComponentError?: (error: unknown) => boolean;
-      /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
+      /** The slot or route boundaries that catch a shell error. See handleSsr. */
       resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
       dynamicStaleTimeSeconds?: number;
       getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
@@ -245,7 +245,7 @@ type RenderAppPageHtmlStreamOptions = {
   fallbackToErrorDocumentOnShellError?: boolean;
   /** Whether the RSC render threw the given shell error. See handleSsr. */
   isServerComponentError?: (error: unknown) => boolean;
-  /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
+  /** The slot or route boundaries that catch a shell error. See handleSsr. */
   resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
   /** Dev-only: original server error to surface in the browser overlay. */
   initialDevServerError?: unknown;
@@ -281,7 +281,7 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
   renderHtmlStream: () => Promise<ReadableStream<Uint8Array> | AppSsrRenderResult>;
   /**
    * The document of a special error that rejected the shell. With
-   * `caughtDocument`, parallel slot boundaries caught it in the page's own
+   * `caughtDocument`, boundaries in the route's tree caught it in the page's own
    * document, which that response sends.
    */
   renderSpecialErrorResponse: (
@@ -291,7 +291,7 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
   resolveSpecialError: (error: unknown) => TSpecialError | null;
 };
 
-/** The page's document, rendered with the slot boundaries that caught its shell error. */
+/** The page's document, rendered with the boundaries that caught its shell error. */
 type AppPageCaughtShellErrorDocument = {
   htmlStream: ReadableStream<Uint8Array>;
   /** React-emitted preload `Link` header (already capped). */

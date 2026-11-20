@@ -59,7 +59,7 @@ import { HttpAccessFallbackSlot } from "../packages/vinext/src/shims/slot.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import {
   APP_PAGE_NOT_FOUND_BOUNDARY_ID,
-  resolveAppPageCaughtNotFoundBoundaries,
+  resolveAppPageCaughtAccessBoundaries,
   resolveAppPageShellSpecialError,
   tagAppPageSlotError,
 } from "../packages/vinext/src/server/app-page-execution.js";
@@ -1748,7 +1748,7 @@ describe("buildPageElements", () => {
         kind: "http-access-fallback",
         statusCode: 404,
       });
-      expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [fromPage, caughtInSlot])).toEqual([
+      expect(resolveAppPageCaughtAccessBoundaries(decoded, [fromPage, caughtInSlot])).toEqual([
         APP_PAGE_NOT_FOUND_BOUNDARY_ID,
         "slot:team:/:0",
       ]);

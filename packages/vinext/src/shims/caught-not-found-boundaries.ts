@@ -1,9 +1,10 @@
 /**
- * The parallel slot not-found boundaries that caught a slot's notFound() in
- * the document. Fizz has no error boundaries, so a slot page's notFound()
- * rejects the shell; the App Router SSR entry then renders the document again
- * from the same Flight payload, with the boundaries that would have caught it
- * on the client rendering their fallback (Next.js renders them in the browser
+ * The not-found, forbidden and unauthorized boundaries that caught a signal
+ * in the document. Fizz has no error boundaries, so a slot page's notFound(),
+ * or the page's own signal in a route with parallel slots, rejects the shell;
+ * the App Router SSR entry then renders the document again from the same
+ * Flight payload, with the boundaries that would have caught it on
+ * the client rendering their fallback (Next.js renders them in the browser
  * after an empty error shell). The browser reads the same ids from
  * `self.__VINEXT_CAUGHT_NOT_FOUND__`, so those boundaries hydrate caught. Only
  * the boundaries the document rendered are sent, since one inside another
@@ -50,7 +51,7 @@ export function withCaughtNotFoundBoundaries(
     : children;
 }
 
-/** Whether the boundary with this id caught a notFound() in the document. */
+/** Whether the boundary with this id caught a signal in the document. */
 export function useCaughtNotFoundBoundary(id: string | undefined): boolean {
   const serverBoundaries = React.useContext(CaughtNotFoundBoundariesContext!);
   if (id === undefined) return false;
