@@ -54,7 +54,7 @@ import { isAppClientReference } from "./app-render-dependency.js";
 import {
   resolveAppPageSpecialErrorStoredHeaders,
   buildAppPageSpecialErrorResponse,
-  resolveAppPageCaughtNotFoundBoundaries,
+  resolveAppPageCaughtAccessBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   type AppPageFontPreload,
@@ -1144,9 +1144,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               // document for its shell's special error.
               resolveCaughtNotFoundBoundaries: renderDocument
                 ? (error) =>
-                    resolveAppPageCaughtNotFoundBoundaries(
+                    resolveAppPageCaughtAccessBoundaries(
                       error,
                       rscErrorTracker.getCapturedSpecialErrors(error),
+                      {
+                        catchesRouteSignals: catchesAppPageRouteSignals(revalidationTarget.route),
+                      },
                     )
                 : undefined,
               async renderShellSpecialError(error, caughtDocument) {
@@ -1571,6 +1574,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const lifecycleOptions: Parameters<typeof renderAppPageLifecycle>[0] = {
     basePath: options.basePath,
     bypassInterceptionContextCache: options.bypassInterceptionContextCache,
+    catchesRouteSignals: catchesAppPageRouteSignals(route),
     clientTraceMetadata: options.clientTraceMetadata,
     reactMaxHeadersLength: options.reactMaxHeadersLength,
     cleanPathname: options.cleanPathname,
@@ -1712,6 +1716,18 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     );
   }
   return renderResponse();
+}
+
+/**
+ * Whether the route's own boundaries catch its page's HTTP access fallback in
+ * the document. Next.js wraps only each segment's `children` in them, so the
+ * route's named parallel slots keep rendering beside the boundary, which a
+ * fallback document shaped like the boundary leaves out. As Next.js stores
+ * one error shell whichever user agent renders it, the route alone decides.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+export function catchesAppPageRouteSignals(route: Pick<AppPageDispatchRoute, "slots">): boolean {
+  return Object.keys(route.slots ?? {}).length > 0;
 }
 
 /** One render's head, once it prepares one, and how that render resolves it. */
@@ -1958,7 +1974,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     async renderFallbackPage(statusCode) {
-      // Parallel slot not-found boundaries caught it in the page's own document.
+      // Boundaries in the route's tree caught it in the page's own document.
       if (caughtDocument) return caughtDocument;
       if (specialError.kind === "http-access-fallback") {
         // A layout's signal is caught above that layout, so the layouts above

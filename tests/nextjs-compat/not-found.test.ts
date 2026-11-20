@@ -514,6 +514,65 @@ describe("Next.js compat: not-found", () => {
     },
   );
 
+  // Next.js wraps only a segment's `children` in its access boundaries, so the
+  // layout's named slots keep rendering beside the boundary that catches the
+  // page's notFound(), forbidden() or unauthorized().
+  // Observed in Next.js 16.2.7, webpack and Turbopack.
+  it.each([
+    ["missing", 404, "notfound-sibling-slots-nf"],
+    ["denied", 403, "notfound-sibling-slots-forbidden"],
+    ["unauth", 401, "notfound-sibling-slots-unauthorized"],
+    // A not-found beside the page catches it in the page's own segment.
+    ["own", 404, "notfound-sibling-slots-own-nf"],
+  ])(
+    "the access boundary document keeps the layout's parallel slots (%s)",
+    async (path, status, boundaryId) => {
+      const { res, html } = await fetchHtml(baseUrl, `/notfound-sibling-slots/${path}`);
+      expect(res.status).toBe(status);
+      expect(html).toContain('id="notfound-sibling-slots-layout"');
+      expect(html).toContain(`id="${boundaryId}"`);
+      expect(html).toContain('id="notfound-sibling-slots-sidebar"');
+      expect(html).toContain("SIDEBAR");
+      expect(html).toContain('<meta name="robots" content="noindex"');
+      // The route's other boundaries' files ride in the inline payload,
+      // unrendered.
+      if (boundaryId !== "notfound-sibling-slots-nf") {
+        expect(html).not.toContain(">Sibling slots not found</p>");
+      }
+      expect(html).not.toContain("<h1>404 - Page Not Found</h1>");
+      expect(html).not.toContain("<h1>403 - Forbidden</h1>");
+      expect(html).not.toContain("<h1>401 - Unauthorized</h1>");
+    },
+  );
+
+  it("a layout's notFound() keeps its document free of what renders below it", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/notfound-sibling-slots/sub");
+    expect(res.status).toBe(404);
+    expect(html).toContain('id="notfound-sibling-slots-nf"');
+    // Nothing below the layout reaches the markup or the inline payload.
+    expect(html).not.toContain("Sub page");
+  });
+
+  // A slot that fails while the document renders again with the boundary
+  // that caught the page's or a slot's notFound() leaves the notFound() to
+  // its fallback document, with its 404, as before that document rendered
+  // the boundary caught. Next.js sends its 404 error shell either way.
+  it.each([
+    ["page-error/missing", "replay-fallback-page-error-nf"],
+    ["page-forbidden/missing", "replay-fallback-page-forbidden-nf"],
+    ["slot-error", "replay-fallback-root-nf"],
+  ])(
+    "a slot that fails beside a caught notFound() keeps the 404 fallback (%s)",
+    async (path, boundaryId) => {
+      const { res, html } = await fetchHtml(baseUrl, `/notfound-replay-fallback/${path}`);
+      expect(res.status).toBe(404);
+      expect(html).toContain('id="replay-fallback-layout"');
+      expect(html).toContain(`id="${boundaryId}"`);
+      expect(html).not.toContain('id="replay-fallback-team-nf"');
+      expect(html).not.toContain('id="replay-fallback-slot-error-page"');
+    },
+  );
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before

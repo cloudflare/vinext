@@ -21,7 +21,7 @@ import {
 import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,
-  resolveAppPageCaughtNotFoundBoundaries,
+  resolveAppPageCaughtAccessBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   resolveAppPageSpecialErrorStoredHeaders,
@@ -160,6 +160,12 @@ type RenderAppPageLifecycleOptionsBase = {
     routePath: string,
     overrides?: AppRenderErrorContextOverrides,
   ) => AppPageBoundaryOnError;
+  /**
+   * Whether the route's own boundaries catch its page's HTTP access fallback
+   * in the document, as for a route with parallel slots, which keep rendering
+   * beside them (see `resolveAppPageCaughtAccessBoundaries`).
+   */
+  catchesRouteSignals?: boolean;
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
@@ -1526,9 +1532,10 @@ async function renderAppPageLifecycleImpl(
         // document does.
         mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
         resolveCaughtNotFoundBoundaries: (error) =>
-          resolveAppPageCaughtNotFoundBoundaries(
+          resolveAppPageCaughtAccessBoundaries(
             error,
             rscErrorTracker.getCapturedSpecialErrors(error),
+            { catchesRouteSignals: options.catchesRouteSignals },
           ),
       });
     },

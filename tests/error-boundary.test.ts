@@ -756,4 +756,36 @@ describe("NotFoundBoundary caught in the document", () => {
     expect(render(outer)).toContain("outer not found");
     expect([...caught.rendered]).toEqual(["slot:team:/:0"]);
   });
+
+  it("renders the page's forbidden or unauthorized boundary caught by its id", async () => {
+    const React = await import("react");
+    const { renderToString } = await import("react-dom/server");
+    const { ForbiddenBoundary, UnauthorizedBoundary } =
+      await import("../packages/vinext/src/shims/error-boundary.js");
+    const { withCaughtNotFoundBoundaries } =
+      await import("../packages/vinext/src/shims/caught-not-found-boundaries.js");
+    const caught = { ids: new Set(["page:403", "page:401"]), rendered: new Set<string>() };
+    type BoundaryComponent = React.ComponentType<{
+      caughtId?: string;
+      children?: React.ReactNode;
+      fallback: React.ReactNode;
+    }>;
+    const render = (boundary: unknown, caughtId?: string) =>
+      renderToString(
+        withCaughtNotFoundBoundaries(
+          caught,
+          React.createElement(
+            boundary as BoundaryComponent,
+            { caughtId, fallback: React.createElement("p", null, "caught") },
+            React.createElement("p", null, "children"),
+          ),
+        ),
+      );
+
+    expect(render(ForbiddenBoundary, "page:403")).toContain("caught");
+    expect(render(UnauthorizedBoundary, "page:401")).toContain("caught");
+    expect(render(ForbiddenBoundary, "page")).toContain("children");
+    expect(render(UnauthorizedBoundary)).toContain("children");
+    expect([...caught.rendered]).toEqual(["page:403", "page:401"]);
+  });
 });

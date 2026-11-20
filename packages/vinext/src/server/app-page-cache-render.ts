@@ -65,7 +65,7 @@ export type RenderAppPageCacheArtifactsOptions = {
     /** The page's own document, in which parallel slot boundaries caught it. */
     caughtDocument?: { html: string; linkHeader?: string },
   ) => Promise<AppPageCacheSpecialErrorDocument | null>;
-  /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
+  /** The slot or route boundaries that catch a shell error. See handleSsr. */
   resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
   renderToReadableStream: (
     element: AppPageRenderableElement,
