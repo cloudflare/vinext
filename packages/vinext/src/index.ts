@@ -503,8 +503,10 @@ const REACT_SERVER_DOM_EDGE_ENTRY =
  * The conditions `react-dom/server` or `react-dom/static` resolves with: the
  * SSR environment's, where Fizz renders, falling back to the environment's
  * own when there is no SSR environment. Where the SSR environment
- * externalizes the entry, as Node dev does, the runtime resolves it with its
- * own conditions.
+ * externalizes the entry, the server runtime resolves it with its own
+ * conditions: those of the runtime building it, unless the SSR environment's
+ * `externalConditions`, which Vite says the server should run with, name
+ * another one. react-dom's map then picks the first that applies.
  */
 function fizzConditions(
   config: Pick<ResolvedConfig, "environments">,
@@ -519,9 +521,12 @@ function fizzConditions(
     (Array.isArray(external) &&
       (external.includes("react-dom") || external.includes(`react-dom/${entry}`)))
   ) {
-    if (process.versions.bun) return ["bun", "node"];
-    if (process.versions.deno) return ["deno", "node"];
-    return ["node"];
+    const runtime = process.versions.bun
+      ? ["bun", "node"]
+      : process.versions.deno
+        ? ["deno", "node"]
+        : ["node"];
+    return [...runtime, ...ssr.externalConditions];
   }
   return ssr.conditions;
 }

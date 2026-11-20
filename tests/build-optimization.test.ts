@@ -4370,14 +4370,15 @@ describe("vinext:react-server-dom-node", () => {
 
   // Returns the id the Flight server entry is resolved to in a server
   // environment with these conditions, whose SSR environment (where Fizz
-  // renders) has `ssrConditions` and `ssrExternal`, or undefined when it is
-  // left alone.
+  // renders) has `ssrConditions`, `ssrExternal` and `ssrExternalConditions`
+  // (Vite's default unless given), or undefined when it is left alone.
   async function resolvedFlightEntry(
     id: string,
     conditions: string[],
     ssrConditions: string[] | null = conditions,
     environmentName = "rsc",
     ssrExternal: true | string[] = [],
+    ssrExternalConditions: string[] = ["node", "module-sync"],
   ) {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugin = (vinext() as any[])
@@ -4391,7 +4392,15 @@ describe("vinext:react-server-dom-node", () => {
           config: { consumer: "server", resolve: { conditions } },
           getTopLevelConfig: () => ({
             environments: ssrConditions
-              ? { ssr: { resolve: { conditions: ssrConditions, external: ssrExternal } } }
+              ? {
+                  ssr: {
+                    resolve: {
+                      conditions: ssrConditions,
+                      external: ssrExternal,
+                      externalConditions: ssrExternalConditions,
+                    },
+                  },
+                }
               : {},
           }),
         },
@@ -4476,6 +4485,20 @@ describe("vinext:react-server-dom-node", () => {
     expect(
       await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"], "rsc", ["react-dom/static"]),
     ).toBeUndefined();
+  });
+
+  // The server runs with the conditions Vite resolves externals with, which
+  // can name another runtime than the one building.
+  it("follows the SSR environment's externalConditions for an externalized react-dom", async () => {
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true, ["bun", "node"]),
+    ).toBeUndefined();
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true, ["worker", "node"]),
+    ).toBeUndefined();
+    expect(
+      await resolvedFlightEntry(STATIC, ["node"], ["node"], "rsc", true, ["bun", "node"]),
+    ).toBe("react-server-dom-webpack/static.node");
   });
 
   // plugin-rsc imports the Flight server in the RSC environment only.
