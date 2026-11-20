@@ -97,7 +97,13 @@ export type PrerenderSpecialErrorMarker = {
 
 const _als = getOrCreateAls<ExecutionContextLike | null>("vinext.requestContext.als");
 const OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL = Symbol.for("__cloudflare-context__");
-let openNextCloudflareContextFallback: unknown;
+const OPEN_NEXT_CLOUDFLARE_CONTEXT_FALLBACK = Symbol.for(
+  "vinext.openNextCloudflareContextFallback",
+);
+
+type OpenNextCloudflareContextGetter = (() => unknown) & {
+  [OPEN_NEXT_CLOUDFLARE_CONTEXT_FALLBACK]?: { value: unknown };
+};
 
 function installOpenNextCloudflareContextBridge(): void {
   const descriptor = Object.getOwnPropertyDescriptor(
@@ -105,17 +111,26 @@ function installOpenNextCloudflareContextBridge(): void {
     OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL,
   );
   if (descriptor && !descriptor.configurable) return;
-  openNextCloudflareContextFallback =
-    descriptor && "value" in descriptor ? descriptor.value : descriptor?.get?.call(globalThis);
+  // A dev server's module runner evaluates this again. The bridge already
+  // installed hands over its fallback: its getter could return a request's
+  // context, which would keep that request alive.
+  const fallback = (descriptor?.get as OpenNextCloudflareContextGetter | undefined)?.[
+    OPEN_NEXT_CLOUDFLARE_CONTEXT_FALLBACK
+  ] ?? {
+    value:
+      descriptor && "value" in descriptor ? descriptor.value : descriptor?.get?.call(globalThis),
+  };
 
+  const get: OpenNextCloudflareContextGetter = () => {
+    const ctx = getRequestExecutionContext();
+    return ctx ? { ctx } : fallback.value;
+  };
+  get[OPEN_NEXT_CLOUDFLARE_CONTEXT_FALLBACK] = fallback;
   Object.defineProperty(globalThis, OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL, {
     configurable: true,
-    get() {
-      const ctx = getRequestExecutionContext();
-      return ctx ? { ctx } : openNextCloudflareContextFallback;
-    },
+    get,
     set(value: unknown) {
-      openNextCloudflareContextFallback = value;
+      fallback.value = value;
     },
   });
 }

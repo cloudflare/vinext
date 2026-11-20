@@ -3,7 +3,7 @@ import path from "node:path";
 import { createBuilder, createServer, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { flightHookRegistry } from "../packages/vinext/src/plugins/react-server-dom-async-hook.js";
+import { devServerRegistry } from "../packages/vinext/src/plugins/react-server-dom-async-hook.js";
 import { createIsolatedFixture } from "./helpers.js";
 
 const FIXTURE_SOURCE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-ssr-collection");
@@ -85,6 +85,7 @@ describe("App Router dev SSR of a collection built from its children", () => {
   let baseUrl = "";
   let fixtureDir = "";
   let server: ViteDevServer | undefined;
+  const consoleMethods: Record<string, unknown> = { ...console };
 
   async function startDevServer(): Promise<{ server: ViteDevServer; baseUrl: string }> {
     const devServer = await createServer({
@@ -124,15 +125,18 @@ describe("App Router dev SSR of a collection built from its children", () => {
     }
   });
 
-  // React's Node development Flight server enables an async_hooks hook each
-  // time a dev server evaluates it, and never disables it. Each running server
-  // keeps its own, and a closed server's hook is disabled.
+  // React's Node development Flight server enables an async_hooks hook and
+  // wraps console's methods each time a dev server evaluates it, and never
+  // undoes either. Each running server keeps its own, and a closed server's
+  // hook is disabled and its console methods put back.
   it("keeps one Flight async hook per running dev server", async () => {
-    const registry = flightHookRegistry();
+    const registry = devServerRegistry();
     await renderedCells(new URL("/", baseUrl));
     expect(registry.live.size).toBe(1);
     const [first] = registry.live;
     expect(first.hook).toBeDefined();
+    const firstConsoleError = console.error;
+    expect(firstConsoleError).not.toBe(consoleMethods.error);
 
     // Same root, so the same pre-bundled build.
     const second = await startDevServer();
@@ -148,6 +152,7 @@ describe("App Router dev SSR of a collection built from its children", () => {
     expect(secondOwner).toMatchObject({ closed: true, hook: undefined });
     expect([...registry.live]).toEqual([first]);
     expect(first.hook).toBeDefined();
+    expect(console.error).toBe(firstConsoleError);
 
     // A restart closes the server it replaces.
     await server!.restart();
@@ -156,9 +161,13 @@ describe("App Router dev SSR of a collection built from its children", () => {
     expect(first).toMatchObject({ closed: true, hook: undefined });
     expect(registry.live.size).toBe(1);
     expect([...registry.live][0].hook).toBeDefined();
+    expect(console.error).not.toBe(firstConsoleError);
+    expect(registry.consoleLayers.every((layer) => !layer.retired)).toBe(true);
 
     await server!.close();
     server = undefined;
     expect(registry.live.size).toBe(0);
+    expect(registry.consoleLayers).toHaveLength(0);
+    expect({ ...console }).toEqual(consoleMethods);
   }, 120_000);
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import {
   runWithExecutionContext,
   getRequestExecutionContext,
@@ -53,6 +53,32 @@ describe("getRequestExecutionContext", () => {
       });
 
       expect(globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL]?.ctx).toBe(fallbackCtx);
+    } finally {
+      globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL] = undefined;
+    }
+  });
+
+  // A dev server's module runner evaluates the module again, during a request.
+  it("keeps the fallback context when the module is evaluated again in a request", async () => {
+    const fallbackCtx = makeCtx();
+    const globalWithContext = globalThis as typeof globalThis & {
+      [key: symbol]: { ctx?: ExecutionContextLike } | undefined;
+    };
+
+    try {
+      globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL] = { ctx: fallbackCtx };
+      vi.resetModules();
+      await runWithExecutionContext(makeCtx(), async () => {
+        await import("../packages/vinext/src/shims/request-context.js");
+      });
+      expect(globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL]?.ctx).toBe(fallbackCtx);
+
+      globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL] = undefined;
+      vi.resetModules();
+      await runWithExecutionContext(makeCtx(), async () => {
+        await import("../packages/vinext/src/shims/request-context.js");
+      });
+      expect(globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL]).toBeUndefined();
     } finally {
       globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL] = undefined;
     }
