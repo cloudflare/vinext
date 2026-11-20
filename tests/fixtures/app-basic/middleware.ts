@@ -597,6 +597,15 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     }
   }
 
+  // Hands the requested pathname to the owner layout of an intercepted slot,
+  // so a refresh shows which request rendered that layout.
+  // Coverage: tests/e2e/app-router/interception-refresh-middleware-headers.spec.ts
+  if (pathname.startsWith("/intercept-refresh-mw/")) {
+    const headers = new Headers(request.headers);
+    headers.set("x-intercept-refresh-mw", pathname);
+    return NextResponse.next({ request: { headers } });
+  }
+
   // An interception source whose public pathname names a page without the
   // intercepted slot, rewritten to a page that has it.
   if (pathname === "/nextjs-compat/intercept-source-group/club/moved") {
@@ -769,6 +778,7 @@ export const config = {
     "/mw-gated-fallback-pages",
     "/photos/:path*",
     "/interception-mw/:path*",
+    "/intercept-refresh-mw/:path*",
     "/nextjs-compat/intercept-source-group/club/moved",
     "/actions",
     "/beforeinteractive-head-ordering/:path*",
