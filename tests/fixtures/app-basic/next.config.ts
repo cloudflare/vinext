@@ -413,6 +413,14 @@ const nextConfig: NextConfig = {
           source: "/nextjs-compat/rsc-query-routing/rewrite/source",
           destination: "/nextjs-compat/rsc-query-routing/rewrite/dest",
         },
+        // Used by E2E: app-router/interception-rewritten-source.spec.ts — a
+        // member page intercepts /photos/[id], but clients without the pass
+        // cookie are served the login page instead.
+        {
+          source: "/gated-members/:id",
+          missing: [{ type: "cookie", key: "gated-pass" }],
+          destination: "/gated-login",
+        },
       ],
       fallback: [
         externalHeadersRewrite("fallback"),

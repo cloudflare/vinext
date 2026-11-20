@@ -2093,6 +2093,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ? interceptionSourcePathname
       : (normalizeTrailingSlashPathname(interceptionSourcePathname, options.trailingSlash) ??
         interceptionSourcePathname);
+    let rewroteToNonInterceptingSource = false;
     const adoptRewrittenInterceptionSource = (rewrittenPathname: string): boolean => {
       // The raw context was matched before this rewrite, so it can name another
       // route: with an unprefixed default locale, `/feed` rewrites to
@@ -2129,21 +2130,36 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         interceptionSourceContext = rewrittenSourcePathname;
       }
       const rewrittenSourceMatch = options.matchRoute(rewrittenSourcePathname);
-      return (
+      const adoptsRewrittenSource =
         interceptionSourceMatch !== null &&
         (isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch) ||
           (isRouteMissSource &&
             rewrittenSourceMatch === null &&
-            interceptionSourceMatch.interceptionRendersRootOwnerFromRouteMiss === true))
-      );
+            interceptionSourceMatch.interceptionRendersRootOwnerFromRouteMiss === true));
+      // The client derives the context it sends from the tree it rendered, so
+      // a source this rewrite routes to a page that does not intercept the
+      // target sends that page instead, which renders the target directly.
+      rewroteToNonInterceptingSource =
+        !adoptsRewrittenSource &&
+        rewrittenInterceptionSourceMatch === null &&
+        isValidInterceptionSourceContext(rewrittenPathname);
+      return adoptsRewrittenSource;
     };
+    // A rewrite that routes the source to a page that does not intercept the
+    // target drops it too, since that source never renders. Whether the source
+    // lacks the slot is the raw source's, not that of a route a rewrite
+    // reached.
+    const rawSourceLacksSlot = interceptionSourceMatch.interceptionSourceLacksSlot === true;
     const dropsRefusedSource = (): boolean => {
-      if (!isRouteMissSource && interceptionSourceMatch?.interceptionSourceLacksSlot !== true) {
+      if (!isRouteMissSource && !rawSourceLacksSlot && !rewroteToNonInterceptingSource) {
         return false;
       }
       interceptionSourceMatch = null;
       interceptionSourceContext = null;
       droppedSource = true;
+      hasVerifiedInterceptionSource = false;
+      bypassInterceptionContextCache = hasRawInterceptionContext;
+      setInterceptionResponseUncacheable(true);
       return true;
     };
     // A direct request to a redirected source never renders it.
@@ -2291,8 +2307,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           // basePath resolves no route at all.
           if (
             ((options.basePath && sourceMiddlewareResult.rewriteHadBasePath === false) ||
-              sourceMiddlewareResult.search !== sourceUrl.search ||
-              !adoptRewrittenInterceptionSource(sourceMiddlewareResult.cleanPathname)) &&
+              !adoptRewrittenInterceptionSource(sourceMiddlewareResult.cleanPathname) ||
+              sourceMiddlewareResult.search !== sourceUrl.search) &&
             !dropsRefusedSource()
           ) {
             options.clearRequestContext();
@@ -2312,36 +2328,44 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       const { matchRewrite } = await import("../config/config-matchers.js");
       // The source request shares the target's query. Its headers and cookies
       // are those source middleware left, as for a direct request to it.
-      const sourceRewriteContext = requestContextForResolvedUrl(
+      const sourceRulesRequestContext =
         sourceRulesHeadersContext === null
           ? buildPostMwRequestContext(userlandRequest)
-          : buildPostMwRequestContext(userlandRequest, sourceRulesHeadersContext),
-        resolvedUrl,
-        url,
-      );
+          : buildPostMwRequestContext(userlandRequest, sourceRulesHeadersContext);
+      // Later rules see the query earlier destinations merged in, as the
+      // target's own rewrites do.
+      let sourceRulesResolvedUrl = resolvedUrl;
       // Applies one phase's rules to the source as a direct request does:
       // every beforeFiles rule in turn, afterFiles up to the first destination
       // that matches a route. Returns whether the source may still intercept.
       const rewriteSource = (rewrites: NextRewrite[], stopAtRoute: boolean): boolean => {
         let didRewriteSource = false;
+        let didRewriteSourceQuery = false;
         for (const rewrite of rewrites) {
           const destination = matchRewrite(
             matchPathname(sourceRulesPathname),
             [rewrite],
-            sourceRewriteContext,
+            requestContextForResolvedUrl(sourceRulesRequestContext, sourceRulesResolvedUrl, url),
             currentBasePathState(),
             matchPathname(sourceRulesPathname),
             dispatchResponseStage === undefined ? markConditionalRewriteCacheability : undefined,
           );
           if (!destination) continue;
-          // An external rewrite proxies instead of rendering the source, and a
-          // destination query would render it with different search params.
-          if (isExternalUrl(destination) || destination.includes("?")) return false;
+          // An external rewrite proxies instead of rendering the source.
+          if (isExternalUrl(destination)) return false;
+          // A destination query would render the source with different search
+          // params, but leaves a page that does not intercept the target to
+          // render it directly.
+          if (destination.includes("?")) didRewriteSourceQuery = true;
+          sourceRulesResolvedUrl = mergeRewriteQuery(sourceRulesResolvedUrl, destination);
           sourceRulesPathname = pathnameForResolvedUrl(destination);
           didRewriteSource = true;
           if (stopAtRoute && options.matchRoute(sourceRulesPathname)) break;
         }
-        return !didRewriteSource || adoptRewrittenInterceptionSource(sourceRulesPathname);
+        return (
+          !didRewriteSource ||
+          (adoptRewrittenInterceptionSource(sourceRulesPathname) && !didRewriteSourceQuery)
+        );
       };
       // A direct request that reaches a dynamic route after beforeFiles still
       // takes the afterFiles rules before that route is accepted, so a rule
