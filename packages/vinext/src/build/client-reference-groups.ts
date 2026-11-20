@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import path from "pathslash";
 import type { Rollup } from "vite";
 import { parseModuleRecord } from "../plugins/ast-utils.js";
+import type { AppRoute } from "../routing/app-route-graph.js";
+import { ROUTE_PAGE_ELEMENT_KEY } from "../server/app-client-reference-preloader.js";
+import { AppElementsWire } from "../server/app-elements-wire.js";
 import { actionOwnerRouteEntryIds } from "./action-owner-manifest.js";
 
 /**
@@ -52,23 +55,68 @@ function inRenderOrder(files: readonly string[]): string[] {
     .map(({ file }) => file);
 }
 
+type ClientReferencePreloadRoute = ClientReferenceGroupRoute &
+  Partial<
+    Pick<
+      AppRoute,
+      "childrenSlot" | "layoutTreePositions" | "routeSegments" | "templateTreePositions"
+    >
+  >;
+
+// As `createAppPageTreePath()` in `app-page-route-wiring.tsx` names them.
+function routeTreePath(route: ClientReferencePreloadRoute, treePosition: number): string {
+  const segments = (route.routeSegments ?? []).slice(0, treePosition);
+  return segments.length === 0 ? "/" : `/${segments.join("/")}`;
+}
+
 /**
  * The files a route renders whatever its render does: its page, layouts and
  * templates, and each slot's page with its layouts, or its default without
  * one. A slot's own layout wraps only its page (see
  * `app-page-route-wiring.tsx`). Boundaries (loading, error, not-found and the
  * like) render only when something triggers them.
+ *
+ * Each file maps to the id of the App Router element that renders it, as
+ * `buildAppPageElements()` keys them; the route's page to
+ * `ROUTE_PAGE_ELEMENT_KEY`, since its id names the request's path.
  */
-function renderedRouteFiles(route: ClientReferenceGroupRoute): string[] {
-  return [
-    route.pagePath,
-    ...route.layouts,
-    ...route.templates,
-    ...route.parallelSlots.flatMap((slot) => [
-      ...(slot.pagePath ? [slot.pagePath, slot.layoutPath] : [slot.defaultPath]),
-      ...(slot.configLayoutPaths ?? []),
+function renderedRouteFiles(route: ClientReferencePreloadRoute): Map<string, string> {
+  const layoutPath = (index: number) =>
+    routeTreePath(route, route.layoutTreePositions?.[index] ?? 0);
+  const entries: Array<[file: string | null | undefined, elementId: string]> = [
+    [
+      route.pagePath,
+      route.childrenSlot
+        ? AppElementsWire.encodeSlotId("children", route.childrenSlot.ownerTreePath)
+        : ROUTE_PAGE_ELEMENT_KEY,
+    ],
+    ...route.layouts.map((file, index): [string, string] => [
+      file,
+      AppElementsWire.encodeLayoutId(layoutPath(index)),
     ]),
-  ].filter((value): value is string => typeof value === "string");
+    ...route.templates.map((file, index): [string, string] => [
+      file,
+      AppElementsWire.encodeTemplateId(
+        routeTreePath(route, route.templateTreePositions?.[index] ?? 0),
+      ),
+    ]),
+    ...route.parallelSlots.flatMap((slot) => {
+      const ownerIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : route.layouts.length - 1;
+      const slotId = AppElementsWire.encodeSlotId(
+        slot.name,
+        ownerIndex >= 0 ? layoutPath(ownerIndex) : "/",
+      );
+      return [
+        ...(slot.pagePath ? [slot.pagePath, slot.layoutPath] : [slot.defaultPath]),
+        ...(slot.configLayoutPaths ?? []),
+      ].map((file): [string | null | undefined, string] => [file, slotId]);
+    }),
+  ];
+  const files = new Map<string, string>();
+  for (const [file, elementId] of entries) {
+    if (typeof file === "string" && !files.has(file)) files.set(file, elementId);
+  }
+  return files;
 }
 
 function interceptEntryIds(intercept: ClientReferenceGroupIntercept): string[] {
@@ -229,6 +277,11 @@ export type ClientReferencePreloadPlan = {
    */
   rendered: Map<string, number[]>;
   /**
+   * The id of the element that renders each of `rendered`'s files, aligned
+   * with it (see `renderedRouteFiles`).
+   */
+  renderedElements: Map<string, string[]>;
+  /**
    * The client references each file in `rendered` reaches through static
    * imports alone, by its index in `files`; empty for the other files.
    */
@@ -260,7 +313,7 @@ export function collectClientReferencePreloadPlan(options: {
   entryIds: readonly string[];
   getModuleInfo: (id: string) => ModuleGraphInfo | null;
   routelessFiles?: readonly string[];
-  routes: readonly ClientReferenceGroupRoute[];
+  routes: readonly ClientReferencePreloadRoute[];
 }): ClientReferencePreloadPlan {
   const canonicalize = options.canonicalizeModuleId ?? ((id: string) => id);
   const moduleInfoCache = new Map<string, ModuleGraphInfo | null>();
@@ -317,6 +370,7 @@ export function collectClientReferencePreloadPlan(options: {
   };
   const routes = new Map<string, number[]>();
   const rendered = new Map<string, number[]>();
+  const renderedElements = new Map<string, Map<number, string>>();
   const interceptFiles: string[] = [];
   for (const route of options.routes) {
     const indices = inRenderOrder(
@@ -328,10 +382,17 @@ export function collectClientReferencePreloadPlan(options: {
     ).map(fileIndex);
     // Patterns are unique, but a duplicate must still preload both routes.
     routes.set(route.pattern, [...new Set([...(routes.get(route.pattern) ?? []), ...indices])]);
+    const renderedFiles = renderedRouteFiles(route);
+    let elements = renderedElements.get(route.pattern);
+    if (!elements) renderedElements.set(route.pattern, (elements = new Map()));
+    for (const [file, elementId] of renderedFiles) {
+      const index = fileIndex(file);
+      if (!elements.has(index)) elements.set(index, elementId);
+    }
     rendered.set(route.pattern, [
       ...new Set([
         ...(rendered.get(route.pattern) ?? []),
-        ...inRenderOrder(renderedRouteFiles(route)).map(fileIndex),
+        ...inRenderOrder([...renderedFiles.keys()]).map(fileIndex),
       ]),
     ]);
     for (const intercept of [
@@ -389,7 +450,21 @@ export function collectClientReferencePreloadPlan(options: {
   const staticOnly = [...new Set(files.flat())].filter(
     (id) => !always.has(id) && !dynamicallyReached.has(id),
   );
-  return { always: [...always], files, routes, rendered, staticFiles, routeless, staticOnly };
+  return {
+    always: [...always],
+    files,
+    routes,
+    rendered,
+    renderedElements: new Map(
+      [...rendered].map(([pattern, indices]) => [
+        pattern,
+        indices.map((index) => renderedElements.get(pattern)!.get(index)!),
+      ]),
+    ),
+    staticFiles,
+    routeless,
+    staticOnly,
+  };
 }
 
 /** Export names an importer uses from a module, or `"*"` for all of them. */

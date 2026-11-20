@@ -47,6 +47,11 @@ export type RouteClientReferences = {
    */
   rendered: Readonly<Record<string, readonly number[]>>;
   /**
+   * The id of the App Router element that renders each of `rendered`'s
+   * files, aligned with it; `ROUTE_PAGE_ELEMENT_KEY` for the route's page.
+   */
+  renderedElements: Readonly<Record<string, readonly string[]>>;
+  /**
    * The references each file in `rendered` reaches through static imports
    * alone, by its index in `files`; empty for the other files.
    */
@@ -71,11 +76,31 @@ export type RouteClientReferenceSet = {
   /**
    * The references the route's rendered files import statically, in the
    * order they render and import them, which may differ from `references`'.
-   * A render links their stylesheets whether or not it reaches them before its
-   * shell, as Next.js links each segment's CSS.
+   * A render links their stylesheets whether or not their components render,
+   * as Next.js links each segment's CSS (see `linkedElements`).
    */
   linked: string[];
+  /**
+   * Each of `linked`, by the elements (see `elementKey`) rendering the files
+   * that import it. A render links one's stylesheets in its shell once one of
+   * them renders before the shell flushes, as Next.js links a segment's CSS
+   * beside it: below a layout still pending then, they wait for the boundary
+   * to reveal instead. A streamed reference a boundary file reaches too has
+   * none, and is linked in the shell.
+   */
+  linkedElements: Map<string, string[]>;
 };
+
+/**
+ * The key `RouteClientReferences.renderedElements` gives a route's page,
+ * whose element id names the request's path rather than the route's.
+ */
+export const ROUTE_PAGE_ELEMENT_KEY = "page:";
+
+/** The key `RouteClientReferences.renderedElements` gives an element id. */
+export function elementKey(elementId: string): string {
+  return elementId.startsWith(ROUTE_PAGE_ELEMENT_KEY) ? ROUTE_PAGE_ELEMENT_KEY : elementId;
+}
 
 /**
  * The client references a render of `routePattern` preloads, or of no route
@@ -90,11 +115,15 @@ export function resolveRouteClientReferences(
   if (!plan || routePattern === undefined) return undefined;
   let files: readonly number[];
   let renderedFiles: readonly number[] = [];
+  let renderedElements: readonly string[] = [];
   if (routePattern === null) {
     files = plan.routeless;
   } else if (Object.hasOwn(plan.routes, routePattern)) {
     files = plan.routes[routePattern]!;
     if (Object.hasOwn(plan.rendered, routePattern)) renderedFiles = plan.rendered[routePattern]!;
+    if (Object.hasOwn(plan.renderedElements, routePattern)) {
+      renderedElements = plan.renderedElements[routePattern]!;
+    }
   } else {
     return undefined;
   }
@@ -110,16 +139,35 @@ export function resolveRouteClientReferences(
     references.push(id);
     if (asyncIndices.has(index)) streamed.push(id);
   }
+  // A streamed reference a boundary (a loading.js fallback, say) reaches
+  // may render outside every element, and links its stylesheets only as the
+  // render orders them, so it's linked in the shell whatever renders.
+  const renderedFileSet = new Set(renderedFiles);
+  const boundaryStreamed = new Set<number>();
+  for (const file of files) {
+    if (renderedFileSet.has(file)) continue;
+    for (const index of plan.files[file]!) {
+      if (asyncIndices.has(index)) boundaryStreamed.add(index);
+    }
+  }
   // In the rendered files' own import order, which a boundary preloading one
   // of them first doesn't change.
   const linkedIndices = new Set<number>();
-  for (const file of renderedFiles) {
+  const linkedElements = new Map<string, string[]>();
+  for (const [position, file] of renderedFiles.entries()) {
     for (const index of plan.staticFiles[file] ?? []) {
-      if (indices.has(index)) linkedIndices.add(index);
+      if (!indices.has(index)) continue;
+      linkedIndices.add(index);
+      const element = renderedElements[position];
+      if (element === undefined || boundaryStreamed.has(index)) continue;
+      const id = plan.references[index]!;
+      const elements = linkedElements.get(id);
+      if (!elements) linkedElements.set(id, [element]);
+      else if (!elements.includes(element)) elements.push(element);
     }
   }
   const linked = Array.from(linkedIndices, (index) => plan.references[index]!);
-  return { references, streamed, linked };
+  return { references, streamed, linked, linkedElements };
 }
 
 export function createClientReferencePreloader(
