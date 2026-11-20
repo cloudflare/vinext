@@ -2101,18 +2101,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ) {
         return false;
       }
-      const rewrittenInterceptionSourceMatch = isValidInterceptionSourceContext(rewrittenPathname)
+      // That rewrite may add a trailing slash; the lookup takes /_not-found
+      // as the client sent it, under the rules for that source.
+      const rewrittenSourcePathname = isRouteMissSource
+        ? ROUTE_MISS_INTERCEPTION_CONTEXT
+        : rewrittenPathname;
+      const rewrittenInterceptionSourceMatch = isValidInterceptionSourceContext(
+        rewrittenSourcePathname,
+      )
         ? (options.matchInterceptRoute?.(
             preActionRoutePathname,
-            rewrittenPathname,
+            rewrittenSourcePathname,
             interceptionIdHeader,
           ) ?? null)
         : null;
       if (rewrittenInterceptionSourceMatch !== null) {
         interceptionSourceMatch = rewrittenInterceptionSourceMatch;
-        interceptionSourceContext = rewrittenPathname;
+        interceptionSourceContext = rewrittenSourcePathname;
       }
-      const rewrittenSourceMatch = options.matchRoute(rewrittenPathname);
+      const rewrittenSourceMatch = options.matchRoute(rewrittenSourcePathname);
       return (
         interceptionSourceMatch !== null &&
         isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch)

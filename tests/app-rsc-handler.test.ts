@@ -8754,6 +8754,7 @@ describe("createAppRscHandler", () => {
     { refusal: "none", interceptionId: null },
     { refusal: "none", sameRewrite: "middleware", interceptionId: null },
     { refusal: "none", sameRewrite: "config", interceptionId: null },
+    { refusal: "none", sameRewrite: "middleware with a trailing slash", interceptionId: null },
     { refusal: "middleware redirect", interceptionId: null },
     { refusal: "middleware redirect", interceptionId: "slug-modal" },
     { refusal: "middleware rewrite", interceptionId: null },
@@ -8781,6 +8782,7 @@ describe("createAppRscHandler", () => {
       });
       const dispatchMatchedPage = vi.fn(async () => new Response("page"));
       const middlewarePaths: string[] = [];
+      const interceptSourcePathnames: string[] = [];
       const handler = createHandler({
         configHeaders: [],
         configRedirects:
@@ -8801,22 +8803,26 @@ describe("createAppRscHandler", () => {
         hasInterceptionId: (id) => id === "slug-modal",
         // /acme intercepts on its own, so only the refusal keeps a rewrite
         // to it from adopting it as the source.
-        matchInterceptRoute: (_pathname, sourcePathname) =>
-          sourcePathname === "/_not-found" || sourcePathname === "/acme"
+        matchInterceptRoute: (_pathname, sourcePathname) => {
+          interceptSourcePathnames.push(sourcePathname);
+          return sourcePathname === "/_not-found" || sourcePathname === "/acme"
             ? {
                 interceptionRendersWholeInterceptingRoute: sourcePathname === "/_not-found",
                 interceptionSourceIsConcrete: true,
                 params: { slug: sourcePathname.slice(1) } as Record<string, string | string[]>,
                 route: slugRoute,
               }
-            : null,
+            : null;
+        },
+        // Like the real matcher, a trailing slash matches the same route.
         matchRoute(pathname: string) {
-          if (pathname === "/photos/1") {
+          const routePathname = pathname.length > 1 ? pathname.replace(/\/$/, "") : pathname;
+          if (routePathname === "/photos/1") {
             return { params: { id: "1" } as Record<string, string | string[]>, route: targetRoute };
           }
-          if (pathname === "/_not-found" || pathname === "/acme") {
+          if (routePathname === "/_not-found" || routePathname === "/acme") {
             return {
-              params: { slug: pathname.slice(1) } as Record<string, string | string[]>,
+              params: { slug: routePathname.slice(1) } as Record<string, string | string[]>,
               route: slugRoute,
             };
           }
@@ -8839,6 +8845,14 @@ describe("createAppRscHandler", () => {
             ) {
               return new Response(null, {
                 headers: { "x-middleware-rewrite": "https://upstream.example/acme" },
+              });
+            }
+            if (
+              request.nextUrl.pathname === "/_not-found" &&
+              sameRewrite === "middleware with a trailing slash"
+            ) {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/_not-found/" },
               });
             }
             if (request.nextUrl.pathname === "/_not-found" && sameRewrite === "middleware") {
@@ -8884,6 +8898,8 @@ describe("createAppRscHandler", () => {
       );
       expect(dispatchMatchedPage).toHaveBeenCalledOnce();
       if (refusal === "none") {
+        // The source is only ever looked up as /_not-found, under its rules.
+        expect(interceptSourcePathnames).not.toContain("/_not-found/");
         expect(dispatchMatchedPage).toHaveBeenCalledWith(
           expect.objectContaining({
             bypassInterceptionContextCache: false,
