@@ -604,16 +604,24 @@ export function isStylesheetModule(id: string): boolean {
  * each such group, so the CSS a set of pages shares gets one stylesheet once
  * it's large and is otherwise copied into each page's stylesheet. Rolldown's
  * own size check only counts the JavaScript a stylesheet compiles to.
+ *
+ * So do the stylesheets that a non-page `import()` target (`next/dynamic`)
+ * loads with other entries. Webpack leaves out of a dynamic chunk what the
+ * page importing it already has, but Rolldown has one chunk per `import()`
+ * target, and a copy there would link the CSS again after the page's own.
  */
-export function collectLargeSharedStylesheets(
+export function collectUncopiedStylesheets(
   stylesheetSizes: ReadonlyMap<string, number>,
   getModuleInfo: (id: string) => {
     readonly isEntry: boolean;
     readonly importers: readonly string[];
     readonly dynamicImporters: readonly string[];
   } | null,
+  // The client entry, which loads the pages.
+  pageLoaderId: string,
 ): Set<string> {
   const groups = new Map<string, { size: number; ids: string[] }>();
+  const uncopied = new Set<string>();
 
   // Stylesheets share most of their importers.
   const infos = new Map<string, ReturnType<typeof getModuleInfo>>();
@@ -625,6 +633,7 @@ export function collectLargeSharedStylesheets(
   for (const [id, size] of stylesheetSizes) {
     // Every entry that loads the stylesheet statically.
     const entries: string[] = [];
+    let loadsDynamically = false;
     const visited = new Set([id]);
     const pending = [id];
 
@@ -634,6 +643,9 @@ export function collectLargeSharedStylesheets(
       if (!info) continue;
 
       if (info.isEntry || info.dynamicImporters.length > 0) entries.push(moduleId);
+      if (info.dynamicImporters.some((importer) => importer !== pageLoaderId)) {
+        loadsDynamically = true;
+      }
 
       for (const importer of info.importers) {
         if (visited.has(importer)) continue;
@@ -641,6 +653,11 @@ export function collectLargeSharedStylesheets(
         visited.add(importer);
         pending.push(importer);
       }
+    }
+
+    if (loadsDynamically && entries.length > 1) {
+      uncopied.add(id);
+      continue;
     }
 
     const key = entries.sort().join("\0");
@@ -651,13 +668,12 @@ export function collectLargeSharedStylesheets(
     groups.set(key, group);
   }
 
-  const large = new Set<string>();
   for (const group of groups.values()) {
     if (group.size < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE) continue;
-    for (const id of group.ids) large.add(id);
+    for (const id of group.ids) uncopied.add(id);
   }
 
-  return large;
+  return uncopied;
 }
 
 /** Rolldown 1.2.18 added `codeSplitting.experimentalInlineCommonChunks`. */
@@ -684,8 +700,8 @@ type InlineCommonChunksOutput = {
  * instead of loading each set of them as a separate tiny chunk. Rolldown keeps
  * one instance of each copied module and only evaluates it when an importer
  * needs it, as both bundlers do. A chunk holding one of
- * `largeSharedStylesheets` ({@link collectLargeSharedStylesheets}) isn't
- * copied, so that CSS keeps one stylesheet, as in webpack.
+ * `uncopiedStylesheets` ({@link collectUncopiedStylesheets}) isn't copied, so
+ * that CSS keeps one stylesheet.
  *
  * Returns the output options with inlining turned on, or undefined when the
  * Rolldown version or other options (which Rolldown rejects in combination
@@ -697,7 +713,7 @@ export function withInlineCommonChunks<Output extends InlineCommonChunksOutput>(
     preserveEntrySignatures?: unknown;
     onDemandWrapping?: unknown;
     rolldownVersion: string;
-    largeSharedStylesheets: ReadonlySet<string>;
+    uncopiedStylesheets: ReadonlySet<string>;
   },
 ): Output | undefined {
   const codeSplitting = output.codeSplitting;
@@ -730,7 +746,7 @@ export function withInlineCommonChunks<Output extends InlineCommonChunksOutput>(
       ...codeSplitting,
       experimentalInlineCommonChunks: {
         maxSize: PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
-        exclude: (id: string) => options.largeSharedStylesheets.has(id),
+        exclude: (id: string) => options.uncopiedStylesheets.has(id),
       },
     },
   };

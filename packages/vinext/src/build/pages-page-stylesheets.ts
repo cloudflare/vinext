@@ -158,3 +158,15 @@ export function withoutPreloadedStylesheets(
     return `__vite__mapDeps([${kept.join(",").padEnd(list.length)}])`;
   });
 }
+
+const SOURCE_MAP_COMMENT = /\n\/\/# sourceMappingURL=[^\n]*\n?$/;
+
+/**
+ * Adds `code` on a line of its own at the end of a chunk, short of its source
+ * map comment, which must stay last. The chunk's source map still lines up.
+ */
+export function appendToChunkCode(chunkCode: string, code: string): string {
+  const comment = SOURCE_MAP_COMMENT.exec(chunkCode);
+  if (!comment) return `${chunkCode}\n${code}`;
+  return `${chunkCode.slice(0, comment.index)}\n${code}${comment[0]}`;
+}

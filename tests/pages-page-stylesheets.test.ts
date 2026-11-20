@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  appendToChunkCode,
   collectPagesPageStylesheets,
   withoutPreloadedStylesheets,
 } from "../packages/vinext/src/build/pages-page-stylesheets.js";
@@ -143,5 +144,17 @@ describe("withoutPreloadedStylesheets", () => {
         new Set(["_next/static/css/alpha.css"]),
       ),
     ).toBe(plain);
+  });
+});
+
+describe("appendToChunkCode", () => {
+  it("adds the code on its own line", () => {
+    expect(appendToChunkCode("a();", "b();")).toBe("a();\nb();");
+  });
+
+  it("keeps the source map comment last", () => {
+    expect(appendToChunkCode("a();\n//# sourceMappingURL=entry.js.map\n", "b();")).toBe(
+      "a();\nb();\n//# sourceMappingURL=entry.js.map\n",
+    );
   });
 });

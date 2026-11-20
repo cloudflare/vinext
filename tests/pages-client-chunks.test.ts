@@ -3,7 +3,7 @@ import { createBuilder, rolldownVersion, type Plugin, type Rolldown } from "vite
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
-  collectLargeSharedStylesheets,
+  collectUncopiedStylesheets,
   collectPagesAppChunkRoots,
   PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
   supportsInlineCommonChunks,
@@ -317,17 +317,21 @@ describe("collectPagesAppChunkRoots", () => {
   });
 });
 
-describe("collectLargeSharedStylesheets", () => {
-  // `page` modules are `import()` targets; `entry` is the client entry.
-  const graph: Record<string, { importers: string[]; entry?: boolean; page?: boolean }> = {
+describe("collectUncopiedStylesheets", () => {
+  // `entry` is the client entry, which loads the pages with `import()`.
+  const graph: Record<string, { importers: string[]; entry?: boolean; loadedBy?: string }> = {
     entry: { importers: [], entry: true },
-    alpha: { importers: [], page: true },
-    beta: { importers: [], page: true },
+    alpha: { importers: [], loadedBy: "entry" },
+    beta: { importers: [], loadedBy: "entry" },
     gallery: { importers: ["alpha", "beta"] },
     "gallery.css": { importers: ["gallery"] },
     "gallery-grid.css": { importers: ["gallery"] },
     "beta.css": { importers: ["beta"] },
     "frame.css": { importers: ["entry", "alpha"] },
+    dialog: { importers: [], loadedBy: "beta" },
+    card: { importers: ["beta", "dialog"] },
+    "card.css": { importers: ["card"] },
+    "dialog.css": { importers: ["dialog"] },
   };
   const getModuleInfo = (id: string) => {
     const node = graph[id];
@@ -335,10 +339,12 @@ describe("collectLargeSharedStylesheets", () => {
       ? {
           isEntry: node.entry === true,
           importers: node.importers,
-          dynamicImporters: node.page ? ["entry"] : [],
+          dynamicImporters: node.loadedBy ? [node.loadedBy] : [],
         }
       : null;
   };
+  const collect = (sizes: Map<string, number>) =>
+    collectUncopiedStylesheets(sizes, getModuleInfo, "entry");
 
   it("keeps the stylesheets of each set of pages that together reach the size", () => {
     const sizes = new Map([
@@ -348,10 +354,7 @@ describe("collectLargeSharedStylesheets", () => {
       ["frame.css", 19_999],
     ]);
 
-    expect([...collectLargeSharedStylesheets(sizes, getModuleInfo)].sort()).toEqual([
-      "gallery-grid.css",
-      "gallery.css",
-    ]);
+    expect([...collect(sizes)].sort()).toEqual(["gallery-grid.css", "gallery.css"]);
   });
 
   it("copies the stylesheets of a set of pages that together stay below the size", () => {
@@ -360,7 +363,17 @@ describe("collectLargeSharedStylesheets", () => {
       ["gallery-grid.css", 9_999],
     ]);
 
-    expect(collectLargeSharedStylesheets(sizes, getModuleInfo)).toEqual(new Set());
+    expect(collect(sizes)).toEqual(new Set());
+  });
+
+  // A copy in the `next/dynamic` chunk would link the CSS after the page's own.
+  it("keeps the stylesheets that a page shares with an import() target", () => {
+    const sizes = new Map([
+      ["card.css", 100],
+      ["dialog.css", 100],
+    ]);
+
+    expect(collect(sizes)).toEqual(new Set(["card.css"]));
   });
 });
 
@@ -382,7 +395,7 @@ describe("withInlineCommonChunks", () => {
   const output = { codeSplitting: { groups: [] } };
   const options = {
     rolldownVersion: "1.2.18",
-    largeSharedStylesheets: new Set(["/app/lib/gallery.module.css"]),
+    uncopiedStylesheets: new Set(["/app/lib/gallery.module.css"]),
   };
 
   it("turns on inlining small common chunks, except those with large shared stylesheets", () => {

@@ -257,6 +257,7 @@ import {
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import {
+  appendToChunkCode,
   collectPagesPageStylesheets,
   withoutPreloadedStylesheets,
 } from "./build/pages-page-stylesheets.js";
@@ -351,7 +352,7 @@ import {
   getOutputFileNames,
   createClientManualChunks,
   createClientCodeSplittingConfig,
-  collectLargeSharedStylesheets,
+  collectUncopiedStylesheets,
   collectPagesAppChunkRoots,
   createPagesClientCodeSplittingConfig,
   isStylesheetModule,
@@ -2024,7 +2025,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const pagesAppChunkRoots = new Set<string>();
   // Each client stylesheet's compiled size, and those that keep a chunk.
   const pagesStylesheetSizes = new Map<string, number>();
-  const pagesLargeSharedStylesheets = new Set<string>();
+  const pagesUncopiedStylesheets = new Set<string>();
   // Whether the Pages Router client output may copy small common chunks
   // (vinext:pages-client-chunks). Hybrid builds use the App Router's groups.
   const pagesInlinesCommonChunks = (rolldownVersion: string) =>
@@ -9719,17 +9720,19 @@ export const loadServerActionClient = ${
 
       pagesAppChunkRoots.clear();
       pagesStylesheetSizes.clear();
-      pagesLargeSharedStylesheets.clear();
+      pagesUncopiedStylesheets.clear();
     },
     buildEnd() {
       const environment = this.environment;
       if (environment?.name !== "client" || environment.config.build.lib || !hasPagesDir) return;
 
       if (pagesInlinesCommonChunks(this.meta.rolldownVersion)) {
-        for (const id of collectLargeSharedStylesheets(pagesStylesheetSizes, (moduleId) =>
-          this.getModuleInfo(moduleId),
+        for (const id of collectUncopiedStylesheets(
+          pagesStylesheetSizes,
+          (moduleId) => this.getModuleInfo(moduleId),
+          RESOLVED_CLIENT_ENTRY,
         )) {
-          pagesLargeSharedStylesheets.add(id);
+          pagesUncopiedStylesheets.add(id);
         }
       }
 
@@ -9769,7 +9772,7 @@ export const loadServerActionClient = ${
         return withInlineCommonChunks(output, {
           ...pagesClientInputOptions,
           rolldownVersion: this.meta.rolldownVersion,
-          largeSharedStylesheets: pagesLargeSharedStylesheets,
+          uncopiedStylesheets: pagesUncopiedStylesheets,
         });
       },
     },
@@ -9824,7 +9827,10 @@ export const loadServerActionClient = ${
         // router, which turns them on as each page renders.
         entry.code = withoutPreloadedStylesheets(entry, new Set(stylesheets.unpreloaded));
         // Appended, so the entry's source map still lines up.
-        entry.code += `\nwindow.__VINEXT_PAGE_STYLESHEETS__=${JSON.stringify(manifest)};`;
+        entry.code = appendToChunkCode(
+          entry.code,
+          `window.__VINEXT_PAGE_STYLESHEETS__=${JSON.stringify(manifest)};`,
+        );
       },
     },
   });

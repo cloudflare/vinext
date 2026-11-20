@@ -36,6 +36,8 @@ const EXPECTED: Record<string, Record<string, string>> = {
   ordered: { title: BLUE, text: BLUE },
   reversed: { title: BLUE, text: BLUE },
   lazy: { title: BLUE, text: BLUE },
+  epsilon: { title: BLUE, text: GREEN, note: RED },
+  note: { title: BLUE, note: RED },
 };
 
 let fixtureRoot: string;
@@ -101,7 +103,10 @@ async function probeColors(page: Page): Promise<Record<string, string>> {
 
 async function expectPage(page: Page, name: string): Promise<void> {
   await expect(page.locator(`[data-page="${name}"]`)).toBeVisible();
-  if (name === "dynamic") await expect(page.locator('[data-probe="card"]')).toBeVisible();
+  // `next/dynamic` components.
+  for (const probe of Object.keys(EXPECTED[name]!)) {
+    await expect(page.locator(`[data-probe="${probe}"]`)).toBeVisible();
+  }
   expect(await probeColors(page), name).toEqual(EXPECTED[name]);
 }
 
@@ -196,6 +201,10 @@ test("client navigations keep each page's full-load cascade", async ({ page }) =
     "ledger",
     "ordered",
     "beta",
+    "note",
+    "epsilon",
+    "note",
+    "epsilon",
   ];
   for (const name of tour) await navigate(page, name);
 
