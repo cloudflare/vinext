@@ -39,6 +39,7 @@ const EXPECTED: Record<string, Record<string, string>> = {
   epsilon: { title: BLUE, text: GREEN, note: RED },
   note: { title: BLUE, note: RED },
   later: { title: BLUE, text: GREEN },
+  host: { title: BLUE },
 };
 
 let fixtureRoot: string;
@@ -238,6 +239,12 @@ test("a dynamic import after a client navigation keeps the page's cascade", asyn
   await expect(page.locator('[data-probe="note"]')).toBeVisible();
   expect(await probeColors(page)).toEqual({ ...EXPECTED.later, note: RED });
   await expectPageStylesheets(page, "later");
+
+  // The badge's stylesheet now comes after the page's own again.
+  await navigate(page, "host");
+  await page.getByRole("button", { name: "Open" }).click();
+  await expect(page.locator('[data-probe="note"]')).toBeVisible();
+  expect(await probeColors(page)).toEqual({ ...EXPECTED.host, note: RED });
 });
 
 test("the first client navigation hands the page's stylesheets to <style> tags", async ({

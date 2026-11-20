@@ -20,6 +20,9 @@ export type PagesStylesheet = { href: string; text: string };
 const stylesheetTexts = new Map<string, Promise<PagesStylesheet>>();
 let removableLinkPaths: Set<string> | undefined;
 let sharedLinkPaths: Set<string> | undefined;
+// Links of a dynamic import's stylesheets that a page's commit put ahead of
+// the marker.
+const linksAheadOfMarker = new Set<HTMLLinkElement>();
 
 function fetchStylesheet(href: string): Promise<PagesStylesheet> {
   let text = stylesheetTexts.get(href);
@@ -101,7 +104,17 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
   // dynamic imports load too. Those are linked ahead of the marker, as on a
   // full load: Vite's preload helper then finds the link when a dynamic import
   // loads one, rather than adding another after the page's own stylesheets,
-  // and a link it added on an earlier page moves there.
+  // and a link it added on an earlier page moves there. On a page that doesn't
+  // load the stylesheet, such a link goes back after the page's own, where
+  // Vite adds a dynamic import's stylesheets.
+  const pagePaths = new Set(stylesheets.map(({ href }) => pathOf(href)));
+  for (const link of linksAheadOfMarker) {
+    if (pagePaths.has(pathOf(link.href))) continue;
+    linksAheadOfMarker.delete(link);
+    if (!link.isConnected) continue;
+    reference.after(link);
+    reference = link;
+  }
   if (!removableLinkPaths || !sharedLinkPaths) {
     const manifest = window.__VINEXT_PAGE_STYLESHEETS__;
     sharedLinkPaths = new Set(manifest?.shared.map(pathOf));
@@ -134,5 +147,6 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
       if (nonce) link.setAttribute("nonce", nonce);
     }
     marker.parentNode!.insertBefore(link, marker);
+    linksAheadOfMarker.add(link);
   }
 }
