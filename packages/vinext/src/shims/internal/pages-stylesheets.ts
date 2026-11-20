@@ -18,8 +18,8 @@
 export type PagesStylesheet = { href: string; text: string };
 
 const stylesheetTexts = new Map<string, Promise<PagesStylesheet>>();
-let removableLinkPaths: Set<string> | undefined;
-let sharedLinkPaths: Set<string> | undefined;
+let removableLinkUrls: Set<string> | undefined;
+let sharedLinkUrls: Set<string> | undefined;
 // Links of a dynamic import's stylesheets that a page's commit put ahead of
 // the marker.
 const linksAheadOfMarker = new Set<HTMLLinkElement>();
@@ -29,12 +29,29 @@ const linkSlots = new WeakMap<HTMLLinkElement, Comment>();
 // added: as the page's stylesheets load, before its dynamic imports' ones.
 const createdLinkSlots = new Map<string, Comment>();
 
+// `url()`s that resolve against the stylesheet: not root-relative, not a
+// fragment, and without a scheme.
+const RELATIVE_CSS_URL = /url\(\s*(["']?)(?![/#]|[a-z][a-z\d+.-]*:)([^"'()\\\s]+)\1\s*\)/gi;
+
+/**
+ * Resolves the relative `url()`s of a stylesheet's text against its URL, as a
+ * `<style>` tag resolves them against the page's. Vite emits these with a
+ * relative `base`.
+ */
+export function withAbsoluteUrls(text: string, href: string): string {
+  return text.replace(
+    RELATIVE_CSS_URL,
+    (_match, _quote, url: string) => `url(${JSON.stringify(new URL(url, href).href)})`,
+  );
+}
+
 function fetchStylesheet(href: string): Promise<PagesStylesheet> {
   let text = stylesheetTexts.get(href);
   if (!text) {
     text = fetch(href, { credentials: "same-origin" }).then((res) => {
       if (!res.ok) throw new Error(`Failed to load stylesheet: ${href}`);
-      return res.text().then((content) => ({ href, text: content }));
+      const url = res.url || new URL(href, document.baseURI).href;
+      return res.text().then((content) => ({ href, text: withAbsoluteUrls(content, url) }));
     });
     // Next.js keeps failures too; the navigation that hit one reloads the page.
     stylesheetTexts.set(href, text);
@@ -53,45 +70,49 @@ export function loadPagesRouteStylesheets(route: string): Promise<PagesStyleshee
   return Promise.all((manifest.routes[route] ?? []).map(fetchStylesheet));
 }
 
-function pathOf(href: string): string {
+// A stylesheet's URL, short of its fragment, as `renderBuiltUrl` can tell
+// stylesheets apart by origin or query.
+function urlOf(href: string): string {
   try {
-    return new URL(href, document.baseURI).pathname;
+    const url = new URL(href, document.baseURI);
+    url.hash = "";
+    return url.href;
   } catch {
     return href;
   }
 }
 
-function linkPaths(): { removable: Set<string>; shared: Set<string> } {
-  if (!removableLinkPaths || !sharedLinkPaths) {
+function linkUrls(): { removable: Set<string>; shared: Set<string> } {
+  if (!removableLinkUrls || !sharedLinkUrls) {
     const manifest = window.__VINEXT_PAGE_STYLESHEETS__;
-    const shared = new Set(manifest?.shared.map(pathOf));
-    sharedLinkPaths = shared;
-    removableLinkPaths = new Set(
+    const shared = new Set(manifest?.shared.map(urlOf));
+    sharedLinkUrls = shared;
+    removableLinkUrls = new Set(
       Object.values(manifest?.routes ?? {})
         .flat()
-        .map(pathOf)
-        .filter((path) => !shared.has(path)),
+        .map(urlOf)
+        .filter((url) => !shared.has(url)),
     );
   }
-  return { removable: removableLinkPaths, shared: sharedLinkPaths };
+  return { removable: removableLinkUrls, shared: sharedLinkUrls };
 }
 
 /** Adds the stylesheets that the document lacks, turned off. */
 export function insertPagesStylesheets(stylesheets: readonly PagesStylesheet[]): void {
   for (const slot of createdLinkSlots.values()) slot.remove();
   createdLinkSlots.clear();
-  const { shared } = linkPaths();
+  const { shared } = linkUrls();
   const linked = new Set(
     Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'), (link) =>
-      pathOf(link.href),
+      urlOf(link.href),
     ),
   );
   for (const { href } of stylesheets) {
-    const path = pathOf(href);
-    if (!shared.has(path) || linked.has(path)) continue;
+    const url = urlOf(href);
+    if (!shared.has(url) || linked.has(url)) continue;
     const slot = document.createComment("");
     document.head.appendChild(slot);
-    createdLinkSlots.set(path, slot);
+    createdLinkSlots.set(url, slot);
   }
 
   const current = new Set(
@@ -143,24 +164,24 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
   // and a link it added on an earlier page moves there. On a page that doesn't
   // load the stylesheet, such a link goes back after the page's own, where
   // Vite adds a dynamic import's stylesheets.
-  const { removable, shared } = linkPaths();
+  const { removable, shared } = linkUrls();
   const isAheadOfMarker = (link: Element) =>
     (marker.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
-  const pagePaths = new Set(stylesheets.map(({ href }) => pathOf(href)));
+  const pageUrls = new Set(stylesheets.map(({ href }) => urlOf(href)));
   const links = new Map<string, HTMLLinkElement>();
   for (const link of document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')) {
-    const path = pathOf(link.href);
+    const url = urlOf(link.href);
     const isAhead = isAheadOfMarker(link);
-    if (isAhead && removable.has(path)) {
+    if (isAhead && removable.has(url)) {
       link.remove();
       continue;
     }
-    links.set(path, link);
+    links.set(url, link);
     // As the server links them.
-    if (isAhead && shared.has(path)) linksAheadOfMarker.add(link);
+    if (isAhead && shared.has(url)) linksAheadOfMarker.add(link);
   }
   for (const link of linksAheadOfMarker) {
-    if (pagePaths.has(pathOf(link.href))) continue;
+    if (pageUrls.has(urlOf(link.href))) continue;
     linksAheadOfMarker.delete(link);
     if (!link.isConnected) continue;
     const slot = linkSlots.get(link);
@@ -174,21 +195,21 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
   }
   const nonce = marker.getAttribute("data-n-css");
   for (const { href } of stylesheets) {
-    const path = pathOf(href);
-    let link = links.get(path);
+    const url = urlOf(href);
+    let link = links.get(url);
     if (link && isAheadOfMarker(link)) continue;
     if (!link) {
-      if (!shared.has(path)) continue;
+      if (!shared.has(url)) continue;
       link = document.createElement("link");
       link.rel = "stylesheet";
       // As Vite links the stylesheets that a dynamic import loads.
       link.crossOrigin = "";
       link.setAttribute("href", href);
       if (nonce) link.setAttribute("nonce", nonce);
-      const slot = createdLinkSlots.get(path);
+      const slot = createdLinkSlots.get(url);
       if (slot?.isConnected) {
         linkSlots.set(link, slot);
-        createdLinkSlots.delete(path);
+        createdLinkSlots.delete(url);
       }
     } else if (link.isConnected) {
       const slot = document.createComment("");

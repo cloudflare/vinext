@@ -5,6 +5,7 @@ import {
   collectPagesPageStylesheets,
   withoutPreloadedStylesheets,
 } from "../packages/vinext/src/build/pages-page-stylesheets.js";
+import { withAbsoluteUrls } from "../packages/vinext/src/shims/internal/pages-stylesheets.js";
 
 function chunk(
   fileName: string,
@@ -137,6 +138,28 @@ describe("withoutPreloadedStylesheets", () => {
     ).toContain("__vite__mapDeps([0,1  ])");
   });
 
+  // Vite adds the runtime expressions that `renderBuiltUrl` returns as they are.
+  it("finds stylesheets that renderBuiltUrl renders at runtime", () => {
+    const runtime = (file: string) => `__assetUrl(${JSON.stringify(file)},"a,b")`;
+    const table = [
+      "_next/static/chunks/alpha.js",
+      "_next/static/css/alpha.css",
+      "_next/static/css/app.css",
+    ]
+      .map(runtime)
+      .join(",");
+    const runtimeCode =
+      `const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[${table}])))=>i.map(i=>d[i]);\n` +
+      'a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]));';
+    expect(
+      withoutPreloadedStylesheets(
+        { code: runtimeCode, fileName: "_next/static/chunks/entry.js" },
+        new Set(["_next/static/css/alpha.css"]),
+        (file) => ({ runtime: runtime(file) }),
+      ),
+    ).toContain("__vite__mapDeps([0,2  ])");
+  });
+
   it("leaves chunks without preloads alone", () => {
     const plain = 'a(()=>import("./alpha.js"),[]);';
     expect(
@@ -197,5 +220,30 @@ describe("builtUrlExpression", () => {
     expect(
       builtUrlExpression(file, hostId, { base: "/docs/", renderBuiltUrl: () => undefined }),
     ).toBe('"/docs/_next/static/css/alpha.css"');
+  });
+});
+
+describe("withAbsoluteUrls", () => {
+  const href = "https://example.com/_next/static/css/alpha.css";
+
+  // A `<style>` tag resolves them against the page instead.
+  it("resolves relative url()s against the stylesheet", () => {
+    expect(
+      withAbsoluteUrls(
+        ".a{background:url(../media/a.png)}.b{src:url(\"./b.woff2\")}.c{x:url( 'c.svg#i' )}",
+        href,
+      ),
+    ).toBe(
+      '.a{background:url("https://example.com/_next/static/media/a.png")}' +
+        '.b{src:url("https://example.com/_next/static/css/b.woff2")}' +
+        '.c{x:url("https://example.com/_next/static/css/c.svg#i")}',
+    );
+  });
+
+  it("leaves root-relative, fragment and absolute url()s alone", () => {
+    const text =
+      ".a{x:url(/a.png)}.b{x:url(//cdn.example.com/b.png)}.c{x:url(#c)}" +
+      '.d{x:url("data:image/png;base64,AA==")}.e{x:url(https://cdn.example.com/e.png)}';
+    expect(withAbsoluteUrls(text, href)).toBe(text);
   });
 });

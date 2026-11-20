@@ -9830,7 +9830,11 @@ export const loadServerActionClient = ${
         const manifest = `{routes:{${routeUrls.join(",")}},shared:${urls(stylesheets.shared)}}`;
         // The page loaders' dynamic imports leave page stylesheets to the
         // router, which turns them on as each page renders.
-        entry.code = withoutPreloadedStylesheets(entry, new Set(stylesheets.unpreloaded));
+        entry.code = withoutPreloadedStylesheets(
+          entry,
+          new Set(stylesheets.unpreloaded),
+          environment.config.experimental.renderBuiltUrl,
+        );
         // Appended, so the entry's source map still lines up.
         entry.code = appendToChunkCode(
           entry.code,

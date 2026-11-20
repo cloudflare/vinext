@@ -126,18 +126,34 @@ const PRELOAD_CALL = /__vite__mapDeps\(\[([\d,]*)\]\)/g;
 export function withoutPreloadedStylesheets(
   chunk: { code: string; fileName: string },
   stylesheets: ReadonlySet<string>,
+  renderBuiltUrl?: RenderBuiltAssetUrl,
 ): string {
   const match = PRELOAD_FILES.exec(chunk.code);
   if (!match) return chunk.code;
-  let files: unknown;
-  try {
-    files = JSON.parse(match[1]);
-  } catch {
-    return chunk.code;
-  }
-  if (!Array.isArray(files)) return chunk.code;
+  const files = arrayElements(match[1]);
+  if (!files) return chunk.code;
 
-  const isStylesheet = (url: unknown) => {
+  // The URLs that `renderBuiltUrl` renders as runtime expressions, which Vite
+  // adds to the table as they are.
+  const runtimeUrls = new Set<string>();
+  for (const stylesheet of stylesheets) {
+    const result = renderBuiltUrl?.(stylesheet, {
+      type: "asset",
+      hostId: chunk.fileName,
+      hostType: "js",
+      ssr: false,
+    });
+    if (typeof result === "object" && result?.runtime) runtimeUrls.add(result.runtime);
+  }
+
+  const isStylesheet = (element: string) => {
+    if (runtimeUrls.has(element)) return true;
+    let url: unknown;
+    try {
+      url = JSON.parse(element);
+    } catch {
+      return false;
+    }
     if (typeof url !== "string") return false;
     const file = url.replace(/[?#].*$/, "");
     const resolved = file.startsWith(".")
@@ -149,8 +165,8 @@ export function withoutPreloadedStylesheets(
     return false;
   };
   const removed = new Set<string>();
-  files.forEach((url, index) => {
-    if (isStylesheet(url)) removed.add(String(index));
+  files.forEach((element, index) => {
+    if (isStylesheet(element)) removed.add(String(index));
   });
   if (removed.size === 0) return chunk.code;
 
@@ -158,6 +174,36 @@ export function withoutPreloadedStylesheets(
     const kept = list.split(",").filter((index) => !removed.has(index));
     return `__vite__mapDeps([${kept.join(",").padEnd(list.length)}])`;
   });
+}
+
+/**
+ * The source of each element of an array literal: JSON strings, or the
+ * runtime expressions that `renderBuiltUrl` returns. Undefined when the
+ * brackets or quotes don't match up.
+ */
+function arrayElements(source: string): string[] | undefined {
+  if (!source.startsWith("[") || !source.endsWith("]")) return undefined;
+  const elements: string[] = [];
+  let depth = 0;
+  let quote: string | undefined;
+  let start = 1;
+  for (let index = 1; index < source.length - 1; index++) {
+    const char = source[index];
+    if (quote) {
+      if (char === "\\") index++;
+      else if (char === quote) quote = undefined;
+    } else if (char === '"' || char === "'" || char === "`") quote = char;
+    else if (char === "(" || char === "[" || char === "{") depth++;
+    else if (char === ")" || char === "]" || char === "}") depth--;
+    else if (char === "," && depth === 0) {
+      elements.push(source.slice(start, index));
+      start = index + 1;
+    }
+    if (depth < 0) return undefined;
+  }
+  if (quote || depth !== 0) return undefined;
+  if (source.length > 2) elements.push(source.slice(start, -1));
+  return elements;
 }
 
 const SOURCE_MAP_COMMENT = /\n\/\/# sourceMappingURL=[^\n]*\n?$/;
