@@ -57,6 +57,12 @@ export const APP_STREAMING_METADATA_BODY_ID_PREFIX = "__vinext_streaming_metadat
 export const APP_STREAMING_METADATA_OUTLET_ID_PREFIX = "__vinext_streaming_metadata_outlet:";
 /** Prefix of the element that renders a route's head, beside its layout tree. */
 export const APP_ROUTE_HEAD_ID_PREFIX = "__vinext_route_head:";
+/**
+ * Prefix of the element that renders an access boundary's not-found,
+ * forbidden or unauthorized file in a route that has parallel slots, so a
+ * payload can leave it for the client to keep with the segment it belongs to.
+ */
+export const APP_ROUTE_FALLBACK_ID_PREFIX = "__vinext_route_fallback:";
 export const APP_UNMATCHED_SLOT_WIRE_VALUE = "__VINEXT_UNMATCHED_SLOT__";
 
 export const UNMATCHED_SLOT = Symbol.for("vinext.unmatchedSlot");
@@ -328,9 +334,15 @@ type AppElementsWireCodec = {
     dynamicStaleTimeSeconds?: number;
   }): ReactNode | AppOutgoingElements;
   encodePageId(routePath: string, interceptionContext: string | null): string;
+  encodeRouteFallbackId(
+    routeId: string,
+    status: 401 | 403 | 404,
+    position: number | "page",
+  ): string;
   encodeRouteId(routePath: string, interceptionContext: string | null): string;
   encodeSlotId(slotName: string, treePath: string): string;
   encodeTemplateId(treePath: string): string;
+  isRouteFallbackIdFor(id: string, routeId: string): boolean;
   isSlotId(key: string): boolean;
   parseElementKey(key: string): AppElementsWireElementKey | null;
   readMetadata(elements: Readonly<Record<string, unknown>>): AppElementsMetadata;
@@ -344,6 +356,28 @@ function appendInterceptionContext(identity: string, interceptionContext: string
 
 function createAppPayloadRouteId(routePath: string, interceptionContext: string | null): string {
   return appendInterceptionContext(`route:${routePath}`, interceptionContext);
+}
+
+/**
+ * The element id of a route's access boundary fallback at `position`, a tree
+ * position or `page` for the boundaries around the route's own page.
+ */
+function createAppRouteFallbackId(
+  routeId: string,
+  status: 401 | 403 | 404,
+  position: number | "page",
+): string {
+  return `${APP_ROUTE_FALLBACK_ID_PREFIX}${status}:${position}:${routeId}`;
+}
+
+function isAppRouteFallbackIdFor(id: string, routeId: string): boolean {
+  if (!id.startsWith(APP_ROUTE_FALLBACK_ID_PREFIX)) return false;
+  const [status, position, ...rest] = id.slice(APP_ROUTE_FALLBACK_ID_PREFIX.length).split(":");
+  return (
+    (status === "401" || status === "403" || status === "404") &&
+    (position === "page" || /^\d+$/.test(position ?? "")) &&
+    rest.join(":") === routeId
+  );
 }
 
 function createAppPayloadPageId(routePath: string, interceptionContext: string | null): string {
@@ -492,6 +526,7 @@ function parseSkippedLayoutIds(value: unknown): readonly string[] {
 }
 
 const RETAINED_ELEMENT_ID_PREFIXES = [
+  APP_ROUTE_FALLBACK_ID_PREFIX,
   APP_ROUTE_HEAD_ID_PREFIX,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
   APP_STREAMING_METADATA_OUTLET_ID_PREFIX,
@@ -934,9 +969,11 @@ export const AppElementsWire: AppElementsWireCodec = {
   encodeLayoutId: createAppPayloadLayoutId,
   encodeOutgoingPayload: buildOutgoingAppPayload,
   encodePageId: createAppPayloadPageId,
+  encodeRouteFallbackId: createAppRouteFallbackId,
   encodeRouteId: createAppPayloadRouteId,
   encodeSlotId: createAppElementsWireSlotId,
   encodeTemplateId: createAppPayloadTemplateId,
+  isRouteFallbackIdFor: isAppRouteFallbackIdFor,
   isSlotId: isAppElementsWireSlotId,
   parseElementKey: parseAppElementsWireElementKey,
   readMetadata: readAppElementsMetadata,

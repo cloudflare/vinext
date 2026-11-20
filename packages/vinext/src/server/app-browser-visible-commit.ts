@@ -253,16 +253,19 @@ function reduceApprovedVisibleCommitState(
         action.operation.lane === "hmr" &&
         state.routeId === action.routeId &&
         Object.hasOwn(state.elements, state.routeId);
-      // The kept route renders its head from a separate entry, so a payload
-      // without one (a boundary error's) keeps the head the route had.
+      // The kept route renders its head and its boundary fallbacks from
+      // separate entries, so a payload without them (a boundary error's)
+      // keeps the ones the route had.
       const hmrRouteHeadId = `${APP_ROUTE_HEAD_ID_PREFIX}${state.routeId}`;
       const hmrPreserveElementIds = hmrPreservesRoute
         ? [
             state.routeId,
-            ...(!Object.hasOwn(action.elements, hmrRouteHeadId) &&
-            Object.hasOwn(state.elements, hmrRouteHeadId)
-              ? [hmrRouteHeadId]
-              : []),
+            ...Object.keys(state.elements).filter(
+              (id) =>
+                (id === hmrRouteHeadId ||
+                  AppElementsWire.isRouteFallbackIdFor(id, state.routeId)) &&
+                !Object.hasOwn(action.elements, id),
+            ),
             ...hmrPreservedSlotOwnerLayoutIds,
           ]
         : hmrPreservedSlotOwnerLayoutIds;

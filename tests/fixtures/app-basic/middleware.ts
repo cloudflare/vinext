@@ -597,6 +597,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     }
   }
 
+  // An interception source whose public pathname names a page without the
+  // intercepted slot, rewritten to a page that has it.
+  if (pathname === "/nextjs-compat/intercept-source-group/club/moved") {
+    const target = request.nextUrl.clone();
+    target.pathname = "/nextjs-compat/intercept-source-group/club/acme";
+    return NextResponse.rewrite(target);
+  }
+
   // Forward search params as a header for RSC testing
   // Ref: opennextjs-cloudflare middleware.ts — search-params header
   const requestHeaders = new Headers(request.headers);
@@ -761,6 +769,7 @@ export const config = {
     "/mw-gated-fallback-pages",
     "/photos/:path*",
     "/interception-mw/:path*",
+    "/nextjs-compat/intercept-source-group/club/moved",
     "/actions",
     "/beforeinteractive-head-ordering/:path*",
     "/beforeinteractive-head-ordering",
