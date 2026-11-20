@@ -1528,7 +1528,8 @@ describe("App RSC route matching", () => {
     // A root-level sibling intercept without a root page is owned by a stand-in
     // route. From /_not-found it would render through that route, or through
     // the top-level `[slug]` route /_not-found matches, neither of which
-    // Next.js shows, so the target renders directly.
+    // Next.js shows. Next.js shows the root layout and the intercept; vinext
+    // renders the target directly instead.
     it("renders the target directly for a root-level sibling intercept with a stand-in owner from an unmatched URL's not-found page", () => {
       const matcher = createAppRscRouteMatcher([
         {
@@ -1557,9 +1558,9 @@ describe("App RSC route matching", () => {
 
     // From /_not-found the first intercept whose source and target match
     // decides, as Next.js's first matching interception rewrite does: a route
-    // group's slot intercept wins over a later `[slug]` one, and when the group
-    // has no page of its own to render it, the target renders directly rather
-    // than the later intercept.
+    // group's slot intercept wins over a later `[slug]` one. When the group has
+    // no page of its own to render it, Next.js still shows the group's modal;
+    // vinext renders the target directly rather than the later intercept.
     it("never falls through to a later intercept from an unmatched URL's not-found page", () => {
       const groupModal = {
         gmodal: {
