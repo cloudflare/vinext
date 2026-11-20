@@ -141,6 +141,36 @@ describe("build.outDir", () => {
     );
   }, 180_000);
 
+  it("keeps the hybrid Pages server in <outDir>/server when a config plugin sets build.outDir", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    const outDir = path.join(fixtureDir, "late-out");
+
+    // The config file's plugin sets build.outDir "late-out" and emptyOutDir:
+    // true. The hybrid Pages build replays it, after vinext gave that build
+    // <outDir>/server and emptyOutDir: false.
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: path.join(fixtureDir, "late-outdir.config.mjs"),
+      plugins: [vinext({ appDir: fixtureDir })],
+      logLevel: "silent",
+      [VINEXT_BUILD_LIFECYCLE_CONFIG]: {},
+    } as Parameters<typeof createBuilder>[0]);
+    await builder.buildApp();
+
+    expect(fs.existsSync(path.join(fixtureDir, "dist"))).toBe(false);
+    expect(fs.readdirSync(outDir).sort()).toEqual(["client", "server", "vinext-client-assets.js"]);
+    expect(listFiles(path.join(outDir, "server"))).toEqual(
+      expect.arrayContaining([
+        "index.js",
+        "ssr/index.js",
+        "entry.js",
+        "BUILD_ID",
+        "vinext-server.json",
+      ]),
+    );
+    expect(listFiles(path.join(outDir, "client")).some((file) => file.endsWith(".js"))).toBe(true);
+  }, 180_000);
+
   it("writes a Pages Router build under build.outDir", async () => {
     const fixtureDir = await isolatedFixture(PAGES_FIXTURE_SOURCE_DIR);
     const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-outdir-out-"));

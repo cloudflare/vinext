@@ -192,6 +192,21 @@ async function buildHybridPagesBundle(
     plugins: [
       ...(userConfig.plugins ?? []),
       ...context.createPagesOnlyPlugins(pagesClientAssetsModule),
+      {
+        // The replayed user hooks may set build.outDir or emptyOutDir (e.g. a
+        // plugin returning `{ build: { outDir } }`). Listed last and ordered
+        // post, this runs after them, so the Pages server stays in
+        // <outDir>/server and the App Router output already there is kept.
+        name: "vinext:hybrid-pages-outdir",
+        enforce: "post",
+        configEnvironment: {
+          order: "post",
+          handler(name) {
+            if (name !== "ssr") return;
+            return { build: { outDir: serverOutDir, emptyOutDir: false } };
+          },
+        },
+      },
     ],
     builder: {
       ...userConfig.builder,
