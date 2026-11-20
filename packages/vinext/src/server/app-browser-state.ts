@@ -29,6 +29,7 @@ import { createCacheEntryReuseProof, type CacheEntryReuseProof } from "./cache-p
 import {
   navigationPlanner,
   resolveDefaultOrUnmatchedSlotPersistenceForLayouts,
+  type InterceptionSourceIdentity,
   type MountedParallelSlotSnapshot,
   type NavigationDecision,
   type OperationLane,
@@ -137,6 +138,9 @@ export type PendingNavigationCommit = {
   routeId: string;
   restoredHistorySnapshot?: boolean;
   skippedLayoutIds: readonly string[];
+  // The source page a traversal rendered from its own URL beneath its
+  // intercepted payload, which then holds every element it left out.
+  suppliedInterceptionSource?: InterceptionSourceIdentity;
 };
 
 export type AppNavigationPayloadOrigin = Readonly<
@@ -539,6 +543,9 @@ function planPendingRootBoundaryFlightResponse(options: {
       result: {
         ...(cacheEntryReuseProof ? { cacheEntryReuseProof } : {}),
         ...(options.pending.restoredHistorySnapshot ? { restoredHistorySnapshot: true } : {}),
+        ...(options.pending.suppliedInterceptionSource
+          ? { suppliedInterceptionSource: options.pending.suppliedInterceptionSource }
+          : {}),
         // Approval call sites must pass the executor's targetHref so the
         // planner trace and future hard-nav executor agree with the browser
         // URL. The fallback remains for lower-level tests and direct disposition
@@ -716,6 +723,7 @@ type CreatePendingNavigationCommitOptions = {
   renderId: number;
   restoredBfcacheIds?: BfcacheIdMap | null;
   reuseCurrentBfcacheIds?: boolean;
+  suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   type: "navigate" | "replace" | "traverse";
 };
 
@@ -789,6 +797,9 @@ export function createPendingNavigationCommitFromElements(
     rootLayoutTreePath: metadata.rootLayoutTreePath,
     routeId: metadata.routeId,
     skippedLayoutIds: metadata.skippedLayoutIds,
+    ...(options.suppliedInterceptionSource
+      ? { suppliedInterceptionSource: options.suppliedInterceptionSource }
+      : {}),
   };
 }
 
