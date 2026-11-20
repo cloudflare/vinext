@@ -1540,6 +1540,8 @@ importers:
 
   tests/fixtures/app-dynamic-root-404-path: {}
 
+  tests/fixtures/app-isr-link-header: {}
+
   tests/fixtures/app-layout-error: {}
 
   tests/fixtures/app-multiple-root-layouts:
