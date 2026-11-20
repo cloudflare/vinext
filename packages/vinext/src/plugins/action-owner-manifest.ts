@@ -16,10 +16,32 @@ import {
 export const ACTION_OWNER_MANIFEST_ID = "virtual:vinext-action-owner-manifest";
 
 const RESOLVED_ACTION_OWNER_MANIFEST_ID = `\0${ACTION_OWNER_MANIFEST_ID}`;
-const ACTION_OWNER_MANIFEST_FILE = "__vinext_action_owner_manifest.js";
+// `.mjs` so Node treats the generated ESM as ESM when the app root is
+// `"type": "commonjs"` (Next.js vercel/next.js#101164).
+const ACTION_OWNER_MANIFEST_FILE = "__vinext_action_owner_manifest.mjs";
 const ACTION_OWNER_MANIFEST_EXTERNALS: ReadonlyMap<string, string> = new Map([
   [ACTION_OWNER_MANIFEST_ID, ACTION_OWNER_MANIFEST_FILE],
 ]);
+
+/**
+ * Vite emits `index.mjs` when the app root is `"type": "commonjs"`, but
+ * plugin-rsc hardcodes `loadModule("ssr", "index")` → `index.js` and leftover
+ * sidecars stay `.js`. A nested `"type": "module"` plus an `index.js` re-export
+ * keeps those files ESM (Next.js vercel/next.js#101164).
+ */
+async function ensureEsmJsFacade(outDir: string): Promise<void> {
+  const mjsEntry = path.join(outDir, "index.mjs");
+  const jsEntry = path.join(outDir, "index.js");
+  if (!fs.existsSync(mjsEntry)) return;
+  await fs.promises.mkdir(outDir, { recursive: true });
+  if (!fs.existsSync(jsEntry)) {
+    await fs.promises.writeFile(
+      jsEntry,
+      `export { default } from "./index.mjs";\nexport * from "./index.mjs";\n`,
+    );
+  }
+  await fs.promises.writeFile(path.join(outDir, "package.json"), `{ "type": "module" }\n`);
+}
 
 function getModuleInfo(context: Rollup.PluginContext, id: string) {
   const info = context.getModuleInfo(id);
@@ -102,15 +124,19 @@ export function createActionOwnerManifestPlugin(options: {
         if (rscOutputDirs.size === 0) {
           rscOutputDirs.add(builder.config.environments.rsc.build.outDir);
         }
-        await Promise.all(
-          [...rscOutputDirs].map(async (outDir) => {
+        const root = builder.config.root;
+        const ssrOutDir = builder.config.environments.ssr?.build.outDir;
+        await Promise.all([
+          ...[...rscOutputDirs].map(async (outDir) => {
             await fs.promises.mkdir(outDir, { recursive: true });
             await fs.promises.writeFile(
               path.join(outDir, ACTION_OWNER_MANIFEST_FILE),
               `export default ${safeJsonStringify(manifest)};\n`,
             );
+            await ensureEsmJsFacade(outDir);
           }),
-        );
+          ssrOutDir ? ensureEsmJsFacade(path.resolve(root, ssrOutDir)) : Promise.resolve(),
+        ]);
         routeReachability = new Map();
         manifest = {};
         rscOutputDirs.clear();
