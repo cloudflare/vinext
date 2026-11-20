@@ -69,6 +69,14 @@ import { resolveTPRRoutes, selectRoutes, type TrafficEntry } from "./tpr.js";
 import { parseWranglerConfig } from "./wrangler-config.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
+  parseWarmCacheHeaderFlags,
+  resolveWarmCacheRequestHeaders,
+  validateWarmCacheRequestHeader,
+  VINEXT_WARM_CACHE_HEADERS_ENV,
+  withWarmCacheRequestHeaders,
+  type WarmCacheRequestHeaders,
+} from "./warm-request-headers.js";
+import {
   createCdnWarmTargets,
   createPrerenderWarmPlan,
   CdnOperationProgress,
@@ -154,6 +162,8 @@ export type DeployOptions = {
   warmCdnCache?: boolean;
   /** Explicit production origin to use for CDN discovery, probing, and warming */
   warmCdnTarget?: string;
+  /** Extra headers for every discovery, readiness, warm-up, and probe request to the Worker */
+  warmCdnHeaders?: WarmCacheRequestHeaders;
   /** Maximum number of CDN warmup requests to issue in parallel */
   warmCdnConcurrency?: number;
   /** Per-request CDN warmup timeout in milliseconds */
@@ -325,6 +335,7 @@ const deployArgOptions = {
   "prerender-concurrency": { type: "string" },
   "warm-cache": { type: "boolean", default: false },
   "warm-cache-target": { type: "string" },
+  "warm-cache-header": { type: "string", multiple: true },
   "warm-cache-concurrency": { type: "string" },
   "warm-cache-timeout": { type: "string" },
   "warm-cache-retries": { type: "string" },
@@ -409,6 +420,9 @@ export function parseDeployArgs(args: string[]) {
   if (values["warm-cache-target"] && !warming) {
     throw new Error("--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.");
   }
+  if (values["warm-cache-header"] && !warming) {
+    throw new Error("--warm-cache-header requires --warm-cache or --traffic-aware-warm-cache.");
+  }
 
   function parseIntArg(name: string, raw: string | undefined): number | undefined {
     if (!raw) return undefined;
@@ -442,6 +456,7 @@ export function parseDeployArgs(args: string[]) {
       values["warm-cache-target"] === undefined
         ? undefined
         : validateCdnWarmTarget(values["warm-cache-target"]),
+    warmCdnHeaders: parseWarmCacheHeaderFlags(values["warm-cache-header"]),
     warmCdnConcurrency:
       values["warm-cache-concurrency"] === undefined
         ? undefined
@@ -1101,6 +1116,7 @@ type CdnWarmDeployOptions = Pick<
   | "message"
   | "tag"
   | "warmCdnTarget"
+  | "warmCdnHeaders"
   | "warmCdnConcurrency"
   | "warmCdnTimeout"
   | "warmCdnRetries"
@@ -1230,6 +1246,15 @@ export async function deployWithCdnWarmup(
 ): Promise<string> {
   if (options.warmCdnTarget !== undefined) {
     options = { ...options, warmCdnTarget: validateCdnWarmTarget(options.warmCdnTarget) };
+  }
+  if (options.warmCdnHeaders?.length) {
+    for (const [name, value] of options.warmCdnHeaders) {
+      validateWarmCacheRequestHeader(name, value, "warmCdnHeaders");
+    }
+    // Names only: header values are secrets.
+    console.log(
+      `  CDN warmup: sending configured request header(s) to the Worker: ${options.warmCdnHeaders.map(([name]) => name).join(", ")}`,
+    );
   }
   if (options.warmCdnDiscoveryTimeout !== undefined) {
     parsePositiveIntegerArg(
@@ -1480,8 +1505,9 @@ async function deployUploadedVersionWithCdnWarmup(
       options.name ??
       upload.workerName ??
       resolveWorkerNameForVersionOverride(wranglerConfig, wranglerOptions);
-    const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
-    if (targetUrl && headers) {
+    const versionHeaders = buildVersionOverrideHeaders(workerName, upload.versionId);
+    if (targetUrl && versionHeaders) {
+      const headers = withWarmCacheRequestHeaders(options.warmCdnHeaders, versionHeaders);
       try {
         if (!warmPlanDiscovered) {
           console.log("  CDN warmup: discovering paths from the staged Worker version...");
@@ -1747,7 +1773,10 @@ async function deployUploadedVersionWithCdnWarmup(
   if (!warmPlanDiscovered && postPromotionTargetUrl) {
     try {
       console.log("  CDN warmup: discovering paths from the promoted Worker version...");
-      await discoverWarmPlan(postPromotionTargetUrl);
+      await discoverWarmPlan(
+        postPromotionTargetUrl,
+        withWarmCacheRequestHeaders(options.warmCdnHeaders),
+      );
       remainingWarmPlan = prepareWarmPlan(remainingWarmPlan);
     } catch (error) {
       throw withPromotedVersionWarmupNote(error);
@@ -1758,7 +1787,12 @@ async function deployUploadedVersionWithCdnWarmup(
     const targetUrl = postPromotionTargetUrl;
     if (targetUrl) {
       try {
-        await warmUploadedVersion(targetUrl, undefined, true, remainingWarmPlan);
+        await warmUploadedVersion(
+          targetUrl,
+          withWarmCacheRequestHeaders(options.warmCdnHeaders),
+          true,
+          remainingWarmPlan,
+        );
       } catch (error) {
         throw withPromotedVersionWarmupNote(error);
       }
@@ -1935,12 +1969,13 @@ async function deployWithCacheabilityProbe(
       options.name ??
       probeUpload.workerName ??
       resolveWorkerNameForVersionOverride(wranglerConfig, wranglerOptions);
-    const headers = buildVersionOverrideHeaders(workerName, probeUpload.versionId);
-    if (!targetUrl || !headers) {
+    const versionHeaders = buildVersionOverrideHeaders(workerName, probeUpload.versionId);
+    if (!targetUrl || !versionHeaders) {
       throw new Error(
         "Two-stage CDN warming needs a production URL and Worker name for version-overridden cacheability probes.",
       );
     }
+    const headers = withWarmCacheRequestHeaders(options.warmCdnHeaders, versionHeaders);
 
     console.log("  CDN warmup: discovering paths from the staged probe Worker...");
     const discovered = await options.discoverWarmPlan({ headers, targetUrl });
@@ -2279,6 +2314,7 @@ function assertPreviewDeployOptions(options: DeployOptions): void {
     tag: options.tag !== undefined,
     warmCdnCache: options.warmCdnCache,
     warmCdnTarget: options.warmCdnTarget !== undefined,
+    warmCdnHeaders: options.warmCdnHeaders !== undefined,
     warmCdnCertify: options.warmCdnCertify,
     warmCdnPromote: options.warmCdnPromote === false,
     experimentalTPR: options.experimentalTPR,
@@ -2295,6 +2331,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (isPreview) assertPreviewDeployOptions(options);
   if (options.warmCdnTarget !== undefined && !options.warmCdnCache && !options.experimentalTPR) {
     throw new Error("--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.");
+  }
+  if (options.warmCdnHeaders !== undefined && !options.warmCdnCache && !options.experimentalTPR) {
+    throw new Error("--warm-cache-header requires --warm-cache or --traffic-aware-warm-cache.");
   }
   const warmCdnTarget =
     options.warmCdnTarget === undefined ? undefined : validateCdnWarmTarget(options.warmCdnTarget);
@@ -2333,6 +2372,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // (fumadocs-mdx starts a file watcher and the deploy never exits).
   if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
   loadDotenv({ root, mode: viteMode });
+  // Read after loadDotenv so a .env file can hold the secret headers. Only a
+  // deploy that warms reads it, so a CI-wide value cannot break other deploys.
+  const warmCdnHeaders =
+    options.warmCdnCache || options.experimentalTPR
+      ? resolveWarmCacheRequestHeaders(
+          process.env[VINEXT_WARM_CACHE_HEADERS_ENV],
+          options.warmCdnHeaders,
+        )
+      : options.warmCdnHeaders;
 
   // The Preview flag must be present before Vite loads the configuration,
   // including the eager metadata pass, and while the multi-environment build runs.
@@ -2691,6 +2739,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         statusSource: warmupStatusSource,
         warmCdnConcurrency: options.warmCdnConcurrency,
         warmCdnTarget: warmCdnTarget ?? tpr?.targetUrl,
+        warmCdnHeaders,
         warmCdnTimeout: options.warmCdnTimeout,
         warmCdnRetries: options.warmCdnRetries,
         warmCdnDiscoveryTimeout: options.warmCdnDiscoveryTimeout,

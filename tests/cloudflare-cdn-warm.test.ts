@@ -93,6 +93,14 @@ describe("Cloudflare CDN warmup", () => {
     expect(buildWarmupUrl("https://app.example.com", "/posts/a%2fb").pathname).toBe("/posts/a%2fb");
   });
 
+  it("keeps warmup URLs on the target origin for protocol-relative paths", () => {
+    for (const pathname of ["//attacker.example/leak", "/\\attacker.example/leak"]) {
+      const url = buildWarmupUrl("https://app.example.com/", pathname);
+      expect(url.origin).toBe("https://app.example.com");
+      expect(url.pathname).toBe("//attacker.example/leak");
+    }
+  });
+
   it("accepts persisted response-store entries and skips after-render bypasses", async () => {
     const attempts = new Map<string, number>();
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {

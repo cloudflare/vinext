@@ -368,11 +368,11 @@ function normalizeWarmPath(pathname: string): string {
   return pathname.startsWith("/") ? pathname : `/${pathname}`;
 }
 
+// Appended to the origin rather than resolved against it: resolving a
+// discovered `//host/x` or `/\host/x` path would send the request, and any
+// configured secret headers, to another origin.
 export function buildWarmupUrl(targetUrl: string, pathname: string): URL {
-  return new URL(
-    normalizeWarmPath(pathname),
-    targetUrl.endsWith("/") ? targetUrl : `${targetUrl}/`,
-  );
+  return new URL(`${new URL(targetUrl).origin}${normalizeWarmPath(pathname)}`);
 }
 
 function isRetryableStatus(status: number, retryNotFound: boolean): boolean {

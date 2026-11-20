@@ -1291,6 +1291,96 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(new Set(fetchOrigins)).toEqual(new Set(["https://app.example.com"]));
   });
 
+  it("sends configured headers on every probed-deploy request to the Worker", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    const requestHeaders: Headers[] = [];
+    let warmRequests = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      requestHeaders.push(headers);
+      if (headers.get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        return appPageProbeResponse();
+      }
+      if (isReadinessFetch(input)) return readinessResponse();
+      // Certification re-requests the warmed entry and needs a reusable hit.
+      warmRequests++;
+      return cacheableHtml("ok", warmRequests === 1 ? "MISS" : "HIT");
+    });
+    const logs: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((...args) => {
+      logs.push(args.join(" "));
+    });
+    const discoveryHeaders: Headers[] = [];
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    try {
+      await deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async ({ headers }) => {
+          discoveryHeaders.push(new Headers(headers));
+          return {
+            appPaths: ["/about"],
+            buildId: "app-build-a",
+            buildIdentity: "app-build-a",
+            loadingShellPaths: [],
+            paths: ["/about"],
+            routePatterns: appPageRoutePatterns(["/about"]),
+            rscPaths: [],
+          };
+        },
+        warmCdnCertify: true,
+        warmCdnConcurrency: 1,
+        warmCdnHeaders: [
+          ["CF-Access-Client-Id", "id.access"],
+          ["CF-Access-Client-Secret", "access-s3cret"],
+        ],
+        warmCdnPromotionDelay: 0,
+        warmCdnReadinessProbes: 1,
+        warmCdnRetries: 0,
+      });
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(wrangler.promoted).toBe(true);
+    expect(discoveryHeaders).toHaveLength(1);
+    expect(discoveryHeaders[0]!.get("CF-Access-Client-Id")).toBe("id.access");
+    expect(discoveryHeaders[0]!.get("CF-Access-Client-Secret")).toBe("access-s3cret");
+    expect(discoveryHeaders[0]!.get("Cloudflare-Workers-Version-Overrides")).toBe(
+      `my-worker="${PROBE_VERSION}"`,
+    );
+    // Probe, readiness, warm, and certification requests across both versions.
+    expect(requestHeaders.some((h) => h.get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1")).toBe(true);
+    expect(warmRequests).toBe(2);
+    for (const headers of requestHeaders) {
+      expect(headers.get("CF-Access-Client-Id")).toBe("id.access");
+      expect(headers.get("CF-Access-Client-Secret")).toBe("access-s3cret");
+      expect(headers.get("Cloudflare-Workers-Version-Overrides")).toMatch(
+        new RegExp(`^my-worker="(${PROBE_VERSION}|${FINAL_VERSION})"$`),
+      );
+    }
+    expect(logs.join("\n")).toContain(
+      "sending configured request header(s) to the Worker: CF-Access-Client-Id, CF-Access-Client-Secret",
+    );
+    expect(logs.join("\n")).not.toContain("access-s3cret");
+  });
+
+  it("rejects a configured header that vinext sets itself before uploading", async () => {
+    writeTwoStageWorkerArtifact();
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        config: "dist/server/wrangler.json",
+        warmCdnHeaders: [["RSC", "1"]],
+      }),
+    ).rejects.toThrow('warmCdnHeaders cannot set "RSC"');
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("promotes compact pattern-only admission for zero-path static fallbacks", async () => {
     writeTwoStageWorkerArtifact();
     const wrangler = mockTwoStageWrangler();
@@ -3123,6 +3213,59 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "triggers",
       "fetch:https://app.example.com/?_rsc",
     ]);
+  });
+
+  it("sends configured headers to post-promotion fallback warmup without a version override", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        custom_domains: ["app.example.com"],
+      }),
+    );
+    vi.mocked(fetch).mockImplementation(async () => cacheableRsc());
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+        });
+      }
+      if (args.includes("deploy")) return "Deployed version\nhttps://stable.example.workers.dev\n";
+      if (args.includes("triggers"))
+        return "Triggers deployed\n  app.example.com (custom domain)\n";
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const discoveryHeaders: Headers[] = [];
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, [], {
+      dangerouslyPromoteOnCdnWarmError: true,
+      discoverWarmPlan: async ({ headers }) => {
+        discoveryHeaders.push(new Headers(headers));
+        return {
+          loadingShellPaths: [],
+          paths: [],
+          rscBuildId: "app-build-a",
+          rscPaths: ["/"],
+        };
+      },
+      warmCdnConcurrency: 1,
+      warmCdnHeaders: [["CF-Access-Client-Id", "id.access"]],
+    });
+
+    expect(discoveryHeaders).toHaveLength(1);
+    expect(discoveryHeaders[0]!.get("CF-Access-Client-Id")).toBe("id.access");
+    expect(discoveryHeaders[0]!.has("Cloudflare-Workers-Version-Overrides")).toBe(false);
+    const warmCalls = getRealWarmFetchCalls();
+    expect(warmCalls).toHaveLength(1);
+    const headers = new Headers(warmCalls[0]![1]?.headers);
+    expect(headers.get("CF-Access-Client-Id")).toBe("id.access");
+    expect(headers.get("rsc")).toBe("1");
+    expect(headers.has("Cloudflare-Workers-Version-Overrides")).toBe(false);
   });
 
   it("leaves the warmed Worker version staged when promotion is disabled", async () => {
