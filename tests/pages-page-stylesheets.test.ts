@@ -161,6 +161,21 @@ describe("withoutPreloadedStylesheets", () => {
     ).toContain("__vite__mapDeps([0,2  ])");
   });
 
+  it("finds stylesheets that renderBuiltUrl renders as other URLs", () => {
+    const cdnCode = code.replace(
+      '"/_next/static/css/alpha.css?dpl=1"',
+      '"https://cdn.example.com/page.css"',
+    );
+    expect(
+      withoutPreloadedStylesheets(
+        { code: cdnCode, fileName: "_next/static/chunks/entry.js" },
+        new Set(["_next/static/css/alpha.css"]),
+        (file) =>
+          file === "_next/static/css/alpha.css" ? "https://cdn.example.com/page.css" : undefined,
+      ),
+    ).toContain("__vite__mapDeps([0,2  ])");
+  });
+
   it("leaves chunks without preloads alone", () => {
     const plain = 'a(()=>import("./alpha.js"),[]);';
     expect(

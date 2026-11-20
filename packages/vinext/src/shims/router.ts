@@ -2234,12 +2234,15 @@ async function loadTargetPageModule(
   target: PagesDataTarget,
   url: string,
   failurePrefix: string,
+  assertStillCurrent: () => void,
 ): Promise<{ default?: unknown; [key: string]: unknown }> {
   // Fetch the page's stylesheets alongside its module; rendering awaits them.
   loadPagesRouteStylesheets(target.pattern)?.catch(() => {});
   try {
     return await target.loader();
   } catch (err) {
+    // A newer navigation has taken over; reloading would override it.
+    assertStillCurrent();
     console.error("[vinext] Page loader threw during navigation:", err);
     scheduleHardNavigationAndThrow(url, `${failurePrefix}: page loader threw`);
   }
@@ -2249,10 +2252,12 @@ async function loadTargetPageModule(
 async function loadNavigationStylesheets(
   route: string,
   url: string,
+  assertStillCurrent: () => void,
 ): Promise<PagesStylesheet[] | undefined> {
   try {
     return await loadPagesRouteStylesheets(route);
   } catch (err) {
+    assertStillCurrent();
     console.error("[vinext] Page stylesheet failed to load during navigation:", err);
     scheduleHardNavigationAndThrow(url, "Navigation failed: page stylesheet failed to load");
   }
@@ -2356,10 +2361,15 @@ async function renderPagesNavigationTarget(
   },
 ): Promise<void> {
   const pageModule =
-    preloaded?.pageModule ?? (await loadTargetPageModule(target, url, "Navigation failed"));
+    preloaded?.pageModule ??
+    (await loadTargetPageModule(target, url, "Navigation failed", assertStillCurrent));
   assertStillCurrent();
 
-  const stylesheets = await loadNavigationStylesheets(preloaded?.pageRoute ?? target.pattern, url);
+  const stylesheets = await loadNavigationStylesheets(
+    preloaded?.pageRoute ?? target.pattern,
+    url,
+    assertStillCurrent,
+  );
   assertStillCurrent();
 
   const PageComponent = pageModule.default;
@@ -2418,7 +2428,12 @@ async function navigateClientNoData(
     throw new NavigationCancelledError(url);
   }
 
-  const pageModule = await loadTargetPageModule(target, url, "Navigation failed");
+  const pageModule = await loadTargetPageModule(
+    target,
+    url,
+    "Navigation failed",
+    assertStillCurrent,
+  );
   assertStillCurrent();
 
   const PageComponent = pageModule.default;
@@ -2559,7 +2574,12 @@ async function navigateClientData(
           dataKind: "none",
           loader: errorLoader ?? (() => import("next/error")),
         };
-        const pageModule = await loadTargetPageModule(errorTarget, url, "Data navigation failed");
+        const pageModule = await loadTargetPageModule(
+          errorTarget,
+          url,
+          "Data navigation failed",
+          assertStillCurrent,
+        );
         assertStillCurrent();
         const PageComponent = pageModule.default;
         if (!isPageComponent(PageComponent)) {
@@ -2846,7 +2866,11 @@ async function navigateClientHtml(
   }
   assertStillCurrent();
 
-  const stylesheets = await loadNavigationStylesheets(nextData.page, browserUrl);
+  const stylesheets = await loadNavigationStylesheets(
+    nextData.page,
+    browserUrl,
+    assertStillCurrent,
+  );
   assertStillCurrent();
 
   const PageComponent = pageModule.default;

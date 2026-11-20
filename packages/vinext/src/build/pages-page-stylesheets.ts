@@ -134,8 +134,9 @@ export function withoutPreloadedStylesheets(
   const files = preloadTable(chunk.code);
   if (!files) return chunk.code;
 
-  // The URLs that `renderBuiltUrl` renders as runtime expressions, which Vite
-  // adds to the table as they are.
+  // The URLs that `renderBuiltUrl` renders, which Vite adds to the table as
+  // they are: strings, or runtime expressions.
+  const renderedUrls = new Set<string>();
   const runtimeUrls = new Set<string>();
   for (const stylesheet of stylesheets) {
     const result = renderBuiltUrl?.(stylesheet, {
@@ -144,6 +145,7 @@ export function withoutPreloadedStylesheets(
       hostType: "js",
       ssr: false,
     });
+    if (typeof result === "string") renderedUrls.add(result);
     if (typeof result !== "object" || !result?.runtime) continue;
     const expression = preloadTable(`${PRELOAD_FILES_START}[${result.runtime}])))=>i;`);
     if (expression?.length === 1) runtimeUrls.add(expression[0].source);
@@ -152,6 +154,7 @@ export function withoutPreloadedStylesheets(
   const isStylesheet = (element: { source: string; value: unknown }) => {
     if (runtimeUrls.has(element.source)) return true;
     if (typeof element.value !== "string") return false;
+    if (renderedUrls.has(element.value)) return true;
     const file = element.value.replace(/[?#].*$/, "");
     const resolved = file.startsWith(".")
       ? path.posix.join(path.posix.dirname(chunk.fileName), file)

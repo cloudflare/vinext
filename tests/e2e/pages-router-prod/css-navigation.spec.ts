@@ -316,3 +316,44 @@ test("the first client navigation hands the page's stylesheets to <style> tags",
   expect(new URL(assetUrl!).pathname).toMatch(/^\/_next\/static\/media\//);
   expect((await page.request.get(assetUrl!)).status()).toBe(200);
 });
+
+test("a superseded navigation's failed stylesheet doesn't reload the page", async ({ page }) => {
+  await page.goto(`${baseUrl}/alpha`);
+  const alpha = await page.evaluate(() =>
+    (window.__VINEXT_PAGE_STYLESHEETS__?.routes["/alpha"] ?? []).map(
+      (href) => new URL(href, document.baseURI).pathname,
+    ),
+  );
+  expect(alpha.length).toBeGreaterThan(0);
+
+  // Alpha's stylesheets fail once beta's navigation has taken over. Their
+  // text loads as the alpha link prefetches, before the navigation.
+  let releaseAlpha!: () => void;
+  const alphaReleased = new Promise<void>((resolve) => (releaseAlpha = resolve));
+  let alphaRequested!: () => void;
+  const alphaRequest = new Promise<void>((resolve) => (alphaRequested = resolve));
+  await page.route(
+    (url) => alpha.includes(url.pathname),
+    async (route) => {
+      alphaRequested();
+      await alphaReleased;
+      await route.abort();
+    },
+  );
+  await page.goto(`${baseUrl}/bare`);
+  await waitForHydration(page);
+  await page.evaluate(() => {
+    (window as { __stayed?: boolean }).__stayed = true;
+  });
+
+  await page.getByTestId("nav-alpha").click();
+  await alphaRequest;
+  await navigate(page, "beta");
+  releaseAlpha();
+
+  // A reload would drop the marker.
+  await page.waitForTimeout(1_000);
+  expect(new URL(page.url()).pathname).toBe("/beta");
+  expect(await page.evaluate(() => (window as { __stayed?: boolean }).__stayed)).toBe(true);
+  await expectPage(page, "beta");
+});
