@@ -97,7 +97,8 @@ checks that every piece still loads and hydrates, in dev and (as the
   through `ZonedLink`, both of which `_app` also reaches.
 - **Vendor packages** (`__test_packages__/`, installed as `file:` deps so
   they live under `node_modules`): a side-effect-free icon barrel used
-  partly by each desk, a CommonJS formatter (ledger + roster), and a table
+  partly by four desks (dispatch, inventory, ledger, roster), a CommonJS
+  formatter (ledger + roster), and a table
   kit with its own CSS module and `sideEffects: ["*.css"]` (inventory + a
   lazy chunk).
 - **Lazy loading** (reports, tools): next/dynamic with SSR, next/dynamic with
