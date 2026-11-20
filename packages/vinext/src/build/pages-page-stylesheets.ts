@@ -1,5 +1,6 @@
 import path from "pathslash";
-import type { RenderBuiltAssetUrl } from "vite";
+import type { ESTree, RenderBuiltAssetUrl } from "vite";
+import { parseProgram } from "../plugins/ast-utils.js";
 
 type BundleItem = {
   type: string;
@@ -114,7 +115,6 @@ export function collectPagesPageStylesheets(
 // The table of files that Vite's dynamic imports preload, which Vite adds at
 // the start of the chunk.
 const PRELOAD_FILES_START = "const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=";
-const PRELOAD_FILES_END = ")))=>i.map(i=>d[i]);";
 const PRELOAD_CALL = /__vite__mapDeps\(\[([\d,]*)\]\)/g;
 
 /**
@@ -130,11 +130,9 @@ export function withoutPreloadedStylesheets(
   stylesheets: ReadonlySet<string>,
   renderBuiltUrl?: RenderBuiltAssetUrl,
 ): string {
-  const tableStart = chunk.code.indexOf(PRELOAD_FILES_START);
-  if (tableStart === -1) return chunk.code;
-  const table = arrayElements(chunk.code, tableStart + PRELOAD_FILES_START.length);
-  if (!table || !chunk.code.startsWith(PRELOAD_FILES_END, table.end)) return chunk.code;
-  const files = table.elements;
+  if (!chunk.code.includes(PRELOAD_FILES_START)) return chunk.code;
+  const files = preloadTable(chunk.code);
+  if (!files) return chunk.code;
 
   // The URLs that `renderBuiltUrl` renders as runtime expressions, which Vite
   // adds to the table as they are.
@@ -146,19 +144,15 @@ export function withoutPreloadedStylesheets(
       hostType: "js",
       ssr: false,
     });
-    if (typeof result === "object" && result?.runtime) runtimeUrls.add(result.runtime);
+    if (typeof result !== "object" || !result?.runtime) continue;
+    const expression = preloadTable(`${PRELOAD_FILES_START}[${result.runtime}])))=>i;`);
+    if (expression?.length === 1) runtimeUrls.add(expression[0].source);
   }
 
-  const isStylesheet = (element: string) => {
-    if (runtimeUrls.has(element)) return true;
-    let url: unknown;
-    try {
-      url = JSON.parse(element);
-    } catch {
-      return false;
-    }
-    if (typeof url !== "string") return false;
-    const file = url.replace(/[?#].*$/, "");
+  const isStylesheet = (element: { source: string; value: unknown }) => {
+    if (runtimeUrls.has(element.source)) return true;
+    if (typeof element.value !== "string") return false;
+    const file = element.value.replace(/[?#].*$/, "");
     const resolved = file.startsWith(".")
       ? path.posix.join(path.posix.dirname(chunk.fileName), file)
       : file;
@@ -180,38 +174,63 @@ export function withoutPreloadedStylesheets(
 }
 
 /**
- * The source of each element of the array literal at `start`, which can span
- * lines: JSON strings, or the runtime expressions that `renderBuiltUrl`
- * returns. Also where the literal ends. Undefined when its brackets or quotes
- * don't match up.
+ * The elements of the table that `__vite__mapDeps` reads, from the chunk's
+ * parsed code: their source, and their value when they are strings. Vite adds
+ * the runtime expressions that `renderBuiltUrl` returns as they are.
  */
-function arrayElements(
-  source: string,
-  start: number,
-): { elements: string[]; end: number } | undefined {
-  if (source[start] !== "[") return undefined;
-  const elements: string[] = [];
-  let depth = 0;
-  let quote: string | undefined;
-  let elementStart = start + 1;
-  for (let index = start + 1; index < source.length; index++) {
-    const char = source[index];
-    if (quote) {
-      if (char === "\\") index++;
-      else if (char === quote) quote = undefined;
-    } else if (char === '"' || char === "'" || char === "`") quote = char;
-    else if (char === "(" || char === "[" || char === "{") depth++;
-    else if ((char === ")" || char === "]" || char === "}") && depth > 0) depth--;
-    else if (char === "]") {
-      if (index > start + 1) elements.push(source.slice(elementStart, index));
-      return { elements, end: index + 1 };
-    } else if (char === ")" || char === "}") return undefined;
-    else if (char === "," && depth === 0) {
-      elements.push(source.slice(elementStart, index));
-      elementStart = index + 1;
+function preloadTable(code: string): { source: string; value: unknown }[] | undefined {
+  let program: ESTree.Program;
+  try {
+    program = parseProgram(code);
+  } catch {
+    return undefined;
+  }
+  for (const statement of program.body) {
+    if (statement.type !== "VariableDeclaration") continue;
+    const declaration = statement.declarations[0];
+    if (declaration?.id.type !== "Identifier" || declaration.id.name !== "__vite__mapDeps") {
+      continue;
     }
+    let table: ESTree.ArrayExpression | undefined;
+    walkExpression(declaration.init, (node) => {
+      if (
+        !table &&
+        node.type === "AssignmentExpression" &&
+        node.left.type === "MemberExpression" &&
+        node.left.property.type === "Identifier" &&
+        node.left.property.name === "f" &&
+        node.right.type === "ArrayExpression"
+      ) {
+        table = node.right;
+      }
+    });
+    if (!table) return undefined;
+    const elements: { source: string; value: unknown }[] = [];
+    for (const element of (table as ESTree.ArrayExpression).elements) {
+      if (!element || element.type === "SpreadElement") return undefined;
+      elements.push({
+        source: code.slice(element.start, element.end),
+        value: element.type === "Literal" ? element.value : undefined,
+      });
+    }
+    return elements;
   }
   return undefined;
+}
+
+/** Visits `node` and the nodes within it, outer ones first. */
+function walkExpression(node: unknown, visit: (node: ESTree.Node) => void): void {
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (const item of node) walkExpression(item, visit);
+    return;
+  }
+  const value = node as ESTree.Node;
+  if (typeof value.type !== "string") return;
+  visit(value);
+  for (const child of Object.values(value)) {
+    if (child && typeof child === "object") walkExpression(child, visit);
+  }
 }
 
 const SOURCE_MAP_COMMENT = /\n\/\/# sourceMappingURL=[^\n]*\n?$/;

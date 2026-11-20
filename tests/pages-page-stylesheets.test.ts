@@ -140,7 +140,8 @@ describe("withoutPreloadedStylesheets", () => {
 
   // Vite adds the runtime expressions that `renderBuiltUrl` returns as they are.
   it("finds stylesheets that renderBuiltUrl renders at runtime", () => {
-    const runtime = (file: string) => `__assetUrl(\n  ${JSON.stringify(file)},\n  "a,b",\n)`;
+    const runtime = (file: string) =>
+      `__assetUrl(\n  ${JSON.stringify(file)}.replace(/[)\\]]/g, "") /* ] */,\n  "a,b",\n)`;
     const table = [
       "_next/static/chunks/alpha.js",
       "_next/static/css/alpha.css",
