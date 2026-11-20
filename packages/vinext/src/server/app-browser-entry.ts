@@ -222,6 +222,7 @@ import {
   createOptimisticRouteTemplate,
   createOptimisticRouteTemplateStore,
   getOptimisticPrefetchSourceKey,
+  isOptimisticRoutePredictionMismatch,
   getOptimisticRouteTemplateKey,
   keepOptimisticStreamingMetadata,
   resolveOptimisticNavigationParamsForHref,
@@ -2242,6 +2243,17 @@ function bootstrapHydration(
           activeTraversalIntent?.historyState ?? window.history.state,
         ));
     const releaseNavigationInFlight = trackAppRouterNavigationInFlight();
+    // The route a learned template predicted for the URL being fetched, if
+    // any, and the store's retirement epoch when it did.
+    let prediction: { epoch: number; routeId: string } | null = null;
+    // Like Next.js's HardRetry (an MPA fallback for a redirected, non-RSC,
+    // other-build or failed response), which marks the predicted pattern too,
+    // in case this document is restored from BFCache.
+    const retireContradictedPrediction = (): void => {
+      if (prediction !== null) {
+        optimisticRouteTemplates.retire(prediction.routeId, prediction.epoch);
+      }
+    };
     try {
       const shouldUsePendingRouterState = programmaticTransition;
       if (hasBrowserRouterState()) {
@@ -2288,6 +2300,7 @@ function bootstrapHydration(
           : null;
 
       while (true) {
+        prediction = null;
         const url = new URL(currentHref, window.location.origin);
         const requestState = getRequestState(
           navigationKind,
@@ -2653,6 +2666,13 @@ function bootstrapHydration(
               routeManifest,
               templates: optimisticRouteTemplates.templates,
             });
+            prediction =
+              optimisticPayload === null
+                ? null
+                : {
+                    epoch: optimisticRouteTemplates.getRetirementEpoch(),
+                    routeId: optimisticPayload.template.routeId,
+                  };
 
             if (
               optimisticPayload !== null &&
@@ -2762,6 +2782,10 @@ function bootstrapHydration(
           streamedRedirectType,
         });
         if (liveFetchDecision.kind === "hardNavigate") {
+          // A page's redirect() came after the route matched.
+          if (liveFetchDecision.redirectSignal !== "streamed-header") {
+            retireContradictedPrediction();
+          }
           if (liveFetchDecision.discardBody) {
             void navResponse.body?.cancel().catch(() => {});
           }
@@ -2785,6 +2809,13 @@ function bootstrapHydration(
         if (liveFetchDecision.kind === "followRedirect") {
           if (liveFetchDecision.discardBody) {
             void navResponse.body?.cancel().catch(() => {});
+          }
+          // A request the server redirected (middleware, a config redirect)
+          // contradicts the template that predicted this URL, as in Next.js,
+          // which marks the pattern with hasDynamicRewrite on a RedirectRetry.
+          // A redirect() the page throws comes after the route matched.
+          if (liveFetchDecision.redirectSignal === "response-url") {
+            retireContradictedPrediction();
           }
           if (navigationKind === "traverse") {
             restoredBfcacheIds = null;
@@ -2860,6 +2891,31 @@ function bootstrapHydration(
           : decodeAppElementsPromise(
               createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
             );
+
+        // The server's answer is authoritative even if a newer navigation
+        // supersedes this one or a skipped-layout retry follows. Once it shows
+        // that a rewrite sends this URL to another route, stop predicting the
+        // template's route.
+        if (prediction !== null && routeManifest !== null) {
+          const { epoch, routeId: predicted } = prediction;
+          const manifest = routeManifest;
+          // The navigation itself reports a failed or malformed payload.
+          void Promise.resolve(rscPayload)
+            .then((elements) => {
+              if (
+                isOptimisticRoutePredictionMismatch({
+                  elements,
+                  predictedRouteId: predicted,
+                  routeManifest: manifest,
+                })
+              ) {
+                // Ignored if an HMR refresh reset the retired routes since.
+                optimisticRouteTemplates.retire(predicted, epoch);
+              }
+            })
+            .catch(() => {});
+        }
+
         if (hasSupplementalRefresh) {
           const supplemental = persistedRefreshInterceptions.map(
             (interception) => (signal: AbortSignal) =>
@@ -2919,6 +2975,7 @@ function bootstrapHydration(
           const staticExportElements = await rscPayload;
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           if (!isStaticExportPayloadDeploymentCompatible(staticExportElements)) {
+            retireContradictedPrediction();
             performHardNavigationForScrollIntent(currentHref);
             return;
           }
@@ -3100,6 +3157,7 @@ function bootstrapHydration(
       const errorDecision = navigationPlanner.classifyRscNavigationError({
         currentHref,
       });
+      retireContradictedPrediction();
       performHardNavigationForScrollIntent(errorDecision.url);
     } finally {
       navigationAbortHandle.release();
@@ -3285,6 +3343,9 @@ function bootstrapHydration(
         return;
       }
       clearClientNavigationCaches();
+      // Routes may have changed, so predict again routes a rewrite answered
+      // with another one, as Next.js's hmrRefresh resets its known routes.
+      optimisticRouteTemplates.forgetRetiredRoutes();
       // Clear stale errors from the dev overlay before dispatching the
       // fresh tree. If the new tree renders cleanly, the overlay stays
       // empty; if it throws again, devOnCaughtError/devOnUncaughtError

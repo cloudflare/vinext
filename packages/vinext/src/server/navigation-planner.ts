@@ -211,6 +211,7 @@ export type RscFetchResultDecision =
       kind: "followRedirect";
       discardBody: boolean;
       redirect: RscRedirectFollow;
+      redirectSignal: RscRedirectSignal;
       trace: NavigationTrace;
     }
   | {
@@ -219,6 +220,7 @@ export type RscFetchResultDecision =
       url: string;
       hardNavigationMode?: "assign" | "replace";
       reason: RscFetchResultHardNavReason;
+      redirectSignal?: RscRedirectSignal;
       trace: NavigationTrace;
     };
 
@@ -423,6 +425,7 @@ function createRscFetchResultHardNavigationDecision(options: {
       ? { hardNavigationMode: options.hardNavigationMode }
       : {}),
     reason: options.reason,
+    ...(options.redirectSignal !== undefined ? { redirectSignal: options.redirectSignal } : {}),
     trace: createNavigationTrace(
       options.reasonCode,
       createRscFetchResultTraceFields(options.facts, {
@@ -447,6 +450,7 @@ function createRscFetchResultFollowRedirectDecision(options: {
     discardBody: options.discardBody,
     kind: "followRedirect",
     redirect: options.redirect,
+    redirectSignal: options.redirectSignal,
     trace: createNavigationTrace(
       NavigationTraceReasonCodes.redirectFollow,
       createRscFetchResultTraceFields(options.facts, {
