@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  filterMetadataTrafficPaths,
   filterTrafficPaths,
   resolveTPRRoutes,
   selectRoutes,
@@ -177,6 +178,7 @@ describe("TPR route resolution", () => {
       await expect(
         resolveTPRRoutes({ root, assetsDir, typedConfig: true, window: 24 }),
       ).resolves.toEqual({
+        metadataCandidates: [],
         routes: [
           { path: "/en", requests: 99 },
           { path: "/videos", requests: 94 },
@@ -207,6 +209,37 @@ describe("TPR route resolution", () => {
           { assetsDir, basePath: "/docs" },
         ).map(({ path }) => path),
       ).toEqual(["/docs/videos", "/docs/about"]);
+    } finally {
+      fs.rmSync(assetsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves asset-named and /api/ traffic to metadata routes", () => {
+    const assetsDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-metadata-"));
+    try {
+      fs.mkdirSync(path.join(assetsDir, "docs"));
+      fs.writeFileSync(path.join(assetsDir, "docs/icon.png"), "");
+      const traffic = [
+        { path: "/favicon.ico", requests: 9 },
+        { path: "/shop/-/opengraph-image.png", requests: 8 },
+        { path: "/api/opengraph-image", requests: 7 },
+        { path: "/assets/old-chunk.js", requests: 6 },
+        // A public file is a built asset, and internal routes are vinext's.
+        { path: "/docs/icon.png", requests: 5 },
+        { path: "/_next/app.js", requests: 4 },
+        { path: "/cdn-cgi/rum", requests: 3 },
+        { path: "/about", requests: 2 },
+      ];
+
+      expect(filterTrafficPaths(traffic, { assetsDir }).map(({ path }) => path)).toEqual([
+        "/about",
+      ]);
+      expect(filterMetadataTrafficPaths(traffic, { assetsDir }).map(({ path }) => path)).toEqual([
+        "/favicon.ico",
+        "/shop/-/opengraph-image.png",
+        "/api/opengraph-image",
+        "/assets/old-chunk.js",
+      ]);
     } finally {
       fs.rmSync(assetsDir, { recursive: true, force: true });
     }

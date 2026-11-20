@@ -2077,10 +2077,14 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
   ${
     (metadataRoutes?.length ?? 0) > 0
-      ? `async getPrerenderMetadataRoutePaths() {
-    const { getPrerenderableMetadataRoutePaths: __getPrerenderableMetadataRoutePaths } =
-      await __loadMetadataRouteResponse();
-    return __getPrerenderableMetadataRoutePaths(metadataRoutes);
+      ? `async getPrerenderMetadataRoutePaths(request) {
+    const {
+      getPrerenderableMetadataRoutePaths: __getPrerenderableMetadataRoutePaths,
+      getWarmableMetadataRoutes: __getWarmableMetadataRoutes,
+    } = await __loadMetadataRouteResponse();
+    return request.warm
+      ? __getWarmableMetadataRoutes(metadataRoutes, request)
+      : __getPrerenderableMetadataRoutePaths(metadataRoutes);
   },`
       : ""
   }

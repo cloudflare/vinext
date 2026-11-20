@@ -11,6 +11,7 @@ import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 import { getNextErrorDigest } from "./next-error-digest.js";
 import { isAppRenderAbortError } from "./app-render-abort-error.js";
+import { isInsideUnifiedScope } from "vinext/shims/unified-request-context";
 
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
@@ -381,6 +382,37 @@ export async function renderAppPageHtmlResponse(
   return buildAppPageHtmlDocumentResponse(htmlStream, { ...options, reactLinkHeader });
 }
 
+/**
+ * Runs `clearRequestContext` once the HTTP layer has read the document to the
+ * end, or the document errors or is cancelled. `beforeClear` runs first, in
+ * each of those cases.
+ *
+ * A cancelled document keeps its request context when it runs in a unified
+ * request scope. The RSC render isn't stopped by the cancel, so Server
+ * Components that resume afterwards still call `cookies()` and `headers()`.
+ * That scope is a context object of its own for this request, so nothing else
+ * reads what is kept. Outside one, the state is module-level and is cleared.
+ */
+export function deferAppPageRequestContextCleanup(
+  htmlStream: ReadableStream<Uint8Array>,
+  clearRequestContext: () => void,
+  beforeClear?: () => void,
+): ReadableStream<Uint8Array> {
+  let cancelled = false;
+  return deferUntilStreamConsumed(
+    htmlStream,
+    () => {
+      beforeClear?.();
+      if (cancelled && isInsideUnifiedScope()) return;
+      clearRequestContext();
+    },
+    undefined,
+    () => {
+      cancelled = true;
+    },
+  );
+}
+
 export function buildAppPageHtmlDocumentResponse(
   htmlStream: ReadableStream<Uint8Array>,
   options: {
@@ -397,9 +429,9 @@ export function buildAppPageHtmlDocumentResponse(
   // layer. Calling it synchronously here would race the lazy RSC/SSR pipeline:
   // components execute while the stream is being pulled, not when the handle
   // is first returned. See: https://github.com/cloudflare/vinext/issues/660
-  const safeStream = deferUntilStreamConsumed(htmlStream, () => {
-    options.clearRequestContext();
-  });
+  const safeStream = deferAppPageRequestContextCleanup(htmlStream, () =>
+    options.clearRequestContext(),
+  );
 
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
