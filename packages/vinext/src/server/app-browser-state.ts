@@ -727,6 +727,23 @@ type CreatePendingNavigationCommitOptions = {
   type: "navigate" | "replace" | "traverse";
 };
 
+// Next.js's interception markers, which only an intercepting route's
+// segments start with.
+const INTERCEPTION_MARKERS = ["(..)(..)", "(.)", "(..)", "(...)"] as const;
+
+function rendersSiblingIntercept(metadata: {
+  interceptionContext: string | null;
+  sourcePage: string | null;
+}): boolean {
+  return (
+    metadata.interceptionContext !== null &&
+    metadata.sourcePage !== null &&
+    metadata.sourcePage
+      .split("/")
+      .some((segment) => INTERCEPTION_MARKERS.some((marker) => segment.startsWith(marker)))
+  );
+}
+
 export function createPendingNavigationCommitFromElements(
   options: CreatePendingNavigationCommitOptions & { nextElements: AppElements },
 ): PendingNavigationCommit {
@@ -752,9 +769,13 @@ export function createPendingNavigationCommitFromElements(
       : options.currentState.previousNextUrl;
   // A payload of the whole intercepting route carries no interception proof,
   // but still renders for its source, so a refresh or traversal sends that
-  // source again, as Next.js re-sends `previousNextUrl`.
+  // source again, as Next.js re-sends `previousNextUrl`. So does a sibling
+  // intercept's, whose page is the intercepting route's own, as Next.js does
+  // while its tree holds an interception route.
   const previousNextUrl =
-    metadata.interception === null && metadata.wholeInterceptionSource === null
+    metadata.interception === null &&
+    metadata.wholeInterceptionSource === null &&
+    !rendersSiblingIntercept(metadata)
       ? null
       : requestedPreviousNextUrl;
 

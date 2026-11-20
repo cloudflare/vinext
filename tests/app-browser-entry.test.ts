@@ -2009,6 +2009,61 @@ describe("app browser entry state helpers", () => {
     expect(nextState.previousNextUrl).toBe("/_not-found");
   });
 
+  // A sibling intercept's payload carries no interception proof, but its page
+  // is the intercepting route's own, so its entry keeps the source it was
+  // opened from, /_not-found included, as Next.js re-sends `previousNextUrl`
+  // while its tree holds an interception route.
+  it("keeps the source of a sibling intercept for its entry", async () => {
+    const commit = async (sourcePage: string, interceptionContext: string | null) => {
+      const state = createState();
+      const pending = await createPendingNavigationCommit({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        currentState: state,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/photos/1",
+            "/",
+            interceptionContext,
+            { "page:/photos/1": React.createElement("main", null, "photo") },
+            undefined,
+            [],
+            null,
+            sourcePage,
+          ),
+        ),
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/photos/1",
+          {},
+        ),
+        operationLane: "navigation",
+        previousNextUrl: interceptionContext,
+        renderId: 1,
+        type: "navigate",
+      });
+      return { pending, state };
+    };
+
+    for (const source of ["/_not-found", "/"]) {
+      const { pending, state } = await commit("/(.)photos/[id]/page", source);
+      expect(pending.interception).toBeNull();
+      expect(pending.previousNextUrl).toBe(source);
+      const approval = approvePendingNavigationCommit({
+        activeNavigationId: 1,
+        currentState: state,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(state, pending),
+        startedNavigationId: 1,
+        targetHref: "https://example.com/photos/1",
+      });
+      if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+      const nextState = applyApprovedVisibleCommit(state, approval.approvedCommit);
+      expect(nextState.interception).toBeNull();
+      expect(nextState.previousNextUrl).toBe(source);
+    }
+    // The target's own page keeps no source.
+    expect((await commit("/photos/[id]/page", "/_not-found")).pending.previousNextUrl).toBeNull();
+  });
+
   it("mints fresh bfcache ids instead of reusing current ids when requested", async () => {
     const currentRootLayout = React.createElement("div", null, "current root");
     const nextRootLayout = React.createElement("div", null, "next root");
