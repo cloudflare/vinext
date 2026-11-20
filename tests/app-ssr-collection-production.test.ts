@@ -151,9 +151,10 @@ describe("App Router dev SSR of a collection built from its children", () => {
     await expect.poll(() => hooksOf(first)[0], { timeout: 30_000 }).not.toBe(firstHook);
     expect(hooksOf(first)).toHaveLength(1);
     await expect.poll(() => console.error, { timeout: 30_000 }).not.toBe(firstConsoleError);
+    // Waits for the rest of the entry to be imported again.
+    expect((await renderedCells(new URL("/", baseUrl))).count).toBe(CELL_COUNT);
     expect(registry.consoleLayers).toHaveLength(firstLayers);
     expect(registry.consoleLayers.every((layer) => !layer.retired)).toBe(true);
-    expect((await renderedCells(new URL("/", baseUrl))).count).toBe(CELL_COUNT);
     const reloadedConsoleError = console.error;
 
     // Same root, so the same pre-bundled build. plugin-rsc's SSR import is

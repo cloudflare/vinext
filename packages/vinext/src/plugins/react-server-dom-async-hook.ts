@@ -14,9 +14,9 @@ import { toSlash } from "pathslash";
  *
  * The build's `async_hooks` resolves to a module that creates hooks through
  * `node:async_hooks` and records the dev server each one belongs to, and the
- * console methods that copy of the build replaced. A server's module runners
- * import in its scope, so a copy is attributed to the server whose runner
- * evaluated it. When that server closes,
+ * console methods that copy of the build replaced. A server's requests and
+ * its module runners' imports run in its scope, so a copy is attributed to
+ * the server whose runner evaluated it. When that server closes,
  * its hook is disabled and its console methods are put back. Vite can still
  * keep a closed server's environments, and with them that copy, so the hook
  * is also told the resources it recorded are gone, as it would have heard. A
@@ -82,7 +82,7 @@ export function devServerRegistry(): DevServerRegistry {
       // Evaluated again, as after a full reload: so are the modules evaluated
       // after it the first time, whose layers are above its own.
       const first = this.consoleLayers.findIndex(
-        (layer) => layer.owner === owner && layer.kind === kind,
+        (layer) => !layer.retired && layer.owner === owner && layer.kind === kind,
       );
       if (first !== -1) {
         const again = new Set(this.consoleLayers.slice(first));
@@ -230,6 +230,8 @@ export function createReactServerDomAsyncHookOwnerPlugin(): Plugin {
   return {
     name: "vinext:react-server-dom-async-hook:owner",
     apply: "serve",
+    // Its middleware has to run before the one that renders.
+    enforce: "pre",
     configureServer(server) {
       const owner: DevServerOwner = { closed: false, hooks: new Map() };
       const registry = devServerRegistry();
@@ -237,13 +239,15 @@ export function createReactServerDomAsyncHookOwnerPlugin(): Plugin {
       for (const environment of Object.values(server.environments)) {
         owners.set(environment, owner);
         if (!isRunnableDevEnvironment(environment)) continue;
-        // For requests, instrumentation at startup and the re-imports of a
-        // full reload alike.
+        // Instrumentation at startup and the re-imports of a full reload are
+        // outside a request.
         const runner = environment.runner;
         const importModule = runner.import.bind(runner);
         runner.import = ((url: string) =>
           registry.scope.run(owner, () => importModule(url))) as typeof runner.import;
       }
+      // A module's own import() doesn't go through the runner's import().
+      server.middlewares.use((_req, _res, next) => registry.scope.run(owner, next));
     },
     closeBundle() {
       const owner = owners.get(this.environment);
