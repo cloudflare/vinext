@@ -4594,6 +4594,190 @@ describe("buildPageElements", () => {
       ]);
     });
 
+    // Next.js's intercepting tree renders every folder of the slot down to the
+    // intercepting page, its route groups, the marker's folder and the page's
+    // own, and the deepest file of each kind heads the route.
+    describe("the metadata files of the intercepting page's own path", () => {
+      const metadataFile = (
+        type: "opengraph-image" | "twitter-image",
+        routeSegments: string[],
+        options: { href?: string; servedUrl?: string } = {},
+      ): MetadataFileRoute => ({
+        contentType: "image/png",
+        filePath: `/app/${routeSegments.join("/")}/${type}.png`,
+        ...(options.href
+          ? {
+              headData: {
+                href: options.href,
+                kind: type === "twitter-image" ? "twitter" : "openGraph",
+              },
+            }
+          : {}),
+        isDynamic: !options.href,
+        ...(options.href ? {} : { module: {} }),
+        routePrefix: "/members",
+        routeSegments,
+        servedUrl: options.servedUrl ?? `/${type}.png`,
+        type,
+      });
+      const imageUrls = (metadata: unknown, kind: "openGraph" | "twitter"): string[] | undefined =>
+        (metadata as Record<string, { images?: readonly { url: unknown }[] }> | null)?.[
+          kind
+        ]?.images?.map((image) => String(image.url));
+      const interceptOpts = (
+        options: ReturnType<typeof createSourceFixture>["options"],
+        interceptSourcePageSegments: string[],
+      ) => ({
+        ...options.pageRequest,
+        opts: { ...options.pageRequest.opts, interceptSourcePageSegments },
+      });
+
+      it("heads the route by the deepest file down to the intercepting page", async () => {
+        const { options } = createSourceFixture({ sourcePageFirst: false });
+        const elements = await buildPageElements({
+          ...options,
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal"], { href: "/modal-og.png" }),
+            metadataFile("opengraph-image", ["members", "@modal", "(grp)", "(...)photos", "[id]"], {
+              href: "/(...)photos/-/opengraph-image.png",
+            }),
+            metadataFile("twitter-image", ["members", "@modal", "(grp)"], {
+              href: "/group-twitter.png",
+            }),
+            metadataFile("opengraph-image", ["members", "[id]"], { href: "/member-og.png" }),
+            metadataFile("twitter-image", ["photos", "[id]"], { href: "/photo-twitter.png" }),
+          ],
+          pageRequest: interceptOpts(options, [
+            "members",
+            "@modal",
+            "(grp)",
+            "(...)photos",
+            "[id]",
+          ]),
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual(["/(...)photos/-/opengraph-image.png"]);
+        expect(imageUrls(metadata, "twitter")).toEqual(["/group-twitter.png"]);
+      });
+
+      it("fills a dynamic file with the intercepting route's params", async () => {
+        const { options } = createSourceFixture({ sourcePageFirst: false });
+        const elements = await buildPageElements({
+          ...options,
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal", "(...)photos", "[id]"], {
+              servedUrl: "/members/(...)photos/[id]/opengraph-image-abc",
+            }),
+          ],
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual([
+          "/members/(...)photos/1/opengraph-image-abc",
+        ]);
+      });
+
+      // A source URL without a page of its own renders the route whole, where
+      // the intercept still heads the route.
+      it("fills the intercepting page's files when the route renders whole", async () => {
+        const { options } = createSourceFixture({ sourcePageFirst: false });
+        const { rendersInterceptionSource: _mark, ...opts } = options.pageRequest.opts as Record<
+          string,
+          unknown
+        >;
+        const elements = await buildPageElements({
+          ...options,
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal", "(...)photos", "[id]"], {
+              servedUrl: "/members/(...)photos/[id]/opengraph-image-abc",
+            }),
+          ],
+          pageRequest: { ...options.pageRequest, opts },
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual([
+          "/members/(...)photos/1/opengraph-image-abc",
+        ]);
+      });
+
+      it("recovers the intercepting head with the intercepting page's files", async () => {
+        const { options } = createSourceFixture({
+          interceptPage: { generateMetadata: () => notFound() },
+          sourcePageFirst: false,
+        });
+        const elements = await buildPageElements({
+          ...options,
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal"], { href: "/modal-og.png" }),
+            metadataFile("opengraph-image", ["members", "@modal", "(...)photos", "[id]"], {
+              servedUrl: "/members/(...)photos/[id]/opengraph-image-abc",
+            }),
+          ],
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual([
+          "/members/(...)photos/1/opengraph-image-abc",
+        ]);
+      });
+
+      // A sibling intercept's tree is the intercepting page's path, with a
+      // default in the owner's slots.
+      it("heads a sibling intercept by the files of the intercepting page's path", async () => {
+        const route = createSyntheticRoute({
+          page: createSyntheticPageModule(() => null),
+          pattern: "/members",
+          routeSegments: ["members"],
+          slots: {
+            modal: {
+              name: "modal",
+              default: createSyntheticPageModule(() => null),
+              layoutIndex: -1,
+              routeSegments: [],
+            },
+          },
+        });
+        const elements = await buildPageElements({
+          ...createBaseOptions({
+            route,
+            routePath: "/members/photo/1",
+            opts: {
+              interceptPage: {
+                default: () => null,
+                generateMetadata: () => ({ title: "Photo 1" }),
+              } as AppPageModule,
+              interceptParams: { id: "1" },
+              interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+              interceptSourcePageSegments: ["members", "(.)photo", "[id]"],
+            },
+          }),
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal"], { href: "/modal-og.png" }),
+            metadataFile("opengraph-image", ["members", "(.)photo", "[id]"], {
+              servedUrl: "/members/(.)photo/[id]/opengraph-image-abc",
+            }),
+          ],
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual([
+          "/members/(.)photo/1/opengraph-image-abc",
+        ]);
+      });
+    });
+
     // Only the kept head's own render knew where it placed its streamed tags,
     // as a prerender of the source page puts them in the head.
     it("leaves the head's streamed body to the client whatever this render places", async () => {

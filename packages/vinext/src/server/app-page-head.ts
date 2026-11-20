@@ -16,6 +16,7 @@ import type { AppPageParams } from "./app-page-boundary.js";
 import { tagAppPageMetadataError } from "./app-page-execution.js";
 import { createAppMetadataModuleRoute, traceGenerateMetadata } from "./app-metadata-tracing.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
+import { filterMetadataRoutesForSegments } from "./metadata-route-segments.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { compareFolderNames } from "../utils/compare.js";
 import { searchParamsToRecord } from "../utils/query.js";
@@ -163,6 +164,13 @@ type ResolveAppPageHeadOptions<TModule extends AppPageHeadModule = AppPageHeadMo
   basePath?: string;
   fallbackOnFileMetadataError?: boolean;
   /**
+   * The params and app-tree segments the head's metadata files resolve for,
+   * when they aren't the route's: an intercepted render's are the intercepting
+   * page's, whose tree Next.js renders.
+   */
+  fileMetadataParams?: AppPageParams;
+  fileMetadataRouteSegments?: readonly string[] | null;
+  /**
    * Branches whose head Next.js resolves but never shows, such as a slot
    * intercept beside the source page. Their own generateMetadata() and
    * generateViewport() run once, after every branch before them in the loader
@@ -191,6 +199,9 @@ type AppPageMetadataOutputOptions = {
   applyFileBasedMetadata?: ApplyAppPageFileBasedMetadata;
   basePath?: string;
   fallbackOnFileMetadataError?: boolean;
+  /** See {@link ResolveAppPageHeadOptions}. */
+  fileMetadataParams?: AppPageParams;
+  fileMetadataRouteSegments?: readonly string[] | null;
   metadataRoutes: readonly MetadataFileRoute[];
   params: AppPageParams;
   routePath: string;
@@ -555,6 +566,75 @@ export function slotInterceptKeepsSourceHead(options: {
 }
 
 /**
+ * The metadata files an intercepted render's head reads, and the segments and
+ * params they resolve for: those of the intercepting route's tree, which
+ * Next.js renders, not those of the segments and the other slots the client
+ * keeps. A sibling intercept's tree is the intercepting page's path. A slot
+ * intercept's is the segments down to the slot's owner and the slot's folders
+ * down to the intercepting page, route groups and the marker's folder
+ * included. The deepest file of each kind wins along that path, and a dynamic
+ * one is filled with the intercepting route's params. Other renders read
+ * every file.
+ */
+export function resolveInterceptHeadFileMetadata(options: {
+  interceptParams?: AppPageParams | null;
+  interceptSourcePageSegments?: readonly string[] | null;
+  /**
+   * The slot of a slot intercept whose tree the head is: one that heads the
+   * route, or the intercepting tree a render beneath its source renders.
+   */
+  interceptSlotKey?: string | null;
+  isSiblingIntercept: boolean;
+  metadataRoutes: readonly MetadataFileRoute[];
+  params: AppPageParams;
+  route: {
+    layouts?: readonly unknown[] | null;
+    layoutTreePositions?: readonly number[] | null;
+    routeSegments?: readonly string[] | null;
+    slots?: Readonly<
+      Record<
+        string,
+        { layoutIndex?: number; name?: string | null; ownerTreePosition?: number | null }
+      >
+    > | null;
+  };
+}): Pick<
+  ResolveAppPageHeadOptions,
+  "fileMetadataParams" | "fileMetadataRouteSegments" | "metadataRoutes"
+> {
+  const { route } = options;
+  const slot = options.interceptSlotKey ? route.slots?.[options.interceptSlotKey] : undefined;
+  // The folder holding the slot's directory owns it, which can sit below the
+  // layout that renders it, as `app/(group)/@modal` does beneath `app/layout`.
+  const ownerTreePosition =
+    slot?.layoutIndex === undefined
+      ? undefined
+      : (slot.ownerTreePosition ??
+        route.layoutTreePositions?.[
+          slot.layoutIndex >= 0 ? slot.layoutIndex : (route.layouts?.length ?? 0) - 1
+        ]);
+  const pageSegments = options.interceptSourcePageSegments;
+  const slotSegment =
+    ownerTreePosition === undefined ? null : `@${slot?.name ?? options.interceptSlotKey}`;
+  const ownerSegments = (route.routeSegments ?? []).slice(0, ownerTreePosition ?? 0);
+  const segments = options.isSiblingIntercept
+    ? pageSegments
+    : slotSegment === null
+      ? null
+      : pageSegments &&
+          pageSegments[ownerSegments.length] === slotSegment &&
+          ownerSegments.every((segment, index) => segment === pageSegments[index])
+        ? pageSegments
+        : [...ownerSegments, slotSegment];
+  if (!segments) return { metadataRoutes: options.metadataRoutes };
+  return {
+    fileMetadataParams: options.interceptParams ?? options.params,
+    fileMetadataRouteSegments: segments,
+    metadataRoutes: filterMetadataRoutesForSegments(options.metadataRoutes, segments),
+  };
+}
+
+/**
  * Like Promise.all, but awaits the already-started promises one at a time, so
  * the first rejection in this order wins, not the first to settle. Next.js's
  * accumulateMetadata and accumulateViewport await their loader-tree items this
@@ -669,10 +749,10 @@ async function finalizeAppPageMetadata(
       resolvedMetadata = await options.applyFileBasedMetadata(
         metadata,
         options.routePath,
-        options.params,
+        options.fileMetadataParams ?? options.params,
         options.metadataRoutes,
         {
-          routeSegments: options.routeSegments ?? [],
+          routeSegments: options.fileMetadataRouteSegments ?? options.routeSegments ?? [],
           metadataSources,
           basePath: options.basePath ?? "",
         },
