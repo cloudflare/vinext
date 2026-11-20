@@ -720,7 +720,9 @@ export async function buildPageElements<
           layoutTreePositions:
             route.layoutTreePositions?.slice(0, retainedSourceLayoutCount) ?? null,
           outletParallelRouteIndex: 0,
-          pageModule: null,
+          // The whole intercepting route's children are the owner's default,
+          // whose metadata Next.js resolves as that tree's page.
+          pageModule: rendersWholeInterceptingRoute ? (effectivePageModule ?? null) : null,
           parallelRoutes: [retainedSourceInterceptInput.head],
         }
       : sourceHeadOptions;
@@ -1223,9 +1225,30 @@ function withDefaultSlotsBesideIntercept<
     slots: Object.fromEntries(
       Object.entries(route.slots).map(([slotKey, slot]) => [
         slotKey,
-        slotKey === interceptSlotKey ? slot : { ...slot, page: null },
+        slotKey === interceptSlotKey ? slot : toDefaultSlot(slot),
       ]),
     ),
+  };
+}
+
+/**
+ * A slot showing its default as Next.js's lone `__DEFAULT__` segment, as the
+ * route graph gives a slot without a page: none of the layouts, loading files
+ * and segments of the branch its page would take.
+ */
+function toDefaultSlot<TSlot extends NonNullable<AppPageBuildRoute["slots"]>[string]>(
+  slot: TSlot,
+): TSlot {
+  return {
+    ...slot,
+    configLayouts: null,
+    configLayoutTreePositions: null,
+    loadings: null,
+    loadingTreePositions: null,
+    page: null,
+    routeSegments: null,
+    slotParamNames: null,
+    slotPatternParts: null,
   };
 }
 

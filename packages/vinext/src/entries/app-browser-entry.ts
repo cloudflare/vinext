@@ -97,9 +97,15 @@ export type AppRouteDynamicRenderClassifier = {
   route(route: AppRoute): boolean;
   /**
    * `layoutPaths` holds the layouts above the intercepting page outside its
-   * own branch: the source route's, and the slot's.
+   * own branch: the source route's, and the slot's. `slotDefaultPaths` holds
+   * the defaults of the other slots of those layouts down to a slot
+   * intercept's owner.
    */
-  intercept(intercept: AppRouteIntercept, layoutPaths: readonly string[]): boolean;
+  intercept(
+    intercept: AppRouteIntercept,
+    layoutPaths: readonly string[],
+    slotDefaultPaths: readonly (string | null)[],
+  ): boolean;
 };
 
 function interceptTargetsRoute(interceptTargetPattern: string, route: AppRoute): boolean {
@@ -227,9 +233,19 @@ function collectClassifiedIntercepts(
 ): { intercept: VinextLinkPrefetchIntercept; targetPatternParts: string[] }[] {
   const sources = new Map<
     string,
-    { intercept: AppRouteIntercept; layoutPaths: readonly string[]; route: AppRoute }
+    {
+      intercept: AppRouteIntercept;
+      layoutPaths: readonly string[];
+      route: AppRoute;
+      slotDefaultPaths: readonly (string | null)[];
+    }
   >();
-  const add = (intercept: AppRouteIntercept, layoutPaths: readonly string[], route: AppRoute) => {
+  const add = (
+    intercept: AppRouteIntercept,
+    layoutPaths: readonly string[],
+    route: AppRoute,
+    slotDefaultPaths: readonly (string | null)[] = [],
+  ) => {
     const key = `${intercept.sourceMatchPattern}\0${intercept.pagePath}`;
     const seen = sources.get(key);
     // Prefer the route that owns the intercept over one that shares its slot.
@@ -240,19 +256,32 @@ function collectClassifiedIntercepts(
     ) {
       return;
     }
-    sources.set(key, { intercept, layoutPaths, route });
+    sources.set(key, { intercept, layoutPaths, route, slotDefaultPaths });
   };
   for (const route of routes) {
     for (const slot of route.parallelSlots) {
       const slotLayoutPaths = slot.layoutPath ? [...route.layouts, slot.layoutPath] : route.layouts;
-      for (const intercept of slot.interceptingRoutes) add(intercept, slotLayoutPaths, route);
+      // The intercepting route's tree shows every other slot of the layouts
+      // down to the slot's owner in its default.
+      const slotDefaultPaths = route.parallelSlots
+        .filter(
+          (other) =>
+            other !== slot && (other.ownerTreePosition ?? 0) <= (slot.ownerTreePosition ?? 0),
+        )
+        .map((other) => other.defaultPath);
+      for (const intercept of slot.interceptingRoutes) {
+        add(intercept, slotLayoutPaths, route, slotDefaultPaths);
+      }
     }
     for (const intercept of route.siblingIntercepts) add(intercept, route.layouts, route);
   }
-  return [...sources.values()].map(({ intercept, layoutPaths, route }) => {
+  return [...sources.values()].map(({ intercept, layoutPaths, route, slotDefaultPaths }) => {
     const rendersDynamically =
-      classifier.intercept(intercept, [...layoutPaths, ...intercept.layoutPaths]) ||
-      classifier.route(route);
+      classifier.intercept(
+        intercept,
+        [...layoutPaths, ...intercept.layoutPaths],
+        slotDefaultPaths,
+      ) || classifier.route(route);
     const targetPatternParts = splitPatternParts(intercept.targetPattern);
     return {
       intercept: {

@@ -3864,6 +3864,94 @@ describe("buildPageElements", () => {
     expect(calls).not.toContain("club page");
   });
 
+  // The whole intercepting route's children are the owner's default, which
+  // Next.js resolves as that tree's page in the head, before the slot. Every
+  // other slot shows its default alone, as Next.js's `__DEFAULT__` segment,
+  // without the layouts of the branch its page takes.
+  it("heads and renders the whole intercepting route as its own tree", async () => {
+    const calls: string[] = [];
+    const component =
+      (name: string) =>
+      ({ children }: { children?: React.ReactNode }) => {
+        calls.push(name);
+        return React.createElement("div", null, name, children);
+      };
+    const route = createSyntheticRoute({
+      layouts: [
+        { default: component("root layout") } as AppPageModule,
+        { default: component("club layout") } as AppPageModule,
+      ],
+      layoutTreePositions: [0, 2],
+      page: {
+        default: component("club page"),
+        generateMetadata: () => ({ title: "Club" }),
+      } as AppPageModule,
+      pattern: "/club/:slug",
+      params: ["slug"],
+      routeSegments: ["club", "[slug]"],
+      slots: {
+        aside: {
+          name: "aside",
+          page: { default: component("aside page") } as AppPageModule,
+          default: { default: component("aside default") } as AppPageModule,
+          configLayouts: [{ default: component("aside club layout") } as AppPageModule],
+          configLayoutTreePositions: [1],
+          layoutIndex: 0,
+          ownerTreePosition: 0,
+          routeSegments: ["club", "[slug]"],
+        },
+        modal: {
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 1,
+          routeSegments: [],
+        },
+      },
+    });
+    const elements = await buildPageElements(
+      createBaseOptions({
+        route,
+        params: { slug: "static" },
+        routePath: "/club/static/pics/1",
+        opts: {
+          interceptionContext: "/club/static",
+          interceptOwnerDefault: {
+            default: component("club default"),
+            generateMetadata: () => ({ title: "Club default", description: "Club default" }),
+          } as AppPageModule,
+          interceptPage: {
+            default: component("pic modal"),
+            generateMetadata: () => ({ description: "Pic modal" }),
+          } as AppPageModule,
+          interceptParams: { id: "1", slug: "static" },
+          interceptSlotId: "slot:modal:/club/[slug]",
+          interceptSlotKey: "modal",
+          interceptSourceMatchedUrl: "/club/static",
+          interceptSourcePageSegments: ["club", "[slug]", "@modal", "(.)pics", "[id]"],
+          rendersInterceptionSource: true,
+          rendersWholeInterceptingRoute: true,
+        },
+      }),
+    );
+
+    await expect(
+      resolveEntryHead(elements, "__vinext_streaming_metadata_body:").metadata,
+    ).resolves.toMatchObject({ title: "Club default", description: "Pic modal" });
+    const record = elements as Record<string, React.ReactNode>;
+    await renderNode(
+      React.createElement(
+        React.Fragment,
+        null,
+        ...Object.entries(record)
+          .filter(([key, entry]) => !key.startsWith("__") && React.isValidElement(entry))
+          .map(([key, entry]) => React.createElement(React.Fragment, { key }, entry)),
+      ),
+    );
+    expect(calls).toEqual(expect.arrayContaining(["club default", "pic modal", "aside default"]));
+    expect(calls).not.toContain("aside page");
+    expect(calls).not.toContain("aside club layout");
+  });
+
   describe("the source route beneath a slot intercept", () => {
     // Next.js renders the intercepting route's tree for an intercepted
     // navigation: the layouts down to the slot's owner and the intercepting

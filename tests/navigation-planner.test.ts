@@ -66,6 +66,7 @@ function createRouteSnapshot(
     rootBoundaryId,
     routeId: "route:/dashboard",
     slotBindings,
+    wholeInterceptionSource: null,
   };
 }
 
@@ -1108,6 +1109,54 @@ describe("navigationPlanner root-boundary decisions", () => {
       throw new Error("Expected proposeCommit decision");
     }
     expect(decision.proposal.preservePreviousSlotIds).toEqual(["slot:team:/dashboard"]);
+  });
+
+  it("replaces the slots the whole intercepting route renders, whatever the direct target leaves in its default", () => {
+    const layoutIds = ["layout:/", "layout:/club/[slug]"];
+    const asideSlot = "slot:aside:/";
+    const modalSlot = "slot:modal:/club/[slug]";
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        layoutIds,
+        [],
+        [
+          createSlotBinding(asideSlot, "layout:/", "default"),
+          createSlotBinding(modalSlot, "layout:/club/[slug]", "active"),
+        ],
+      ),
+      displayUrl: "https://example.com/club/static/pics/1",
+      matchedUrl: "/club/static/pics/1",
+      routeId: "route:/club/static/pics/1",
+      wholeInterceptionSource: "/club/static",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...currentSnapshot,
+      displayUrl: "https://example.com/club/static/pics/2",
+      matchedUrl: "/club/static/pics/2",
+      routeId: "route:/club/static/pics/2",
+    };
+    // The direct target route leaves the modal slot in its default.
+    const routeManifest = createRouteManifestForSnapshots(currentSnapshot, {
+      ...targetSnapshot,
+      slotBindings: [
+        createSlotBinding(asideSlot, "layout:/", "default"),
+        createSlotBinding(modalSlot, "layout:/club/[slug]", "default"),
+      ],
+    });
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      lane: "server-action",
+      routeManifest,
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") {
+      throw new Error("Expected proposeCommit decision");
+    }
+    expect(decision.proposal.preservePreviousSlotIds).toEqual([asideSlot]);
   });
 
   it("does not preserve default target slots when their owner layout is not retained", () => {

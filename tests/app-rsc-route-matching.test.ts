@@ -1295,6 +1295,49 @@ describe("App RSC route matching", () => {
       expect(handlerMatcher.findIntercept("/club/static/pics/1", "/club/static")).toBeNull();
     });
 
+    // The interception rewrite captures every param of the intercepting route
+    // from the source, those of the slot's folders above the marker too.
+    it("takes the params of the slot's folders from the source of a whole intercepting route", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          ...route("/teams/:team", ["teams", ":team"], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/teams/:team/:album",
+                  sourcePageSegments: [
+                    "(shared)",
+                    "teams",
+                    "[team]",
+                    "@modal",
+                    "[album]",
+                    "(.)pics",
+                    "[id]",
+                  ],
+                  targetPattern: "/teams/:team/:album/pics/:id",
+                  interceptLayouts: [],
+                  page: "pics-modal",
+                  params: ["team", "album", "id"],
+                },
+              ],
+            },
+          }),
+          routeSegments: ["(shared)", "teams", "[team]"],
+        },
+        {
+          ...route("/teams/:team/:album", ["teams", ":team", ":album"]),
+          routeSegments: ["(other)", "teams", "[team]", "[album]"],
+        },
+      ]);
+
+      expect(matcher.findIntercept("/teams/other/two/pics/1", "/teams/acme/one")).toMatchObject({
+        sourceRouteIndex: 0,
+        rendersWholeInterceptingRoute: true,
+        matchedParams: { team: "acme", album: "one", id: "1" },
+        sourceMatchedParams: { team: "acme", album: "one" },
+      });
+    });
+
     it("prefers the whole intercepting route among intercepts whose source lacks the slot", () => {
       const intercept = (page: string, sourcePageSegments?: string[]) => ({
         sourceMatchPattern: "/club/:slug",
