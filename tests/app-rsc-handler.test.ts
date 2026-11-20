@@ -9236,6 +9236,7 @@ describe("createAppRscHandler", () => {
     { sourceMiddleware: "rewrite to /club/other", interceptionContext: null },
     { sourceMiddleware: "deny", interceptionContext: null },
     { sourceMiddleware: "rewrite to /club/acme?x=1", interceptionContext: null },
+    { sourceMiddleware: "external rewrite", interceptionContext: null },
   ])(
     "intercepts from a source without the slot only through a rewrite to one with it (source middleware: $sourceMiddleware)",
     async ({ sourceMiddleware, interceptionContext }) => {
@@ -9310,6 +9311,11 @@ describe("createAppRscHandler", () => {
               return new Response(null, { headers: { "x-middleware-next": "1" } });
             }
             if (sourceMiddleware === "deny") return new Response("denied", { status: 401 });
+            if (sourceMiddleware === "external rewrite") {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": "https://upstream.example/club/acme" },
+              });
+            }
             return new Response(null, {
               headers: {
                 "x-middleware-rewrite": `https://example.test/docs${sourceMiddleware.slice("rewrite to ".length)}`,
@@ -9319,12 +9325,17 @@ describe("createAppRscHandler", () => {
         },
       });
 
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
       const headers = createRscRequestHeaders({ interceptionContext: "/club/static" });
       const rscUrl = await createRscRequestUrl("/docs/club/static/pics/1", headers);
-      const response = await handler(
-        new Request(`https://example.test${rscUrl}`, { headers }),
-        null,
-      );
+      let response: Response;
+      try {
+        fetchSpy.mockResolvedValue(new Response("upstream"));
+        response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
 
       expect(response.status).toBe(200);
       expect(middlewarePaths).toEqual(["/club/static/pics/1", "/club/static"]);
