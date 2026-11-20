@@ -7,6 +7,7 @@ import type {
 import type { BasePathMatchState } from "../config/config-matchers.js";
 import { requestContextFromRequest } from "../config/request-context.js";
 import {
+  encodeNormalizedPathnameForRouteMatch,
   normalizePathnameForRouteMatch,
   normalizePathnameForRouteMatchStrict,
 } from "../routing/utils.js";
@@ -2991,7 +2992,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       (!isInterceptionMatch || requestPathnameDiffersFromCachePath) &&
       options.matchRequestRoute
     ) {
-      const cachePathMatch = options.matchRoute(cleanPathname);
+      // An unrewritten `cleanPathname` is the request pathname decoded once.
+      // Encode its literal percent signs again so this match doesn't decode
+      // them a second time and report a path such as `/blog/100%25` as a
+      // different identity. A rewrite destination is still encoded.
+      const cachePathMatch = options.matchRoute(
+        cleanPathnameIsRequestPathname
+          ? encodeNormalizedPathnameForRouteMatch(cleanPathname)
+          : cleanPathname,
+      );
       if (
         (requestPathnameDiffersFromCachePath && rawRequestPathnameIsObservable) ||
         !cachePathMatch ||
