@@ -4517,6 +4517,19 @@ describe("vinext:react-server-dom-node", () => {
     expect(await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"], "rsc", true)).toBe(
       "react-server-dom-webpack/static.node",
     );
+    // An entry's own subpath externalizes only that entry.
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"], "rsc", ["react-dom/server"]),
+    ).toBe("@vitejs/plugin-rsc/vendor/react-server-dom/server.node");
+    expect(
+      await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"], "rsc", ["react-dom/server"]),
+    ).toBeUndefined();
+    expect(
+      await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"], "rsc", ["react-dom/static"]),
+    ).toBe("react-server-dom-webpack/static.node");
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"], "rsc", ["react-dom/static"]),
+    ).toBeUndefined();
   });
 
   // plugin-rsc imports the Flight server in the RSC environment only.

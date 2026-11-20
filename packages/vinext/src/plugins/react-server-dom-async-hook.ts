@@ -97,8 +97,14 @@ export function devServerRegistry(): DevServerRegistry {
       }
       const target = console as unknown as ConsoleMethods;
       const links = new Map<string, ConsoleLink>();
-      for (const [name, method] of Object.entries(target)) {
-        if (typeof method !== "function") continue;
+      // The methods React's patchConsole could replace: data properties that
+      // can be redefined.
+      for (const name of Object.getOwnPropertyNames(target)) {
+        const descriptor = Object.getOwnPropertyDescriptor(target, name)!;
+        const method: unknown = descriptor.value;
+        if (typeof method !== "function" || !(descriptor.configurable || descriptor.writable)) {
+          continue;
+        }
         const link: ConsoleLink = { target: method, forward: undefined };
         link.forward = function (this: unknown, ...args: unknown[]): unknown {
           return (link.target as (...args: unknown[]) => unknown).apply(this, args);

@@ -16,15 +16,17 @@ describe("dev server console layers", () => {
   // Each module replaces one console method, as React's Flight build and
   // vinext's hook warning suppression do.
   const calls: string[] = [];
-  function evaluate(owner: object, kind: string, method: "log" | "info") {
+  function evaluate(owner: object, kind: string, method: string) {
     const registry = devServerRegistry();
     const layer = registry.scope.run(owner as never, () => registry.consoleLayer(kind));
-    const replaced = console[method];
+    const target = console as unknown as Record<string, (...args: unknown[]) => void>;
+    const replaced = target[method];
     const wrapper = (...args: unknown[]) => {
       calls.push(kind);
       replaced(...args);
     };
-    console[method] = wrapper;
+    // As React's patchConsole replaces a method.
+    Object.defineProperty(target, method, { value: wrapper });
     layer?.record();
     return wrapper;
   }
@@ -68,5 +70,31 @@ describe("dev server console layers", () => {
     calls.length = 0;
     console.log("message");
     expect(calls).toEqual(["hook-warning", "flight", "hook-warning", "flight"]);
+  });
+
+  // React patches a method it can redefine, enumerable or not, and leaves
+  // the others alone.
+  it("links only the methods that can be redefined", () => {
+    const registry = devServerRegistry();
+    const a = { closed: false, hooks: new Map() };
+    registry.live.add(a);
+    const frozen = () => {};
+    Object.defineProperty(console, "vinextFrozen", { value: frozen, enumerable: true });
+    Object.defineProperty(console, "vinextHidden", {
+      value: () => {},
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    try {
+      evaluate(a, "flight", "vinextHidden");
+      expect(() => evaluate(a, "flight", "vinextHidden")).not.toThrow();
+      expect((console as unknown as Record<string, unknown>).vinextFrozen).toBe(frozen);
+      calls.length = 0;
+      (console as unknown as Record<string, () => void>).vinextHidden();
+      expect(calls).toEqual(["flight"]);
+    } finally {
+      delete (console as unknown as Record<string, unknown>).vinextHidden;
+    }
   });
 });

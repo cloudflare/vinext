@@ -503,15 +503,16 @@ const REACT_SERVER_DOM_EDGE_ENTRY =
   /^((?:@vitejs\/plugin-rsc\/vendor\/react-server-dom|react-server-dom-webpack)\/(server|static))\.edge$/;
 
 /**
- * The conditions `react-dom/server` and `react-dom/static` resolve with: the
+ * The conditions `react-dom/server` or `react-dom/static` resolves with: the
  * SSR environment's, where Fizz renders, falling back to the environment's
  * own when there is no SSR environment. Where the SSR environment
- * externalizes react-dom, as Node dev does, the runtime resolves it with its
+ * externalizes the entry, as Node dev does, the runtime resolves it with its
  * own conditions.
  */
 function fizzConditions(
   config: Pick<ResolvedConfig, "environments">,
   environmentConditions: readonly string[],
+  entry: keyof typeof REACT_DOM_BUILDS,
 ): readonly string[] {
   const ssr = config.environments.ssr?.resolve;
   if (!ssr) return environmentConditions;
@@ -519,7 +520,7 @@ function fizzConditions(
   if (
     external === true ||
     (Array.isArray(external) &&
-      (external.includes("react-dom") || external.includes("react-dom/server")))
+      (external.includes("react-dom") || external.includes(`react-dom/${entry}`)))
   ) {
     if (process.versions.bun) return ["bun", "node"];
     if (process.versions.deno) return ["deno", "node"];
@@ -528,11 +529,20 @@ function fizzConditions(
   return ssr.conditions;
 }
 
-/** The Node build of the Flight server entry `id`, if Fizz's is Node too. */
-function reactServerDomNodeEntry(id: string, conditions: readonly string[]): string | undefined {
+/**
+ * The Node build of the Flight server entry `id`, if Fizz's is Node too.
+ * `conditionsOf` gives the conditions react-dom's entry of the same name
+ * resolves with.
+ */
+function reactServerDomNodeEntry(
+  id: string,
+  conditionsOf: (entry: keyof typeof REACT_DOM_BUILDS) => readonly string[],
+): string | undefined {
   const match = REACT_SERVER_DOM_EDGE_ENTRY.exec(id);
   if (!match) return undefined;
-  const builds = REACT_DOM_BUILDS[match[2] as keyof typeof REACT_DOM_BUILDS];
+  const entry = match[2] as keyof typeof REACT_DOM_BUILDS;
+  const builds = REACT_DOM_BUILDS[entry];
+  const conditions = conditionsOf(entry);
   const build =
     builds.conditions.find(([condition]) => conditions.includes(condition))?.[1] ?? builds.fallback;
   return build === "node" ? `${match[1]}.node` : undefined;
@@ -4913,9 +4923,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (optimizer.include && name === "rsc" && !hasCloudflarePlugin) {
               optimizer.include = optimizer.include.map(
                 (id) =>
-                  reactServerDomNodeEntry(
-                    id,
-                    fizzConditions(config, environment.resolve.conditions),
+                  reactServerDomNodeEntry(id, (entry) =>
+                    fizzConditions(config, environment.resolve.conditions, entry),
                   ) ?? id,
               );
             }
@@ -5765,11 +5774,12 @@ export const loadServerActionClient = ${
         filter: { id: REACT_SERVER_DOM_EDGE_ENTRY },
         handler(id, importer, options) {
           if (hasCloudflarePlugin || this.environment?.name !== "rsc") return;
-          const nodeEntry = reactServerDomNodeEntry(
-            id,
+          const environment = this.environment;
+          const nodeEntry = reactServerDomNodeEntry(id, (entry) =>
             fizzConditions(
-              this.environment.getTopLevelConfig(),
-              this.environment.config.resolve.conditions,
+              environment.getTopLevelConfig(),
+              environment.config.resolve.conditions,
+              entry,
             ),
           );
           if (!nodeEntry) return;
