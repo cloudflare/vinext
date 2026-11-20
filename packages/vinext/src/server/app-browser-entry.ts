@@ -115,14 +115,15 @@ import {
   type AppBrowserServerActionResult,
 } from "./app-browser-action-result.js";
 import {
+  createInterceptionSourceRefreshMerge,
   createSupplementalRefreshCoordinator,
-  mergeRefreshedParallelSlot,
   rendersWholeInterceptingRoute,
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
+  supplyInterceptionSourceElements,
   supplyRetainedElements,
 } from "./app-browser-supplemental-refresh.js";
 import { createAppBrowserNavigationAbortCoordinator } from "./app-browser-navigation-abort.js";
@@ -231,7 +232,10 @@ import {
   type LearnedOptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
 import { createMountedLayoutsHeader, holdsSkippedLayouts } from "./app-mounted-layouts.js";
-import { resolveHeldRetainedElementIds } from "./app-retained-elements.js";
+import {
+  holdsInterceptionSourceTree,
+  resolveHeldRetainedElementIds,
+} from "./app-retained-elements.js";
 import {
   VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -243,6 +247,7 @@ import { stripRscCompletionMetadataResponse } from "./rsc-completion-metadata.js
 import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
 import {
   navigationPlanner,
+  type InterceptionSourceIdentity,
   type NavigationReuseFacts,
   type VisitedResponseCacheCandidateFacts,
 } from "./navigation-planner.js";
@@ -872,6 +877,7 @@ type RenderNavigationPayloadOptions = {
   restoredBfcacheIds?: Readonly<Record<string, string>> | null;
   reuseCurrentBfcacheIds?: boolean;
   scrollIntent?: AppRouterScrollIntent | null;
+  suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   targetHref: string;
   traversalIntent?: HistoryTraversalIntent | null;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
@@ -900,6 +906,7 @@ async function renderNavigationPayload(
     restoredBfcacheIds: options.restoredBfcacheIds ?? null,
     reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds ?? true,
     scrollIntent: options.scrollIntent ?? null,
+    suppliedInterceptionSource: options.suppliedInterceptionSource ?? null,
     targetHistoryIndex: options.traversalIntent?.targetHistoryIndex,
     targetHref: options.targetHref,
     visibleCommitMode: options.visibleCommitMode ?? "transition",
@@ -971,17 +978,26 @@ async function commitSameUrlNavigatePayload(
             targetPathname: interception.targetPathname,
           }),
       );
+      // The source page an intercepted state names goes beneath the re-render
+      // only when the server rendered it as an intercept from that source.
+      const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+        previousNextUrl: actionInitiation.routerState.previousNextUrl,
+        refreshUrl,
+      });
       for (const sourcePageRefresh of sourcePageRefreshes) {
-        supplemental.push((signal) =>
-          fetchPersistedSourcePageRefresh({
-            mountedSlotsHeader,
-            signal,
-            targetPathname: sourcePageRefresh,
-          }),
+        supplemental.push(async (signal) =>
+          sourcePageRefreshMerge.track(
+            sourcePageRefresh,
+            await fetchPersistedSourcePageRefresh({
+              mountedSlotsHeader,
+              signal,
+              targetPathname: sourcePageRefresh,
+            }),
+          ),
         );
       }
       nextElements = resolveSupplementalRefreshes({
-        merge: mergeRefreshedParallelSlot,
+        merge: sourcePageRefreshMerge.merge,
         mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
         primary: nextElements,
         signal: supplementalHandle.signal,
@@ -2867,7 +2883,24 @@ function bootstrapHydration(
           : decodeAppElementsPromise(
               createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
             );
+        // The source a traversal's intercepted payload names, once a render of
+        // that page from its own URL supplies what the payload left out.
+        let suppliedInterceptionSource: InterceptionSourceIdentity | null = null;
         if (hasSupplementalRefresh) {
+          // A refresh or traversal renders the source page an intercepted
+          // state names beside the target. It goes beneath the target's payload
+          // only when the server rendered that payload as an intercept from
+          // that source.
+          const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+            onSource: (source) => {
+              if (navigationKind === "traverse") suppliedInterceptionSource = source;
+            },
+            previousNextUrl:
+              navigationKind === "traverse"
+                ? requestPreviousNextUrl
+                : navigationInitiationState.previousNextUrl,
+            refreshUrl: url,
+          });
           const supplemental = persistedRefreshInterceptions.map(
             (interception) => (signal: AbortSignal) =>
               fetchPersistedInterceptedSlotRefresh({
@@ -2879,8 +2912,8 @@ function bootstrapHydration(
               }),
           );
           for (const persistedSourcePageRefresh of persistedSourcePageRefreshes) {
-            supplemental.push((signal) =>
-              fetchPersistedSourcePageRefresh({
+            supplemental.push(async (signal) => {
+              const elements = await fetchPersistedSourcePageRefresh({
                 // A traversal starts from another entry's state, whose mounted
                 // slots aren't the ones the intercepted payload leaves to it.
                 mountedSlotsHeader:
@@ -2889,11 +2922,12 @@ function bootstrapHydration(
                     : mountedSlotsHeader,
                 signal,
                 targetPathname: persistedSourcePageRefresh,
-              }),
-            );
+              });
+              return sourcePageRefreshMerge.track(persistedSourcePageRefresh, elements);
+            });
           }
           rscPayload = resolveSupplementalRefreshes({
-            merge: mergeRefreshedParallelSlot,
+            merge: sourcePageRefreshMerge.merge,
             mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
             primary: Promise.resolve(rscPayload),
             signal: navigationAbortHandle.signal,
@@ -2952,7 +2986,14 @@ function bootstrapHydration(
             // names no mounted slots for the server to leave out.
             const sourcePageAbortHandle = navigationAbortCoordinator.begin();
             rscPayload = resolveSupplementalRefreshes({
-              merge: supplyRetainedElements,
+              merge: (current: AppElements, refreshed: AppElements) => {
+                if (navigationKind !== "traverse") {
+                  return supplyRetainedElements(current, refreshed);
+                }
+                const supplied = supplyInterceptionSourceElements(current, refreshed);
+                suppliedInterceptionSource = supplied.source;
+                return supplied.elements;
+              },
               primary: rscPayload,
               signal: sourcePageAbortHandle.signal,
               supplemental: sourcePageRefreshes.map(
@@ -2967,6 +3008,16 @@ function bootstrapHydration(
               .finally(() => sourcePageAbortHandle.release())
               .then(requireCompleteSupplementalRefresh);
           }
+        }
+
+        // A traversal shows its source's render, not the visible state, beneath
+        // the intercept only once the payload holds that source's tree: every
+        // element it left out and the layout its intercepted slot renders in.
+        if (navigationKind === "traverse" && requestInterceptionContext !== null) {
+          const elements = await rscPayload;
+          if (!browserNavigationController.isCurrentNavigation(navId)) return;
+          rscPayload = Promise.resolve(elements);
+          if (!holdsInterceptionSourceTree(elements)) suppliedInterceptionSource = null;
         }
 
         // Static hosts cannot supply the compatibility response header used by
@@ -3019,6 +3070,7 @@ function bootstrapHydration(
           restoredBfcacheIds,
           reuseCurrentBfcacheIds,
           scrollIntent,
+          suppliedInterceptionSource,
           targetHref: currentHref,
           traversalIntent: activeTraversalIntent,
           // A settled prefetch still commits as a transition, as in Next.js:

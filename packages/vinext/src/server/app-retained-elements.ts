@@ -16,6 +16,39 @@ const ROUTE_ELEMENT_ID_PREFIXES = [
 ] as const;
 
 /**
+ * Whether a payload for an intercepted route carries the source tree beneath
+ * the intercept itself: every element it left for the client to keep, and the
+ * layout its intercepted slot renders in.
+ */
+export function holdsInterceptionSourceTree(elements: AppElements): boolean {
+  const metadata = AppElementsWire.readMetadata(elements);
+  const interception = metadata.interception;
+  if (interception === null || metadata.skippedLayoutIds.length > 0) return false;
+  const ownerLayoutId = metadata.slotBindings.find(
+    (binding) => binding.slotId === interception.slotId,
+  )?.ownerLayoutId;
+  return (
+    ownerLayoutId !== null &&
+    ownerLayoutId !== undefined &&
+    Object.hasOwn(elements, ownerLayoutId) &&
+    resolveMissingRetainedElementIds(elements).length === 0
+  );
+}
+
+function resolveMissingRetainedElementIds(next: AppElements): string[] {
+  const nextMetadata = AppElementsWire.readMetadata(next);
+  const headId = APP_ROUTE_HEAD_ID_PREFIX + nextMetadata.routeId;
+  const metadataBodyId = APP_STREAMING_METADATA_BODY_ID_PREFIX + nextMetadata.routeId;
+  // A head's streamed tags have a body element only when its own render placed
+  // them there, so the body goes with the head the route renders: none beside
+  // a head the payload carries, and the state's own, if any, beside the head
+  // it keeps.
+  return nextMetadata.retainedElementIds.filter(
+    (id) => !Object.hasOwn(next, id) && (id !== metadataBodyId || !Object.hasOwn(next, headId)),
+  );
+}
+
+/**
  * The elements a payload left for the client to keep that it doesn't carry
  * itself, when a client state holds every one of them unchanged, or null when
  * it doesn't.
@@ -38,15 +71,8 @@ export function resolveHeldRetainedElementIds(
   sourceUrl: string | null,
 ): readonly string[] | null {
   const nextMetadata = AppElementsWire.readMetadata(next);
-  const headId = APP_ROUTE_HEAD_ID_PREFIX + nextMetadata.routeId;
   const metadataBodyId = APP_STREAMING_METADATA_BODY_ID_PREFIX + nextMetadata.routeId;
-  // A head's streamed tags have a body element only when its own render placed
-  // them there, so the body goes with the head the route renders: none beside
-  // a head the payload carries, and the state's own, if any, beside the head
-  // it keeps.
-  const missing = nextMetadata.retainedElementIds.filter(
-    (id) => !Object.hasOwn(next, id) && (id !== metadataBodyId || !Object.hasOwn(next, headId)),
-  );
+  const missing = resolveMissingRetainedElementIds(next);
   if (missing.length === 0) return missing;
   if (
     nextMetadata.interception === null ||
