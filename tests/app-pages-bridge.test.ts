@@ -5,6 +5,7 @@ import {
 import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  matchPagesFallbackRoute,
   renderPagesFallback,
   type PagesEntry,
 } from "../packages/vinext/src/server/app-pages-bridge.js";
@@ -14,6 +15,52 @@ import {
   runWithExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
+
+describe("matchPagesFallbackRoute", () => {
+  const request = new Request("https://example.test/fr/about", {
+    headers: { "accept-language": "fr" },
+  });
+  const pageMatch = { route: { isDynamic: false, pattern: "/about" } };
+  const apiMatch = { route: { isDynamic: true, pattern: "/api/:slug" } };
+
+  // The request-stage Pages entry exports only the matchers.
+  it("matches with a matchers-only entry", () => {
+    const matchPageRoute = vi.fn(() => pageMatch);
+    const matchApiRoute = vi.fn(() => apiMatch);
+    const pagesEntry: PagesEntry = { matchApiRoute, matchPageRoute };
+
+    expect(matchPagesFallbackRoute(pagesEntry, "/fr/about", request)).toBe(pageMatch);
+    expect(matchPageRoute).toHaveBeenCalledWith("/fr/about", request);
+    expect(matchPagesFallbackRoute(pagesEntry, "/api/users", request)).toBe(apiMatch);
+    expect(matchApiRoute).toHaveBeenCalledWith("/api/users", request);
+    expect(matchPageRoute).toHaveBeenCalledOnce();
+  });
+
+  it("matches API paths only against API routes", () => {
+    const pagesEntry: PagesEntry = {
+      matchApiRoute: () => null,
+      matchPageRoute: () => pageMatch,
+    };
+
+    expect(matchPagesFallbackRoute(pagesEntry, "/api", request)).toBeNull();
+    expect(matchPagesFallbackRoute(pagesEntry, "/api/users", request)).toBeNull();
+    expect(matchPagesFallbackRoute(pagesEntry, "/apis", request)).toBe(pageMatch);
+  });
+
+  // renderPagesFallback renders any path no App route matches for an entry
+  // without matchers.
+  it("reports an entry without matchers as rendering every unmatched path", () => {
+    const pagesEntry: PagesEntry = {
+      handleApiRoute: () => new Response("api"),
+      renderPage: () => new Response("page"),
+    };
+
+    expect(matchPagesFallbackRoute(pagesEntry, "/about", request)).toBe("unmatched");
+    expect(matchPagesFallbackRoute(pagesEntry, "/api/users", request)).toBe("unmatched");
+    expect(matchPagesFallbackRoute({}, "/about", request)).toBeNull();
+    expect(matchPagesFallbackRoute({}, "/api/users", request)).toBeNull();
+  });
+});
 
 describe("renderPagesFallback", () => {
   const defaultDeps = {

@@ -546,7 +546,7 @@ ${
   hasPagesDir
     ? `import { getDraftModeCookieHeader } from "next/headers";
 import * as __pagesRequestEntry from "virtual:vinext-pages-request-entry";
-import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};
+import { matchPagesFallbackRoute as __matchPagesFallbackRoute, renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
 import { applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext } from ${JSON.stringify(appRouteHandlerMiddlewareContextPath)};`
     : ""
@@ -703,7 +703,10 @@ const __requestHandler = createAppRscRequestHandler({
   renderNotFound: async () => null,
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url }) {
+      ? `matchPagesRoute(pathname, request) {
+    return __matchPagesFallbackRoute(__pagesRequestEntry, pathname, request);
+  },
+  async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url }) {
     return __renderPagesFallback(
       { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url },
       {
@@ -1074,7 +1077,7 @@ function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._get
 ${
   hasPagesDir
     ? `// Pages Router routes are loaded lazily from the SSR environment for internal prerender requests.
-import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};`
+import { matchPagesFallbackRoute as __matchPagesFallbackRoute, renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};`
     : ""
 }
 
@@ -2184,7 +2187,10 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   },
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url }) {
+      ? `async matchPagesRoute(pathname, request) {
+    return __matchPagesFallbackRoute(await __ensureHybridPagesApplication(), pathname, request);
+  },
+  async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url }) {
     return __renderPagesFallback(
       { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url },
       {

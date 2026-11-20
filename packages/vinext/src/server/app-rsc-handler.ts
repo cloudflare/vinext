@@ -127,6 +127,7 @@ import {
   normalizeDefaultLocalePathname,
   shouldRestoreLocaleRootTrailingSlash,
 } from "./pages-i18n.js";
+import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import {
   badRequestResponse,
   notFoundResponse,
@@ -416,6 +417,11 @@ export type AppRscHandlerRoute = {
     >
   > | null;
 };
+
+type PagesRouteMatchResult =
+  | { route: { isDynamic: boolean; pattern: string } }
+  | "unmatched"
+  | null;
 
 type AppRscRouteMatch<TRoute> = {
   /**
@@ -846,6 +852,15 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   /** `matchRequestRoute` without its decoded static page substitution. */
   matchRawRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
+  /**
+   * The Pages route `renderPagesFallback` renders for a raw route pathname,
+   * matched without rendering it, or `"unmatched"` when Pages renders every
+   * path no App route matches. Provided when the app has a Pages directory.
+   */
+  matchPagesRoute?: (
+    pathname: string,
+    request: Request,
+  ) => PagesRouteMatchResult | Promise<PagesRouteMatchResult>;
   runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
   prefetchInlining?: PrefetchInliningConfig;
@@ -2335,12 +2350,69 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // Later rules see the query earlier destinations merged in, as the
       // target's own rewrites do.
       let sourceRulesResolvedUrl = resolvedUrl;
+      let didRewriteSource = false;
+      let didRewriteSourceQuery = false;
+      let didRewriteSourceExternally = false;
+      const unrewrittenSourceRoute =
+        interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route;
+      // A /_not-found that a root-level owner stands in for matches no route,
+      // so it takes the afterFiles and then the fallback rules.
+      const unrewrittenSourceMatchesNoRoute =
+        interceptionSourceMatch.interceptionRendersRootOwnerFromRouteMiss === true;
+      // The route a direct request to the rewritten source pathname reaches,
+      // in the order the target's own routing takes: a static App route, then
+      // a Pages route over the App route it outranks.
+      const sourceRulesRoute = async (): Promise<{
+        isApp: boolean;
+        route: { isDynamic: boolean };
+      } | null> => {
+        if (!didRewriteSource) {
+          return unrewrittenSourceMatchesNoRoute
+            ? null
+            : { isApp: true, route: unrewrittenSourceRoute };
+        }
+        const appRoute = options.matchRoute(sourceRulesPathname)?.route ?? null;
+        if (appRoute !== null && !appRoute.isDynamic) return { isApp: true, route: appRoute };
+        // Pages routes match the headers the source's rules see, as the
+        // target's Pages routes match those its middleware left.
+        const pagesMatch = options.matchPagesRoute
+          ? await options.matchPagesRoute(
+              sourceRulesPathname,
+              new Request(userlandRequest.url, { headers: sourceRulesRequestContext.headers }),
+            )
+          : null;
+        if (pagesMatch === "unmatched") {
+          if (appRoute === null) return { isApp: false, route: { isDynamic: false } };
+        } else if (
+          pagesMatch !== null &&
+          pagesRouteHasPriorityOverAppRoute(pagesMatch.route, appRoute)
+        ) {
+          return { isApp: false, route: pagesMatch.route };
+        }
+        return appRoute === null ? null : { isApp: true, route: appRoute };
+      };
+      // The image endpoint, a metadata route or a public file a rewrite
+      // reaches serves itself instead of the source. Each ends routing as a
+      // static route does; a dynamic metadata route would take later rules
+      // too, but stopping there only leaves the target to render directly.
+      const reachesFilesystemOutput = async (): Promise<boolean> =>
+        isImageOptimizationPath(sourceRulesPathname) ||
+        (options.isMetadataRoute
+          ? options.isMetadataRoute(sourceRulesPathname)
+          : ((await options.isMetadataRoutePath?.(sourceRulesPathname)) ?? false)) ||
+        options.publicFiles.has(normalizePathnameForRouteMatch(sourceRulesPathname));
+      const reachedByDirectRequest = async () =>
+        didRewriteSource && (await reachesFilesystemOutput())
+          ? { isApp: false, route: { isDynamic: false } }
+          : await sourceRulesRoute();
       // Applies one phase's rules to the source as a direct request does:
-      // every beforeFiles rule in turn, afterFiles up to the first destination
-      // that matches a route. Returns whether the source may still intercept.
-      const rewriteSource = (rewrites: NextRewrite[], stopAtRoute: boolean): boolean => {
-        let didRewriteSource = false;
-        let didRewriteSourceQuery = false;
+      // every beforeFiles rule in turn, afterFiles and fallback up to the
+      // first destination that matches a route. Returns false once a rule
+      // rewrites the source to an external URL, which proxies it instead.
+      const rewriteSource = async (
+        rewrites: NextRewrite[],
+        stopAtRoute: boolean,
+      ): Promise<boolean> => {
         for (const rewrite of rewrites) {
           const destination = matchRewrite(
             matchPathname(sourceRulesPathname),
@@ -2351,8 +2423,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             dispatchResponseStage === undefined ? markConditionalRewriteCacheability : undefined,
           );
           if (!destination) continue;
-          // An external rewrite proxies instead of rendering the source.
-          if (isExternalUrl(destination)) return false;
+          if (isExternalUrl(destination)) {
+            didRewriteSourceExternally = true;
+            return false;
+          }
           // A destination query would render the source with different search
           // params, but leaves a page that does not intercept the target to
           // render it directly.
@@ -2360,30 +2434,39 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           sourceRulesResolvedUrl = mergeRewriteQuery(sourceRulesResolvedUrl, destination);
           sourceRulesPathname = pathnameForResolvedUrl(destination);
           didRewriteSource = true;
-          if (stopAtRoute && options.matchRoute(sourceRulesPathname)) break;
+          if (stopAtRoute && (await reachedByDirectRequest()) !== null) break;
         }
-        return (
-          !didRewriteSource ||
-          (adoptRewrittenInterceptionSource(sourceRulesPathname) && !didRewriteSourceQuery)
-        );
+        return true;
       };
-      // A direct request that reaches a dynamic route after beforeFiles still
-      // takes the afterFiles rules before that route is accepted, so a rule
-      // that rewrites the source away for this client refuses it here too. A
-      // static route is final before afterFiles. A /_not-found that a
-      // root-level owner stands in for matches no route, so it takes the
-      // afterFiles and then the fallback rules.
-      const matchesNoRoute = (): boolean =>
-        interceptionSourceMatch?.interceptionRendersRootOwnerFromRouteMiss === true;
-      if (
-        (!rewriteSource(options.configRewrites.beforeFiles, false) ||
-          ((matchesNoRoute() ||
-            (interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route)
-              .isDynamic) &&
-            !rewriteSource(options.configRewrites.afterFiles, true)) ||
-          (matchesNoRoute() && !rewriteSource(options.configRewrites.fallback, true))) &&
-        !dropsRefusedSource()
-      ) {
+      // A direct request takes the afterFiles rules unless beforeFiles leave it
+      // on a static route or a public file, and the fallback rules if neither
+      // matches after those, so the source may intercept only where the last
+      // phase leaves it. A rule that rewrites the source away for this client
+      // refuses it here, and a later one can route it back. A Pages route or
+      // public file serves itself there instead of the source.
+      const mayInterceptRewrittenSource = async (): Promise<boolean> => {
+        if (!(await rewriteSource(options.configRewrites.beforeFiles, false))) return false;
+        let reached = await reachedByDirectRequest();
+        if (reached === null || reached.route.isDynamic) {
+          if (!(await rewriteSource(options.configRewrites.afterFiles, true))) return false;
+          reached = await reachedByDirectRequest();
+          if (reached === null) {
+            if (!(await rewriteSource(options.configRewrites.fallback, true))) return false;
+            reached = await reachedByDirectRequest();
+          }
+        }
+        if (!didRewriteSource) return true;
+        if (reached !== null && !reached.isApp) {
+          rewroteToNonInterceptingSource = true;
+          return false;
+        }
+        return adoptRewrittenInterceptionSource(sourceRulesPathname) && !didRewriteSourceQuery;
+      };
+      const mayInterceptSource = await mayInterceptRewrittenSource();
+      // A source a rule proxies elsewhere never renders here, so the request
+      // renders the target directly, as for a page without the intercept.
+      if (didRewriteSourceExternally) rewroteToNonInterceptingSource = true;
+      if (!mayInterceptSource && !dropsRefusedSource()) {
         options.clearRequestContext();
         return notFoundResponse();
       }

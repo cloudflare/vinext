@@ -342,6 +342,14 @@ const nextConfig: NextConfig = {
           has: [{ type: "cookie", key: "client-page-hmr-q" }],
           destination: "/client-page-search-params/hmr?q=from-cookie",
         },
+        // Used by E2E: app-router/interception-rewritten-source.spec.ts — a
+        // member page that beforeFiles rewrites to an unmatched path, which an
+        // afterFiles rule routes back to the member page.
+        {
+          source: "/gated-members/:id",
+          has: [{ type: "cookie", key: "gated-detour" }],
+          destination: "/gated-detour/:id",
+        },
       ],
       afterFiles: [
         externalHeadersRewrite("after-files"),
@@ -420,6 +428,10 @@ const nextConfig: NextConfig = {
           source: "/gated-members/:id",
           missing: [{ type: "cookie", key: "gated-pass" }],
           destination: "/gated-login",
+        },
+        {
+          source: "/gated-detour/:id",
+          destination: "/gated-members/:id",
         },
       ],
       fallback: [
