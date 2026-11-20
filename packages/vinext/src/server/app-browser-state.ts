@@ -2,6 +2,7 @@ import { stripBasePath } from "../utils/base-path.js";
 import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import {
   AppElementsWire,
+  bindAppElementsSlotRefreshPathname,
   getMountedSlotIds,
   getMountedSlotIdsHeader,
   type AppElements,
@@ -679,7 +680,12 @@ type CreatePendingNavigationCommitOptions = {
 export function createPendingNavigationCommitFromElements(
   options: CreatePendingNavigationCommitOptions & { nextElements: AppElements },
 ): PendingNavigationCommit {
-  const elements = options.nextElements;
+  // The slots this response rendered are refetched at the URL it was
+  // committed for, the snapshot's pathname.
+  const elements = bindAppElementsSlotRefreshPathname(
+    options.nextElements,
+    options.navigationSnapshot.pathname,
+  );
   // Before any merge into the visible tree: a page still streaming when a
   // later navigation keeps its branch first renders under that navigation,
   // but reads the query of the response that delivered it.

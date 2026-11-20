@@ -83,6 +83,11 @@ import {
   isAppPageRouteGroupSegment,
 } from "./app-page-segment-state.js";
 import { createAppPageSegmentPlan } from "./app-page-segment-plan.js";
+import {
+  createAppPageRouteHeadRef,
+  resolveAppPageRouteHeadRef,
+  type AppPageRouteHeadRef,
+} from "./app-page-route-head-ref.js";
 import type { AppPageRenderIdentity } from "./app-page-render-identity.js";
 import {
   resolveAppPageModuleTraceSegment,
@@ -826,7 +831,7 @@ function createAppPageSlotBindings<
 }
 
 function createAppPageRouteHead(
-  resolveHead: (() => AppPageRouteHead) | null | undefined,
+  head: AppPageRouteHeadRef<AppPageRouteHead> | null,
   pathname: string,
   metadataPlacement: "body" | "head",
   trailingSlash?: boolean,
@@ -834,11 +839,11 @@ function createAppPageRouteHead(
   return (
     <>
       <meta charSet="utf-8" />
-      {resolveHead ? (
+      {head ? (
         <AppPageHead
+          head={head}
           metadataPlacement={metadataPlacement}
           pathname={pathname}
-          resolveHead={resolveHead}
           trailingSlash={trailingSlash}
         />
       ) : (
@@ -852,12 +857,12 @@ function createAppPageRouteHead(
 // renders it, so generateMetadata() and generateViewport() share React's
 // cache() with the page instead of running before the render.
 async function AppPageHead(props: {
+  head: AppPageRouteHeadRef<AppPageRouteHead>;
   metadataPlacement: "body" | "head";
   pathname: string;
-  resolveHead: () => AppPageRouteHead;
   trailingSlash?: boolean;
 }): Promise<ReactNode> {
-  const head = props.resolveHead();
+  const head = resolveAppPageRouteHeadRef(props.head);
   const [metadata, viewport] = await Promise.all([
     props.metadataPlacement === "head" ? head.metadata : null,
     head.viewport,
@@ -934,13 +939,13 @@ export function createAppPageRouteBodyMetadata(
 }
 
 async function AppPageStreamingMetadata(props: {
+  head: AppPageRouteHeadRef<AppPageRouteHead>;
   pathname: string;
-  resolveHead: () => AppPageRouteHead;
   scriptNonce?: string;
   trailingSlash?: boolean;
 }): Promise<ReactNode> {
   try {
-    const metadata = await props.resolveHead().metadata;
+    const metadata = await resolveAppPageRouteHeadRef(props.head).metadata;
     return createAppPageRouteBodyMetadata(
       metadata,
       props.pathname,
@@ -957,9 +962,9 @@ async function AppPageStreamingMetadata(props: {
 AppPageStreamingMetadata.displayName = "Vinext.StreamingMetadata";
 
 async function AppPageMetadataOutlet(props: {
-  resolveHead: () => AppPageRouteHead;
+  head: AppPageRouteHeadRef<AppPageRouteHead>;
 }): Promise<null> {
-  return props.resolveHead().outlet;
+  return resolveAppPageRouteHeadRef(props.head).outlet;
 }
 AppPageMetadataOutlet.displayName = "Vinext.MetadataOutlet";
 
@@ -1004,6 +1009,7 @@ export function buildAppPageElements<
     ? resolveAppPageChildrenSlotId(options.route.childrenSlot)
     : pageId;
   const metadataPlacement = options.metadataPlacement ?? "head";
+  const headRef = options.resolveHead ? createAppPageRouteHeadRef(options.resolveHead) : null;
   // Head resolution can fail after the render has started, so every resolved
   // head gets an outlet that rethrows inside the route's boundaries.
   const streamingMetadataOutletId = options.resolveHead
@@ -1384,20 +1390,18 @@ export function buildAppPageElements<
   if (options.route.staticSiblings && options.route.staticSiblings.length > 0) {
     elements[APP_STATIC_SIBLINGS_KEY] = options.route.staticSiblings;
   }
-  if (options.resolveHead && streamingMetadataBodyId) {
+  if (headRef && streamingMetadataBodyId) {
     elements[streamingMetadataBodyId] = (
       <AppPageStreamingMetadata
+        head={headRef}
         pathname={options.resolvedMetadataPathname ?? options.routePath}
-        resolveHead={options.resolveHead}
         scriptNonce={options.scriptNonce}
         trailingSlash={options.trailingSlash}
       />
     );
   }
-  if (options.resolveHead && streamingMetadataOutletId) {
-    elements[streamingMetadataOutletId] = (
-      <AppPageMetadataOutlet resolveHead={options.resolveHead} />
-    );
+  if (headRef && streamingMetadataOutletId) {
+    elements[streamingMetadataOutletId] = <AppPageMetadataOutlet head={headRef} />;
   }
   const getEffectiveSlotParams = (slotKey: string, _slotName: string): AppPageParams =>
     slotPlansByKey.get(slotKey)?.params ?? options.matchedParams;
@@ -2496,7 +2500,7 @@ export function buildAppPageElements<
   const routeElement = (
     <>
       {createAppPageRouteHead(
-        options.resolveHead,
+        headRef,
         options.resolvedMetadataPathname ?? options.routePath,
         metadataPlacement,
         options.trailingSlash,

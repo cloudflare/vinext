@@ -369,10 +369,11 @@ describe("deploy prerender config wiring", () => {
         experimentalTPR: true,
         warmCdnCertify: true,
         warmCdnTarget: "not-an-origin",
+        warmCdnHeaders: [["X-Key", "value"]],
         warmCdnPromote: false,
       }),
     ).rejects.toThrow(
-      "Worker Preview deployments do not support: preview, warmCdnCache, warmCdnTarget, warmCdnCertify, warmCdnPromote, experimentalTPR.",
+      "Worker Preview deployments do not support: preview, warmCdnCache, warmCdnTarget, warmCdnHeaders, warmCdnCertify, warmCdnPromote, experimentalTPR.",
     );
     expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
     expect(execFileSync).not.toHaveBeenCalled();
@@ -727,6 +728,7 @@ export function createBuilder(config) {
       writeFile("dist/server/RSC_BUILD_ID", "build-a\n");
       writeFile("dist/server/index.js", "export default {};\n");
       resolveTPRRoutesMock.mockResolvedValueOnce({
+        metadataCandidates: [{ path: "/api/opengraph-image", requests: 5 }],
         routes: [{ path: "/missing", requests: 10 }],
         targetUrl: "https://vinext.dev",
       });

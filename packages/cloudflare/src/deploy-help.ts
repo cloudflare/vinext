@@ -49,6 +49,10 @@ ${wranglerOptions}    --vite-config <path>     Vite config file to build with (d
                              HTTPS origin to use for discovery, probing, and warming
                              (overrides URLs inferred from Wrangler output)
                              Also supported with traffic-aware warming
+    --warm-cache-header <"Name: value">
+                             Extra request header for discovery, readiness,
+                             warming, and probe requests to the Worker
+                             (repeatable; see VINEXT_WARM_CACHE_HEADERS below)
     --warm-cache-concurrency <count>
                              Maximum number of CDN warmup requests in parallel (default: 25)
     --warm-cache-timeout <ms>  Per-request CDN warmup timeout (default: 10000)
@@ -98,6 +102,14 @@ ${wranglerOptions}    --vite-config <path>     Vite config file to build with (d
   Zone > Zone > Read permissions for that zone.
   Use --warm-cache-target <origin> to provide the production HTTPS origin
   manually for traffic-aware analytics selection, discovery, probing, and warming.
+
+  Sites behind Cloudflare Access or another auth proxy can send the headers it
+  requires, such as an Access service token's CF-Access-Client-Id and
+  CF-Access-Client-Secret. Set VINEXT_WARM_CACHE_HEADERS to one "Name: value"
+  per line to keep secrets out of shell history; --warm-cache-header entries
+  replace env entries with the same name. Header values are never printed, and
+  names vinext sets itself (Accept, Cache-Control, RSC, Next-*, X-Vinext-*, ...)
+  are rejected.
 
   Workers Cache automatically uses tiered caching. Warmed entries can therefore
   be reused outside the data center reached by the warmup request after cache

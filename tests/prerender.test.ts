@@ -1418,9 +1418,10 @@ describe("prerenderApp — default mode (app-basic)", () => {
   let outDir: string;
   let results: PrerenderRouteResult[];
   let nextPhaseAfterPrerender: string | undefined;
+  let rscBundlePath: string;
 
   beforeAll(async () => {
-    const rscBundlePath = await buildAppFixture(APP_FIXTURE);
+    rscBundlePath = await buildAppFixture(APP_FIXTURE);
     outDir = tmpDir("vinext-prerender-app-");
 
     const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
@@ -1452,6 +1453,56 @@ describe("prerenderApp — default mode (app-basic)", () => {
   afterAll(() => {
     fs.rmSync(outDir, { recursive: true, force: true });
   });
+
+  it("discovers the metadata routes Next.js prerenders as CDN warm targets", async () => {
+    // Next.js builds every static metadata file, and a code-generated one
+    // unless it is dynamic: one under a dynamic segment only for its own
+    // generateStaticParams, generated sitemaps per generateSitemaps id.
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: APP_FIXTURE,
+      rscBundlePath,
+      pagesDir: null,
+    });
+    const metadataRoutes = Object.fromEntries(
+      Object.entries(manifest?.routePatterns ?? {}).flatMap(([pathname, route]) =>
+        route.metadataRoute ? [[pathname, route.pattern]] : [],
+      ),
+    );
+
+    expect(manifest?.routeHandlerPaths).toEqual(
+      expect.arrayContaining(Object.keys(metadataRoutes)),
+    );
+    expect(metadataRoutes).toMatchObject({
+      "/favicon.ico": "/favicon.ico",
+      "/about/opengraph-image.png": "/about/opengraph-image.png",
+      "/metadata-dynamic-static/-/opengraph-image.png":
+        "/metadata-dynamic-static/-/opengraph-image.png",
+      "/sitemap.xml": "/sitemap.xml",
+      "/robots.txt": "/robots.txt",
+      "/icon": "/icon",
+      "/products/sitemap/0.xml": "/products/sitemap.xml",
+      "/products/sitemap/featured.xml": "/products/sitemap.xml",
+      "/metadata-invalid-id-sibling/icon/good": "/metadata-invalid-id-sibling/icon",
+      "/metadata-static-params/public-post/opengraph-image":
+        "/metadata-static-params/:slug/opengraph-image",
+      "/metadata-storage/force-static/opengraph-image":
+        "/metadata-storage/force-static/opengraph-image",
+    });
+    // No generateStaticParams of its own, so Next.js renders it on request.
+    expect(Object.values(metadataRoutes)).not.toContain("/blog/:slug/opengraph-image");
+    // Generated sitemaps replace the base sitemap URL.
+    expect(metadataRoutes).not.toHaveProperty("/products/sitemap.xml");
+    // Image routes are warmed at the URL the rendered page links them with.
+    const html = fs.readFileSync(path.join(outDir, "index.html"), "utf8");
+    for (const pathname of ["/favicon.ico", "/icon"]) {
+      const search = manifest?.routePatterns?.[pathname]?.metadataSearch;
+      expect(search).toMatch(/^\?[0-9a-f]{16}$/);
+      expect(html).toContain(`href="${pathname}${search}"`);
+    }
+    expect(manifest?.routePatterns?.["/sitemap.xml"]?.metadataSearch).toBeUndefined();
+  }, 60_000);
 
   // As in Next.js, whose build fails on a prerender error, a page that throws
   // is not stored, even when an error.tsx catches the error (#4394).
