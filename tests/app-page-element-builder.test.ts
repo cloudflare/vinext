@@ -3952,6 +3952,81 @@ describe("buildPageElements", () => {
     expect(calls).not.toContain("aside club layout");
   });
 
+  // Each other slot of the whole intercepting route is Next.js's lone
+  // `__DEFAULT__` segment, which carries none of the slot directory's files,
+  // and the payload keeps nothing the client holds, so a default renders even
+  // in a slot the client has mounted.
+  it("renders the whole intercepting route's other slots as clean, fresh defaults", async () => {
+    const calls: string[] = [];
+    const component =
+      (name: string) =>
+      ({ children }: { children?: React.ReactNode }) => {
+        calls.push(name);
+        return React.createElement("div", null, name, children);
+      };
+    const route = createSyntheticRoute({
+      layouts: [],
+      layoutTreePositions: [],
+      page: { default: component("club page") } as AppPageModule,
+      pattern: "/club/:slug",
+      params: ["slug"],
+      routeSegments: ["club", "[slug]"],
+      slots: {
+        aside: {
+          name: "aside",
+          page: { default: component("aside page") } as AppPageModule,
+          default: { default: component("aside default") } as AppPageModule,
+          error: { default: () => React.createElement("div", null, "aside error") },
+          layout: { default: component("aside slot layout") } as AppPageModule,
+          layoutIndex: -1,
+          loading: { default: () => React.createElement("div", null, "aside loading") },
+          notFound: { default: () => React.createElement("div", null, "aside not found") },
+          notFoundTreePosition: 0,
+          notFounds: [{ default: () => React.createElement("div", null, "aside not found") }],
+          notFoundTreePositions: [0],
+          ownerTreePosition: 0,
+          routeSegments: ["club", "[slug]"],
+        },
+        modal: {
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: -1,
+          routeSegments: [],
+        },
+      },
+    });
+    const options = createBaseOptions({
+      route,
+      params: { slug: "static" },
+      routePath: "/club/static/pics/1",
+      mountedSlotsHeader: "slot:aside:/",
+      opts: {
+        interceptionContext: "/club/static",
+        interceptOwnerDefault: null,
+        interceptPage: { default: component("pic modal") } as AppPageModule,
+        interceptParams: { id: "1", slug: "static" },
+        interceptSlotId: "slot:modal:/",
+        interceptSlotKey: "modal",
+        interceptSourceMatchedUrl: "/club/static",
+        interceptSourcePageSegments: ["club", "[slug]", "@modal", "(.)pics", "[id]"],
+        rendersInterceptionSource: true,
+        rendersWholeInterceptingRoute: true,
+      },
+    });
+    const elements = await buildPageElements({
+      ...options,
+      pageRequest: { ...options.pageRequest, isRscRequest: true },
+    });
+
+    const aside = (elements as Record<string, React.ReactNode>)["slot:aside:/"];
+    expect(aside).toBeDefined();
+    expect(findElementOfType(aside, ErrorBoundary)).toBeNull();
+    expect(findElementOfType(aside, React.Suspense)).toBeNull();
+    expect(await renderElementEntry(elements, "slot:aside:/")).toContain("aside default");
+    expect(calls).not.toContain("aside slot layout");
+    expect(calls).not.toContain("aside page");
+  });
+
   describe("the source route beneath a slot intercept", () => {
     // Next.js renders the intercepting route's tree for an intercepted
     // navigation: the layouts down to the slot's owner and the intercepting

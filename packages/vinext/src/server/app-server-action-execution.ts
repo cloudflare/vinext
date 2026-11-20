@@ -393,8 +393,10 @@ export type HandleServerActionRscRequestOptions<
    * Hydrate a route's lazy page/route-handler modules before reading
    * `route.page` / `route.routeHandler` on action redirect targets and
    * re-render targets obtained via `matchRoute`/`getSourceRoute`. Idempotent.
+   * With the opts of a render of the whole intercepting route, only what it
+   * shows.
    */
-  ensureRouteLoaded?: (route: TRoute) => unknown;
+  ensureRouteLoaded?: (route: TRoute, interceptOpts?: unknown) => unknown;
   findIntercept: (pathname: string) => AppServerActionIntercept<TPage> | null;
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
@@ -1969,7 +1971,10 @@ export async function handleServerActionRscRequest<
         actionRerenderTarget.interceptOpts as Parameters<typeof resolveAppPageNavigationParams>[3],
       );
       // Hydrate the re-render target before reading its page module.
-      await options.ensureRouteLoaded?.(actionRerenderTarget.route);
+      await options.ensureRouteLoaded?.(
+        actionRerenderTarget.route,
+        actionRerenderTarget.interceptOpts,
+      );
       // An intercepted re-render renders the interception, which takes its
       // config from its own loader tree, as on an intercepted navigation.
       const actionInterceptConfig = actionRerenderTarget.interceptOpts

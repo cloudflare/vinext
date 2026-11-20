@@ -155,22 +155,40 @@ export function isAppInterceptRenderedDynamically(
   );
   try {
     const pageDir = path.dirname(intercept.pagePath);
+    // The tree position of a folder on the page's folder chain, or null.
+    const treePositionOf = (dir: string) => {
+      const relative = path.relative(dir, pageDir);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+      return routeSegments.length - relative.split("/").filter(Boolean).length;
+    };
     const layoutsByPosition = new Map<number, string>();
     for (const layoutPath of layoutPaths) {
-      const relative = path.relative(path.dirname(layoutPath), pageDir);
-      if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
-      const depthBelowLayout = relative.split("/").filter(Boolean).length;
-      layoutsByPosition.set(routeSegments.length - depthBelowLayout, layoutPath);
+      const position = treePositionOf(path.dirname(layoutPath));
+      if (position !== null) layoutsByPosition.set(position, layoutPath);
     }
     const layoutTreePositions = [...layoutsByPosition.keys()].sort((a, b) => a - b);
     const { isUnreadable, read } = createSegmentConfigReader(readMdxEsm);
     const layouts = layoutTreePositions.map((position) => read(layoutsByPosition.get(position)));
     const page = read(intercept.pagePath);
     // A slot intercept's route renders the owner's default in its children,
-    // and every other slot's default.
-    const parallelSegments = [intercept.ownerDefaultPath, ...slotDefaultPaths].map(read);
+    // and every other slot's default, each a `__DEFAULT__` segment beside the
+    // slot at its owner's position. Children sorts first.
+    const defaults: [name: string, ownerDir: string, defaultPath: string][] = [];
+    if (intercept.ownerDefaultPath) {
+      defaults.push(["", path.dirname(intercept.ownerDefaultPath), intercept.ownerDefaultPath]);
+    }
+    for (const defaultPath of slotDefaultPaths) {
+      if (!defaultPath) continue;
+      const slotDir = path.dirname(defaultPath);
+      defaults.push([path.basename(slotDir).slice(1), path.dirname(slotDir), defaultPath]);
+    }
+    const parallelBranches = defaults.flatMap(([name, ownerDir, defaultPath]) => {
+      const ownerTreePosition = treePositionOf(ownerDir);
+      if (ownerTreePosition === null) return [];
+      return [{ isDefault: true, name, ownerTreePosition, page: read(defaultPath) }];
+    });
     if (isUnreadable()) return false;
-    const tree = { layouts, layoutTreePositions, page, parallelSegments, routeSegments };
+    const tree = { layouts, layoutTreePositions, page, parallelBranches, routeSegments };
     const segmentConfig = resolveAppPageSegmentConfig(tree);
     return !isAppPageStaticEligible({
       dynamicConfig: segmentConfig.dynamicConfig,
