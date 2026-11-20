@@ -45,7 +45,10 @@ export function isRouteMissInterceptionSource(
  *
  * Anything that fails validation returns null, matching the prior behavior of
  * an absent header. This is intentionally more permissive than rejecting the
- * whole request — interception is a progressive enhancement.
+ * whole request — interception is a progressive enhancement. Next.js never
+ * rejects a request over its `Next-Url`, so the RSC handler also treats a value
+ * that passes these bounds but names no canonical source pathname as absent,
+ * and the target renders on its own.
  */
 
 /** Hard cap on the byte length of the interception-context header value. */
