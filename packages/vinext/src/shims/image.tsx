@@ -134,6 +134,9 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
     unoptimized: _unoptimized,
     overrideSrc,
     loading,
+    // Deprecated props: Next.js consumes them and applies them to fill images only.
+    objectFit,
+    objectPosition,
     ...rest
   },
   ref,
@@ -142,6 +145,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // Matches Next.js behavior — prevents double-firing from React re-renders,
   // strict-mode double-invocation, or state updates inside the handler itself.
   // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+  const legacyFill = { objectFit, objectPosition };
   const lastLoadedSrcRef = useRef<string | undefined>(undefined);
   const lastErrorSrcRef = useRef<string | undefined>(undefined);
 
@@ -314,7 +318,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         data-nimg={fill ? "fill" : "1"}
         onLoad={handleLoad}
         onError={handleError}
-        style={fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style }}
+        style={fill ? getFillStyle(style, blurStyle, legacyFill) : { ...blurStyle, ...style }}
         {...rest}
       />
     );
@@ -343,7 +347,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         className={className}
         onLoad={handleLoad}
         onError={handleError}
-        style={fill ? getFillStyle(style) : style}
+        style={fill ? getFillStyle(style, undefined, legacyFill) : style}
         {...rest}
       />
     );
@@ -402,7 +406,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
           data-nimg="fill"
           onLoad={handleLoad}
           onError={handleError}
-          style={getFillStyle(style, blurStyle)}
+          style={getFillStyle(style, blurStyle, legacyFill)}
           {...rest}
         />
       );
@@ -515,7 +519,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
       data-nimg={fill ? "fill" : "1"}
       onLoad={handleLoad}
       onError={handleError}
-      style={fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style }}
+      style={fill ? getFillStyle(style, blurStyle, legacyFill) : { ...blurStyle, ...style }}
       {...rest}
     />
   );
