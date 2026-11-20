@@ -85,7 +85,9 @@ describe("App Router dev SSR of a collection built from its children", () => {
   let baseUrl = "";
   let fixtureDir = "";
   let server: ViteDevServer | undefined;
-  const consoleMethods: Record<string, unknown> = { ...console };
+  // Taken after the production tests above: their server wraps console.error
+  // once for the process.
+  let consoleMethods: Record<string, unknown> = {};
 
   async function startDevServer(): Promise<{ server: ViteDevServer; baseUrl: string }> {
     const devServer = await createServer({
@@ -104,6 +106,7 @@ describe("App Router dev SSR of a collection built from its children", () => {
   }
 
   beforeAll(async () => {
+    consoleMethods = { ...console };
     fixtureDir = await createIsolatedFixture(FIXTURE_SOURCE_DIR, "vinext-ssr-collection-dev-");
     ({ server, baseUrl } = await startDevServer());
   }, 120_000);
