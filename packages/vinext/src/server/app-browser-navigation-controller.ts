@@ -1084,7 +1084,11 @@ export function createAppBrowserNavigationController(
         }
         pendingNavigationCommits.delete(renderId);
         resolveCommitted?.(false);
-        consumeAppRouterScrollIntent(options.scrollIntent ?? null);
+        // A detached shell shares its navigation's scroll intent, which the
+        // navigation's own payload commits or consumes.
+        if (options.navigationCommitKind !== "detached") {
+          consumeAppRouterScrollIntent(options.scrollIntent ?? null);
+        }
         return "no-commit";
       }
 

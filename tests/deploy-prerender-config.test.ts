@@ -369,10 +369,11 @@ describe("deploy prerender config wiring", () => {
         experimentalTPR: true,
         warmCdnCertify: true,
         warmCdnTarget: "not-an-origin",
+        warmCdnHeaders: [["X-Key", "value"]],
         warmCdnPromote: false,
       }),
     ).rejects.toThrow(
-      "Worker Preview deployments do not support: preview, warmCdnCache, warmCdnTarget, warmCdnCertify, warmCdnPromote, experimentalTPR.",
+      "Worker Preview deployments do not support: preview, warmCdnCache, warmCdnTarget, warmCdnHeaders, warmCdnCertify, warmCdnPromote, experimentalTPR.",
     );
     expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
     expect(execFileSync).not.toHaveBeenCalled();
@@ -539,7 +540,10 @@ describe("deploy prerender config wiring", () => {
         "node_modules/vite/index.js",
         `export * from ${JSON.stringify(viteUrl)};
 export function createBuilder(config) {
-  return { async buildApp() { config.__vinextBuildLifecycle.onComplete(); } };
+  return {
+    config: { root: config.root, build: { outDir: "dist" } },
+    async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
+  };
 }
 `,
       );
@@ -554,6 +558,67 @@ export function createBuilder(config) {
       } finally {
         warn.mockRestore();
       }
+    },
+  );
+
+  it("reads the build output from the build.outDir the build resolved", async () => {
+    writeProject("true");
+    writeFile("next.config.mjs", 'export default { output: "export" };\n');
+    const viteUrl = pathToFileURL(createRequire(import.meta.url).resolve("vite")).href;
+    writeFile(
+      "node_modules/vite/package.json",
+      JSON.stringify({ name: "vite", type: "module", main: "index.js" }),
+    );
+    // A plugin's config hook set build.outDir and root, which the config file
+    // doesn't show. Vite resolves the outDir against the root.
+    writeFile(
+      "node_modules/vite/index.js",
+      `export * from ${JSON.stringify(viteUrl)};
+export function createBuilder(config) {
+  return {
+    config: { root: config.root + "/site", build: { outDir: "out" } },
+    async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
+  };
+}
+`,
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routeRootConfig: expect.objectContaining({ outDir: path.join(tmpDir, "site", "out") }),
+      }),
+    );
+  });
+
+  it.each([
+    ['build: { outDir: "out" },', path.join("out")],
+    ['root: "site", build: { outDir: "out" },', path.join("site", "out")],
+    ['root: "site",', path.join("site", "dist")],
+  ])(
+    "reads a --skip-build deploy's output from the Vite config's build.outDir (%s)",
+    async (config, expected) => {
+      writeProject("true");
+      writeFile("next.config.mjs", 'export default { output: "export" };\n');
+      const viteConfig = path.join(tmpDir, "vite.config.ts");
+      fs.writeFileSync(
+        viteConfig,
+        fs
+          .readFileSync(viteConfig, "utf8")
+          .replace("export default defineConfig({", `export default defineConfig({\n  ${config}`),
+      );
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({ root: tmpDir, skipBuild: true });
+
+      // A relative outDir is relative to the config's root, as in Vite.
+      expect(runPrerenderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeRootConfig: expect.objectContaining({ outDir: path.join(tmpDir, expected) }),
+        }),
+      );
     },
   );
 
@@ -727,6 +792,7 @@ export function createBuilder(config) {
       writeFile("dist/server/RSC_BUILD_ID", "build-a\n");
       writeFile("dist/server/index.js", "export default {};\n");
       resolveTPRRoutesMock.mockResolvedValueOnce({
+        metadataCandidates: [{ path: "/api/opengraph-image", requests: 5 }],
         routes: [{ path: "/missing", requests: 10 }],
         targetUrl: "https://vinext.dev",
       });

@@ -189,6 +189,7 @@ function renderPagesRouterElement(
   }
 
   cancelPreviousRenderCommit();
+  commitRouterSnapshot();
   // A cancelled navigation's render still commits, and shows its page, unless
   // a newer render replaces it.
   const renderId = ++routerRuntimeState.pagesRenderId;
@@ -476,6 +477,12 @@ type PagesRouterRuntimeState = {
   routerDidNavigate: boolean;
   deprecatedEventBridgeInstalled: boolean;
   pagesRouterReady: boolean;
+  /**
+   * The router snapshot of the last committed router state change (see
+   * `commitRouterSnapshot`). `token` grows by one per commit, so the provider
+   * can tell a newer commit from the state it already holds.
+   */
+  committedRouterSnapshot: CommittedRouterSnapshot | null;
   publicRouter?: Record<string, unknown>;
 };
 
@@ -508,6 +515,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     routerDidNavigate: false,
     deprecatedEventBridgeInstalled: false,
     pagesRouterReady: typeof window === "undefined" || !shouldDeferInitialPagesRouterReady(),
+    committedRouterSnapshot: null,
   };
 }
 
@@ -3280,10 +3288,21 @@ function stripHash(url: string): string {
   return i === -1 ? url : url.slice(0, i);
 }
 
+/**
+ * `detail` of the `vinext:navigate` events the router dispatches. Every such
+ * navigation has already committed its router snapshot (`commitRouterSnapshot`).
+ * A string, not an object: the client entry and page chunks can each evaluate
+ * their own `next/router` instance, and the provider must recognise an event
+ * dispatched by any of them.
+ */
+const ROUTER_NAVIGATE_EVENT_DETAIL = "vinext.routerStateCommitted";
+
 /** Notify in-page listeners (e.g. useRouter hooks) that navigation occurred. */
 function dispatchNavigateEvent(): void {
   notifyNextNavigationPagesContext();
-  window.dispatchEvent(new CustomEvent("vinext:navigate"));
+  window.dispatchEvent(
+    new CustomEvent("vinext:navigate", { detail: ROUTER_NAVIGATE_EVENT_DETAIL }),
+  );
 }
 
 /**
@@ -3763,6 +3782,7 @@ async function performNavigation(
         : (redirectBrowserHref ?? credentialedDisplayHref ?? full),
       navState,
     );
+    commitRouterSnapshot();
     if (doScroll) scrollToHashTarget(extractHash(resolved));
     onStateUpdate?.();
     routerEvents.emit("hashChangeComplete", eventUrl, { shallow });
@@ -3893,6 +3913,7 @@ async function performNavigation(
     if (result === "failed") return false;
   } else {
     emitBeforeHistoryChange();
+    commitRouterSnapshot();
     // Shallow navigations skip the render-commit path, so apply the scroll
     // reset synchronously here — before routeChangeComplete. This matches the
     // non-shallow path, where the x/y reset runs inside the render-commit
@@ -3997,8 +4018,62 @@ export function useRouter(): NextRouter {
   );
 }
 
+type RouterSnapshot = ReturnType<typeof getRouterSnapshot>;
+
+type CommittedRouterSnapshot = {
+  token: number;
+  snapshot: RouterSnapshot;
+};
+
+type RouterSnapshotState = {
+  snapshot: RouterSnapshot;
+  // The `committedRouterSnapshot` token this state already accounts for.
+  commitToken: number;
+};
+
+function getCommittedRouterSnapshotToken(): number {
+  return routerRuntimeState.committedRouterSnapshot?.token ?? 0;
+}
+
+/**
+ * Record the router state at the moment a change commits, like Next.js's
+ * `Router#set()` assigning `this.state` (packages/next/src/shared/lib/router/router.ts).
+ * A render-backed navigation calls this once its history entry and
+ * `__NEXT_DATA__` are committed, right before `root.render()`; shallow and
+ * hash-only changes call it after their history update, and the ready
+ * transition when it flips the ready bit. The provider only ever shows a
+ * committed snapshot, never the live location: on popstate the browser moves
+ * `location` before the route is resolved, a traversal rejected by
+ * `beforePopState` never commits, and the location may move again before a
+ * completed navigation dispatches `vinext:navigate`.
+ */
+function commitRouterSnapshot(): void {
+  routerRuntimeState.committedRouterSnapshot = {
+    token: getCommittedRouterSnapshotToken() + 1,
+    snapshot: getRouterSnapshot(),
+  };
+}
+
+function takeRouterSnapshot(): RouterSnapshotState {
+  return { snapshot: getRouterSnapshot(), commitToken: getCommittedRouterSnapshotToken() };
+}
+
+/** Adopt a router state commit newer than the provider's state, if there is one. */
+function adoptCommittedRouterSnapshot(prev: RouterSnapshotState): RouterSnapshotState {
+  const committed = routerRuntimeState.committedRouterSnapshot;
+  if (committed === null || committed.token === prev.commitToken) return prev;
+  return { snapshot: committed.snapshot, commitToken: committed.token };
+}
+
 function PagesRouterProvider({ children }: { children: ReactNode }): ReactElement {
-  const [{ pathname, query, asPath, isReady }, setState] = useState(getRouterSnapshot);
+  const [routerState, setState] = useState(takeRouterSnapshot);
+  // A client navigation records its route snapshot and then calls
+  // root.render(), which re-renders this provider with its old state. Adopt the
+  // committed snapshot during render, before any child reads the context, so
+  // the new page's first render already sees its route, as in Next.js.
+  const currentRouterState = adoptCommittedRouterSnapshot(routerState);
+  if (currentRouterState !== routerState) setState(currentRouterState);
+  const { pathname, query, asPath, isReady } = currentRouterState.snapshot;
 
   // Popstate is handled by the Pages Router client entry via
   // installPagesRouterRuntime() so beforePopState() is consistently enforced
@@ -4006,8 +4081,14 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
   // provider boundary so many useRouter() calls share one router state and one
   // vinext:navigate listener.
   useEffect(() => {
-    const onNavigate = ((_e: CustomEvent) => {
-      setState(getRouterSnapshot());
+    // The router's own navigations committed their snapshot already (a
+    // render-backed one was adopted during render, so this only picks up
+    // shallow and hash-only changes). Never re-read the live location for
+    // them: it may have moved since. An event dispatched outside the router
+    // has no commit, so it records the live state, as before.
+    const onNavigate = ((e: CustomEvent) => {
+      if (e.detail !== ROUTER_NAVIGATE_EVENT_DETAIL) commitRouterSnapshot();
+      setState(adoptCommittedRouterSnapshot);
     }) as EventListener;
     window.addEventListener("vinext:navigate", onNavigate);
     let cancelled = false;
@@ -4016,7 +4097,8 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
 
       const becameReady = markPagesRouterReady();
       if (becameReady) {
-        setState(getRouterSnapshot());
+        commitRouterSnapshot();
+        setState(adoptCommittedRouterSnapshot);
         notifyNextNavigationPagesContext();
       }
     }, 0);
@@ -4254,6 +4336,7 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     // L1381-1403 and L1780). The snapshot stays in sessionStorage, so a later
     // non-hash popstate to this entry still restores the saved position.
     const hashUrl = browserUrl + window.location.hash;
+    commitRouterSnapshot();
     routerEvents.emit("hashChangeStart", hashUrl, { shallow: false });
     scrollToHashTarget(window.location.hash);
     routerEvents.emit("hashChangeComplete", hashUrl, { shallow: false });

@@ -33,6 +33,7 @@ import {
   wranglerSupportsVersionAnnotations,
 } from "../packages/cloudflare/src/deploy.js";
 import { parsePreviewsDeployArgs } from "../packages/cloudflare/src/previews-deploy.js";
+import { resolveWarmCacheRequestHeaders } from "../packages/cloudflare/src/warm-request-headers.js";
 import {
   detectPackageManager,
   detectPackageManagerName,
@@ -255,6 +256,54 @@ describe("buildWranglerDeployArgs", () => {
 });
 
 describe("deploy environment validation", () => {
+  describe("VINEXT_WARM_CACHE_HEADERS from .env files", () => {
+    beforeEach(() => {
+      // Restored by unstubAllEnvs after loadDotenv writes it.
+      vi.stubEnv("VINEXT_WARM_CACHE_HEADERS", undefined);
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("reads the deploy's .env files before a warming deploy starts", async () => {
+      writeFile(
+        tmpDir,
+        ".env.production.local",
+        "VINEXT_WARM_CACHE_HEADERS=s3cret-without-colon\n",
+      );
+
+      await expect(deploy({ root: tmpDir, warmCdnCache: true, dryRun: true })).rejects.toThrow(
+        'VINEXT_WARM_CACHE_HEADERS line 1 expects "Name: value", but the entry has no colon.',
+      );
+    });
+
+    it("rejects programmatic warm-up headers for a deploy that does not warm", async () => {
+      await expect(
+        deploy({ root: tmpDir, warmCdnHeaders: [["X-Key", "value"]], dryRun: true }),
+      ).rejects.toThrow("--warm-cache-header requires --warm-cache or --traffic-aware-warm-cache.");
+    });
+
+    it("validates programmatic warm-up headers before a dry run returns", async () => {
+      await expect(
+        deploy({ root: tmpDir, warmCdnCache: true, warmCdnHeaders: [["RSC", "1"]], dryRun: true }),
+      ).rejects.toThrow('warmCdnHeaders cannot set "RSC"');
+    });
+
+    it("ignores the env var for a deploy that does not warm", async () => {
+      writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
+      writeFile(
+        tmpDir,
+        ".env.production.local",
+        "VINEXT_WARM_CACHE_HEADERS=s3cret-without-colon\n",
+      );
+
+      await expect(deploy({ root: tmpDir, dryRun: true })).rejects.toThrow(
+        "Run `vinext init --platform=cloudflare` first.",
+      );
+    });
+  });
+
   it("keeps the typed Cloudflare config authoritative for the Worker name", async () => {
     writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
 
@@ -1031,6 +1080,7 @@ describe("parseDeployArgs", () => {
       "warmCdnReadinessTimeout",
       "warmCdnReadinessRetries",
       "warmCdnTarget",
+      "warmCdnHeaders",
     ]) {
       expect(cliSource).toContain(`${option}: parsed.${option}`);
     }
@@ -1125,6 +1175,118 @@ describe("parseDeployArgs", () => {
     },
   );
 
+  describe("warm-up request headers", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("parses repeated --warm-cache-header flags", () => {
+      const parsed = parseDeployArgs([
+        "--warm-cache",
+        "--warm-cache-header",
+        "CF-Access-Client-Id: id.access",
+        "--warm-cache-header=X-Bot-Key:  a:b ",
+      ]);
+      expect(parsed.warmCdnHeaders).toEqual([
+        ["CF-Access-Client-Id", "id.access"],
+        ["X-Bot-Key", "a:b"],
+      ]);
+      expect(parseDeployArgs(["--warm-cache"]).warmCdnHeaders).toBeUndefined();
+    });
+
+    it("reads VINEXT_WARM_CACHE_HEADERS lines and lets a flag replace an entry", () => {
+      const flags = parseDeployArgs([
+        "--traffic-aware-warm-cache",
+        "--warm-cache-header",
+        "cf-access-client-secret: flag-secret",
+      ]).warmCdnHeaders;
+      expect(
+        resolveWarmCacheRequestHeaders(
+          "CF-Access-Client-Id: id.access\r\n\nCF-Access-Client-Secret: env-secret\n",
+          flags,
+        ),
+      ).toEqual([
+        ["CF-Access-Client-Id", "id.access"],
+        ["cf-access-client-secret", "flag-secret"],
+      ]);
+      expect(resolveWarmCacheRequestHeaders(undefined, undefined)).toBeUndefined();
+    });
+
+    it("requires CDN warming for --warm-cache-header", () => {
+      expect(() => parseDeployArgs(["--warm-cache-header", "X-Key: value"])).toThrow(
+        "--warm-cache-header requires --warm-cache or --traffic-aware-warm-cache.",
+      );
+    });
+
+    it.each([
+      "Accept",
+      "cache-control",
+      "Pragma",
+      "User-Agent",
+      "Host",
+      "RSC",
+      "Next-Router-Prefetch",
+      "Next-Url",
+      "x-nextjs-data",
+      "X-Deployment-Id",
+      "Cloudflare-Workers-Version-Overrides",
+      "X-Vinext-Expected-Worker-Version",
+      "x-vinext-prerender-secret",
+      "x-rsc-action",
+      "x-middleware-prefetch",
+      "Range",
+      "If-Range",
+      "If-Match",
+      "if-none-match",
+      "If-Modified-Since",
+      "If-Unmodified-Since",
+      "x-prerender-revalidate",
+      "X-Prerender-Revalidate-If-Generated",
+    ])("rejects %s because vinext controls it", (name) => {
+      expect(() => parseDeployArgs(["--warm-cache", "--warm-cache-header", `${name}: 1`])).toThrow(
+        `--warm-cache-header cannot set "${name}": vinext controls this header on warm-up requests.`,
+      );
+    });
+
+    it.each([
+      "Connection",
+      "Content-Length",
+      "Expect",
+      "Keep-Alive",
+      "Sec-Fetch-Mode",
+      "Transfer-Encoding",
+      "upgrade",
+    ])("rejects %s because fetch() does not allow it", (name) => {
+      expect(() => parseDeployArgs(["--warm-cache", "--warm-cache-header", `${name}: x`])).toThrow(
+        `--warm-cache-header cannot set "${name}": fetch() does not allow it.`,
+      );
+    });
+
+    it.each([
+      ["s3cret-without-colon", '--warm-cache-header expects "Name: value"'],
+      ["Bad s3cret: value", "--warm-cache-header has an invalid header name."],
+      [": s3cret", "--warm-cache-header has an invalid header name."],
+      ["X-Key: s3cret\u0000", '--warm-cache-header has an invalid value for header "X-Key".'],
+      ["X-Key: s3\u2028cret", '--warm-cache-header has an invalid value for header "X-Key".'],
+    ])("rejects a malformed flag without printing its value", (entry, message) => {
+      let error: unknown;
+      try {
+        parseDeployArgs(["--warm-cache", "--warm-cache-header", entry]);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(message);
+      expect((error as Error).message).not.toContain("s3cret");
+    });
+
+    it("names the env line of a malformed entry without printing it", () => {
+      expect(() => resolveWarmCacheRequestHeaders("X-Key: ok\ns3cret", undefined)).toThrow(
+        'VINEXT_WARM_CACHE_HEADERS line 2 expects "Name: value", but the entry has no colon.',
+      );
+    });
+  });
+
   it("parses --env with space-separated value", () => {
     expect(parseDeployArgs(["--env", "staging"]).env).toBe("staging");
   });
@@ -1174,6 +1336,8 @@ describe("parseDeployArgs", () => {
     expect(help).toContain("--traffic-aware-warm-cache");
     expect(help).toContain("--warm-cache");
     expect(help).toContain("--warm-cache-target");
+    expect(help).toContain("--warm-cache-header");
+    expect(help).toContain("VINEXT_WARM_CACHE_HEADERS");
     expect(help).toContain("--dangerously-promote-on-warm-cache-error");
     expect(help).not.toContain("--dangerously-promote-on-cdn-warm-error");
     expect(help).not.toContain("--experimental-");

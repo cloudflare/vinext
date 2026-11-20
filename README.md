@@ -118,16 +118,16 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 ### CLI reference
 
-| Command                            | Description                                                             |
-| ---------------------------------- | ----------------------------------------------------------------------- |
-| `vite dev`                         | Start dev server with HMR                                               |
-| `vite build`                       | Production build (multi-environment for App Router: RSC + SSR + client) |
-| `vinext start`                     | Start local production server for testing                               |
-| `npx @vinext/cloudflare deploy`    | Build and deploy to Cloudflare Workers                                  |
-| `vp exec vinext-cloudflare deploy` | Build and deploy to Cloudflare Workers with Vite+                       |
-| `vinext init`                      | Migrate a Next.js project to run under vinext                           |
-| `vinext check`                     | Scan your Next.js app for compatibility issues before migrating         |
-| `vinext lint`                      | Delegate to eslint or oxlint                                            |
+| Command                            | Description                                                                                        |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `vite dev`                         | Start dev server with HMR                                                                          |
+| `vite build`                       | Production build (multi-environment for App Router: RSC + SSR + client)                            |
+| `vinext start`                     | Start local production server for testing. Pass `--outDir <dir>` when Vite's `build.outDir` is set |
+| `npx @vinext/cloudflare deploy`    | Build and deploy to Cloudflare Workers                                                             |
+| `vp exec vinext-cloudflare deploy` | Build and deploy to Cloudflare Workers with Vite+                                                  |
+| `vinext init`                      | Migrate a Next.js project to run under vinext                                                      |
+| `vinext check`                     | Scan your Next.js app for compatibility issues before migrating                                    |
+| `vinext lint`                      | Delegate to eslint or oxlint                                                                       |
 
 `vinext dev` and `vinext build` remain as thin aliases for the project-local Vite commands.
 They require a Vite config; if one is missing, run `vinext init`. Vite owns their options,
@@ -831,6 +831,11 @@ custom binding name.
 upload and makes one final cache-fill request per admitted identity by default.
 Add `--warm-cache-certify` only to opt into a second, header-only request that
 must prove every planned entry reusable before promotion.
+
+For a site behind Cloudflare Access or another auth proxy, set
+`VINEXT_WARM_CACHE_HEADERS` to the headers it accepts, one `Name: value` per
+line (or pass `--warm-cache-header "Name: value"`). See
+[Sites behind an auth proxy](https://vinext.dev/docs/guides/caching#sites-behind-an-auth-proxy).
 
 While the data adapter can store entries and serve HIT/STALE itself, the CDN adapter delegates serving to Cloudflare's edge: the origin renders fresh responses and tags them with `Cache-Tag`, and `revalidateTag()` / `revalidatePath()` purge the edge through `ctx.cache.purge({ tags })`. See [examples/response-store-demo](examples/response-store-demo) for the Workers Response Store adapter.
 

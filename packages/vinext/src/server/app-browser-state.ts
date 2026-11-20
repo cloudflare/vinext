@@ -2,6 +2,7 @@ import { stripBasePath } from "../utils/base-path.js";
 import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import {
   AppElementsWire,
+  bindAppElementsSlotRefreshPathname,
   getMountedSlotIds,
   getMountedSlotIdsHeader,
   type AppElements,
@@ -9,6 +10,7 @@ import {
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import { holdsSkippedLayouts } from "./app-mounted-layouts.js";
+import { resolveHeldRetainedElementIds } from "./app-retained-elements.js";
 import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
 import {
   NEXT_ACTION_HEADER,
@@ -156,6 +158,7 @@ type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
 type CacheRestorableAppPayloadMetadata = Readonly<{
   cacheEntryReuseProof?: CacheEntryReuseProof;
   dynamicStaleTimeSeconds?: number;
+  retainedElementIds: readonly string[];
   skippedLayoutIds: readonly string[];
 }>;
 type DispatchPendingNavigationCommitDispositionDecision = {
@@ -163,6 +166,9 @@ type DispatchPendingNavigationCommitDispositionDecision = {
   preserveAbsentSlots: boolean;
   preserveElementIds: readonly string[];
   preservePreviousSlotIds: readonly string[];
+  // Elements the payload left for the client to keep, kept from the current
+  // state whatever the lane's own preservation rules would keep.
+  retainedElementIds?: readonly string[];
   trace: NavigationTrace;
 };
 type NonDispatchPendingNavigationCommitDispositionDecision = {
@@ -194,7 +200,7 @@ function createOperationRecord(options: {
 }
 
 export function isCompleteAppPayloadMetadata(metadata: CacheRestorableAppPayloadMetadata): boolean {
-  return metadata.skippedLayoutIds.length === 0;
+  return metadata.skippedLayoutIds.length === 0 && metadata.retainedElementIds.length === 0;
 }
 
 export function isCacheRestorableAppPayloadMetadata(
@@ -380,9 +386,13 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     }),
   );
 
-  return mergeSkippedLayoutPreservation({
+  return mergeRetainedElementPreservation({
     currentState: options.currentState,
-    decision,
+    decision: mergeSkippedLayoutPreservation({
+      currentState: options.currentState,
+      decision,
+      pending: options.pending,
+    }),
     pending: options.pending,
   });
 }
@@ -630,6 +640,36 @@ function mergeSkippedLayoutPreservation(options: {
   };
 }
 
+function mergeRetainedElementPreservation(options: {
+  currentState: AppRouterState;
+  decision: PendingNavigationCommitDispositionDecision;
+  pending: PendingNavigationCommit;
+}): PendingNavigationCommitDispositionDecision {
+  if (options.decision.disposition !== "dispatch") return options.decision;
+  const retainedElementIds = resolveHeldRetainedElementIds(
+    options.currentState,
+    options.pending.action.elements,
+    options.pending.previousNextUrl,
+  );
+  if (retainedElementIds?.length === 0) return options.decision;
+  // The navigation fetches what its state doesn't hold before it commits, so
+  // a payload that still names elements the state can't keep commits as a
+  // document navigation, never as a tree missing them. A detached commit only
+  // shows early what its navigation's own payload commits, so it leaves that
+  // payload to decide.
+  if (retainedElementIds === null || !options.pending.action.reuseCurrentBfcacheIds) {
+    return {
+      disposition:
+        options.pending.action.operation.navigationCommitKind === "detached"
+          ? "skip"
+          : "hard-navigate",
+      preserveElementIds: [],
+      trace: options.decision.trace,
+    };
+  }
+  return { ...options.decision, retainedElementIds };
+}
+
 function mergeSkippedLayoutSlotPreservation(options: {
   currentSlotBindings: readonly AppElementsSlotBinding[];
   preservePreviousSlotIds: readonly string[];
@@ -679,7 +719,12 @@ type CreatePendingNavigationCommitOptions = {
 export function createPendingNavigationCommitFromElements(
   options: CreatePendingNavigationCommitOptions & { nextElements: AppElements },
 ): PendingNavigationCommit {
-  const elements = options.nextElements;
+  // The slots this response rendered are refetched at the URL it was
+  // committed for, the snapshot's pathname.
+  const elements = bindAppElementsSlotRefreshPathname(
+    options.nextElements,
+    options.navigationSnapshot.pathname,
+  );
   // Before any merge into the visible tree: a page still streaming when a
   // later navigation keeps its branch first renders under that navigation,
   // but reads the query of the response that delivered it.

@@ -4400,6 +4400,171 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
 // ─── vinext:async-hooks-stub ───────────────────────────────────────────────────
 
+describe("vinext:react-server-dom-node", () => {
+  type ResolveIdHandler = (
+    this: unknown,
+    id: string,
+    importer: string | undefined,
+    options: object,
+  ) => unknown;
+
+  // Returns the id the Flight server entry is resolved to in a server
+  // environment with these conditions, whose SSR environment (where Fizz
+  // renders) has `ssrConditions`, `ssrExternal` and `ssrExternalConditions`
+  // (Vite's default unless given), or undefined when it is left alone.
+  async function resolvedFlightEntry(
+    id: string,
+    conditions: string[],
+    ssrConditions: string[] | null = conditions,
+    environmentName = "rsc",
+    ssrExternal: true | string[] = [],
+    ssrExternalConditions: string[] = ["node", "module-sync"],
+  ) {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = (vinext() as any[])
+      .flat(Infinity)
+      .find((p: any) => p?.name === "vinext:react-server-dom-node");
+    let resolved: string | undefined;
+    await (plugin.resolveId as { handler: ResolveIdHandler }).handler.call(
+      {
+        environment: {
+          name: environmentName,
+          config: { consumer: "server", resolve: { conditions } },
+          getTopLevelConfig: () => ({
+            environments: ssrConditions
+              ? {
+                  ssr: {
+                    resolve: {
+                      conditions: ssrConditions,
+                      external: ssrExternal,
+                      externalConditions: ssrExternalConditions,
+                    },
+                  },
+                }
+              : {},
+          }),
+        },
+        resolve: async (target: string) => {
+          resolved = target;
+          return { id: target };
+        },
+      },
+      id,
+      "/app/entry.js",
+      {},
+    );
+    return resolved;
+  }
+
+  const SERVER = "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge";
+  const STATIC = "react-server-dom-webpack/static.edge";
+
+  it("pairs the Flight server with react-dom's Node build on Node", async () => {
+    expect(await resolvedFlightEntry(SERVER, ["module", "node"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    expect(await resolvedFlightEntry(STATIC, ["module", "node"])).toBe(
+      "react-server-dom-webpack/static.node",
+    );
+  });
+
+  // react-dom maps `deno` to server.node.js but to static.browser.js.
+  it("follows react-dom's own map for the deno condition", async () => {
+    expect(await resolvedFlightEntry(SERVER, ["deno", "node"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    expect(await resolvedFlightEntry(SERVER, ["deno"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    expect(await resolvedFlightEntry(STATIC, ["deno", "node"])).toBeUndefined();
+  });
+
+  it("keeps the edge build where react-dom's Fizz build is not Node's", async () => {
+    // react-dom/server's Bun and edge builds schedule with setTimeout, as the
+    // Flight server's edge build does.
+    expect(await resolvedFlightEntry(SERVER, ["bun", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["bun", "node"])).toBe(
+      "react-server-dom-webpack/static.node",
+    );
+    expect(await resolvedFlightEntry(SERVER, ["workerd", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["edge-light"])).toBeUndefined();
+  });
+
+  // Fizz renders in the SSR environment, whose conditions are its own.
+  it("follows the SSR environment's conditions, not the RSC environment's", async () => {
+    // react-dom maps `worker` to its browser builds.
+    expect(await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(SERVER, ["workerd"], ["node"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    // Without an SSR environment, the environment's own conditions decide.
+    expect(await resolvedFlightEntry(SERVER, ["node"], null)).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+  });
+
+  // As in Node dev, where vinext externalizes React for the SSR environment.
+  it("follows Node's own resolution of an externalized react-dom", async () => {
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"], "rsc", ["react-dom"]),
+    ).toBe("@vitejs/plugin-rsc/vendor/react-server-dom/server.node");
+    expect(await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"], "rsc", true)).toBe(
+      "react-server-dom-webpack/static.node",
+    );
+    // An entry's own subpath externalizes only that entry.
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"], "rsc", ["react-dom/server"]),
+    ).toBe("@vitejs/plugin-rsc/vendor/react-server-dom/server.node");
+    expect(
+      await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"], "rsc", ["react-dom/server"]),
+    ).toBeUndefined();
+    expect(
+      await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"], "rsc", ["react-dom/static"]),
+    ).toBe("react-server-dom-webpack/static.node");
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"], "rsc", ["react-dom/static"]),
+    ).toBeUndefined();
+  });
+
+  // The server runs with the conditions Vite resolves externals with, which
+  // can name another runtime than the one building.
+  it("follows the SSR environment's externalConditions for an externalized react-dom", async () => {
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true, ["bun", "node"]),
+    ).toBeUndefined();
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true, ["worker", "node"]),
+    ).toBeUndefined();
+    expect(
+      await resolvedFlightEntry(STATIC, ["node"], ["node"], "rsc", true, ["bun", "node"]),
+    ).toBe("react-server-dom-webpack/static.node");
+  });
+
+  // Vite's default externalConditions name no runtime, so the one building
+  // stands in for it, but an explicit target decides.
+  it("follows the building runtime only where externalConditions are Vite's default", async () => {
+    Object.defineProperty(process.versions, "bun", { value: "1.3.0", configurable: true });
+    try {
+      expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true)).toBeUndefined();
+      expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true, ["node"])).toBe(
+        "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+      );
+    } finally {
+      Reflect.deleteProperty(process.versions, "bun");
+    }
+    expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true)).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+  });
+
+  // plugin-rsc imports the Flight server in the RSC environment only.
+  it("keeps an edge Flight server import in any other server environment", async () => {
+    expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "ssr")).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["node"], ["node"], "custom")).toBeUndefined();
+  });
+});
+
 describe("vinext:async-hooks-stub", () => {
   const VIRTUAL_ID = "\0vinext:async-hooks-stub";
 

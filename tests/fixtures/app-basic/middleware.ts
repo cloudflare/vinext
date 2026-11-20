@@ -171,6 +171,13 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       return NextResponse.rewrite(target);
     }
   }
+  // Adds a version segment to the path, as a deployment-pinning rewrite does.
+  // Coverage: tests/e2e/app-router/mw-rewrite-slot-refresh.spec.ts
+  if (pathname.startsWith("/mw-rewrite-slot-refresh/p/")) {
+    const target = request.nextUrl.clone();
+    target.pathname = pathname.replace("/mw-rewrite-slot-refresh/", "/mw-rewrite-slot-refresh/v1/");
+    return NextResponse.rewrite(target);
+  }
   if (pathname.startsWith("/encoded-parity/rewrite-any/")) {
     const target = request.nextUrl.clone();
     target.pathname = pathname.replace("/encoded-parity/rewrite-any/", "/encoded-parity/");
@@ -590,6 +597,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     }
   }
 
+  // An interception source whose public pathname names a page without the
+  // intercepted slot, rewritten to a page that has it.
+  if (pathname === "/nextjs-compat/intercept-source-group/club/moved") {
+    const target = request.nextUrl.clone();
+    target.pathname = "/nextjs-compat/intercept-source-group/club/acme";
+    return NextResponse.rewrite(target);
+  }
+
   // Forward search params as a header for RSC testing
   // Ref: opennextjs-cloudflare middleware.ts — search-params header
   const requestHeaders = new Headers(request.headers);
@@ -702,6 +717,7 @@ export const config = {
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
     "/encoded-parity/rewrite-any/:path*",
+    "/mw-rewrite-slot-refresh/:path*",
     "/nextjs-compat/optimistic-rewrite/:path*",
     "/encoded-parity/sibling/:path*",
     "/middleware-throw",
@@ -753,6 +769,7 @@ export const config = {
     "/mw-gated-fallback-pages",
     "/photos/:path*",
     "/interception-mw/:path*",
+    "/nextjs-compat/intercept-source-group/club/moved",
     "/actions",
     "/beforeinteractive-head-ordering/:path*",
     "/beforeinteractive-head-ordering",
