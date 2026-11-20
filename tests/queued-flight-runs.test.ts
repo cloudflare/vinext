@@ -204,6 +204,45 @@ describe("trackQueuedFlightRuns", () => {
     expect(cancelledWith).toBe("not cancelled");
   });
 
+  // React's Flight client asks for the next chunk as soon as it has decoded
+  // one, so the tracker never times it as a reader that stopped. A React whose
+  // client read later would start timers here first, before any were cut off.
+  it("starts no timer while React's Flight client reads a run", async () => {
+    const { renderToReadableStream, createFromReadableStream } = loadCacheFlightCodec();
+    const items = Array.from({ length: 2000 }, (_, i) => `item-${i}-`.padEnd(64, "x"));
+    const payload = new Uint8Array(
+      await new Response(
+        renderToReadableStream({ first: "ok", rest: Promise.resolve(items) }),
+      ).arrayBuffer(),
+    );
+
+    // The timers decoding the payload starts, with or without the tracker.
+    async function timersDecoding(tracked: boolean): Promise<number> {
+      const { controller, stream } = controlledStream();
+      const flight = tracked ? trackQueuedFlightRuns(stream) : null;
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      try {
+        // One run of many chunks, as React writes a flush.
+        for (let offset = 0; offset < payload.length; offset += 2048) {
+          controller.enqueue(payload.subarray(offset, offset + 2048));
+        }
+        const decoded = createFromReadableStream(flight?.stream ?? stream) as Promise<{
+          first: string;
+          rest: Promise<string[]>;
+        }>;
+        const root = await (flight ? flight.afterCurrentRun(decoded) : decoded);
+        expect(root.first).toBe("ok");
+        expect(await root.rest).toEqual(items);
+        return setTimeoutSpy.mock.calls.length;
+      } finally {
+        setTimeoutSpy.mockRestore();
+        controller.close();
+      }
+    }
+
+    expect(await timersDecoding(true)).toBe(await timersDecoding(false));
+  });
+
   it("starts no timer for a consumer that keeps reading a run", async () => {
     // Each timer costs a request in workerd about a millisecond.
     const { controller, stream } = controlledStream();
