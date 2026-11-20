@@ -577,6 +577,25 @@ describe("Next.js compat: not-found", () => {
     },
   );
 
+  // A not-found file that redirects or throws answers through the notFound()'s
+  // fallback document, as in a route without parallel slots, rather than the
+  // caught document's 404. (Next.js 16.2.7 sends its 404 error shell and runs
+  // the file in the browser, with or without the slots.)
+  it.each([
+    ["fallback-redirect", 307, "/notfound-sibling-slots"],
+    ["fallback-throw", 500, null],
+  ])(
+    "a caught notFound() whose not-found file fails keeps its outcome (%s)",
+    async (path, status, location) => {
+      const { res, html } = await fetchHtml(baseUrl, `/notfound-replay-fallback/${path}/missing`, {
+        redirect: "manual",
+      });
+      expect(res.status).toBe(status);
+      expect(res.headers.get("location")).toBe(location);
+      expect(html).not.toContain(`id="replay-${path}-sidebar"`);
+    },
+  );
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before
