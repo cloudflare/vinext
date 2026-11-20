@@ -7149,16 +7149,25 @@ describe("createAppRscHandler", () => {
       afterFiles: gateBack,
       intercepts: true,
     },
+    // Only its render tells whether the entry serves the path, so the source
+    // is refused there, even where a later phase would route it back.
     {
-      label: "an unmatched path a Pages entry without matchers renders",
-      pagesRoute: "unmatched",
+      label:
+        "an unmatched path a Pages entry without matchers may serve that afterFiles route back",
+      pagesRoute: "indeterminate",
       afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "an unmatched path a Pages entry without matchers may serve that fallback route back",
+      pagesRoute: "indeterminate",
+      fallback: gateBack,
       intercepts: false,
     },
     {
       label: "a dynamic route a Pages entry without matchers leaves to the App Router",
       gateRoute: "dynamic",
-      pagesRoute: "unmatched",
+      pagesRoute: "indeterminate",
       afterFiles: gateBack,
       intercepts: true,
     },
@@ -7205,7 +7214,7 @@ describe("createAppRscHandler", () => {
     isMetadataRoute?: boolean;
     label: string;
     pagesPathname?: string;
-    pagesRoute?: "dynamic" | "none" | "static" | "unmatched";
+    pagesRoute?: "dynamic" | "indeterminate" | "none" | "static";
     publicFiles?: Set<string>;
   }[])(
     "replays later rewrite phases for a source beforeFiles send to $label",
@@ -7252,8 +7261,8 @@ describe("createAppRscHandler", () => {
           pagesRoute === undefined
             ? undefined
             : async (pathname: string) =>
-                pagesRoute === "unmatched"
-                  ? "unmatched"
+                pagesRoute === "indeterminate"
+                  ? "indeterminate"
                   : pathname === pagesPathname && pagesRoute !== "none"
                     ? { route: { isDynamic: pagesRoute === "dynamic", pattern: pagesPathname } }
                     : null,
@@ -7457,6 +7466,182 @@ describe("createAppRscHandler", () => {
       expect.objectContaining({ cleanPathname: "/photos/1", interceptionContext: null }),
     );
   });
+
+  // A direct request takes the config rewrites from the destination source
+  // middleware rewrote it to, so a rule that routes that destination back to
+  // the source renders the source. The client then shows the source and sends
+  // it as the context, and Next.js intercepts. Without such a rule the client
+  // shows the destination, which does not intercept the target.
+  it.each([
+    { phase: "beforeFiles", routesBack: true },
+    { phase: "afterFiles", routesBack: true },
+    { phase: "fallback", routesBack: true },
+    { phase: "afterFiles", routesBack: false },
+  ])(
+    "takes the $phase rules from the destination source middleware rewrites to (routes back: $routesBack)",
+    async ({ phase, routesBack }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({
+        isDynamic: true,
+        pattern: "/members/:id",
+        routeSegments: ["members", ":id"],
+      });
+      const gateBack = [
+        { source: "/gate/:id", destination: routesBack ? "/members/:id" : "/gate" },
+      ];
+      const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: phase === "beforeFiles" ? gateBack : [],
+          afterFiles: phase === "afterFiles" ? gateBack : [],
+          fallback: phase === "fallback" ? gateBack : [],
+        },
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/members/7"
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute: (pathname: string) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+          return null;
+        },
+        async runMiddleware({ cleanPathname }) {
+          const rewritten = cleanPathname === "/members/7";
+          return {
+            kind: "continue",
+            cleanPathname: rewritten ? "/gate/7" : cleanPathname,
+            rewritten,
+            search: rewritten ? "" : null,
+          };
+        },
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: !routesBack,
+          cleanPathname: "/photos/1",
+          interceptionContext: routesBack ? "/members/7" : null,
+        }),
+      );
+    },
+  );
+
+  // The source renders with the search params the target request carries, so
+  // a rewrite whose merged query leaves them exactly as they were, in order,
+  // keeps the source. Any other query would render it with different ones.
+  it.each([
+    {
+      label: "a destination query the target carries",
+      targetSearch: "?view=login",
+      intercepts: true,
+    },
+    {
+      label: "a destination query the target carries after its other params",
+      targetSearch: "?a=1&view=login",
+      intercepts: true,
+    },
+    {
+      label: "a destination query that moves a param the target carries",
+      targetSearch: "?view=login&a=1",
+      intercepts: false,
+    },
+    {
+      label: "a middleware query that a later rule restores",
+      middlewareSearch: "?view=other",
+      targetSearch: "?view=login",
+      intercepts: true,
+    },
+    {
+      label: "a middleware query that no rule restores",
+      middlewareSearch: "?view=other",
+      sourceRuleQuery: "view=else",
+      targetSearch: "?view=login",
+      intercepts: false,
+    },
+  ] as {
+    intercepts: boolean;
+    label: string;
+    middlewareSearch?: string;
+    sourceRuleQuery?: string;
+    targetSearch: string;
+  }[])(
+    "compares the query the source rewrites leave with the target's for $label",
+    async ({ intercepts, middlewareSearch, sourceRuleQuery = "view=other", targetSearch }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({
+        pattern: "/members/7",
+        routeSegments: ["members", "7"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [
+            middlewareSearch === undefined
+              ? { source: "/members/7", destination: "/members/7?view=login" }
+              : {
+                  source: "/members/7",
+                  has: [{ type: "query", key: "view", value: sourceRuleQuery.split("=")[1] }],
+                  destination: "/members/7?view=login",
+                },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/members/7"
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute: (pathname: string) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+          return null;
+        },
+        async runMiddleware({ cleanPathname }) {
+          const rewritten = middlewareSearch !== undefined && cleanPathname === "/members/7";
+          return {
+            kind: "continue",
+            cleanPathname,
+            rewritten,
+            search: rewritten ? middlewareSearch : null,
+          };
+        },
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+      const rscUrl = await createRscRequestUrl(`/docs/photos/1${targetSearch}`, headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      if (intercepts) {
+        expect(response.status).toBe(200);
+        expect(dispatchMatchedPage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            bypassInterceptionContextCache: false,
+            cleanPathname: "/photos/1",
+            interceptionContext: "/members/7",
+          }),
+        );
+      } else {
+        expect(response.status).toBe(404);
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   // A direct request rebuilds its rewrite context after middleware, so a
   // `Host` that middleware adds selects host-conditioned beforeFiles rules.
