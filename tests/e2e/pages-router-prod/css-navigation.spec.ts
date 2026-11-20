@@ -128,10 +128,12 @@ async function expectPageStylesheets(page: Page, name: string): Promise<void> {
       afterMarker.push(node.getAttribute("data-n-href")!);
       node = node.nextElementSibling;
     }
-    const links = Array.from(
+    const marker = document.querySelector("noscript[data-n-css]")!;
+    const linkElements = Array.from(
       document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'),
-      (link) => pathOf(link.href),
     );
+    const links = linkElements.map((link) => pathOf(link.href));
+    const pagePaths = new Set((manifest?.routes[route] ?? []).map(pathOf));
     return {
       expected: manifest?.routes[route] ?? [],
       shared: manifest?.shared ?? [],
@@ -141,6 +143,11 @@ async function expectPageStylesheets(page: Page, name: string): Promise<void> {
       afterMarker,
       links,
       managedLinks: links.filter((link) => managed.has(link)),
+      // Links that dynamic imports add to the page's stylesheets.
+      laterLinks: linkElements
+        .filter((link) => marker.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING)
+        .map((link) => pathOf(link.href))
+        .filter((path) => pagePaths.has(path)),
     };
   }, `/${name}`);
 
@@ -148,6 +155,7 @@ async function expectPageStylesheets(page: Page, name: string): Promise<void> {
   expect(state.on, name).toEqual(state.expected);
   expect(state.afterMarker, name).toEqual(state.expected);
   expect(state.managedLinks, name).toEqual([]);
+  expect(state.laterLinks, name).toEqual([]);
   expect(new Set(state.links).size, `${name}: ${state.links.join(", ")}`).toBe(state.links.length);
 }
 

@@ -97,7 +97,9 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
 
   // The `<style>` tags hold page stylesheets now, so their server-rendered
   // `<link>`s, ahead of the marker, go, except for stylesheets that other
-  // dynamic imports load too. Links that Vite adds later, after it, stay.
+  // dynamic imports load too. Links that Vite adds later, after it, stay, but
+  // one to a stylesheet of this page moves ahead of the marker, where a full
+  // load links it, or it would apply again after the page's own stylesheets.
   if (!removableLinkPaths) {
     const manifest = window.__VINEXT_PAGE_STYLESHEETS__;
     const shared = new Set(manifest?.shared.map(pathOf));
@@ -108,8 +110,14 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
         .filter((path) => !shared.has(path)),
     );
   }
+  const pagePaths = new Set(stylesheets.map(({ href }) => pathOf(href)));
   for (const link of document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')) {
+    const path = pathOf(link.href);
     const isServerLink = marker.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_PRECEDING;
-    if (isServerLink && removableLinkPaths.has(pathOf(link.href))) link.remove();
+    if (!isServerLink) {
+      if (pagePaths.has(path)) marker.parentNode!.insertBefore(link, marker);
+    } else if (removableLinkPaths.has(path)) {
+      link.remove();
+    }
   }
 }
