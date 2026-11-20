@@ -57,4 +57,24 @@ test.describe("interception from a rewritten source", () => {
     await expect(page.getByTestId("photo-page")).toHaveCount(0);
     expect(await readSoftNavigationMarker(page)).toBe(true);
   });
+
+  test("intercepts the target over the member page that afterFiles routes back to after beforeFiles rewrite it away", async ({
+    page,
+  }) => {
+    // The login rule comes before the rule that routes the detour back, so it
+    // never applies and no pass cookie is needed.
+    await page.context().addCookies([{ name: "gated-detour", value: "1", url: BASE }]);
+    await page.goto(`${BASE}/gated-members/7`);
+    await waitForAppRouterHydration(page);
+    await expect(page.getByTestId("gated-member-page")).toBeVisible();
+    await setSoftNavigationMarker(page);
+
+    await page.click("#gated-member-photo-link");
+
+    await expect(page).toHaveURL(`${BASE}/photos/1`);
+    await expect(page.getByTestId("gated-members-photo-modal")).toBeVisible();
+    await expect(page.getByTestId("gated-member-page")).toBeVisible();
+    await expect(page.getByTestId("photo-page")).toHaveCount(0);
+    expect(await readSoftNavigationMarker(page)).toBe(true);
+  });
 });

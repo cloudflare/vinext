@@ -130,6 +130,24 @@ function applyPagesMiddlewareContext(
 }
 
 /**
+ * The Pages route `renderPagesFallback` renders for a raw (still
+ * percent-encoded) route pathname, matched against the same tries without
+ * rendering it. An entry with a handler but no matcher renders every path no
+ * App route matches, which `"unmatched"` reports.
+ */
+export function matchPagesFallbackRoute(
+  pagesEntry: PagesEntry,
+  pathname: string,
+  request: Request,
+): PagesRouteMatch | "unmatched" | null {
+  const isApiPathname = pathname.startsWith("/api/") || pathname === "/api";
+  const matchRoute = isApiPathname ? pagesEntry.matchApiRoute : pagesEntry.matchPageRoute;
+  if (typeof matchRoute === "function") return matchRoute(pathname, request);
+  const handler = isApiPathname ? pagesEntry.handleApiRoute : pagesEntry.renderPage;
+  return typeof handler === "function" ? "unmatched" : null;
+}
+
+/**
  * Fallback handler to route App Router requests to the Pages Router when no App Router route matches.
  */
 export async function renderPagesFallback(

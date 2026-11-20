@@ -2181,6 +2181,9 @@ describe("App Router entry templates", () => {
     expect(code).toContain(
       'import * as __pagesRequestEntry from "virtual:vinext-pages-request-entry"',
     );
+    expect(code).toContain(
+      "matchPagesRoute(pathname, request) {\n    return __matchPagesFallbackRoute(__pagesRequestEntry, pathname, request);",
+    );
     expect(code).not.toContain("virtual:vinext-rsc-entry");
     expect(code).toContain(
       'import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler"',
@@ -2673,6 +2676,17 @@ describe("App Router entry templates", () => {
     expect(code).toContain("__hybridPagesApplication ??= __shareIsolatePromise((async () => {");
     expect(code).toContain("await __pagesEntry.__ensureInstrumentation?.(ctx);");
     expect(code).toContain("})(), ctx);");
+  });
+
+  it("matches hybrid Pages routes against the initialized Pages application", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      hasPagesDir: true,
+    });
+
+    expect(() => parseAst(code)).not.toThrow();
+    expect(code).toContain(
+      "async matchPagesRoute(pathname, request) {\n    return __matchPagesFallbackRoute(await __ensureHybridPagesApplication(), pathname, request);",
+    );
   });
 
   // Ported from Next.js: test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts

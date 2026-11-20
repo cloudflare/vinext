@@ -23,6 +23,7 @@ import {
 import { PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER } from "../packages/vinext/src/server/worker-stages.js";
 import { VINEXT_CACHE_IDENTITY_ORIGIN } from "../packages/vinext/src/server/multi-stage.js";
 import type { PagesRouteDataKind } from "../packages/vinext/src/server/pages-route-data-kind.js";
+import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRscHandlerRoute } from "../packages/vinext/src/server/app-rsc-handler.js";
 import {
@@ -240,6 +241,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     isDev: overrides.isDev ?? true,
     hasInterceptionId: overrides.hasInterceptionId ?? (() => false),
     matchInterceptRoute: overrides.matchInterceptRoute,
+    matchPagesRoute: overrides.matchPagesRoute,
     matchRoute:
       overrides.matchRoute ??
       ((pathname: string) =>
@@ -7059,6 +7061,265 @@ describe("createAppRscHandler", () => {
         "private, no-cache, no-store, max-age=0, must-revalidate",
       );
     }
+  });
+
+  // A direct request takes afterFiles rules unless beforeFiles leave it on a
+  // static route or a file, and fallback rules when neither matches after
+  // those, so a later phase can route a source back to the intercepting source
+  // that beforeFiles rewrote it away from. The client then shows the source
+  // and sends it as the context, and Next.js intercepts. Where routing ends
+  // anywhere else, the target renders directly.
+  const toGate = [{ source: "/members/:id", destination: "/gate/:id" }];
+  const gateBack = [{ source: "/gate/:id", destination: "/members/:id" }];
+  it.each([
+    {
+      label: "an unmatched path that afterFiles route back",
+      afterFiles: gateBack,
+      intercepts: true,
+    },
+    {
+      label: "a dynamic route that afterFiles route back",
+      gateRoute: "dynamic",
+      afterFiles: gateBack,
+      intercepts: true,
+    },
+    {
+      label: "a static route that afterFiles would route back",
+      gateRoute: "static",
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    { label: "an unmatched path that fallback route back", fallback: gateBack, intercepts: true },
+    {
+      label: "a dynamic route that fallback would route back",
+      gateRoute: "dynamic",
+      fallback: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "an unmatched path that afterFiles send to another one that fallback route back",
+      afterFiles: [{ source: "/gate/:id", destination: "/detour/:id" }],
+      fallback: [{ source: "/detour/:id", destination: "/members/:id" }],
+      intercepts: true,
+    },
+    {
+      label: "a public file that afterFiles would route back",
+      publicFiles: new Set(["/gate/7"]),
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "an unmatched path that afterFiles send to a public file before routing back",
+      publicFiles: new Set(["/file/7"]),
+      afterFiles: [
+        { source: "/gate/:id", destination: "/file/:id" },
+        { source: "/file/:id", destination: "/members/:id" },
+      ],
+      intercepts: false,
+    },
+    {
+      label: "a static Pages page that afterFiles would route back",
+      pagesRoute: "static",
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "a dynamic Pages page that afterFiles route back",
+      pagesRoute: "dynamic",
+      afterFiles: gateBack,
+      intercepts: true,
+    },
+    {
+      label: "a dynamic Pages page that fallback would route back",
+      pagesRoute: "dynamic",
+      fallback: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "an unmatched path that afterFiles route back to a static Pages page",
+      pagesRoute: "static",
+      pagesPathname: "/members/7",
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label:
+        "a path no Pages page owns in an app with a Pages directory that afterFiles route back",
+      pagesRoute: "none",
+      afterFiles: gateBack,
+      intercepts: true,
+    },
+    {
+      label: "an unmatched path a Pages entry without matchers renders",
+      pagesRoute: "unmatched",
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "a dynamic route a Pages entry without matchers leaves to the App Router",
+      gateRoute: "dynamic",
+      pagesRoute: "unmatched",
+      afterFiles: gateBack,
+      intercepts: true,
+    },
+    {
+      label: "a metadata route that afterFiles would route back",
+      isMetadataRoute: true,
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "the image endpoint that afterFiles would route back",
+      beforeFiles: [{ source: "/members/:id", destination: "/_next/image" }],
+      afterFiles: [{ source: "/_next/image", destination: "/members/7" }],
+      intercepts: false,
+    },
+    {
+      label: "an unmatched path that fallback rewrites externally",
+      fallback: [{ source: "/:path*", destination: "https://legacy.example/:path*" }],
+      intercepts: false,
+    },
+    {
+      label: "an external URL",
+      beforeFiles: [{ source: "/members/:id", destination: "https://legacy.example/members/:id" }],
+      intercepts: false,
+    },
+    {
+      label: "a path whose query keeps afterFiles from routing it back",
+      beforeFiles: [{ source: "/members/:id", destination: "/gate/:id?detour=1" }],
+      afterFiles: [
+        {
+          source: "/gate/:id",
+          missing: [{ type: "query", key: "detour" }],
+          destination: "/members/:id",
+        },
+      ],
+      intercepts: false,
+    },
+  ] as {
+    afterFiles?: NextRewrite[];
+    beforeFiles?: NextRewrite[];
+    fallback?: NextRewrite[];
+    gateRoute?: "dynamic" | "static";
+    intercepts: boolean;
+    isMetadataRoute?: boolean;
+    label: string;
+    pagesPathname?: string;
+    pagesRoute?: "dynamic" | "none" | "static" | "unmatched";
+    publicFiles?: Set<string>;
+  }[])(
+    "replays later rewrite phases for a source beforeFiles send to $label",
+    async ({
+      afterFiles = [],
+      beforeFiles = toGate,
+      fallback = [],
+      gateRoute,
+      intercepts,
+      isMetadataRoute,
+      pagesPathname = "/gate/7",
+      pagesRoute,
+      publicFiles,
+    }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({
+        isDynamic: true,
+        pattern: "/members/:id",
+        routeSegments: ["members", ":id"],
+      });
+      const gatePageRoute = createPageRoute({
+        isDynamic: gateRoute === "dynamic",
+        pattern: "/gate/7",
+        routeSegments: ["gate", "7"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: { beforeFiles, afterFiles, fallback },
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/members/7"
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute: (pathname: string) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+          if (pathname === "/gate/7" && gateRoute !== undefined) {
+            return { params: {}, route: gatePageRoute };
+          }
+          return null;
+        },
+        matchPagesRoute:
+          pagesRoute === undefined
+            ? undefined
+            : async (pathname: string) =>
+                pagesRoute === "unmatched"
+                  ? "unmatched"
+                  : pathname === pagesPathname && pagesRoute !== "none"
+                    ? { route: { isDynamic: pagesRoute === "dynamic", pattern: pagesPathname } }
+                    : null,
+        isMetadataRoute: isMetadataRoute ? (pathname: string) => pathname === "/gate/7" : undefined,
+        publicFiles,
+        renderPagesFallback: pagesRoute === undefined ? undefined : async () => null,
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: !intercepts,
+          cleanPathname: "/photos/1",
+          interceptionContext: intercepts ? "/members/7" : null,
+        }),
+      );
+    },
+  );
+
+  // The interception id names the tree of the source the later phase routes
+  // back to, so a supplemental refresh renders it.
+  it("accepts an interception id from a source afterFiles rewrites route back", async () => {
+    const interceptionId = "interception:slot:modal:/members/[id]:/members/[id]->/photos/:id";
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({
+      isDynamic: true,
+      pattern: "/members/7",
+      routeSegments: ["members", "7"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/members/:id", destination: "/gate/:id" }],
+        afterFiles: [{ source: "/gate/:id", destination: "/members/:id" }],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      hasInterceptionId: (requestedId) => requestedId === interceptionId,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/members/7"
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+        return null;
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/members/7", interceptionId });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ cleanPathname: "/photos/1", interceptionContext: "/members/7" }),
+    );
   });
 
   // A supplemental refresh names an intercepted tree the rewritten source
