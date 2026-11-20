@@ -9,7 +9,7 @@ import {
 } from "vinext/shims/fetch-cache";
 import { buildAppStaticParamsTags } from "./implicit-tags.js";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
-import { matchRoutePattern } from "../routing/route-pattern.js";
+import { interceptionMarkerPatternParam, matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { removeTrailingSlash } from "../utils/base-path.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
@@ -682,6 +682,8 @@ function normalizeGenerateStaticParams(
 
 export function routePatternParamNames(patternParts: readonly string[]): string[] {
   return patternParts.flatMap((part) => {
+    const markerParam = interceptionMarkerPatternParam(part);
+    if (markerParam) return [markerParam.name];
     if (!part.startsWith(":")) return [];
     return [part.slice(1, part.endsWith("+") || part.endsWith("*") ? -1 : undefined)];
   });
