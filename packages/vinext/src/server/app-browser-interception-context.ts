@@ -19,12 +19,28 @@ type ResolveManifestNavigationInterceptionContextOptions = {
    * page). Next.js builds `Next-Url` from the rendered router tree rather than
    * the browser URL, and that tree is then /_not-found, so the context is
    * /_not-found and only an interception owned beneath the root whose source
-   * matches it applies, unless the root layout has a parallel slot.
+   * matches it applies. When the root layout has a parallel slot, a target of
+   * any interception whose source matches it loads as a document instead.
    */
   currentRenderIsRouteMiss?: boolean;
   routeManifest: BrowserRouteManifest | null;
   targetPathname: string;
 };
+
+/**
+ * A navigation from an unmatched URL's not-found page to an intercept whose
+ * source matches /_not-found, where the root layout has a parallel slot
+ * besides `children`. Next.js loads the target's document there, so the
+ * caller performs a document navigation instead of fetching a payload.
+ */
+export const ROUTE_MISS_DOCUMENT_NAVIGATION: unique symbol = Symbol(
+  "vinext.routeMissDocumentNavigation",
+);
+
+export type NavigationInterceptionContextResolution =
+  | string
+  | null
+  | typeof ROUTE_MISS_DOCUMENT_NAVIGATION;
 
 /**
  * Resolve the first-hop interception context from declared route topology.
@@ -39,11 +55,9 @@ type ResolveManifestNavigationInterceptionContextOptions = {
  */
 export function resolveManifestNavigationInterceptionContext(
   options: ResolveManifestNavigationInterceptionContextOptions,
-): string | null {
+): NavigationInterceptionContextResolution {
   if (options.routeManifest === null) return null;
-  if (options.currentRenderIsRouteMiss === true && rootLayoutHasSlot(options.routeManifest)) {
-    return null;
-  }
+  const loadsDocument = loadsTargetDocument(options.routeManifest, options);
 
   const currentPathname = resolveCurrentSourcePathname(options);
   const targetPathname = stripBasePath(options.targetPathname, options.basePath);
@@ -51,10 +65,12 @@ export function resolveManifestNavigationInterceptionContext(
   const targetParts = splitPathnameForRouteMatch(targetPathname);
 
   for (const interception of options.routeManifest.segmentGraph.interceptions.values()) {
-    if (!appliesFromCurrentRender(interception.sourcePatternParts, options)) continue;
+    if (!loadsDocument && !appliesFromCurrentRender(interception.sourcePatternParts, options)) {
+      continue;
+    }
     if (!matchRoutePatternPrefix(sourceParts, interception.sourcePatternParts)) continue;
     if (matchRoutePattern(targetParts, interception.targetPatternParts) === null) continue;
-    return currentPathname;
+    return loadsDocument ? ROUTE_MISS_DOCUMENT_NAVIGATION : currentPathname;
   }
 
   return null;
@@ -62,11 +78,9 @@ export function resolveManifestNavigationInterceptionContext(
 
 export function resolveMiddlewareRewriteNavigationInterceptionContext(
   options: ResolveManifestNavigationInterceptionContextOptions,
-): string | null {
+): NavigationInterceptionContextResolution {
   if (options.routeManifest === null) return null;
-  if (options.currentRenderIsRouteMiss === true && rootLayoutHasSlot(options.routeManifest)) {
-    return null;
-  }
+  const loadsDocument = loadsTargetDocument(options.routeManifest, options);
 
   const currentPathname = resolveCurrentSourcePathname(options);
   // The not-found page of an unmatched URL has no matched route pathname.
@@ -82,14 +96,16 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
   const targetParts = splitPathnameForRouteMatch(targetPathname);
 
   for (const interception of options.routeManifest.segmentGraph.interceptions.values()) {
-    if (!appliesFromCurrentRender(interception.sourcePatternParts, options)) continue;
+    if (!loadsDocument && !appliesFromCurrentRender(interception.sourcePatternParts, options)) {
+      continue;
+    }
     if (
       !matchRoutePatternWithOptionalDynamicSegments(targetParts, interception.targetPatternParts)
     ) {
       continue;
     }
     if (matchRoutePatternPrefix(sourceParts, interception.sourcePatternParts)) {
-      return currentPathname;
+      return loadsDocument ? ROUTE_MISS_DOCUMENT_NAVIGATION : currentPathname;
     }
 
     if (
@@ -119,9 +135,14 @@ function appliesFromCurrentRender(
 const ROOT_LAYOUT_ID = AppElementsWire.encodeLayoutId("/");
 
 // The not-found page of an unmatched URL holds only `children` at the root, so
-// when the root layout has another slot, Next.js loads the document of any
-// target it prefetched instead of applying it softly. Rendering the target
-// directly shows the same page.
+// when the root layout has another slot, Next.js can't apply a target's tree
+// in place and loads the target's document instead.
+function loadsTargetDocument(
+  routeManifest: BrowserRouteManifest,
+  options: ResolveManifestNavigationInterceptionContextOptions,
+): boolean {
+  return options.currentRenderIsRouteMiss === true && rootLayoutHasSlot(routeManifest);
+}
 
 function rootLayoutHasSlot(routeManifest: BrowserRouteManifest): boolean {
   for (const binding of routeManifest.segmentGraph.slotBindings.values()) {

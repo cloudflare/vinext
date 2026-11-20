@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  ROUTE_MISS_DOCUMENT_NAVIGATION,
   resolveManifestNavigationInterceptionContext,
   resolveMiddlewareRewriteNavigationInterceptionContext,
 } from "../packages/vinext/src/server/app-browser-interception-context.js";
@@ -203,11 +204,11 @@ describe("resolveManifestNavigationInterceptionContext", () => {
 
   // The not-found page's tree has only `children` at the root, so Next.js
   // loads the document of a target whose root layout has another slot.
-  it("sends no interception context from a not-found page when the root layout has a slot", () => {
+  it("loads the document of an intercept target from a not-found page when the root layout has a slot", () => {
     for (const [slotBindings, context] of [
       [[], "/_not-found"],
       [[slugModalBinding], "/_not-found"],
-      [[slugModalBinding, rootModalBinding], null],
+      [[slugModalBinding, rootModalBinding], ROUTE_MISS_DOCUMENT_NAVIGATION],
     ] as const) {
       expect(
         resolveManifestNavigationInterceptionContext({
@@ -216,6 +217,24 @@ describe("resolveManifestNavigationInterceptionContext", () => {
           currentRenderIsRouteMiss: true,
           routeManifest: createRouteManifest([slugPhotoInterception], slotBindings),
           targetPathname: "/photos/42",
+        }),
+      ).toBe(context);
+    }
+
+    // A root-owned intercept's source matches /_not-found too; one whose
+    // source doesn't match it, and a target nothing intercepts, keep no context.
+    for (const [interception, targetPathname, context] of [
+      [rootPhotoInterception, "/photos/42", ROUTE_MISS_DOCUMENT_NAVIGATION],
+      [feedPhotoInterception, "/photos/42", null],
+      [slugPhotoInterception, "/about", null],
+    ] as const) {
+      expect(
+        resolveManifestNavigationInterceptionContext({
+          basePath: "/docs",
+          currentPathname: "/docs/feed/missing",
+          currentRenderIsRouteMiss: true,
+          routeManifest: createRouteManifest([interception], [rootModalBinding]),
+          targetPathname: `/docs${targetPathname}`,
         }),
       ).toBe(context);
     }
@@ -395,10 +414,16 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
     }
   });
 
-  it("sends no interception context from a not-found page when the root layout has a slot", () => {
-    for (const [slotBindings, context] of [
-      [[slugModalBinding], "/_not-found"],
-      [[slugModalBinding, rootModalBinding], null],
+  it("loads the document of an intercept target from a not-found page when the root layout has a slot", () => {
+    for (const [interceptions, slotBindings, context] of [
+      [[slugPhotoInterception], [slugModalBinding], "/_not-found"],
+      [
+        [slugPhotoInterception],
+        [slugModalBinding, rootModalBinding],
+        ROUTE_MISS_DOCUMENT_NAVIGATION,
+      ],
+      [[rootPhotoInterception], [rootModalBinding], ROUTE_MISS_DOCUMENT_NAVIGATION],
+      [[feedPhotoInterception], [rootModalBinding], null],
     ] as const) {
       expect(
         resolveMiddlewareRewriteNavigationInterceptionContext({
@@ -406,7 +431,7 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
           currentMatchedPathname: "/feed/missing",
           currentPathname: "/feed/missing",
           currentRenderIsRouteMiss: true,
-          routeManifest: createRouteManifest([slugPhotoInterception], slotBindings),
+          routeManifest: createRouteManifest(interceptions, slotBindings),
           targetPathname: "/photos/42",
         }),
       ).toBe(context);
