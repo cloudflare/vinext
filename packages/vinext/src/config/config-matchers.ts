@@ -669,8 +669,8 @@ export function matchRedirect(
       break;
     }
     if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
-    const params = matchConfigPattern(pathname, redirect.source);
-    if (params) {
+    const matched = execConfigSource(pathname, redirect.source);
+    if (matched) {
       onRuleSourceMatch?.(redirect);
       const conditionParams =
         redirect.has || redirect.missing
@@ -680,10 +680,11 @@ export function matchRedirect(
       return resolveRedirectMatch(
         redirect,
         {
-          ...params,
+          ...matched.params,
           ...conditionParams,
         },
         basePathState,
+        matched.unmatched.filter((key) => !(key in conditionParams)),
       );
     }
   }
@@ -913,16 +914,36 @@ function normalizeRedirectPathnameSlashes(destination: string): string {
   );
 }
 
+/**
+ * path-to-regexp compiles a repeat param with the `/` or `.` before it as one
+ * token, so Next.js emits neither for a param that matched nothing: `/old`
+ * redirects from `/old/:path*` to `/new`, not `/new/`. A pathname that is
+ * only the param keeps its root.
+ */
+function dropUnmatchedRepeatParams(destination: string, unmatchedParams: string[]): string {
+  if (unmatchedParams.length === 0) return destination;
+  const names = unmatchedParams.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const tokenRe = new RegExp(`[/.]:(?:${names})\\*(?![A-Za-z0-9_])`, "g");
+  const pathStart = REDIRECT_ORIGIN_RE.exec(destination)?.[0].length ?? 0;
+  const pathEnd = pathStart + destination.slice(pathStart).search(/[?#]|$/);
+  const pathname = destination
+    .slice(pathStart, pathEnd)
+    .replace(tokenRe, (_token, offset: number) => (offset === 0 ? "/" : ""));
+  return destination.slice(0, pathStart) + pathname + destination.slice(pathEnd);
+}
+
 function resolveRedirectMatch(
   redirect: NextRedirect,
   params: Record<string, string>,
   basePathState: BasePathMatchState,
+  unmatchedParams: string[] = [],
 ): RedirectMatch {
-  const {
-    template: destination,
-    literalColon,
-    parsed,
-  } = parseRedirectDestinationTemplate(redirect, params, basePathState);
+  const { template, literalColon, parsed } = parseRedirectDestinationTemplate(
+    redirect,
+    params,
+    basePathState,
+  );
+  const destination = dropUnmatchedRepeatParams(template, unmatchedParams);
   // The authority is split off before substitution, so captures in the host
   // are never mistaken for pathname slashes.
   const origin = REDIRECT_ORIGIN_RE.exec(destination)?.[0] ?? "";
