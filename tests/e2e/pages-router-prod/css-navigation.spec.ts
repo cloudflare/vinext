@@ -240,7 +240,15 @@ test("a dynamic import after a client navigation keeps the page's cascade", asyn
   expect(await probeColors(page)).toEqual({ ...EXPECTED.later, note: RED });
   await expectPageStylesheets(page, "later");
 
-  // The badge's stylesheet now comes after the page's own again.
+  // The badge's stylesheet now comes after the page's own again, as it does
+  // when the server linked it.
+  await navigate(page, "host");
+  await page.getByRole("button", { name: "Open" }).click();
+  await expect(page.locator('[data-probe="note"]')).toBeVisible();
+  expect(await probeColors(page)).toEqual({ ...EXPECTED.host, note: RED });
+
+  await page.goto(`${baseUrl}/later`);
+  await waitForHydration(page);
   await navigate(page, "host");
   await page.getByRole("button", { name: "Open" }).click();
   await expect(page.locator('[data-probe="note"]')).toBeVisible();

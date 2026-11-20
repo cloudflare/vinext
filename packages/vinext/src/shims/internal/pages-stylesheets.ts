@@ -107,14 +107,6 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
   // and a link it added on an earlier page moves there. On a page that doesn't
   // load the stylesheet, such a link goes back after the page's own, where
   // Vite adds a dynamic import's stylesheets.
-  const pagePaths = new Set(stylesheets.map(({ href }) => pathOf(href)));
-  for (const link of linksAheadOfMarker) {
-    if (pagePaths.has(pathOf(link.href))) continue;
-    linksAheadOfMarker.delete(link);
-    if (!link.isConnected) continue;
-    reference.after(link);
-    reference = link;
-  }
   if (!removableLinkPaths || !sharedLinkPaths) {
     const manifest = window.__VINEXT_PAGE_STYLESHEETS__;
     sharedLinkPaths = new Set(manifest?.shared.map(pathOf));
@@ -128,11 +120,25 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
   }
   const isAheadOfMarker = (link: Element) =>
     (marker.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+  const pagePaths = new Set(stylesheets.map(({ href }) => pathOf(href)));
   const links = new Map<string, HTMLLinkElement>();
   for (const link of document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')) {
     const path = pathOf(link.href);
-    if (isAheadOfMarker(link) && removableLinkPaths.has(path)) link.remove();
-    else links.set(path, link);
+    const isAhead = isAheadOfMarker(link);
+    if (isAhead && removableLinkPaths.has(path)) {
+      link.remove();
+      continue;
+    }
+    links.set(path, link);
+    // As the server links them.
+    if (isAhead && sharedLinkPaths.has(path)) linksAheadOfMarker.add(link);
+  }
+  for (const link of linksAheadOfMarker) {
+    if (pagePaths.has(pathOf(link.href))) continue;
+    linksAheadOfMarker.delete(link);
+    if (!link.isConnected) continue;
+    reference.after(link);
+    reference = link;
   }
   const nonce = marker.getAttribute("data-n-css");
   for (const { href } of stylesheets) {
