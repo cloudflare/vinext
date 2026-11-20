@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { glob } from "node:fs/promises";
 import path, { toSlash } from "pathslash";
 import { escapeRegExp } from "../utils/regex.js";
@@ -109,11 +109,13 @@ export function findFileWithExtensions(basePath: string, matcher: ValidFileMatch
 export function findFileWithExts(
   dir: string,
   name: string,
-  matcher: ValidFileMatcher,
+  matcher: { dottedExtensions: readonly string[] },
 ): string | null {
   for (const ext of matcher.dottedExtensions) {
     const filePath = path.join(dir, name + ext);
-    if (existsSync(filePath)) return filePath;
+    // Follow valid symlinks, treating missing targets like missing files.
+    // Other errors (for example a symlink loop) still propagate.
+    if (statSync(filePath, { throwIfNoEntry: false })?.isFile()) return filePath;
   }
   return null;
 }
