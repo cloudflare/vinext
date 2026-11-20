@@ -3,7 +3,9 @@
 import * as React from "react";
 import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
+  APP_RETAINED_ELEMENT_IDS_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
+  APP_STREAMING_METADATA_BODY_ID_PREFIX,
   AppElementsWire,
   readOptimisticStateKeyRebinder,
   UNMATCHED_SLOT,
@@ -275,9 +277,9 @@ function isSlotBindingListValue(value: unknown): value is readonly AppElementsSl
   return Array.isArray(value) && value.length > 0 && value.every(isSlotBindingValue);
 }
 
-function isSkippedLayoutIdsMetadataValue(id: string, value: unknown): value is readonly string[] {
+function isElementIdListMetadataValue(id: string, value: unknown): value is readonly string[] {
   return (
-    id === APP_SKIPPED_LAYOUT_IDS_KEY &&
+    (id === APP_SKIPPED_LAYOUT_IDS_KEY || id === APP_RETAINED_ELEMENT_IDS_KEY) &&
     Array.isArray(value) &&
     value.every((entry) => typeof entry === "string")
   );
@@ -338,7 +340,7 @@ function isTransportMetadataValue(
     isArtifactCompatibilityEnvelopeValue(value) ||
     isCacheEntryReuseProofValue(value) ||
     isInterceptionMetadataValue(value) ||
-    isSkippedLayoutIdsMetadataValue(id, value) ||
+    isElementIdListMetadataValue(id, value) ||
     isSlotBindingListValue(value)
   );
 }
@@ -845,7 +847,13 @@ export function Slot({
   const elements = React.useContext(ElementsContext);
 
   if (!Object.hasOwn(elements, id)) {
-    if (process.env.NODE_ENV !== "production" && !AppElementsWire.isSlotId(id)) {
+    // A head whose render placed its streamed tags in the head leaves no body
+    // element for the route to keep.
+    if (
+      process.env.NODE_ENV !== "production" &&
+      !AppElementsWire.isSlotId(id) &&
+      !id.startsWith(APP_STREAMING_METADATA_BODY_ID_PREFIX)
+    ) {
       if (!warnedMissingEntryIds.has(id)) {
         warnedMissingEntryIds.add(id);
         console.warn("[vinext] Missing App Router element entry during render: " + id);
