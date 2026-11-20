@@ -11,6 +11,7 @@ import {
   handleAppNavigationFailure,
   stageAppNavigationFailureTarget,
 } from "../packages/vinext/src/client/app-nav-failure-handler.js";
+import DefaultGlobalError from "../packages/vinext/src/shims/default-global-error.js";
 import { BailoutToCSRError } from "../packages/vinext/src/shims/navigation-errors.js";
 import { applyServerActionResultDecision } from "../packages/vinext/src/server/app-browser-server-action-navigation.js";
 import {
@@ -10350,6 +10351,49 @@ describe("prodOnCaughtError (hydrateRoot prod handler)", () => {
         expect.objectContaining({ componentStack: "\n    at Lazy" }),
       );
       expect(consoleSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("routes the default global-error boundary through the uncaught handler", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const onImplicitRootError = vi.fn();
+      const handler = createProdOnCaughtError(onImplicitRootError);
+      const err = new Error("render error with no global-error file");
+      const errorInfo = {
+        componentStack: "\n    at Page",
+        errorBoundary: {
+          props: { isGlobalErrorBoundary: true, fallback: DefaultGlobalError },
+        },
+      };
+
+      handler(err, errorInfo);
+
+      expect(onImplicitRootError).toHaveBeenCalledWith(err, errorInfo);
+      expect(consoleSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("keeps a user global-error boundary on the caught-error path", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const onImplicitRootError = vi.fn();
+      const handler = createProdOnCaughtError(onImplicitRootError);
+      const err = new Error("render error with a global-error file");
+
+      handler(err, {
+        componentStack: "\n    at Page",
+        errorBoundary: {
+          props: { isGlobalErrorBoundary: true, fallback: function GlobalError() {} },
+        },
+      });
+
+      expect(onImplicitRootError).not.toHaveBeenCalled();
+      expect(consoleSpy.mock.calls.map((args) => args[0])).toContain(err);
     } finally {
       consoleSpy.mockRestore();
     }
