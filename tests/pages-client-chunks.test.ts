@@ -3,6 +3,7 @@ import { createBuilder, rolldownVersion, type Plugin, type Rolldown } from "vite
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
+  collectLargeSharedStylesheets,
   collectPagesAppChunkRoots,
   PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
   supportsInlineCommonChunks,
@@ -52,9 +53,38 @@ function facadeOf(chunk: Rolldown.OutputChunk): string | undefined {
   return chunk.facadeModuleId?.slice(FIXTURE.length + 1);
 }
 
+/** A plugin that collects the build's stylesheets into `stylesheets`, by file name. */
+function collectStylesheets(stylesheets: Map<string, string>): Plugin {
+  return {
+    name: "test:collect-stylesheets",
+    generateBundle(_options, bundle) {
+      for (const item of Object.values(bundle)) {
+        if (item.type === "asset" && item.fileName.endsWith(".css")) {
+          stylesheets.set(item.fileName, String(item.source));
+        }
+      }
+    },
+  };
+}
+
+function importedCss(chunk: Rolldown.OutputChunk): Set<string> {
+  return (
+    (chunk as { viteMetadata?: { importedCss: Set<string> } }).viteMetadata?.importedCss ??
+    new Set()
+  );
+}
+
+/** The sorted facades of `chunks`, with "" for a chunk that has none. */
+function facadesOf(chunks: Rolldown.OutputChunk[]): string[] {
+  return chunks.map((chunk) => facadeOf(chunk) ?? "").sort((a, b) => a.localeCompare(b));
+}
+
 describe("Pages Router client chunks", () => {
-  it("loads _app's imports as one chunk, copies small shared modules into pages, keeps shared CSS in one chunk", async () => {
-    const chunks = await buildClientChunks();
+  it("loads _app's imports as one chunk and copies small shared modules into pages", async () => {
+    const stylesheets = new Map<string, string>();
+    const [chunks] = (await buildChunks({}, ["client"], [collectStylesheets(stylesheets)])) as [
+      Rolldown.OutputChunk[],
+    ];
 
     // `_app` keeps its own chunk, which the client entry imports and the
     // Pages manifests look up by source path.
@@ -83,24 +113,35 @@ describe("Pages Router client chunks", () => {
       expect(chunk.moduleIds.filter((id) => /\/(_app\.tsx|brand\.ts)$/.test(id))).toEqual([]);
     }
 
-    // A module chunk with a stylesheet is never copied.
-    const panelChunks = chunksWith(chunks, "/lib/shared-panel.module.css");
-    expect(panelChunks).toHaveLength(1);
-    expect(facadeOf(panelChunks[0]!)).toBeUndefined();
-
-    // A small module that pages share is copied into each of them.
-    const labelChunks = chunksWith(chunks, "/lib/shared-label.ts").map(
-      (chunk) => facadeOf(chunk) ?? "",
+    // A small module that pages share is copied into each of them, and so is
+    // a small stylesheet.
+    const inlines = supportsInlineCommonChunks(rolldownVersion);
+    expect(facadesOf(chunksWith(chunks, "/lib/shared-label.ts"))).toEqual(
+      inlines ? ["pages/alpha.tsx", "pages/beta.tsx", "pages/index.tsx"] : [""],
     );
-    if (supportsInlineCommonChunks(rolldownVersion)) {
-      expect([...labelChunks].sort((a, b) => a.localeCompare(b))).toEqual([
-        "pages/alpha.tsx",
-        "pages/beta.tsx",
-        "pages/index.tsx",
-      ]);
-    } else {
-      expect(labelChunks).toEqual([""]);
-    }
+    expect(facadesOf(chunksWith(chunks, "/lib/shared-panel.module.css"))).toEqual(
+      inlines ? ["pages/alpha.tsx", "pages/beta.tsx"] : [""],
+    );
+
+    // Each copy's CSS joins its page's stylesheet.
+    const stylesheetsWith = (className: string) =>
+      [...stylesheets]
+        .filter(([, css]) => css.includes(`._${className}_`))
+        .map(([fileName]) => fileName);
+    const importersOf = (fileNames: string[]) =>
+      facadesOf(chunks.filter((chunk) => fileNames.some((file) => importedCss(chunk).has(file))));
+    expect(stylesheetsWith("panel")).toHaveLength(1);
+    expect(importersOf(stylesheetsWith("panel"))).toEqual(
+      inlines ? ["pages/alpha.tsx", "pages/beta.tsx"] : [""],
+    );
+
+    // Stylesheets that the same pages share keep one chunk once together they
+    // hold 20 kB of CSS, as in webpack, though each holds less.
+    const galleryChunks = chunksWith(chunks, "/lib/shared-gallery.module.css");
+    expect(facadesOf(galleryChunks)).toEqual([""]);
+    expect(chunksWith(chunks, "/lib/shared-gallery-grid.module.css")).toEqual(galleryChunks);
+    expect(stylesheetsWith("gallery-item-0")).toEqual([...importedCss(galleryChunks[0]!)]);
+    expect(stylesheetsWith("grid-item-0")).toEqual(stylesheetsWith("gallery-item-0"));
   });
 
   it("leaves the SSR build that follows the client build alone", async () => {
@@ -202,6 +243,35 @@ describe("collectPagesAppChunkRoots", () => {
     ).toEqual(["/app/lib/frame.tsx", "/app/styles/globals.css", "/vinext/shims/navigation.js"]);
   });
 
+  it("groups _app's stylesheets when a page imports one of them too", () => {
+    expect(
+      collect({
+        "/entry.js": {
+          entry: true,
+          dynamicImports: ["/app/pages/_app.tsx", "/app/pages/index.tsx"],
+        },
+        "/app/pages/_app.tsx": { imports: ["/nm/lib/lib.css", "/app/styles/overrides.css"] },
+        "/app/pages/index.tsx": { imports: ["/nm/lib/lib.css"] },
+        "/nm/lib/lib.css": {},
+        "/app/styles/overrides.css": {},
+      }),
+    ).toEqual(["/nm/lib/lib.css", "/app/styles/overrides.css"]);
+  });
+
+  it("leaves stylesheets alone in _app's chunk when _app imports nothing else", () => {
+    expect(
+      collect({
+        "/entry.js": { entry: true, dynamicImports: ["/app/pages/_app.tsx"] },
+        "/app/pages/_app.tsx": {
+          imports: ["/app/styles/globals.css", "/app/styles/theme.scss", "/nm/react/index.js"],
+        },
+        "/app/styles/globals.css": {},
+        "/app/styles/theme.scss": {},
+        "/nm/react/index.js": {},
+      }),
+    ).toEqual([]);
+  });
+
   it("leaves out imports that lead back to _app, to a module loaded with import() or to a module the client entry loads", () => {
     expect(
       collect({
@@ -247,6 +317,53 @@ describe("collectPagesAppChunkRoots", () => {
   });
 });
 
+describe("collectLargeSharedStylesheets", () => {
+  // `page` modules are `import()` targets; `entry` is the client entry.
+  const graph: Record<string, { importers: string[]; entry?: boolean; page?: boolean }> = {
+    entry: { importers: [], entry: true },
+    alpha: { importers: [], page: true },
+    beta: { importers: [], page: true },
+    gallery: { importers: ["alpha", "beta"] },
+    "gallery.css": { importers: ["gallery"] },
+    "gallery-grid.css": { importers: ["gallery"] },
+    "beta.css": { importers: ["beta"] },
+    "frame.css": { importers: ["entry", "alpha"] },
+  };
+  const getModuleInfo = (id: string) => {
+    const node = graph[id];
+    return node
+      ? {
+          isEntry: node.entry === true,
+          importers: node.importers,
+          dynamicImporters: node.page ? ["entry"] : [],
+        }
+      : null;
+  };
+
+  it("keeps the stylesheets of each set of pages that together reach the size", () => {
+    const sizes = new Map([
+      ["gallery.css", 12_000],
+      ["gallery-grid.css", 9_000],
+      ["beta.css", 15_000],
+      ["frame.css", 19_999],
+    ]);
+
+    expect([...collectLargeSharedStylesheets(sizes, getModuleInfo)].sort()).toEqual([
+      "gallery-grid.css",
+      "gallery.css",
+    ]);
+  });
+
+  it("copies the stylesheets of a set of pages that together stay below the size", () => {
+    const sizes = new Map([
+      ["gallery.css", 10_000],
+      ["gallery-grid.css", 9_999],
+    ]);
+
+    expect(collectLargeSharedStylesheets(sizes, getModuleInfo)).toEqual(new Set());
+  });
+});
+
 describe("supportsInlineCommonChunks", () => {
   it.each([
     ["1.2.18", true],
@@ -263,22 +380,27 @@ describe("supportsInlineCommonChunks", () => {
 
 describe("withInlineCommonChunks", () => {
   const output = { codeSplitting: { groups: [] } };
-  const options = { rolldownVersion: "1.2.18" };
+  const options = {
+    rolldownVersion: "1.2.18",
+    largeSharedStylesheets: new Set(["/app/lib/gallery.module.css"]),
+  };
 
-  it("turns on inlining small common chunks, except stylesheets", () => {
+  it("turns on inlining small common chunks, except those with large shared stylesheets", () => {
     const codeSplitting: unknown = withInlineCommonChunks(output, options)?.codeSplitting;
     const inline = (
-      codeSplitting as { experimentalInlineCommonChunks: { maxSize: number; exclude: RegExp } }
+      codeSplitting as {
+        experimentalInlineCommonChunks: { maxSize: number; exclude: (id: string) => boolean };
+      }
     ).experimentalInlineCommonChunks;
 
     expect(inline.maxSize).toBe(PAGES_INLINE_COMMON_CHUNK_MAX_SIZE);
-    expect(inline.exclude.test("/app/lib/panel.module.css")).toBe(true);
-    expect(inline.exclude.test("/app/lib/theme.scss?inline")).toBe(true);
-    expect(inline.exclude.test("/app/lib/panel.tsx")).toBe(false);
+    expect(inline.exclude("/app/lib/gallery.module.css")).toBe(true);
+    expect(inline.exclude("/app/lib/panel.module.css")).toBe(false);
+    expect(inline.exclude("/app/lib/panel.tsx")).toBe(false);
   });
 
   it.each([
-    ["an older Rolldown", output, { rolldownVersion: "1.2.17" }],
+    ["an older Rolldown", output, { ...options, rolldownVersion: "1.2.17" }],
     [
       "inlining the output already configures",
       { codeSplitting: { experimentalInlineCommonChunks: { maxSize: 0 } } },

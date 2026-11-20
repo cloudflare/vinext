@@ -538,6 +538,18 @@ export function collectPagesAppChunkRoots(
     if (joinsGroup(id) && !leadsToEntry.has(id)) roots.add(id);
   }
 
+  // Stylesheets that only `_app` imports stay in its chunk: a chunk of only
+  // stylesheets still gets a JavaScript file under strict execution order,
+  // which wraps even their empty modules, so every page would load it for
+  // nothing. One that a page imports too keeps the group, so it loads once,
+  // in `_app`'s import order.
+  const onlyAppStylesheets = [...roots].every(
+    (id) =>
+      isStylesheetModule(id) &&
+      (getModuleInfo(id)?.importers ?? []).every((importer) => importer === appId),
+  );
+  if (onlyAppStylesheets) return new Set();
+
   return roots;
 }
 
@@ -571,7 +583,82 @@ export function createPagesClientCodeSplittingConfig(
  */
 export const PAGES_INLINE_COMMON_CHUNK_MAX_SIZE = 20_000;
 
-const STYLESHEET_MODULE_RE = /\.(?:css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/;
+export const STYLESHEET_MODULE_RE = /\.(?:css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/;
+const NON_STYLESHEET_QUERY_RE = /[?&](?:inline|url|raw|transform-only)\b/;
+
+/**
+ * Whether `id` is a stylesheet whose CSS goes into its chunk's stylesheet,
+ * short of `?inline`, `?url` and `?raw` imports (and the `?transform-only`
+ * module behind a `?url` one).
+ */
+export function isStylesheetModule(id: string): boolean {
+  return STYLESHEET_MODULE_RE.test(id) && !NON_STYLESHEET_QUERY_RE.test(id);
+}
+
+/**
+ * Collect the stylesheets that must keep a chunk of their own: those that the
+ * same set of entries (the client entry, pages, `import()` targets) loads
+ * statically, when together they hold at least
+ * {@link PAGES_INLINE_COMMON_CHUNK_MAX_SIZE} of CSS. Rolldown groups a common
+ * chunk's modules by that set, and webpack applies `minSize` to the CSS of
+ * each such group, so the CSS a set of pages shares gets one stylesheet once
+ * it's large and is otherwise copied into each page's stylesheet. Rolldown's
+ * own size check only counts the JavaScript a stylesheet compiles to.
+ */
+export function collectLargeSharedStylesheets(
+  stylesheetSizes: ReadonlyMap<string, number>,
+  getModuleInfo: (id: string) => {
+    readonly isEntry: boolean;
+    readonly importers: readonly string[];
+    readonly dynamicImporters: readonly string[];
+  } | null,
+): Set<string> {
+  const groups = new Map<string, { size: number; ids: string[] }>();
+
+  // Stylesheets share most of their importers.
+  const infos = new Map<string, ReturnType<typeof getModuleInfo>>();
+  const infoOf = (id: string) => {
+    if (!infos.has(id)) infos.set(id, getModuleInfo(id));
+    return infos.get(id)!;
+  };
+
+  for (const [id, size] of stylesheetSizes) {
+    // Every entry that loads the stylesheet statically.
+    const entries: string[] = [];
+    const visited = new Set([id]);
+    const pending = [id];
+
+    while (pending.length > 0) {
+      const moduleId = pending.pop()!;
+      const info = infoOf(moduleId);
+      if (!info) continue;
+
+      if (info.isEntry || info.dynamicImporters.length > 0) entries.push(moduleId);
+
+      for (const importer of info.importers) {
+        if (visited.has(importer)) continue;
+
+        visited.add(importer);
+        pending.push(importer);
+      }
+    }
+
+    const key = entries.sort().join("\0");
+    const group = groups.get(key) ?? { size: 0, ids: [] };
+
+    group.size += size;
+    group.ids.push(id);
+    groups.set(key, group);
+  }
+
+  const large = new Set<string>();
+  for (const group of groups.values()) {
+    if (group.size < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE) continue;
+    for (const id of group.ids) large.add(id);
+  }
+
+  return large;
+}
 
 /** Rolldown 1.2.18 added `codeSplitting.experimentalInlineCommonChunks`. */
 export function supportsInlineCommonChunks(rolldownVersion: string): boolean {
@@ -596,8 +683,9 @@ type InlineCommonChunksOutput = {
  * Turbopack (at any size) duplicate small modules that several pages share
  * instead of loading each set of them as a separate tiny chunk. Rolldown keeps
  * one instance of each copied module and only evaluates it when an importer
- * needs it, as both bundlers do. Stylesheets keep their own chunk, as
- * Turbopack keeps a shared CSS module in one stylesheet.
+ * needs it, as both bundlers do. A chunk holding one of
+ * `largeSharedStylesheets` ({@link collectLargeSharedStylesheets}) isn't
+ * copied, so that CSS keeps one stylesheet, as in webpack.
  *
  * Returns the output options with inlining turned on, or undefined when the
  * Rolldown version or other options (which Rolldown rejects in combination
@@ -609,6 +697,7 @@ export function withInlineCommonChunks<Output extends InlineCommonChunksOutput>(
     preserveEntrySignatures?: unknown;
     onDemandWrapping?: unknown;
     rolldownVersion: string;
+    largeSharedStylesheets: ReadonlySet<string>;
   },
 ): Output | undefined {
   const codeSplitting = output.codeSplitting;
@@ -641,7 +730,7 @@ export function withInlineCommonChunks<Output extends InlineCommonChunksOutput>(
       ...codeSplitting,
       experimentalInlineCommonChunks: {
         maxSize: PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
-        exclude: STYLESHEET_MODULE_RE,
+        exclude: (id: string) => options.largeSharedStylesheets.has(id),
       },
     },
   };

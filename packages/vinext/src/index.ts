@@ -344,8 +344,12 @@ import {
   getOutputFileNames,
   createClientManualChunks,
   createClientCodeSplittingConfig,
+  collectLargeSharedStylesheets,
   collectPagesAppChunkRoots,
   createPagesClientCodeSplittingConfig,
+  isStylesheetModule,
+  STYLESHEET_MODULE_RE,
+  supportsInlineCommonChunks,
   withInlineCommonChunks,
   createClientAssetFileNames,
   createWorkerFileNames,
@@ -1913,6 +1917,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   // Filled in from the client module graph; see vinext:pages-client-chunks.
   const pagesAppChunkRoots = new Set<string>();
+  // Each client stylesheet's compiled size, and those that keep a chunk.
+  const pagesStylesheetSizes = new Map<string, number>();
+  const pagesLargeSharedStylesheets = new Set<string>();
+  // Whether the Pages Router client output may copy small common chunks
+  // (vinext:pages-client-chunks). Hybrid builds use the App Router's groups.
+  const pagesInlinesCommonChunks = (rolldownVersion: string) =>
+    hasPagesDir &&
+    !hasAppDir &&
+    !options.disableNextLikeChunking &&
+    supportsInlineCommonChunks(rolldownVersion);
   // The client's input options once every plugin's `options` hook has run.
   let pagesClientInputOptions: { preserveEntrySignatures?: unknown; onDemandWrapping?: unknown } =
     {};
@@ -9315,6 +9329,21 @@ export const loadServerActionClient = ${
   // Next.js-like Pages Router client chunks: `_app`'s imports load as one
   // chunk, and small chunks that pages share are copied into each page.
   plugins.push({
+    name: "vinext:pages-client-stylesheet-sizes",
+    apply: "build",
+    // Normal order: sees a stylesheet once vite:css compiles it, before
+    // vite:css-post turns it into JavaScript.
+    transform: {
+      filter: { id: STYLESHEET_MODULE_RE },
+      handler(code, id) {
+        if (this.environment?.name !== "client" || !isStylesheetModule(id)) return;
+        if (!pagesInlinesCommonChunks(this.meta.rolldownVersion)) return;
+
+        pagesStylesheetSizes.set(id, code.length);
+      },
+    },
+  });
+  plugins.push({
     name: "vinext:pages-client-chunks",
     apply: "build",
     // Runs its post-order hooks after those of normal-order plugins.
@@ -9334,11 +9363,23 @@ export const loadServerActionClient = ${
       },
     },
     buildStart() {
-      if (this.environment?.name === "client") pagesAppChunkRoots.clear();
+      if (this.environment?.name !== "client") return;
+
+      pagesAppChunkRoots.clear();
+      pagesStylesheetSizes.clear();
+      pagesLargeSharedStylesheets.clear();
     },
     buildEnd() {
       const environment = this.environment;
       if (environment?.name !== "client" || environment.config.build.lib || !hasPagesDir) return;
+
+      if (pagesInlinesCommonChunks(this.meta.rolldownVersion)) {
+        for (const id of collectLargeSharedStylesheets(pagesStylesheetSizes, (moduleId) =>
+          this.getModuleInfo(moduleId),
+        )) {
+          pagesLargeSharedStylesheets.add(id);
+        }
+      }
 
       const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
       if (!appFilePath) return;
@@ -9376,6 +9417,7 @@ export const loadServerActionClient = ${
         return withInlineCommonChunks(output, {
           ...pagesClientInputOptions,
           rolldownVersion: this.meta.rolldownVersion,
+          largeSharedStylesheets: pagesLargeSharedStylesheets,
         });
       },
     },
