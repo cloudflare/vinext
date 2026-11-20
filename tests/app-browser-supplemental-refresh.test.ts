@@ -1075,7 +1075,7 @@ describe("parallel route supplemental refreshes", () => {
   // intercepted payload left out, whichever slot it refreshes, even where it
   // matches the intercepted slot from its own URL.
   it.each(["slot:sidebar:/members", "slot:children:/members"])(
-    "keeps the intercepted payload's own head and modal when a source render refreshes %s",
+    "keeps the intercepted payload's own head, layouts and modal when a source render refreshes %s",
     (refreshedSlotId) => {
       const interception = {
         sourceMatchedUrl: "/members/7",
@@ -1086,9 +1086,13 @@ describe("parallel route supplemental refreshes", () => {
       };
       const primary: AppElements = {
         ...AppElementsWire.createMetadataEntries({
+          bfcacheSegmentIdentities: {
+            "layout:/members": "members layout",
+            "template:/": "root template",
+          },
           interception,
           interceptionContext: "/members/7",
-          layoutIds: ["layout:/", "layout:/members"],
+          layoutIds: ["layout:/", "layout:/members", "layout:/members/7"],
           rootLayoutTreePath: "/",
           routeId: "route:/members/7",
           slotBindings: [
@@ -1102,15 +1106,29 @@ describe("parallel route supplemental refreshes", () => {
             },
           ],
         }),
-        [AppElementsWire.keys.retainedElementIds]: ["page:/members/7"],
+        // The segments below the slot's owner, the owner's own template
+        // included, are the source's to keep.
+        [AppElementsWire.keys.retainedElementIds]: [
+          "page:/members/7",
+          "layout:/members/7",
+          "template:/members",
+        ],
         "__vinext_route_head:route:/members/7": "photo head",
+        "layout:/members": "members layout",
         "route:/members/7": "intercepted route",
         "slot:modal:/members": "photo modal",
+        "template:/": "root template",
       };
       const source: AppElements = {
         ...AppElementsWire.createMetadataEntries({
+          bfcacheSegmentIdentities: {
+            "layout:/members": "source layout",
+            "layout:/members/7": "member layout",
+            "template:/": "source root template",
+            "template:/members": "source template",
+          },
           interceptionContext: null,
-          layoutIds: ["layout:/", "layout:/members"],
+          layoutIds: ["layout:/", "layout:/members", "layout:/members/7"],
           rootLayoutTreePath: "/",
           routeId: "route:/members/7",
           slotBindings: [
@@ -1130,9 +1148,13 @@ describe("parallel route supplemental refreshes", () => {
         }),
         "__vinext_route_head:route:/members/7": "member head",
         "__vinext_streaming_metadata_body:route:/members/7": "member body",
+        "layout:/members": "source layout",
+        "layout:/members/7": "member layout",
         "page:/members/7": "member page",
         "route:/members/7": "source route",
         "slot:modal:/members": "modal catch-all",
+        "template:/": "source root template",
+        "template:/members": "source template",
         [refreshedSlotId]: "member slot",
       };
 
@@ -1144,14 +1166,31 @@ describe("parallel route supplemental refreshes", () => {
         false,
       );
       expect(result["route:/members/7"]).toBe("intercepted route");
+      // The layouts and templates the intercepted payload rendered from its own
+      // request stay its own, as Next.js keeps each segment the refresh
+      // rendered. The ones it left for the client to keep are the source's.
+      expect(result["layout:/members"]).toBe("members layout");
+      expect(result["template:/"]).toBe("root template");
+      expect(result["layout:/members/7"]).toBe("member layout");
+      expect(result["template:/members"]).toBe("source template");
       const metadata = AppElementsWire.readMetadata(result);
+      expect(metadata.bfcacheSegmentIdentities).toMatchObject({
+        "layout:/members": "members layout",
+        "layout:/members/7": "member layout",
+        "template:/": "root template",
+        "template:/members": "source template",
+      });
       expect(metadata.slotBindings).toContainEqual(
         expect.objectContaining({
           activeRouteId: "route:/photos/1",
           slotId: "slot:modal:/members",
         }),
       );
-      expect(metadata.retainedElementIds).toEqual(["page:/members/7"]);
+      expect(metadata.retainedElementIds).toEqual([
+        "page:/members/7",
+        "layout:/members/7",
+        "template:/members",
+      ]);
     },
   );
 
