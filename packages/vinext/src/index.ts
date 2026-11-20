@@ -258,6 +258,7 @@ import {
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import {
   appendToChunkCode,
+  builtUrlExpression,
   collectPagesPageStylesheets,
   withoutPreloadedStylesheets,
 } from "./build/pages-page-stylesheets.js";
@@ -9719,7 +9720,8 @@ export const loadServerActionClient = ${
       if (this.environment?.name !== "client") return;
 
       pagesAppChunkRoots.clear();
-      pagesStylesheetSizes.clear();
+      // Sizes stay across watch builds, which skip the transforms of
+      // stylesheets that haven't changed.
       pagesUncopiedStylesheets.clear();
     },
     buildEnd() {
@@ -9811,25 +9813,28 @@ export const loadServerActionClient = ${
           isAlwaysLoaded: (id) => id === RESOLVED_CLIENT_ENTRY || canonicalize(id) === appId,
           loaderChunk: entry.fileName,
         });
-        // The URLs Vite loads these from, with the deployment ID query that
-        // Next.js adds to stylesheets.
-        const url = (file: string) =>
-          nextConfig.assetPrefix || nextConfig.deploymentId
-            ? renderVinextBuiltUrl(file, nextConfig.assetPrefix, nextConfig.deploymentId)
-            : environment.config.base + file;
-        const manifest = {
-          routes: Object.fromEntries(
-            Object.entries(stylesheets.routes).map(([route, files]) => [route, files.map(url)]),
-          ),
-          shared: stylesheets.shared.map(url),
-        };
+        // The URLs Vite loads these from (with the deployment ID query that
+        // Next.js adds to stylesheets), as the entry's JavaScript.
+        const urls = (files: string[]) =>
+          `[${files
+            .map((file) =>
+              builtUrlExpression(file, entry.fileName, {
+                base: environment.config.base,
+                renderBuiltUrl: environment.config.experimental.renderBuiltUrl,
+              }),
+            )
+            .join(",")}]`;
+        const routeUrls = Object.entries(stylesheets.routes).map(
+          ([route, files]) => `${JSON.stringify(route)}:${urls(files)}`,
+        );
+        const manifest = `{routes:{${routeUrls.join(",")}},shared:${urls(stylesheets.shared)}}`;
         // The page loaders' dynamic imports leave page stylesheets to the
         // router, which turns them on as each page renders.
         entry.code = withoutPreloadedStylesheets(entry, new Set(stylesheets.unpreloaded));
         // Appended, so the entry's source map still lines up.
         entry.code = appendToChunkCode(
           entry.code,
-          `window.__VINEXT_PAGE_STYLESHEETS__=${JSON.stringify(manifest)};`,
+          `window.__VINEXT_PAGE_STYLESHEETS__=${manifest};`,
         );
       },
     },

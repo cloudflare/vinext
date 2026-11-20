@@ -631,6 +631,9 @@ export function collectUncopiedStylesheets(
   };
 
   for (const [id, size] of stylesheetSizes) {
+    // Gone from the module graph since an earlier watch build.
+    if (!infoOf(id)) continue;
+
     // Every entry that loads the stylesheet statically.
     const entries: string[] = [];
     let loadsDynamically = false;

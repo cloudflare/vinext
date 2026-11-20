@@ -375,6 +375,11 @@ describe("collectUncopiedStylesheets", () => {
 
     expect(collect(sizes)).toEqual(new Set(["card.css"]));
   });
+
+  // Sizes stay across watch builds, which skip unchanged stylesheets' transforms.
+  it("leaves out stylesheets that an earlier build sized but the graph no longer has", () => {
+    expect(collect(new Map([["removed.css", 30_000]]))).toEqual(new Set());
+  });
 });
 
 describe("supportsInlineCommonChunks", () => {

@@ -181,6 +181,8 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
       if (!shared.has(path)) continue;
       link = document.createElement("link");
       link.rel = "stylesheet";
+      // As Vite links the stylesheets that a dynamic import loads.
+      link.crossOrigin = "";
       link.setAttribute("href", href);
       if (nonce) link.setAttribute("nonce", nonce);
       const slot = createdLinkSlots.get(path);

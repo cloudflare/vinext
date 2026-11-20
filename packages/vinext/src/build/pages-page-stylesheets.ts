@@ -1,4 +1,5 @@
 import path from "pathslash";
+import type { RenderBuiltAssetUrl } from "vite";
 
 type BundleItem = {
   type: string;
@@ -169,4 +170,29 @@ export function appendToChunkCode(chunkCode: string, code: string): string {
   const comment = SOURCE_MAP_COMMENT.exec(chunkCode);
   if (!comment) return `${chunkCode}\n${code}`;
   return `${chunkCode.slice(0, comment.index)}\n${code}${comment[0]}`;
+}
+
+/**
+ * The JavaScript expression for `file`'s URL in the chunk `hostId`, as Vite
+ * renders a built asset's URL in JavaScript: `renderBuiltUrl`'s result, or a
+ * URL relative to the chunk with a relative `base`, or `base` and the file.
+ */
+export function builtUrlExpression(
+  file: string,
+  hostId: string,
+  options: { base: string; renderBuiltUrl?: RenderBuiltAssetUrl },
+): string {
+  let relative = options.base === "" || options.base === "./";
+  const result = options.renderBuiltUrl?.(file, {
+    type: "asset",
+    hostId,
+    hostType: "js",
+    ssr: false,
+  });
+  if (typeof result === "string") return JSON.stringify(result);
+  if (result?.runtime) return `(${result.runtime})`;
+  if (typeof result?.relative === "boolean") relative = result.relative;
+  if (!relative) return JSON.stringify(options.base + file);
+  const url = path.posix.relative(path.posix.dirname(hostId), file);
+  return `new URL(${JSON.stringify(url)},import.meta.url).href`;
 }
