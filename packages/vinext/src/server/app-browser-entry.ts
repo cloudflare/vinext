@@ -107,6 +107,7 @@ import {
   resolveManifestNavigationInterceptionContext,
   resolveMiddlewareRewriteNavigationInterceptionContext,
 } from "./app-browser-interception-context.js";
+import { getRouteMissInterceptionSourceHref } from "./app-interception-context-header.js";
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
@@ -1262,6 +1263,12 @@ function getRequestState(
         };
       }
       const currentRenderIsRouteMiss = isRouteMissRender(currentRouterState.elements);
+      // The source an intercepted state keeps, for its refreshes and
+      // traversals. An unmatched URL's not-found page sends /_not-found, as
+      // Next.js keeps that tree path as its `Next-Url`.
+      const currentSourceHref = currentRenderIsRouteMiss
+        ? getRouteMissInterceptionSourceHref(__basePath)
+        : window.location.pathname + window.location.search;
       const manifestInterceptionContext = resolveManifestNavigationInterceptionContext({
         basePath: __basePath,
         currentPathname: window.location.pathname,
@@ -1272,7 +1279,7 @@ function getRequestState(
       if (manifestInterceptionContext !== null) {
         return {
           interceptionContext: manifestInterceptionContext,
-          previousNextUrl: window.location.pathname + window.location.search,
+          previousNextUrl: currentSourceHref,
         };
       }
       // Fallback: when the current page is a declared interception source and
@@ -1297,10 +1304,9 @@ function getRequestState(
           targetPathname,
         });
       if (middlewareRewriteInterceptionContext !== null) {
-        const currentHrefForFallback = window.location.pathname + window.location.search;
         return {
           interceptionContext: middlewareRewriteInterceptionContext,
-          previousNextUrl: currentHrefForFallback,
+          previousNextUrl: currentSourceHref,
         };
       }
       return {

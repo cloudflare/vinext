@@ -8692,6 +8692,154 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  // An unmatched URL's not-found page sends /_not-found, which Next.js's
+  // interception rewrite matches from `Next-Url` alone, never running
+  // middleware or redirects on it. The intercept renders only where a direct
+  // request to /_not-found renders cleanly; anything else drops the source
+  // and renders the target directly, never the source's redirect or 404. A
+  // request selecting the intercept by id is refused. A rewrite that keeps
+  // the /_not-found path is a clean pass, as for any other source; one to
+  // another path never adopts that path as the source.
+  it.each([
+    { refusal: "none", interceptionId: null },
+    { refusal: "none", sameRewrite: "middleware", interceptionId: null },
+    { refusal: "none", sameRewrite: "config", interceptionId: null },
+    { refusal: "middleware redirect", interceptionId: null },
+    { refusal: "middleware redirect", interceptionId: "slug-modal" },
+    { refusal: "middleware rewrite", interceptionId: null },
+    { refusal: "middleware rewrite", interceptionId: "slug-modal" },
+    { refusal: "config redirect", interceptionId: null },
+    { refusal: "config redirect", interceptionId: "slug-modal" },
+    { refusal: "config rewrite", interceptionId: null },
+    { refusal: "config rewrite", interceptionId: "slug-modal" },
+  ])(
+    "intercepts from an unmatched URL's not-found page only where /_not-found renders (refusal: $refusal, same-path rewrite: $sameRewrite, id: $interceptionId)",
+    async ({ refusal, sameRewrite, interceptionId }) => {
+      const targetRoute = createPageRoute({
+        isDynamic: true,
+        params: ["id"],
+        pattern: "/photos/:id",
+        routeSegments: ["photos", "[id]"],
+      });
+      const slugRoute = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/:slug",
+        routeSegments: ["[slug]"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const middlewarePaths: string[] = [];
+      const handler = createHandler({
+        configHeaders: [],
+        configRedirects:
+          refusal === "config redirect"
+            ? [{ source: "/_not-found", destination: "/login", permanent: false }]
+            : [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles:
+            refusal === "config rewrite"
+              ? [{ source: "/_not-found", destination: "/acme" }]
+              : sameRewrite === "config"
+                ? [{ source: "/_not-found", destination: "/_not-found" }]
+                : [],
+          fallback: [],
+        },
+        dispatchMatchedPage,
+        hasInterceptionId: (id) => id === "slug-modal",
+        // /acme intercepts on its own, so only the refusal keeps a rewrite
+        // to it from adopting it as the source.
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/_not-found" || sourcePathname === "/acme"
+            ? {
+                interceptionRendersWholeInterceptingRoute: sourcePathname === "/_not-found",
+                interceptionSourceIsConcrete: true,
+                params: { slug: sourcePathname.slice(1) } as Record<string, string | string[]>,
+                route: slugRoute,
+              }
+            : null,
+        matchRoute(pathname: string) {
+          if (pathname === "/photos/1") {
+            return { params: { id: "1" } as Record<string, string | string[]>, route: targetRoute };
+          }
+          if (pathname === "/_not-found" || pathname === "/acme") {
+            return {
+              params: { slug: pathname.slice(1) } as Record<string, string | string[]>,
+              route: slugRoute,
+            };
+          }
+          return null;
+        },
+        middlewareModule: {
+          default(request: NextRequest) {
+            middlewarePaths.push(request.nextUrl.pathname);
+            if (request.nextUrl.pathname === "/_not-found" && refusal === "middleware redirect") {
+              return Response.redirect("https://example.test/docs/login", 307);
+            }
+            if (request.nextUrl.pathname === "/_not-found" && refusal === "middleware rewrite") {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/acme" },
+              });
+            }
+            if (request.nextUrl.pathname === "/_not-found" && sameRewrite === "middleware") {
+              // A rewrite to the request's own URL that only sets a header.
+              return new Response(null, {
+                headers: {
+                  "x-middleware-override-headers": "x-from-middleware",
+                  "x-middleware-request-x-from-middleware": "1",
+                  "x-middleware-rewrite": request.nextUrl.href,
+                },
+              });
+            }
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+      });
+
+      const headers = createRscRequestHeaders({
+        interceptionContext: "/_not-found",
+        interceptionId: interceptionId ?? undefined,
+      });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.headers.get("location")).toBeNull();
+      if (interceptionId !== null) {
+        expect(response.status).toBe(400);
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+        return;
+      }
+      expect(response.status).toBe(200);
+      expect(middlewarePaths).toEqual(
+        refusal === "config redirect" ? ["/photos/1"] : ["/photos/1", "/_not-found"],
+      );
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      if (refusal === "none") {
+        expect(dispatchMatchedPage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            bypassInterceptionContextCache: false,
+            interceptionContext: "/_not-found",
+          }),
+        );
+        return;
+      }
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: true,
+          interceptionContext: null,
+          route: targetRoute,
+        }),
+      );
+    },
+  );
+
   // A sibling intercept opened from a deeper source renders the intercepting
   // route itself, but the deeper source is what a source rewrite reaches, so
   // it is the source the handler authorizes.

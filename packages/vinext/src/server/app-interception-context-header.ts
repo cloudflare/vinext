@@ -1,3 +1,24 @@
+import { restoreBasePath } from "../utils/base-path.js";
+
+/**
+ * The interception context of an unmatched URL's not-found page. Next.js
+ * builds `Next-Url` from the rendered router tree, which is then /_not-found.
+ */
+export const ROUTE_MISS_INTERCEPTION_CONTEXT = "/_not-found";
+
+/** The source href a state opened from an unmatched URL's not-found page keeps. */
+export function getRouteMissInterceptionSourceHref(basePath: string): string {
+  return restoreBasePath(ROUTE_MISS_INTERCEPTION_CONTEXT, basePath);
+}
+
+/** Whether a state's source is an unmatched URL's not-found page. */
+export function isRouteMissInterceptionSource(
+  previousNextUrl: string | null,
+  basePath: string,
+): boolean {
+  return previousNextUrl === getRouteMissInterceptionSourceHref(basePath);
+}
+
 /**
  * Normalize the `x-vinext-interception-context` header from inbound requests.
  *

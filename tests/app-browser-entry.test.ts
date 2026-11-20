@@ -1962,6 +1962,53 @@ describe("app browser entry state helpers", () => {
     expect((await commit("/club/other")).pending.previousNextUrl).toBeNull();
   });
 
+  // A refresh of an intercept opened from an unmatched URL's not-found page
+  // sends /_not-found again and commits the whole intercepting route softly,
+  // as Next.js does when the root layout has no other slot.
+  it("keeps /_not-found as the source when an intercept from a not-found page refreshes", async () => {
+    const createWholeRouteElements = () =>
+      createResolvedElements("route:/photos/1", "/", "/_not-found", {
+        "page:/photos/1": React.createElement("main", null, "photo modal"),
+        [AppElementsWire.keys.wholeInterceptionSource]: "/_not-found",
+      });
+    const navigationSnapshot = createClientNavigationRenderSnapshot(
+      "https://example.com/photos/1",
+      {},
+    );
+    const state = createState({
+      elements: createWholeRouteElements(),
+      interceptionContext: "/_not-found",
+      navigationSnapshot,
+      previousNextUrl: "/_not-found",
+      routeId: "route:/photos/1",
+    });
+    const pending = await createPendingNavigationCommit({
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      currentState: state,
+      nextElements: Promise.resolve(createWholeRouteElements()),
+      navigationSnapshot,
+      operationLane: "refresh",
+      previousNextUrl: "/_not-found",
+      renderId: 1,
+      type: "navigate",
+    });
+    expect(pending.previousNextUrl).toBe("/_not-found");
+
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState: state,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(state, pending),
+      startedNavigationId: 1,
+      targetHref: "https://example.com/photos/1",
+    });
+    if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+    const nextState = applyApprovedVisibleCommit(state, approval.approvedCommit);
+    expect(nextState.routeId).toBe("route:/photos/1");
+    expect(nextState.interception).toBeNull();
+    expect(nextState.previousNextUrl).toBe("/_not-found");
+  });
+
   it("mints fresh bfcache ids instead of reusing current ids when requested", async () => {
     const currentRootLayout = React.createElement("div", null, "current root");
     const nextRootLayout = React.createElement("div", null, "next root");
