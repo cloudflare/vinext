@@ -11,6 +11,8 @@ export const PAGES = [
   "delta",
   "ordered",
   "reversed",
+  "epsilon",
+  "note",
 ] as const;
 
 export function Nav() {
