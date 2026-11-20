@@ -9690,7 +9690,8 @@ export const loadServerActionClient = ${
         if (this.environment?.name !== "client" || !isStylesheetModule(id)) return;
         if (!pagesInlinesCommonChunks(this.meta.rolldownVersion)) return;
 
-        pagesStylesheetSizes.set(id, code.length);
+        // In bytes, as webpack sizes chunks.
+        pagesStylesheetSizes.set(id, Buffer.byteLength(code));
       },
     },
   });
