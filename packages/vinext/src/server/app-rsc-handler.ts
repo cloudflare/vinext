@@ -2261,9 +2261,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             externalRewriteRequest: request,
             hadBasePath: resolvedPathnameHasBasePath,
             isDataRequest: isMiddlewareDataRequest,
-            // The request discards whatever a /_not-found source's middleware
-            // answers, so it must not fetch an external rewrite for it.
-            proxyExternalRewrite: !isRouteMissSource,
+            // The request discards whatever the middleware of a /_not-found
+            // source or of one without the slot answers, so it must not fetch
+            // an external rewrite for either.
+            proxyExternalRewrite: !isRouteMissSource && !rawSourceLacksSlot,
             request: sourceMiddlewareRequest,
             // From the spelling a direct request uses: a basePath root drops
             // its slash in `sourceUrl`, while a direct request keeps `/docs/`.
