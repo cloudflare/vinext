@@ -77,6 +77,7 @@ import {
   withBasePath,
 } from "./url-utils.js";
 import { navigationPlanner } from "../server/navigation-planner.js";
+import { matchOptimisticRouteManifestRoute } from "../server/app-optimistic-routing.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isExternalUrl } from "../utils/external-url.js";
@@ -500,9 +501,38 @@ function normalizeRscCacheLookupPathname(rscUrl: string): string | null {
   }
 }
 
+/**
+ * The slot IDs of the route that the server rendered for an entry, after
+ * rewrites. The server reads the mounted slots only for the slots of the route
+ * it renders (`mountedSlotIds` in `app-page-route-wiring.tsx`). Null when the
+ * entry or the route manifest does not name the route.
+ */
+function resolvePrefetchCacheEntryRouteSlotIds(entry: PrefetchCacheEntry): Set<string> | null {
+  const renderedPathAndSearch = entry.snapshot?.renderedPathAndSearch;
+  if (!renderedPathAndSearch) return null;
+  const routeManifest = getNavigationRuntime()?.bootstrap.routeManifest ?? null;
+  if (routeManifest === null) return null;
+  const match = matchOptimisticRouteManifestRoute({
+    basePath: __basePath,
+    href: renderedPathAndSearch,
+    routeManifest,
+  });
+  return match === null ? null : new Set(match.route.slotIds);
+}
+
+function filterMountedSlotsHeader(
+  mountedSlotsHeader: string | null,
+  slotIds: ReadonlySet<string>,
+): string | null {
+  if (mountedSlotsHeader === null) return null;
+  const kept = mountedSlotsHeader.split(" ").filter((slotId) => slotIds.has(slotId));
+  return kept.length > 0 ? kept.join(" ") : null;
+}
+
 function isPrefetchCacheEntryCompatibleWithMountedSlots(
   entry: PrefetchCacheEntry,
   mountedSlotsHeader: string | null,
+  interceptionContext: string | null,
 ): boolean {
   // The two clauses are load-bearing, not redundant. `resolvePrefetch...Header`
   // prefers the entry's pinned request-time slot context (falling back to the
@@ -514,7 +544,17 @@ function isPrefetchCacheEntryCompatibleWithMountedSlots(
   if (resolvePrefetchCacheEntryMountedSlotsHeader(entry) === mountedSlotsHeader) {
     return true;
   }
-  return (entry.snapshot?.mountedSlotsHeader ?? null) === mountedSlotsHeader;
+  if ((entry.snapshot?.mountedSlotsHeader ?? null) === mountedSlotsHeader) return true;
+  // A prefetch made on a page with other mounted slots has the same payload
+  // when the two sets agree on the slots of the route the server rendered.
+  // An intercepted payload renders the slots of another route's layout.
+  if (interceptionContext !== null || entry.mountedSlotsHeader === undefined) return false;
+  const routeSlotIds = resolvePrefetchCacheEntryRouteSlotIds(entry);
+  if (routeSlotIds === null) return false;
+  return (
+    filterMountedSlotsHeader(entry.mountedSlotsHeader, routeSlotIds) ===
+    filterMountedSlotsHeader(mountedSlotsHeader, routeSlotIds)
+  );
 }
 
 function findPrefetchCacheEntryForNavigation(
@@ -532,7 +572,11 @@ function findPrefetchCacheEntryForNavigation(
     if (
       exactEntry &&
       exactEntry.cacheForNavigation !== false &&
-      isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
+      isPrefetchCacheEntryCompatibleWithMountedSlots(
+        exactEntry,
+        mountedSlotsHeader,
+        interceptionContext,
+      )
     ) {
       return { cacheKey: exactCacheKey, entry: exactEntry };
     }
@@ -552,7 +596,15 @@ function findPrefetchCacheEntryForNavigation(
     if (source.interceptionContext !== interceptionContext) continue;
     const normalizedSource = normalizeRscCacheLookupUrl(source.rscUrl);
     if (normalizedSource === null || !normalizedTargets.has(normalizedSource)) continue;
-    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+    if (
+      !isPrefetchCacheEntryCompatibleWithMountedSlots(
+        entry,
+        mountedSlotsHeader,
+        interceptionContext,
+      )
+    ) {
+      continue;
+    }
 
     return { cacheKey, entry };
   }
@@ -645,7 +697,15 @@ export function hasSearchAgnosticPrefetchShellForRoute(
     const source = AppElementsWire.decodeCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeRscCacheLookupPathname(source.rscUrl) !== normalizedTargetPathname) continue;
-    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+    if (
+      !isPrefetchCacheEntryCompatibleWithMountedSlots(
+        entry,
+        mountedSlotsHeader,
+        interceptionContext,
+      )
+    ) {
+      continue;
+    }
 
     if (entry.pending !== undefined) return true;
     if (resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) return true;
@@ -941,7 +1001,15 @@ export function discardLearningOnlyPrefetchCacheEntry(
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeRscCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
     // Another slot context's entry is not the one being replaced.
-    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+    if (
+      !isPrefetchCacheEntryCompatibleWithMountedSlots(
+        entry,
+        mountedSlotsHeader,
+        interceptionContext,
+      )
+    ) {
+      continue;
+    }
 
     superseded.push([cacheKey, entry]);
   }
@@ -1692,7 +1760,11 @@ export function consumePrefetchResponse(
   if (
     exactEntry &&
     exactEntry.cacheForNavigation !== false &&
-    !isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
+    !isPrefetchCacheEntryCompatibleWithMountedSlots(
+      exactEntry,
+      mountedSlotsHeader,
+      interceptionContext,
+    )
   ) {
     deletePrefetchCacheEntry(cache, getPrefetchedUrls(), exactCacheKey, exactEntry, false);
   }
@@ -1722,7 +1794,14 @@ function consumeMatchedPrefetchResponse(
   if (entry.cacheForNavigation === false) return null;
 
   if (entry.snapshot) {
-    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) {
+    const { interceptionContext } = AppElementsWire.decodeCacheKey(cacheKey);
+    if (
+      !isPrefetchCacheEntryCompatibleWithMountedSlots(
+        entry,
+        mountedSlotsHeader,
+        interceptionContext,
+      )
+    ) {
       // Slot mismatch means the prefetch used stale slot context and cannot
       // be safely reused.
       return null;
