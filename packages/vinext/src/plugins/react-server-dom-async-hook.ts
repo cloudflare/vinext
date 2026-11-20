@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Plugin } from "vite";
+import { isRunnableDevEnvironment, type Plugin } from "vite";
 import { toSlash } from "pathslash";
 
 /**
@@ -14,7 +14,9 @@ import { toSlash } from "pathslash";
  *
  * The build's `async_hooks` resolves to a module that creates hooks through
  * `node:async_hooks` and records the dev server each one belongs to, and the
- * console methods that copy of the build replaced. When that server closes,
+ * console methods that copy of the build replaced. A server's module runners
+ * import in its scope, so a copy is attributed to the server whose runner
+ * evaluated it. When that server closes,
  * its hook is disabled and its console methods are put back. Vite can still
  * keep a closed server's environments, and with them that copy, so the hook
  * is also told the resources it recorded are gone, as it would have heard. A
@@ -33,7 +35,9 @@ const REGISTRY = Symbol.for("vinext.devServerOwners");
 
 type DevServerOwner = {
   closed: boolean;
-  hook?: { of: unknown; release(): void };
+  // The enabled hook of each build, by the build's path: a server could
+  // evaluate an installed copy as well as plugin-rsc's.
+  hooks: Map<string, { of: unknown; release(): void }>;
 };
 
 type ConsoleMethods = Record<string, unknown>;
@@ -53,8 +57,7 @@ type ConsoleLayer = {
  * realm.
  */
 type DevServerRegistry = {
-  // The dev server a request runs for, so a module evaluated while serving it
-  // is attributed to it.
+  // The dev server whose module runner is importing.
   scope: AsyncLocalStorage<DevServerOwner>;
   // The dev servers that are running.
   live: Set<DevServerOwner>;
@@ -76,7 +79,15 @@ export function devServerRegistry(): DevServerRegistry {
     consoleLayer(kind) {
       const owner = ownerOfModule(this);
       if (!owner) return undefined;
-      retireConsoleLayers(this, (layer) => layer.owner === owner && layer.kind === kind);
+      // Evaluated again, as after a full reload: so are the modules evaluated
+      // after it the first time, whose layers are above its own.
+      const first = this.consoleLayers.findIndex(
+        (layer) => layer.owner === owner && layer.kind === kind,
+      );
+      if (first !== -1) {
+        const again = new Set(this.consoleLayers.slice(first));
+        retireConsoleLayers(this, (layer) => layer.owner === owner && again.has(layer));
+      }
       const before: ConsoleMethods = { ...console };
       return {
         owner,
@@ -95,9 +106,9 @@ export function devServerRegistry(): DevServerRegistry {
 }
 
 /**
- * A module evaluated outside a request, such as by instrumentation at
- * startup, belongs to the only running server. With several running and no
- * request, it isn't attributed.
+ * One a runner vinext doesn't wrap evaluated, such as an external runtime's
+ * in the same process, belongs to the only running server. With several
+ * running, it isn't attributed.
  */
 function ownerOfModule(registry: DevServerRegistry): DevServerOwner | undefined {
   const owner = registry.scope.getStore();
@@ -137,9 +148,11 @@ function retireConsoleLayers(
 // drops what it recorded for one only then. Async ids only increase, so the
 // ones it can have recorded are those created while it was enabled: it's
 // called for each, in slices so a long session's don't block the restart.
-const ASYNC_HOOKS_MODULE = `"use strict";
+function asyncHooksModule(build: string): string {
+  return `"use strict";
+const BUILD = ${JSON.stringify(build)};
 const asyncHooks = require("node:async_hooks");
-const consoleLayer = globalThis[Symbol.for(${JSON.stringify(REGISTRY.description)})]?.consoleLayer("react-server-dom");
+const consoleLayer = globalThis[Symbol.for(${JSON.stringify(REGISTRY.description)})]?.consoleLayer("react-server-dom:" + BUILD);
 const owner = consoleLayer?.owner;
 if (consoleLayer) queueMicrotask(consoleLayer.record);
 function newestAsyncId() {
@@ -160,12 +173,13 @@ module.exports = {
     const enable = hook.enable;
     hook.enable = function () {
       if (owner.closed) return this;
-      if (owner.hook?.of === hook) return enable.call(this);
-      // The server evaluated the build again, after re-optimizing its
-      // dependencies: the previous copy no longer renders.
-      owner.hook?.release();
+      const previous = owner.hooks.get(BUILD);
+      if (previous?.of === hook) return enable.call(this);
+      // The server evaluated the build again, as after a full reload: the
+      // previous copy no longer renders.
+      previous?.release();
       const firstAsyncId = newestAsyncId();
-      owner.hook = {
+      owner.hooks.set(BUILD, {
         of: hook,
         release() {
           hook.disable();
@@ -173,13 +187,14 @@ module.exports = {
             destroyAll(callbacks.destroy, firstAsyncId, newestAsyncId());
           }
         },
-      };
+      });
       return enable.call(this);
     };
     return hook;
   },
 };
 `;
+}
 
 /** For the dev optimizer's Rolldown pipeline, which pre-bundles the build. */
 export const reactServerDomAsyncHookOptimizeDepsPlugin: Plugin = {
@@ -187,21 +202,27 @@ export const reactServerDomAsyncHookOptimizeDepsPlugin: Plugin = {
   resolveId: {
     filter: { id: /^(?:node:)?async_hooks$/ },
     handler(_id, importer) {
-      if (importer && REACT_SERVER_DOM_NODE_DEVELOPMENT_BUILD.test(toSlash(importer))) {
-        return REACT_SERVER_DOM_ASYNC_HOOKS_ID;
+      if (
+        importer &&
+        // Its own id ends with the build's path.
+        !importer.startsWith(REACT_SERVER_DOM_ASYNC_HOOKS_ID) &&
+        REACT_SERVER_DOM_NODE_DEVELOPMENT_BUILD.test(toSlash(importer))
+      ) {
+        return `${REACT_SERVER_DOM_ASYNC_HOOKS_ID}?${toSlash(importer)}`;
       }
     },
   },
   load: {
-    filter: { id: new RegExp(`^${REACT_SERVER_DOM_ASYNC_HOOKS_ID}$`) },
-    handler() {
-      return ASYNC_HOOKS_MODULE;
+    filter: { id: new RegExp(`^${REACT_SERVER_DOM_ASYNC_HOOKS_ID}\\?`) },
+    handler(id) {
+      // After the "?": the build's path.
+      return asyncHooksModule(id.slice(REACT_SERVER_DOM_ASYNC_HOOKS_ID.length + 1));
     },
   },
 };
 
 /**
- * Records each dev server, and when it closes disables its hook and puts back
+ * Records each dev server, and when it closes disables its hooks and puts back
  * the console methods replaced for it.
  */
 export function createReactServerDomAsyncHookOwnerPlugin(): Plugin {
@@ -209,23 +230,27 @@ export function createReactServerDomAsyncHookOwnerPlugin(): Plugin {
   return {
     name: "vinext:react-server-dom-async-hook:owner",
     apply: "serve",
-    // Its middleware has to run before the one that renders.
-    enforce: "pre",
     configureServer(server) {
-      const owner: DevServerOwner = { closed: false };
+      const owner: DevServerOwner = { closed: false, hooks: new Map() };
       const registry = devServerRegistry();
       registry.live.add(owner);
       for (const environment of Object.values(server.environments)) {
         owners.set(environment, owner);
+        if (!isRunnableDevEnvironment(environment)) continue;
+        // For requests, instrumentation at startup and the re-imports of a
+        // full reload alike.
+        const runner = environment.runner;
+        const importModule = runner.import.bind(runner);
+        runner.import = ((url: string) =>
+          registry.scope.run(owner, () => importModule(url))) as typeof runner.import;
       }
-      server.middlewares.use((_req, _res, next) => registry.scope.run(owner, next));
     },
     closeBundle() {
       const owner = owners.get(this.environment);
       if (!owner || owner.closed) return;
       owner.closed = true;
-      owner.hook?.release();
-      owner.hook = undefined;
+      for (const hook of owner.hooks.values()) hook.release();
+      owner.hooks.clear();
       const registry = devServerRegistry();
       registry.live.delete(owner);
       retireConsoleLayers(registry, (layer) => layer.owner === owner);

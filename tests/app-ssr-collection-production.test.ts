@@ -134,37 +134,56 @@ describe("App Router dev SSR of a collection built from its children", () => {
   // hook is disabled and its console methods put back.
   it("keeps one Flight async hook per running dev server", async () => {
     const registry = devServerRegistry();
+    const hooksOf = (owner: typeof registry.live extends Set<infer T> ? T : never) =>
+      [...owner.hooks.values()].map((hook) => hook.of);
     await renderedCells(new URL("/", baseUrl));
     expect(registry.live.size).toBe(1);
     const [first] = registry.live;
-    expect(first.hook).toBeDefined();
+    expect(hooksOf(first)).toHaveLength(1);
     const firstConsoleError = console.error;
     expect(firstConsoleError).not.toBe(consoleMethods.error);
 
-    // Same root, so the same pre-bundled build.
+    // A full reload, as when a route is added, evaluates the build and the
+    // modules that wrap console after it again, outside a request.
+    const firstHook = hooksOf(first)[0];
+    const firstLayers = registry.consoleLayers.length;
+    server!.environments.rsc.hot.send({ type: "full-reload" });
+    await expect.poll(() => hooksOf(first)[0], { timeout: 30_000 }).not.toBe(firstHook);
+    expect(hooksOf(first)).toHaveLength(1);
+    await expect.poll(() => console.error, { timeout: 30_000 }).not.toBe(firstConsoleError);
+    expect(registry.consoleLayers).toHaveLength(firstLayers);
+    expect(registry.consoleLayers.every((layer) => !layer.retired)).toBe(true);
+    expect((await renderedCells(new URL("/", baseUrl))).count).toBe(CELL_COUNT);
+    const reloadedConsoleError = console.error;
+
+    // Same root, so the same pre-bundled build. plugin-rsc's SSR import is
+    // the latest server's, so the first one renders again only once it has
+    // restarted.
     const second = await startDevServer();
     const secondOwner = [...registry.live].find((owner) => owner !== first)!;
     try {
       const { count } = await renderedCells(new URL("/", second.baseUrl));
       expect(count).toBe(CELL_COUNT);
-      expect(secondOwner.hook).toBeDefined();
-      expect(secondOwner.hook).not.toBe(first.hook);
+      expect(hooksOf(secondOwner)).toHaveLength(1);
+      expect(hooksOf(secondOwner)[0]).not.toBe(hooksOf(first)[0]);
     } finally {
       await second.server.close();
     }
-    expect(secondOwner).toMatchObject({ closed: true, hook: undefined });
+    expect(secondOwner.closed).toBe(true);
+    expect(hooksOf(secondOwner)).toHaveLength(0);
     expect([...registry.live]).toEqual([first]);
-    expect(first.hook).toBeDefined();
-    expect(console.error).toBe(firstConsoleError);
+    expect(hooksOf(first)).toHaveLength(1);
+    expect(console.error).toBe(reloadedConsoleError);
 
     // A restart closes the server it replaces.
     await server!.restart();
     const { count } = await renderedCells(new URL("/", baseUrl));
     expect(count).toBe(CELL_COUNT);
-    expect(first).toMatchObject({ closed: true, hook: undefined });
+    expect(first.closed).toBe(true);
+    expect(hooksOf(first)).toHaveLength(0);
     expect(registry.live.size).toBe(1);
-    expect([...registry.live][0].hook).toBeDefined();
-    expect(console.error).not.toBe(firstConsoleError);
+    expect(hooksOf([...registry.live][0])).toHaveLength(1);
+    expect(registry.consoleLayers).toHaveLength(firstLayers);
     expect(registry.consoleLayers.every((layer) => !layer.retired)).toBe(true);
 
     await server!.close();
