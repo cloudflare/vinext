@@ -387,6 +387,8 @@ type RunAppMiddlewareOptions = {
   hadBasePath: boolean;
   isDataRequest: boolean;
   middlewareRequest?: Request;
+  /** False reports an external rewrite without proxying it. */
+  proxyExternalRewrite?: boolean;
   request: Request;
   /** `shouldRestoreLocaleRootTrailingSlash` for the raw request pathname. */
   restoreLocaleRootTrailingSlash?: boolean;
@@ -1490,6 +1492,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // stage and its shared cache never see this request.
       return dispatchResponseStage ? withRequestStageBypassCacheState(response) : response;
     }
+    if (middlewareResult.kind === "externalRewrite") {
+      // Only a source run asks to leave an external rewrite unproxied.
+      throw new Error("[vinext] Middleware left the request's external rewrite unproxied");
+    }
 
     cleanPathname = middlewareResult.cleanPathname;
     didMiddlewareRewrite = middlewareResult.rewritten;
@@ -2195,6 +2201,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             externalRewriteRequest: request,
             hadBasePath: resolvedPathnameHasBasePath,
             isDataRequest: isMiddlewareDataRequest,
+            // The request discards whatever a /_not-found source's middleware
+            // answers, so it must not fetch an external rewrite for it.
+            proxyExternalRewrite: !isRouteMissSource,
             request: sourceMiddlewareRequest,
             // From the spelling a direct request uses: a basePath root drops
             // its slash in `sourceUrl`, while a direct request keeps `/docs/`.
@@ -2235,7 +2244,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             : "middleware is eligible for this pathname",
         );
       }
-      if (sourceMiddlewareResult.kind === "response") {
+      if (sourceMiddlewareResult.kind === "externalRewrite") {
+        // Reported only for a source the request drops when middleware answers.
+        if (!dropsRefusedSource()) {
+          options.clearRequestContext();
+          return notFoundResponse();
+        }
+      } else if (sourceMiddlewareResult.kind === "response") {
         if (!dropsRefusedSource()) {
           if (request.body && !request.body.locked) {
             void request.body.cancel().catch(() => {});
