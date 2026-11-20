@@ -9459,6 +9459,7 @@ export const loadServerActionClient = ${
         const stylesheets = collectPagesPageStylesheets(bundle, {
           routeOf: (id) => routes.get(canonicalize(id)),
           isAlwaysLoaded: (id) => id === RESOLVED_CLIENT_ENTRY || canonicalize(id) === appId,
+          loaderChunk: entry.fileName,
         });
         // The URLs Vite loads these from, with the deployment ID query that
         // Next.js adds to stylesheets.
@@ -9466,14 +9467,17 @@ export const loadServerActionClient = ${
           nextConfig.assetPrefix || nextConfig.deploymentId
             ? renderVinextBuiltUrl(file, nextConfig.assetPrefix, nextConfig.deploymentId)
             : environment.config.base + file;
-        const urls = Object.fromEntries(
-          Object.entries(stylesheets).map(([route, files]) => [route, files.map(url)]),
-        );
+        const manifest = {
+          routes: Object.fromEntries(
+            Object.entries(stylesheets.routes).map(([route, files]) => [route, files.map(url)]),
+          ),
+          shared: stylesheets.shared.map(url),
+        };
         // The page loaders' dynamic imports leave page stylesheets to the
         // router, which turns them on as each page renders.
-        entry.code = withoutPreloadedStylesheets(entry, new Set(Object.values(stylesheets).flat()));
+        entry.code = withoutPreloadedStylesheets(entry, new Set(stylesheets.unpreloaded));
         // Appended, so the entry's source map still lines up.
-        entry.code += `\nwindow.__VINEXT_PAGE_STYLESHEETS__=${JSON.stringify(urls)};`;
+        entry.code += `\nwindow.__VINEXT_PAGE_STYLESHEETS__=${JSON.stringify(manifest)};`;
       },
     },
   });

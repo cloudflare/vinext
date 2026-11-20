@@ -35,6 +35,7 @@ const EXPECTED: Record<string, Record<string, string>> = {
   delta: { title: BLUE, text: PURPLE },
   ordered: { title: BLUE, text: BLUE },
   reversed: { title: BLUE, text: BLUE },
+  lazy: { title: BLUE, text: BLUE },
 };
 
 let fixtureRoot: string;
@@ -108,8 +109,13 @@ async function expectPage(page: Page, name: string): Promise<void> {
 async function expectPageStylesheets(page: Page, name: string): Promise<void> {
   const state = await page.evaluate((route) => {
     const pathOf = (href: string) => new URL(href, document.baseURI).pathname;
+    const manifest = window.__VINEXT_PAGE_STYLESHEETS__;
+    const shared = new Set(manifest?.shared.map(pathOf));
     const managed = new Set(
-      Object.values(window.__VINEXT_PAGE_STYLESHEETS__ ?? {}).flatMap((hrefs) => hrefs.map(pathOf)),
+      Object.values(manifest?.routes ?? {})
+        .flat()
+        .map(pathOf)
+        .filter((path) => !shared.has(path)),
     );
     const afterMarker: string[] = [];
     let node = document.querySelector("noscript[data-n-css]")?.nextElementSibling;
@@ -122,7 +128,8 @@ async function expectPageStylesheets(page: Page, name: string): Promise<void> {
       (link) => pathOf(link.href),
     );
     return {
-      expected: window.__VINEXT_PAGE_STYLESHEETS__?.[route] ?? [],
+      expected: manifest?.routes[route] ?? [],
+      shared: manifest?.shared ?? [],
       on: Array.from(document.querySelectorAll("style[data-n-href]:not([media])"), (tag) =>
         tag.getAttribute("data-n-href")!,
       ),
@@ -132,6 +139,7 @@ async function expectPageStylesheets(page: Page, name: string): Promise<void> {
     };
   }, `/${name}`);
 
+  expect(state.shared.length).toBeGreaterThan(0);
   expect(state.on, name).toEqual(state.expected);
   expect(state.afterMarker, name).toEqual(state.expected);
   expect(state.managedLinks, name).toEqual([]);
@@ -139,9 +147,14 @@ async function expectPageStylesheets(page: Page, name: string): Promise<void> {
 }
 
 async function navigate(page: Page, name: string): Promise<void> {
+  await page.evaluate(() => delete document.body.dataset.layoutColor);
   await page.getByTestId(`nav-${name}`).click();
   await expectPage(page, name);
   await expectPageStylesheets(page, name);
+  if (name === "beta") {
+    // The page's layout effects already see its stylesheets.
+    expect(await page.evaluate(() => document.body.dataset.layoutColor)).toBe(PURPLE);
+  }
 }
 
 test("full page loads apply each page's stylesheets in order", async ({ page }) => {
@@ -210,7 +223,7 @@ test("the first client navigation hands the page's stylesheets to <style> tags",
       document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'),
       (link) => new URL(link.href).pathname,
     ),
-    alpha: window.__VINEXT_PAGE_STYLESHEETS__?.["/alpha"] ?? [],
+    alpha: window.__VINEXT_PAGE_STYLESHEETS__?.routes["/alpha"] ?? [],
   }));
   expect(initial.marker).toBe(true);
   // The server links the page's stylesheets, which client navigations manage.

@@ -165,6 +165,19 @@ function PagesRouterCommitBoundaryHelper({
   return createElement(Fragment, null, children);
 }
 
+/**
+ * Runs `onCommit` as a render commits, ahead of the page's own layout effects:
+ * `wrapWithRouterContext` renders it before the page, as Next.js renders the
+ * `<Head>` that turns the page's stylesheets on.
+ */
+function PagesStylesheetsCommit({ onCommit }: { onCommit: () => void }): null {
+  useNonWarningLayoutEffect(() => {
+    onCommit();
+  }, [onCommit]);
+
+  return null;
+}
+
 function renderPagesRouterElement(
   element: ReactElement,
   scroll?: ScrollPosition | null,
@@ -176,6 +189,9 @@ function renderPagesRouterElement(
   }
 
   cancelPreviousRenderCommit();
+  // A cancelled navigation's render still commits, and shows its page, unless
+  // a newer render replaces it.
+  const renderId = ++routerRuntimeState.pagesRenderId;
 
   return new Promise<void>((resolve, reject) => {
     const cancel = () => {
@@ -207,7 +223,6 @@ function renderPagesRouterElement(
       wrapWithRouterContext(
         element,
         () => {
-          if (stylesheets && isCurrent()) commitPagesStylesheets(stylesheets);
           void (async () => {
             if (!isCurrent()) return;
 
@@ -226,6 +241,13 @@ function renderPagesRouterElement(
           clearIfCurrent();
           reject(error);
         },
+        stylesheets
+          ? () => {
+              if (renderId === routerRuntimeState.pagesRenderId) {
+                commitPagesStylesheets(stylesheets);
+              }
+            }
+          : undefined,
       ),
     );
     if (!hasBrowserDocument()) {
@@ -443,6 +465,8 @@ type PagesRouterRuntimeState = {
   activeAbortController: AbortController | null;
   activeNavigationEvent: PagesNavigationEventContext | null;
   cancelPendingRenderCommit: (() => void) | null;
+  /** Counts navigation renders, so only the latest switches page stylesheets. */
+  pagesRenderId: number;
   beforePopStateCb?: BeforePopStateCallback;
   lastPathnameAndSearch: string;
   lastHash: string;
@@ -462,6 +486,7 @@ type PagesRouterRuntimeComponents = {
     onError: (error: Error) => void;
   }>;
   Provider: ComponentType<{ children: ReactNode }>;
+  StylesheetsCommit: ComponentType<{ onCommit: () => void }>;
 };
 
 const PAGES_ROUTER_RUNTIME_STATE_KEY = Symbol.for("vinext.pagesRouter.runtimeState");
@@ -474,6 +499,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     activeAbortController: null,
     activeNavigationEvent: null,
     cancelPendingRenderCommit: null,
+    pagesRenderId: 0,
     lastPathnameAndSearch:
       typeof window !== "undefined" ? window.location.pathname + window.location.search : "",
     lastHash: typeof window !== "undefined" ? window.location.hash : "",
@@ -519,6 +545,7 @@ function getPagesRouterRuntimeComponents(): PagesRouterRuntimeComponents {
   const components: PagesRouterRuntimeComponents = {
     CommitBoundary: PagesRouterCommitBoundary,
     Provider: PagesRouterProvider,
+    StylesheetsCommit: PagesStylesheetsCommit,
   };
   routerRuntimeState.components = components;
   return components;
@@ -4381,8 +4408,9 @@ export function wrapWithRouterContext(
   element: ReactElement,
   onCommit: () => void = noopCommit,
   onError: (error: Error) => void = noopCommit,
+  onStylesheetsCommit: () => void = noopCommit,
 ): ReactElement {
-  const { CommitBoundary, Provider } = getPagesRouterRuntimeComponents();
+  const { CommitBoundary, Provider, StylesheetsCommit } = getPagesRouterRuntimeComponents();
   // React Strict Mode (Pages Router). When `reactStrictMode: true`, wrap the
   // router-context subtree in <React.StrictMode> so React runs its dev-only
   // strict checks. We read a client-only `window` flag rather than wrapping
@@ -4399,7 +4427,12 @@ export function wrapWithRouterContext(
   if (typeof window !== "undefined" && window.__VINEXT_REACT_STRICT_MODE__ === true) {
     inner = createElement(StrictMode, null, inner);
   }
-  return createElement(CommitBoundary, { onCommit, onError }, inner);
+  return createElement(
+    CommitBoundary,
+    { onCommit, onError },
+    createElement(StylesheetsCommit, { onCommit: onStylesheetsCommit }),
+    inner,
+  );
 }
 
 /**

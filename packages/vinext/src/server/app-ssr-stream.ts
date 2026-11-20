@@ -565,12 +565,14 @@ function htmlAttributeHasToken(tag: string, name: string, token: string): boolea
 }
 
 function getInlineCss(manifest: InlineCssManifest, href: string): string | null {
-  if (Object.prototype.hasOwnProperty.call(manifest, href)) {
-    return manifest[href] ?? "";
+  // Stylesheet URLs carry the deployment ID query, which the manifest omits.
+  const file = href.replace(/[?#].*$/, "");
+  if (Object.prototype.hasOwnProperty.call(manifest, file)) {
+    return manifest[file] ?? "";
   }
 
   try {
-    const pathname = new URL(href).pathname;
+    const pathname = new URL(file).pathname;
     if (Object.prototype.hasOwnProperty.call(manifest, pathname)) {
       return manifest[pathname] ?? "";
     }

@@ -35,6 +35,7 @@ function collect(chunks: ReturnType<typeof chunk>[]) {
     {
       routeOf: (id) => ROUTES[id],
       isAlwaysLoaded: (id) => id === "entry" || id === "/pages/_app.tsx",
+      loaderChunk: "entry.js",
     },
   );
 }
@@ -52,7 +53,7 @@ describe("collectPagesPageStylesheets", () => {
         }),
         chunk("panel.js", { imports: ["base.js"], css: ["panel.css"] }),
         chunk("base.js", { css: ["base.css"] }),
-      ]),
+      ]).routes,
     ).toEqual({ "/alpha": ["base.css", "panel.css", "alpha.css"] });
   });
 
@@ -69,12 +70,14 @@ describe("collectPagesPageStylesheets", () => {
         }),
         chunk("bare.js", { module: "/pages/bare.tsx", imports: ["shared.js"] }),
       ]),
-    ).toEqual({ "/alpha": ["alpha.css"] });
+    ).toEqual({ routes: { "/alpha": ["alpha.css"] }, shared: [], unpreloaded: ["alpha.css"] });
   });
 
-  it("leaves the stylesheets of other dynamic imports to Vite", () => {
+  // Next.js lists these in its dynamic CSS manifest, which keeps their server links.
+  it("keeps the links of page stylesheets that other dynamic imports load too", () => {
     expect(
       collect([
+        chunk("entry.js", { module: "entry", dynamicImports: ["alpha.js", "beta.js"] }),
         chunk("alpha.js", {
           module: "/pages/alpha.tsx",
           imports: ["card.js"],
@@ -85,7 +88,22 @@ describe("collectPagesPageStylesheets", () => {
         chunk("card.js", { css: ["card.css"] }),
         chunk("beta.js", { module: "/pages/beta.tsx", css: ["beta.css"] }),
       ]),
-    ).toEqual({ "/alpha": ["alpha.css"], "/beta": ["beta.css"] });
+    ).toEqual({
+      routes: { "/alpha": ["card.css", "alpha.css"], "/beta": ["beta.css"] },
+      shared: ["card.css"],
+      unpreloaded: ["card.css", "alpha.css", "beta.css"],
+    });
+  });
+
+  it("lets the loader chunk's other dynamic imports preload their stylesheets", () => {
+    expect(
+      collect([
+        chunk("entry.js", { module: "entry", dynamicImports: ["alpha.js", "widget.js"] }),
+        chunk("alpha.js", { module: "/pages/alpha.tsx", imports: ["card.js"] }),
+        chunk("widget.js", { module: "/lib/widget.tsx", imports: ["card.js"] }),
+        chunk("card.js", { css: ["card.css"] }),
+      ]).unpreloaded,
+    ).toEqual([]);
   });
 });
 

@@ -14,21 +14,32 @@ type CollectPagesPageStylesheetsOptions = {
   routeOf: (moduleId: string) => string | undefined;
   /** Whether every page loads this module's stylesheets: `_app` and the client entry. */
   isAlwaysLoaded: (moduleId: string) => boolean;
+  /** The chunk whose dynamic imports load the pages. */
+  loaderChunk: string;
+};
+
+export type PagesPageStylesheets = {
+  /** Each route's own stylesheets, in the order its page loads them. */
+  routes: Record<string, string[]>;
+  /**
+   * Route stylesheets that other dynamic imports load too. Their
+   * server-rendered links stay, as Next.js leaves the links of stylesheets in
+   * its dynamic CSS manifest.
+   */
+  shared: string[];
+  /** Route stylesheets for the page loaders to leave to the router. */
+  unpreloaded: string[];
 };
 
 /**
  * Each Pages Router route's own stylesheets, the ones its client navigations
  * turn on and off. As in Next.js's client build manifest, they are the files a
  * page loads, in that order, without those every page loads with `_app`.
- *
- * A stylesheet that a dynamic import other than a page's also loads is left
- * out too: Vite adds it as a `<link>` that stays, as Next.js leaves the
- * stylesheets of `next/dynamic` chunks alone.
  */
 export function collectPagesPageStylesheets(
   bundle: Readonly<Record<string, BundleItem>>,
   options: CollectPagesPageStylesheetsOptions,
-): Record<string, string[]> {
+): PagesPageStylesheets {
   const chunks = new Map<string, BundleItem>();
   for (const item of Object.values(bundle)) {
     if (item.type === "chunk") chunks.set(item.fileName, item);
@@ -61,27 +72,42 @@ export function collectPagesPageStylesheets(
     chunk.facadeModuleId ? options.routeOf(chunk.facadeModuleId) : undefined;
   const isAlwaysLoaded = (chunk: BundleItem) =>
     !!chunk.facadeModuleId && options.isAlwaysLoaded(chunk.facadeModuleId);
+  // The stylesheets of a dynamic import that isn't a page.
+  const otherDynamicStylesheets = (chunk: BundleItem): string[] =>
+    (chunk.dynamicImports ?? []).flatMap((fileName) => {
+      const imported = chunks.get(fileName);
+      if (!imported || routeOf(imported) !== undefined || isAlwaysLoaded(imported)) return [];
+      return stylesheetsOf(fileName);
+    });
 
-  const unmanaged = new Set<string>();
+  const alwaysLoaded = new Set<string>();
+  const dynamic = new Set<string>();
   for (const chunk of chunks.values()) {
     if (isAlwaysLoaded(chunk)) {
-      for (const file of stylesheetsOf(chunk.fileName)) unmanaged.add(file);
+      for (const file of stylesheetsOf(chunk.fileName)) alwaysLoaded.add(file);
     }
-    for (const fileName of chunk.dynamicImports ?? []) {
-      const imported = chunks.get(fileName);
-      if (!imported || routeOf(imported) !== undefined || isAlwaysLoaded(imported)) continue;
-      for (const file of stylesheetsOf(fileName)) unmanaged.add(file);
-    }
+    for (const file of otherDynamicStylesheets(chunk)) dynamic.add(file);
   }
 
   const routes: Record<string, string[]> = {};
+  const routed = new Set<string>();
   for (const chunk of chunks.values()) {
     const route = routeOf(chunk);
     if (route === undefined) continue;
-    const files = stylesheetsOf(chunk.fileName).filter((file) => !unmanaged.has(file));
-    if (files.length > 0) routes[route] = files;
+    const files = stylesheetsOf(chunk.fileName).filter((file) => !alwaysLoaded.has(file));
+    if (files.length === 0) continue;
+    routes[route] = files;
+    for (const file of files) routed.add(file);
   }
-  return routes;
+
+  // The loader chunk's other dynamic imports still load their stylesheets.
+  const loader = chunks.get(options.loaderChunk);
+  const loaderOwn = new Set(loader ? otherDynamicStylesheets(loader) : []);
+  return {
+    routes,
+    shared: [...routed].filter((file) => dynamic.has(file)),
+    unpreloaded: [...routed].filter((file) => !loaderOwn.has(file)),
+  };
 }
 
 const PRELOAD_FILES =

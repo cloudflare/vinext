@@ -18,7 +18,7 @@
 export type PagesStylesheet = { href: string; text: string };
 
 const stylesheetTexts = new Map<string, Promise<PagesStylesheet>>();
-let pageStylesheetPaths: Set<string> | undefined;
+let removableLinkPaths: Set<string> | undefined;
 
 function fetchStylesheet(href: string): Promise<PagesStylesheet> {
   let text = stylesheetTexts.get(href);
@@ -39,9 +39,9 @@ function fetchStylesheet(href: string): Promise<PagesStylesheet> {
  * Vite manages stylesheets.
  */
 export function loadPagesRouteStylesheets(route: string): Promise<PagesStylesheet[]> | undefined {
-  const routes = typeof window === "undefined" ? undefined : window.__VINEXT_PAGE_STYLESHEETS__;
-  if (!routes) return undefined;
-  return Promise.all((routes[route] ?? []).map(fetchStylesheet));
+  const manifest = typeof window === "undefined" ? undefined : window.__VINEXT_PAGE_STYLESHEETS__;
+  if (!manifest) return undefined;
+  return Promise.all((manifest.routes[route] ?? []).map(fetchStylesheet));
 }
 
 /** Adds the stylesheets that the document lacks, turned off. */
@@ -85,22 +85,31 @@ export function commitPagesStylesheets(stylesheets: readonly PagesStylesheet[]):
     else tag.setAttribute("media", "x");
   }
 
-  let reference = document.querySelector("noscript[data-n-css]");
-  if (reference) {
-    for (const { href } of stylesheets) {
-      const tag = tags.get(href);
-      if (!tag) continue;
-      reference.parentNode!.insertBefore(tag, reference.nextSibling);
-      reference = tag;
-    }
+  const marker = document.querySelector("noscript[data-n-css]");
+  if (!marker) return;
+  let reference = marker;
+  for (const { href } of stylesheets) {
+    const tag = tags.get(href);
+    if (!tag) continue;
+    marker.parentNode!.insertBefore(tag, reference.nextSibling);
+    reference = tag;
   }
 
   // The `<style>` tags hold page stylesheets now, so their server-rendered
-  // `<link>`s go.
-  pageStylesheetPaths ??= new Set(
-    Object.values(window.__VINEXT_PAGE_STYLESHEETS__ ?? {}).flatMap((hrefs) => hrefs.map(pathOf)),
-  );
+  // `<link>`s, ahead of the marker, go, except for stylesheets that other
+  // dynamic imports load too. Links that Vite adds later, after it, stay.
+  if (!removableLinkPaths) {
+    const manifest = window.__VINEXT_PAGE_STYLESHEETS__;
+    const shared = new Set(manifest?.shared.map(pathOf));
+    removableLinkPaths = new Set(
+      Object.values(manifest?.routes ?? {})
+        .flat()
+        .map(pathOf)
+        .filter((path) => !shared.has(path)),
+    );
+  }
   for (const link of document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')) {
-    if (pageStylesheetPaths.has(pathOf(link.href))) link.remove();
+    const isServerLink = marker.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_PRECEDING;
+    if (isServerLink && removableLinkPaths.has(pathOf(link.href))) link.remove();
   }
 }
