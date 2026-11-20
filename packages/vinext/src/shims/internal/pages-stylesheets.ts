@@ -29,20 +29,75 @@ const linkSlots = new WeakMap<HTMLLinkElement, Comment>();
 // added: as the page's stylesheets load, before its dynamic imports' ones.
 const createdLinkSlots = new Map<string, Comment>();
 
-// `url()`s that resolve against the stylesheet: not root-relative, not a
-// fragment, and without a scheme.
-const RELATIVE_CSS_URL = /url\(\s*(["']?)(?![/#]|[a-z][a-z\d+.-]*:)([^"'()\\\s]+)\1\s*\)/gi;
+// Not root-relative, not a fragment, and without a scheme.
+const RELATIVE_URL = /^(?![/#]|[a-z][a-z\d+.-]*:)/i;
+
+/** Where the CSS string or comment at `start` ends. */
+function endOfStringOrComment(text: string, start: number): number {
+  if (text.startsWith("/*", start)) {
+    const end = text.indexOf("*/", start + 2);
+    return end === -1 ? text.length : end + 2;
+  }
+  const quote = text[start];
+  for (let index = start + 1; index < text.length; index++) {
+    if (text[index] === "\\") index++;
+    else if (text[index] === quote || text[index] === "\n") return index + 1;
+  }
+  return text.length;
+}
 
 /**
  * Resolves the relative `url()`s of a stylesheet's text against its URL, as a
  * `<style>` tag resolves them against the page's. Vite emits these with a
- * relative `base`.
+ * relative `base`. Root-relative ones keep resolving against the page, as
+ * Next.js inlines the same text.
  */
 export function withAbsoluteUrls(text: string, href: string): string {
-  return text.replace(
-    RELATIVE_CSS_URL,
-    (_match, _quote, url: string) => `url(${JSON.stringify(new URL(url, href).href)})`,
-  );
+  let result = "";
+  let copied = 0;
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '"' || char === "'" || text.startsWith("/*", index)) {
+      index = endOfStringOrComment(text, index);
+      continue;
+    }
+    const isUrl =
+      (char === "u" || char === "U") &&
+      text.slice(index, index + 4).toLowerCase() === "url(" &&
+      !/[\w-]/.test(text[index - 1] ?? "");
+    if (!isUrl) {
+      index++;
+      continue;
+    }
+
+    let end = index + 4;
+    while (/\s/.test(text[end] ?? "")) end++;
+    let url: string;
+    if (text[end] === '"' || text[end] === "'") {
+      const valueEnd = endOfStringOrComment(text, end);
+      url = text.slice(end + 1, valueEnd - 1);
+      end = valueEnd;
+      while (/\s/.test(text[end] ?? "")) end++;
+    } else {
+      const close = text.indexOf(")", end);
+      if (close === -1) break;
+      url = text.slice(end, close).trimEnd();
+      end = close;
+    }
+    if (text[end] !== ")") {
+      index = end;
+      continue;
+    }
+    end++;
+    // Escapes would need decoding first.
+    if (url && !url.includes("\\") && RELATIVE_URL.test(url)) {
+      result += `${text.slice(copied, index)}url(${JSON.stringify(new URL(url, href).href)})`;
+      copied = end;
+    }
+    index = end;
+  }
+  return copied === 0 ? text : result + text.slice(copied);
 }
 
 function fetchStylesheet(href: string): Promise<PagesStylesheet> {

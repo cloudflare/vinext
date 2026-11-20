@@ -111,8 +111,10 @@ export function collectPagesPageStylesheets(
   };
 }
 
-const PRELOAD_FILES =
-  /^const __vite__mapDeps=\(i,m=__vite__mapDeps,d=\(m\.f\|\|\(m\.f=(\[[^\n]*\])\)\)\)=>i\.map\(i=>d\[i\]\);$/m;
+// The table of files that Vite's dynamic imports preload, which Vite adds at
+// the start of the chunk.
+const PRELOAD_FILES_START = "const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=";
+const PRELOAD_FILES_END = ")))=>i.map(i=>d[i]);";
 const PRELOAD_CALL = /__vite__mapDeps\(\[([\d,]*)\]\)/g;
 
 /**
@@ -128,10 +130,11 @@ export function withoutPreloadedStylesheets(
   stylesheets: ReadonlySet<string>,
   renderBuiltUrl?: RenderBuiltAssetUrl,
 ): string {
-  const match = PRELOAD_FILES.exec(chunk.code);
-  if (!match) return chunk.code;
-  const files = arrayElements(match[1]);
-  if (!files) return chunk.code;
+  const tableStart = chunk.code.indexOf(PRELOAD_FILES_START);
+  if (tableStart === -1) return chunk.code;
+  const table = arrayElements(chunk.code, tableStart + PRELOAD_FILES_START.length);
+  if (!table || !chunk.code.startsWith(PRELOAD_FILES_END, table.end)) return chunk.code;
+  const files = table.elements;
 
   // The URLs that `renderBuiltUrl` renders as runtime expressions, which Vite
   // adds to the table as they are.
@@ -177,33 +180,38 @@ export function withoutPreloadedStylesheets(
 }
 
 /**
- * The source of each element of an array literal: JSON strings, or the
- * runtime expressions that `renderBuiltUrl` returns. Undefined when the
- * brackets or quotes don't match up.
+ * The source of each element of the array literal at `start`, which can span
+ * lines: JSON strings, or the runtime expressions that `renderBuiltUrl`
+ * returns. Also where the literal ends. Undefined when its brackets or quotes
+ * don't match up.
  */
-function arrayElements(source: string): string[] | undefined {
-  if (!source.startsWith("[") || !source.endsWith("]")) return undefined;
+function arrayElements(
+  source: string,
+  start: number,
+): { elements: string[]; end: number } | undefined {
+  if (source[start] !== "[") return undefined;
   const elements: string[] = [];
   let depth = 0;
   let quote: string | undefined;
-  let start = 1;
-  for (let index = 1; index < source.length - 1; index++) {
+  let elementStart = start + 1;
+  for (let index = start + 1; index < source.length; index++) {
     const char = source[index];
     if (quote) {
       if (char === "\\") index++;
       else if (char === quote) quote = undefined;
     } else if (char === '"' || char === "'" || char === "`") quote = char;
     else if (char === "(" || char === "[" || char === "{") depth++;
-    else if (char === ")" || char === "]" || char === "}") depth--;
+    else if ((char === ")" || char === "]" || char === "}") && depth > 0) depth--;
+    else if (char === "]") {
+      if (index > start + 1) elements.push(source.slice(elementStart, index));
+      return { elements, end: index + 1 };
+    } else if (char === ")" || char === "}") return undefined;
     else if (char === "," && depth === 0) {
-      elements.push(source.slice(start, index));
-      start = index + 1;
+      elements.push(source.slice(elementStart, index));
+      elementStart = index + 1;
     }
-    if (depth < 0) return undefined;
   }
-  if (quote || depth !== 0) return undefined;
-  if (source.length > 2) elements.push(source.slice(start, -1));
-  return elements;
+  return undefined;
 }
 
 const SOURCE_MAP_COMMENT = /\n\/\/# sourceMappingURL=[^\n]*\n?$/;

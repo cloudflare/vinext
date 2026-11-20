@@ -140,7 +140,7 @@ describe("withoutPreloadedStylesheets", () => {
 
   // Vite adds the runtime expressions that `renderBuiltUrl` returns as they are.
   it("finds stylesheets that renderBuiltUrl renders at runtime", () => {
-    const runtime = (file: string) => `__assetUrl(${JSON.stringify(file)},"a,b")`;
+    const runtime = (file: string) => `__assetUrl(\n  ${JSON.stringify(file)},\n  "a,b",\n)`;
     const table = [
       "_next/static/chunks/alpha.js",
       "_next/static/css/alpha.css",
@@ -237,6 +237,19 @@ describe("withAbsoluteUrls", () => {
       '.a{background:url("https://example.com/_next/static/media/a.png")}' +
         '.b{src:url("https://example.com/_next/static/css/b.woff2")}' +
         '.c{x:url("https://example.com/_next/static/css/c.svg#i")}',
+    );
+  });
+
+  it("skips strings and comments and reads quoted url()s whole", () => {
+    expect(
+      withAbsoluteUrls(
+        '/* url(a.png) */.a{content:"url(b.png)"}.c{x:url("c (1).png")}.d{x:URL( d.png )}',
+        href,
+      ),
+    ).toBe(
+      '/* url(a.png) */.a{content:"url(b.png)"}' +
+        '.c{x:url("https://example.com/_next/static/css/c%20(1).png")}' +
+        '.d{x:url("https://example.com/_next/static/css/d.png")}',
     );
   });
 
