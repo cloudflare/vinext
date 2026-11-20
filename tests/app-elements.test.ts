@@ -84,6 +84,7 @@ describe("AppElementsWire", () => {
       skippedLayoutIds: [],
       slotBindings: [],
       sourcePage: null,
+      wholeInterceptionSource: null,
     });
   });
 
@@ -345,6 +346,7 @@ describe("AppElementsWire", () => {
       skippedLayoutIds: [],
       slotBindings: [],
       sourcePage: null,
+      wholeInterceptionSource: null,
     });
   });
 

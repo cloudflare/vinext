@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   createSupplementalRefreshCoordinator,
   mergeRefreshedParallelSlot,
+  rendersWholeInterceptingRoute,
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
@@ -40,6 +41,113 @@ describe("parallel route supplemental refreshes", () => {
         },
       }),
     ).toEqual(["/refreshing?random=old"]);
+  });
+
+  // The whole intercepting route renders for a source that shares none of its
+  // tree. A refresh of its entry asks for that source's page too, as for an
+  // intercepted entry, but none of it merges into the whole route, whose
+  // pathname-keyed entries the source page would otherwise overwrite.
+  it("merges nothing into a payload of the whole intercepting route", async () => {
+    const primary: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: "/club/static",
+        layoutIds: ["layout:/", "layout:/club/[slug]"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/club/static/pics/1",
+        slotBindings: [
+          {
+            activeRouteId: "route:/club/static/pics/1",
+            ownerLayoutId: "layout:/club/[slug]",
+            slotId: "slot:modal:/club/[slug]",
+            state: "active",
+          },
+        ],
+        wholeInterceptionSource: "/club/static",
+      }),
+      "page:/club/static/pics/1": "club default",
+      "route:/club/static/pics/1": "club layout",
+      "slot:modal:/club/[slug]": "pic modal",
+    };
+    const sourcePage: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/club/static",
+        slotBindings: [
+          {
+            activeRouteId: "route:/club/static",
+            ownerLayoutId: "layout:/",
+            refreshPathname: "/club/static",
+            slotId: "slot:children:/",
+            state: "active",
+          },
+        ],
+      }),
+      "page:/club/static": "static club",
+      "route:/club/static": "static route",
+      "slot:children:/": "static tree",
+    };
+
+    expect(mergeRefreshedParallelSlot(primary, sourcePage)).toBe(primary);
+    // A mark naming a source other than the payload's context counts for nothing.
+    expect(
+      AppElementsWire.readMetadata({
+        ...primary,
+        [AppElementsWire.keys.wholeInterceptionSource]: "/club/other",
+      }).wholeInterceptionSource,
+    ).toBeNull();
+
+    // A refresh of a state showing it fetches no source page, while an
+    // ordinary intercept's state still fetches its own.
+    const refreshUrl = new URL("https://example.com/club/static/pics/1");
+    const refreshState = { previousNextUrl: "/club/static", slotBindings: [] };
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "",
+        refreshUrl,
+        state: { ...refreshState, elements: primary },
+      }),
+    ).toEqual([]);
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "",
+        refreshUrl,
+        state: {
+          ...refreshState,
+          elements: { ...primary, [AppElementsWire.keys.wholeInterceptionSource]: "/club/other" },
+        },
+      }),
+    ).toEqual(["/club/static"]);
+
+    // A traversal learns it from the payload: a source page it fetched can
+    // neither fail it nor merge into it.
+    let sourceSignal: AbortSignal | undefined;
+    const sourceRefresh = (signal: AbortSignal) => {
+      sourceSignal = signal;
+      return new Promise<AppElements>((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    };
+    await expect(
+      resolveSupplementalRefreshes({
+        merge: mergeRefreshedParallelSlot,
+        mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
+        primary: Promise.resolve(primary),
+        signal: new AbortController().signal,
+        supplemental: [sourceRefresh],
+      }),
+    ).resolves.toEqual({ degraded: false, value: primary });
+    expect(sourceSignal?.aborted).toBe(true);
+    await expect(
+      resolveSupplementalRefreshes({
+        merge: mergeRefreshedParallelSlot,
+        mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
+        primary: Promise.resolve(primary),
+        signal: new AbortController().signal,
+        supplemental: [() => Promise.reject(new Error("source refresh failed"))],
+      }),
+    ).resolves.toEqual({ degraded: false, value: primary });
   });
 
   it("recovers the active children route when multiple parallel slots are active", () => {

@@ -143,12 +143,52 @@ test.describe("Parallel Routes", () => {
 });
 
 test.describe("Intercepting Routes", () => {
+  const markerKept = (page: Page) =>
+    page.evaluate(() => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker);
+  // The whole intercepting route: the owner's default in its children, headed
+  // by its metadata too, and the modal taking the owner's params from the page
+  // it opened from.
+  const expectWholeInterceptingRoute = async (page: Page, target: RegExp, picId = "1") => {
+    await expect(page).toHaveURL(target);
+    await expect(page).toHaveTitle("Pic modal");
+    await expect(page.locator('meta[name="description"]')).toHaveAttribute(
+      "content",
+      "Club default",
+    );
+    await expect(page.locator("#intercept-source-group-modal")).toHaveText(`Pic modal: ${picId}`);
+    await expect(page.locator("#intercept-source-group-modal-club")).toHaveText(
+      "Modal club: static",
+    );
+    await expect(page.locator("#intercept-source-group-club-layout")).toContainText(
+      "Club layout: static",
+    );
+    await expect(page.locator("#intercept-source-group-club-default")).toHaveText("Club default");
+    await expect(page.locator("#intercept-source-group-static")).toHaveCount(0);
+    await expect(page.locator("#intercept-source-group-pic")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
+  };
+  // Every other slot of its tree shows its default alone.
+  const expectOtherSlotsInDefault = async (page: Page) => {
+    await expect(page.locator("#intercept-source-group-aside-default")).toHaveText("Aside default");
+    await expect(page.locator("#intercept-source-group-aside-layout")).toHaveCount(0);
+  };
+  const refreshRouter = (page: Page) =>
+    page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router || !("refresh" in router)) {
+        throw new Error("window.next App Router is not installed");
+      }
+      router.refresh();
+    });
+
   // A static page in a sibling route group sits outside the slot owner's
-  // layout, so it has no slot to show the modal in: the link opens the target
-  // page itself, without leaving the page's own tree beneath it.
-  test("opens the target from a page in a sibling route group without the slot", async ({
+  // layout, so it has no slot to show the modal in: like Next.js, the link
+  // renders the whole intercepting route instead.
+  test("opens the intercepting route from a page in a sibling route group without the slot", async ({
     page,
   }) => {
+    const expectInterceptingRoute = (target: RegExp) => expectWholeInterceptingRoute(page, target);
+
     await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/static`);
     await waitForAppRouterHydration(page);
     await page.evaluate(() => {
@@ -160,21 +200,121 @@ test.describe("Intercepting Routes", () => {
         response.url().includes("/intercept-source-group/club/static/pics/1") &&
         response.request().headers()["rsc"] === "1",
     );
-    await page.getByRole("link", { name: "Pic 1" }).click();
+    await page.getByRole("link", { name: "Pic 1", exact: true }).click();
     expect((await navigation).status()).toBe(200);
+    await expectInterceptingRoute(/\/intercept-source-group\/club\/static\/pics\/1$/);
+    await expectOtherSlotsInDefault(page);
 
-    await expect(page).toHaveURL(/\/intercept-source-group\/club\/static\/pics\/1$/);
+    // A refresh asks for it from the same source again, as Next.js re-sends
+    // its previousNextUrl, and keeps it.
+    const refresh = page.waitForRequest(
+      (request) =>
+        request.url().includes("/intercept-source-group/club/static/pics/1") &&
+        request.headers()["rsc"] === "1",
+    );
+    await refreshRouter(page);
+    expect((await refresh).headers()["x-vinext-interception-context"]).toBe(
+      "/nextjs-compat/intercept-source-group/club/static",
+    );
+    await expectInterceptingRoute(/\/intercept-source-group\/club\/static\/pics\/1$/);
+
+    await page.goBack();
+    await expect(page).toHaveURL(/\/intercept-source-group\/club\/static$/);
+    await expect(page.locator("#intercept-source-group-static")).toBeVisible();
+    await expect(page.locator("#intercept-source-group-modal")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
+
+    // Its history entry keeps the source, so going forward shows it again.
+    await page.goForward();
+    await expectInterceptingRoute(/\/intercept-source-group\/club\/static\/pics\/1$/);
+    await page.goBack();
+    await expect(page.locator("#intercept-source-group-static")).toBeVisible();
+
+    // The target's own slug does not reach the modal, which takes the owner's
+    // params from the page it opened from.
+    await page.getByRole("link", { name: "Acme pic 1", exact: true }).click();
+    await expectInterceptingRoute(/\/intercept-source-group\/club\/acme\/pics\/1$/);
+    await expectOtherSlotsInDefault(page);
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page).toHaveTitle("Pic page");
     await expect(page.locator("#intercept-source-group-pic")).toHaveText("Pic page: 1");
+    await expect(page.locator("#intercept-source-group-club-layout")).toContainText(
+      "Club layout: acme",
+    );
+    await expect(page.locator("#intercept-source-group-modal")).toHaveCount(0);
+    await expect(page.locator("#intercept-source-group-club-default")).toHaveCount(0);
+    await expect(page.locator('meta[name="description"]')).toHaveCount(0);
+
+    await page.goBack();
+    await expect(page).toHaveURL(/\/intercept-source-group\/club\/static$/);
+    await expect(page.locator("#intercept-source-group-static")).toBeVisible();
+    await expect(page.locator("#intercept-source-group-club-layout")).toHaveCount(0);
+  });
+
+  // Like Next.js, an action redirect's entry keeps the source the action sent
+  // when its render intercepts, so a refresh asks for it from that source.
+  test("keeps the source of the whole intercepting route across an action redirect", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Pic 1", exact: true }).click();
+    await expectWholeInterceptingRoute(page, /\/intercept-source-group\/club\/static\/pics\/1$/);
+
+    // The redirect's render replaces the modal, and keeps the other slots'
+    // defaults.
+    await page.locator("#intercept-source-group-modal-next").click();
+    await expectWholeInterceptingRoute(
+      page,
+      /\/intercept-source-group\/club\/static\/pics\/2$/,
+      "2",
+    );
+    await expectOtherSlotsInDefault(page);
+
+    const refresh = page.waitForRequest(
+      (request) =>
+        request.url().includes("/intercept-source-group/club/static/pics/2") &&
+        request.headers()["rsc"] === "1",
+    );
+    await refreshRouter(page);
+    expect((await refresh).headers()["x-vinext-interception-context"]).toBe(
+      "/nextjs-compat/intercept-source-group/club/static",
+    );
+    await expectWholeInterceptingRoute(
+      page,
+      /\/intercept-source-group\/club\/static\/pics\/2$/,
+      "2",
+    );
+  });
+
+  // The interception rewrite takes every param of the intercepting route from
+  // the source, those of the slot's folders above the marker too.
+  test("takes the params of the slot's folders from the source of the whole intercepting route", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/static/one`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Track 1", exact: true }).click();
+
+    await expect(page).toHaveURL(/\/intercept-source-group\/club\/acme\/two\/tracks\/1$/);
+    await expect(page.locator("#intercept-source-group-track-modal")).toHaveText(
+      "Track modal: static one 1",
+    );
     await expect(page.locator("#intercept-source-group-club-layout")).toContainText(
       "Club layout: static",
     );
-    await expect(page.locator("#intercept-source-group-static")).toHaveCount(0);
-    await expect(page.locator("#intercept-source-group-modal")).toHaveCount(0);
-    expect(
-      await page.evaluate(
-        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
-      ),
-    ).toBe(true);
+    await expect(page.locator("#intercept-source-group-club-default")).toHaveText("Club default");
+    await expect(page.locator("#intercept-source-group-track")).toHaveCount(0);
+    await expect(page.locator("#intercept-source-group-static-album")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
   });
 
   test("opens the modal from a page whose middleware rewrite reaches the slot", async ({

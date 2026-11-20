@@ -117,6 +117,7 @@ import {
 import {
   createSupplementalRefreshCoordinator,
   mergeRefreshedParallelSlot,
+  rendersWholeInterceptingRoute,
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
@@ -981,6 +982,7 @@ async function commitSameUrlNavigatePayload(
       }
       nextElements = resolveSupplementalRefreshes({
         merge: mergeRefreshedParallelSlot,
+        mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
         primary: nextElements,
         signal: supplementalHandle.signal,
         supplemental,
@@ -1929,7 +1931,10 @@ function registerServerActionCallback(): void {
               payload: Promise.resolve(elements),
               payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
               pendingRouterState: null,
-              previousNextUrl: null,
+              // The action, and so its redirect's render, sent the context of
+              // the state it began in. Like Next.js, the redirect's entry keeps
+              // it when that render intercepted; any other render clears it.
+              previousNextUrl: actionInitiation.routerState.previousNextUrl,
               scrollIntent: actionScrollIntent,
               targetHref: target.href,
             }).catch(() => {
@@ -2889,6 +2894,7 @@ function bootstrapHydration(
           }
           rscPayload = resolveSupplementalRefreshes({
             merge: mergeRefreshedParallelSlot,
+            mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
             primary: Promise.resolve(rscPayload),
             signal: navigationAbortHandle.signal,
             supplemental,

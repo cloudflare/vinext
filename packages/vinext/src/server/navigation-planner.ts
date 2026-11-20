@@ -60,6 +60,8 @@ export type RouteSnapshot = {
   displayUrl: string;
   matchedUrl: string;
   slotBindings: readonly ParallelSlotBindingSnapshot[];
+  /** The source a payload renders the whole intercepting route for. */
+  wholeInterceptionSource: string | null;
 };
 
 export type InterceptionSnapshot = {
@@ -947,11 +949,46 @@ function resolveRouteManifestRootLayoutTreePath(
   return routeManifest.segmentGraph.rootBoundaries.get(route.rootBoundaryId)?.treePath ?? null;
 }
 
+/**
+ * The topology a payload of the whole intercepting route rendered: the slot
+ * owner's layouts and root layout, which the direct target route's need not
+ * share. Its root layout must head its layouts and be a root boundary the
+ * manifest knows, as its slot bindings name only its layouts.
+ */
+function resolveRenderedRouteTopologySnapshot(
+  routeManifest: BrowserRouteManifest,
+  snapshot: RouteSnapshot,
+): RouteTopologyResolution {
+  const rootLayoutTreePath = snapshot.rootBoundaryId;
+  if (
+    rootLayoutTreePath === null ||
+    snapshot.layoutIds[0] !== AppElementsWire.encodeLayoutId(rootLayoutTreePath)
+  ) {
+    return { kind: "unknown" };
+  }
+  for (const rootBoundary of routeManifest.segmentGraph.rootBoundaries.values()) {
+    if (rootBoundary.treePath !== rootLayoutTreePath) continue;
+    return {
+      kind: "known",
+      topology: {
+        layoutIds: snapshot.layoutIds,
+        rootBoundaryId: rootBoundary.id,
+        rootLayoutTreePath,
+        slotBindings: snapshot.slotBindings,
+      },
+    };
+  }
+  return { kind: "unknown" };
+}
+
 function resolveRouteTopologySnapshot(options: {
   routeManifest: BrowserRouteManifest | null;
   slotBindingSource: RouteTopologySlotBindingSource;
   snapshot: RouteSnapshot;
 }): RouteTopologyResolution {
+  if (options.routeManifest !== null && options.snapshot.wholeInterceptionSource !== null) {
+    return resolveRenderedRouteTopologySnapshot(options.routeManifest, options.snapshot);
+  }
   const route =
     options.routeManifest === null
       ? null

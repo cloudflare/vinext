@@ -51,6 +51,13 @@ export const APP_BFCACHE_SEGMENT_IDENTITIES_KEY = "__bfcacheSegmentIdentities";
  * segments (issue cloudflare/vinext#1525).
  */
 export const APP_STATIC_SIBLINGS_KEY = "__staticSiblings";
+/**
+ * The interception source a payload renders the whole intercepting route for,
+ * when that source shares none of its tree. The payload carries no
+ * interception proof, but depends on that source as an intercepted one does,
+ * so the client keeps sending it, as Next.js keeps `previousNextUrl`.
+ */
+const APP_WHOLE_INTERCEPTION_SOURCE_KEY = "__wholeInterceptionSource";
 /** Prefix of the element that streams a route's generateMetadata() tags in the body. */
 export const APP_STREAMING_METADATA_BODY_ID_PREFIX = "__vinext_streaming_metadata_body:";
 /** Prefix of the element that rethrows a route's head errors inside its boundaries. */
@@ -257,6 +264,7 @@ type AppElementsMetadata = {
   skippedLayoutIds: readonly string[];
   slotBindings: readonly AppElementsSlotBinding[];
   sourcePage: string | null;
+  wholeInterceptionSource: string | null;
 };
 
 type AppElementsWireMetadataInput = {
@@ -269,6 +277,7 @@ type AppElementsWireMetadataInput = {
   bfcacheSegmentIdentities?: AppElementsBfcacheSegmentIdentities;
   slotBindings?: readonly AppElementsSlotBinding[];
   sourcePage?: string | null;
+  wholeInterceptionSource?: string | null;
 };
 
 type AppElementsWireMetadataEntries = Readonly<{
@@ -281,6 +290,7 @@ type AppElementsWireMetadataEntries = Readonly<{
   [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]?: AppElementsBfcacheSegmentIdentities;
   [APP_SOURCE_PAGE_SEGMENTS_KEY]?: readonly string[];
   [APP_SLOT_BINDINGS_KEY]?: readonly AppElementsSlotBinding[];
+  [APP_WHOLE_INTERCEPTION_SOURCE_KEY]?: string;
 }>;
 
 /**
@@ -317,6 +327,7 @@ type AppElementsWireKeys = {
   readonly skippedLayoutIds: typeof APP_SKIPPED_LAYOUT_IDS_KEY;
   readonly slotBindings: typeof APP_SLOT_BINDINGS_KEY;
   readonly sourcePageSegments: typeof APP_SOURCE_PAGE_SEGMENTS_KEY;
+  readonly wholeInterceptionSource: typeof APP_WHOLE_INTERCEPTION_SOURCE_KEY;
 };
 
 type AppElementsWireCodec = {
@@ -451,6 +462,9 @@ function createAppElementsWireMetadataEntries(
       ? { [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: input.bfcacheSegmentIdentities }
       : {}),
     ...(sourcePageSegments === null ? {} : { [APP_SOURCE_PAGE_SEGMENTS_KEY]: sourcePageSegments }),
+    ...(typeof input.wholeInterceptionSource === "string"
+      ? { [APP_WHOLE_INTERCEPTION_SOURCE_KEY]: input.wholeInterceptionSource }
+      : {}),
   };
   // Empty slot binding metadata is intentionally omitted. Missing
   // __slotBindings round-trips as [] and means "no route-state proof", so
@@ -925,6 +939,7 @@ export function readAppElementsMetadata(
   const bfcacheSegmentIdentities = parseBfcacheSegmentIdentities(
     elements[APP_BFCACHE_SEGMENT_IDENTITIES_KEY],
   );
+  const wholeInterceptionSource = elements[APP_WHOLE_INTERCEPTION_SOURCE_KEY];
 
   return {
     artifactCompatibility,
@@ -940,6 +955,14 @@ export function readAppElementsMetadata(
     skippedLayoutIds,
     slotBindings,
     sourcePage,
+    // Only beside interception context the payload names, and never with
+    // interception proof, which renders a source of its own.
+    wholeInterceptionSource:
+      typeof wholeInterceptionSource === "string" &&
+      wholeInterceptionSource === interceptionContext &&
+      interception === null
+        ? wholeInterceptionSource
+        : null,
   };
 }
 
@@ -960,6 +983,7 @@ export const AppElementsWire: AppElementsWireCodec = {
     skippedLayoutIds: APP_SKIPPED_LAYOUT_IDS_KEY,
     slotBindings: APP_SLOT_BINDINGS_KEY,
     sourcePageSegments: APP_SOURCE_PAGE_SEGMENTS_KEY,
+    wholeInterceptionSource: APP_WHOLE_INTERCEPTION_SOURCE_KEY,
   },
   unmatchedSlotValue: APP_UNMATCHED_SLOT_WIRE_VALUE,
   createMetadataEntries: createAppElementsWireMetadataEntries,

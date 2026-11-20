@@ -454,6 +454,7 @@ function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshot {
       routeId: state.routeId,
     }),
     slotBindings: state.slotBindings,
+    wholeInterceptionSource: AppElementsWire.readMetadata(state.elements).wholeInterceptionSource,
   };
 }
 
@@ -477,6 +478,8 @@ function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnap
       routeId: pending.routeId,
     }),
     slotBindings: pending.action.slotBindings,
+    wholeInterceptionSource: AppElementsWire.readMetadata(pending.action.elements)
+      .wholeInterceptionSource,
   };
 }
 
@@ -739,7 +742,13 @@ export function createPendingNavigationCommitFromElements(
     options.previousNextUrl !== undefined
       ? options.previousNextUrl
       : options.currentState.previousNextUrl;
-  const previousNextUrl = metadata.interception === null ? null : requestedPreviousNextUrl;
+  // A payload of the whole intercepting route carries no interception proof,
+  // but still renders for its source, so a refresh or traversal sends that
+  // source again, as Next.js re-sends `previousNextUrl`.
+  const previousNextUrl =
+    metadata.interception === null && metadata.wholeInterceptionSource === null
+      ? null
+      : requestedPreviousNextUrl;
 
   return {
     action: {

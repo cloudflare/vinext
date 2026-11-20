@@ -379,9 +379,10 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   /**
    * Hydrate a source route's lazy page/route-handler modules before reading
    * `route.page` (e.g. for fetch-cache-mode resolution) on intercept and ISR
-   * revalidation targets obtained via `getSourceRoute`. Idempotent.
+   * revalidation targets obtained via `getSourceRoute`. Idempotent. With the
+   * opts of a render of the whole intercepting route, only what it shows.
    */
-  ensureRouteLoaded?: (route: TRoute) => unknown;
+  ensureRouteLoaded?: (route: TRoute, interceptOpts?: unknown) => unknown;
   fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
   /** This request's intercept, which dispatch resolves once before rendering. */
@@ -968,7 +969,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // Hydrate the (possibly different) source route before reading its
       // slots for navigation params and its page module for fetch-cache-mode
       // resolution.
-      await options.ensureRouteLoaded?.(revalidationTarget.route);
+      await options.ensureRouteLoaded?.(revalidationTarget.route, revalidationTarget.interceptOpts);
       // Use the full navigationParams (not narrowed params) as the base so
       // interception-specific extras from a source-route intercept survive
       // the slot param merge.  resolveAppPageNavigationParams preserves all
@@ -1469,7 +1470,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       });
     },
     async resolveSearchParams(sourceRoute, searchParams, interceptOpts) {
-      await options.ensureRouteLoaded?.(sourceRoute);
+      await options.ensureRouteLoaded?.(sourceRoute, interceptOpts);
       interceptConfig = resolveAppPageInterceptSegmentConfig(sourceRoute, interceptOpts);
       return interceptConfig.dynamicConfig === "force-static"
         ? new URLSearchParams()
