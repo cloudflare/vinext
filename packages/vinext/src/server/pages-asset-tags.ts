@@ -9,7 +9,7 @@
  * template string.
  */
 
-import { createNonceAttribute } from "./html.js";
+import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import {
   assetServingUrlFromBaseAnchored,
   SSR_MANIFEST_SHARED_CHUNKS_KEY,
@@ -234,7 +234,7 @@ type CollectAssetTagsOptions = {
  * Build the HTML `<link>` and `<script>` tag string for the SSR response.
  *
  * Mirrors Next.js `_document` behaviour:
- * - CSS files → `<link rel="stylesheet">`.
+ * - CSS files → `<link rel="stylesheet">`, followed by `<noscript data-n-css>`.
  * - JS files → `<link rel="modulepreload">` + `<script type="module" defer>`.
  * - Lazy chunks (behind `React.lazy` / `next/dynamic`) are skipped.
  * - The registered client-entry bootstrap is injected first.
@@ -395,6 +395,12 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         );
       }
     }
+  }
+
+  // Client navigations put page stylesheets after this, as Next.js's
+  // `_document` does; it also carries the nonce for their `<style>` tags.
+  if (tags.length > 0) {
+    tags.push(`<noscript data-n-css="${escapeHtmlAttr(options.scriptNonce ?? "")}"></noscript>`);
   }
 
   return tags.join("\n  ");

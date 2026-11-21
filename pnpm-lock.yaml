@@ -921,6 +921,15 @@ importers:
       '@vinext/cloudflare':
         specifier: workspace:*
         version: link:../../packages/cloudflare
+      atlas-glyphs:
+        specifier: file:./__test_packages__/atlas-glyphs
+        version: file:examples/pages-router-complex/__test_packages__/atlas-glyphs
+      atlas-grid-kit:
+        specifier: file:./__test_packages__/atlas-grid-kit
+        version: file:examples/pages-router-complex/__test_packages__/atlas-grid-kit
+      atlas-legacy-format:
+        specifier: file:./__test_packages__/atlas-legacy-format
+        version: file:examples/pages-router-complex/__test_packages__/atlas-legacy-format
       i18next:
         specifier: ^24.2.3
         version: 24.2.3(typescript@7.0.2)
@@ -2350,6 +2359,8 @@ importers:
   tests/fixtures/pages-build-outdir: {}
 
   tests/fixtures/pages-cjs-package-scope: {}
+
+  tests/fixtures/pages-client-chunks: {}
 
   tests/fixtures/pages-isr-query-context: {}
 
@@ -7693,6 +7704,15 @@ packages:
   async-function@1.0.0:
     resolution: {integrity: sha512-hsU18Ae8CDTR6Kgu9DYf0EbCr/a5iGL0rytQDobUcdpYOKokk8LEjVphnXkDkgpi0wYVsqrXuP0bZxJaTqdgoA==}
     engines: {node: '>= 0.4'}
+
+  atlas-glyphs@file:examples/pages-router-complex/__test_packages__/atlas-glyphs:
+    resolution: {directory: examples/pages-router-complex/__test_packages__/atlas-glyphs, type: directory}
+
+  atlas-grid-kit@file:examples/pages-router-complex/__test_packages__/atlas-grid-kit:
+    resolution: {directory: examples/pages-router-complex/__test_packages__/atlas-grid-kit, type: directory}
+
+  atlas-legacy-format@file:examples/pages-router-complex/__test_packages__/atlas-legacy-format:
+    resolution: {directory: examples/pages-router-complex/__test_packages__/atlas-legacy-format, type: directory}
 
   available-typed-arrays@1.0.7:
     resolution: {integrity: sha512-wvUjBtSGN7+7SjNpq/9M2Tg350UZD3q62IFZLbRAR1bSMlCo1ZaeW+BJ+D090e4hIIZLBcTDWe4Mh4jvUDajzQ==}
@@ -15989,6 +16009,12 @@ snapshots:
   astring@1.9.0: {}
 
   async-function@1.0.0: {}
+
+  atlas-glyphs@file:examples/pages-router-complex/__test_packages__/atlas-glyphs: {}
+
+  atlas-grid-kit@file:examples/pages-router-complex/__test_packages__/atlas-grid-kit: {}
+
+  atlas-legacy-format@file:examples/pages-router-complex/__test_packages__/atlas-legacy-format: {}
 
   available-typed-arrays@1.0.7:
     dependencies:

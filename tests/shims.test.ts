@@ -28398,12 +28398,16 @@ describe("Pages Router _next/data client navigation", () => {
       expect(result).toBe(true);
       expect(loaderAbout).toHaveBeenCalledTimes(1);
       expect(appLoader).toHaveBeenCalledTimes(1);
+      // The commit boundary renders the stylesheet commit, then the router provider.
       const committed = render.mock.calls.at(-1)![0] as {
         props: {
-          children: { props: { children: { type: unknown; props: Record<string, unknown> } } };
+          children: [
+            unknown,
+            { props: { children: { type: unknown; props: Record<string, unknown> } } },
+          ];
         };
       };
-      const appElement = committed.props.children.props.children;
+      const appElement = committed.props.children[1].props.children;
       expect(appElement.type).toBe(AppComponent);
       expect(appElement.props).toMatchObject({
         appProps: { source: "_app.getInitialProps" },

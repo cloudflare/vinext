@@ -353,6 +353,22 @@ describe("collectAssetTags", () => {
     expect(result).toContain('nonce="abc123"');
   });
 
+  // Ported from Next.js: packages/next/src/pages/_document.tsx (`<noscript data-n-css>`)
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/pages/_document.tsx
+  it("marks where client navigations put page stylesheets, with the nonce", () => {
+    const tags = parseTags(
+      collectAssetTags({
+        manifest: makeManifest({ "page.tsx": ["style.css", "page.js"] }),
+        moduleIds: ["page.tsx"],
+        scriptNonce: "abc123",
+        disableOptimizedLoading: true,
+      }),
+    );
+    const marker = tags.indexOf('<noscript data-n-css="abc123"></noscript>');
+    expect(marker).toBe(tags.length - 1);
+    expect(tags.findIndex((tag) => tag.includes('href="/style.css"'))).toBeLessThan(marker);
+  });
+
   it("returns empty string when manifest is null and no globals set", () => {
     setPagesClientAssets(undefined);
     const result = collectAssetTags({

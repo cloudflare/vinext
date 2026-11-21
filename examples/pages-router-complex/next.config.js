@@ -38,6 +38,8 @@ const baseConfig = {
   // The middleware inspects raw /_next/data URLs (the hardNavTo branch), so
   // the framework must not normalise them to page paths first.
   skipMiddlewareUrlNormalize: true,
+  // Ships a CSS module; Next.js' server build would otherwise externalize it.
+  transpilePackages: ["atlas-grid-kit"],
   output: "standalone",
   outputFileTracingRoot: path.join(__dirname, "../../"),
   assetPrefix: isDev ? undefined : "/atlas/cdn/",

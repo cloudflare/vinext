@@ -226,6 +226,11 @@ describe("createClientReferenceChunksManifest", () => {
     expect(withChunks["/app/missing.tsx#X"]).toBeUndefined();
   });
 
+  it("names stylesheets with the deployment ID query that their server links carry", () => {
+    const withChunks = createClientReferenceChunksManifest(referenceChunks, "dpl_123")(manifest);
+    expect(withChunks["/app/a.tsx#Widget"]!.chunks).toEqual(["m/m.js\n/a.css?dpl=dpl_123", ""]);
+  });
+
   it("does not resolve keys inherited from Object.prototype", () => {
     const withChunks = createClientReferenceChunksManifest({
       references: {},

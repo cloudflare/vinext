@@ -148,5 +148,9 @@ export function applyDocumentAssetProps(
         preloadCrossOrigin,
         true,
       );
-    });
+    })
+    .replace(/<noscript\b[^>]*\bdata-n-css="[^"]*"[^>]*>/gi, (tag) =>
+      // Next.js gives client-inserted page stylesheets `<Head>`'s nonce.
+      addAttribute(tag, "data-n-css", preloadNonce, true),
+    );
 }

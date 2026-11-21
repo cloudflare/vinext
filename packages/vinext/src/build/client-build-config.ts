@@ -449,6 +449,313 @@ export function createClientCodeSplittingConfig(
 }
 
 /**
+ * Collect the modules that root the Pages Router "pages-app" chunk: `_app`'s
+ * static imports, short of the modules the first vinext group takes ahead of
+ * it ("framework", "vinext" and "react-dom-server"). Every page loads `_app`,
+ * so splitting its imports only adds requests: a module that `_app` and some
+ * pages both import would otherwise get a shared chunk of its own. Next.js
+ * keeps `pages/_app` unsplit for the same reason. `_app`'s next/navigation
+ * hooks load on every page too, so they join it rather than load on their own.
+ *
+ * Rolldown adds what these modules use to the chunk (following only the
+ * re-exports of a side-effect-free barrel that are used), while `_app` itself
+ * keeps its own chunk: the client entry imports it, and the Pages manifests
+ * look it up by its source path. An import that statically leads back to
+ * `_app`, to a module loaded with `import()` (a page, a next/dynamic target)
+ * or to an app module the client entry loads (instrumentation-client and its
+ * imports) stays out: Rolldown would pull that module into the group too, and
+ * the entry would then load the whole group before `_app`. Modules the first
+ * group takes with its own (vinext's runtime helpers) don't count.
+ */
+export function collectPagesAppChunkRoots(
+  appId: string,
+  moduleIds: Iterable<string>,
+  getModuleInfo: (id: string) => {
+    readonly isEntry: boolean;
+    readonly importedIds: readonly string[];
+    readonly importers: readonly string[];
+    readonly dynamicImporters: readonly string[];
+  } | null,
+  clientManualChunks: (id: string) => string | undefined,
+): Set<string> {
+  // Modules the first group doesn't name may join the "pages-app" chunk.
+  const joinsGroup = (id: string) => {
+    const chunkName = clientManualChunks(id);
+    return (
+      chunkName === undefined ||
+      chunkName === "vinext-navigation" ||
+      chunkName === "vinext-app-router"
+    );
+  };
+
+  // Every module that `ids` load statically, `ids` included.
+  const closure = (ids: string[]) => {
+    const modules = new Set<string>();
+
+    while (ids.length > 0) {
+      const id = ids.pop()!;
+      if (modules.has(id)) continue;
+
+      modules.add(id);
+      ids.push(...(getModuleInfo(id)?.importedIds ?? []));
+    }
+
+    return modules;
+  };
+
+  // Seed the modules that must stay out: `_app`, `import()` targets, and what
+  // the client entry loads beyond the first group's own modules.
+  const leadsToEntry = new Set([appId]);
+  const entries: string[] = [];
+  const firstGroupModules: string[] = [];
+
+  for (const id of moduleIds) {
+    const info = getModuleInfo(id);
+    if (info?.isEntry) entries.push(id);
+
+    if (!joinsGroup(id)) firstGroupModules.push(id);
+    else if (info?.dynamicImporters.length) leadsToEntry.add(id);
+  }
+
+  const firstGroupTakes = closure(firstGroupModules);
+  for (const id of closure(entries)) {
+    if (joinsGroup(id) && !firstGroupTakes.has(id)) leadsToEntry.add(id);
+  }
+
+  // Anything that statically imports one of those leads to it too.
+  const pending = [...leadsToEntry];
+  while (pending.length > 0) {
+    for (const importer of getModuleInfo(pending.pop()!)?.importers ?? []) {
+      if (leadsToEntry.has(importer)) continue;
+
+      leadsToEntry.add(importer);
+      pending.push(importer);
+    }
+  }
+
+  const roots = new Set<string>();
+  for (const id of getModuleInfo(appId)?.importedIds ?? []) {
+    if (joinsGroup(id) && !leadsToEntry.has(id)) roots.add(id);
+  }
+
+  // Stylesheets that only `_app` imports stay in its chunk: a chunk of only
+  // stylesheets still gets a JavaScript file under strict execution order,
+  // which wraps even their empty modules, so every page would load it for
+  // nothing. One that a page imports too keeps the group, so it loads once,
+  // in `_app`'s import order.
+  const onlyAppStylesheets = [...roots].every(
+    (id) =>
+      isStylesheetModule(id) &&
+      (getModuleInfo(id)?.importers ?? []).every((importer) => importer === appId),
+  );
+  if (onlyAppStylesheets) return new Set();
+
+  return roots;
+}
+
+/**
+ * Pages Router code splitting: vinext's groups, with the "pages-app" chunk of
+ * {@link collectPagesAppChunkRoots} after the first one. The returned group
+ * reads `appRoots` when Rolldown chunks the bundle, so a plugin fills it in
+ * once the client module graph is known.
+ */
+export function createPagesClientCodeSplittingConfig(
+  base: ReturnType<typeof createClientCodeSplittingConfig>,
+  appRoots: ReadonlySet<string>,
+) {
+  const [first, ...rest] = base.groups;
+
+  const pagesAppGroup = {
+    name(moduleId: string) {
+      return appRoots.has(moduleId) ? "pages-app" : null;
+    },
+    // `_app` may import less than the default `minSize`.
+    minSize: 0,
+  };
+
+  return { pagesAppGroup, codeSplitting: { ...base, groups: [first!, pagesAppGroup, ...rest] } };
+}
+
+/**
+ * Next.js' webpack `splitChunks.minSize` for Pages Router builds: a module
+ * group shared by pages but smaller than this is copied into each of them
+ * rather than loaded as a chunk of its own.
+ */
+export const PAGES_INLINE_COMMON_CHUNK_MAX_SIZE = 20_000;
+
+export const STYLESHEET_MODULE_RE = /\.(?:css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/;
+const NON_STYLESHEET_QUERY_RE = /[?&](?:inline|url|raw|transform-only)\b/;
+
+/**
+ * Whether `id` is a stylesheet whose CSS goes into its chunk's stylesheet,
+ * short of `?inline`, `?url` and `?raw` imports (and the `?transform-only`
+ * module behind a `?url` one).
+ */
+export function isStylesheetModule(id: string): boolean {
+  return STYLESHEET_MODULE_RE.test(id) && !NON_STYLESHEET_QUERY_RE.test(id);
+}
+
+/**
+ * Collect the stylesheets that must keep a chunk of their own: those that the
+ * same set of entries (the client entry, pages, `import()` targets) loads
+ * statically, when together they hold at least
+ * {@link PAGES_INLINE_COMMON_CHUNK_MAX_SIZE} of CSS. Rolldown groups a common
+ * chunk's modules by that set, and webpack applies `minSize` to the CSS of
+ * each such group, so the CSS a set of pages shares gets one stylesheet once
+ * it's large and is otherwise copied into each page's stylesheet. Rolldown's
+ * own size check only counts the JavaScript a stylesheet compiles to.
+ *
+ * So do the stylesheets that a non-page `import()` target (`next/dynamic`)
+ * loads with other entries. Webpack leaves out of a dynamic chunk what the
+ * page importing it already has, but Rolldown has one chunk per `import()`
+ * target, and a copy there would link the CSS again after the page's own.
+ */
+export function collectUncopiedStylesheets(
+  stylesheetSizes: ReadonlyMap<string, number>,
+  getModuleInfo: (id: string) => {
+    readonly isEntry: boolean;
+    readonly importers: readonly string[];
+    readonly dynamicImporters: readonly string[];
+  } | null,
+  // The client entry, which loads the pages.
+  pageLoaderId: string,
+): Set<string> {
+  const groups = new Map<string, { size: number; ids: string[] }>();
+  const uncopied = new Set<string>();
+
+  // Stylesheets share most of their importers.
+  const infos = new Map<string, ReturnType<typeof getModuleInfo>>();
+  const infoOf = (id: string) => {
+    if (!infos.has(id)) infos.set(id, getModuleInfo(id));
+    return infos.get(id)!;
+  };
+
+  for (const [id, size] of stylesheetSizes) {
+    // Gone from the module graph since an earlier watch build.
+    if (!infoOf(id)) continue;
+
+    // Every entry that loads the stylesheet statically.
+    const entries: string[] = [];
+    let loadsDynamically = false;
+    const visited = new Set([id]);
+    const pending = [id];
+
+    while (pending.length > 0) {
+      const moduleId = pending.pop()!;
+      const info = infoOf(moduleId);
+      if (!info) continue;
+
+      if (info.isEntry || info.dynamicImporters.length > 0) entries.push(moduleId);
+      if (info.dynamicImporters.some((importer) => importer !== pageLoaderId)) {
+        loadsDynamically = true;
+      }
+
+      for (const importer of info.importers) {
+        if (visited.has(importer)) continue;
+
+        visited.add(importer);
+        pending.push(importer);
+      }
+    }
+
+    if (loadsDynamically && entries.length > 1) {
+      uncopied.add(id);
+      continue;
+    }
+
+    const key = entries.sort().join("\0");
+    const group = groups.get(key) ?? { size: 0, ids: [] };
+
+    group.size += size;
+    group.ids.push(id);
+    groups.set(key, group);
+  }
+
+  for (const group of groups.values()) {
+    if (group.size < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE) continue;
+    for (const id of group.ids) uncopied.add(id);
+  }
+
+  return uncopied;
+}
+
+/** Rolldown 1.2.18 added `codeSplitting.experimentalInlineCommonChunks`. */
+export function supportsInlineCommonChunks(rolldownVersion: string): boolean {
+  const [release = "", prerelease] = rolldownVersion.split("-", 2);
+  const [major = 0, minor = 0, patch = 0] = release.split(".").map(Number);
+
+  if (major !== 1) return major > 1;
+  if (minor !== 2) return minor > 2;
+  return patch > 18 || (patch === 18 && prerelease === undefined);
+}
+
+type InlineCommonChunksOutput = {
+  readonly codeSplitting?: unknown;
+  readonly format?: string;
+  readonly preserveModules?: boolean;
+  readonly strictExecutionOrder?: boolean;
+};
+
+/**
+ * Copy small Pages Router common chunks into the chunks that import them, as
+ * Next.js' webpack (below {@link PAGES_INLINE_COMMON_CHUNK_MAX_SIZE}) and
+ * Turbopack (at any size) duplicate small modules that several pages share
+ * instead of loading each set of them as a separate tiny chunk. Rolldown keeps
+ * one instance of each copied module and only evaluates it when an importer
+ * needs it, as both bundlers do. A chunk holding one of
+ * `uncopiedStylesheets` ({@link collectUncopiedStylesheets}) isn't copied, so
+ * that CSS keeps one stylesheet.
+ *
+ * Returns the output options with inlining turned on, or undefined when the
+ * Rolldown version or other options (which Rolldown rejects in combination
+ * with it) rule it out, or when the output already configures it.
+ */
+export function withInlineCommonChunks<Output extends InlineCommonChunksOutput>(
+  output: Output,
+  options: {
+    preserveEntrySignatures?: unknown;
+    onDemandWrapping?: unknown;
+    rolldownVersion: string;
+    uncopiedStylesheets: ReadonlySet<string>;
+  },
+): Output | undefined {
+  const codeSplitting = output.codeSplitting;
+
+  const isEsmOutput =
+    output.format === undefined ||
+    output.format === "es" ||
+    output.format === "esm" ||
+    output.format === "module";
+  const keepsEntrySignatures =
+    options.preserveEntrySignatures !== undefined && options.preserveEntrySignatures !== false;
+
+  if (
+    !supportsInlineCommonChunks(options.rolldownVersion) ||
+    !codeSplitting ||
+    typeof codeSplitting !== "object" ||
+    "experimentalInlineCommonChunks" in codeSplitting ||
+    !isEsmOutput ||
+    output.preserveModules === true ||
+    output.strictExecutionOrder === false ||
+    keepsEntrySignatures ||
+    options.onDemandWrapping === true
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...output,
+    codeSplitting: {
+      ...codeSplitting,
+      experimentalInlineCommonChunks: {
+        maxSize: PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
+        exclude: (id: string) => options.uncopiedStylesheets.has(id),
+      },
+    },
+  };
+}
+
+/**
  * Matches React framework packages (and the RSC flight runtime) inside
  * `node_modules`. Used to split them into a dedicated "framework" chunk in the
  * RSC server build.
