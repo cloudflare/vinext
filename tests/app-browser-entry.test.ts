@@ -130,6 +130,7 @@ import {
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
   resolveInterceptionContextFromPreviousNextUrl,
+  resolveNavigationInterceptionSource,
   resolveActiveRoutePaths,
   resolveHistoryTraversalIntent,
   resolveServerActionRequestState,
@@ -1960,6 +1961,204 @@ describe("app browser entry state helpers", () => {
     // target's own render.
     expect((await commit(undefined)).pending.previousNextUrl).toBeNull();
     expect((await commit("/club/other")).pending.previousNextUrl).toBeNull();
+  });
+
+  // A refresh of an intercept opened from an unmatched URL's not-found page
+  // sends /_not-found again and commits the whole intercepting route softly,
+  // as Next.js does when the root layout has no other slot.
+  it("keeps /_not-found as the source when an intercept from a not-found page refreshes", async () => {
+    const createWholeRouteElements = () =>
+      createResolvedElements("route:/photos/1", "/", "/_not-found", {
+        "page:/photos/1": React.createElement("main", null, "photo modal"),
+        [AppElementsWire.keys.wholeInterceptionSource]: "/_not-found",
+      });
+    const navigationSnapshot = createClientNavigationRenderSnapshot(
+      "https://example.com/photos/1",
+      {},
+    );
+    const state = createState({
+      elements: createWholeRouteElements(),
+      interceptionContext: "/_not-found",
+      navigationSnapshot,
+      previousNextUrl: "/_not-found",
+      routeId: "route:/photos/1",
+    });
+    const pending = await createPendingNavigationCommit({
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      currentState: state,
+      nextElements: Promise.resolve(createWholeRouteElements()),
+      navigationSnapshot,
+      operationLane: "refresh",
+      previousNextUrl: "/_not-found",
+      renderId: 1,
+      type: "navigate",
+    });
+    expect(pending.previousNextUrl).toBe("/_not-found");
+
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState: state,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(state, pending),
+      startedNavigationId: 1,
+      targetHref: "https://example.com/photos/1",
+    });
+    if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+    const nextState = applyApprovedVisibleCommit(state, approval.approvedCommit);
+    expect(nextState.routeId).toBe("route:/photos/1");
+    expect(nextState.interception).toBeNull();
+    expect(nextState.previousNextUrl).toBe("/_not-found");
+  });
+
+  // A sibling intercept's payload carries no interception proof, but its page
+  // is the intercepting route's own, so its entry keeps the source it was
+  // opened from, /_not-found included, as Next.js re-sends `previousNextUrl`
+  // while its tree holds an interception route.
+  it("keeps the source of a sibling intercept for its entry", async () => {
+    const commit = async (sourcePage: string, interceptionContext: string | null) => {
+      const state = createState();
+      const pending = await createPendingNavigationCommit({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        currentState: state,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/photos/1",
+            "/",
+            interceptionContext,
+            { "page:/photos/1": React.createElement("main", null, "photo") },
+            undefined,
+            [],
+            null,
+            sourcePage,
+          ),
+        ),
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/photos/1",
+          {},
+        ),
+        operationLane: "navigation",
+        previousNextUrl: interceptionContext,
+        renderId: 1,
+        type: "navigate",
+      });
+      return { pending, state };
+    };
+
+    for (const source of ["/_not-found", "/"]) {
+      const { pending, state } = await commit("/(.)photos/[id]/page", source);
+      expect(pending.interception).toBeNull();
+      expect(pending.previousNextUrl).toBe(source);
+      const approval = approvePendingNavigationCommit({
+        activeNavigationId: 1,
+        currentState: state,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(state, pending),
+        startedNavigationId: 1,
+        targetHref: "https://example.com/photos/1",
+      });
+      if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+      const nextState = applyApprovedVisibleCommit(state, approval.approvedCommit);
+      expect(nextState.interception).toBeNull();
+      expect(nextState.previousNextUrl).toBe(source);
+    }
+    // The target's own page keeps no source.
+    expect((await commit("/photos/[id]/page", "/_not-found")).pending.previousNextUrl).toBeNull();
+  });
+
+  // Next.js navigates and prefetches with `nextUrl`, the path of the tree it
+  // rendered. A sibling intercept's or a whole intercepting route's tree stops
+  // at the interception marker, so that is the owner's path with the source's
+  // values, while refreshes still send the source the entry keeps.
+  it("navigates from an intercepting route's own tree path", () => {
+    const source = (
+      sourcePage: string,
+      previousNextUrl: string,
+      options: { basePath?: string; whole?: boolean; interception?: boolean } = {},
+    ) => {
+      const context = resolveInterceptionContextFromPreviousNextUrl(
+        previousNextUrl,
+        options.basePath,
+      );
+      return resolveNavigationInterceptionSource(
+        {
+          elements: createResolvedElements(
+            "route:/photos/1",
+            "/",
+            context,
+            options.whole ? { [AppElementsWire.keys.wholeInterceptionSource]: context } : {},
+            undefined,
+            [],
+            options.interception ? createInterceptionProof(context!, "/photos/1") : null,
+            sourcePage,
+          ),
+          previousNextUrl,
+        },
+        options.basePath ?? "",
+      );
+    };
+
+    // Sibling intercepts.
+    expect(source("/(.)photos/[id]/page", "/feed")).toEqual({
+      previousNextUrl: null,
+      pathname: "/",
+    });
+    expect(source("/(.)photos/[id]/page", "/_not-found")).toEqual({
+      previousNextUrl: null,
+      pathname: "/",
+    });
+    expect(source("/(.)photos/[id]/page", "/docs/feed", { basePath: "/docs" })).toEqual({
+      previousNextUrl: null,
+      pathname: "/docs",
+    });
+    expect(source("/(g)/feed/(.)photos/[id]/page", "/feed?tab=1")).toEqual({
+      previousNextUrl: null,
+      pathname: "/feed",
+    });
+    expect(source("/[team]/(..)photos/[id]/page", "/acme/members")).toEqual({
+      previousNextUrl: null,
+      pathname: "/acme",
+    });
+    // Whole intercepting routes, through the slot's folders above the marker.
+    expect(
+      source(
+        "/nextjs-compat/intercept-source-group/(shared)/club/[slug]/[album]/(.)tracks/[id]/page",
+        "/nextjs-compat/intercept-source-group/club/static/one",
+        { whole: true },
+      ),
+    ).toEqual({
+      previousNextUrl: null,
+      pathname: "/nextjs-compat/intercept-source-group/club/static/one",
+    });
+    expect(source("/(g)/(.)photos/[id]/page", "/_not-found", { whole: true })).toEqual({
+      previousNextUrl: null,
+      pathname: "/",
+    });
+    expect(source("/[slug]/(.)photos/[id]/page", "/_not-found", { whole: true })).toEqual({
+      previousNextUrl: null,
+      pathname: "/_not-found",
+    });
+    // A source page without a marker stops at the owner.
+    expect(source("/(g)/page", "/_not-found", { whole: true })).toEqual({
+      previousNextUrl: null,
+      pathname: "/",
+    });
+    expect(source("/[slug]/page", "/_not-found", { whole: true })).toEqual({
+      previousNextUrl: null,
+      pathname: "/_not-found",
+    });
+    expect(source("/club/[slug]/page", "/club/static", { whole: true })).toEqual({
+      previousNextUrl: null,
+      pathname: "/club/static",
+    });
+    expect(source("/[...rest]/page", "/a/b", { whole: true })).toEqual({
+      previousNextUrl: null,
+      pathname: "/a/b",
+    });
+    // A slot intercept keeps its source page beneath the modal.
+    expect(source("/feed/page", "/feed", { interception: true })).toEqual({
+      previousNextUrl: "/feed",
+      pathname: null,
+    });
   });
 
   it("mints fresh bfcache ids instead of reusing current ids when requested", async () => {

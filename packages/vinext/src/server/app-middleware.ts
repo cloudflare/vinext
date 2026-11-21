@@ -40,6 +40,11 @@ export type ApplyAppMiddlewareOptions = {
   /** An App Router-created body branch dedicated to middleware. */
   middlewareRequest?: Request;
   module: MiddlewareModule;
+  /**
+   * False reports an external rewrite as `externalRewrite` without proxying
+   * it, for a caller that discards any response middleware gives.
+   */
+  proxyExternalRewrite?: boolean;
   request: Request;
   /** Forwarded to `executeMiddleware`. */
   restoreLocaleRootTrailingSlash?: boolean;
@@ -81,6 +86,12 @@ export type ApplyAppMiddlewareResult =
       /** True when this pathname can match middleware for some request context. */
       pathnameEligible?: boolean;
       response: Response;
+    }
+  | {
+      /** An external rewrite left unproxied, as `proxyExternalRewrite: false` asks. */
+      kind: "externalRewrite";
+      matched?: boolean;
+      pathnameEligible?: boolean;
     };
 
 type ForwardedMiddlewareContext = {
@@ -321,6 +332,10 @@ export async function applyAppMiddleware(
   if (forwarded.rewriteUrl) {
     try {
       if (isExternalMiddlewareRewrite(forwarded.rewriteUrl, options.request)) {
+        if (options.proxyExternalRewrite === false) {
+          if (options.middlewareRequest) cancelRequestBody(options.middlewareRequest);
+          return { kind: "externalRewrite", matched, pathnameEligible };
+        }
         const validationResponse = await options.validateExternalRewriteRequest?.();
         if (validationResponse) {
           if (options.middlewareRequest) cancelRequestBody(options.middlewareRequest);
@@ -428,6 +443,9 @@ export async function applyAppMiddleware(
         options.context.status = result.rewriteStatus;
       }
       if (isExternalUrl(result.rewriteUrl)) {
+        if (options.proxyExternalRewrite === false) {
+          return { kind: "externalRewrite", matched, pathnameEligible };
+        }
         const validationResponse = await options.validateExternalRewriteRequest?.();
         if (validationResponse) {
           return {

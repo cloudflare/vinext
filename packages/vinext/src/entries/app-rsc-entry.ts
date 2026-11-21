@@ -664,6 +664,7 @@ const __requestHandler = createAppRscRequestHandler({
       authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams),
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+      interceptionRendersRootOwnerFromRouteMiss: intercept.rendersRootOwnerFromRouteMiss,
       interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
       interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
       interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
@@ -674,7 +675,7 @@ const __requestHandler = createAppRscRequestHandler({
   },
   ${
     middlewarePath
-      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, restoreLocaleRootTrailingSlash, validateExternalRewriteRequest }) {
+      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, proxyExternalRewrite, request, restoreLocaleRootTrailingSlash, validateExternalRewriteRequest }) {
     return __applyAppMiddleware({
       basePath: __basePath,
       cleanPathname,
@@ -687,6 +688,7 @@ const __requestHandler = createAppRscRequestHandler({
       isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
       middlewareRequest,
       module: middlewareModule,
+      proxyExternalRewrite,
       request,
       restoreLocaleRootTrailingSlash,
       skipTrailingSlashRedirect: ${JSON.stringify(config?.skipTrailingSlashRedirect ?? false)},
@@ -2141,6 +2143,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams),
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+      interceptionRendersRootOwnerFromRouteMiss: intercept.rendersRootOwnerFromRouteMiss,
       interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
       interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
       interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
@@ -2151,7 +2154,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   },
   ${
     middlewarePath
-      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, restoreLocaleRootTrailingSlash, validateExternalRewriteRequest }) {
+      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, proxyExternalRewrite, request, restoreLocaleRootTrailingSlash, validateExternalRewriteRequest }) {
     return __applyAppMiddleware({
       basePath: __basePath,
       cleanPathname,
@@ -2164,6 +2167,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
       middlewareRequest,
       module: middlewareModule,
+      proxyExternalRewrite,
       request,
       restoreLocaleRootTrailingSlash,
       skipTrailingSlashRedirect: ${JSON.stringify(config?.skipTrailingSlashRedirect ?? false)},

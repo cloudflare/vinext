@@ -3836,6 +3836,8 @@ describe("buildPageElements", () => {
     // It still renders for its source, which the client keeps sending.
     expect(metadata.interceptionContext).toBe("/club/static");
     expect(metadata.wholeInterceptionSource).toBe("/club/static");
+    // Its source page runs through the slot to the intercepting page.
+    expect(metadata.sourcePage).toBe("/club/[slug]/(.)pics/[id]/page");
     expect(metadata.routeId).toBe("route:/club/static/pics/1");
     expect(Object.keys(elements).some((id) => id.includes(":/club/static\0"))).toBe(false);
     await expect(

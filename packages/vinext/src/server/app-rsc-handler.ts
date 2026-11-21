@@ -64,7 +64,12 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { flattenErrorCauses } from "../utils/error-cause.js";
-import { hasBasePath, restoreBasePath, stripBasePath } from "../utils/base-path.js";
+import {
+  hasBasePath,
+  removeTrailingSlash,
+  restoreBasePath,
+  stripBasePath,
+} from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import {
   buildRequestHeadersFromMiddlewareResponse,
@@ -77,7 +82,10 @@ import {
   mergeMiddlewareResponseHeadersOntoResponse,
   withExternalRewriteResponseHeaders,
 } from "./middleware-response-headers.js";
-import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
+import {
+  normalizeInterceptionContextHeader,
+  ROUTE_MISS_INTERCEPTION_CONTEXT,
+} from "./app-interception-context-header.js";
 import type {
   AppPrerenderMetadataRoutePathsRequest,
   AppPrerenderRootParamNamesMap,
@@ -379,6 +387,8 @@ type RunAppMiddlewareOptions = {
   hadBasePath: boolean;
   isDataRequest: boolean;
   middlewareRequest?: Request;
+  /** False reports an external rewrite without proxying it. */
+  proxyExternalRewrite?: boolean;
   request: Request;
   /** `shouldRestoreLocaleRootTrailingSlash` for the raw request pathname. */
   restoreLocaleRootTrailingSlash?: boolean;
@@ -424,6 +434,11 @@ type AppRscRouteMatch<TRoute> = {
   /** The same for the raw match, which draft mode and server actions render. */
   interceptionRawRendersTargetLayouts?: boolean;
   interceptionSourceIsConcrete?: boolean;
+  /**
+   * /_not-found names no route, so a root-level intercept's own owner stands
+   * in for it, for that context alone.
+   */
+  interceptionRendersRootOwnerFromRouteMiss?: boolean;
   /**
    * The source has no slot to render the intercept into. Unless the request
    * renders the whole intercepting route, only a source rewrite to a route
@@ -1242,7 +1257,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return false;
     }
     if (sourceMatch.interceptionSourceIsConcrete !== undefined) {
-      return sourceMatch.interceptionSourceIsConcrete;
+      return (
+        sourceMatch.interceptionSourceIsConcrete ||
+        (sourceContext === ROUTE_MISS_INTERCEPTION_CONTEXT &&
+          sourceMatch.interceptionRendersRootOwnerFromRouteMiss === true)
+      );
     }
     // Backward-compatible fallback for custom/older entry glue. Route identity
     // proves existence; match the raw context like a direct request to it.
@@ -1481,6 +1500,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // Middleware answered in the uncached request stage, so the response
       // stage and its shared cache never see this request.
       return dispatchResponseStage ? withRequestStageBypassCacheState(response) : response;
+    }
+    if (middlewareResult.kind === "externalRewrite") {
+      // Only a source run asks to leave an external rewrite unproxied.
+      throw new Error("[vinext] Middleware left the request's external rewrite unproxied");
     }
 
     cleanPathname = middlewareResult.cleanPathname;
@@ -2044,8 +2067,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // renders the whole intercepting route instead, or the route with the slot
   // that a source rewrite reaches. When authorization refuses such a source,
   // the request renders the target directly, as one without an interception
-  // context does.
-  let droppedSourceWithoutSlot = false;
+  // context does. So does a refused /_not-found, the context of an unmatched
+  // URL's not-found page: Next.js renders its intercept from `Next-Url` alone
+  // and never runs middleware or redirects on it, so the navigation must not
+  // take the source's redirect or 404.
+  const isRouteMissSource = interceptionContextHeader === ROUTE_MISS_INTERCEPTION_CONTEXT;
+  let droppedSource = false;
   if (
     interceptionSourceMatch !== null &&
     interceptionContextHeader !== null &&
@@ -2074,29 +2101,49 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // the client sends back, so it must satisfy the inbound header contract;
       // otherwise keep the raw match. Either way the selected source must be
       // the exact route and params the rewrite reaches, so a rewrite cannot
-      // select a source it did not route the claimed source to.
-      const rewrittenInterceptionSourceMatch = isValidInterceptionSourceContext(rewrittenPathname)
+      // select a source it did not route the claimed source to. /_not-found
+      // names no route of its own, so only a rewrite that keeps that path
+      // keeps its source.
+      if (
+        isRouteMissSource &&
+        removeTrailingSlash(rewrittenPathname) !== ROUTE_MISS_INTERCEPTION_CONTEXT
+      ) {
+        return false;
+      }
+      // That rewrite may add a trailing slash; the lookup takes /_not-found
+      // as the client sent it, under the rules for that source.
+      const rewrittenSourcePathname = isRouteMissSource
+        ? ROUTE_MISS_INTERCEPTION_CONTEXT
+        : rewrittenPathname;
+      const rewrittenInterceptionSourceMatch = isValidInterceptionSourceContext(
+        rewrittenSourcePathname,
+      )
         ? (options.matchInterceptRoute?.(
             preActionRoutePathname,
-            rewrittenPathname,
+            rewrittenSourcePathname,
             interceptionIdHeader,
           ) ?? null)
         : null;
       if (rewrittenInterceptionSourceMatch !== null) {
         interceptionSourceMatch = rewrittenInterceptionSourceMatch;
-        interceptionSourceContext = rewrittenPathname;
+        interceptionSourceContext = rewrittenSourcePathname;
       }
-      const rewrittenSourceMatch = options.matchRoute(rewrittenPathname);
+      const rewrittenSourceMatch = options.matchRoute(rewrittenSourcePathname);
       return (
         interceptionSourceMatch !== null &&
-        isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch)
+        (isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch) ||
+          (isRouteMissSource &&
+            rewrittenSourceMatch === null &&
+            interceptionSourceMatch.interceptionRendersRootOwnerFromRouteMiss === true))
       );
     };
-    const dropsSourceWithoutSlot = (): boolean => {
-      if (interceptionSourceMatch?.interceptionSourceLacksSlot !== true) return false;
+    const dropsRefusedSource = (): boolean => {
+      if (!isRouteMissSource && interceptionSourceMatch?.interceptionSourceLacksSlot !== true) {
+        return false;
+      }
       interceptionSourceMatch = null;
       interceptionSourceContext = null;
-      droppedSourceWithoutSlot = true;
+      droppedSource = true;
       return true;
     };
     // A direct request to a redirected source never renders it.
@@ -2108,7 +2155,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         currentBasePathState(),
         dispatchResponseStage ? undefined : markConditionalRedirectCacheability,
       ) &&
-      !dropsSourceWithoutSlot()
+      !dropsRefusedSource()
     ) {
       options.clearRequestContext();
       return notFoundResponse();
@@ -2119,7 +2166,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // The request headers source middleware left, which the source's config
     // rewrites match as they would a direct request's.
     let sourceRulesHeadersContext: ReturnType<typeof headersContextFromRequest> | null = null;
-    if (runMiddleware && !droppedSourceWithoutSlot) {
+    if (runMiddleware && !droppedSource) {
       const sourceUrl = new URL(userlandRequest.url);
       sourceUrl.search = new URL(resolvedUrl, url).search;
       // Source middleware must see the URL a direct request to the source
@@ -2173,6 +2220,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             externalRewriteRequest: request,
             hadBasePath: resolvedPathnameHasBasePath,
             isDataRequest: isMiddlewareDataRequest,
+            // The request discards whatever a /_not-found source's middleware
+            // answers, so it must not fetch an external rewrite for it.
+            proxyExternalRewrite: !isRouteMissSource,
             request: sourceMiddlewareRequest,
             // From the spelling a direct request uses: a basePath root drops
             // its slash in `sourceUrl`, while a direct request keeps `/docs/`.
@@ -2213,8 +2263,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             : "middleware is eligible for this pathname",
         );
       }
-      if (sourceMiddlewareResult.kind === "response") {
-        if (!dropsSourceWithoutSlot()) {
+      if (sourceMiddlewareResult.kind === "externalRewrite") {
+        // Reported only for a source the request drops when middleware answers.
+        if (!dropsRefusedSource()) {
+          options.clearRequestContext();
+          return notFoundResponse();
+        }
+      } else if (sourceMiddlewareResult.kind === "response") {
+        if (!dropsRefusedSource()) {
           if (request.body && !request.body.locked) {
             void request.body.cancel().catch(() => {});
           }
@@ -2237,7 +2293,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             ((options.basePath && sourceMiddlewareResult.rewriteHadBasePath === false) ||
               sourceMiddlewareResult.search !== sourceUrl.search ||
               !adoptRewrittenInterceptionSource(sourceMiddlewareResult.cleanPathname)) &&
-            !dropsSourceWithoutSlot()
+            !dropsRefusedSource()
           ) {
             options.clearRequestContext();
             return notFoundResponse();
@@ -2248,8 +2304,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     if (
       HAS_CONFIG_REWRITES &&
-      !droppedSourceWithoutSlot &&
-      (options.configRewrites.beforeFiles.length || options.configRewrites.afterFiles.length)
+      !droppedSource &&
+      (options.configRewrites.beforeFiles.length ||
+        options.configRewrites.afterFiles.length ||
+        options.configRewrites.fallback.length)
     ) {
       const { matchRewrite } = await import("../config/config-matchers.js");
       // The source request shares the target's query. Its headers and cookies
@@ -2288,20 +2346,26 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // A direct request that reaches a dynamic route after beforeFiles still
       // takes the afterFiles rules before that route is accepted, so a rule
       // that rewrites the source away for this client refuses it here too. A
-      // static route is final before afterFiles.
+      // static route is final before afterFiles. A /_not-found that a
+      // root-level owner stands in for matches no route, so it takes the
+      // afterFiles and then the fallback rules.
+      const matchesNoRoute = (): boolean =>
+        interceptionSourceMatch?.interceptionRendersRootOwnerFromRouteMiss === true;
       if (
         (!rewriteSource(options.configRewrites.beforeFiles, false) ||
-          ((interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route)
-            .isDynamic &&
-            !rewriteSource(options.configRewrites.afterFiles, true))) &&
-        !dropsSourceWithoutSlot()
+          ((matchesNoRoute() ||
+            (interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route)
+              .isDynamic) &&
+            !rewriteSource(options.configRewrites.afterFiles, true)) ||
+          (matchesNoRoute() && !rewriteSource(options.configRewrites.fallback, true))) &&
+        !dropsRefusedSource()
       ) {
         options.clearRequestContext();
         return notFoundResponse();
       }
     }
   }
-  if (droppedSourceWithoutSlot) {
+  if (droppedSource) {
     // The proof that let the selector and shared caches through named the
     // refused source.
     if (interceptionIdHeader !== null) {

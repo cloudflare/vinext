@@ -317,6 +317,31 @@ test.describe("Intercepting Routes", () => {
     expect(await markerKept(page)).toBe(true);
   });
 
+  // Next.js navigates from the whole intercepting route's tree path, which runs
+  // through the slot's folders to the marker, so it still matches the source.
+  test("navigates from the whole intercepting route through the slot's folders", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/static/one`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Track 1", exact: true }).click();
+    await expect(page.locator("#intercept-source-group-track-modal")).toHaveText(
+      "Track modal: static one 1",
+    );
+
+    await page.getByRole("link", { name: "Track 2", exact: true }).click();
+    await expect(page).toHaveURL(/\/intercept-source-group\/club\/acme\/two\/tracks\/2$/);
+    await expect(page.locator("#intercept-source-group-track-modal")).toHaveText(
+      "Track modal: static one 2",
+    );
+    await expect(page.locator("#intercept-source-group-club-default")).toHaveText("Club default");
+    await expect(page.locator("#intercept-source-group-track")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
+  });
+
   test("opens the modal from a page whose middleware rewrite reaches the slot", async ({
     page,
   }) => {

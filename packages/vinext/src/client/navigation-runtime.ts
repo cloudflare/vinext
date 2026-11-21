@@ -48,6 +48,18 @@ export type NavigationRuntimeVisibleCommitMode = "transition" | "synchronous";
 type NavigationRuntimePrefetchRouterState = {
   pathAndSearch: string;
   routeId: string;
+  /** The committed render is the not-found page of an unmatched URL. */
+  routeMiss: boolean;
+  /**
+   * The interception context the committed entry keeps from the source it was
+   * opened from, which its navigations send whatever their target.
+   */
+  sourceInterceptionContext: string | null;
+  /**
+   * The path its navigations resolve a context from, when that is not the
+   * current URL: an intercepting route's own tree path.
+   */
+  sourcePathname: string | null;
 };
 
 type NavigationRuntimeTraversalIntent = {

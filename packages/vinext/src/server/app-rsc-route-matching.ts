@@ -7,6 +7,7 @@ import {
 } from "../routing/route-pattern.js";
 import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
 import { decodeMatchedParams, decodeRouteSegment, splitPathSegments } from "../routing/utils.js";
+import { ROUTE_MISS_INTERCEPTION_CONTEXT } from "./app-interception-context-header.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 
@@ -131,6 +132,13 @@ type AppRscRouteForMatching = {
 type AppRscInterceptMatch = AppRscInterceptLookupEntry & {
   matchedParams: AppRscRouteParams;
   sourceRouteIsConcrete: boolean;
+  /**
+   * /_not-found, which names no route, reaches a root-level intercept whose
+   * owner is the intercepting route's own: the root page for a sibling
+   * intercept, a root route group's page for its slot. That owner stands in
+   * for the source route.
+   */
+  rendersRootOwnerFromRouteMiss: boolean;
   /**
    * The source route has no slot to render a slot intercept into. Unless the
    * request renders the whole intercepting route, returned only to a caller
@@ -397,6 +405,11 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       const sourceParts = appRscPathnameParts(sourcePathname);
       const matchedSourceRoute = matchRawRequestParts(sourceParts);
       let slotlessSourceMatch: AppRscInterceptMatch | null = null;
+      // From an unmatched URL's not-found page, the first intercept whose
+      // source and target match decides, as Next.js's first matching
+      // interception rewrite does. When it can't render here, the target
+      // renders directly rather than a later intercept.
+      const isRouteMissSource = sourcePathname === ROUTE_MISS_INTERCEPTION_CONTEXT;
 
       for (const entry of interceptLookup) {
         if (interceptionId !== null && entry.interceptionId !== interceptionId) continue;
@@ -436,7 +449,10 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         // would reach the same handler dispatch branch. A handler cannot be a
         // renderable interception source, so let another matching intercept
         // win or reject this interception entirely.
-        if (sourceRoute && isAppRouteHandlerRoute(sourceRoute)) continue;
+        if (sourceRoute && isAppRouteHandlerRoute(sourceRoute)) {
+          if (isRouteMissSource) return null;
+          continue;
+        }
         const matchedSourceParams = concreteSourceRoute
           ? concreteSourceRoute.params
           : sourceRoute
@@ -461,12 +477,30 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           entry.slotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
           sourceRoute?.slots?.[entry.slotKey] === undefined;
         const ownerRoute = routes[entry.sourceRouteIndex];
+        // An unmatched URL's not-found page shows none of the intercepting
+        // route's tree, so it keeps no source segment beneath the intercept:
+        // Next.js's client then shows the intercepting route's own render,
+        // with nothing in the owner's children.
+        const rendersFromRouteMiss =
+          isRouteMissSource && entry.slotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY;
         const rendersWholeInterceptingRoute =
-          sourceRouteLacksSlot &&
+          (sourceRouteLacksSlot || rendersFromRouteMiss) &&
           ownerRoute !== undefined &&
           !isAppRouteHandlerRoute(ownerRoute) &&
           ownerRoute.slots?.[entry.slotKey] !== undefined &&
           isSlotOwnerRoute(ownerRoute.routeSegments, entry.sourcePageSegments);
+        if (rendersFromRouteMiss && !rendersWholeInterceptingRoute) return null;
+        // A sibling intercept whose marker directory has no page of its own
+        // would render from it through a stand-in owner, or the route that
+        // /_not-found happens to match, never the intercepting route Next.js
+        // shows.
+        if (
+          isRouteMissSource &&
+          entry.slotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
+          !entry.ownerIsInterceptingRoute
+        ) {
+          return null;
+        }
         // Among sources without the slot, the first whole intercepting route
         // wins over an earlier intercept that only a rewrite can give a slot.
         if (
@@ -514,6 +548,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         // check on the slot-owner route here would defeat the descendant
         // semantics — fall back to empty params instead.
         if (matchedSourceParams === null && entry.sourceMatchPatternParts === null) {
+          if (isRouteMissSource) return null;
           continue;
         }
         const sourceParams =
@@ -551,6 +586,10 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
               matchRawRequestParts(urlParts),
             ),
           sourceRouteIsConcrete: concreteSourceRoute !== null,
+          rendersRootOwnerFromRouteMiss:
+            isRouteMissSource &&
+            concreteSourceRoute === null &&
+            entry.sourceMatchPatternParts?.length === 0,
           sourceRouteLacksSlot,
           rendersWholeInterceptingRoute,
           sourceRouteIndex: rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex,
@@ -564,8 +603,9 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           authorizationSourceParams: matchedSourceParams ?? createRouteParams(),
         };
         // An intercept whose source has the slot wins over an earlier one
-        // whose source lacks it.
-        if (!sourceRouteLacksSlot) return match;
+        // whose source lacks it. A route miss renders the whole intercepting
+        // route either way.
+        if (!sourceRouteLacksSlot || isRouteMissSource) return match;
         slotlessSourceMatch = match;
       }
       return slotlessSourceMatch;
