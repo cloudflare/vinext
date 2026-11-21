@@ -282,14 +282,15 @@ type PrefetchInterceptionSource = {
 };
 
 /**
- * The page a prefetch originates from: the current URL, whether the committed
- * render is an unmatched URL's not-found page, and the context its entry keeps
- * from the source an intercept was opened from.
+ * The page a prefetch originates from, as its navigations see it: the path
+ * they resolve a context from, whether the committed render is an unmatched
+ * URL's not-found page, and the context its entry keeps from the source an
+ * intercept was opened from.
  */
 export function getPrefetchInterceptionSource(): PrefetchInterceptionSource {
   const routerState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
   return {
-    pathname: window.location.pathname,
+    pathname: routerState?.sourcePathname ?? window.location.pathname,
     routeMiss: routerState?.routeMiss === true,
     sourceInterceptionContext: routerState?.sourceInterceptionContext ?? null,
   };

@@ -156,6 +156,7 @@ import {
   readHistoryStatePreviousNextUrl,
   resolveActiveRoutePaths,
   resolveInterceptionContextFromPreviousNextUrl,
+  resolveNavigationInterceptionSource,
   type AppNavigationPayloadOrigin,
   type AppRouterState,
   type HistoryTraversalIntent,
@@ -476,6 +477,7 @@ let initialPrefetchRouterState: {
   routeId: string;
   routeMiss: boolean;
   sourceInterceptionContext: null;
+  sourcePathname: null;
 } | null = null;
 const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
@@ -1299,7 +1301,9 @@ function getRequestState(
   switch (navigationKind) {
     case "navigate": {
       const currentRouterState = getBrowserRouterState();
-      const currentPreviousNextUrl = currentRouterState.previousNextUrl;
+      const navigationSource = resolveNavigationInterceptionSource(currentRouterState, __basePath);
+      const currentPreviousNextUrl = navigationSource.previousNextUrl;
+      const currentPathname = navigationSource.pathname ?? window.location.pathname;
       if (currentPreviousNextUrl !== null) {
         return {
           interceptionContext: resolveInterceptionContextFromPreviousNextUrl(
@@ -1315,10 +1319,10 @@ function getRequestState(
       // Next.js keeps that tree path as its `Next-Url`.
       const currentSourceHref = currentRenderIsRouteMiss
         ? getRouteMissInterceptionSourceHref(__basePath)
-        : window.location.pathname + window.location.search;
+        : (navigationSource.pathname ?? window.location.pathname + window.location.search);
       const manifestInterceptionContext = resolveManifestNavigationInterceptionContext({
         basePath: __basePath,
-        currentPathname: window.location.pathname,
+        currentPathname,
         currentRenderIsRouteMiss,
         routeManifest: getBrowserRouteManifest(),
         targetPathname,
@@ -1347,8 +1351,10 @@ function getRequestState(
       const middlewareRewriteInterceptionContext =
         resolveMiddlewareRewriteNavigationInterceptionContext({
           basePath: __basePath,
-          currentMatchedPathname: getCurrentMatchedRoutePathname(),
-          currentPathname: window.location.pathname,
+          // The intercepting route's tree path is the only one it navigates from.
+          currentMatchedPathname:
+            navigationSource.pathname === null ? getCurrentMatchedRoutePathname() : null,
+          currentPathname,
           currentRenderIsRouteMiss,
           routeManifest: getBrowserRouteManifest(),
           targetPathname,
@@ -2149,6 +2155,7 @@ function bootstrapHydration(
       routeId: AppElementsWire.readMetadata(elements).routeId,
       routeMiss: isRouteMissRender(elements),
       sourceInterceptionContext: null,
+      sourcePathname: null,
     };
     return elements;
   });
@@ -3323,14 +3330,16 @@ function bootstrapHydration(
         return initialPrefetchRouterState;
       }
       const state = browserNavigationController.getBrowserRouterState();
+      const navigationSource = resolveNavigationInterceptionSource(state, __basePath);
       return {
         pathAndSearch: createSnapshotPathAndSearch(state.navigationSnapshot),
         routeId: state.routeId,
         routeMiss: isRouteMissRender(state.elements),
         sourceInterceptionContext: resolveInterceptionContextFromPreviousNextUrl(
-          state.previousNextUrl,
+          navigationSource.previousNextUrl,
           __basePath,
         ),
+        sourcePathname: navigationSource.pathname,
       };
     },
     navigate: navigateRsc,
