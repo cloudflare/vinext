@@ -1,0 +1,3 @@
+# Codex: only run when invoked explicitly as `$triage`.
+policy:
+  allow_implicit_invocation: false

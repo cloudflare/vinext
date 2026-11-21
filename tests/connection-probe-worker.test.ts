@@ -130,7 +130,7 @@ export default {
           persist: false;
           logLevel: "none";
           watch: false;
-          server: { port: 0 };
+          server: { hostname: string; port: 0 };
           inspector: { port: 0 };
         };
       }): Promise<StartedWorker>;
@@ -142,7 +142,7 @@ export default {
         persist: false,
         logLevel: "none",
         watch: false,
-        server: { port: 0 },
+        server: { hostname: "127.0.0.1", port: 0 },
         inspector: { port: 0 },
       },
     });

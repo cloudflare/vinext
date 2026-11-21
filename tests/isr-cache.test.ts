@@ -23,6 +23,7 @@ import {
   normalizeMountedSlotsHeader,
   triggerBackgroundRegeneration,
   coalesceOnDemandRevalidation,
+  coalesceOnDemandResponse,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
@@ -614,6 +615,37 @@ describe("coalesceOnDemandRevalidation", () => {
   });
 });
 
+describe("coalesceOnDemandResponse", () => {
+  it("releases the body a HEAD revalidation leaves out", async () => {
+    let canceled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        canceled = true;
+      },
+    });
+    const response = await coalesceOnDemandResponse(
+      "coalesce-head-body",
+      "HEAD",
+      async () => new Response(body, { headers: { "x-test": "1" } }),
+    );
+
+    expect(canceled).toBe(true);
+    expect(response?.body).toBeNull();
+    expect(response?.headers.get("x-test")).toBe("1");
+  });
+
+  it.each([204, 205, 304])("copies a bodyless %s response", async (status) => {
+    const response = await coalesceOnDemandResponse(
+      `coalesce-bodyless-${status}`,
+      "GET",
+      async () => new Response(null, { status }),
+    );
+
+    expect(response?.status).toBe(status);
+    expect(response?.body).toBeNull();
+  });
+});
+
 describe("triggerBackgroundRegeneration", () => {
   it("calls the render function", async () => {
     const renderFn = vi.fn().mockResolvedValue(undefined);
@@ -772,7 +804,15 @@ describe("triggerBackgroundRegeneration", () => {
 
       expect(consoleError).toHaveBeenCalled();
       expect(handler).not.toHaveBeenCalled();
+
+      // Not reported, so VINEXT_QUIET still logs it.
+      vi.stubEnv("VINEXT_QUIET", "1");
+      consoleError.mockClear();
+      triggerBackgroundRegeneration("regen-no-ctx-quiet", renderFn);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(consoleError).toHaveBeenCalled();
     } finally {
+      vi.unstubAllEnvs();
       delete globalThis.__VINEXT_onRequestErrorHandler__;
       consoleError.mockRestore();
     }

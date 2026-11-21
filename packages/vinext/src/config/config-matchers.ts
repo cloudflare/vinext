@@ -269,18 +269,15 @@ const REQUEST_HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 
+/**
+ * Strip the fixed request hop-by-hop list. Fields the client nominates in
+ * `Connection` are forwarded, like Next.js: the headers here already include
+ * middleware's request overrides, so honouring the client's list would let it
+ * drop headers middleware set.
+ */
 function stripHopByHopRequestHeaders(headers: Headers): void {
-  const connectionTokens = (headers.get("connection") || "")
-    .split(",")
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean);
-
   for (const header of REQUEST_HOP_BY_HOP_HEADERS) {
     headers.delete(header);
-  }
-
-  for (const token of connectionTokens) {
-    headers.delete(token);
   }
 }
 
@@ -598,7 +595,9 @@ export function matchRedirect(
   // second slash, which is O(n) on the path length but far cheaper than
   // running 63 compiled regexes.
 
-  let localeMatch: RedirectMatch | null = null;
+  // Resolved only once the linear scan below has confirmed no earlier rule
+  // wins: resolving parses the destination, which can throw.
+  let localeMatch: { redirect: NextRedirect; params: Record<string, string> } | null = null;
   let localeMatchIndex = Infinity;
 
   if (index.localeStatic.size > 0) {
@@ -621,10 +620,7 @@ export function matchRedirect(
             : _emptyParams();
         if (!conditionParams) continue;
         // Locale was omitted (the `?` made it optional) — param value is "".
-        localeMatch = resolveRedirectMatch(redirect, {
-          [entry.paramName]: "",
-          ...conditionParams,
-        });
+        localeMatch = { redirect, params: { [entry.paramName]: "", ...conditionParams } };
         localeMatchIndex = entry.originalIndex;
         break; // bucket entries are in insertion order = original order
       }
@@ -651,10 +647,10 @@ export function matchRedirect(
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
               : _emptyParams();
           if (!conditionParams) continue;
-          localeMatch = resolveRedirectMatch(redirect, {
-            [entry.paramName]: localePart,
-            ...conditionParams,
-          });
+          localeMatch = {
+            redirect,
+            params: { [entry.paramName]: localePart, ...conditionParams },
+          };
           localeMatchIndex = entry.originalIndex;
           break; // bucket entries are in insertion order = original order
         }
@@ -681,15 +677,21 @@ export function matchRedirect(
           ? collectConditionParams(redirect.has, redirect.missing, ctx)
           : _emptyParams();
       if (!conditionParams) continue;
-      return resolveRedirectMatch(redirect, {
-        ...params,
-        ...conditionParams,
-      });
+      return resolveRedirectMatch(
+        redirect,
+        {
+          ...params,
+          ...conditionParams,
+        },
+        basePathState,
+      );
     }
   }
 
   // Return the locale-static match if found (no earlier linear rule matched).
-  return localeMatch;
+  return (
+    localeMatch && resolveRedirectMatch(localeMatch.redirect, localeMatch.params, basePathState)
+  );
 }
 
 /**
@@ -787,16 +789,159 @@ function substituteAndSanitizeDestination(
   return sanitizeDestination(substituteDestinationParams(destination, params, kind));
 }
 
+/**
+ * Prepare a redirect destination template as Next.js does before substituting
+ * params. processRoutes (load-custom-routes.ts) prefixes a local destination
+ * with the basePath (a bare `/` becomes the basePath, except on the
+ * default-locale variant), then parseDestination (prepare-destination.ts) parses it
+ * with the URL parser, its param tokens escaped so they survive. This trims
+ * whitespace, resolves dot segments and backslashes, percent-encodes the path
+ * and hash, punycodes the host, drops an empty query or hash, and throws (a
+ * 500) on an invalid absolute URL. Captures are substituted afterwards, so the
+ * parser never sees them. The query text is kept verbatim, as
+ * preserveRedirectDestinationQuery emits it.
+ */
+function parseRedirectDestinationTemplate(
+  redirect: NextRedirect,
+  params: Record<string, string>,
+  { basePath, hadBasePath }: BasePathMatchState,
+): { template: string; literalColon: string; parsed: boolean } {
+  let template = redirect.destination;
+  const isLocal = template.startsWith("/");
+  if (isLocal && basePath && hadBasePath) {
+    template = template === "/" && !redirect.defaultLocaleVariant ? basePath : basePath + template;
+  }
+  template = template.replace(LOCATION_STRIPPED_RE, "");
+
+  // Next.js's param escape marker, lengthened until it cannot collide with
+  // literal destination text. The host parser lowercases it, so it is
+  // restored case-insensitively, as Next.js does.
+  let marker = "__ESC_COLON_";
+  while (template.toLowerCase().includes(marker.toLowerCase())) marker = `_${marker}`;
+  // Stands in for a `\:` escaped colon until params have been substituted, so
+  // it must not occur in the template or in any param value.
+  const paramValues = Object.values(params);
+  let literalColon = "__ESC_LITERAL_COLON_";
+  while (
+    template.includes(literalColon) ||
+    paramValues.some((value) => value.includes(literalColon))
+  ) {
+    literalColon = `_${literalColon}`;
+  }
+  const keys = Object.keys(params).sort((a, b) => b.length - a.length);
+  const keyPattern = keys.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  // A `\`-escaped character is skipped, so `\:name` stays literal.
+  const escaped =
+    keys.length === 0
+      ? template
+      : template.replace(
+          new RegExp(`\\\\.|:(${keyPattern})(?![A-Za-z0-9_])`, "gs"),
+          (match, key: string | undefined) => (key ? `${marker}${key}` : match),
+        );
+  // path-to-regexp's compile consumes a `\` as an escape; an escaped `:` must
+  // also survive substitution.
+  const consumeEscapes = (value: string) =>
+    value.replace(/\\(.)/gs, (_, char: string) => (char === ":" ? literalColon : char));
+  let url: URL;
+  try {
+    url = isLocal ? new URL(`http://n${escaped}`) : new URL(escaped);
+  } catch {
+    // Next.js throws on a template it cannot parse (a relative `about`, a
+    // param in the scheme or port); substituting it as written keeps the
+    // redirect working instead.
+    return { template, literalColon, parsed: false };
+  }
+  const hash = url.hash;
+  url.search = "";
+  url.hash = "";
+
+  const hashIndex = template.indexOf("#");
+  const beforeHash = hashIndex === -1 ? template : template.slice(0, hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+  const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
+  let base = isLocal ? url.pathname : url.href;
+  if (!isLocal && (url.username || url.password)) {
+    // Next.js formatUrl re-encodes the parsed credentials with
+    // encodeURIComponent, restoring only the first `:`, and drops a password
+    // without a username.
+    const auth = url.username
+      ? `${encodeURIComponent(url.password ? `${url.username}:${url.password}` : url.username).replace(/%3A/i, ":")}@`
+      : "";
+    url.username = "";
+    url.password = "";
+    base = url.href.replace("//", `//${auth}`);
+  }
+  // Next.js then compiles the pathname and hash with path-to-regexp, which
+  // consumes a `\` as an escape. A special-scheme pathname has none left: the
+  // URL parser turned them into `/`.
+  if (!isLocal && !SPECIAL_SCHEME_RE.test(url.protocol)) {
+    base = base.slice(0, base.length - url.pathname.length) + consumeEscapes(url.pathname);
+  }
+  // The host parser lowercased any marker and param name in the host, where
+  // Next.js then throws for a param that is not all lowercase; restore the
+  // original name so the param is substituted.
+  const markerRe = new RegExp(`${marker}(${keyPattern})`, "gi");
+  const unescape = (value: string) =>
+    keys.length === 0
+      ? value
+      : value.replace(
+          markerRe,
+          (_, key: string) =>
+            `:${keys.includes(key) ? key : keys.find((k) => k.toLowerCase() === key.toLowerCase())}`,
+        );
+  return {
+    template: `${unescape(base)}${/^\?&*$/.test(query) ? "" : query}${unescape(consumeEscapes(hash))}`,
+    literalColon,
+    parsed: true,
+  };
+}
+
+const SPECIAL_SCHEME_RE = /^(?:https?|wss?|ftp|file):$/;
+
+// The `scheme://authority` of an absolute destination template.
+const REDIRECT_ORIGIN_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*/;
+
+/**
+ * Next.js resolve-routes.ts runs normalizeRepeatedSlashes on the prepared
+ * destination's pathname, after params are substituted: backslashes become
+ * `/` and runs of slashes collapse, so a basePath-prefixed `//target`
+ * becomes `/docs/target`. `destination` starts at the pathname.
+ */
+function normalizeRedirectPathnameSlashes(destination: string): string {
+  return destination.replace(/^[^?#]*/, (pathname) =>
+    pathname.replace(/\\/g, "/").replace(/\/\/+/g, "/"),
+  );
+}
+
 function resolveRedirectMatch(
   redirect: NextRedirect,
   params: Record<string, string>,
+  basePathState: BasePathMatchState,
 ): RedirectMatch {
+  const {
+    template: destination,
+    literalColon,
+    parsed,
+  } = parseRedirectDestinationTemplate(redirect, params, basePathState);
+  // The authority is split off before substitution, so captures in the host
+  // are never mistaken for pathname slashes.
+  const origin = REDIRECT_ORIGIN_RE.exec(destination)?.[0] ?? "";
   return {
-    // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-    destination: substituteAndSanitizeDestination(redirect.destination, params, "redirect"),
+    destination: (!parsed
+      ? substituteAndSanitizeDestination(destination, params, "redirect")
+      : origin
+        ? substituteDestinationParams(origin, params, "redirect") +
+          normalizeRedirectPathnameSlashes(
+            substituteDestinationParams(destination.slice(origin.length), params, "redirect"),
+          )
+        : // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+          normalizeRedirectPathnameSlashes(
+            substituteAndSanitizeDestination(destination, params, "redirect"),
+          )
+    ).replaceAll(literalColon, ":"),
     // Next.js getRedirectStatus (lib/redirect-status.ts).
     statusCode: redirect.statusCode || (redirect.permanent ? 308 : 307),
-    destinationQuery: substituteRedirectDestinationQuery(redirect.destination, params),
+    destinationQuery: substituteRedirectDestinationQuery(destination, params),
   };
 }
 
@@ -998,6 +1143,37 @@ export function preserveRedirectDestinationQuery(
   return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
 }
 
+// The URL parser trims leading and trailing C0 controls and spaces, and removes
+// ASCII tab and newlines anywhere.
+// oxlint-disable-next-line no-control-regex -- C0 controls are what it trims
+const LOCATION_STRIPPED_RE = /^[\u0000- ]+|[\u0000- ]+$|[\t\n\r]/g;
+// Characters a header value cannot carry as text: C0 controls other than tab,
+// DEL, and every non-ASCII code point (the `u` flag keeps astral characters
+// such as emoji whole).
+// oxlint-disable-next-line no-control-regex -- C0 controls are the point
+const LOCATION_UNSAFE_RE = /[\u0000-\u0008\u000A-\u001F\u007F]|[^\u0000-\u007F]/gu;
+// encodeURIComponent throws on a lone UTF-16 surrogate; the URL parser
+// serializes it as U+FFFD. A valid pair matches first and is kept, so any other
+// surrogate match is a lone one. No lookbehind: this module reaches the client,
+// and a bundler cannot lower one for a target without it (Safari below 16.4).
+const SURROGATE_RE = /[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g;
+
+/**
+ * Percent-encode what a config-redirect `Location` header cannot carry.
+ *
+ * The destination template was already parsed like a URL by matchRedirect, so
+ * its literal path, hash and host are encoded as Next.js sends them. Captures
+ * and the destination query are inserted verbatim, like Next.js, so they can
+ * still hold control or non-ASCII characters. Next.js writes those raw and its
+ * Node server answers 500 for a character above U+00FF (the Headers
+ * constructor throws the same way); vinext percent-encodes them instead.
+ */
+export function encodeRedirectLocation(location: string): string {
+  return location
+    .replace(SURROGATE_RE, (surrogate) => (surrogate.length === 2 ? surrogate : "\uFFFD"))
+    .replace(LOCATION_UNSAFE_RE, encodeURIComponent);
+}
+
 function parseExternalRewriteUrl(externalUrl: string): URL | null {
   try {
     return new URL(externalUrl);
@@ -1042,6 +1218,9 @@ export async function proxyExternalRequest(
 
   // Forward the request with appropriate headers
   const headers = new Headers(request.headers);
+  // The inbound Host after any middleware request-header override. Like
+  // Next.js, a Host that middleware dropped forwards as an empty value.
+  const requestHost = headers.get("host") ?? "";
   // Set Host to the external target (required for correct routing)
   headers.set("host", targetUrl.host);
   // Remove headers that should not be forwarded to external services.
@@ -1051,6 +1230,9 @@ export async function proxyExternalRequest(
   // proxy and backend (defense-in-depth against request smuggling,
   // ref: CVE GHSA-ggv3-7p47-pfv8).
   stripHopByHopRequestHeaders(headers);
+  // Like Next.js, replace the client's X-Forwarded-Host with the inbound Host
+  // so the upstream never sees a forwarded host this proxy did not vouch for.
+  headers.set("x-forwarded-host", requestHost);
   // Next.js forwards truthy x-middleware-request-* values that were not
   // consumed by an override list under their literal names. Other middleware
   // protocol controls must not escape to the external origin.
@@ -1398,6 +1580,9 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite | NextH
         out.push({
           ...r,
           source: localizedSource,
+          // Next.js prefixes this variant's destination with the basePath
+          // without collapsing a bare `/`, so it redirects to `/docs/`.
+          ...(type === "redirect" ? { defaultLocaleVariant: true } : {}),
         });
       }
     }

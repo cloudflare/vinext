@@ -201,6 +201,12 @@ export function throwIfStaticGenerationAccessError(): void {
   }
 }
 
+/** Whether `error` is the error a `dynamic = "error"` render throws on a dynamic API read. */
+export function isStaticGenerationAccessError(error: unknown): error is Error {
+  const accessError = getHeadersShimState().headersContext?.accessError;
+  return accessError !== undefined && error === accessError;
+}
+
 // ---------------------------------------------------------------------------
 // Cache scope detection — checks whether we're inside "use cache" or
 // unstable_cache() by reading ALS instances stored on globalThis via Symbols.

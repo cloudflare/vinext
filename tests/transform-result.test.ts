@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   magicStringTransformResult,
   omitUnusedBuildSourcemap,
+  serverReferenceProxyResult,
 } from "../packages/vinext/src/plugins/transform-result.js";
 
 function createResult() {
@@ -25,6 +26,32 @@ describe("magicStringTransformResult", () => {
     expect(result.map).toBe(map);
     expect(generateMap).toHaveBeenCalledOnce();
     expect(generateMap).toHaveBeenCalledWith({ hires: "boundary" });
+  });
+});
+
+describe("serverReferenceProxyResult", () => {
+  it("returns an empty map in builds without generating one", () => {
+    const generateMap = vi.fn(() => ({ version: 3, mappings: "AAAA" }));
+    const output = { toString: () => "export const action = proxy;", generateMap };
+
+    expect(serverReferenceProxyResult({ mode: "build" }, output)).toEqual({
+      code: "export const action = proxy;",
+      map: { mappings: "" },
+    });
+    expect(generateMap).not.toHaveBeenCalled();
+  });
+
+  it("keeps the full map in dev", () => {
+    const generateMap = vi.fn(() => ({ version: 3, sources: ["actions.ts"], mappings: "AAAA" }));
+    const output = { toString: () => "export const action = proxy;", generateMap };
+
+    const result = serverReferenceProxyResult({ mode: "dev" }, output, {
+      hires: "boundary",
+      source: "actions.ts",
+    });
+    expect(result.code).toBe("export const action = proxy;");
+    expect(result.map).toEqual({ version: 3, sources: ["actions.ts"], mappings: "AAAA" });
+    expect(generateMap).toHaveBeenCalledWith({ hires: "boundary", source: "actions.ts" });
   });
 });
 

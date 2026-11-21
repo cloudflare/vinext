@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { revalidateTemplateServer } from "../actions";
 
 export default async function Page({ params }: { params: Promise<{ section: string }> }) {
   const { section } = await params;
@@ -7,6 +8,11 @@ export default async function Page({ params }: { params: Promise<{ section: stri
   return (
     <>
       <p data-testid="server-template-section-page">Section {section}</p>
+      <form action={revalidateTemplateServer}>
+        <button type="submit" data-testid="server-template-revalidate">
+          Revalidate
+        </button>
+      </form>
       <Link
         href={`/nextjs-compat/template-server/${section}?view=details`}
         data-testid="server-template-search-link"

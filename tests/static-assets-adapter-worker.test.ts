@@ -31,9 +31,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-static-assets-worker-"));
     fs.symlinkSync(CLOUDFLARE_NODE_MODULES, path.join(root, "node_modules"), "junction");
     write(root, "package.json", JSON.stringify({ name: "static-assets-cache", type: "module" }));
-    write(
-      root,
-      "wrangler.jsonc",
+    const wranglerConfig = JSON.parse(
       generateWranglerConfig(
         {
           root,
@@ -41,12 +39,15 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
           isAppRouter: true,
           hasISR: false,
           hasMDX: false,
-          nativeModulesToStub: [],
         },
         { cdnCache: "static-assets", dataCache: "none", imageOptimization: "none" },
         "2026-04-01",
       ),
-    );
+    ) as Record<string, unknown>;
+    // The fixture's Cloudflare Vite plugin v1 bundles a miniflare that predates
+    // nodejs_compat being on by default (2026-08-04), so it needs the flag.
+    wranglerConfig.compatibility_flags = ["nodejs_compat"];
+    write(root, "wrangler.jsonc", JSON.stringify(wranglerConfig, null, 2));
     write(
       root,
       "app/layout.tsx",
@@ -106,7 +107,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
           persist: false;
           logLevel: "none";
           watch: false;
-          server: { port: 0 };
+          server: { hostname: string; port: 0 };
           inspector: false;
         };
       }): Promise<{
@@ -127,7 +128,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
         persist: false,
         logLevel: "none",
         watch: false,
-        server: { port: 0 },
+        server: { hostname: "127.0.0.1", port: 0 },
         // The tests never use the inspector. With it on, wrangler probes for a
         // free port near 9229, which parallel test processes can race for, and
         // waits on an inspector WebSocket that never settles `url` if it errors.
@@ -188,11 +189,14 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     const require = createRequire(
       fs.realpathSync(path.join(CLOUDFLARE_NODE_MODULES, "wrangler/package.json")),
     );
-    const { Miniflare } = (await import(pathToFileURL(require.resolve("miniflare")).href)) as {
-      Miniflare: new (options: Record<string, unknown>) => {
+    const { Miniflare, convertV4MiniflareOptions } = (await import(
+      pathToFileURL(require.resolve("miniflare")).href
+    )) as {
+      Miniflare: new (options: unknown) => {
         dispatchFetch(url: string): Promise<Response>;
         dispose(): Promise<void>;
       };
+      convertV4MiniflareOptions: (options: Record<string, unknown>) => unknown;
     };
     const dist = path.join(root, "dist/server");
     const config = JSON.parse(fs.readFileSync(path.join(dist, "wrangler.json"), "utf8")) as {
@@ -211,17 +215,18 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     // Production cancels a request when its client disconnects. Workerd does
     // the same to a service-binding request whose caller has finished, so the
     // front worker abandons the first app request while it awaits the index.
-    const miniflare = new Miniflare({
-      workers: [
-        {
-          name: "front",
-          modules: true,
-          compatibilityDate: config.compatibility_date,
-          serviceBindings: {
-            APP: "app",
-            INDEX_REQUESTED: () => indexRequest.then(() => new Response()),
-          },
-          script: `export default {
+    const miniflare = new Miniflare(
+      convertV4MiniflareOptions({
+        workers: [
+          {
+            name: "front",
+            modules: true,
+            compatibilityDate: config.compatibility_date,
+            serviceBindings: {
+              APP: "app",
+              INDEX_REQUESTED: () => indexRequest.then(() => new Response()),
+            },
+            script: `export default {
   async fetch(request, env) {
     if (new URL(request.url).pathname !== "/abandon") return env.APP.fetch("https://app.local/");
     const app = env.APP.fetch("https://app.local/").then(
@@ -232,33 +237,34 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     return new Response(await Promise.race([indexRequested, app]));
   },
 };`,
-        },
-        {
-          name: "app",
-          compatibilityDate: config.compatibility_date,
-          compatibilityFlags: config.compatibility_flags ?? [],
-          modules: ["index.js", ...modules].map((file) => ({
-            path: file,
-            type: "ESModule",
-            contents: fs.readFileSync(path.join(dist, file), "utf8"),
-          })),
-          serviceBindings: {
-            async ASSETS(request: Request) {
-              const { pathname } = new URL(request.url);
-              if (pathname.endsWith("/static-cache/index.json")) {
-                indexFetches++;
-                indexRequested();
-                await indexReleased;
-              }
-              const file = path.join(root, "dist/client", decodeURIComponent(pathname));
-              return fs.existsSync(file) && fs.statSync(file).isFile()
-                ? new Response(fs.readFileSync(file))
-                : new Response(null, { status: 404 });
+          },
+          {
+            name: "app",
+            compatibilityDate: config.compatibility_date,
+            compatibilityFlags: config.compatibility_flags ?? [],
+            modules: ["index.js", ...modules].map((file) => ({
+              path: file,
+              type: "ESModule",
+              contents: fs.readFileSync(path.join(dist, file), "utf8"),
+            })),
+            serviceBindings: {
+              async ASSETS(request: Request) {
+                const { pathname } = new URL(request.url);
+                if (pathname.endsWith("/static-cache/index.json")) {
+                  indexFetches++;
+                  indexRequested();
+                  await indexReleased;
+                }
+                const file = path.join(root, "dist/client", decodeURIComponent(pathname));
+                return fs.existsSync(file) && fs.statSync(file).isFile()
+                  ? new Response(fs.readFileSync(file))
+                  : new Response(null, { status: 404 });
+              },
             },
           },
-        },
-      ],
-    });
+        ],
+      }),
+    );
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       const abandoned = await miniflare.dispatchFetch("https://front.local/abandon");

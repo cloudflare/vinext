@@ -25,11 +25,21 @@ function stylesheetHrefs(html: string): string[] {
   );
 }
 
+/** A document's modulepreload links, in document order. */
+function modulepreloadTags(html: string): string[] {
+  return html.match(/<link\b[^>]*\brel="modulepreload"[^>]*>/g) ?? [];
+}
+
 /** The hrefs of a document's modulepreload links, sorted. */
 function modulepreloadHrefs(html: string): string[] {
-  return (html.match(/<link\b[^>]*\brel="modulepreload"[^>]*>/g) ?? [])
+  return modulepreloadTags(html)
     .map((tag) => tag.match(/\bhref="([^"]+)"/)![1]!)
     .sort();
+}
+
+/** The modulepreload links without the fixture's CSP nonce. */
+function unnoncedModulepreloads(html: string): string[] {
+  return modulepreloadTags(html).filter((tag) => !tag.includes('nonce="vinext-test-nonce"'));
 }
 
 /** A response's first chunk and its whole body. */
@@ -195,6 +205,136 @@ describe("App Router production SSR route client reference preloads", () => {
     expect(warmStylesheets).toEqual(stylesheets);
   });
 
+  // Issue #3728. Next.js 16 (webpack and Turbopack) links the page's CSS, its
+  // Client Components' included, in the shell of both routes. Another route
+  // (/loading-css/lazy-viewer) imports the viewer through next/dynamic.
+  it.each([
+    ["/loading-css/async-page", false],
+    ["/loading-css/async-loading", true],
+  ])(
+    "links the stylesheet of a page's client component in the shell, under loading.js or not (%s)",
+    async (route, showsFallback) => {
+      const href = cssHref("--loading-css-viewer");
+      for (const label of ["cold", "warm"]) {
+        const { first, html } = await readStream(`${baseUrl}${route}`);
+        expect(html, label).toContain('data-testid="loading-css-viewer"');
+        // Under loading.js the shell flushes before the page renders.
+        expect(first.includes('data-testid="loading-css-fallback"'), label).toBe(showsFallback);
+        expect(first.includes('data-testid="loading-css-viewer"'), label).toBe(!showsFallback);
+        // Not only a late preload, which reveals the content unstyled.
+        const stylesheets = (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).filter(
+          (tag) => tag.includes(`href="${href}"`),
+        );
+        expect(stylesheets, label).toHaveLength(1);
+        expect(stylesheets[0], label).toContain('crossorigin=""');
+        expect(first, label).toContain(stylesheets[0]);
+      }
+    },
+  );
+
+  it("links a page's client component stylesheets in import order, under loading.js", async () => {
+    const firstHref = cssHref("--loading-css-cascade-first");
+    const secondHref = cssHref("--loading-css-cascade-second");
+    expect(firstHref).not.toBe(secondHref);
+    for (const label of ["cold", "warm"]) {
+      const { first, html } = await readStream(`${baseUrl}/loading-css/cascade`);
+      expect(first, label).toContain('data-testid="loading-css-cascade-fallback"');
+      expect(html, label).toContain('data-testid="loading-css-cascade-second"');
+      // The route's not-found boundary preloads Second first; the page
+      // imports it last, so its rule wins.
+      const hrefs = stylesheetHrefs(first);
+      expect(hrefs.indexOf(firstHref), label).toBeGreaterThanOrEqual(0);
+      expect(hrefs.indexOf(secondHref), label).toBeGreaterThan(hrefs.indexOf(firstHref));
+      expect(winningRule(first, ".loading-css-cascade"), label).toBe("second");
+    }
+  });
+
+  it("links no stylesheet of the page or layouts a parent not-found boundary replaces", async () => {
+    const hrefs = [cssHref("--loading-css-missing-layout"), cssHref("--loading-css-missing-page")];
+    for (const label of ["cold", "warm"]) {
+      const response = await fetch(`${baseUrl}/loading-css/missing`);
+      expect(response.status, label).toBe(404);
+      const html = await response.text();
+      expect(html, label).toContain('data-testid="not-found-note"');
+      for (const href of hrefs) expect(html, label).not.toContain(`href="${href}"`);
+    }
+  });
+
+  it("links no stylesheet of a slot page its own not-found boundary replaces", async () => {
+    const mainHref = cssHref("--loading-css-slot-main");
+    const panelHref = cssHref("--loading-css-slot-panel");
+    expect(mainHref).not.toBe(panelHref);
+    for (const label of ["cold", "warm"]) {
+      const response = await fetch(`${baseUrl}/loading-css/slot`);
+      const html = await response.text();
+      expect(html, label).toContain('data-testid="slot-panel-not-found"');
+      expect(html, label).toContain('data-testid="slot-main-note"');
+      // The route's page still renders, and links its stylesheet.
+      expect(stylesheetHrefs(html), label).toContain(mainHref);
+      expect(html, label).not.toContain(`href="${panelHref}"`);
+    }
+  });
+
+  it("links no stylesheet of the route in the error document a shell error sends", async () => {
+    const href = cssHref("--shell-error-note");
+    for (const label of ["cold", "warm"]) {
+      const response = await fetch(`${baseUrl}/shell-error`);
+      expect(response.status, label).toBe(500);
+      const html = await response.text();
+      expect(html, label).toContain("__next_error__");
+      // The page imports the note, but doesn't render it here.
+      expect(html, label).not.toContain(`href="${href}"`);
+    }
+  });
+
+  // The stylesheets a document ends with once hydrated: its own, then those of
+  // each module chunk its Flight data names, which the client reference loader
+  // appends to <head> as React loads the chunk, whether the reference renders
+  // or not (an unrendered boundary's row is in the data too).
+  const hydratedStylesheetHrefs = (html: string): string[] => {
+    const { appClientReferenceChunks } = JSON.parse(
+      fs.readFileSync(
+        path.join(fixtureDir, "dist", "client", "vinext-client-entry-manifest.json"),
+        "utf8",
+      ),
+    ) as { appClientReferenceChunks: { modules: { file: string; css: string[] }[] } };
+    const cssByFile = new Map(appClientReferenceChunks.modules.map(({ file, css }) => [file, css]));
+    const hrefs = stylesheetHrefs(html);
+    for (const match of html.matchAll(/\\?"m\/([^"\\]+\.js)/g)) {
+      for (const css of cssByFile.get(match[1]!) ?? []) {
+        const href = css.startsWith("/") ? css : `/${css}`;
+        if (!hrefs.includes(href)) hrefs.push(href);
+      }
+    }
+    return hrefs;
+  };
+
+  // The page imports a client component it renders only with `?note`; its
+  // not-found boundary renders another, whose global rule has the same
+  // specificity. The page's rule must win once the document hydrates.
+  it("keeps a page's client component rule ahead of its unrendered not-found boundary's", async () => {
+    const files = new Map(clientCssFiles().map(({ href, css }) => [href, css]));
+    for (const [label, query] of [
+      ["cold", ""],
+      ["warm", ""],
+      ["rendered", "?note"],
+    ]) {
+      const response = await fetch(`${baseUrl}/loading-css/grouped${query}`);
+      expect(response.status, label).toBe(200);
+      const html = await response.text();
+      expect(html.includes('data-testid="loading-css-grouped-note"'), label).toBe(query !== "");
+      let winner: string | undefined;
+      for (const href of hydratedStylesheetHrefs(html)) {
+        for (const match of (files.get(href) ?? "").matchAll(
+          /\.loading-css-grouped\s*\{[^}]*--css-group-winner:\s*(\w+)/g,
+        )) {
+          winner = match[1];
+        }
+      }
+      expect(winner, label).toBe("page");
+    }
+  });
+
   it("streams a client component that awaits at its top level, as Next.js does", async () => {
     const read = () => readStream(`${baseUrl}/streamed`);
 
@@ -214,6 +354,8 @@ describe("App Router production SSR route client reference preloads", () => {
     const panelJs = clientFileHref(".js", "streamed-panel");
     expect(modulepreloadHrefs(cold.first)).toContain(panelJs);
     expect(modulepreloadHrefs(cold.first)).toEqual(modulepreloadHrefs(warm.first));
+    expect(unnoncedModulepreloads(cold.html)).toEqual([]);
+    expect(unnoncedModulepreloads(warm.html)).toEqual([]);
     const clientDir = path.join(fixtureDir, "dist", "client");
     const cssFile = (rule: string) =>
       fs
@@ -340,5 +482,151 @@ describe("App Router production SSR route client reference preloads", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toContain('data-testid="shared-note"');
     expect((globalThis as SharedEvaluationMarker).__vinextSharedClientEvaluated).toBe(true);
+  });
+
+  it("links client components' stylesheets as anonymous when crossOrigin is unset", async () => {
+    // Vite's preload helper links a lazily imported component's stylesheet as
+    // anonymous, which would fail the CORS check on a no-cors copy the browser
+    // cached.
+    //
+    // The shell links /streamed's panel stylesheet ahead of the badge's, and
+    // /streamed/also's in the head; the rest link as the render reads them.
+    for (const route of ["/", "/streamed", "/streamed/also", "/layout-streamed/nested"]) {
+      const html = await (await fetch(`${baseUrl}${route}`)).text();
+      const stylesheets = (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).filter(
+        (tag) => tag.includes('data-precedence="vite-rsc/client-reference"'),
+      );
+      expect(stylesheets.length, route).toBeGreaterThan(0);
+      for (const tag of stylesheets) expect(tag, route).toContain('crossorigin=""');
+    }
+  });
+
+  it("hints every script once, with the CSP nonce", async () => {
+    // plugin-rsc hints a client component's scripts without the nonce, which
+    // the fixture's `script-src 'nonce-…'` policy blocks.
+    for (const route of [
+      "/",
+      "/dynamic",
+      "/streamed/also",
+      "/layout-streamed/nested",
+      "/shared/one",
+    ]) {
+      for (const pass of ["first", "second"]) {
+        const html = await (await fetch(`${baseUrl}${route}`)).text();
+        const hrefs = modulepreloadHrefs(html);
+        expect(hrefs.length, `${route} (${pass})`).toBeGreaterThan(1);
+        expect(unnoncedModulepreloads(html), `${route} (${pass})`).toEqual([]);
+        // next/dynamic links the widget's chunk again, as plugin-rsc hints it.
+        if (route !== "/dynamic")
+          expect(new Set(hrefs).size, `${route} (${pass})`).toBe(hrefs.length);
+      }
+    }
+  });
+
+  it("preloads the RouteManifest chunk the browser entry imports, at low priority", async () => {
+    // A dynamic import() is fetched at high priority; the preload keeps the
+    // browser entry's import of the manifest off the document's bandwidth.
+    const href = clientFileHref(".js", '"routes":[');
+    for (const route of ["/", "/streamed/also"]) {
+      const html = await (await fetch(`${baseUrl}${route}`)).text();
+      const preload = modulepreloadTags(html).filter((tag) => tag.includes(`href="${href}"`));
+      expect(preload, route).toHaveLength(1);
+      expect(preload[0], route).toContain('fetchPriority="low"');
+    }
+  });
+
+  it("names each client reference's chunks in its Flight row, not in the browser entry", async () => {
+    // The browser entry once held a loader per client component in the app
+    // (#4179): every page downloaded them all, and an added component changed
+    // the entry's hash. As in Next.js, each reference's Flight row names the
+    // chunks it loads instead.
+    const clientDir = path.join(fixtureDir, "dist", "client");
+    const { appBrowserEntry, appClientReferenceChunks } = JSON.parse(
+      fs.readFileSync(path.join(clientDir, "vinext-client-entry-manifest.json"), "utf8"),
+    ) as {
+      appBrowserEntry: string;
+      appClientReferenceChunks?: {
+        references: Record<string, number>;
+        modules: { file: string }[];
+      };
+    };
+    expect(appClientReferenceChunks).toBeDefined();
+    const moduleFiles = appClientReferenceChunks!.modules.map((module) => module.file);
+    expect(moduleFiles.length).toBeGreaterThan(1);
+    const buildManifest = JSON.parse(
+      fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf8"),
+    ) as Record<string, { file: string; imports?: string[] }>;
+    const queue = Object.keys(buildManifest).filter(
+      (key) => buildManifest[key]!.file === appBrowserEntry,
+    );
+    expect(queue).toHaveLength(1);
+    const eager = new Set<string>();
+    for (let key = queue.shift(); key !== undefined; key = queue.shift()) {
+      const chunk = buildManifest[key]!;
+      if (eager.has(chunk.file)) continue;
+      eager.add(chunk.file);
+      queue.push(...(chunk.imports ?? []));
+    }
+    // plugin-rsc's reference loaders: `"6a092ae781cf":async()=>{...}`.
+    // The minifier drops the quotes of keys that start with a letter.
+    const loader = /[{,]"?[0-9a-f]{12}"?:async\(\)=>/;
+    for (const file of eager) {
+      expect(moduleFiles, file).not.toContain(file);
+      const code = fs.readFileSync(path.join(clientDir, file), "utf8");
+      expect(code, file).not.toMatch(loader);
+      for (const moduleFile of moduleFiles) {
+        expect(code, file).not.toContain(path.posix.basename(moduleFile));
+      }
+    }
+
+    // The document's Flight data names the module chunk of each reference the
+    // page renders, which SSR modulepreloads.
+    for (const route of ["/", "/streamed/also"]) {
+      const html = await (await fetch(`${baseUrl}${route}`)).text();
+      expect(html, route).not.toContain("__VINEXT_CLIENT_REFERENCE_REGISTRY__");
+      const named = [...html.matchAll(/\\?"m\/([^"\\]+\.js)/g)].map((match) => match[1]!);
+      expect(named.length, route).toBeGreaterThan(0);
+      const preloads = modulepreloadHrefs(html);
+      for (const file of named) {
+        expect(moduleFiles, route).toContain(file);
+        expect(preloads, route).toContain(`/${file}`);
+      }
+    }
+  });
+
+  it("loads every module script at low priority, like Next.js's async scripts", async () => {
+    // Browsers fetch module scripts at high priority unless told otherwise.
+    // The shell-error document is built by hand, without React's hints.
+    for (const route of ["/", "/dynamic", "/streamed/also", "/shared/one", "/shell-error"]) {
+      const html = await (await fetch(`${baseUrl}${route}`)).text();
+      const lowPreloads = new Set(
+        modulepreloadTags(html)
+          .filter((tag) => tag.includes('fetchPriority="low"'))
+          .map((tag) => tag.match(/\bhref="([^"]+)"/)![1]!),
+      );
+      const scripts = (html.match(/<script\b[^>]*>/gi) ?? []).filter(
+        (tag) => tag.includes('type="module"') && tag.includes(" src="),
+      );
+      if (route === "/shell-error") {
+        // Only the bootstrap module script.
+        expect(html, route).toContain("__next_error__");
+        expect(scripts.length, route).toBe(1);
+      } else {
+        // React's bootstrap script and the client entry's preinitialized chunks.
+        expect(scripts.length, route).toBeGreaterThan(1);
+      }
+      for (const tag of scripts) {
+        const src = tag.match(/\bsrc="([^"]+)"/)![1]!;
+        // React's bootstrap module script reuses its low-priority preload.
+        expect(
+          tag.includes('fetchPriority="low"') || lowPreloads.has(src),
+          `${route}: ${tag}`,
+        ).toBe(true);
+      }
+      expect(
+        modulepreloadTags(html).filter((tag) => !tag.includes('fetchPriority="low"')),
+        route,
+      ).toEqual([]);
+    }
   });
 });

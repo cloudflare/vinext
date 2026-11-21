@@ -2,8 +2,8 @@ import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
-// A dynamic route with no loading boundary and no parallel slots: its
-// automatic prefetch renders the whole page so a click can reuse it.
+// A dynamic route with no loading boundary and no parallel slots: like Next.js,
+// its automatic prefetch fetches only the route shell, never the page.
 export default async function ClientCacheFullRenderTarget({
   params,
 }: {

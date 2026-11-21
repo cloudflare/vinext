@@ -100,6 +100,19 @@ export function createServerActionNotFoundResponse(): Response {
   });
 }
 
+/**
+ * Log the unknown action id, clear the request context, and build the 404.
+ * Shared by action forwarding, action execution, and the RSC handler.
+ */
+export function respondServerActionNotFound(
+  actionId: string | null,
+  clearRequestContext: () => void,
+): Response {
+  console.warn(getServerActionNotFoundMessage(actionId));
+  clearRequestContext();
+  return createServerActionNotFoundResponse();
+}
+
 function isServerActionNotFoundResponse(response: Pick<Response, "headers">): boolean {
   return response.headers.get(SERVER_ACTION_NOT_FOUND_HEADER) === "1";
 }

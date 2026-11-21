@@ -30,6 +30,7 @@ function deriveExecutionContext(
     ...(base?.trustedRevalidateOrigin === undefined
       ? {}
       : { trustedRevalidateOrigin: base.trustedRevalidateOrigin }),
+    ...(base?.middlewareOrigin === undefined ? {} : { middlewareOrigin: base.middlewareOrigin }),
     dispatchPagesRevalidate,
     isInternalPagesRevalidation,
   };

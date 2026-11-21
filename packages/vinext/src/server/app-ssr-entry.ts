@@ -1,13 +1,23 @@
 /// <reference types="@vitejs/plugin-rsc/types" />
 
 import "./server-globals.js";
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
-import { preinitModule } from "react-dom";
+import {
+  preinitModule,
+  preloadModule,
+  type PreinitModuleOptions,
+  type PreloadModuleOptions,
+} from "react-dom";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
-import type { RenderToReadableStreamOptions } from "react-dom/server";
-import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
+// Resolved per environment: React's Node build on Node and the edge build under
+// workerd/edge-light, matching how Next.js loads `react-dom/server`.
+import {
+  renderToReadableStream,
+  renderToStaticMarkup,
+  type RenderToReadableStreamOptions,
+} from "react-dom/server";
 import clientReferences, { routeClientReferences } from "virtual:vite-rsc/client-references";
 import type { NavigationContext } from "vinext/shims/navigation-server";
 import {
@@ -25,8 +35,14 @@ import { createClientPageSsrSearchParamsSource } from "./app-page-search-params-
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isOpenRedirectShaped, repeatedSlashRedirectResponse } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { isSrvxAbsoluteFormTarget } from "./srvx-request-target.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { withAppRouterTree } from "vinext/shims/app-router-tree-context";
+import {
+  CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL,
+  withCaughtNotFoundBoundaries,
+  type CaughtNotFoundBoundaries,
+} from "vinext/shims/caught-not-found-boundaries";
 import {
   BeforeInteractiveContext,
   type BeforeInteractiveInlineScript,
@@ -49,6 +65,7 @@ import {
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
 import type { AppSsrRenderResult } from "./app-page-stream.js";
+import { trackQueuedFlightRuns } from "./queued-flight-runs.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
@@ -67,17 +84,21 @@ import {
 } from "./app-client-reference-preloader.js";
 import {
   createStreamedClientReferences,
+  resetStreamedClientReferences,
   renderStreamedStylesheets,
   runWithStreamedClientReferences,
-  wrapClientReferenceRequireForStreaming,
+  wrapClientReferenceRequire,
 } from "./app-streamed-client-references.js";
 import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
+import { ssrServerConsumerManifest } from "./app-client-reference-manifest.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 import { createRenderStreamCancellation, isAppRenderAbortError } from "./app-render-abort-error.js";
 import { getNextErrorDigest } from "./next-error-digest.js";
+import { isBailoutToCSRError, isDynamicServerError } from "vinext/shims/navigation-errors";
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
 // @ts-expect-error — resolved by the vinext Vite plugin in SSR environments.
 import pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
@@ -101,6 +122,14 @@ type SsrRenderOptions = RenderToReadableStreamOptions & {
  */
 const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
 
+/**
+ * plugin-rsc's SSR `createFromReadableStream` spreads these over its own
+ * options, whose type leaves out the consumer manifest.
+ */
+const SSR_FLIGHT_OPTIONS: NonNullable<Parameters<typeof createFromReadableStream>[1]> & {
+  serverConsumerManifest: typeof ssrServerConsumerManifest;
+} = { serverConsumerManifest: ssrServerConsumerManifest };
+
 export type FontPreload = {
   href: string;
   type: string;
@@ -112,17 +141,7 @@ export type FontData = {
   preloads?: FontPreload[];
 };
 
-type StaticPrerender = typeof import("react-dom/static.edge").prerender;
-
-function isReactDevelopmentRuntime(): boolean {
-  if (process.env.NODE_ENV === "production") {
-    return false;
-  }
-  if (process.env.NODE_ENV === "development") {
-    return true;
-  }
-  return Function.prototype.toString.call(createReactElement).includes("getOwner");
-}
+type StaticPrerender = typeof import("react-dom/static").prerender;
 
 function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPrerender } {
   return (
@@ -134,53 +153,13 @@ function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPr
 }
 
 async function loadStaticPrerender(): Promise<StaticPrerender> {
-  // Prefer the stable ESM entry in all environments. Future React dev builds
-  // may export prerender() here, so this is the first path we attempt.
-  const staticRenderer: unknown = await import("react-dom/static.edge");
+  // Every react-dom/static build exports prerender() from React 19.3, the
+  // minimum vinext supports.
+  const staticRenderer: unknown = await import("react-dom/static");
   if (isStaticPrerenderModule(staticRenderer)) {
     return staticRenderer.prerender;
   }
-
-  // Fallback: React development builds historically did not export prerender()
-  // from the ESM entry, so reach into the CJS artifact. The path is fragile
-  // because it depends on React's internal file layout, but it is only used
-  // when the stable ESM entry does not provide prerender().
-  if (isReactDevelopmentRuntime()) {
-    try {
-      const [{ createRequire }, path] = await Promise.all([
-        import("node:module"),
-        // Native node:path is fine here: the resolved path is fed straight into
-        // a dynamic import() and never compared against pathslash-normalized
-        // ids, so forward-slash canonicalization buys nothing.
-        // oxlint-disable-next-line no-restricted-imports
-        import("node:path"),
-      ]);
-      const require = createRequire(import.meta.url);
-      const reactDomPackageJson = require.resolve("react-dom/package.json");
-      const reactDomDir = path.dirname(reactDomPackageJson);
-      const devRendererPath = path.join(reactDomDir, "cjs/react-dom-server.edge.development.js");
-      const devRenderer: unknown = await import(/* @vite-ignore */ devRendererPath);
-      if (isStaticPrerenderModule(devRenderer)) {
-        return devRenderer.prerender;
-      }
-      // Node.js ESM import of a CJS module wraps the exports in `default`.
-      const devRendererDefault =
-        typeof devRenderer === "object" &&
-        devRenderer !== null &&
-        "default" in devRenderer &&
-        devRenderer.default;
-      if (isStaticPrerenderModule(devRendererDefault)) {
-        return devRendererDefault.prerender;
-      }
-      throw new Error("react-dom development renderer did not expose prerender().");
-    } catch (error) {
-      throw new Error("[vinext] Failed to load React static development renderer.", {
-        cause: error,
-      });
-    }
-  }
-
-  throw new Error("[vinext] react-dom/static.edge did not expose prerender().");
+  throw new Error("[vinext] react-dom/static did not expose prerender().");
 }
 
 function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
@@ -193,25 +172,38 @@ function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
   });
 }
 
-function buildBootstrapModuleScript(bootstrapModuleUrl?: string, nonce?: string): string {
+function buildBootstrapModuleScript(
+  bootstrapModuleUrl?: string,
+  nonce?: string,
+  crossOrigin?: string,
+): string {
   if (!bootstrapModuleUrl) return "";
+  // As React's bootstrapModules emits it.
+  const crossOriginAttribute =
+    crossOrigin === undefined
+      ? ""
+      : ` crossorigin="${crossOrigin === "use-credentials" ? "use-credentials" : ""}"`;
   return (
     `<script type="module"${createNonceAttribute(nonce)} src="` +
     escapeHtmlAttr(bootstrapModuleUrl) +
-    '" id="_R_" async=""></script>'
+    `"${crossOriginAttribute} id="_R_" async="" fetchPriority="low"></script>`
   );
 }
 
 function renderSsrErrorDocumentShell(
   bootstrapModuleUrl?: string,
   nonce?: string,
+  crossOrigin?: string,
 ): ReadableStream<Uint8Array> {
   const html = renderToStaticMarkup(
     createReactElement(DefaultGlobalError, {
       error: null,
     }),
-  ).replace("<style>", '<style data-vinext-error-shell-style="">');
-  const bootstrapScript = buildBootstrapModuleScript(bootstrapModuleUrl, nonce);
+  )
+    // Like Next.js's NonIndex, which the error document's 500 status turns on.
+    .replace("<head>", '<head><meta name="robots" content="noindex"/>')
+    .replace("<style>", '<style data-vinext-error-shell-style="">');
+  const bootstrapScript = buildBootstrapModuleScript(bootstrapModuleUrl, nonce, crossOrigin);
   if (!bootstrapScript) {
     return createUtf8Stream(`<!DOCTYPE html>${html}`);
   }
@@ -226,13 +218,17 @@ function renderSsrErrorDocumentShell(
   );
 }
 
-// Streamed references load through a wrapped loader, which must see every
-// load from the first. The build fills `async` in as chunks render; should it
-// ever not (a plugin rewrote the placeholder first), nothing streams.
-if (Array.isArray(routeClientReferences?.async) && routeClientReferences.async.length > 0) {
-  const { async, references } = routeClientReferences;
-  wrapClientReferenceRequireForStreaming(
-    new Set(async.map((index) => references[index]!)),
+// Client references load through a wrapped loader, which must see every load
+// from the first. It hints their scripts with the render's nonce, and streams
+// the references whose modules evaluate asynchronously. The build fills
+// `async` in as chunks render; should it ever not (a plugin rewrote the
+// placeholder first), nothing streams. Development hints no scripts.
+if (process.env.NODE_ENV === "production") {
+  const async = routeClientReferences?.async;
+  wrapClientReferenceRequire(
+    new Set(
+      Array.isArray(async) ? async.map((index) => routeClientReferences!.references[index]!) : [],
+    ),
     (id) => (clientReferences as Record<string, (() => Promise<unknown>) | undefined>)[id],
   );
 }
@@ -341,12 +337,12 @@ function extractBootstrapModuleUrl(bootstrapScriptContent?: string): string | un
 
 function buildModulePreloadHtml(bootstrapModuleUrl?: string, nonce?: string): string {
   if (!bootstrapModuleUrl) return "";
-  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(bootstrapModuleUrl)}" crossorigin="${pagesClientAssets.crossOrigin ?? ""}" />\n`;
+  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(bootstrapModuleUrl)}" crossorigin="${pagesClientAssets.crossOrigin ?? ""}" fetchPriority="low" />\n`;
 }
 
 function buildHeadInjectionHtml(
   navContext: NavigationContext,
-  bootstrapModuleUrl: string | undefined,
+  bootstrapPreloadUrl: string | undefined,
   formState: ReactFormState | null,
   insertedHTML: string,
   fontHTML: string,
@@ -384,7 +380,7 @@ function buildHeadInjectionHtml(
     rscMetadataScript +
     rscCompatibilityScript +
     formStateScript +
-    buildModulePreloadHtml(bootstrapModuleUrl, scriptNonce) +
+    buildModulePreloadHtml(bootstrapPreloadUrl, scriptNonce) +
     insertedHTML +
     fontHTML
   );
@@ -414,12 +410,20 @@ export async function handleSsr(
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
     pprFallbackShellSignal?: AbortSignal;
+    /** Aborts a streaming render whose document is given up. */
+    signal?: AbortSignal;
     /**
      * Pattern of the route this render shows, whose client references load
      * before it starts, or null for a render without a route (a route-miss
      * 404). Omitted, every client reference loads first.
      */
     preloadRoutePattern?: string | null;
+    /**
+     * A boundary's document, which replaces the route's page and the layouts
+     * below the boundary, so it doesn't link the stylesheets of the route's
+     * rendered files (`RouteClientReferenceSet.linked`), as Next.js doesn't.
+     */
+    isBoundaryRender?: boolean;
     formState?: ReactFormState | null;
     basePath?: string;
     /**
@@ -459,6 +463,18 @@ export async function handleSsr(
      */
     isCacheCandidate?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
+    /**
+     * Whether the RSC render threw the given shell error. As in Next.js, in
+     * dev the error document carries only an error that the HTML render alone
+     * threw, for the overlay: the browser reports the others itself.
+     */
+    isServerComponentError?: (error: unknown) => boolean;
+    /**
+     * The parallel slot not-found boundaries that catch the error that
+     * rejected the shell, or null when none catches it. The document then
+     * renders again from the same payload with them caught.
+     */
+    resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
     dynamicStaleTimeSeconds?: number;
     getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   },
@@ -502,10 +518,18 @@ export async function handleSsr(
     // shows the same document as a warm one, except for those whose modules
     // evaluate asynchronously, which it streams like Next.js. A PPR fallback
     // shell aborts on the next tick, so it loads every reference first.
-    const routeReferences = options?.pprFallbackShellSignal
+    const resolvedReferences = options?.pprFallbackShellSignal
       ? undefined
       : resolveRouteClientReferences(routeClientReferences, options?.preloadRoutePattern);
-    const streamedReferences = createStreamedClientReferences(routeReferences);
+    const routeReferences =
+      resolvedReferences && options?.isBoundaryRender
+        ? { ...resolvedReferences, linked: [] }
+        : resolvedReferences;
+    const streamedReferences = createStreamedClientReferences(
+      routeReferences,
+      options?.scriptNonce,
+      assetCrossOrigin,
+    );
     await clientReferencePreloader.preload(
       routeReferences?.references,
       streamedReferences?.streamed,
@@ -557,15 +581,51 @@ export async function handleSsr(
         let flightRoot: PromiseLike<AppWireElements> | null = null;
 
         function VinextFlightRoot(): ReactNode {
+          // Browsers fetch module scripts at high priority, ahead of the
+          // document's own content. Next.js loads these chunks with classic
+          // async scripts, which they fetch at low priority, and React
+          // already preloads the bootstrap module at low priority.
           for (const moduleUrl of pagesClientAssets.appBootstrapPreinitModules ?? []) {
+            // React forwards fetchPriority; its types leave it out.
             preinitModule(moduleUrl, {
               as: "script",
               crossOrigin: assetCrossOrigin,
+              fetchPriority: "low",
               nonce: options?.scriptNonce,
-            });
+            } as PreinitModuleOptions);
+          }
+          // Evaluating these starts hydration, which needs the whole shell, so
+          // only React's bootstrap script at the end of the shell may run them.
+          for (const moduleUrl of pagesClientAssets.appBootstrapPreloadModules ?? []) {
+            // React forwards fetchPriority; its types leave it out.
+            preloadModule(moduleUrl, {
+              as: "script",
+              crossOrigin: assetCrossOrigin,
+              fetchPriority: "low",
+              nonce: options?.scriptNonce,
+            } as PreloadModuleOptions);
+          }
+          // The browser entry imports the RouteManifest chunk as it boots.
+          // Browsers fetch a dynamic import() at high priority, ahead of the
+          // document's own content; the import reuses this low-priority
+          // preload instead.
+          if (pagesClientAssets.appRouteManifestModule) {
+            // React forwards fetchPriority; its types leave it out.
+            preloadModule(pagesClientAssets.appRouteManifestModule, {
+              as: "script",
+              crossOrigin: assetCrossOrigin,
+              fetchPriority: "low",
+              nonce: options?.scriptNonce,
+            } as PreloadModuleOptions);
           }
           if (!flightRoot) {
-            flightRoot = createFromReadableStream<AppWireElements>(ssrStream);
+            // The root renders once the Flight client has decoded every chunk
+            // queued with the one that completed it, so the tree it renders
+            // doesn't stop at a chunk of the same flush (#4770).
+            const flight = trackQueuedFlightRuns(ssrStream);
+            flightRoot = flight.afterCurrentRun(
+              createFromReadableStream<AppWireElements>(flight.stream, SSR_FLIGHT_OPTIONS),
+            );
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
@@ -713,6 +773,7 @@ export async function handleSsr(
               }
             : undefined,
           maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
+          signal: options?.signal,
           onError(error: unknown) {
             if (pprFallbackShellSignal && isPprFallbackShellAbortError(error)) {
               return undefined;
@@ -744,20 +805,76 @@ export async function handleSsr(
         let htmlStream: ReadableStream<Uint8Array>;
         let renderComplete = Promise.resolve();
         let shellErrorRecovered = false;
+        let ssrOnlyShellError: unknown;
+        let caughtShellError: unknown;
+        let caughtBoundaries: CaughtNotFoundBoundaries | null = null;
         let shouldDelayInitialHtmlPull = false;
+        // Fizz has no error boundaries, so a parallel slot's notFound() rejects
+        // the shell. The root to render the document again with, from the same
+        // payload, with the slot boundaries that catch it on the client
+        // rendering their fallback, or null when any copy isn't caught in its
+        // slot. No server component runs again.
+        const prepareCaughtNotFoundRoot = (error: unknown): ReactElement | null => {
+          const caughtNotFoundBoundaries =
+            options?.resolveCaughtNotFoundBoundaries?.(error) ?? null;
+          if (!caughtNotFoundBoundaries || caughtNotFoundBoundaries.length === 0) return null;
+          // Decode the payload again inside this render, so that it hints the
+          // client references' stylesheets and modules to this document, like
+          // the render it replaces. A fallback shell's stays open, as its SSR
+          // stream does, so the references its aborted prerender omitted stay
+          // suspended. Without the payload's bytes, the shell's error goes on
+          // to the fallback above the slot's layout.
+          const replayedRscStream = rscEmbed.replay({
+            keepOpen: pprFallbackShellSignal !== undefined,
+          });
+          if (!replayedRscStream) return null;
+          ssrStream = replayedRscStream;
+          flightRoot = null;
+          beforeInteractiveInlineScripts.length = 0;
+          clearServerInsertedHTML();
+          // The caught boundaries replace their slots' files, which the
+          // route's linked stylesheets include. Next.js sends an error shell
+          // without stylesheets here, so link only what this render reads.
+          resetStreamedClientReferences(
+            streamedReferences,
+            routeReferences && { ...routeReferences, linked: [] },
+          );
+          const boundaries: CaughtNotFoundBoundaries = {
+            ids: new Set(caughtNotFoundBoundaries),
+            rendered: new Set(),
+          };
+          caughtBoundaries = boundaries;
+          return withCaughtNotFoundBoundaries(boundaries, ssrRoot);
+        };
         if (pprFallbackShellSignal) {
           const prerender = await loadStaticPrerender();
-          const htmlAbortController = new AbortController();
-          const pendingHtml = prerender(ssrRoot, {
-            ...renderOptions,
-            signal: htmlAbortController.signal,
-          });
-          // Known limitation: unlike Next.js, nothing waits for modules that are
-          // still loading. A next/dynamic() without `loading` whose import is
-          // pending here has no Suspense boundary of its own, so it suspends to
-          // the nearest one; with no loading.js above it, the shell is empty.
-          setTimeout(() => htmlAbortController.abort(), 0);
-          htmlStream = (await pendingHtml).prelude;
+          const prerenderFallbackShell = async (
+            root: ReactElement,
+          ): Promise<ReadableStream<Uint8Array>> => {
+            const htmlAbortController = new AbortController();
+            const pendingHtml = runWithStreamedClientReferences(streamedReferences, () =>
+              prerender(root, {
+                ...renderOptions,
+                signal: htmlAbortController.signal,
+              }),
+            );
+            // Known limitation: unlike Next.js, nothing waits for modules that
+            // are still loading. A next/dynamic() without `loading` whose import
+            // is pending here has no Suspense boundary of its own, so it
+            // suspends to the nearest one; with no loading.js above it, the
+            // shell is empty.
+            setTimeout(() => htmlAbortController.abort(), 0);
+            return (await pendingHtml).prelude;
+          };
+          try {
+            htmlStream = await prerenderFallbackShell(ssrRoot);
+          } catch (error) {
+            const caughtRoot = prepareCaughtNotFoundRoot(error);
+            if (!caughtRoot) throw error;
+            // A slot's not-found boundary that throws replaces the 404.
+            htmlStream = await prerenderFallbackShell(caughtRoot);
+            caughtShellError = error;
+          }
         } else {
           let streamingHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
           try {
@@ -777,15 +894,49 @@ export async function handleSsr(
             htmlStream = streamingHtmlStream;
           } catch (error) {
             void streamingHtmlStream?.cancel().catch(() => {});
-            if (
+            const caughtRoot = prepareCaughtNotFoundRoot(error);
+            if (caughtRoot) {
+              let caughtHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
+              try {
+                caughtHtmlStream = await runWithStreamedClientReferences(streamedReferences, () =>
+                  renderToReadableStream(caughtRoot, renderOptions),
+                );
+                if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
+              } catch (caughtRenderError) {
+                // A slot's not-found boundary that throws replaces the 404.
+                void caughtHtmlStream?.cancel().catch(() => {});
+                throw caughtRenderError;
+              }
+              renderComplete = caughtHtmlStream.allReady;
+              shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
+              caughtShellError = error;
+              htmlStream = caughtHtmlStream;
+            } else if (
               options?.fallbackToErrorDocumentOnShellError !== true ||
-              options?.waitForAllReady === true ||
-              typeof (error as { digest?: unknown } | null)?.digest === "string"
+              isNavigationSignalError(error) ||
+              isBailoutToCSRError(error) ||
+              isDynamicServerError(error)
             ) {
               throw error;
+            } else {
+              // Like Next.js, any other error answers with the error document,
+              // carrying the payload this render already produced. The browser
+              // renders that payload, and the error boundary it carries catches
+              // the error, so no server component runs, or reports, again.
+              // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx (getErrorRSCPayload)
+              shellErrorRecovered = true;
+              // The error document shows none of the route's files, so it
+              // links none of their stylesheets, as Next.js's doesn't.
+              streamedReferences.unlinked = streamedReferences.unlinked.filter((id) =>
+                streamedReferences.streamed.has(id),
+              );
+              if (options?.isServerComponentError?.(error) !== true) ssrOnlyShellError = error;
+              htmlStream = renderSsrErrorDocumentShell(
+                bootstrapModuleUrl,
+                options?.scriptNonce,
+                assetCrossOrigin,
+              );
             }
-            shellErrorRecovered = true;
-            htmlStream = renderSsrErrorDocumentShell(bootstrapModuleUrl, options?.scriptNonce);
           }
         }
 
@@ -836,7 +987,7 @@ export async function handleSsr(
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
           const errorMetaHTML = errorMetaRenderer.flush();
           const initialDevServerErrorHTML = createInitialDevServerErrorScript(
-            options?.initialDevServerError,
+            options?.initialDevServerError ?? ssrOnlyShellError,
             options?.scriptNonce,
           );
           if (didInjectHeadHTML) return insertedHTML + errorMetaHTML + getRenderedSearchHTML();
@@ -855,10 +1006,17 @@ export async function handleSsr(
             hidesQuery
               ? { ...ssrNavigationContext, searchParams: new URLSearchParams() }
               : ssrNavigationContext,
-            bootstrapModuleUrl,
+            // React preloads the bootstrap module of a document it renders.
+            shellErrorRecovered ? bootstrapModuleUrl : undefined,
             options?.formState ?? null,
             insertedHTML +
               errorMetaHTML +
+              (caughtBoundaries === null
+                ? ""
+                : createInlineScriptTag(
+                    `self.${CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL}=${safeJsonStringify([...caughtBoundaries.rendered])}`,
+                    options?.scriptNonce,
+                  )) +
               getTraceMetaHTML() +
               initialDevServerErrorHTML +
               // The transform inlines Fizz's stylesheet links before it adds
@@ -922,6 +1080,7 @@ export async function handleSsr(
           renderComplete,
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
           shellErrorRecovered,
+          ...(caughtShellError === undefined ? {} : { caughtShellError }),
           linkHeader: reactLinkHeader,
         };
       } catch (error) {
@@ -934,6 +1093,9 @@ export async function handleSsr(
 
 export default {
   async fetch(request: Request): Promise<Response> {
+    // Nitro's Node server takes request.url's origin from an absolute-form
+    // request target, which `vinext start` 404s before routing.
+    if (isSrvxAbsoluteFormTarget(request)) return notFoundResponse();
     const url = new URL(request.url);
     // Redirect repeated slashes / backslashes like Next.js and block encoded
     // protocol-relative shapes (/%5Cevil.com/). See

@@ -33,6 +33,7 @@ import {
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import {
   getDataCacheHandler,
+  MemoryCacheHandler,
   setDataCacheHandler,
 } from "../packages/vinext/src/shims/cache-handler.js";
 import {
@@ -1550,6 +1551,29 @@ describe("app server action execution helpers", () => {
     }
   });
 
+  it("logs a production fetch action that throws a string under VINEXT_QUIET, as it isn't reported", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await withEnvVar("VINEXT_QUIET", "1", () =>
+        withEnvVar("NODE_ENV", "production", () =>
+          handleServerActionRscRequest(
+            createRscOptions({
+              loadServerAction() {
+                return Promise.resolve(() => {
+                  throw "string failure";
+                });
+              },
+            }),
+          ),
+        ),
+      );
+
+      expect(errorSpy).toHaveBeenCalledWith("[vinext] Server action error:", "string failure");
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("logs a development fetch action failure that already has a digest", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -1720,7 +1744,7 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
     expect(buildPageElement).toHaveBeenCalledWith(
       expect.objectContaining({
-        interceptOpts: { slot: "modal" },
+        interceptOpts: { rendersInterceptionSource: true, slot: "modal" },
         params: sourceParams,
         route: sourceRoute,
       }),
@@ -2791,6 +2815,74 @@ describe("app server action execution helpers", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
+  // ("should not use stale caches in server actions that have revalidated").
+  // Next.js runs an action in its page's request store, whose implicit tags
+  // let a cache read inside the action observe the action's own revalidatePath().
+  it.each([
+    { kind: "fetch", pathname: "/dashboard" },
+    { kind: "progressive", pathname: "/action-source" },
+  ])(
+    "reads caches inside a $kind action with its page's implicit tags",
+    async ({ kind, pathname }) => {
+      const previousHandler = getDataCacheHandler();
+      const memoryHandler = new MemoryCacheHandler();
+      const getSoftTags: string[][] = [];
+      setDataCacheHandler({
+        get(key, ctx) {
+          getSoftTags.push([...((ctx as { softTags?: string[] } | undefined)?.softTags ?? [])]);
+          return memoryHandler.get(key, ctx);
+        },
+        set: memoryHandler.set.bind(memoryHandler),
+        revalidateTag: memoryHandler.revalidateTag.bind(memoryHandler),
+      });
+      let calls = 0;
+      const readCached = registerCachedFunction(
+        async () => ++calls,
+        `test:action-implicit-tags-${kind}`,
+      );
+      const values: unknown[] = [];
+      const action = async () => {
+        values.push(await readCached());
+        revalidatePath(pathname);
+        values.push(await readCached());
+        return "done";
+      };
+
+      try {
+        await runWithRequestContext(createRequestContext(), () => readCached());
+        getSoftTags.length = 0;
+        await runWithRequestContext(createRequestContext(), () =>
+          kind === "fetch"
+            ? handleServerActionRscRequest(
+                createRscOptions({
+                  loadServerAction() {
+                    return Promise.resolve(action);
+                  },
+                }),
+              )
+            : handleProgressiveServerActionRequest(
+                createOptions({
+                  currentRoute: { pattern: pathname, routeSegments: [pathname.slice(1)] },
+                  async decodeAction() {
+                    return action;
+                  },
+                  readFormDataWithLimit() {
+                    const formData = new FormData();
+                    formData.set("$ACTION_ID_test", "");
+                    return Promise.resolve(formData);
+                  },
+                }),
+              ),
+        );
+        expect(getSoftTags[0]).toContain(`_N_T_${pathname}`);
+        expect(values).toEqual([1, 2]);
+      } finally {
+        setDataCacheHandler(previousHandler);
+      }
+    },
+  );
+
   it("emits dynamic-only x-action-revalidated when a fetch action refreshes", async () => {
     const response = await handleServerActionRscRequest(
       createRscOptions({
@@ -3756,6 +3848,147 @@ describe("app server action execution helpers", () => {
     modeSpy.mockRestore();
     revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
+  });
+
+  it("takes an intercepted re-render's fetch defaults from the interception, not its source route", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
+    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
+    // app/feed/page.tsx is force-static; app/feed/@modal/(.)photos/[id] isn't.
+    const sourceRoute: TestRoute = {
+      id: "feed",
+      page: {},
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+    };
+
+    const buildPageElement = vi.fn(() => "intercepted-page");
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        cleanPathname: "/photos/42",
+        currentRouteMatch: { params: {}, route: sourceRoute },
+        currentRoutePathname: "/photos/42",
+        findIntercept() {
+          return {
+            matchedParams: { id: "42" },
+            page: { default: "modal-photo", fetchCache: "force-no-store", revalidate: 30 },
+            slotKey: "modal",
+            sourceRouteIndex: 0,
+          };
+        },
+        getSourceRoute() {
+          return sourceRoute;
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/photos/42"));
+            return "revalidated";
+          });
+        },
+        resolveRouteDynamicConfig: () => "force-static",
+        resolveRouteFetchCacheMode: () => "force-cache",
+        resolveRouteRevalidateSeconds: () => 3600,
+        toInterceptOpts(intercept) {
+          const interceptOpts = {
+            interceptBranchSegments: ["photos", "[id]"],
+            interceptPage: intercept.page,
+            interceptSlotKey: intercept.slotKey,
+            slot: intercept.slotKey,
+          };
+          return interceptOpts;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(modeSpy).toHaveBeenLastCalledWith("force-no-store");
+    expect(revalidateSpy).toHaveBeenLastCalledWith(30);
+    expect(forceDynamicSpy).toHaveBeenLastCalledWith(false);
+    // The source's force-static would have emptied the query.
+    expect(buildPageElement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isForceStatic: false,
+        searchParams: new URLSearchParams("tab=activity"),
+      }),
+    );
+
+    modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
+    forceDynamicSpy.mockRestore();
+  });
+
+  it("takes a same-route intercepted re-render's fetch defaults from the interception", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
+    // app/shots/[id]/page.tsx is force-static; app/shots/@modal/(.)[id] isn't.
+    const shotRoute: TestRoute = {
+      id: "shots/[id]",
+      page: {},
+      params: ["id"],
+      pattern: "/shots/:id",
+      routeSegments: ["shots", "[id]"],
+    };
+
+    const buildPageElement = vi.fn(() => "intercepted-page");
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        cleanPathname: "/shots/2",
+        currentRouteMatch: { params: { id: "2" }, route: shotRoute },
+        // The direct page's runtime, which the interception doesn't choose.
+        isEdgeRuntime: true,
+        currentRoutePathname: "/shots/2",
+        findIntercept() {
+          return {
+            matchedParams: { id: "2" },
+            page: { default: "modal-shot", fetchCache: "force-no-store", revalidate: 30 },
+            slotKey: "modal",
+            sourceRouteIndex: 0,
+          };
+        },
+        getSourceRoute() {
+          return shotRoute;
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/shots/2"));
+            return "revalidated";
+          });
+        },
+        resolveRouteDynamicConfig: () => "force-static",
+        resolveRouteFetchCacheMode: () => "force-cache",
+        resolveRouteRevalidateSeconds: () => 3600,
+        toInterceptOpts(intercept) {
+          const interceptOpts = {
+            interceptBranchSegments: ["[id]"],
+            interceptPage: intercept.page,
+            interceptSlotKey: intercept.slotKey,
+            slot: intercept.slotKey,
+          };
+          return interceptOpts;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-edge-runtime")).toBeNull();
+    expect(modeSpy).toHaveBeenLastCalledWith("force-no-store");
+    expect(revalidateSpy).toHaveBeenLastCalledWith(30);
+    expect(buildPageElement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isForceStatic: false,
+        searchParams: new URLSearchParams("tab=activity"),
+      }),
+    );
+
+    modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
   });
 });
 

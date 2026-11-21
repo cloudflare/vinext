@@ -66,6 +66,7 @@ import {
   formatViteOpenInEditorFile,
   installReactRefreshErrorRecovery,
   normalizeViteHmrError,
+  selectUnreportedInitialDevServerErrors,
 } from "../packages/vinext/src/client/dev-error-overlay.js";
 import {
   dismissOverlay,
@@ -77,9 +78,10 @@ import {
   APP_CACHE_ENTRY_REUSE_PROOF_KEY,
   APP_ARTIFACT_COMPATIBILITY_KEY,
   AppElementsWire,
-  APP_LAYOUT_FLAGS_KEY,
   APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_HEAD_ID_PREFIX,
   APP_ROUTE_KEY,
+  APP_STREAMING_METADATA_BODY_ID_PREFIX,
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   UNMATCHED_SLOT,
@@ -100,6 +102,7 @@ import {
   getPendingAppRouterScrollIntent,
   isLatestAppRouterScrollIntent,
 } from "../packages/vinext/src/shims/app-router-scroll-state.js";
+import * as appRouterNavigationShim from "../packages/vinext/src/shims/app-router-navigation.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createBfcacheSegmentIdentityMap,
@@ -131,6 +134,7 @@ import {
   type OperationLane,
 } from "../packages/vinext/src/server/app-browser-state.js";
 import { createInitialBfcacheMaps } from "../packages/vinext/src/server/app-bfcache-identity.js";
+import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
 import {
   HistoryStateSnapshotCache,
@@ -154,6 +158,7 @@ import {
   createNavigationTrace,
 } from "../packages/vinext/src/server/navigation-trace.js";
 import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
+import { resolveHeldRetainedElementIds } from "../packages/vinext/src/server/app-retained-elements.js";
 import { createCacheEntryReuseProof } from "../packages/vinext/src/server/cache-proof.js";
 import {
   ACTION_REVALIDATED_HEADER,
@@ -248,7 +253,6 @@ function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
     elements: createResolvedElements("route:/initial", "/"),
     interception: null,
     layoutIds: [AppElementsWire.encodeLayoutId("/")],
-    layoutFlags: {},
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
     renderId: 0,
     activeOperation: null,
@@ -494,9 +498,12 @@ function createRootChangeRouteManifest(
 
 type TestPendingDispositionOptions = {
   activeNavigationId: number;
+  currentActiveOperation?: AppRouterState["activeOperation"];
   currentRootLayoutTreePath: string | null;
   currentVisibleCommitVersion: number;
   nextRootLayoutTreePath: string | null;
+  // Omitted for an HMR-shaped operation, which carries no navigation id.
+  pendingNavigationId?: number | null;
   renderId?: number;
   startedNavigationId: number;
   startedVisibleCommitVersion: number;
@@ -510,6 +517,7 @@ async function resolveTestPendingNavigationCommitDispositionDecision(
     visibleCommitVersion: options.startedVisibleCommitVersion,
   });
   const currentState = createState({
+    activeOperation: options.currentActiveOperation ?? null,
     rootLayoutTreePath: options.currentRootLayoutTreePath,
     visibleCommitVersion: options.currentVisibleCommitVersion,
   });
@@ -519,6 +527,10 @@ async function resolveTestPendingNavigationCommitDispositionDecision(
     nextElements: Promise.resolve(
       createResolvedElements("route:/dashboard", options.nextRootLayoutTreePath),
     ),
+    navigationId:
+      options.pendingNavigationId === null
+        ? undefined
+        : (options.pendingNavigationId ?? options.startedNavigationId),
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
     operationLane: "navigation",
     renderId: options.renderId ?? options.startedNavigationId,
@@ -652,7 +664,6 @@ type ApprovedTestCommitOptions = {
   interception?: AppElementsInterception | null;
   interceptionContext?: string | null;
   layoutIds?: readonly string[];
-  layoutFlags?: AppRouterState["layoutFlags"];
   navigationSnapshot?: AppRouterState["navigationSnapshot"];
   operationLane?: OperationLane;
   previousNextUrl?: string | null;
@@ -678,7 +689,6 @@ async function applyApprovedTestCommit(
         options.rootLayoutTreePath,
         options.interceptionContext ?? null,
         {
-          [APP_LAYOUT_FLAGS_KEY]: options.layoutFlags ?? {},
           ...options.extraEntries,
         },
         options.layoutIds,
@@ -1051,7 +1061,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target?tab=1#details",
         origin: "https://example.com",
         responseCompatibilityId: null,
-        responseUrl: "https://example.com/target.rsc?tab=1&_rsc=stale",
+        responseUrl: "https://example.com/target?tab=1&_rsc=stale",
       }),
     ).toEqual({
       hardNavigationTarget: "/target?tab=1#details",
@@ -1064,10 +1074,25 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target/",
         origin: "https://example.com",
         responseCompatibilityId: "compat-b",
-        responseUrl: "https://example.com/target.rsc?_rsc=stale",
+        responseUrl: "https://example.com/target?_rsc=stale",
       }),
     ).toEqual({
       hardNavigationTarget: "/target/",
+      kind: "hard-navigate",
+    });
+
+    // A "//" pathname keeps its "/." prefix so the hard navigation stays on
+    // the app origin.
+    expect(
+      resolveRscCompatibilityNavigationDecision({
+        clientCompatibilityId: "compat-a",
+        currentHref: "/.//other.test/out",
+        origin: "https://example.com",
+        responseCompatibilityId: "compat-b",
+        responseUrl: "https://example.com//other.test/out?_rsc=stale",
+      }),
+    ).toEqual({
+      hardNavigationTarget: "/.//other.test/out",
       kind: "hard-navigate",
     });
   });
@@ -1081,7 +1106,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target",
         origin: "https://example.com",
         responseCompatibilityId: "compat-a",
-        responseUrl: "https://example.com/target.rsc?_rsc=fresh",
+        responseUrl: "https://example.com/target?_rsc=fresh",
       }),
     ).toEqual({ kind: "compatible" });
   });
@@ -1148,8 +1173,8 @@ describe("app browser entry navigation scheduling", () => {
   it("creates replayable cached RSC snapshots with compatibility IDs", async () => {
     stubWindow("https://example.com/current");
 
-    const responseUrl = "https://example.com/target.rsc?_rsc=fresh";
-    const snapshot = navigationShim.createCachedRscResponseSnapshot(
+    const responseUrl = "https://example.com/target?_rsc=fresh";
+    const snapshot = appRouterNavigationShim.createCachedRscResponseSnapshot(
       new Response("unused", {
         headers: {
           "content-type": "text/x-component",
@@ -1174,7 +1199,7 @@ describe("app browser entry navigation scheduling", () => {
       }),
     ).toEqual({ kind: "compatible" });
 
-    const replayed = navigationShim.restoreRscResponse(snapshot);
+    const replayed = appRouterNavigationShim.restoreRscResponse(snapshot);
     expect(replayed.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
     expect(replayed.headers.get(VINEXT_MOUNTED_SLOTS_HEADER)).toBe("children");
     expect(replayed.headers.get(VINEXT_PARAMS_HEADER)).toBe("%7B%22slug%22%3A%22target%22%7D");
@@ -2202,6 +2227,78 @@ describe("app browser entry state helpers", () => {
     expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.staleOperation);
   });
 
+  it("commits over a visible commit from a navigation it superseded", async () => {
+    // Rapid same-route clicks: the first navigation's render advances the
+    // version after the second one started. The latest navigation still wins.
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentActiveOperation: {
+        id: 1,
+        lane: "navigation",
+        navigationId: 1,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision.disposition).toBe("dispatch");
+  });
+
+  it("commits over a refresh commit that started under an older navigation", async () => {
+    // A server action revalidates, then its caller runs router.back(). React
+    // renders the action's refresh-lane commit after the traversal started;
+    // the traversal still wins.
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentActiveOperation: {
+        id: 1,
+        lane: "refresh",
+        navigationId: 1,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision.disposition).toBe("dispatch");
+  });
+
+  it("stays stale for an operation without a navigation id that compares a render id", async () => {
+    // HMR approval passes its render id as startedNavigationId, so an id
+    // ahead of a committed navigation's must not read as superseding it.
+    const decision = await resolveTestPendingNavigationCommitDispositionDecision({
+      activeNavigationId: 2,
+      currentActiveOperation: {
+        id: 1,
+        lane: "navigation",
+        navigationId: 1,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      currentVisibleCommitVersion: 1,
+      currentRootLayoutTreePath: "/",
+      nextRootLayoutTreePath: "/",
+      pendingNavigationId: null,
+      startedNavigationId: 2,
+      startedVisibleCommitVersion: 0,
+    });
+
+    expect(decision.disposition).toBe("skip");
+    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.staleOperation);
+  });
+
   it("treats stale state as authoritative even when the root boundary changed", async () => {
     const decision = await resolveTestPendingNavigationCommitDispositionDecision({
       activeNavigationId: 2,
@@ -2824,6 +2921,75 @@ describe("app browser entry state helpers", () => {
     expect(nextState.elements[rootLayoutId]).toBe(nextRootLayout);
   });
 
+  it("keeps the route head across an HMR replacement that carries none", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const routeId = AppElementsWire.encodeRouteId("/hmr-head", null);
+    const routeHeadId = `${APP_ROUTE_HEAD_ID_PREFIX}${routeId}`;
+    const currentHead = React.createElement("title", null, "current head");
+    const nextHead = React.createElement("title", null, "next head");
+    const currentState = createState({
+      bfcacheIds: { [rootLayoutId]: "0" },
+      elements: createResolvedElements(
+        routeId,
+        "/",
+        null,
+        {
+          [rootLayoutId]: React.createElement("section", null, "layout"),
+          [routeId]: React.createElement("div", null, "route shell"),
+          [routeHeadId]: currentHead,
+          [AppElementsWire.encodeRouteFallbackId(routeId, 404, 0)]: "current not-found",
+          "page:/hmr-head": React.createElement("main", null, "page"),
+        },
+        [rootLayoutId],
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/hmr-head", {}),
+      routeId,
+    });
+    const commitHmr = async (extra: Record<string, React.ReactNode>) => {
+      const pending = await createPendingNavigationCommit({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        currentState,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            routeId,
+            "/",
+            null,
+            {
+              [rootLayoutId]: React.createElement("section", null, "layout error"),
+              [routeId]: React.createElement("div", null, "boundary route"),
+              ...extra,
+            },
+            [rootLayoutId],
+          ),
+        ),
+        navigationSnapshot: currentState.navigationSnapshot,
+        operationLane: "hmr",
+        renderId: 16,
+        type: "replace",
+      });
+      const { approvedCommit } = approveHmrVisibleCommit({
+        currentState,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+        targetHref: "https://example.com/hmr-head",
+      });
+      if (!approvedCommit) throw new Error("Expected HMR visible commit approval");
+      return applyApprovedVisibleCommit(currentState, approvedCommit);
+    };
+
+    // A boundary error's payload carries its head inline in the route it
+    // renders, which HMR replaces with the route the client holds.
+    expect((await commitHmr({})).elements[routeHeadId]).toBe(currentHead);
+    expect((await commitHmr({ [routeHeadId]: nextHead })).elements[routeHeadId]).toBe(nextHead);
+    // So do the kept route's boundary fallbacks.
+    const fallbackId = AppElementsWire.encodeRouteFallbackId(routeId, 404, 0);
+    expect((await commitHmr({})).elements[fallbackId]).toBe("current not-found");
+    expect((await commitHmr({ [fallbackId]: "next not-found" })).elements[fallbackId]).toBe(
+      "next not-found",
+    );
+  });
+
   it("preserves planner-approved named slot state across HMR replacement", async () => {
     const rootLayoutId = AppElementsWire.encodeLayoutId("/");
     const authSlotId = AppElementsWire.encodeSlotId("auth", "/");
@@ -3410,37 +3576,6 @@ describe("app browser entry state helpers", () => {
       "https://example.com/dashboard?from=planner",
     );
     expect(hardNavigateApproval.approvedCommit).toBeNull();
-  });
-
-  it("preserves layoutFlags only for approved same-layout ancestors", async () => {
-    const state = createState({
-      bfcacheIds: { "layout:/": "0" },
-      layoutFlags: { "layout:/": "s", "layout:/old": "d" },
-    });
-    const nextState = await applyApprovedTestCommit(state, {
-      layoutFlags: { "layout:/blog": "d" },
-      layoutIds: ["layout:/", "layout:/blog"],
-      rootLayoutTreePath: "/",
-      routeId: "route:/next",
-    });
-
-    expect(nextState.layoutFlags).toEqual({
-      "layout:/": "s",
-      "layout:/blog": "d",
-    });
-  });
-
-  it("replaces layoutFlags on approved replace commits", async () => {
-    const state = createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } });
-    const nextState = await applyApprovedTestCommit(state, {
-      layoutFlags: { "layout:/": "d" },
-      rootLayoutTreePath: "/",
-      routeId: "route:/next",
-      type: "replace",
-    });
-
-    // Replace: only new flags
-    expect(nextState.layoutFlags).toEqual({ "layout:/": "d" });
   });
 
   it("stores previousNextUrl on approved navigate commits", async () => {
@@ -5274,7 +5409,9 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("does not hard-navigate same-URL server action payloads from snapshot root topology alone", async () => {
+  // Like Next.js, which compares the rendered router trees, a payload that
+  // renders another root layout loads a new document, also without a manifest.
+  it("hard-navigates same-URL server action payloads that render another root layout", async () => {
     const actionTargetHref = "https://example.com/marketing?from=action";
     const initialState = createState({
       rootLayoutTreePath: "/(marketing)",
@@ -5301,8 +5438,8 @@ describe("app browser navigation controller", () => {
       );
 
       expect(result).toBeUndefined();
-      expect(assign).not.toHaveBeenCalled();
-      expect(stateRef.current.routeId).toBe("route:/dashboard");
+      expect(assign).toHaveBeenCalledWith(actionTargetHref);
+      expect(stateRef.current.routeId).toBe("route:/marketing");
     } finally {
       detach();
     }
@@ -6545,7 +6682,7 @@ describe("app browser entry previousNextUrl helpers", () => {
     const state = createExternalHistoryStatePreservingMetadata(
       { caller: "state" },
       createHistoryStateWithNavigationMetadata(
-        { __vinext_treeSnapshotId: 9 },
+        { __vinext_treeSnapshotId: "doc:9" },
         {
           bfcacheIds: { "page:/feed": "_b_1_" },
           bfcacheVersion: 2,
@@ -6562,7 +6699,7 @@ describe("app browser entry previousNextUrl helpers", () => {
       __vinext_historyIndex: 4,
       __vinext_previousNextUrl: "/feed",
       __vinext_treeSnapshotClaimed: true,
-      __vinext_treeSnapshotId: 9,
+      __vinext_treeSnapshotId: "doc:9",
       caller: "state",
     });
     expect(isExternalHistoryState(state)).toBe(true);
@@ -6584,10 +6721,10 @@ describe("app browser entry previousNextUrl helpers", () => {
   it("clears stale claim metadata when assigning a different tree snapshot id", () => {
     expect(
       createHistoryStateWithTreeSnapshotId(
-        { __vinext_treeSnapshotClaimed: true, __vinext_treeSnapshotId: 9 },
-        10,
+        { __vinext_treeSnapshotClaimed: true, __vinext_treeSnapshotId: "doc:9" },
+        "doc:10",
       ),
-    ).toEqual({ __vinext_treeSnapshotId: 10 });
+    ).toEqual({ __vinext_treeSnapshotId: "doc:10" });
   });
 
   it("stores previousNextUrl alongside existing history state", () => {
@@ -6674,12 +6811,68 @@ describe("app browser entry previousNextUrl helpers", () => {
       ["/detail-page#stale"],
       ["/detail-page\\stale"],
       ["/detail-page\0stale"],
+      // A URL parser drops a tab, so this would name //other-origin.example.
+      ["/\t/other-origin.example/detail-page"],
       ["/detail-page", 42],
     ]) {
       expect(
         readHistoryStateActiveRoutePaths({ __vinext_activeRoutePaths: activeRoutePaths }),
       ).toBeNull();
     }
+  });
+
+  // Next.js refetches a reused segment at the URL of the route it came from:
+  // packages/next/src/client/components/router-reducer/ppr-navigations.ts
+  it("records the committed URL on the slots a navigation response rendered", async () => {
+    const nextElements = createResolvedElements(
+      "route:/v1/p/caf%C3%A9",
+      "/",
+      null,
+      { "slot:info:/": "info", "slot:aside:/": "kept" },
+      [AppElementsWire.encodeLayoutId("/")],
+      [
+        {
+          activeRouteId: "route:/v1/p/caf%C3%A9",
+          ownerLayoutId: "layout:/",
+          slotId: "slot:info:/",
+          state: "active",
+        },
+        {
+          activeRouteId: "route:/feed",
+          ownerLayoutId: "layout:/",
+          refreshPathname: "/feed",
+          slotId: "slot:aside:/",
+          state: "active",
+        },
+        { ownerLayoutId: "layout:/", slotId: "slot:modal:/", state: "default" },
+      ],
+    );
+    const pending = await createPendingNavigationCommit({
+      currentState: createState(),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/p/caf%C3%A9?tab=new",
+        {},
+      ),
+      nextElements: Promise.resolve(nextElements),
+      operationLane: "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      renderId: 1,
+      type: "navigate",
+    });
+
+    const expected = [
+      expect.objectContaining({ slotId: "slot:aside:/", refreshPathname: "/feed" }),
+      expect.objectContaining({ slotId: "slot:info:/", refreshPathname: "/p/caf%C3%A9" }),
+      expect.not.objectContaining({ refreshPathname: expect.anything() }),
+    ];
+    expect(pending.action.slotBindings).toEqual(expected);
+    expect(AppElementsWire.readMetadata(pending.action.elements).slotBindings).toEqual(expected);
+    // The response may be a cached payload, so it keeps no URL of its own.
+    expect(
+      AppElementsWire.readMetadata(nextElements).slotBindings.find(
+        (binding) => binding.slotId === "slot:info:/",
+      ),
+    ).not.toHaveProperty("refreshPathname");
   });
 
   it("resolves back, forward, and unknown traversal intent from history state", () => {
@@ -6717,7 +6910,7 @@ describe("app browser entry previousNextUrl helpers", () => {
     });
   });
 
-  it("classifies same-url payloads without treating snapshot root topology as authority", async () => {
+  it("classifies same-url payloads that render another root layout as hard navigations", async () => {
     const currentState = createState({
       rootLayoutTreePath: "/(marketing)",
     });
@@ -6735,11 +6928,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       type: "navigate",
     });
 
-    expect(result.decision.disposition).toBe("commit");
+    expect(result.decision.disposition).toBe("hard-navigate");
     expect(result.pending.routeId).toBe("route:/dashboard");
     expect(result.pending.action.renderId).toBe(3);
-    expect(result.trace.entries[0]?.code).toBe(NavigationTraceTransactionCodes.visibleCommit);
-    expect(result.trace.entries[1]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryUnknown);
+    expect(result.trace.entries[0]?.code).toBe(NavigationTraceTransactionCodes.hardNavigate);
+    expect(result.trace.entries[1]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryChanged);
     expect(result.trace.entries[1]?.fields.targetHref).toBe(
       "https://example.com/dashboard?action=same-url",
     );
@@ -6781,11 +6974,6 @@ describe("app browser entry previousNextUrl helpers", () => {
         },
         ["layout:/", "layout:/dashboard"],
       ),
-      layoutFlags: {
-        "layout:/": "s",
-        "layout:/dashboard": "s",
-        "layout:/stale": "d",
-      },
       layoutIds: ["layout:/", "layout:/dashboard"],
     });
 
@@ -6794,7 +6982,6 @@ describe("app browser entry previousNextUrl helpers", () => {
         "page:/dashboard/settings": React.createElement("main", null, "settings"),
       },
       layoutIds: ["layout:/", "layout:/dashboard", "layout:/dashboard/settings"],
-      layoutFlags: { "layout:/dashboard/settings": "d" },
       rootLayoutTreePath: "/",
       routeId: "route:/dashboard/settings",
     });
@@ -6803,11 +6990,6 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(nextState.elements["layout:/dashboard"]).toBe(dashboardLayout);
     expect(Object.hasOwn(nextState.elements, "layout:/stale")).toBe(false);
     expect(Object.hasOwn(nextState.elements, "page:/stale")).toBe(false);
-    expect(nextState.layoutFlags).toEqual({
-      "layout:/": "s",
-      "layout:/dashboard": "s",
-      "layout:/dashboard/settings": "d",
-    });
     expect(nextState.layoutIds).toEqual([
       "layout:/",
       "layout:/dashboard",
@@ -6846,6 +7028,56 @@ describe("app browser entry previousNextUrl helpers", () => {
 
     expect(nextState.bfcacheIds[templateId]).not.toBe(state.bfcacheIds[templateId]);
     expect(nextState.elements[templateId]).toBe(previousTemplate);
+  });
+
+  // https://github.com/cloudflare/vinext/issues/4387
+  it("keeps a reused server template seed's key stable across the next refresh", async () => {
+    const templateId = "template:/template";
+    const xIdentity = '["template","template-graph","root","x"]';
+    const yIdentity = '["template","template-graph","root","y"]';
+    const seed = React.createElement("h1", null, "template seed x");
+    const state = createState({
+      bfcacheIds: { [templateId]: "_b_1_" },
+      elements: createResolvedElements("route:/template/x", "/", null, {
+        [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: { [templateId]: xIdentity },
+        [templateId]: seed,
+      }),
+      routeId: "route:/template/x",
+    });
+
+    const navigatedState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: { [templateId]: yIdentity },
+        [templateId]: React.createElement("h1", null, "template seed y"),
+        "page:/template/y": React.createElement("main", null, "y"),
+      },
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/y",
+    });
+
+    // The seed survives, but its key follows the destination child segment.
+    expect(navigatedState.elements[templateId]).toBe(seed);
+    expect(createBfcacheSegmentIdentityMap({ elements: navigatedState.elements })).toEqual({
+      [templateId]: yIdentity,
+    });
+
+    const refreshedTemplate = React.createElement("h1", null, "refreshed template");
+    const refreshedState = await applyApprovedTestCommit(navigatedState, {
+      extraEntries: {
+        [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: { [templateId]: yIdentity },
+        [templateId]: refreshedTemplate,
+        "page:/template/y": React.createElement("main", null, "y"),
+      },
+      operationLane: "refresh",
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/y",
+    });
+
+    expect(refreshedState.elements[templateId]).toBe(refreshedTemplate);
+    expect(refreshedState.bfcacheIds[templateId]).toBe(navigatedState.bfcacheIds[templateId]);
+    expect(createBfcacheSegmentIdentityMap({ elements: refreshedState.elements })).toEqual({
+      [templateId]: yIdentity,
+    });
   });
 
   it("installs fresh server template output when its own dynamic param changes", async () => {
@@ -7079,7 +7311,6 @@ describe("app browser entry previousNextUrl helpers", () => {
 
   it("preserves explicitly skipped retained layouts on approved navigate commits", async () => {
     const rootLayout = React.createElement("div", null, "root layout");
-    const staleLayout = React.createElement("div", null, "stale layout");
     const currentState = createState({
       bfcacheIds: {
         "layout:/": "0",
@@ -7090,14 +7321,9 @@ describe("app browser entry previousNextUrl helpers", () => {
         null,
         {
           "layout:/": rootLayout,
-          "layout:/stale": staleLayout,
         },
         ["layout:/"],
       ),
-      layoutFlags: {
-        "layout:/": "s",
-        "layout:/stale": "s",
-      },
       layoutIds: ["layout:/"],
     });
     const pending = await createPendingNavigationCommit({
@@ -7109,8 +7335,7 @@ describe("app browser entry previousNextUrl helpers", () => {
           "/",
           null,
           {
-            [APP_LAYOUT_FLAGS_KEY]: {},
-            [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/", "layout:/stale"],
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/"],
             "page:/settings": React.createElement("main", null, "settings"),
           },
           ["layout:/"],
@@ -7138,10 +7363,74 @@ describe("app browser entry previousNextUrl helpers", () => {
     const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
 
     expect(nextState.elements["layout:/"]).toBe(rootLayout);
-    expect(Object.hasOwn(nextState.elements, "layout:/stale")).toBe(false);
-    expect(nextState.layoutFlags).toEqual({
-      "layout:/": "s",
+  });
+
+  // The navigation refetches a whole payload when its state no longer holds a
+  // layout the payload left out, so one that still can't be restored loads as
+  // a document instead of committing a tree missing that layout.
+  it.each([
+    {
+      name: "the client doesn't hold",
+      skipped: ["layout:/", "layout:/stale"],
+      layoutIds: ["layout:/", "layout:/stale"],
+      identities: undefined,
+    },
+    {
+      name: "changed identity",
+      skipped: ["layout:/"],
+      layoutIds: ["layout:/"],
+      identities: { "layout:/": "other-identity" },
+    },
+  ])("hard-navigates for a skipped layout with $name", async (testCase) => {
+    const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+      },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          "layout:/": React.createElement("div", null, "root layout"),
+        },
+        ["layout:/"],
+      ),
+      layoutIds: ["layout:/"],
     });
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/settings",
+          "/",
+          null,
+          {
+            ...(testCase.identities
+              ? { [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: testCase.identities }
+              : {}),
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: testCase.skipped,
+            "page:/settings": React.createElement("main", null, "settings"),
+          },
+          testCase.layoutIds,
+        ),
+      ),
+      operationLane: "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      renderId: 1,
+      type: "navigate",
+    });
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState,
+      pending,
+      routeManifest: null,
+      startedNavigationId: 1,
+      targetHref: "https://example.com/settings",
+    });
+
+    expect(approval.approvedCommit).toBeNull();
+    expect(approval.decision.disposition).toBe("hard-navigate");
   });
 
   it("does not preserve skipped layouts when target bfcache ids mismatch", async () => {
@@ -7225,9 +7514,6 @@ describe("app browser entry previousNextUrl helpers", () => {
         },
         ["layout:/"],
       ),
-      layoutFlags: {
-        "layout:/": "s",
-      },
       layoutIds: ["layout:/"],
     });
     const pending = await createPendingNavigationCommit({
@@ -7239,7 +7525,6 @@ describe("app browser entry previousNextUrl helpers", () => {
           "/",
           null,
           {
-            [APP_LAYOUT_FLAGS_KEY]: {},
             [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/"],
             "page:/settings": React.createElement("main", null, "settings"),
           },
@@ -7269,7 +7554,6 @@ describe("app browser entry previousNextUrl helpers", () => {
 
     expect(Object.hasOwn(nextState.elements, "layout:/")).toBe(false);
     expect(nextState.elements["page:/settings"]).toBeDefined();
-    expect(nextState.layoutFlags).toEqual({});
     expect(nextState.bfcacheIds["layout:/"]).toMatch(/^_b_\d+_$/);
     expect(nextState.bfcacheIds["layout:/"]).not.toBe("_b_4_");
   });
@@ -7302,10 +7586,6 @@ describe("app browser entry previousNextUrl helpers", () => {
         ["layout:/", "layout:/dashboard"],
         [currentModalBinding],
       ),
-      layoutFlags: {
-        "layout:/": "s",
-        "layout:/dashboard": "s",
-      },
       layoutIds: ["layout:/", "layout:/dashboard"],
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
       routeId: "route:/dashboard",
@@ -7328,7 +7608,6 @@ describe("app browser entry previousNextUrl helpers", () => {
           "/",
           null,
           {
-            [APP_LAYOUT_FLAGS_KEY]: {},
             [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/dashboard"],
             "page:/dashboard/settings": React.createElement("main", null, "settings"),
           },
@@ -8930,7 +9209,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 0,
       requestPreviousNextUrl: "/feed",
-      responseUrl: "https://example.com/target.rsc?tab=1&_rsc=abc",
+      responseUrl: "https://example.com/target?tab=1&_rsc=abc",
     });
 
     expect(decision).toEqual({
@@ -8949,7 +9228,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 2,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/items.rsc?sort=new&_rsc=abc",
+      responseUrl: "https://example.com/items?sort=new&_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -8967,7 +9246,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 0,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/new.rsc?_rsc=abc",
+      responseUrl: "https://example.com/new?_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -9003,7 +9282,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 2,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/b.rsc?_rsc=abc",
+      responseUrl: "https://example.com/b?_rsc=abc",
     });
 
     expect(decision).toEqual({
@@ -9031,6 +9310,53 @@ describe("app browser RSC redirect lifecycle", () => {
       previousNextUrl: null,
       redirectDepth: 1,
     });
+  });
+
+  // A same-origin path whose pathname begins with "//" must not become a
+  // protocol-relative href naming another host.
+  it("keeps a streamed redirect to a path beginning with // on the app origin", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/old",
+      historyUpdateMode: "replace",
+      maxRedirectDepth: 0,
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/.//other.test/out",
+    });
+
+    expect(decision).toMatchObject({ href: "/.//other.test/out", reason: "maxRedirectsExceeded" });
+  });
+
+  it("keeps an RSC response URL whose path begins with // on the app origin", () => {
+    const decision = resolveRscRedirectLifecycleHop({
+      currentHref: "https://example.com/old",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      responseUrl: "https://example.com//other.test/out?_rsc=abc",
+    });
+
+    expect(decision).toMatchObject({ href: "/.//other.test/out", kind: "follow" });
+  });
+
+  // The server sends a scheme-relative redirect() target as written, so the
+  // client resolves it against the page it fetched, as the Flight digest is.
+  it.each([
+    ["https://example.com", "/docs/foo"],
+    ["http://example.com", "https://foo/"],
+  ])("resolves a streamed https:foo target from %s against the fetched page", (origin, href) => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/docs/page",
+      historyUpdateMode: "replace",
+      origin,
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "https:foo",
+    });
+
+    expect(decision).toMatchObject({ href });
   });
 
   it("lets explicit push redirects upgrade an initiating replace navigation", () => {
@@ -9113,11 +9439,11 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 1,
       requestPreviousNextUrl: null,
-      streamedRedirectTarget: "/target.rsc?visible=1&_rsc=abc#details",
+      streamedRedirectTarget: "/target?visible=1&_rsc=abc#details",
     });
 
     expect(decision).toEqual({
-      href: "/target.rsc?visible=1&_rsc=abc#details",
+      href: "/target?visible=1&_rsc=abc#details",
       historyUpdateMode: "replace",
       kind: "follow",
       previousNextUrl: null,
@@ -9235,6 +9561,39 @@ describe("devOnCaughtError (hydrateRoot dev handler)", () => {
 
     expect(onImplicitRootError).toHaveBeenCalledWith(error, errorInfo);
     expect(onCaughtError).not.toHaveBeenCalled();
+  });
+
+  it("notes a catch by the implicit root or a global-error boundary", () => {
+    const onRootErrorBoundaryCatch = vi.fn();
+    const handler = createDevOnCaughtError(vi.fn(), vi.fn(), onRootErrorBoundaryCatch);
+
+    handler(new Error("route error"), { errorBoundary: { props: {} } });
+    expect(onRootErrorBoundaryCatch).not.toHaveBeenCalled();
+
+    handler(new Error("global error"), {
+      errorBoundary: { props: { isGlobalErrorBoundary: true } },
+    });
+    handler(new Error("root error"), {
+      errorBoundary: { props: { isImplicitRootErrorBoundary: true } },
+    });
+    expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
+
+    // The root boundary around a global-error boundary only catches the
+    // global-error fallback's own throw.
+    handler(new Error("global-error threw"), {
+      errorBoundary: {
+        props: { isImplicitRootErrorBoundary: true, wrapsGlobalErrorBoundary: true },
+      },
+    });
+    expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
+
+    handler(
+      Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" }),
+      {
+        errorBoundary: { props: { isGlobalErrorBoundary: true } },
+      },
+    );
+    expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
   });
 
   it("keeps explicit dev error boundaries on the caught-error path", () => {
@@ -9769,6 +10128,7 @@ describe("dev overlay store", () => {
 
       reportToOverlay({
         source: "caught",
+        name: undefined,
         message: "boom",
         stack: undefined,
         ignoredStackFrames: undefined,
@@ -9787,6 +10147,84 @@ describe("dev overlay store", () => {
       unsubscribe();
       dismissOverlay();
     }
+  });
+});
+
+describe("selectUnreportedInitialDevServerErrors", () => {
+  function reported(
+    source: "caught" | "window-error" | "server",
+    name: string | undefined,
+    message: string,
+  ) {
+    return {
+      id: 0,
+      source,
+      name,
+      message,
+      stack: undefined,
+      ignoredStackFrames: undefined,
+      projectRoot: undefined,
+      codeFrame: undefined,
+      componentStack: undefined,
+    };
+  }
+
+  it("skips an error the browser's render threw again, once for each report", () => {
+    const payload = { name: "Error", message: "boom" };
+
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [payload, payload],
+        [reported("caught", "Error", "boom")],
+      ),
+    ).toEqual([payload]);
+    // App Router reports an error its root boundary catches as a window error.
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [payload],
+        [reported("window-error", "Error", "boom")],
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps an error whose name or source differs from the browser's report", () => {
+    const typeError = { name: "TypeError", message: "load failed" };
+    const serverError = { name: "Error", message: "load failed" };
+
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [typeError, serverError],
+        [reported("caught", "Error", "other"), reported("server", "Error", "load failed")],
+      ),
+    ).toEqual([typeError, serverError]);
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [typeError],
+        [reported("caught", "Error", "load failed")],
+      ),
+    ).toEqual([typeError]);
+  });
+
+  it("replays nothing once a root-level boundary caught the browser's error", () => {
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [{ name: "TypeError", message: "(0 , __vite_ssr_import_0__.fn) is not a function" }],
+        [reported("window-error", "TypeError", "fn is not a function")],
+        true,
+      ),
+    ).toEqual([]);
+  });
+
+  it("matches a thrown non-Error value, reported raw or coerced to an Error", () => {
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [{ message: "plain string" }, { message: "plain string" }],
+        [
+          reported("caught", undefined, "plain string"),
+          reported("window-error", "Error", "plain string"),
+        ],
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -10344,5 +10782,583 @@ describe("resolveServerActionRequestState", () => {
 
     expect(headers.has("X-Vinext-Interception-Context")).toBe(false);
     expect(headers.has("X-Vinext-Mounted-Slots")).toBe(false);
+  });
+});
+
+describe("elements an intercepted payload leaves for the client to keep", () => {
+  // An intercepted soft navigation keeps the source page it shows beneath the
+  // intercepting slot, as Next.js reuses the active source segment
+  // (reuseActiveSegmentInDefaultSlot in client/components/router-reducer/ppr-navigations.ts).
+  const ROUTE_ID = "route:/members/7";
+  const PAGE_ID = "page:/members/7";
+  const HEAD_ID = `${APP_ROUTE_HEAD_ID_PREFIX}${ROUTE_ID}`;
+  const BODY_ID = `${APP_STREAMING_METADATA_BODY_ID_PREFIX}${ROUTE_ID}`;
+  const MODAL_ID = "slot:modal:/members";
+  const SIDEBAR_ID = "slot:sidebar:/members";
+  const SIDEBAR_SEGMENT_ID = createNestedBfcacheSlotSegmentId(SIDEBAR_ID, 1);
+  const LAYOUT_IDS = ["layout:/", "layout:/members"];
+  const RETAINED_IDS = [PAGE_ID, SIDEBAR_ID, HEAD_ID];
+
+  const interception: AppElementsInterception = {
+    sourceMatchedUrl: "/members/7",
+    sourceRouteId: ROUTE_ID,
+    slotId: MODAL_ID,
+    targetMatchedUrl: "/photos/1",
+    targetRouteId: "route:/photos/1",
+  };
+
+  const sourceIdentities = {
+    "layout:/": "identity:layout:/",
+    "layout:/members": "identity:layout:/members",
+    [MODAL_ID]: "identity:modal shell",
+    [PAGE_ID]: "identity:member 7",
+    [SIDEBAR_ID]: "identity:sidebar shell",
+  };
+
+  function createElements(options: {
+    entries: Record<string, unknown>;
+    identities?: Record<string, string>;
+    interception?: AppElementsInterception | null;
+    routeId?: string;
+    slotBindings: readonly AppElementsSlotBinding[];
+  }): AppElements {
+    return normalizeAppElements({
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: options.identities ?? sourceIdentities,
+        interception: options.interception ?? null,
+        interceptionContext: options.interception ? "/members/7" : null,
+        layoutIds: LAYOUT_IDS,
+        rootLayoutTreePath: "/",
+        routeId: options.routeId ?? ROUTE_ID,
+        slotBindings: options.slotBindings,
+      }),
+      ...options.entries,
+    });
+  }
+
+  const page = React.createElement("main", null, "member 7");
+  const head = React.createElement("title", null, "member 7");
+  const sidebar = React.createElement("aside", null, "member sidebar");
+
+  function createSourceState(routeId: string = ROUTE_ID): AppRouterState {
+    return {
+      activeOperation: null,
+      bfcacheIds: {
+        "layout:/": "_b_1_",
+        "layout:/members": "_b_2_",
+        [MODAL_ID]: "_b_3_",
+        [PAGE_ID]: "_b_4_",
+        [SIDEBAR_ID]: "_b_5_",
+      },
+      elements: createElements({
+        entries: {
+          [HEAD_ID]: head,
+          "layout:/": "root layout",
+          "layout:/members": "members layout",
+          [MODAL_ID]: null,
+          [PAGE_ID]: page,
+          [routeId]: "source route",
+          [SIDEBAR_ID]: sidebar,
+        },
+        routeId,
+        slotBindings: [
+          { ownerLayoutId: "layout:/members", slotId: MODAL_ID, state: "default" },
+          {
+            activeRouteId: routeId,
+            ownerLayoutId: "layout:/members",
+            slotId: SIDEBAR_ID,
+            state: "active",
+          },
+        ],
+      }),
+      interception: null,
+      interceptionContext: null,
+      layoutIds: LAYOUT_IDS,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/members/7", {}),
+      previousNextUrl: null,
+      renderId: 0,
+      rootLayoutTreePath: "/",
+      routeId,
+      slotBindings: [
+        { ownerLayoutId: "layout:/members", slotId: MODAL_ID, state: "default" },
+        {
+          activeRouteId: routeId,
+          ownerLayoutId: "layout:/members",
+          slotId: SIDEBAR_ID,
+          state: "active",
+        },
+      ],
+      visibleCommitVersion: 0,
+    };
+  }
+
+  function createInterceptedElements(
+    options: {
+      entries?: Record<string, unknown>;
+      identities?: Record<string, string>;
+      interception?: AppElementsInterception | null;
+    } = {},
+  ): AppElements {
+    return createElements({
+      entries: {
+        [AppElementsWire.keys.retainedElementIds]: RETAINED_IDS,
+        "layout:/": "fresh root layout",
+        "layout:/members": "fresh members layout",
+        [MODAL_ID]: "photo modal",
+        [ROUTE_ID]: "intercepted route",
+        ...options.entries,
+      },
+      identities: options.identities,
+      interception: options.interception === undefined ? interception : options.interception,
+      slotBindings: [
+        {
+          activeRouteId: "route:/photos/1",
+          interceptionId: "interception:modal",
+          interceptionSourceMatchedUrl: "/members/7",
+          ownerLayoutId: "layout:/members",
+          slotId: MODAL_ID,
+          state: "active",
+        },
+        { ownerLayoutId: "layout:/members", slotId: SIDEBAR_ID, state: "default" },
+      ],
+    });
+  }
+
+  async function approve(
+    currentState: AppRouterState,
+    nextElements: AppElements,
+    options: {
+      navigationCommitKind?: "authoritative" | "detached";
+      operationLane?: OperationLane;
+      previousNextUrl?: string;
+      reuseCurrentBfcacheIds?: boolean;
+      type?: "navigate" | "replace" | "traverse";
+    } = {},
+  ) {
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationCommitKind: options.navigationCommitKind,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/1", {}),
+      nextElements: Promise.resolve(nextElements),
+      operationLane: options.operationLane ?? "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      previousNextUrl: options.previousNextUrl ?? "/members/7",
+      renderId: 1,
+      reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds,
+      type: options.type ?? "navigate",
+    });
+    return approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      startedNavigationId: 1,
+      targetHref: "https://example.com/photos/1",
+    });
+  }
+
+  it.each<{ name: string; operationLane: OperationLane; type: "navigate" | "replace" }>([
+    { name: "a navigation", operationLane: "navigation", type: "navigate" },
+    { name: "a refresh", operationLane: "refresh", type: "replace" },
+    { name: "a server action", operationLane: "server-action", type: "replace" },
+  ])("keeps the source page the state shows on $name", async (testCase) => {
+    const currentState = createSourceState();
+    const approval = await approve(currentState, createInterceptedElements(), testCase);
+
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(nextState.elements[PAGE_ID]).toBe(page);
+    expect(nextState.elements[HEAD_ID]).toBe(head);
+    expect(nextState.elements[SIDEBAR_ID]).toBe(sidebar);
+    expect(nextState.elements[MODAL_ID]).toBe("photo modal");
+    expect(nextState.elements[ROUTE_ID]).toBe("intercepted route");
+    expect(nextState.slotBindings).toContainEqual(
+      expect.objectContaining({ slotId: SIDEBAR_ID, state: "active" }),
+    );
+    expect(nextState.slotBindings).toContainEqual(
+      expect.objectContaining({ slotId: MODAL_ID, state: "active" }),
+    );
+    // The kept page keeps its BFCache id, so its client state survives.
+    expect(nextState.bfcacheIds[PAGE_ID]).toBe("_b_4_");
+    expect(nextState.bfcacheIds[SIDEBAR_ID]).toBe("_b_5_");
+    expect(nextState.interception).toEqual(interception);
+  });
+
+  it("commits a payload that already carries what it retains", async () => {
+    const currentState = createSourceState();
+    const supplied = createInterceptedElements({
+      entries: { [HEAD_ID]: "fresh head", [PAGE_ID]: "fresh page", [SIDEBAR_ID]: "fresh sidebar" },
+    });
+    expect(resolveHeldRetainedElementIds(currentState, supplied, "/members/7")).toEqual([]);
+
+    const approval = await approve(currentState, supplied);
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(nextState.elements[PAGE_ID]).toBe("fresh page");
+    expect(nextState.elements[HEAD_ID]).toBe("fresh head");
+  });
+
+  // The body holds the head's streamed tags only when the head's own render
+  // placed them there, as a request-time render can and a prerender doesn't.
+  it("keeps a head whose render streamed no body", async () => {
+    const currentState = createSourceState();
+    const nextElements = createInterceptedElements({
+      entries: { [AppElementsWire.keys.retainedElementIds]: [...RETAINED_IDS, BODY_ID] },
+    });
+    expect(resolveHeldRetainedElementIds(currentState, nextElements, "/members/7")).toEqual(
+      RETAINED_IDS,
+    );
+
+    const approval = await approve(currentState, nextElements);
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(nextState.elements[HEAD_ID]).toBe(head);
+    expect(Object.hasOwn(nextState.elements, BODY_ID)).toBe(false);
+  });
+
+  it("keeps the streamed body beside the head it belongs to", async () => {
+    const sourceState = createSourceState();
+    const body = React.createElement("title", null, "streamed member 7");
+    const currentState = {
+      ...sourceState,
+      elements: { ...sourceState.elements, [BODY_ID]: body },
+    };
+    const nextElements = createInterceptedElements({
+      entries: { [AppElementsWire.keys.retainedElementIds]: [...RETAINED_IDS, BODY_ID] },
+    });
+
+    const approval = await approve(currentState, nextElements);
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(nextState.elements[HEAD_ID]).toBe(head);
+    expect(nextState.elements[BODY_ID]).toBe(body);
+  });
+
+  it("keeps the source's boundary fallbacks beneath the slot owner", async () => {
+    const fallbackId = AppElementsWire.encodeRouteFallbackId(ROUTE_ID, 404, 2);
+    const fallback = React.createElement("p", null, "member not found");
+    const sourceState = createSourceState();
+    const currentState = {
+      ...sourceState,
+      elements: { ...sourceState.elements, [fallbackId]: fallback },
+    };
+    const nextElements = createInterceptedElements({
+      entries: { [AppElementsWire.keys.retainedElementIds]: [...RETAINED_IDS, fallbackId] },
+    });
+    expect(resolveHeldRetainedElementIds(currentState, nextElements, "/members/7")).toEqual([
+      ...RETAINED_IDS,
+      fallbackId,
+    ]);
+    // A state that holds none, as after a 404 document, fetches the source.
+    expect(resolveHeldRetainedElementIds(sourceState, nextElements, "/members/7")).toBeNull();
+
+    const approval = await approve(currentState, nextElements);
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+    expect(nextState.elements[fallbackId]).toBe(fallback);
+    // Only the source's own route keys its fallbacks.
+    const otherRouteFallbackId = AppElementsWire.encodeRouteFallbackId("route:/members/8", 404, 2);
+    expect(
+      resolveHeldRetainedElementIds(
+        {
+          ...currentState,
+          elements: { ...currentState.elements, [otherRouteFallbackId]: fallback },
+        },
+        createInterceptedElements({
+          entries: {
+            [AppElementsWire.keys.retainedElementIds]: [...RETAINED_IDS, otherRouteFallbackId],
+          },
+        }),
+        "/members/7",
+      ),
+    ).toBeNull();
+  });
+
+  async function commitIntercepted(nextElements: AppElements): Promise<AppRouterState> {
+    const sourceState = createSourceState();
+    const approval = await approve(sourceState, nextElements);
+    if (approval.approvedCommit === null) throw new Error("expected a commit");
+    return applyApprovedVisibleCommit(sourceState, approval.approvedCommit);
+  }
+
+  it("keeps the source's head an intercepted state kept", async () => {
+    const currentState = await commitIntercepted(createInterceptedElements());
+
+    expect(currentState.elements[HEAD_ID]).toBe(head);
+    expect(
+      resolveHeldRetainedElementIds(currentState, createInterceptedElements(), "/members/7"),
+    ).toEqual(RETAINED_IDS);
+  });
+
+  it("keeps no head an intercepted state's own payload carried", async () => {
+    const currentState = await commitIntercepted(
+      createInterceptedElements({
+        entries: {
+          [AppElementsWire.keys.retainedElementIds]: [PAGE_ID, SIDEBAR_ID],
+          [HEAD_ID]: "photo head",
+        },
+      }),
+    );
+
+    expect(currentState.elements[HEAD_ID]).toBe("photo head");
+    expect(
+      resolveHeldRetainedElementIds(currentState, createInterceptedElements(), "/members/7"),
+    ).toBeNull();
+  });
+
+  it("keeps no streamed body beside a head the payload carries", () => {
+    const sourceState = createSourceState("route:/members/8");
+    const currentState = {
+      ...sourceState,
+      elements: { ...sourceState.elements, [BODY_ID]: "another render's body" },
+    };
+    const supplied = createInterceptedElements({
+      entries: {
+        [AppElementsWire.keys.retainedElementIds]: [...RETAINED_IDS, BODY_ID],
+        [HEAD_ID]: "fresh head",
+        [PAGE_ID]: "fresh page",
+        [SIDEBAR_ID]: "fresh sidebar",
+      },
+    });
+
+    expect(resolveHeldRetainedElementIds(currentState, supplied, "/members/7")).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: "shows another route",
+      state: () => createSourceState("route:/members/8"),
+      elements: () => createInterceptedElements(),
+    },
+    {
+      name: "holds a page with another identity",
+      state: () => createSourceState(),
+      elements: () =>
+        createInterceptedElements({
+          identities: { ...sourceIdentities, [PAGE_ID]: "identity:member 7 elsewhere" },
+        }),
+    },
+    {
+      name: "holds a branch inside a slot with another identity",
+      state: () => {
+        const state = createSourceState();
+        return {
+          ...state,
+          elements: {
+            ...state.elements,
+            [SIDEBAR_SEGMENT_ID]: null,
+            [AppElementsWire.keys.bfcacheSegmentIdentities]: {
+              ...sourceIdentities,
+              [SIDEBAR_SEGMENT_ID]: "identity:sidebar members",
+            },
+          },
+        };
+      },
+      elements: () =>
+        createInterceptedElements({
+          identities: { ...sourceIdentities, [SIDEBAR_SEGMENT_ID]: "identity:sidebar photos" },
+        }),
+    },
+    {
+      name: "doesn't hold the head",
+      state: () => {
+        const state = createSourceState();
+        const { [HEAD_ID]: _head, ...elements } = state.elements;
+        return { ...state, elements };
+      },
+      elements: () => createInterceptedElements(),
+    },
+    {
+      name: "holds a loading shell's empty page",
+      state: () => {
+        const state = createSourceState();
+        return { ...state, elements: { ...state.elements, [PAGE_ID]: null } };
+      },
+      elements: () => createInterceptedElements(),
+    },
+    {
+      name: "holds a loading shell's empty children slot page",
+      state: () => {
+        const state = createSourceState();
+        const identities = AppElementsWire.readMetadata(state.elements).bfcacheSegmentIdentities;
+        return {
+          ...state,
+          elements: {
+            ...state.elements,
+            [AppElementsWire.keys.bfcacheSegmentIdentities]: {
+              ...identities,
+              "slot:children:/members": "identity:member 7 children",
+            },
+            "slot:children:/members": null,
+          },
+        };
+      },
+      elements: () =>
+        createInterceptedElements({
+          entries: {
+            [AppElementsWire.keys.retainedElementIds]: [
+              "slot:children:/members",
+              SIDEBAR_ID,
+              HEAD_ID,
+            ],
+          },
+          identities: {
+            ...sourceIdentities,
+            "slot:children:/members": "identity:member 7 children",
+          },
+        }),
+    },
+    {
+      name: "receives a payload for no interception",
+      state: () => createSourceState(),
+      elements: () => createInterceptedElements({ interception: null }),
+    },
+    {
+      name: "shows the source page with another query",
+      state: () => ({
+        ...createSourceState(),
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/members/7?tab=b",
+          {},
+        ),
+      }),
+      elements: () => createInterceptedElements(),
+      previousNextUrl: "/members/7?tab=a",
+    },
+    {
+      name: "holds only another route's head",
+      state: () => {
+        const state = createSourceState();
+        return {
+          ...state,
+          elements: { ...state.elements, [`${APP_ROUTE_HEAD_ID_PREFIX}route:/members/8`]: head },
+        };
+      },
+      elements: () =>
+        createInterceptedElements({
+          entries: {
+            [AppElementsWire.keys.retainedElementIds]: [
+              PAGE_ID,
+              SIDEBAR_ID,
+              `${APP_ROUTE_HEAD_ID_PREFIX}route:/members/8`,
+            ],
+          },
+        }),
+    },
+  ])("loads the document when the state $name", async (testCase) => {
+    const currentState = testCase.state();
+    const nextElements = testCase.elements();
+    const previousNextUrl = testCase.previousNextUrl ?? "/members/7";
+    expect(resolveHeldRetainedElementIds(currentState, nextElements, previousNextUrl)).toBeNull();
+
+    const approval = await approve(currentState, nextElements, { previousNextUrl });
+    expect(approval.approvedCommit).toBeNull();
+    expect(approval.decision.disposition).toBe("hard-navigate");
+  });
+
+  it("leaves a detached commit it can't complete to its navigation's payload", async () => {
+    const state = createSourceState();
+    const { [HEAD_ID]: _head, ...elements } = state.elements;
+    const approval = await approve({ ...state, elements }, createInterceptedElements(), {
+      navigationCommitKind: "detached",
+    });
+
+    expect(approval.approvedCommit).toBeNull();
+    expect(approval.decision.disposition).toBe("no-commit");
+  });
+
+  it("leaves the scroll intent to the navigation's payload when its shell can't commit", async () => {
+    const state = createSourceState();
+    const { [HEAD_ID]: _head, ...elements } = state.elements;
+    const initialState = { ...state, elements };
+    const nextElements = createInterceptedElements();
+    const routeManifest = createRouteManifestForPendingCommit(
+      initialState,
+      await createPendingNavigationCommit({
+        currentState: initialState,
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/photos/1",
+          {},
+        ),
+        nextElements: Promise.resolve(nextElements),
+        operationLane: "navigation",
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        previousNextUrl: "/members/7",
+        renderId: 1,
+        type: "navigate",
+      }),
+    );
+    const performHardNavigation = vi.fn(() => true);
+    const { controller, detach } = createControllerHarness(initialState, {
+      getRouteManifest: () => routeManifest,
+      performHardNavigation,
+    });
+    const scrollIntent = beginAppRouterScrollIntent("#photo");
+
+    try {
+      const navId = controller.beginNavigation();
+      await expect(
+        controller.renderNavigationPayload({
+          actionType: "navigate",
+          createNavigationCommitEffect: () => createCommitEffectMock(),
+          historyUpdateMode: "push",
+          navigationCommitKind: "detached",
+          navigationInitiationState: initialState,
+          navigationSnapshot: createClientNavigationRenderSnapshot(
+            "https://example.com/photos/1",
+            {},
+          ),
+          navId,
+          nextElements: Promise.resolve(nextElements),
+          operationLane: "navigation",
+          params: {},
+          payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+          pendingRouterState: null,
+          previousNextUrl: "/members/7",
+          scrollIntent,
+          targetHref: "https://example.com/photos/1#photo",
+        }),
+      ).resolves.toBe("no-commit");
+      expect(performHardNavigation).not.toHaveBeenCalled();
+      expect(getPendingAppRouterScrollIntent()?.id).toBe(scrollIntent.id);
+    } finally {
+      clearAppRouterScrollIntent();
+      detach();
+    }
+  });
+
+  it("loads the document for a traversal that can't reuse the state's segments", async () => {
+    const approval = await approve(createSourceState(), createInterceptedElements(), {
+      operationLane: "traverse",
+      reuseCurrentBfcacheIds: false,
+      type: "traverse",
+    });
+
+    expect(approval.approvedCommit).toBeNull();
+    expect(approval.decision.disposition).toBe("hard-navigate");
+  });
+
+  it("never classifies a payload that retains elements as complete", () => {
+    expect(
+      isCompleteAppPayloadMetadata(AppElementsWire.readMetadata(createInterceptedElements())),
+    ).toBe(false);
+  });
+
+  it("rejects a retained id that names no element", () => {
+    expect(() =>
+      AppElementsWire.readMetadata({
+        ...createInterceptedElements(),
+        [AppElementsWire.keys.retainedElementIds]: ["__route"],
+      }),
+    ).toThrow(/__retainedElementIds/);
   });
 });

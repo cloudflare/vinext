@@ -1,6 +1,9 @@
 import type { ClientInstrumentationHooks } from "./instrumentation-client.js";
 
-let clientInstrumentationHooks: ClientInstrumentationHooks | null = null;
+// Pages Router dev pre-bundles next/* shims with their own copy of this module,
+// while the browser entry registers hooks on the raw one. Keep the hooks on
+// globalThis so every copy notifies the app's instrumentation-client.
+const VINEXT_CLIENT_INSTRUMENTATION_HOOKS = Symbol.for("vinext.client.instrumentationHooks");
 
 export function normalizeClientInstrumentationHooks(
   hooks: ClientInstrumentationHooks,
@@ -11,17 +14,22 @@ export function normalizeClientInstrumentationHooks(
 export function setClientInstrumentationHooks(
   hooks: ClientInstrumentationHooks | null,
 ): ClientInstrumentationHooks | null {
-  clientInstrumentationHooks = hooks;
-  return clientInstrumentationHooks;
+  Reflect.set(globalThis, VINEXT_CLIENT_INSTRUMENTATION_HOOKS, hooks);
+  return hooks;
 }
 
 export function getClientInstrumentationHooks(): ClientInstrumentationHooks | null {
-  return clientInstrumentationHooks;
+  return (
+    (Reflect.get(globalThis, VINEXT_CLIENT_INSTRUMENTATION_HOOKS) as
+      | ClientInstrumentationHooks
+      | null
+      | undefined) ?? null
+  );
 }
 
 export function notifyAppRouterTransitionStart(
   href: string,
   navigationType: "push" | "replace" | "traverse",
 ): void {
-  clientInstrumentationHooks?.onRouterTransitionStart?.(href, navigationType);
+  getClientInstrumentationHooks()?.onRouterTransitionStart?.(href, navigationType);
 }

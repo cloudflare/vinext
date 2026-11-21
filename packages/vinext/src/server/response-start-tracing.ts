@@ -1,5 +1,6 @@
 import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
 import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
+import { observeStreamConsumption } from "./defer-until-stream-consumed.js";
 import { frameworkTracer } from "./tracer.js";
 
 const tracedResponses = new WeakMap<Response, Promise<void>>();
@@ -19,43 +20,16 @@ function traceResponseStartStream(
   stream: ReadableStream<Uint8Array>,
   onSettled: () => void,
 ): ReadableStream<Uint8Array> {
-  const reader = stream.getReader();
   const runInTraceContext = frameworkTracer.captureActiveContext();
-  let started = false;
-
-  return new ReadableStream<Uint8Array>(
-    {
-      async pull(controller) {
-        try {
-          const result = await reader.read();
-          if (result.done) {
-            onSettled();
-            controller.close();
-            return;
-          }
-          if (!started) {
-            started = true;
-            runInTraceContext(() =>
-              frameworkTracer.trace(createResponseStartSpanDescriptor(), () => undefined),
-            );
-            onSettled();
-          }
-          controller.enqueue(result.value);
-        } catch (error) {
-          onSettled();
-          controller.error(error);
-        }
-      },
-      async cancel(reason) {
-        try {
-          await reader.cancel(reason);
-        } finally {
-          onSettled();
-        }
-      },
+  return observeStreamConsumption(stream, {
+    onStart() {
+      runInTraceContext(() =>
+        frameworkTracer.trace(createResponseStartSpanDescriptor(), () => undefined),
+      );
+      onSettled();
     },
-    { highWaterMark: 0 },
-  );
+    onFlush: onSettled,
+  });
 }
 
 export function traceResponseStartWithCompletion(response: Response): {

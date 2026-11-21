@@ -21,12 +21,17 @@ import {
 import type { ImageConfig } from "./image-optimization.js";
 import {
   attachRequestCfMetadata,
-  cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
+  haveSameHeaders,
+  stripRequestUrlFragment,
+  withRequestHeaders,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
+import { withRequestStageBypassCacheState } from "./cache-headers.js";
+import { isExternalUrl } from "../utils/external-url.js";
+import { applyMiddlewareResponseHeadersToRequest } from "../utils/middleware-request-headers.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import { createStaticAssetRequest } from "./worker-utils.js";
@@ -55,10 +60,17 @@ import {
   validateCdnRequest,
 } from "./cache-control.js";
 import {
+  createSharedPagesPageCacheIdentity,
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
   type DispatchWorkerResponseStage,
+  type PagesPageResponseStageProps,
   type WorkerResponseStageProps,
 } from "./worker-stages.js";
+import {
+  adapterUsesSharedCacheIdentity,
+  pagesCacheIdentityOrigin,
+  pagesPageSharesAcrossHosts,
+} from "./shared-cache-identity.js";
 import { getPagesResponseStageCacheDisposition } from "./pages-response-stage.js";
 import type {
   VinextAssetFetcher,
@@ -114,16 +126,20 @@ type PagesStageRuntimeDispatch = (
   ctx: ExecutionContextLike,
 ) => Promise<Response>;
 
-function haveSameHeaders(first: Headers, second: Headers): boolean {
-  const firstEntries = [...first];
-  const secondEntries = [...second];
-  return (
-    firstEntries.length === secondEntries.length &&
-    firstEntries.every(
-      ([name, value], index) =>
-        name === secondEntries[index]?.[0] && value === secondEntries[index]?.[1],
-    )
-  );
+/**
+ * Whether middleware's request-header overrides changed the request. Next.js
+ * also copies ordinary middleware response headers onto the request; like a
+ * client's own headers, those do not opt the render out of the shared stage.
+ */
+function hasRequestHeaderOverrides(
+  originalHeaders: Headers,
+  requestHeaders: Headers,
+  middlewareResponseHeaders: Headers | undefined,
+): boolean {
+  const expectedHeaders = middlewareResponseHeaders
+    ? applyMiddlewareResponseHeadersToRequest(originalHeaders, middlewareResponseHeaders)
+    : originalHeaders;
+  return !haveSameHeaders(expectedHeaders, requestHeaders);
 }
 
 function captureOuterResponsePolicyHeaders(
@@ -178,10 +194,13 @@ const configHeaders = vinextConfig?.headers ?? [];
 const imageConfig: ImageConfig | undefined = vinextConfig?.images
   ? {
       qualities: vinextConfig.images.qualities,
+      localPatterns: vinextConfig.images.localPatterns,
       dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
       dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
       contentDispositionType: vinextConfig.images.contentDispositionType,
       contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+      minimumCacheTTL: vinextConfig.images.minimumCacheTTL,
+      maximumResponseBody: vinextConfig.images.maximumResponseBody,
     }
   : undefined;
 
@@ -262,6 +281,8 @@ function handleRequest(
   defaultHostRuntime: "node" | "worker",
   assets: VinextAssetFetcher | undefined,
 ): Promise<Response> {
+  // Multi-stage Node adapters can keep a `#fragment` sent on the request line.
+  request = stripRequestUrlFragment(request);
   const url = new URL(request.url);
   const trace = async () => {
     await pagesEntry.__ensureInstrumentation?.(platformCtx);
@@ -388,7 +409,7 @@ async function handleRequestImpl(
         filteredHeaders.set(VINEXT_EXPECTED_WORKER_VERSION_HEADER, expectedWorkerVersion);
       }
     }
-    request = cloneRequestWithHeaders(request, filteredHeaders);
+    request = withRequestHeaders(request, filteredHeaders);
 
     const url = new URL(request.url);
     let pathname = url.pathname;
@@ -487,6 +508,11 @@ async function handleRequestImpl(
     // request as a replay source for every render in that retry sequence.
     // Ordinary matched page renders keep the original streaming request.
     let speculativeRenderRequest: Request | null = null;
+    // The middleware response alone, before next.config headers are staged.
+    let middlewareResponseHeaders: Headers | undefined;
+    // Whether middleware answered the request itself, by a redirect, its own
+    // response or an external rewrite.
+    let middlewareAnswered = false;
 
     const deps: PagesPipelineDeps = {
       assetPrefix: vinextConfig?.assetPrefix,
@@ -513,7 +539,24 @@ async function handleRequestImpl(
       matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
       runMiddleware:
         typeof runMiddleware === "function"
-          ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
+          ? async (middlewareInput, middlewareCtx, middlewareOptions) => {
+              const result = await wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)(
+                middlewareInput,
+                middlewareCtx,
+                middlewareOptions,
+              );
+              middlewareResponseHeaders = undefined;
+              middlewareAnswered =
+                !result.continue ||
+                (result.rewriteUrl !== undefined && isExternalUrl(result.rewriteUrl));
+              if (result.responseHeaders) {
+                middlewareResponseHeaders = new Headers();
+                for (const [key, value] of result.responseHeaders) {
+                  middlewareResponseHeaders.append(key, value);
+                }
+              }
+              return result;
+            }
           : null,
       renderPage: (req, resolvedUrl, options, stagedHeaders) => {
         if (options?.renderErrorPageOnMiss === false && req.body !== null && !req.bodyUsed) {
@@ -535,15 +578,26 @@ async function handleRequestImpl(
                     : undefined,
                 hasRequestAwareDocument: hasRequestAwareDocument === true,
                 request: req,
-                requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
+                requestHeadersChanged: hasRequestHeaderOverrides(
+                  filteredHeaders,
+                  req.headers,
+                  middlewareResponseHeaders,
+                ),
                 routeDataKind: matchedPage?.route.dataKind,
                 stagedHeaders,
               });
         const isSharedStaticPage = cache === "shared" && matchedPage?.route.dataKind === "static";
+        // Next.js keys a static page's response cache entry by its path, so
+        // one entry answers every host that is not a configured i18n domain.
+        // A probe classifies the shared dispatch, so it renders as one.
+        const sharedAcrossHosts =
+          (cache === "shared" || probeMode !== null) &&
+          pagesPageSharesAcrossHosts(matchedPage?.route) &&
+          adapterUsesSharedCacheIdentity();
         const transportedPolicyHeaders = isSharedStaticPage
           ? withoutResponseStageVary(responseStagePolicyHeaders)
           : withResponseStageVary(responseStagePolicyHeaders, stagedHeaders?.get("Vary"));
-        const responseStageProps = (): WorkerResponseStageProps => ({
+        const responseStageProps = (): PagesPageResponseStageProps => ({
           buildId: pagesEntry.buildId,
           cacheability: {
             policyHeaders: transportedPolicyHeaders,
@@ -558,6 +612,7 @@ async function handleRequestImpl(
             ? { ...options, originalUrl: originalRenderUrl }
             : (options ?? null),
           resolvedUrl,
+          sharedAcrossHosts,
           // Static/ISR pages cannot observe Node's response object. Keep their
           // request-specific middleware headers outside the shared artifact so
           // one safe render can still serve every outer composition. Pages
@@ -566,10 +621,20 @@ async function handleRequestImpl(
           stagedHeaders: isSharedStaticPage ? null : [...(stagedHeaders ?? new Headers())],
         });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
+        const props = responseStageProps();
         const dispatched = trackedDispatchResponseStage(
           stageRequest,
-          responseStageProps(),
-          { cache },
+          props,
+          cache === "shared" && sharedAcrossHosts
+            ? {
+                cache,
+                cacheIdentity: createSharedPagesPageCacheIdentity(
+                  stageRequest,
+                  props,
+                  pagesCacheIdentityOrigin(stageRequest.url, i18nConfig),
+                ),
+              }
+            : { cache },
           env,
           ctx,
         );
@@ -629,7 +694,11 @@ async function handleRequestImpl(
                     ? authorizeOnDemandRevalidate
                     : undefined,
                 request: req,
-                requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
+                requestHeadersChanged: hasRequestHeaderOverrides(
+                  filteredHeaders,
+                  req.headers,
+                  middlewareResponseHeaders,
+                ),
                 stagedHeaders,
               });
         const dispatched = trackedDispatchResponseStage(
@@ -761,7 +830,14 @@ async function handleRequestImpl(
       );
       if (sourceResult.type !== "response") return null;
       await sourceResult.response.body?.cancel().catch(() => {});
-      if (isImageSourceBodyStatus(sourceResult.response.status)) return sourceAsset;
+      if (isImageSourceBodyStatus(sourceResult.response.status) && sourceAsset !== null) {
+        // The pipeline staged middleware and `headers()` values on its response.
+        const { withStagedCacheControl } = await import("./worker-image-optimization.js");
+        return withStagedCacheControl(
+          sourceAsset,
+          sourceResult.response.headers.get("Cache-Control"),
+        );
+      }
       await sourceAsset?.body?.cancel().catch(() => {});
       return null;
     };
@@ -771,6 +847,16 @@ async function handleRequestImpl(
       let response = result.response;
       if (sharedResponseHeaders && sharedOuterPolicyHeaders) {
         reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedOuterPolicyHeaders);
+      }
+      // Middleware or a next.config redirect or external rewrite answered in
+      // this uncached request stage, so a staged response stage and its
+      // shared cache never see this request. A fallback external rewrite
+      // answers after the response stage rendered a miss, and replaces it.
+      if (
+        !forceCacheBypass &&
+        ((middlewareAnswered && !responseStageDispatched) || result.configAnswered)
+      ) {
+        response = withRequestStageBypassCacheState(response);
       }
       if (probeMode && probeRoute && !responseStageDispatched) {
         const { finalizeRequestStageCacheabilityProbe } = await import("./cacheability-request.js");

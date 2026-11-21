@@ -19,6 +19,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           Unauthorized item
         </Link>
         <Link href="/nextjs-compat/not-found-sibling-intercept/item/1">Item 1</Link>
+        <Link href="/nextjs-compat/not-found-sibling-intercept/item/layout-missing">
+          Layout not found
+        </Link>
       </nav>
       {children}
     </div>

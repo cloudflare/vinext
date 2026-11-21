@@ -16,10 +16,12 @@ export function getCurrentBrowserLocale({
 }): string | undefined {
   if (typeof window === "undefined") return undefined;
 
-  const pathnameLocale = getLocalePathPrefix(
-    stripBasePath(window.location.pathname, basePath),
-    window.__VINEXT_LOCALES__,
-  );
+  const locales = window.__VINEXT_LOCALES__;
+  // Skip the location read when no locales are configured (the common case for
+  // every Link render): getLocalePathPrefix() would return undefined anyway.
+  const pathnameLocale = locales?.length
+    ? getLocalePathPrefix(stripBasePath(window.location.pathname, basePath), locales)
+    : undefined;
   if (pathnameLocale) return pathnameLocale;
 
   // Prefer the actually-active locale (set by SSR for the rendered page) over

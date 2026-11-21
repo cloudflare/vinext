@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { preload } from "react-dom";
 import { CacheStatusProbe } from "../../components/cache-status-probe";
 import { RevalidateControls } from "../../components/revalidate-controls";
 import { loadPrewarmProbe } from "../prewarm-probe";
@@ -44,6 +45,10 @@ export default async function CachedSlugPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
+  // Gives the document a renderer-owned Link header.
+  if (slug.startsWith("preload-")) {
+    preload("/preload-probe.woff2", { as: "font", crossOrigin: "", type: "font/woff2" });
+  }
   const path = `/cached/${slug}`;
   const tag = `post:${slug}`;
   const post = await loadPost(slug);

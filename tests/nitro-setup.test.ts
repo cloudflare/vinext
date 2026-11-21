@@ -19,7 +19,13 @@ type NitroSetupTarget = {
     routeRules?: Record<string, Record<string, unknown>>;
     traceDeps?: string[];
   };
+  hooks?: { callHook(name: string, ...args: unknown[]): Promise<unknown> };
 };
+
+// Nitro's hooks. vinext wraps callHook, so each setup gets its own.
+const nitroHooks = () => ({ callHook: async () => {} });
+
+type NitroSetup = NonNullable<NonNullable<NitroSetupPlugin["nitro"]>["setup"]>;
 
 type NitroSetupPlugin = {
   nitro?: {
@@ -137,11 +143,14 @@ async function initializeNitroSetupPlugin(root: string): Promise<NitroSetupPlugi
   await configPlugin.config({ root, plugins: [] }, { command: "build", mode: "production" });
 
   const nitroPlugin = findNamedPlugin(plugins, "vinext:nitro-setup") as NitroSetupPlugin;
-  if (!nitroPlugin?.nitro?.setup) {
+  const setup = nitroPlugin?.nitro?.setup;
+  if (!setup) {
     throw new Error("vinext:nitro-setup plugin not found");
   }
-
-  return nitroPlugin;
+  // Nitro always passes its hooks.
+  const setupWithHooks: NitroSetup = (nitro) =>
+    setup({ ...nitro, hooks: nitro.hooks ?? nitroHooks() });
+  return { ...nitroPlugin, nitro: { ...nitroPlugin.nitro, setup: setupWithHooks } };
 }
 
 describe("vinext Nitro setup integration", () => {
@@ -231,7 +240,10 @@ describe("vinext Nitro setup integration", () => {
       writeProjectFile(root, `.output/public/${file}`, "");
     }
 
-    expect(nitro.options.plugins).toEqual(["#vinext/nitro-public-files"]);
+    expect(nitro.options.plugins).toEqual([
+      expect.stringMatching(/nitro-request-target-plugin\.(js|ts)$/),
+      "#vinext/nitro-public-files",
+    ]);
     const template = nitro.options.virtual?.["#vinext/nitro-public-files"];
     expect(typeof template).toBe("function");
     // Keyed as Nitro keys its static files: decoded, then joined to `/`. A
@@ -277,12 +289,29 @@ describe("vinext Nitro setup integration", () => {
     ["under a Nitro baseURL", { dev: false, baseURL: "/docs/", serveStatic: true }],
   ])("does not register the public files plugin %s", async (_, options) => {
     const nitroPlugin = await initializeNitroSetupPlugin(createAppProject());
-    const nitro: NitroSetupTarget = { options };
+    const nitro: NitroSetupTarget = { options, hooks: nitroHooks() };
 
     await nitroPlugin.nitro!.setup!(nitro);
 
-    expect(nitro.options.plugins).toBeUndefined();
+    expect(nitro.options.plugins ?? []).not.toContain("#vinext/nitro-public-files");
     expect(nitro.options.virtual).toBeUndefined();
+  });
+
+  // It saves each request's raw target before h3 can rewrite req.url; the dev
+  // server checks the raw target itself.
+  it("registers the request-target plugin for builds only", async () => {
+    const nitroPlugin = await initializeNitroSetupPlugin(createAppProject());
+    const build: NitroSetupTarget = { options: { dev: false, serveStatic: false } };
+    const dev: NitroSetupTarget = { options: { dev: true }, hooks: nitroHooks() };
+
+    await nitroPlugin.nitro!.setup!(build);
+    await nitroPlugin.nitro!.setup!(build);
+    await nitroPlugin.nitro!.setup!(dev);
+
+    expect(build.options.plugins).toEqual([
+      expect.stringMatching(/nitro-request-target-plugin\.(js|ts)$/),
+    ]);
+    expect(dev.options.plugins).toBeUndefined();
   });
 
   it("propagates server externals during Nitro dev", async () => {
@@ -294,6 +323,7 @@ describe("vinext Nitro setup integration", () => {
         routeRules: {},
         traceDeps: ["existing-trace"],
       },
+      hooks: nitroHooks(),
     };
 
     await nitroPlugin.nitro!.setup!(nitro);

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
@@ -82,5 +83,55 @@ describe("production server listen failures", () => {
 
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("EADDRINUSE");
+  }, 20_000);
+});
+
+describe("production server NODE_ENV", () => {
+  const prodServerPath = path.resolve(
+    import.meta.dirname,
+    "../packages/vinext/dist/server/prod-server.js",
+  );
+
+  // React picks its development or production build from NODE_ENV when it is
+  // first loaded, so this runs in a fresh process. The server bundle loads
+  // React the way a built one does, then reports NODE_ENV and the React build.
+  async function serveFreshProcess(nodeEnv: string | undefined): Promise<string> {
+    const root = createProject("app");
+    fs.writeFileSync(
+      path.join(root, "dist/server/index.js"),
+      `import { createRequire } from "node:module";
+const require = createRequire(${JSON.stringify(prodServerPath)});
+require("react");
+const reactBuilds = Object.keys(require.cache).filter((file) => /react\\.(development|production)\\.js$/.test(file));
+const body = [String(process.env.NODE_ENV), ...reactBuilds.map((file) => file.split(/[\\\\/]/).pop())].join(" ");
+export default () => new Response(body);
+`,
+    );
+    fs.writeFileSync(
+      path.join(root, "main.js"),
+      `import { startProdServer } from ${JSON.stringify(pathToFileURL(prodServerPath).href)};
+const { server } = await startProdServer({ outDir: "dist", port: 0, host: "127.0.0.1", silent: true });
+const response = await fetch(\`http://127.0.0.1:\${server.address().port}/\`);
+console.log(await response.text());
+server.close();
+`,
+    );
+    const env = { ...process.env };
+    if (nodeEnv === undefined) Reflect.deleteProperty(env, "NODE_ENV");
+    else Reflect.set(env, "NODE_ENV", nodeEnv);
+    const { stdout } = await execFileAsync(process.execPath, ["main.js"], {
+      cwd: root,
+      env,
+      timeout: 15_000,
+    });
+    return stdout.trim();
+  }
+
+  it("defaults to production before React loads, like `vinext start`", async () => {
+    expect(await serveFreshProcess(undefined)).toBe("production react.production.js");
+  }, 20_000);
+
+  it("keeps an explicit NODE_ENV", async () => {
+    expect(await serveFreshProcess("development")).toBe("development react.development.js");
   }, 20_000);
 });

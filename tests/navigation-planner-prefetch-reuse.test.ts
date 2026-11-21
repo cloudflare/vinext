@@ -127,14 +127,19 @@ describe("navigationPlanner prefetch reuse classification", () => {
     });
   });
 
-  it("skips visited and prefetch reuse when navigation cache is bypassed", () => {
+  it("fetches fresh without an optimistic shell when navigation cache is bypassed", () => {
+    // Same-pathname navigations keep the current page mounted in Next.js, so
+    // they skip the loading shell as well as visited and prefetch reuse.
     const decision = classifyReuse({
       bypassNavigationCache: true,
       prefetch: { status: "available" },
       visitedResponse: { status: "available" },
     });
 
-    expect(decision.kind).toBe("attemptOptimisticRouteShell");
+    expect(decision).toMatchObject({
+      kind: "fetchFresh",
+      reason: "cacheBypassed",
+    });
   });
 
   it("fetches fresh for refresh even when cache candidates exist", () => {

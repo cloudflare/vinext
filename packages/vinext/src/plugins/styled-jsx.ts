@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import type { ESTree, Plugin } from "vite";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
@@ -18,6 +18,9 @@ type StyledJsxPluginOptions = {
 };
 
 const STYLED_JSX_IMPORT_RE = /^styled-jsx(?:\/.*)?$/;
+// Browser-side entry points: compiled `<style jsx>` imports `styled-jsx/style`,
+// and App Router style registries import `styled-jsx`.
+const STYLED_JSX_RUNTIME_IDS = ["styled-jsx", "styled-jsx/style"];
 const STYLED_JSX_SOURCE_RE =
   /(?:<style\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
 const STYLED_JSX_CSS_RE =
@@ -59,10 +62,9 @@ function createProjectRequire(projectRoot: string) {
   return createRequire(path.join(projectRoot, "package.json"));
 }
 
-function resolveNextRequire(projectRoot: string): NodeJS.Require | null {
+function resolveNextPackageJson(projectRoot: string): string | null {
   try {
-    const projectRequire = createProjectRequire(projectRoot);
-    return createRequire(projectRequire.resolve("next/package.json"));
+    return toSlash(createProjectRequire(projectRoot).resolve("next/package.json"));
   } catch {
     return null;
   }
@@ -82,12 +84,21 @@ export function createStyledJsxPlugin(
 ): Plugin {
   let projectRoot = initialProjectRoot;
   let development = false;
+  let nextPackageJson: string | null | undefined;
   let nextRequire: NodeJS.Require | null | undefined;
   let compilerPromise: Promise<NextSwcModule> | null = null;
   const importModule = options.importModule ?? ((url: string) => import(url));
 
+  function getNextPackageJson(): string | null {
+    if (nextPackageJson === undefined) nextPackageJson = resolveNextPackageJson(projectRoot);
+    return nextPackageJson;
+  }
+
   function getNextRequire(): NodeJS.Require | null {
-    nextRequire ??= resolveNextRequire(projectRoot);
+    if (nextRequire === undefined) {
+      const packageJson = getNextPackageJson();
+      nextRequire = packageJson ? createRequire(packageJson) : null;
+    }
     return nextRequire;
   }
 
@@ -115,13 +126,40 @@ export function createStyledJsxPlugin(
       development = config.command === "serve";
       if (config.root !== projectRoot) {
         projectRoot = config.root;
+        nextPackageJson = undefined;
         nextRequire = undefined;
         compilerPromise = null;
+      }
+
+      const clientOptimizeDeps = config.environments.client?.optimizeDeps;
+      const requireFromNext = development && clientOptimizeDeps ? getNextRequire() : null;
+      if (!clientOptimizeDeps || !requireFromNext) return;
+      // styled-jsx ships CommonJS, so the browser needs the prebundled copy.
+      // The client resolveId below resolves it from Next's package, and Vite
+      // never discovers deps imported from inside node_modules, so without
+      // these startup includes the browser gets the raw CommonJS file.
+      for (const id of STYLED_JSX_RUNTIME_IDS) {
+        const include = `next > ${id}`;
+        if (clientOptimizeDeps.include?.includes(include)) continue;
+        try {
+          requireFromNext.resolve(id);
+        } catch {
+          continue;
+        }
+        (clientOptimizeDeps.include ??= []).push(include);
       }
     },
     resolveId: {
       filter: { id: STYLED_JSX_IMPORT_RE },
-      handler(source) {
+      async handler(source, _importer, resolveOptions) {
+        const packageJson = getNextPackageJson();
+        if (development && packageJson && this.environment.name === "client") {
+          // An absolute path would bypass the dev dependency optimizer and
+          // serve the raw CommonJS file. Resolving the bare id as Next would
+          // import it picks up the copy prebundled by configResolved instead.
+          return this.resolve(source, packageJson, { ...resolveOptions, skipSelf: true });
+        }
+
         try {
           return getNextRequire()?.resolve(source) ?? null;
         } catch {}

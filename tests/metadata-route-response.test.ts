@@ -6,10 +6,16 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   getPrerenderableMetadataRoutePaths,
+  getWarmableMetadataRoutes,
   handleMetadataRouteRequest,
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import {
+  DefaultCdnCacheAdapter,
+  getCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 import { addCollectedRequestTags } from "../packages/vinext/src/shims/fetch-cache.js";
 import { _setRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
@@ -118,6 +124,292 @@ describe("handleMetadataRouteRequest", () => {
     ]);
   });
 
+  it("lists the metadata routes a Next.js build prerenders for CDN warming", async () => {
+    // Probed on next@16.2.7 (webpack and Turbopack): `next build` prerenders
+    // app/sitemap.js and app/robots.js, app/blog/[slug]/opengraph-image.js per
+    // its own generateStaticParams, app/gallery/opengraph-image.js per
+    // generateImageMetadata id and app/products/sitemap.js per
+    // generateSitemaps id. It leaves force-dynamic routes, an opengraph-image
+    // whose only params come from its page's generateStaticParams, and
+    // generateImageMetadata below a dynamic segment to request time.
+    const route = (
+      servedUrl: string,
+      type: string,
+      module: Record<string, unknown>,
+      patternParts?: string[],
+    ): MetadataFileRoute => ({
+      type,
+      isDynamic: true,
+      filePath: `/tmp/app${servedUrl}.tsx`,
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl,
+      contentType: type === "sitemap" ? "application/xml" : "image/png",
+      module,
+      ...(patternParts ? { patternParts } : {}),
+    });
+    const image = async () => new Response("image");
+    const generateSitemaps = vi.fn(async () => [{ id: 0 }, { id: "one" }]);
+    const generateImageMetadata = vi.fn(() => [{ id: "small" }, { id: "large" }, { id: "a/b" }]);
+    const generateStaticParams = vi.fn(() => [{ slug: "first" }, { slug: "second" }]);
+    const routes = [
+      {
+        ...route("/shop/-/icon.png", "icon", {}),
+        contentHash: "built-icon-hash",
+        isDynamic: false,
+      },
+      route("/sitemap.xml", "sitemap", { default: () => [] }),
+      route("/robots.txt", "robots", { default: () => ({}), revalidate: 60 }),
+      route("/twitter-image", "twitter-image", { default: image, dynamic: "force-dynamic" }),
+      route("/icon", "icon", { default: image, revalidate: 0 }),
+      route("/products/sitemap.xml", "sitemap", { default: () => [], generateSitemaps }),
+      {
+        ...route("/gallery/opengraph-image", "opengraph-image", {
+          default: image,
+          generateImageMetadata,
+        }),
+        contentHash: "gallery-hash",
+      },
+      route(
+        "/blog/[slug]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateStaticParams },
+        ["blog", ":slug", "opengraph-image"],
+      ),
+      route("/docs/[slug]/opengraph-image", "opengraph-image", { default: image }, [
+        "docs",
+        ":slug",
+        "opengraph-image",
+      ]),
+      route(
+        "/news/[slug]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateStaticParams: () => undefined },
+        ["news", ":slug", "opengraph-image"],
+      ),
+      route(
+        "/shop/[id]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateImageMetadata },
+        ["shop", ":id", "opengraph-image"],
+      ),
+    ];
+
+    await expect(
+      getWarmableMetadataRoutes(routes, { enumerateDynamicPaths: true }),
+    ).resolves.toEqual([
+      // A static file is linked with the hash of the file this build embeds.
+      { paths: ["/shop/-/icon.png"], routePattern: "/shop/-/icon.png", search: "?built-icon-hash" },
+      { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
+      { paths: ["/robots.txt"], routePattern: "/robots.txt" },
+      {
+        paths: ["/products/sitemap/0.xml", "/products/sitemap/one.xml"],
+        routePattern: "/products/sitemap.xml",
+      },
+      {
+        paths: ["/gallery/opengraph-image/small", "/gallery/opengraph-image/large"],
+        routePattern: "/gallery/opengraph-image",
+        // Pages link an image with its content hash.
+        search: "?gallery-hash",
+      },
+      {
+        routePattern: "/blog/:slug/opengraph-image",
+        staticParams: [{ slug: "first" }, { slug: "second" }],
+      },
+      // Discovery reports that generateStaticParams must return an array.
+      { routePattern: "/news/:slug/opengraph-image", staticParams: null },
+    ]);
+    expect(generateImageMetadata).toHaveBeenCalledTimes(1);
+    expect(generateImageMetadata).toHaveBeenCalledWith({ params: {} });
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+
+    generateSitemaps.mockClear();
+    generateImageMetadata.mockClear();
+    generateStaticParams.mockClear();
+    // Without enumeration (traffic-aware warming), only one-URL routes are
+    // listed and no generator runs.
+    await expect(
+      getWarmableMetadataRoutes(routes, { enumerateDynamicPaths: false }),
+    ).resolves.toEqual([
+      { paths: ["/shop/-/icon.png"], routePattern: "/shop/-/icon.png", search: "?built-icon-hash" },
+      { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
+      { paths: ["/robots.txt"], routePattern: "/robots.txt" },
+    ]);
+    expect(generateSitemaps).not.toHaveBeenCalled();
+    expect(generateImageMetadata).not.toHaveBeenCalled();
+    expect(generateStaticParams).not.toHaveBeenCalled();
+  });
+
+  it("runs discovery generators without the discovery request's headers", async () => {
+    // No Next.js test port applies: Next.js runs these generators at build
+    // time through the generateStaticParams its metadata loader adds, where
+    // request APIs throw.
+    const readHeaders = async () => {
+      await headers();
+      return [{ id: "a", slug: "a" }];
+    };
+    const route = (
+      servedUrl: string,
+      type: string,
+      module: Record<string, unknown>,
+      patternParts?: string[],
+    ): MetadataFileRoute => ({
+      type,
+      isDynamic: true,
+      filePath: `/tmp/app${servedUrl}.tsx`,
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl,
+      contentType: type === "sitemap" ? "application/xml" : "image/png",
+      module,
+      ...(patternParts ? { patternParts } : {}),
+    });
+    const image = async () => new Response("image");
+    const routes = [
+      route("/sitemap.xml", "sitemap", {
+        default: markUseCache(async () => []),
+        generateSitemaps: readHeaders,
+      }),
+      route("/gallery/opengraph-image", "opengraph-image", {
+        default: image,
+        generateImageMetadata: readHeaders,
+      }),
+      route(
+        "/blog/[slug]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateStaticParams: readHeaders },
+        ["blog", ":slug", "opengraph-image"],
+      ),
+    ];
+    const discover = (fn: () => Promise<unknown>) =>
+      runWithRequestContext(
+        createRequestContext({
+          headersContext: {
+            cookies: new Map(),
+            headers: new Headers({ "x-vinext-prerender-secret": "secret" }),
+          },
+        }),
+        fn,
+      );
+
+    for (const listed of routes) {
+      await expect(
+        discover(() => getWarmableMetadataRoutes([listed], { enumerateDynamicPaths: true })),
+      ).rejects.toThrow("used a request API such as `headers()`");
+    }
+    await expect(discover(() => getPrerenderableMetadataRoutePaths([routes[0]!]))).rejects.toThrow(
+      "used a request API such as `headers()`",
+    );
+  });
+
+  it("fails discovery when a generator result isn't iterable", async () => {
+    // No Next.js test port applies: the generateStaticParams Next.js' metadata
+    // loader adds iterates these results, so `next build` fails on them.
+    const route = (servedUrl: string, type: string, module: Record<string, unknown>) =>
+      ({
+        type,
+        isDynamic: true,
+        filePath: `/tmp/app${servedUrl}.tsx`,
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl,
+        contentType: type === "sitemap" ? "application/xml" : "image/png",
+        module,
+      }) satisfies MetadataFileRoute;
+    const sitemap = route("/sitemap.xml", "sitemap", {
+      default: markUseCache(async () => []),
+      generateSitemaps: async () => ({ id: "a" }),
+    });
+    const image = route("/opengraph-image", "opengraph-image", {
+      default: async () => new Response("image"),
+      generateImageMetadata: () => undefined,
+    });
+
+    await expect(
+      getWarmableMetadataRoutes([sitemap], { enumerateDynamicPaths: true }),
+    ).rejects.toThrow("generateSitemaps() must return an array");
+    await expect(getPrerenderableMetadataRoutePaths([sitemap])).rejects.toThrow(
+      "generateSitemaps() must return an array",
+    );
+    await expect(
+      getWarmableMetadataRoutes([image], { enumerateDynamicPaths: true }),
+    ).rejects.toThrow("generateImageMetadata() must return an array");
+    // An iterable result is read like Next.js' for...of.
+    await expect(
+      getWarmableMetadataRoutes(
+        [
+          {
+            ...sitemap,
+            module: { ...sitemap.module, generateSitemaps: async () => new Set([{ id: "a" }]) },
+          },
+        ],
+        { enumerateDynamicPaths: true },
+      ),
+    ).resolves.toEqual([{ paths: ["/sitemap/a.xml"], routePattern: "/sitemap.xml" }]);
+  });
+
+  it("serves the sitemap children an iterable generateSitemaps result lists", async () => {
+    // Next.js' generated sitemap GET reads generateSitemaps() with for...of,
+    // as its generateStaticParams does.
+    const route = {
+      type: "sitemap",
+      isDynamic: true,
+      filePath: "/tmp/app/sitemap.ts",
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl: "/sitemap.xml",
+      contentType: "application/xml",
+      module: {
+        default: () => [{ url: "https://example.com/a" }],
+        generateSitemaps: async () => new Set([{ id: "a" }, { id: "b" }]),
+      },
+    } satisfies MetadataFileRoute;
+    const request = (cleanPathname: string) =>
+      handleMetadataRouteRequest({ cleanPathname, makeThenableParams, metadataRoutes: [route] });
+
+    expect((await request("/sitemap/b.xml"))?.status).toBe(200);
+    expect((await request("/sitemap/c.xml"))?.status).toBe(404);
+    await expect(
+      handleMetadataRouteRequest({
+        cleanPathname: "/sitemap/a.xml",
+        makeThenableParams,
+        metadataRoutes: [
+          { ...route, module: { ...route.module, generateSitemaps: async () => ({ id: "a" }) } },
+        ],
+      }),
+    ).rejects.toThrow("generateSitemaps() must return an array");
+  });
+
+  it("stamps the adapter's build identity on metadata route responses", async () => {
+    // No Next.js test port applies: deploy warm-up checks this vinext header
+    // against the staged Worker version, as it does for Route Handlers.
+    const previousAdapter = getCdnCacheAdapter();
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter("build-a"));
+    try {
+      const response = await handleMetadataRouteRequest({
+        cleanPathname: "/robots.txt",
+        makeThenableParams,
+        metadataRoutes: [
+          {
+            type: "robots",
+            isDynamic: true,
+            filePath: "/tmp/app/robots.ts",
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/robots.txt",
+            contentType: "text/plain",
+            module: { default: () => ({ rules: { userAgent: "*" } }) },
+          },
+        ],
+      });
+
+      expect(response?.status).toBe(200);
+      expect(response?.headers.get("X-Vinext-Build-Id")).toBe("build-a");
+    } finally {
+      setCdnCacheAdapter(previousAdapter);
+    }
+  });
+
   it("publishes collected cache tags and cache life for prerender seeding", async () => {
     const response = await withEnvVar("VINEXT_PRERENDER", "1", () =>
       runWithRequestContext(createRequestContext(), () =>
@@ -224,6 +516,145 @@ describe("handleMetadataRouteRequest", () => {
     expect(response?.headers.has("x-vinext-metadata-route-cache")).toBe(false);
   });
 
+  // Next.js's ResponseCache doesn't resolve the previous entry for an
+  // on-demand revalidation, so the metadata function runs and is stored.
+  it.each([
+    { isStale: false, name: "fresh" },
+    { isStale: true, name: "stale" },
+  ])("regenerates a $name cached response for an on-demand revalidation", async ({ isStale }) => {
+    const isrGet = vi.fn(async () => ({
+      isStale,
+      value: {
+        lastModified: 1,
+        value: {
+          kind: "APP_ROUTE" as const,
+          body: new TextEncoder().encode("User-Agent: *\nAllow: /stored\n").buffer,
+          headers: {
+            "content-type": "text/plain",
+            "x-vinext-metadata-route-cache": "1",
+          },
+          status: 200,
+        },
+      },
+    }));
+    const isrSet = vi.fn(async () => {});
+    const scheduleBackgroundRegeneration = vi.fn();
+
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () =>
+        handleMetadataRouteRequest({
+          cleanPathname: "/robots.txt",
+          isrRouteKey: (pathname) => pathname,
+          isrGet,
+          isrSet,
+          makeThenableParams,
+          metadataRoutes: [
+            {
+              type: "robots",
+              isDynamic: true,
+              filePath: "/tmp/app/robots.ts",
+              routePrefix: "",
+              routeSegments: [],
+              servedUrl: "/robots.txt",
+              contentType: "text/plain",
+              module: {
+                default: async () => ({ rules: { userAgent: "*", allow: "/regenerated" } }),
+              },
+            },
+          ],
+          scheduleBackgroundRegeneration,
+        }),
+    );
+
+    expect(await response?.text()).toContain("/regenerated");
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
+    expect(isrSet).toHaveBeenCalledTimes(1);
+  });
+
+  // Next.js's ResponseCache stores an on-demand revalidation's response,
+  // whatever its status.
+  it.each([400, 500])("stores a %s response from an on-demand revalidation", async (status) => {
+    const isrSet = vi.fn(async () => {});
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () =>
+        handleMetadataRouteRequest({
+          cleanPathname: "/icon",
+          isrRouteKey: (pathname) => pathname,
+          isrGet: async () => null,
+          isrSet,
+          makeThenableParams,
+          metadataRoutes: [
+            {
+              type: "icon",
+              isDynamic: true,
+              filePath: "/tmp/app/icon.tsx",
+              routePrefix: "",
+              routeSegments: [],
+              servedUrl: "/icon",
+              contentType: "image/png",
+              module: { default: async () => new Response("failed", { status }) },
+            },
+          ],
+        }),
+    );
+
+    expect(response?.status).toBe(status);
+    expect(isrSet).toHaveBeenCalledTimes(1);
+  });
+
+  // Next.js batches ResponseCache work by its key and isOnDemandRevalidate, so
+  // concurrent on-demand revalidations of one metadata route share a render.
+  it("shares one render between concurrent on-demand revalidations", async () => {
+    let renders = 0;
+    let releaseRender!: () => void;
+    const renderReleased = new Promise<void>((resolve) => {
+      releaseRender = resolve;
+    });
+    const isrSet = vi.fn(async () => {});
+    const revalidate = () =>
+      runWithRequestContext(createRequestContext({ isOnDemandRevalidate: true }), () =>
+        handleMetadataRouteRequest({
+          cleanPathname: "/robots.txt",
+          isrRouteKey: (pathname) => pathname,
+          isrGet: async () => null,
+          isrSet,
+          makeThenableParams,
+          metadataRoutes: [
+            {
+              type: "robots",
+              isDynamic: true,
+              filePath: "/tmp/app/robots.ts",
+              routePrefix: "",
+              routeSegments: [],
+              servedUrl: "/robots.txt",
+              contentType: "text/plain",
+              module: {
+                default: async () => {
+                  renders++;
+                  await renderReleased;
+                  return { rules: { userAgent: "*", allow: "/regenerated" } };
+                },
+              },
+            },
+          ],
+        }),
+      );
+
+    const pending = [revalidate(), revalidate()];
+    await vi.waitFor(() => expect(renders).toBe(1));
+    releaseRender();
+    const responses = await Promise.all(pending);
+
+    expect(renders).toBe(1);
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    for (const response of responses) {
+      expect(await response?.text()).toContain("/regenerated");
+    }
+  });
+
   it("rejects excluded dynamic metadata images without rendering or storing them", async () => {
     let cacheWrites = 0;
     const response = await handleMetadataRouteRequest({
@@ -286,6 +717,58 @@ describe("handleMetadataRouteRequest", () => {
     });
 
     expect(response?.status).toBe(404);
+  });
+
+  // Next.js selects a metadata route by the pathname as sent, so `/%62log/icon`
+  // reaches `[lang]/icon`. The decoded cache key belongs to `blog/icon`, so the
+  // encoded request neither reads nor writes that entry.
+  it("keeps a raw-selected metadata route out of the decoded route's cache entry", async () => {
+    const isrGet = vi.fn(async () => null);
+    const isrSet = vi.fn(async () => {});
+    const metadataRoutes: MetadataRuntimeRoute[] = [
+      {
+        type: "icon",
+        isDynamic: true,
+        filePath: "/tmp/app/blog/icon.tsx",
+        routePrefix: "/blog",
+        routeSegments: ["blog"],
+        servedUrl: "/blog/icon",
+        contentType: "image/png",
+        module: { default: () => new Response("blog icon") },
+      },
+      {
+        type: "icon",
+        isDynamic: true,
+        filePath: "/tmp/app/[lang]/icon.tsx",
+        routePrefix: "/[lang]",
+        routeSegments: ["[lang]"],
+        servedUrl: "/[lang]/icon",
+        patternParts: [":lang", "icon"],
+        contentType: "image/png",
+        module: {
+          default: async ({ params }: { params: Promise<{ lang: string }> }) =>
+            new Response(`lang ${(await params).lang}`),
+        },
+      },
+    ];
+    const request = (routePathname: string) =>
+      handleMetadataRouteRequest({
+        cleanPathname: "/blog/icon",
+        isrRouteKey: (pathname) => pathname,
+        isrGet,
+        isrSet,
+        makeThenableParams,
+        metadataRoutes,
+        routePathname,
+      });
+
+    await expect((await request("/%62log/icon"))?.text()).resolves.toBe("lang blog");
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+
+    await expect((await request("/blog/icon"))?.text()).resolves.toBe("blog icon");
+    expect(isrGet).toHaveBeenCalledWith("/blog/icon");
+    expect(isrSet).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -702,6 +1185,95 @@ describe("handleMetadataRouteRequest", () => {
 
     expect(response?.status).toBe(200);
     expect(generateSitemapsReads).toBe(0);
+  });
+
+  it("drops the framing headers of a metadata route's returned Response", async () => {
+    // A metadata image route can return a fetch() Response whose body Node
+    // decoded while keeping the upstream Content-Length and Content-Encoding.
+    const route = {
+      type: "icon",
+      isDynamic: true,
+      filePath: "/tmp/app/icon.tsx",
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl: "/icon",
+      contentType: "image/png",
+      module: {
+        default: () =>
+          new Response("decoded icon", {
+            headers: {
+              "Content-Type": "image/png",
+              "Content-Encoding": "gzip",
+              "Content-Length": "4",
+            },
+          }),
+      },
+    } satisfies MetadataFileRoute;
+
+    const response = await handleMetadataRouteRequest({
+      metadataRoutes: [route],
+      cleanPathname: "/icon",
+      makeThenableParams,
+    });
+
+    expect(response?.headers.get("content-type")).toBe("image/png");
+    expect(response?.headers.has("content-encoding")).toBe(false);
+    expect(response?.headers.has("content-length")).toBe(false);
+    await expect(response?.text()).resolves.toBe("decoded icon");
+  });
+
+  // Next.js strips the framing headers only when sending, so the stored entry
+  // keeps them and each replay drops them again.
+  it("stores a metadata route's framing headers and drops them from the response and replays", async () => {
+    const isrSet = vi.fn<NonNullable<Parameters<typeof handleMetadataRouteRequest>[0]["isrSet"]>>(
+      async () => {},
+    );
+    const route = {
+      type: "icon",
+      isDynamic: true,
+      filePath: "/tmp/app/icon.tsx",
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl: "/icon",
+      contentType: "image/png",
+      module: {
+        default: () =>
+          new Response("decoded icon", {
+            headers: { "Content-Type": "image/png", "Content-Encoding": "gzip" },
+          }),
+      },
+    } satisfies MetadataFileRoute;
+
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () =>
+        handleMetadataRouteRequest({
+          cleanPathname: "/icon",
+          isrRouteKey: (pathname) => pathname,
+          isrGet: async () => null,
+          isrSet,
+          makeThenableParams,
+          metadataRoutes: [route],
+        }),
+    );
+
+    expect(response?.headers.has("content-encoding")).toBe(false);
+    await expect(response?.text()).resolves.toBe("decoded icon");
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    const stored = isrSet.mock.calls[0]![1];
+    expect(stored.kind === "APP_ROUTE" && stored.headers["content-encoding"]).toBe("gzip");
+
+    const replayed = await handleMetadataRouteRequest({
+      cleanPathname: "/icon",
+      isrRouteKey: (pathname) => pathname,
+      isrGet: async () => ({ isStale: false, value: { lastModified: 1, value: stored } }),
+      makeThenableParams,
+      metadataRoutes: [route],
+    });
+
+    expect(replayed?.headers.get("content-type")).toBe("image/png");
+    expect(replayed?.headers.has("content-encoding")).toBe(false);
+    await expect(replayed?.text()).resolves.toBe("decoded icon");
   });
 
   it("serves matched static metadata route file data", async () => {
@@ -1184,7 +1756,9 @@ describe("metadata route cacheability registration", () => {
       servedUrl: "/event/[city]/[eventId]/opengraph-image",
       patternParts: ["event", ":city", ":eventId", "opengraph-image"],
       contentType: "image/png",
-      module: { default: response },
+      // Next.js stores a metadata route under a dynamic segment only when
+      // it generates its params.
+      module: { default: response, generateStaticParams: () => [] },
     };
   }
 
@@ -1252,6 +1826,84 @@ describe("metadata route cacheability registration", () => {
       expect(response?.status).toBe(status);
       expect(response?.headers.get("Cache-Control")).toBe("public, max-age=300");
       expect(state.outcome?.cacheable).toBe(cacheable);
+      expect(write).toHaveBeenCalledTimes(cacheable ? 1 : 0);
+    },
+  );
+
+  // Probed against next@16.2.7 (webpack and Turbopack): under a dynamic
+  // segment, Next.js stores a metadata route only when static generation is
+  // enabled for its own module.
+  it.each([
+    ["without generateStaticParams", {}, "/event/london/42/opengraph-image", false],
+    ["with revalidate alone", { revalidate: 60 }, "/event/london/42/opengraph-image", false],
+    ["with revalidate = false", { revalidate: false }, "/event/london/42/opengraph-image", false],
+    [
+      "with generateStaticParams",
+      { generateStaticParams: () => [] },
+      "/event/london/42/opengraph-image",
+      true,
+    ],
+    [
+      "with generateImageMetadata",
+      { generateImageMetadata: () => [{ id: "small" }] },
+      "/event/london/42/opengraph-image/small",
+      true,
+    ],
+    [
+      "with dynamic = force-static",
+      { dynamic: "force-static" },
+      "/event/london/42/opengraph-image",
+      true,
+    ],
+    ["with dynamic = error", { dynamic: "error" }, "/event/london/42/opengraph-image", true],
+  ] as const)(
+    "stores a dynamic-segment metadata route %s like Next.js",
+    async (_label, config, pathname, cacheable) => {
+      const route = dynamicImageRoute(() => new Response("image"));
+      delete route.module!.generateStaticParams;
+      Object.assign(route.module!, config);
+      const write = vi.fn();
+      const read = vi.fn(async () => null);
+      const { response, state } = await handleWithAdmission(pathname, [route], {
+        isrGet: read,
+        isrSet: write,
+        isrRouteKey: (path) => path,
+      });
+      expect(response?.status).toBe(200);
+      expect(state.outcome?.cacheable).toBe(cacheable);
+      expect(read).toHaveBeenCalledTimes(cacheable ? 1 : 0);
+      expect(write).toHaveBeenCalledTimes(cacheable ? 1 : 0);
+      if (!cacheable) expect(response?.headers.get("Cache-Control")).toContain("no-store");
+    },
+  );
+
+  it.each([
+    ["with dynamicParams = false", { dynamicParams: false }, false],
+    ["with generateStaticParams", { generateStaticParams: () => [] }, true],
+  ] as const)(
+    "stores a dynamic-segment sitemap %s like Next.js",
+    async (_label, config, cacheable) => {
+      const route: MetadataRuntimeRoute = {
+        type: "sitemap",
+        isDynamic: true,
+        filePath: "/tmp/app/event/[city]/sitemap.ts",
+        routePrefix: "/event/[city]",
+        routeSegments: ["event", "[city]"],
+        servedUrl: "/event/[city]/sitemap.xml",
+        patternParts: ["event", ":city", "sitemap.xml"],
+        contentType: "application/xml",
+        module: { default: () => [], ...config },
+      };
+      const write = vi.fn();
+      const read = vi.fn(async () => null);
+      const { response, state } = await handleWithAdmission("/event/london/sitemap.xml", [route], {
+        isrGet: read,
+        isrSet: write,
+        isrRouteKey: (path) => path,
+      });
+      expect(response?.status).toBe(200);
+      expect(state.outcome?.cacheable).toBe(cacheable);
+      expect(read).toHaveBeenCalledTimes(cacheable ? 1 : 0);
       expect(write).toHaveBeenCalledTimes(cacheable ? 1 : 0);
     },
   );

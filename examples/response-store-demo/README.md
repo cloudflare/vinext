@@ -47,5 +47,5 @@ vinext({ cache: responseStoreAdapter({ shards: 4 }) });
 Canonical App Router RSC requests use the same response-stage transport:
 
 ```sh
-curl 'https://response-store-demo.vinext.workers.dev/cached/intro.rsc?_rsc=' -H 'Accept: text/x-component' -H 'RSC: 1'
+curl 'https://response-store-demo.vinext.workers.dev/cached/intro?_rsc=' -H 'Accept: text/x-component' -H 'RSC: 1'
 ```

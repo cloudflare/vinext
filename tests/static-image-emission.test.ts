@@ -56,6 +56,13 @@ function writeFixtureFile(root: string, filePath: string, content: string | Buff
   fs.writeFileSync(absolutePath, content);
 }
 
+// Replace a watched file in one step, so a rebuild never reads it truncated.
+async function replaceFile(filePath: string, content: string | Buffer): Promise<void> {
+  const temporaryPath = `${filePath}.${process.pid}.tmp`;
+  await fs.promises.writeFile(temporaryPath, content);
+  await fs.promises.rename(temporaryPath, filePath);
+}
+
 type FixtureOptions = {
   basePath?: string;
   assetPrefix?: string;
@@ -247,6 +254,7 @@ function waitForWatchBuild(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let checkingOutput = false;
+    let recheckOutput = false;
     const cleanup = () => {
       clearTimeout(timeout);
       watcher.off("event", onEvent);
@@ -259,13 +267,23 @@ function waitForWatchBuild(
       if (event.code === "ERROR") {
         cleanup();
         reject(event.error ?? new Error("Watch build failed"));
-      } else if (event.code === "END" && !checkingOutput) {
+      } else if (event.code === "END") {
+        // A rebuild can finish while the previous one's output is still being
+        // checked. Check again afterwards rather than miss the last build.
+        if (checkingOutput) {
+          recheckOutput = true;
+          return;
+        }
         checkingOutput = true;
         try {
-          if (await isExpectedOutput()) {
-            cleanup();
-            resolve();
-          }
+          do {
+            recheckOutput = false;
+            if (await isExpectedOutput()) {
+              cleanup();
+              resolve();
+              return;
+            }
+          } while (recheckOutput);
         } catch (error) {
           cleanup();
           reject(error);
@@ -579,9 +597,13 @@ export function middleware(request: NextRequest) {
 
       const changedBuild = waitForWatchBuild(watcher, async () => {
         const emittedImage = await findEmittedImage(root);
-        return emittedImage !== firstImage;
+        return (
+          emittedImage !== firstImage &&
+          !fs.existsSync(path.join(outDir, "_next/static/media", firstImage)) &&
+          (await readBuiltJavaScript(outDir)).includes(emittedImage)
+        );
       });
-      await fs.promises.writeFile(imagePath, PNG_4X3);
+      await replaceFile(imagePath, PNG_4X3);
       await changedBuild;
       const secondImage = await findEmittedImage(root);
       expect(secondImage).not.toBe(firstImage);
@@ -599,7 +621,7 @@ export function middleware(request: NextRequest) {
           !builtJavaScript.includes(secondImage)
         );
       });
-      await fs.promises.writeFile(entryPath, `console.log("no image");\n`);
+      await replaceFile(entryPath, `console.log("no image");\n`);
       await removedBuild;
       expect(fs.existsSync(path.join(outDir, "_next/static/media", secondImage))).toBe(false);
       expect(await readBuiltJavaScript(outDir)).not.toContain(secondImage);

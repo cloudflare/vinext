@@ -505,6 +505,170 @@ describe("config source matching regressions", () => {
   });
 });
 
+describe("matchRedirect destinations agree with Next.js", () => {
+  const ctx = requestContextFromRequest(new Request("http://localhost/"));
+  const { prepareDestination } =
+    require("next/dist/shared/lib/router/utils/prepare-destination") as {
+      prepareDestination: (args: object) => { parsedDestination: Record<string, unknown> };
+    };
+  const { formatUrl } = require("next/dist/shared/lib/router/utils/format-url") as {
+    formatUrl: (url: object) => string;
+  };
+
+  it("formats credentials as Next.js formatUrl does", () => {
+    for (const destination of [
+      "https://u%20:p%20@example.com/a",
+      "https://u:p@example.com/a",
+      "https://:p@example.com/a",
+      "https://u:@example.com/a",
+      "https://u:p:q@example.com/a",
+      "https://ü:ß@example.com/a",
+    ]) {
+      const { parsedDestination } = prepareDestination({
+        appendParamsToQuery: false,
+        destination,
+        params: {},
+        query: {},
+      });
+      const expected = formatUrl({ ...parsedDestination, query: undefined, search: "" });
+      expect(
+        matchRedirect("/r", [{ source: "/r", destination, permanent: false }], ctx)?.destination,
+        destination,
+      ).toBe(expected);
+    }
+  });
+
+  it("collapses repeated slashes in the substituted pathname, after the basePath prefix", () => {
+    const { normalizeRepeatedSlashes } = require("next/dist/shared/lib/utils") as {
+      normalizeRepeatedSlashes: (url: string) => string;
+    };
+    for (const [destination, basePath] of [
+      ["//target/x", "/docs"],
+      ["//target/x", ""],
+      ["/a//b\\c/:slug", ""],
+      ["/:slug//z", "/docs"],
+      ["https://example.com//a//:slug", "/docs"],
+    ]) {
+      // processRoutes prefixes the basePath on a local template.
+      const template = destination.startsWith("/") ? basePath + destination : destination;
+      const { parsedDestination } = prepareDestination({
+        appendParamsToQuery: false,
+        destination: template,
+        params: { slug: "s" },
+        query: {},
+      });
+      parsedDestination.pathname = normalizeRepeatedSlashes(parsedDestination.pathname as string);
+      const expected = formatUrl({ ...parsedDestination, query: undefined, search: "" });
+      expect(
+        matchRedirect("/r/s", [{ source: "/r/:slug", destination, permanent: false }], ctx, {
+          basePath,
+          hadBasePath: true,
+        })?.destination,
+        `${basePath} ${destination}`,
+      ).toBe(expected);
+    }
+  });
+
+  it("leaves slashes captured into the host alone", () => {
+    const { normalizeRepeatedSlashes } = require("next/dist/shared/lib/utils") as {
+      normalizeRepeatedSlashes: (url: string) => string;
+    };
+    const destination = "https://:host.example/a//b";
+    const { parsedDestination } = prepareDestination({
+      appendParamsToQuery: false,
+      destination,
+      params: { host: "foo//bar" },
+      query: {},
+    });
+    parsedDestination.pathname = normalizeRepeatedSlashes(parsedDestination.pathname as string);
+    const expected = formatUrl({ ...parsedDestination, query: undefined, search: "" });
+    expect(
+      matchRedirect(
+        "/r",
+        [
+          {
+            source: "/r",
+            destination,
+            permanent: false,
+            has: [{ type: "query", key: "host", value: "(?<host>.*)" }],
+          },
+        ],
+        requestContextFromRequest(new Request("http://localhost/r?host=foo//bar")),
+      )?.destination,
+    ).toBe(expected);
+  });
+
+  it("consumes template backslash escapes in non-special pathnames and hashes", () => {
+    const { normalizeRepeatedSlashes } = require("next/dist/shared/lib/utils") as {
+      normalizeRepeatedSlashes: (url: string) => string;
+    };
+    for (const [destination, slug] of [
+      ["myapp://example.com/a\\b", "s"],
+      ["myapp://example.com/a\\\\b", "s"],
+      ["mailto:a\\b", "s"],
+      ["/a#x\\y", "s"],
+      ["https://e.com/a#x\\y", "s"],
+      ["/a#b\\:slug", "Q"],
+      ["myapp://example.com/a\\:slug", "Q"],
+      ["myapp://example.com/a\\\\:slug", "Q"],
+      ["/a\\:slug", "Q"],
+    ]) {
+      const { parsedDestination } = prepareDestination({
+        appendParamsToQuery: false,
+        destination,
+        params: { slug },
+        query: {},
+      });
+      parsedDestination.pathname = normalizeRepeatedSlashes(parsedDestination.pathname as string);
+      const expected = formatUrl({ ...parsedDestination, query: undefined, search: "" });
+      expect(
+        matchRedirect(
+          `/r/${encodeURIComponent(slug)}`,
+          [{ source: "/r/:slug", destination, permanent: false }],
+          ctx,
+        )?.destination,
+        destination,
+      ).toBe(expected);
+    }
+  });
+
+  it("substitutes destinations Next.js throws on instead of failing the request", () => {
+    // Next.js 16.2.7 throws on each of these; vinext substitutes the params.
+    for (const [destination, pathname, expected] of [
+      // The host parser lowercases a param name in the host.
+      ["https://:tenantId.example.com/x", "/r/acme", "https://acme.example.com/x"],
+      ["http://localhost::slug/x", "/r/3000", "http://localhost:3000/x"],
+      [":slug://example.com/", "/r/https", "https://example.com/"],
+      ["about", "/r/s", "about"],
+    ]) {
+      const source = destination.includes("tenantId") ? "/r/:tenantId" : "/r/:slug";
+      expect(
+        matchRedirect(pathname, [{ source, destination, permanent: false }], ctx)?.destination,
+        destination,
+      ).toBe(expected);
+    }
+  });
+
+  it("keeps literal text and captures that look like escape markers", () => {
+    // Next.js 16.2.7 throws on this destination; vinext redirects to it as written.
+    expect(
+      matchRedirect(
+        "/r/s",
+        [{ source: "/r/:slug", destination: "/__ESC_COLON_/:slug", permanent: false }],
+        ctx,
+      )?.destination,
+    ).toBe("/__ESC_COLON_/s");
+    // Next.js 16.2.7 inserts the capture verbatim.
+    expect(
+      matchRedirect(
+        "/r/__ESC_LITERAL_COLON_",
+        [{ source: "/r/:slug", destination: "/a/:slug", permanent: false }],
+        ctx,
+      )?.destination,
+    ).toBe("/a/__ESC_LITERAL_COLON_");
+  });
+});
+
 describe("matchRedirect locale-static index agrees with the compiled source", () => {
   const ctx = requestContextFromRequest(new Request("http://localhost/"));
 
@@ -532,6 +696,21 @@ describe("matchRedirect locale-static index agrees with the compiled source", ()
     expect(matchRedirect("/fr/docs/intro", redirects, ctx)?.destination).toBe("/fr/guides/intro");
     expect(matchRedirect("/fr/blog/a/b", redirects, ctx)?.destination).toBe("/posts/a/b");
     expect(matchRedirect("/fr/blog", redirects, ctx)).toBeNull();
+  });
+
+  it("does not resolve a locale-static rule an earlier linear rule shadows", () => {
+    // Resolving parses the destination, which throws on an invalid URL; the
+    // first rule wins in Next.js, so the second destination is never parsed.
+    const redirects = [
+      { source: "/:path*", destination: "/ok", permanent: false },
+      {
+        source: "/:locale(en|fr)?/foo",
+        destination: "https://example.com:99999/a",
+        permanent: false,
+      },
+    ];
+    expect(matchRedirect("/en/foo", redirects, ctx)?.destination).toBe("/ok");
+    expect(matchRedirect("/foo", redirects, ctx)?.destination).toBe("/ok");
   });
 
   it("leaves slash-ending sources to the linear scan", () => {

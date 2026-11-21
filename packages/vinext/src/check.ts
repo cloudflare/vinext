@@ -217,7 +217,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   images: {
     status: "partial",
     detail:
-      "remotePatterns, deviceSizes/imageSizes, qualities and SVG/CSP options honoured; resizing needs an optimizer via vinext({ images: { optimizer } }), images are served as-is otherwise; loader/loaderFile are ignored",
+      "remotePatterns, deviceSizes/imageSizes, qualities, localPatterns (production only) and SVG/CSP options honoured; resizing needs an optimizer via vinext({ images: { optimizer } }), images are served as-is otherwise; loader/loaderFile are ignored",
   },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
   output: {
@@ -263,13 +263,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "unsupported",
     detail: "ignored; configure cache adapters with vinext({ cache }) in vite.config",
   },
-  cacheLife: {
-    status: "unsupported",
-    detail: "custom cacheLife profiles are ignored; only the built-in profiles are available",
-  },
+  cacheLife: { status: "supported" },
   "experimental.cacheLife": {
-    status: "unsupported",
-    detail: "custom cacheLife profiles are ignored; only the built-in profiles are available",
+    status: "supported",
+    detail: "legacy alias of cacheLife",
   },
   skipTrailingSlashRedirect: { status: "supported" },
   "experimental.skipTrailingSlashRedirect": {
@@ -346,6 +343,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   cacheComponents: {
     status: "partial",
     detail: "experimental support; behavior is incomplete",
+  },
+  "experimental.cacheComponents": {
+    status: "partial",
+    detail: "legacy alias of cacheComponents; experimental support, behavior is incomplete",
   },
   "experimental.ppr": {
     status: "unsupported",
@@ -467,7 +468,7 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next-intl": {
     status: "supported",
     detail:
-      "createNextIntlPlugin is only optional with the request config at (src/)i18n/request.*; its experimental messages, precompile and extract options don't work (they need webpack/Turbopack loaders)",
+      "createNextIntlPlugin is only optional with the request config at (src/)i18n/request.*; its experimental extract option doesn't work (it needs a webpack/Turbopack loader)",
   },
   "@clerk/nextjs": {
     status: "supported",

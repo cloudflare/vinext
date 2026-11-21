@@ -426,19 +426,13 @@ export default function Home() {
             <code className="font-mono text-kumo-default">next dev</code> keeps working.
           </p>
           <div className="flex flex-col gap-3 sm:flex-row">
-            <LinkButton
-              variant="primary"
-              icon={<CloudIcon />}
-              href="https://github.com/cloudflare/vinext#quick-start"
-              external
-            >
+            <LinkButton variant="primary" icon={<CloudIcon />} href="/docs/getting-started">
               Read the quick start
             </LinkButton>
             <LinkButton
               variant="outline"
               icon={<ArrowUpRightIcon />}
-              href="https://github.com/cloudflare/vinext#migrating-an-existing-nextjs-project"
-              external
+              href="/docs/getting-started/migrating"
             >
               Migration guide
             </LinkButton>

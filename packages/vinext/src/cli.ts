@@ -183,7 +183,7 @@ async function start() {
   await startProdServer({
     port,
     host,
-    outDir: path.resolve(process.cwd(), "dist"),
+    outDir: path.resolve(process.cwd(), parsed.outDir ?? "dist"),
   });
 }
 
@@ -270,6 +270,10 @@ async function typegen() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("typegen");
 
+  // Like `next typegen`, default to production so next.config and its
+  // callbacks take their production paths.
+  if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
+
   const root = path.resolve(parsed.positionals?.[0] ?? process.cwd());
   loadDotenv({
     root,
@@ -327,10 +331,13 @@ function printHelp(cmd?: string) {
   Serves the output from \`vinext build\`. Supports SSR, static files,
   compression, and all middleware.
   For output: "standalone", you can also run: node dist/standalone/server.js
+  (<build.outDir>/standalone/server.js when Vite's build.outDir is set)
 
   Options:
     -p, --port <port>        Port to listen on (default: 3000, or PORT env)
     -H, --hostname <host>    Hostname to bind to (default: 0.0.0.0)
+    --outDir <dir>           Build output to serve, when Vite's build.outDir
+                             is set (default: dist)
     -h, --help               Show this help
 `);
     return;
@@ -376,9 +383,12 @@ function printHelp(cmd?: string) {
     --prerender          Configure Vite builds to pre-render static routes
                          (Cloudflare deploy won't serve them unless using Static Assets)
     --warm-cache         Add cache warming to the Cloudflare deploy script
-                         (Response Store or Workers Cache, default: prompt with No)
+                         (requires a --cdn-cache other than none, default: prompt with No)
     --legacy-wrangler-cloudflare-init
                          Use the legacy Wrangler setup instead of cf
+    --ignore-wrangler-config
+                         Set up cf even if a root Wrangler config exists
+                         (use when it belongs to an unrelated Worker)
     --cdn-cache <type>   Cloudflare CDN cache: none, response-store, workers-cache,
                          static-assets, or data-cache
                          (default: none; response-store is the default cache choice)

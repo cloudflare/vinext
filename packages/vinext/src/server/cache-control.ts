@@ -9,6 +9,9 @@ export { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
+/** The policy Next.js sends on every Server Action response. */
+export const SERVER_ACTION_CACHE_CONTROL = "no-cache, no-store, max-age=0, must-revalidate";
+
 export const BROWSER_REVALIDATE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
 export const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
@@ -196,15 +199,13 @@ export function applyCdnResponseBuildIdentityHeaders(response: Response): Respon
     applyResponseHeaderMap(response.headers, map);
     return response;
   } catch {
-    // Response.redirect() has immutable headers. Recreate only those responses
-    // that need adapter identity so the outer runtime boundary can stamp them.
-    const headers = new Headers(response.headers);
-    applyResponseHeaderMap(headers, map);
-    return new Response(response.body, {
-      headers,
-      status: response.status,
-      statusText: response.statusText,
-    });
+    // Response.redirect() and fetch() responses have immutable headers.
+    // Recreate only those responses that need adapter identity so the outer
+    // runtime boundary can stamp them. Using the response as the init keeps
+    // workerd's webSocket, which a 101 upgrade cannot be constructed without.
+    const rebuilt = new Response(response.body, response as ResponseInit);
+    applyResponseHeaderMap(rebuilt.headers, map);
+    return rebuilt;
   }
 }
 

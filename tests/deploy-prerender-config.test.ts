@@ -5,7 +5,8 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { resolveBuildOutputDir } from "../packages/cloudflare/src/build-output.js";
 import type { TPRRouteResult } from "../packages/cloudflare/src/tpr.js";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
@@ -13,6 +14,10 @@ const emitPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
 const discoverPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
 const resolveTPRRoutesMock = vi.hoisted(() =>
   vi.fn(async (): Promise<TPRRouteResult> => ({ routes: [] })),
+);
+// Keep the git lookup out of the mocked child_process calls these tests assert on.
+const resolveVersionAnnotationsMock = vi.hoisted(() =>
+  vi.fn((): { message?: string; tag?: string } => ({})),
 );
 const realWranglerUrl = pathToFileURL(
   createRequire(path.join(process.cwd(), "examples/app-router-cloudflare/package.json")).resolve(
@@ -22,6 +27,11 @@ const realWranglerUrl = pathToFileURL(
 
 vi.mock("vinext/internal/build/run-prerender", () => ({
   runPrerender: runPrerenderMock,
+}));
+
+vi.mock("../packages/cloudflare/src/version-annotations.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../packages/cloudflare/src/version-annotations.js")>()),
+  resolveVersionAnnotations: resolveVersionAnnotationsMock,
 }));
 
 vi.mock("../packages/cloudflare/src/tpr.js", async (importOriginal) => ({
@@ -78,6 +88,7 @@ vi.mock("node:child_process", async (importOriginal) => {
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     }),
+    spawnSync: vi.fn(actual.spawnSync),
     spawn: vi.fn(() => {
       const child = new EventEmitter() as ChildProcess;
       const childStdout = new PassThrough();
@@ -296,8 +307,10 @@ describe("deploy prerender config wiring", () => {
     emitPrerenderPathManifestMock.mockClear();
     discoverPrerenderPathManifestMock.mockClear();
     resolveTPRRoutesMock.mockClear();
+    resolveVersionAnnotationsMock.mockClear();
     vi.mocked(execFileSync).mockClear();
     vi.mocked(spawn).mockClear();
+    vi.mocked(spawnSync).mockClear();
   });
 
   afterEach(() => {
@@ -356,10 +369,11 @@ describe("deploy prerender config wiring", () => {
         experimentalTPR: true,
         warmCdnCertify: true,
         warmCdnTarget: "not-an-origin",
+        warmCdnHeaders: [["X-Key", "value"]],
         warmCdnPromote: false,
       }),
     ).rejects.toThrow(
-      "Worker Preview deployments do not support: preview, warmCdnCache, warmCdnTarget, warmCdnCertify, warmCdnPromote, experimentalTPR.",
+      "Worker Preview deployments do not support: preview, warmCdnCache, warmCdnTarget, warmCdnHeaders, warmCdnCertify, warmCdnPromote, experimentalTPR.",
     );
     expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
     expect(execFileSync).not.toHaveBeenCalled();
@@ -387,6 +401,7 @@ describe("deploy prerender config wiring", () => {
       expect.stringContaining(path.join("cf", "bin", "cf")),
       "previews",
       "deploy",
+      "--preview-name",
       "pr-123",
       "--prebuilt",
       "--mode",
@@ -442,7 +457,9 @@ describe("deploy prerender config wiring", () => {
         true,
       );
       expect(
-        JSON.parse(fs.readFileSync(path.join(tmpDir, ".cloudflare/output/v0/config.json"), "utf8")),
+        JSON.parse(
+          fs.readFileSync(path.join(resolveBuildOutputDir(tmpDir), "config.json"), "utf8"),
+        ),
       ).toMatchObject({ buildContext: { mode, isPreview: true } });
       expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe("false");
       expect(process.env.CLOUDFLARE_ENV).toBe("other");
@@ -451,6 +468,7 @@ describe("deploy prerender config wiring", () => {
         expect.any(String),
         "previews",
         "deploy",
+        "--preview-name",
         "pr-123",
         "--prebuilt",
         "--mode",
@@ -522,7 +540,10 @@ describe("deploy prerender config wiring", () => {
         "node_modules/vite/index.js",
         `export * from ${JSON.stringify(viteUrl)};
 export function createBuilder(config) {
-  return { async buildApp() { config.__vinextBuildLifecycle.onComplete(); } };
+  return {
+    config: { root: config.root, build: { outDir: "dist" } },
+    async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
+  };
 }
 `,
       );
@@ -540,6 +561,67 @@ export function createBuilder(config) {
     },
   );
 
+  it("reads the build output from the build.outDir the build resolved", async () => {
+    writeProject("true");
+    writeFile("next.config.mjs", 'export default { output: "export" };\n');
+    const viteUrl = pathToFileURL(createRequire(import.meta.url).resolve("vite")).href;
+    writeFile(
+      "node_modules/vite/package.json",
+      JSON.stringify({ name: "vite", type: "module", main: "index.js" }),
+    );
+    // A plugin's config hook set build.outDir and root, which the config file
+    // doesn't show. Vite resolves the outDir against the root.
+    writeFile(
+      "node_modules/vite/index.js",
+      `export * from ${JSON.stringify(viteUrl)};
+export function createBuilder(config) {
+  return {
+    config: { root: config.root + "/site", build: { outDir: "out" } },
+    async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
+  };
+}
+`,
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routeRootConfig: expect.objectContaining({ outDir: path.join(tmpDir, "site", "out") }),
+      }),
+    );
+  });
+
+  it.each([
+    ['build: { outDir: "out" },', path.join("out")],
+    ['root: "site", build: { outDir: "out" },', path.join("site", "out")],
+    ['root: "site",', path.join("site", "dist")],
+  ])(
+    "reads a --skip-build deploy's output from the Vite config's build.outDir (%s)",
+    async (config, expected) => {
+      writeProject("true");
+      writeFile("next.config.mjs", 'export default { output: "export" };\n');
+      const viteConfig = path.join(tmpDir, "vite.config.ts");
+      fs.writeFileSync(
+        viteConfig,
+        fs
+          .readFileSync(viteConfig, "utf8")
+          .replace("export default defineConfig({", `export default defineConfig({\n  ${config}`),
+      );
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({ root: tmpDir, skipBuild: true });
+
+      // A relative outDir is relative to the config's root, as in Vite.
+      expect(runPrerenderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeRootConfig: expect.objectContaining({ outDir: path.join(tmpDir, expected) }),
+        }),
+      );
+    },
+  );
+
   it("loads Vite config even when the prerender-all flag already decides prerendering", async () => {
     writeProject("true");
     fs.appendFileSync(
@@ -550,6 +632,31 @@ export function createBuilder(config) {
 
     await expect(deploy({ root: tmpDir, skipBuild: true, prerenderAll: true })).rejects.toThrow(
       "vite config loaded",
+    );
+  });
+
+  it("loads disk config and its callbacks with NODE_ENV=production when it is unset", async () => {
+    vi.stubEnv("NODE_ENV", undefined);
+    writeProject("true");
+    writeFile(
+      "next.config.mjs",
+      [
+        "const loadNodeEnv = String(process.env.NODE_ENV);",
+        "export default {",
+        '  output: "export",',
+        "  generateBuildId: () => `${loadNodeEnv}:${process.env.NODE_ENV}`,",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextConfig: expect.objectContaining({ buildId: "production:production" }),
+      }),
     );
   });
 
@@ -685,6 +792,7 @@ export function createBuilder(config) {
       writeFile("dist/server/RSC_BUILD_ID", "build-a\n");
       writeFile("dist/server/index.js", "export default {};\n");
       resolveTPRRoutesMock.mockResolvedValueOnce({
+        metadataCandidates: [{ path: "/api/opengraph-image", requests: 5 }],
         routes: [{ path: "/missing", requests: 10 }],
         targetUrl: "https://vinext.dev",
       });
@@ -747,6 +855,24 @@ export function createBuilder(config) {
     ]);
   });
 
+  it("rejects explicit annotations before a TPR fallback runs an older wrangler deploy", async () => {
+    writeProject(undefined);
+    writeFile(
+      "node_modules/wrangler/package.json",
+      JSON.stringify({ name: "wrangler", version: "4.65.0", type: "module", main: "index.js" }),
+    );
+    writeFile(
+      "node_modules/wrangler/index.js",
+      `export * from ${JSON.stringify(realWranglerUrl)};\n`,
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deploy({ root: tmpDir, skipBuild: true, experimentalTPR: true, tag: "v2" }),
+    ).rejects.toThrow("--message and --tag require Wrangler 4.66.0 or newer (found 4.65.0).");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("does not silently deploy when certified TPR has no traffic", async () => {
     writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
@@ -787,6 +913,39 @@ export function createBuilder(config) {
     );
     log.mockRestore();
   });
+
+  it.each(["wrangler", "cf"])(
+    "filters TPR traffic against the deployed %s assets directory and basePath",
+    async (deploymentTool) => {
+      writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+      if (deploymentTool === "cf") writeCfBuildOutputScaffolding();
+      const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+      fs.writeFileSync(
+        viteConfigPath,
+        fs
+          .readFileSync(viteConfigPath, "utf8")
+          .replace(
+            "vinext({ cache:",
+            'vinext({ clientOutDir: "build/client", nextConfig: { basePath: "/docs" }, cache:',
+          ),
+      );
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({ root: tmpDir, skipBuild: true, experimentalTPR: true });
+
+      expect(resolveTPRRoutesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          assetsDir: path.join(
+            tmpDir,
+            deploymentTool === "cf"
+              ? ".cloudflare/output/v0/workers/default/assets"
+              : "build/client",
+          ),
+          basePath: "/docs",
+        }),
+      );
+    },
+  );
 
   it("uses a normal deploy when a TPR warmup cannot be staged safely", async () => {
     writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
@@ -1062,6 +1221,33 @@ export function createBuilder(config) {
     }
   });
 
+  it("records the resolved version message and tag on the cf deploy", async () => {
+    writeProjectWithInlineNextConfig(`{ output: "export" }`);
+    writeCfBuildOutputScaffolding();
+    resolveVersionAnnotationsMock.mockReturnValueOnce({ message: "Fix the header", tag: "abc123" });
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, message: "Fix the header" });
+
+    expect(resolveVersionAnnotationsMock).toHaveBeenCalledWith(
+      tmpDir,
+      expect.objectContaining({ message: "Fix the header" }),
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [
+        path.join(tmpDir, "node_modules/cf/bin/cf"),
+        "deploy",
+        "--prebuilt",
+        "--mode",
+        "production",
+        "--message=Fix the header",
+        "--tag=abc123",
+      ],
+      expect.objectContaining({ cwd: tmpDir }),
+    );
+  });
+
   it.each([
     { warmCdnCache: false, warmCdnPromote: true },
     { warmCdnCache: false, warmCdnPromote: false },
@@ -1081,27 +1267,38 @@ export function createBuilder(config) {
       ".cloudflare/output/v0/workers/response-store/worker.config.json",
       JSON.stringify({ name: "response-store" }),
     );
-    const originalExecute = vi.mocked(execFileSync).getMockImplementation()!;
-    vi.mocked(execFileSync).mockImplementation(((_file, args) => {
+    const originalExecute = vi.mocked(spawnSync).getMockImplementation()!;
+    // cf writes its log to stderr and only JSON results to stdout.
+    vi.mocked(spawnSync).mockImplementation(((_file, args) => {
       const cfArgs = args as string[];
       if (cfArgs.includes("versions") && cfArgs.includes("create")) {
-        return JSON.stringify({
-          id: "22222222-2222-4222-8222-222222222222",
-          preview_url: "https://preview.example.workers.dev",
-        });
+        return {
+          status: 0,
+          stdout: "",
+          stderr:
+            "│  Worker Version ID: 22222222-2222-4222-8222-222222222222\n│  Version Preview URL: https://preview.example.workers.dev\n",
+        };
       }
       if (cfArgs.includes("list")) {
-        return JSON.stringify({
-          deployments: [
-            {
-              id: "active-deployment",
-              versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
-            },
-          ],
-        });
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            deployments: [
+              {
+                id: "active-deployment",
+                versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+              },
+            ],
+          }),
+          stderr: "",
+        };
       }
-      return "Deployed test-worker\n  https://app.example.workers.dev\n";
-    }) as typeof execFileSync);
+      return {
+        status: 0,
+        stdout: "",
+        stderr: "Deployed test-worker\n  https://app.example.workers.dev\n",
+      };
+    }) as typeof spawnSync);
     try {
       const { deploy } = await import("../packages/cloudflare/src/deploy.js");
       await deploy({ root: tmpDir, skipBuild: true, ...options });
@@ -1119,11 +1316,13 @@ export function createBuilder(config) {
       }
       expect(
         vi
-          .mocked(execFileSync)
-          .mock.calls.some(([, args]) => (args as string[]).includes("response-store")),
+          .mocked(spawnSync)
+          .mock.calls.some(([, args]) =>
+            (args as string[] | undefined)?.includes("response-store"),
+          ),
       ).toBe(false);
     } finally {
-      vi.mocked(execFileSync).mockImplementation(originalExecute);
+      vi.mocked(spawnSync).mockImplementation(originalExecute);
     }
   });
 

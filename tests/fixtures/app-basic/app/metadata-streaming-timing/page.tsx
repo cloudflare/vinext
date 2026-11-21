@@ -1,7 +1,9 @@
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata() {
-  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  // Tests expect the metadata to land 600ms+ after the shell. The extra delay
+  // leaves room for slow shell renders on a busy CI runner.
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
   return {
     title: "Delayed streaming metadata",
     description: "Metadata resolved after the document shell",

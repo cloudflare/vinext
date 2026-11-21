@@ -20,7 +20,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml } from "../helpers.js";
+import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml, fetchRsc } from "../helpers.js";
 
 describe("Next.js compat: rsc-basic", () => {
   let server: ViteDevServer;
@@ -81,12 +81,7 @@ describe("Next.js compat: rsc-basic", () => {
   // Next.js: 'should return RSC response with correct content-type'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic.test.ts
   it("RSC response has correct content-type", async () => {
-    const res = await fetch(`${baseUrl}/nextjs-compat/rsc-server.rsc`, {
-      headers: {
-        RSC: "1",
-        Accept: "text/x-component",
-      },
-    });
+    const res = await fetchRsc(baseUrl, "/nextjs-compat/rsc-server");
     const contentType = res.headers.get("content-type") ?? "";
     expect(contentType).toContain("text/x-component");
   });
@@ -94,12 +89,7 @@ describe("Next.js compat: rsc-basic", () => {
   // Next.js: 'should return RSC response with rendered content'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic.test.ts
   it("RSC response contains rendered content", async () => {
-    const res = await fetch(`${baseUrl}/nextjs-compat/rsc-server.rsc`, {
-      headers: {
-        RSC: "1",
-        Accept: "text/x-component",
-      },
-    });
+    const res = await fetchRsc(baseUrl, "/nextjs-compat/rsc-server");
     const body = await res.text();
     const hasContent = body.includes("Server Component") || body.includes("from server");
     expect(hasContent).toBe(true);

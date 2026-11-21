@@ -34,6 +34,12 @@ export default function PrefetchRedirectHome() {
         To a page whose layout reads cookies and redirects, full prefetch
       </Link>
       <Link
+        href="/nextjs-compat/prefetch-redirect/layout-nested-guard"
+        id="prefetch-redirect-layout-nested-guard"
+      >
+        To a page whose layout renders a component that reads cookies and redirects
+      </Link>
+      <Link
         href="/nextjs-compat/prefetch-redirect/layout-redirect"
         id="prefetch-redirect-layout-redirect"
       >

@@ -30,6 +30,8 @@ function createPnpmStyleFixture(): { root: string; styledJsxRoot: string } {
   fs.writeFileSync(path.join(nextRoot, "package.json"), '{"name":"next"}');
   fs.writeFileSync(path.join(styledJsxRoot, "package.json"), '{"name":"styled-jsx"}');
   fs.writeFileSync(path.join(styledJsxRoot, "css.js"), "module.exports = {};");
+  fs.writeFileSync(path.join(styledJsxRoot, "index.js"), "module.exports = {};");
+  fs.writeFileSync(path.join(styledJsxRoot, "style.js"), "module.exports = {};");
   fs.symlinkSync(nextRoot, path.join(root, "node_modules", "next"), "dir");
   fs.symlinkSync(styledJsxRoot, path.join(nextRoot, "node_modules", "styled-jsx"), "dir");
   return { root, styledJsxRoot };
@@ -65,14 +67,44 @@ describe("styled-jsx compatibility plugin", () => {
     expect(hyphenatedAttribute).toBeNull();
   });
 
-  it("resolves styled-jsx subpaths from Next's dependency graph", () => {
+  it("resolves styled-jsx subpaths from Next's dependency graph", async () => {
     const { root, styledJsxRoot } = createPnpmStyleFixture();
     const plugin = createStyledJsxPlugin(root);
-    const resolveId = plugin.resolveId as { handler(source: string): string | null };
+    const resolveId = plugin.resolveId as { handler(source: string): Promise<string | null> };
 
-    expect(fs.realpathSync(resolveId.handler("styled-jsx/css")!)).toBe(
+    expect(fs.realpathSync((await resolveId.handler("styled-jsx/css"))!)).toBe(
       fs.realpathSync(path.join(styledJsxRoot, "css.js")),
     );
+  });
+
+  it("prebundles Next's styled-jsx runtime for the dev client from the resolved root", () => {
+    const { root } = createPnpmStyleFixture();
+    const initialRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
+    temporaryDirectories.push(initialRoot);
+    type TestConfig = {
+      root: string;
+      command: "serve" | "build";
+      environments: Record<string, { optimizeDeps: { include?: string[] } }>;
+    };
+    const createConfig = (command: TestConfig["command"]): TestConfig => ({
+      root,
+      command,
+      environments: { client: { optimizeDeps: {} }, ssr: { optimizeDeps: {} } },
+    });
+
+    const devConfig = createConfig("serve");
+    (createStyledJsxPlugin(initialRoot).configResolved as (config: TestConfig) => void)(devConfig);
+    const buildConfig = createConfig("build");
+    (createStyledJsxPlugin(initialRoot).configResolved as (config: TestConfig) => void)(
+      buildConfig,
+    );
+
+    expect(devConfig.environments.client.optimizeDeps.include).toEqual([
+      "next > styled-jsx",
+      "next > styled-jsx/style",
+    ]);
+    expect(devConfig.environments.ssr.optimizeDeps.include).toBeUndefined();
+    expect(buildConfig.environments.client.optimizeDeps.include).toBeUndefined();
   });
 
   it("leaves ordinary style tags untouched when Next is not installed", async () => {
@@ -191,8 +223,9 @@ describe("styled-jsx compatibility plugin", () => {
     const configResolved = plugin.configResolved as (config: {
       root: string;
       command: "serve";
+      environments: object;
     }) => void;
-    configResolved({ root: process.cwd(), command: "serve" });
+    configResolved({ root: process.cwd(), command: "serve", environments: {} });
     const transformHook = plugin.transform as {
       handler(source: string, id: string): Promise<unknown>;
     };
@@ -250,8 +283,9 @@ describe("styled-jsx compatibility plugin", () => {
     const configResolved = plugin.configResolved as (config: {
       root: string;
       command: "serve";
+      environments: object;
     }) => void;
-    configResolved({ root: process.cwd(), command: "serve" });
+    configResolved({ root: process.cwd(), command: "serve", environments: {} });
     const transformHook = plugin.transform as {
       handler(source: string, id: string): Promise<{ code: string }>;
     };

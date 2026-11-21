@@ -8,6 +8,7 @@
     "fake-context-lib": "file:./__test_packages__/fake-context-lib",
     "fake-css-lib": "file:./__test_packages__/fake-css-lib",
     "fake-css-module-lib": "file:./__test_packages__/fake-css-module-lib",
+    "fake-tsconfig-exact-lib": "file:./__test_packages__/fake-tsconfig-exact-lib",
     "react": "catalog:",
     "react-dom": "catalog:",
     "react-server-dom-webpack": "catalog:",

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Request } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
@@ -27,12 +27,18 @@ async function navigateWhileArchivedModuleIsHeld(
     await archivedModuleReleased;
     await route.continue();
   });
-  page.on("requestfinished", (request) => {
+  const onRscRequestEnd = (request: Request) => {
     const url = new URL(request.url());
     if (url.pathname.startsWith(ROUTE) && url.searchParams.get("archived") === "1") {
       rscResponseFinished();
     }
-  });
+  };
+  page.on("requestfinished", onRscRequestEnd);
+  // Chromium sometimes reports this response as failed (net::ERR_ABORTED)
+  // even though the page received all of it and the navigation commits, so
+  // requestfinished never fires. The assertions below still catch a response
+  // that really was cut short.
+  page.on("requestfailed", onRscRequestEnd);
 
   await page.goto(`${BASE}${ROUTE}`);
   await waitForAppRouterHydration(page);

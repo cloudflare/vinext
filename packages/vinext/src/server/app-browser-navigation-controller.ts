@@ -900,7 +900,6 @@ export function createAppBrowserNavigationController(
         elements: options.restoredState.elements,
         interception: options.restoredState.interception,
         interceptionContext: options.restoredState.interceptionContext,
-        layoutFlags: options.restoredState.layoutFlags,
         layoutIds: options.restoredState.layoutIds,
         navigationSnapshot: options.restoredState.navigationSnapshot,
         operation,
@@ -1085,7 +1084,11 @@ export function createAppBrowserNavigationController(
         }
         pendingNavigationCommits.delete(renderId);
         resolveCommitted?.(false);
-        consumeAppRouterScrollIntent(options.scrollIntent ?? null);
+        // A detached shell shares its navigation's scroll intent, which the
+        // navigation's own payload commits or consumes.
+        if (options.navigationCommitKind !== "detached") {
+          consumeAppRouterScrollIntent(options.scrollIntent ?? null);
+        }
         return "no-commit";
       }
 

@@ -17,6 +17,7 @@ import {
   createTickBufferedTransform,
 } from "../packages/vinext/src/server/app-ssr-stream.js";
 import { createSsrErrorMetaRenderer } from "../packages/vinext/src/server/app-ssr-error-meta.js";
+import { extractRscPayloadFromPrerenderedHtml } from "../packages/vinext/src/build/prerender.js";
 
 /**
  * Create a ReadableStream from an array of string chunks, with optional
@@ -620,12 +621,13 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     expect(donePos).toBeGreaterThan(lastChunksPos);
   });
 
-  it("XSS-safe: safeJsonStringify prevents </script> breakout in RSC data", async () => {
+  it("XSS-safe: script-safe escaping prevents </script> and <!-- breakout in RSC data", async () => {
     const rsc = createMockRscStream();
 
-    // Push RSC data that contains a </script> payload
+    // Push RSC data that contains </script>, <script> and <!-- payloads next to
+    // ordinary markup.
     const malicious =
-      '0:["$","div",null,{"dangerouslySetInnerHTML":{"__html":"</script><script>alert(1)</script>"}}]\n';
+      '0:["$","div",null,{"dangerouslySetInnerHTML":{"__html":"</script><script>alert(1)</script><!--<p>a &amp; b</p></SCRIPT>"}}]\n';
     rsc.push(malicious);
     rsc.close();
 
@@ -640,26 +642,23 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     // The output should contain the RSC chunk
     expect(output).toContain(RSC_RUNTIME_PUSH);
 
-    // RSC data is now stored as a JSON text string. safeJsonStringify escapes
-    // <, >, and & characters so that </script> in the RSC data cannot break
-    // out of the enclosing <script> tag. The < and > characters are escaped
-    // to \\u003c and \\u003e respectively.
-
-    // The raw string "</script>" should NOT appear outside of the proper
-    // script tags we control. Count actual <script> and </script> tags —
-    // they should be balanced (our tags only, not the malicious payload).
+    // Only a '<' that begins "<!--", "<script" or "</script" is escaped, so the
+    // payload cannot close the enclosing script or open a comment. Every
+    // script tag in the output is one of ours.
     // lgtm[js/bad-tag-filter] — counting tags to verify XSS protection, not filtering HTML
-    const openScripts = (output.match(/<script>/g) || []).length;
-    const closeScripts = (output.match(/<\/script>/g) || []).length;
+    const openScripts = (output.match(/<script/gi) || []).length;
+    const closeScripts = (output.match(/<\/script/gi) || []).length;
     expect(openScripts).toBe(closeScripts);
-
-    // The malicious raw HTML should NOT appear as actual HTML in the output
+    expect(output).not.toContain("<!--");
     expect(output).not.toContain("alert(1)</script>");
+    expect(output).toContain("\\u003c/script>\\u003cscript>alert(1)\\u003c/script>\\u003c!--");
 
-    // Verify the </script> characters are escaped in the JSON string output.
-    // safeJsonStringify escapes '<' to '\\u003c' and '>' to '\\u003e',
-    // so the malicious payload is safely neutralized.
-    expect(output).toContain("\\u003c/script\\u003e");
-    expect(output).not.toContain(",60,47,115,99,114,105,112,116,62,");
+    // Other markup is left as-is so compression can match it against the SSR
+    // HTML.
+    expect(output).toContain("<p>a &amp; b</p>\\u003c/SCRIPT>");
+
+    // The payload decodes back byte-for-byte.
+    const payload = extractRscPayloadFromPrerenderedHtml(output);
+    expect(new TextDecoder().decode(payload!)).toBe(malicious);
   });
 });

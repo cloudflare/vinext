@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import { APP_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
+import { APP_FIXTURE_DIR, fetchRsc, startFixtureServer } from "./helpers.js";
 
 describe("App Router deployment ID", () => {
   let baseUrl: string;
@@ -45,9 +45,7 @@ describe("App Router deployment ID", () => {
   // Ported from Next.js: test/e2e/app-dir/segment-cache/deployment-skew/deployment-skew.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/deployment-skew/deployment-skew.test.ts
   it("sets the deployment ID header on RSC responses", async () => {
-    const res = await fetch(`${baseUrl}/about.rsc?_rsc=`, {
-      headers: { Accept: "text/x-component", RSC: "1" },
-    });
+    const res = await fetchRsc(baseUrl, "/about");
 
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/x-component");

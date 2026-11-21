@@ -1670,6 +1670,17 @@ describe("API routes", () => {
     expect(result.defaultContentType).toBe("application/octet-stream");
   });
 
+  it("re-adds the basePath to an API URL whose first segment equals it", async () => {
+    // basePath "/api" and pages/api/users: `/api/api/users` was stripped once.
+    const handleApi = vi.fn(async (request: Request) => Response.json({ url: request.url }));
+    const result = await runPagesRequest(
+      makeRequest("/api/users"),
+      baseDeps({ basePath: "/api", hadBasePath: true, handleApi }),
+    );
+    expect(result.type).toBe("response");
+    expect(handleApi.mock.calls[0][0].url).toBe("http://localhost/api/api/users");
+  });
+
   it("passes staged middleware and config response headers to API dispatch", async () => {
     const handleApi = vi.fn(
       async (_request: Request, _apiUrl: string, _ctx: unknown, stagedHeaders: Headers) => {
@@ -1861,6 +1872,44 @@ describe("serveFilesystemRoute", () => {
     if (result.type !== "response") return;
     expect(result.response.status).toBe(403);
   });
+
+  // Next.js's static file server sets a Cache-Control only when none is
+  // present, while its image optimizer sets its own after middleware's.
+  // An empty value leaves the file's default in place.
+  for (const [pathname, middlewareValue, served, expected] of [
+    ["/file.txt", "private, no-store", "public, max-age=0, must-revalidate", "private, no-store"],
+    ["/file.txt", "", "public, max-age=0, must-revalidate", null],
+    [
+      "/_next/image?url=%2Ffoo.png&w=828&q=75",
+      "private, no-store",
+      "public, max-age=60, must-revalidate",
+      null,
+    ],
+  ] as const) {
+    it(`merges middleware's Cache-Control "${middlewareValue}" into ${pathname} like Next.js`, async () => {
+      for (const status of [200, 304]) {
+        const result = await runPagesRequest(
+          makeRequest(pathname),
+          baseDeps({
+            serveFilesystemRoute: vi.fn(
+              async () =>
+                new Response(status === 304 ? null : "body", {
+                  status,
+                  headers: { "cache-control": served },
+                }),
+            ),
+            runMiddleware: makeMiddleware({
+              responseHeaders: [["cache-control", middlewareValue]],
+            }),
+          }),
+        );
+        expect(result.type).toBe("response");
+        if (result.type !== "response") return;
+        expect(result.response.status).toBe(status);
+        expect(result.response.headers.get("cache-control")).toBe(expected ?? served);
+      }
+    });
+  }
 
   it("falls through to render when serveFilesystemRoute returns false", async () => {
     const renderPage = makeRenderPage(200);
@@ -2942,10 +2991,18 @@ describe("wrapMiddlewareWithBasePath", () => {
     expect(middlewareRequest.geo?.country).toBe("AU");
   });
 
-  it("does not double-add an already-present basePath (addBasePathToPathname is idempotent)", async () => {
+  it("re-adds the basePath to a stripped pathname whose first segment equals it", async () => {
+    // `/root/root/dashboard` was stripped once to `/root/dashboard`.
     const runMiddleware = makeMiddleware({ continue: true });
     const wrapped = wrapMiddlewareWithBasePath(runMiddleware, "/root", true);
     await wrapped(makeRequest("/root/dashboard"), null, { isDataRequest: false });
-    expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/root/dashboard");
+    expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/root/root/dashboard");
+  });
+
+  it("re-adds the basePath to the stripped root as the bare basePath", async () => {
+    const runMiddleware = makeMiddleware({ continue: true });
+    const wrapped = wrapMiddlewareWithBasePath(runMiddleware, "/root", true);
+    await wrapped(makeRequest("/"), null, { isDataRequest: false });
+    expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/root");
   });
 });

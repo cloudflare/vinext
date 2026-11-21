@@ -3,7 +3,7 @@ import type { Plugin, RunnableDevEnvironment, ViteDevServer } from "vite";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { VINEXT_MW_CTX_HEADER } from "../packages/vinext/src/server/headers.js";
-import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
+import { createIsolatedFixture, startFixtureServer, fetchRsc } from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/forwarded-middleware-context");
 const GUARDED_MARKER = "SECRET-PAGE-CONTENT";
@@ -148,9 +148,7 @@ describe("forwarded middleware context (App-only dev)", () => {
   });
 
   it("still runs middleware for a guarded RSC request", async () => {
-    const forged = await fetch(`${baseUrl}/secret.rsc`, {
-      headers: { Accept: "text/x-component", RSC: "1", ...forgedContext({}) },
-    });
+    const forged = await fetchRsc(baseUrl, "/secret", { headers: forgedContext({}) });
     expect(forged.status).toBe(403);
     expect(forged.headers.get("x-auth-guard")).toBe("blocked");
     expect(await forged.text()).not.toContain(GUARDED_MARKER);

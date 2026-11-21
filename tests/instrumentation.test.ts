@@ -916,3 +916,26 @@ describe("generateInstrumentationClientInjectModule", () => {
     expect(code).toContain('from "./path/with\\"quote.js"');
   });
 });
+
+describe("client instrumentation hook state", () => {
+  const statePath = "../packages/vinext/src/client/instrumentation-client-state.js";
+
+  afterEach(async () => {
+    (await import(statePath)).setClientInstrumentationHooks(null);
+  });
+
+  // Pages Router dev pre-bundles next/* shims with their own copy of the state
+  // module, while the browser entry registers the hooks on the raw copy.
+  it("notifies hooks registered through another copy of the state module", async () => {
+    const registering = await import(statePath);
+    vi.resetModules();
+    const notifying = await import(statePath);
+    expect(notifying).not.toBe(registering);
+
+    const onRouterTransitionStart = vi.fn();
+    registering.setClientInstrumentationHooks({ onRouterTransitionStart });
+    notifying.notifyAppRouterTransitionStart("/about", "push");
+
+    expect(onRouterTransitionStart).toHaveBeenCalledWith("/about", "push");
+  });
+});

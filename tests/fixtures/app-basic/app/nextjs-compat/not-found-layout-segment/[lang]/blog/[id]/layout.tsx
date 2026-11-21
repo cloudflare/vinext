@@ -1,6 +1,7 @@
 /**
  * Test fixture: layout that calls notFound() for invalid ids, with no deeper
- * not-found, so the [lang] boundary's metadata becomes the page's metadata.
+ * not-found, so the [lang] boundary catches it while the document keeps the
+ * route's own title.
  */
 import { notFound } from "next/navigation";
 

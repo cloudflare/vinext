@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
-import { deploy, parseDeployArgs } from "./deploy.js";
+import { deploy, parseDeployArgs, resolveDeploymentTool } from "./deploy.js";
 import { printDeployHelp, printPreviewsDeployHelp } from "./deploy-help.js";
 import { parsePreviewsDeployArgs } from "./previews-deploy.js";
 
@@ -12,7 +12,7 @@ const rawArgs = process.argv.slice(3);
 
 function printHelp(commandName?: string): void {
   if (commandName === "deploy") {
-    printDeployHelp();
+    printDeployHelp(resolveDeploymentTool(process.cwd()));
     return;
   }
   if (commandName === "previews") {
@@ -31,7 +31,7 @@ function printHelp(commandName?: string): void {
 
   Commands:
     deploy                          Deploy to Cloudflare Workers
-    previews deploy [preview-name]  Deploy a Cloudflare Worker Preview
+    previews deploy                 Deploy a Cloudflare Worker Preview
 
   Options:
     -h, --help     Show this help
@@ -51,6 +51,9 @@ async function deployCommand(): Promise<void> {
     preview: parsed.preview,
     env: parsed.env,
     config: parsed.config,
+    message: parsed.message,
+    tag: parsed.tag,
+    viteConfig: parsed.viteConfig,
     skipBuild: parsed.skipBuild,
     dryRun: parsed.dryRun,
     verbose: parsed.verbose,
@@ -59,6 +62,7 @@ async function deployCommand(): Promise<void> {
     prerenderConcurrency: parsed.prerenderConcurrency,
     warmCdnCache: parsed.warmCdnCache,
     warmCdnTarget: parsed.warmCdnTarget,
+    warmCdnHeaders: parsed.warmCdnHeaders,
     warmCdnConcurrency: parsed.warmCdnConcurrency,
     warmCdnTimeout: parsed.warmCdnTimeout,
     warmCdnRetries: parsed.warmCdnRetries,
@@ -101,6 +105,7 @@ async function previewsCommand(): Promise<void> {
     root: process.cwd(),
     env: options.mode,
     skipBuild: options.skipBuild,
+    viteConfig: options.viteConfig,
     target: { type: "preview", name: options.name },
   });
 }

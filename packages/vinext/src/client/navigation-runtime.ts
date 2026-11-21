@@ -6,6 +6,7 @@ import {
 } from "../routing/browser-route-manifest.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
+import type { CachedRscResponse } from "vinext/shims/app-router-navigation";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "./browser-globals.js";
 
 type NavigationRuntimeSnapshot = {
@@ -69,7 +70,7 @@ export type NavigationRuntimeNavigate = (
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {
-  clearNavigationCaches?: () => void;
+  clearNavigationCaches?: (options?: { pingVisibleLinks?: boolean }) => void;
   commitHashNavigation?: (
     href: string,
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
@@ -86,16 +87,25 @@ export type NavigationRuntimeFunctions = {
    * reset any link that is still showing a `useLinkStatus()` pending state but
    * is not the one driving this navigation (e.g. a programmatic router.push or
    * a shallow-routing transition). Registered by shims/link.tsx; decoupled
-   * through the runtime to avoid a circular import with shims/navigation.ts.
+   * through the runtime to avoid a circular import with
+   * shims/app-router-navigation.ts.
    */
   notifyLinkNavigationStart?: () => void;
-  /**
-   * Re-prefetch visible links whose prefetch inputs or cache entries changed.
-   * `"cache-invalidation"` marks a ping that follows a whole-cache
-   * invalidation (a revalidating Server Action or `router.refresh()`).
-   */
-  pingVisibleLinks?: (cause?: "cache-invalidation") => void;
+  pingVisibleLinks?: () => void;
   preparePrefetchResponse?: (response: Response) => Promise<unknown>;
+  /**
+   * The visited (BFCache) response a full prefetch can be fulfilled from, and
+   * until when a navigation would still reuse it (null if it wouldn't).
+   */
+  readVisitedResponseForFullPrefetch?: (
+    rscUrls: readonly string[],
+    interceptionContext: string | null,
+    mountedSlotsHeader: string | null,
+  ) => {
+    navigatedAt: number;
+    navigationFreshUntil: number | null;
+    response: CachedRscResponse;
+  } | null;
   claimCurrentHistoryTreeSnapshot?: (
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     previousHistoryState: unknown,
@@ -159,7 +169,7 @@ function readRuntimeWindow(): Window | null {
   return window;
 }
 
-function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntimeFunctions {
+export function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntimeFunctions {
   if (!isUnknownRecord(value)) return false;
   return (
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&
@@ -170,6 +180,7 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "readVisitedResponseForFullPrefetch")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "claimCurrentHistoryTreeSnapshot")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "discardPendingNavigation")) &&

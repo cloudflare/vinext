@@ -351,7 +351,7 @@ describe("basePath: rewrite/redirect/header gating", () => {
       hadBasePath: true,
     });
     expect(result).toEqual({
-      destination: "/somewhere-else",
+      destination: "/docs/somewhere-else",
       statusCode: 307,
       destinationQuery: [],
     });

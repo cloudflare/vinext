@@ -1,0 +1,5 @@
+{
+  "name": "cf-app-build-outdir-fixture",
+  "private": true,
+  "type": "module"
+}

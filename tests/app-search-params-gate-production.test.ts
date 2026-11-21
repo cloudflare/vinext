@@ -11,6 +11,7 @@ import path from "node:path";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { createRscRequestUrl } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
 const FIXTURE_SOURCE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-search-params-gate");
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
@@ -186,9 +187,7 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     urls: readonly string[],
     rscUrls: readonly string[] = [],
   ): Promise<void> {
-    const pathnames = new Set(
-      [...urls, ...rscUrls].map((url) => new URL(url, baseUrl).pathname.replace(/\.rsc$/, "")),
-    );
+    const pathnames = new Set([...urls, ...rscUrls].map((url) => new URL(url, baseUrl).pathname));
     await expectNoStoredEntries(pathnames);
     for (const [url, init] of [
       ...urls.map((url) => [url, undefined] as const),
@@ -221,7 +220,10 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     }
     expect(testIdText(second.body, "render-id")).not.toBe(testIdText(first.body, "render-id"));
     // An RSC request renders the page without SSR, so it's checked on its own.
-    const rscUrl = `${pathname}.rsc?q=${crypto.randomUUID()}`;
+    const rscUrl = await createRscRequestUrl(
+      `${pathname}?q=${crypto.randomUUID()}`,
+      new Headers(RSC_REQUEST.headers),
+    );
     const rsc = await get(rscUrl, RSC_REQUEST);
     expect(rsc.status).toBe(200);
     // A Flight response, not HTML, so the RSC render path and its writes run.

@@ -3,7 +3,7 @@ import {
   createTemporaryReferenceSet,
   encodeReply,
 } from "@vitejs/plugin-rsc/browser";
-import { parseRenderedPathAndSearchHeader } from "vinext/shims/navigation";
+import { parseRenderedPathAndSearchHeader } from "vinext/shims/app-router-navigation";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import {
   createServerActionResultFacts,
@@ -21,6 +21,7 @@ import { resolveServerActionRequestState, type AppRouterState } from "./app-brow
 import { AppElementsWire, type AppElements, type AppWireElements } from "./app-elements.js";
 import {
   createServerActionRequestUrl,
+  toPathAbsolutePathname,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
 } from "./app-rsc-cache-busting.js";
 import { throwOnServerActionNotFound } from "./server-action-not-found.js";
@@ -52,6 +53,8 @@ type ActionRedirectTarget = {
 export type ClientServerActionDeps = {
   basePath: string;
   clearClientNavigationCaches(): void;
+  /** Evict only the cached navigation data that may be dynamic. */
+  clearDynamicClientNavigationCaches(): void;
   clientRscCompatibilityId: string | null;
   commitSameUrlNavigatePayload(
     elements: Promise<AppElements>,
@@ -129,7 +132,8 @@ class ServerActionRedirectError extends Error {
   constructor(target: ActionRedirectTarget) {
     super("NEXT_REDIRECT");
     const redirectUrl = new URL(target.href, window.location.href);
-    const redirectHref = redirectUrl.pathname + redirectUrl.search + redirectUrl.hash;
+    const redirectHref =
+      toPathAbsolutePathname(redirectUrl.pathname) + redirectUrl.search + redirectUrl.hash;
     const redirectType = target.type === "push" ? "push" : "replace";
     this.digest = `NEXT_REDIRECT;${redirectType};${redirectHref};${target.status};`;
   }
@@ -197,7 +201,9 @@ export async function invokeClientServerAction(
   }
 
   const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-  if (revalidation !== "none") deps.clearClientNavigationCaches();
+  // Like Next.js, `refresh()` alone keeps the static prefetches.
+  if (revalidation === "staticAndDynamic") deps.clearClientNavigationCaches();
+  else if (revalidation === "dynamicOnly") deps.clearDynamicClientNavigationCaches();
   const invalidResponseError = await readInvalidServerActionResponseError(
     fetchResponse.clone(),
     actionRedirectTarget !== null,

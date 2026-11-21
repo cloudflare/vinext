@@ -26,10 +26,13 @@ declare module "virtual:vinext-rsc-entry" {
   ): void | Promise<void>;
   export const __imageConfig: {
     qualities?: number[];
+    localPatterns?: Array<{ pathname?: string; search?: string }>;
     dangerouslyAllowSVG?: boolean;
     dangerouslyAllowLocalIP?: boolean;
     contentDispositionType?: "inline" | "attachment";
     contentSecurityPolicy?: string;
+    minimumCacheTTL?: number;
+    maximumResponseBody?: number;
   };
 }
 
@@ -60,10 +63,13 @@ declare module "virtual:vinext-app-request-entry" {
   ): void | Promise<void>;
   export const __imageConfig: {
     qualities?: number[];
+    localPatterns?: Array<{ pathname?: string; search?: string }>;
     dangerouslyAllowSVG?: boolean;
     dangerouslyAllowLocalIP?: boolean;
     contentDispositionType?: "inline" | "attachment";
     contentSecurityPolicy?: string;
+    minimumCacheTTL?: number;
+    maximumResponseBody?: number;
   };
 }
 

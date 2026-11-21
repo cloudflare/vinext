@@ -907,8 +907,8 @@ export default {
           outDir: writeWorkerEntry(manifest),
         });
         servers.push(server);
-        const res = await fetch(`http://localhost:${port}/page.rsc`, {
-          headers: { "Accept-Encoding": "gzip" },
+        const res = await fetch(`http://localhost:${port}/page`, {
+          headers: { "Accept-Encoding": "gzip", RSC: "1" },
         });
         expect(res.status).toBe(200);
         expect(res.headers.get("content-encoding")).toBe(expectedEncoding);
@@ -1012,11 +1012,101 @@ export default {
       const denied = await get("/protected/private.png");
       expect(denied.status).toBe(400);
       expect(denied.headers.get("x-mw")).toBe("1");
+      // Only an image replaces the Content-Type middleware or config set.
+      expect(denied.headers.get("content-type")).toBe("text/plain");
       await expect(denied.text()).resolves.toBe("The requested resource isn't a valid image.");
       expect(fetchedAssets).toEqual(["/open.png"]);
     } finally {
       setImageOptimizer(null);
       await server?.close();
+    }
+  });
+
+  it("serves an admitted image source unoptimized without an image optimizer", async () => {
+    // The Pages Router Worker and the Node server pass a source through when no
+    // optimizer is configured. The App Router Worker sent the handler's
+    // internal redirect to the source instead.
+    const entryPaths = [
+      "../packages/vinext/src/server/app-router-entry.ts",
+      "../packages/vinext/src/server/app-request-stage-independent-entry.ts",
+    ];
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const workerEntry = (await server.ssrLoadModule(
+        path.resolve(import.meta.dirname, entryPaths[0]),
+      )) as {
+        default: {
+          fetch(request: Request, env?: unknown, ctx?: { waitUntil(): void }): Promise<Response>;
+        };
+      };
+      const env = {
+        ASSETS: {
+          fetch(request: Request) {
+            const { pathname } = new URL(request.url);
+            return new Response(pathname, { headers: { "content-type": "image/png" } });
+          },
+        },
+      };
+      const image = await workerEntry.default.fetch(
+        new Request("https://example.com/_next/image?source=%2Fopen.png", {
+          headers: { accept: "image/webp", host: "example.com" },
+        }),
+        env,
+        { waitUntil() {} },
+      );
+      expect(image.status).toBe(200);
+      expect(image.headers.get("location")).toBeNull();
+      expect(image.headers.get("content-type")).toBe("image/png");
+      expect(image.headers.get("cache-control")).toBe("public, max-age=14400, must-revalidate");
+      expect(image.headers.get("x-mw")).toBe("1");
+      await expect(image.text()).resolves.toBe("/open.png");
+
+      const fetchAsset = vi.fn(
+        async () => new Response("visible", { headers: { "content-type": "image/png" } }),
+      );
+      const adapter = Object.assign(new DefaultCdnCacheAdapter(), {
+        assets: { fetch: fetchAsset },
+      });
+      Reflect.set(globalThis, REGISTER_CDN_ADAPTER, () => setCdnCacheAdapter(adapter));
+      const stageEntry = (await server.ssrLoadModule(
+        path.resolve(import.meta.dirname, entryPaths[1]),
+      )) as {
+        handleRequestStage(
+          request: Request,
+          env: unknown,
+          ctx: undefined,
+          dispatchResponseStage: () => Promise<Response>,
+        ): Promise<Response>;
+      };
+      const staged = await stageEntry.handleRequestStage(
+        new Request("https://example.com/_next/image?url=%2Fvisible.png&w=64&q=75", {
+          headers: { accept: "image/webp" },
+        }),
+        {},
+        undefined,
+        async () => new Response("page"),
+      );
+      expect(staged.status).toBe(200);
+      expect(staged.headers.get("location")).toBeNull();
+      expect(staged.headers.get("content-type")).toBe("image/png");
+      expect(staged.headers.get("x-middleware-image")).toBe("admitted");
+      await expect(staged.text()).resolves.toBe("visible");
+    } finally {
+      await server?.close();
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      Reflect.deleteProperty(globalThis, REGISTER_CDN_ADAPTER);
     }
   });
 });

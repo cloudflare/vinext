@@ -3,7 +3,7 @@ import path from "node:path";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { createIsolatedFixture } from "./helpers.js";
+import { createIsolatedFixture, fetchRsc } from "./helpers.js";
 
 const FIXTURE_SOURCE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-flight-framing");
 
@@ -60,13 +60,11 @@ describe("App Router production Flight framing", () => {
     const length = 1_100;
     const firstMarker = `FIRST-${"a".repeat(length - 6)}`;
     const secondMarker = `SECOND-${"b".repeat(length - 7)}`;
-    const probeUrl = new URL("/.rsc", baseUrl);
+    const probeUrl = new URL("/", baseUrl);
     probeUrl.searchParams.set("first", firstMarker);
     probeUrl.searchParams.set("second", secondMarker);
 
-    const probeResponse = await fetch(probeUrl, {
-      headers: { Accept: "text/x-component", RSC: "1" },
-    });
+    const probeResponse = await fetchRsc(baseUrl, `${probeUrl.pathname}${probeUrl.search}`);
     expect(probeResponse.status).toBe(200);
     const probe = await probeResponse.text();
     const firstBodyStart = outlinedStringBodyStart(probe, firstMarker);

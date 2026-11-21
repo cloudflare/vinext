@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "1.3.0",
+  "version": "1.4.6",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "homepage": "https://vinext.dev/",
   "license": "MIT",
@@ -138,6 +138,10 @@
       "types": "./dist/server/response-start-tracing.d.ts",
       "import": "./dist/server/response-start-tracing.js"
     },
+    "./internal/server/websocket-upgrade-response": {
+      "types": "./dist/server/websocket-upgrade-response.d.ts",
+      "import": "./dist/server/websocket-upgrade-response.js"
+    },
     "./internal/build/run-prerender": {
       "types": "./dist/build/run-prerender.d.ts",
       "import": "./dist/build/run-prerender.js"
@@ -245,6 +249,7 @@
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "am-i-vibing": "catalog:",
+    "iconv-lite": "catalog:",
     "ignore": "catalog:",
     "image-size": "catalog:",
     "pathslash": "catalog:",

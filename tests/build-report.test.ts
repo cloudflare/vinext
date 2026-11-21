@@ -18,7 +18,6 @@ import {
   classifyPagesRoute,
   classifyAppRoute,
   classifyAppRouteHandler,
-  classifyLayoutSegmentConfig,
   buildReportRows,
   formatBuildReport,
   printBuildReport,
@@ -908,66 +907,5 @@ describe("printBuildReport respects pageExtensions", () => {
 
     const output = lines.join("\n");
     expect(output).toContain("/about");
-  });
-});
-
-// ─── classifyLayoutSegmentConfig ─────────────────────────────────────────────
-
-describe("classifyLayoutSegmentConfig", () => {
-  it("returns kind=static with segment-config reason for force-static", () => {
-    expect(classifyLayoutSegmentConfig('export const dynamic = "force-static";')).toEqual({
-      kind: "static",
-      reason: { layer: "segment-config", key: "dynamic", value: "force-static" },
-    });
-  });
-
-  it('returns kind=static with segment-config reason for dynamic = "error"', () => {
-    expect(classifyLayoutSegmentConfig("export const dynamic = 'error';")).toEqual({
-      kind: "static",
-      reason: { layer: "segment-config", key: "dynamic", value: "error" },
-    });
-  });
-
-  it("returns kind=dynamic with segment-config reason for force-dynamic", () => {
-    expect(classifyLayoutSegmentConfig('export const dynamic = "force-dynamic";')).toEqual({
-      kind: "dynamic",
-      reason: { layer: "segment-config", key: "dynamic", value: "force-dynamic" },
-    });
-  });
-
-  it("returns kind=dynamic with revalidate reason for revalidate = 0", () => {
-    expect(classifyLayoutSegmentConfig("export const revalidate = 0;")).toEqual({
-      kind: "dynamic",
-      reason: { layer: "segment-config", key: "revalidate", value: 0 },
-    });
-  });
-
-  it("returns kind=static with revalidate reason for revalidate = Infinity", () => {
-    expect(classifyLayoutSegmentConfig("export const revalidate = Infinity;")).toEqual({
-      kind: "static",
-      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
-    });
-  });
-
-  it("returns kind=static with revalidate reason for revalidate = false", () => {
-    // revalidate = false means "cache indefinitely" — same as Infinity.
-    expect(classifyLayoutSegmentConfig("export const revalidate = false;")).toEqual({
-      kind: "static",
-      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
-    });
-  });
-
-  it("returns kind=absent when no config is present (defers to module graph)", () => {
-    expect(
-      classifyLayoutSegmentConfig(
-        "export default function Layout({ children }) { return children; }",
-      ),
-    ).toEqual({ kind: "absent" });
-  });
-
-  it("returns kind=absent for positive revalidate (ISR is a page concept)", () => {
-    expect(classifyLayoutSegmentConfig("export const revalidate = 60;")).toEqual({
-      kind: "absent",
-    });
   });
 });

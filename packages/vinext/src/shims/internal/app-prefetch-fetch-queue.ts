@@ -6,10 +6,17 @@ const MAX_DEFAULT_APP_PREFETCH_REQUESTS = 4;
 const defaultAppPrefetchQueue: Array<() => void> = [];
 type AppPrefetchFetchControl = {
   cancel: () => void;
-  runner?: () => void;
+  cancelQueued?: () => void;
+  runner?: (promoted?: boolean) => void;
 };
 /** Lets a consumer promote or cancel the request behind a promise it already holds. */
 const appPrefetchFetchControls = new WeakMap<Promise<Response>, AppPrefetchFetchControl>();
+/**
+ * Navigations waiting on a promise, each live while it is current, with the
+ * sequence number it was claimed at.
+ */
+const appPrefetchFetchClaims = new WeakMap<Promise<Response>, Map<() => boolean, number>>();
+let appPrefetchFetchClaimSequence = 0;
 let activeDefaultAppPrefetchRequests = 0;
 let defaultAppPrefetchDrainScheduled = false;
 
@@ -45,10 +52,15 @@ export function releaseAppPrefetchFetchSlot(response: Response): void {
  * Low-priority App Router prefetches share a small request queue. The consumer
  * must either snapshot the returned Response with snapshotRscResponse() or call
  * releaseAppPrefetchFetchSlot() when it drops the response without consuming it.
+ *
+ * `isWanted` is checked when a queued request reaches a free slot. Returning
+ * false drops it without fetching, like a cancelled Next.js prefetch task. A
+ * navigation that promotes the request skips the check.
  */
 export function scheduleAppPrefetchFetch(
   fetcher: (signal: AbortSignal) => Promise<Response>,
   priority: "low" | "high",
+  isWanted?: () => boolean,
 ): Promise<Response> {
   const controller = new AbortController();
   if (priority === "high") {
@@ -69,12 +81,19 @@ export function scheduleAppPrefetchFetch(
     return promise;
   }
 
-  let runner!: () => void;
+  let runner!: (promoted?: boolean) => void;
   let rejectPromise!: (reason?: unknown) => void;
   let started = false;
   const promise = new Promise<Response>((resolve, reject) => {
     rejectPromise = reject;
-    runner = () => {
+    runner = (promoted = false) => {
+      if (!promoted && isWanted?.() === false) {
+        // Only the drain loop reaches here; it moves on to the next request.
+        appPrefetchFetchControls.delete(promise);
+        activeDefaultAppPrefetchRequests -= 1;
+        reject(new DOMException("Prefetch is no longer wanted", "AbortError"));
+        return;
+      }
       started = true;
       let didRelease = false;
       const release = () => {
@@ -107,24 +126,31 @@ export function scheduleAppPrefetchFetch(
     };
   });
 
+  const cancelQueued = () => {
+    if (started) return;
+    const index = defaultAppPrefetchQueue.indexOf(runner);
+    if (index === -1) return;
+    defaultAppPrefetchQueue.splice(index, 1);
+    appPrefetchFetchControls.delete(promise);
+    controller.abort();
+    rejectPromise(controller.signal.reason);
+  };
   defaultAppPrefetchQueue.push(runner);
   appPrefetchFetchControls.set(promise, {
     runner,
+    cancelQueued,
     cancel: () => {
-      if (started) {
-        controller.abort();
-        return;
-      }
-      const index = defaultAppPrefetchQueue.indexOf(runner);
-      if (index === -1) return;
-      defaultAppPrefetchQueue.splice(index, 1);
-      appPrefetchFetchControls.delete(promise);
-      controller.abort();
-      rejectPromise(controller.signal.reason);
+      if (started) controller.abort();
+      else cancelQueued();
     },
   });
   scheduleDefaultAppPrefetchDrain();
   return promise;
+}
+
+/** Cancel a prefetch request that is still waiting for a slot; never aborts one in flight. */
+export function cancelQueuedAppPrefetchFetch(promise: Promise<Response>): void {
+  appPrefetchFetchControls.get(promise)?.cancelQueued?.();
 }
 
 /** Cancel a queued or in-flight prefetch request. No-op once it has settled. */
@@ -144,17 +170,59 @@ export function cancelAppPrefetchFetch(promise: Promise<Response> | undefined): 
  * cap instead of waiting for a slot.
  *
  * No-op when the request has already started or was never queued.
+ *
+ * Also records a claim, live while `isCurrent` returns true, until the returned
+ * function releases it; see `isAppPrefetchFetchClaimed`.
  */
-export function promoteAppPrefetchFetch(promise: Promise<Response> | undefined): void {
-  if (promise === undefined) return;
+export function promoteAppPrefetchFetch(
+  promise: Promise<Response> | undefined,
+  isCurrent: () => boolean = () => true,
+): () => void {
+  if (promise === undefined) return () => {};
+  let claims = appPrefetchFetchClaims.get(promise);
+  if (claims === undefined) {
+    claims = new Map();
+    appPrefetchFetchClaims.set(promise, claims);
+  }
+  claims.set(isCurrent, ++appPrefetchFetchClaimSequence);
+  const release = () => {
+    claims.delete(isCurrent);
+  };
+
   const control = appPrefetchFetchControls.get(promise);
   const runner = control?.runner;
-  if (runner === undefined) return;
+  if (runner === undefined) return release;
 
   const index = defaultAppPrefetchQueue.indexOf(runner);
-  if (index === -1) return;
+  if (index === -1) return release;
   defaultAppPrefetchQueue.splice(index, 1);
 
   activeDefaultAppPrefetchRequests += 1;
-  runner();
+  runner(true);
+  return release;
+}
+
+/**
+ * Whether a current navigation is waiting on this prefetch. A staged prefetch
+ * (route tree, then payload) hands navigation a promise that wraps its queued
+ * requests, so promotion cannot reach them; they check this instead before
+ * dropping themselves.
+ *
+ * `claimedBy` limits this to claims made up to that `getAppPrefetchFetchClaimSequence()`.
+ */
+export function isAppPrefetchFetchClaimed(
+  promise: Promise<Response> | undefined,
+  claimedBy = Infinity,
+): boolean {
+  const claims = promise && appPrefetchFetchClaims.get(promise);
+  if (!claims) return false;
+  for (const [isCurrent, sequence] of claims) {
+    if (sequence <= claimedBy && isCurrent()) return true;
+  }
+  return false;
+}
+
+/** The sequence number of the latest claim on any prefetch. */
+export function getAppPrefetchFetchClaimSequence(): number {
+  return appPrefetchFetchClaimSequence;
 }

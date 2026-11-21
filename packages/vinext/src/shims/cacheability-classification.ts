@@ -19,6 +19,8 @@ export type RouteCacheabilityOutcome = {
    */
   status?: number;
   headers?: Readonly<Record<string, string>>;
+  /** App pages: the client-router stale time from the completed render's cacheLife. */
+  staleTimeSeconds?: number;
   tags?: readonly string[];
 };
 
@@ -115,6 +117,14 @@ export function beginRouteCacheability(
     state.preserveResponseCachePolicy = false;
   }
   return true;
+}
+
+/** Forget the route a dispatch began classifying when routing resumes after rejecting it. */
+export function resetRouteCacheability(): void {
+  const state = readRouteCacheabilityState();
+  if (!state) return;
+  state.route = undefined;
+  state.patternDynamicReason = undefined;
 }
 
 /** Prevent shared caching when request processing before route dispatch was request-specific. */

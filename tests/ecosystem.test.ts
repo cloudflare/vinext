@@ -111,12 +111,14 @@ describe("next-view-transitions", () => {
 describe("nuqs", () => {
   let proc: ChildProcess | null = null;
   let fetchPage: (path: string) => Promise<{ html: string; status: number }>;
+  let baseUrl: string;
   const fixtureRoot = path.join(FIXTURES_DIR, "nuqs");
 
   beforeAll(async () => {
     const fixture = await startFixture("nuqs", 4402);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
+    baseUrl = fixture.baseUrl;
   }, FIXTURE_HOOK_TIMEOUT_MS);
 
   afterAll(() => stopFixtureDevServer(proc));
@@ -146,7 +148,7 @@ describe("nuqs", () => {
     expect(html).toContain('data-testid="next-page"');
   });
 
-  it("prebundles next/navigation.js imports against vinext shims", async () => {
+  it("resolves next/navigation.js imports in prebundled deps to vinext's shim", async () => {
     await fetchPage("/");
 
     const depsDir = path.join(fixtureRoot, "node_modules", ".vite", "deps");
@@ -159,9 +161,16 @@ describe("nuqs", () => {
 
     const optimizedAdapter = readFileSync(path.join(depsDir, optimizedAdapterFile!), "utf8");
 
-    expect(optimizedAdapter).toContain("vinext.navigationRuntime");
-    expect(optimizedAdapter).toContain("vinext.navigation.readonlySearchParams");
+    // A pre-bundled copy of the shim would carry its own navigation state, so
+    // the import stays bare instead of inlining the shim or real Next.
+    expect(optimizedAdapter).toContain('from "next/navigation.js"');
+    expect(optimizedAdapter).not.toContain("vinext.navigationRuntime");
     expect(optimizedAdapter).not.toContain("node_modules/.pnpm/next@");
+
+    // Served to the browser, the bare import resolves to vinext's shim module.
+    const served = await fetch(`${baseUrl}/node_modules/.vite/deps/${optimizedAdapterFile}`);
+    expect(served.status).toBe(200);
+    expect(await served.text()).toMatch(/from "[^"]*\/vinext\/dist\/shims\/navigation\.js"/);
   });
 });
 

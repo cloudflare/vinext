@@ -36,8 +36,7 @@ function visibleTestId(page: Page, testId: string) {
 function waitForServerActionResponse(page: Page, pathname: string) {
   return page.waitForResponse((response) => {
     if (response.request().method() !== "POST") return false;
-    const responsePathname = new URL(response.url()).pathname;
-    return responsePathname === pathname || responsePathname === `${pathname}.rsc`;
+    return new URL(response.url()).pathname === pathname;
   });
 }
 

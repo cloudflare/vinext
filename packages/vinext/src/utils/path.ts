@@ -18,6 +18,25 @@ export function canonicalizeFilePath(filePath: string): string {
   }
 }
 
+/**
+ * Resolve `target` through symlinks, including a path that doesn't exist
+ * yet: its nearest existing ancestor is resolved and the rest appended.
+ */
+export function resolveRealPath(target: string): string {
+  const missing: string[] = [];
+  let current = path.resolve(target);
+  for (;;) {
+    try {
+      return path.join(toSlash(fs.realpathSync.native(current)), ...missing);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(target);
+      missing.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
 /** Whether `filePath` is a strict descendant of `directory`. */
 export function isPathInside(directory: string, filePath: string): boolean {
   const relativePath = path.relative(directory, filePath);

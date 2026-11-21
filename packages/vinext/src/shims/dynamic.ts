@@ -22,7 +22,7 @@
  * - dynamic(() => import('./Component'), { ssr: false })
  */
 import React, { type ComponentType } from "react";
-import { AppRouterTreeContext } from "./app-router-tree-context.js";
+import { useIsAppRouterTree } from "./app-router-tree-context.js";
 import { DynamicPreloadChunks } from "./dynamic-preload-chunks.js";
 import type {
   DynamicOptions,
@@ -163,9 +163,11 @@ type DynamicErrorBoundaryState = {
 
 /**
  * Lightweight error boundary that renders the loading component with the error
- * when a dynamic() loader rejects. Without this, loader failures would propagate
- * uncaught through React's rendering — this preserves the Next.js behavior where
- * the `loading` component can display errors.
+ * when a dynamic() loader rejects, as the Pages Router's react-loadable does by
+ * passing `error` to `loading`. App Router trees never get it: Next.js's App
+ * Router next/dynamic is React.lazy inside Suspense with no boundary of its own,
+ * so loader and render errors reach the nearest error.tsx.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/lazy-dynamic/loadable.tsx
  *
  * Lazily created because React.Component is not available in the RSC environment
  * (server components use a slimmed-down React that doesn't include class components).
@@ -175,7 +177,7 @@ function getDynamicErrorBoundary() {
   if (DynamicErrorBoundary) return DynamicErrorBoundary;
   if (!React.Component) return null;
   DynamicErrorBoundary = class extends (
-    React.Component<DynamicErrorBoundaryProps, DynamicErrorBoundaryState>
+    (React.Component<DynamicErrorBoundaryProps, DynamicErrorBoundaryState>)
   ) {
     constructor(props: DynamicErrorBoundaryProps) {
       super(props);
@@ -212,21 +214,6 @@ function getDynamicErrorBoundary() {
 
 // Detect server vs client
 const isServer = typeof window === "undefined";
-
-/**
- * Whether this dynamic() renders in an App Router tree. RSC renders the App
- * Router only, and react-server has no context support. On the server, the
- * App Router SSR entry marks its tree; in the browser, App Router documents
- * set `window.next.appDir` before anything renders, which also covers
- * separate client roots (e.g. a modal rendered with createRoot). Everything
- * else (Pages Router pages, `pages/_document`, ad-hoc react-dom/server
- * renders) keeps the boundary, since Pages next/dynamic is react-loadable,
- * which never suspends.
- */
-function useIsAppRouterTree(): boolean {
-  if (!isServer) return window.next?.appDir === true;
-  return AppRouterTreeContext ? React.use(AppRouterTreeContext) : true;
-}
 
 /**
  * The element tree around an SSR-enabled dynamic() component. The client
@@ -336,6 +323,7 @@ function dynamic<P = {}>(
     const InitialLazyComponent = createLazyComponent(loader);
 
     const ClientSSRFalse = (props: P) => {
+      const isAppRouterTree = useIsAppRouterTree();
       const [mounted, setMounted] = React.useState(false);
       const { LazyComponent, retry, retryKey } = useRetryableLazyComponent(
         loader,
@@ -356,7 +344,7 @@ function dynamic<P = {}>(
         : null;
       const lazyElement = createElementWithProps(LazyComponent, props);
       let content: React.ReactNode = lazyElement;
-      if (LoadingComponent) {
+      if (LoadingComponent && !isAppRouterTree) {
         const ErrorBoundary = getDynamicErrorBoundary();
         if (ErrorBoundary) {
           content = React.createElement(
@@ -408,10 +396,10 @@ function dynamic<P = {}>(
         ? React.createElement(LoadingComponent, createDynamicLoadingProps())
         : null;
       const lazyElement = createElementWithProps(LazyServer, props);
-      // Wrap with error boundary so loader rejections render the loading
-      // component with the error instead of propagating uncaught.
+      // Outside the App Router, loader rejections render the loading
+      // component with the error, as react-loadable does.
       let content: React.ReactNode = lazyElement;
-      if (LoadingComponent) {
+      if (LoadingComponent && !isAppRouterTree) {
         const ErrorBoundary = getDynamicErrorBoundary();
         if (ErrorBoundary) {
           content = React.createElement(
@@ -446,7 +434,7 @@ function dynamic<P = {}>(
       : null;
     const lazyElement = createElementWithProps(LazyComponent, props);
     let content: React.ReactNode = lazyElement;
-    if (LoadingComponent) {
+    if (LoadingComponent && !isAppRouterTree) {
       const ErrorBoundary = getDynamicErrorBoundary();
       if (ErrorBoundary) {
         content = React.createElement(

@@ -15,15 +15,31 @@ export type VinextLinkPrefetchRoute = {
   patternParts: string[];
   /**
    * The route's segment config rules out static generation, so Next.js
-   * renders it on every request. Read at build time. Never set with Cache
-   * Components: segment config doesn't decide what renders dynamically there,
-   * so a full prefetch of a dynamic route keeps re-rendering its page after
-   * each invalidation (Next.js re-prefetches its static shell instead).
+   * renders it on every request, and its automatic prefetch never renders the
+   * page. Read at build time. Never set with Cache Components: segment config
+   * doesn't decide what renders dynamically there, so an automatic prefetch of
+   * a dynamic route without a loading boundary still renders its page
+   * (Next.js prefetches its static shell instead).
    */
   rendersDynamically?: true;
+  /**
+   * Intercepting pages that can render a URL of this route under a matching
+   * interception context. Next.js builds each as its own route, so its
+   * `rendersDynamically` replaces the route's own then. Set only alongside
+   * `rendersDynamically` classification.
+   */
+  intercepts?: VinextLinkPrefetchIntercept[];
   requiresDynamicNavigationRequest?: boolean;
   /** The route has dynamic params above its root layout. */
   hasRootParams?: true;
+};
+
+export type VinextLinkPrefetchIntercept = {
+  /** The URL pattern of the route the interception context must be on, or below. */
+  sourcePatternParts: string[];
+  /** The URL pattern the intercepting page intercepts. */
+  targetPatternParts: string[];
+  rendersDynamically?: true;
 };
 
 /**

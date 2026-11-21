@@ -13,8 +13,11 @@
  * - fixtures/app-basic/app/nextjs-compat/api/draft-enable/
  * - fixtures/app-basic/app/nextjs-compat/api/draft-disable/
  * - fixtures/app-basic/app/nextjs-compat/api/draft-status/
+ * - fixtures/app-basic/app/nextjs-compat/draftmode/fetch-cache/
  */
 
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchJson, fetchHtml } from "../helpers.js";
@@ -280,5 +283,54 @@ describe("Next.js compat: draft-mode", () => {
 
     expect(html).toContain('id="draft-mode">true');
     expect(html).toContain("Loading draft content...");
+  });
+
+  // ── Draft mode bypasses the fetch cache ──────────────────────
+  // Next.js: patch-fetch.ts calls the original fetch when
+  // workStore.isDraftMode is set, so a draft request neither reads nor
+  // writes the fetch cache.
+  // Source: .nextjs-ref/packages/next/src/server/lib/patch-fetch.ts
+
+  it("bypasses the fetch cache when draft mode is enabled", async () => {
+    let upstreamCalls = 0;
+    const upstream = http.createServer((_req, res) => {
+      upstreamCalls++;
+      res.setHeader("content-type", "text/plain");
+      res.end(`token-${upstreamCalls}`);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const { port } = upstream.address() as AddressInfo;
+      const upstreamUrl = `http://127.0.0.1:${port}/data?run=${Date.now()}`;
+      const pagePath = `/nextjs-compat/draftmode/fetch-cache?upstream=${encodeURIComponent(upstreamUrl)}`;
+      const readToken = (html: string) => html.match(/id="token">([^<]*)</)?.[1];
+
+      const enableRes = await fetch(`${baseUrl}/nextjs-compat/api/draft-enable`);
+      const bypassCookie = enableRes.headers
+        .getSetCookie()
+        .find((cookie) => cookie.includes("__prerender_bypass"));
+      expect(bypassCookie).toBeDefined();
+      const draftInit = { headers: { Cookie: bypassCookie!.split(";")[0] } };
+
+      // Outside draft mode, `revalidate: false` is cached indefinitely.
+      const first = await fetchHtml(baseUrl, pagePath);
+      expect(first.html).toContain('id="draft-mode">false');
+      expect(readToken(first.html)).toBe("token-1");
+      expect(readToken((await fetchHtml(baseUrl, pagePath)).html)).toBe("token-1");
+
+      // Draft requests skip the cached entry and refetch every time.
+      const draft = await fetchHtml(baseUrl, pagePath, draftInit);
+      expect(draft.html).toContain('id="draft-mode">true');
+      expect(readToken(draft.html)).toBe("token-2");
+      expect(readToken((await fetchHtml(baseUrl, pagePath, draftInit)).html)).toBe("token-3");
+
+      // Draft responses never replace the published entry.
+      expect(readToken((await fetchHtml(baseUrl, pagePath)).html)).toBe("token-1");
+      expect(upstreamCalls).toBe(3);
+    } finally {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
   });
 });

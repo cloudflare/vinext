@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  filterMetadataTrafficPaths,
   filterTrafficPaths,
   resolveTPRRoutes,
   selectRoutes,
@@ -83,6 +84,24 @@ describe("TPR route resolution", () => {
         expect.any(Object),
       );
 
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          domains: [
+            { hostname: "previews.example.net", production: false, previews: true },
+            { hostname: "shop.example.net", production: true, previews: false },
+          ],
+        }),
+      );
+      fetchMock.mockClear();
+      await expect(
+        resolveTPRRoutes({ root, typedConfig: true, window: 24 }),
+      ).resolves.toMatchObject({ skipped: "could not resolve zone for shop.example.net" });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.cloudflare.com/client/v4/zones?name=example.net",
+        expect.any(Object),
+      );
+
       fs.writeFileSync(configPath, JSON.stringify({ domains: [] }));
       fetchMock.mockClear();
       await expect(
@@ -107,6 +126,123 @@ describe("TPR route resolution", () => {
       "/hot",
       "/warm",
     ]);
+  });
+
+  it("drops Cloudflare-reserved and static asset paths the app never renders", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-assets-"));
+    try {
+      const output = path.join(root, ".cloudflare/output/v0/workers/default");
+      fs.mkdirSync(output, { recursive: true });
+      fs.writeFileSync(
+        path.join(output, "worker.config.json"),
+        JSON.stringify({ domains: ["app.example.com"] }),
+      );
+      const assetsDir = path.join(root, "dist/client");
+      fs.mkdirSync(path.join(assetsDir, "videos"), { recursive: true });
+      fs.writeFileSync(path.join(assetsDir, "videos/hero.webm"), "");
+      fs.writeFileSync(path.join(assetsDir, "videos/intro clip.webm"), "");
+      process.env.CLOUDFLARE_API_TOKEN = "token";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string | URL | Request) => {
+          const url = input instanceof Request ? input.url : input.toString();
+          if (url.includes("/zones?")) {
+            return Response.json({ success: true, result: [{ id: "zone-id" }] });
+          }
+          return Response.json({
+            data: {
+              viewer: {
+                zones: [
+                  {
+                    httpRequestsAdaptiveGroups: [
+                      "/cdn-cgi/zaraz/t",
+                      "/en",
+                      "/cdn-cgi/rum",
+                      "/cdn-cgi/speculation",
+                      "/videos/hero.webm",
+                      "/videos/intro%20clip.webm",
+                      "/videos",
+                      "/en/missing",
+                    ].map((clientRequestPath, index) => ({
+                      count: 100 - index,
+                      dimensions: { clientRequestPath },
+                    })),
+                  },
+                ],
+              },
+            },
+          });
+        }),
+      );
+
+      await expect(
+        resolveTPRRoutes({ root, assetsDir, typedConfig: true, window: 24 }),
+      ).resolves.toEqual({
+        metadataCandidates: [],
+        routes: [
+          { path: "/en", requests: 99 },
+          { path: "/videos", requests: 94 },
+          { path: "/en/missing", requests: 93 },
+        ],
+        targetUrl: "https://app.example.com",
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("matches public files and build output below basePath", () => {
+    const assetsDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-base-path-"));
+    try {
+      fs.mkdirSync(path.join(assetsDir, "videos"));
+      fs.writeFileSync(path.join(assetsDir, "videos/hero.webm"), "");
+      fs.mkdirSync(path.join(assetsDir, "docs/_next/static"), { recursive: true });
+      fs.writeFileSync(path.join(assetsDir, "docs/_next/static/module.wasm"), "");
+      expect(
+        filterTrafficPaths(
+          [
+            { path: "/docs/videos/hero.webm", requests: 3 },
+            { path: "/docs/_next/static/module.wasm", requests: 3 },
+            { path: "/docs/videos", requests: 2 },
+            { path: "/docs/about", requests: 1 },
+          ],
+          { assetsDir, basePath: "/docs" },
+        ).map(({ path }) => path),
+      ).toEqual(["/docs/videos", "/docs/about"]);
+    } finally {
+      fs.rmSync(assetsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves asset-named and /api/ traffic to metadata routes", () => {
+    const assetsDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-metadata-"));
+    try {
+      fs.mkdirSync(path.join(assetsDir, "docs"));
+      fs.writeFileSync(path.join(assetsDir, "docs/icon.png"), "");
+      const traffic = [
+        { path: "/favicon.ico", requests: 9 },
+        { path: "/shop/-/opengraph-image.png", requests: 8 },
+        { path: "/api/opengraph-image", requests: 7 },
+        { path: "/assets/old-chunk.js", requests: 6 },
+        // A public file is a built asset, and internal routes are vinext's.
+        { path: "/docs/icon.png", requests: 5 },
+        { path: "/_next/app.js", requests: 4 },
+        { path: "/cdn-cgi/rum", requests: 3 },
+        { path: "/about", requests: 2 },
+      ];
+
+      expect(filterTrafficPaths(traffic, { assetsDir }).map(({ path }) => path)).toEqual([
+        "/about",
+      ]);
+      expect(filterMetadataTrafficPaths(traffic, { assetsDir }).map(({ path }) => path)).toEqual([
+        "/favicon.ico",
+        "/shop/-/opengraph-image.png",
+        "/api/opengraph-image",
+        "/assets/old-chunk.js",
+      ]);
+    } finally {
+      fs.rmSync(assetsDir, { recursive: true, force: true });
+    }
   });
 
   it("keeps exact /api App Router page candidates", () => {

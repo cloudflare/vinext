@@ -1,0 +1,10 @@
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  openGraph: null,
+  twitter: null,
+};
+
+export default function Layout({ children }: { children: React.ReactNode }) {
+  return <div>{children}</div>;
+}

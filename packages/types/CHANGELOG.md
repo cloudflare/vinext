@@ -1,5 +1,15 @@
 # @vinext/types
 
+## 1.0.2
+
+### Bug Fixes
+
+- **Image:** preserve deprecated prop annotations (#4177)
+
+### Contributors
+
+- @MumuTW
+
 ## 1.0.1
 
 ### Bug Fixes

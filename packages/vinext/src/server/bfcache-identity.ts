@@ -47,6 +47,16 @@ export function isNestedBfcacheSlotSegmentIdFor(id: string, parentSlotId: string
   );
 }
 
+/**
+ * Activity key for a route segment whose directory has no layout of its own.
+ * Next.js keeps a layout-router Activity list at every segment level, implicit
+ * layouts included, keyed by the child segment. The tag keeps these keys apart
+ * from identity strings, whose kinds never use it, and from BFCache ids.
+ */
+export function createBfcacheChildSegmentStateKey(segmentPathKey: string): string {
+  return JSON.stringify(["segment", segmentPathKey]);
+}
+
 export type BfcacheSegmentIdentity = string;
 
 export type BfcacheSegmentDescriptor =

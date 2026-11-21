@@ -1,9 +1,16 @@
 import { test } from "@playwright/test";
-import { expectHostCaptureCannotRetargetProxy } from "../helpers";
+import {
+  expectHostCaptureCannotRetargetProxy,
+  expectPathCaptureStaysInDestination,
+} from "../helpers";
 
 test("a has capture in an external rewrite host cannot retarget the proxy", async ({
   baseURL,
   request,
 }) => {
   await expectHostCaptureCannotRetargetProxy(request, baseURL ?? "http://localhost:4175");
+});
+
+test("a has capture in an external rewrite path stays inside it", async ({ baseURL, request }) => {
+  await expectPathCaptureStaysInDestination(request, baseURL ?? "http://localhost:4175");
 });

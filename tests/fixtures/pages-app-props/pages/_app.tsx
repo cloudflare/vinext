@@ -66,6 +66,14 @@ function App(props: any) {
 }
 
 App.getInitialProps = async ({ Component, ctx }: any) => {
+  if (ctx.asPath === "/gssp-not-found" && ctx.res) {
+    ctx.res.setHeader("Cache-Control", "public, s-maxage=60");
+  }
+  if (ctx.asPath === "/gssp-not-found?end=true" && ctx.pathname === "/_error" && ctx.res) {
+    ctx.res.statusCode = 404;
+    ctx.res.end("ended by App.getInitialProps");
+    return {};
+  }
   if (ctx.pathname === "/gsp-sent-response" && ctx.res) {
     ctx.res.writeHead(302, { Location: "/missing" });
     ctx.res.end();

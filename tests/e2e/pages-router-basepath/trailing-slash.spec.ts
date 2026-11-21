@@ -52,6 +52,15 @@ test.describe("basePath + trailingSlash", () => {
     expect(outside.status).toBe(404);
   });
 
+  // "/slashed-guard/" accepts /docs/slashed-guard/ only as requested, slash
+  // included. Next.js then retests without the slash and ends the request with
+  // an empty 200; vinext runs middleware.
+  test("runs middleware for a request only the slashed matcher accepts", async () => {
+    const response = await getRawPath("/docs/slashed-guard/");
+    expect(response.status).toBe(403);
+    expect(response.body).toBe("blocked by middleware");
+  });
+
   // Next.js renders the shared getStaticProps /404 for "/404", keeping only
   // the request's trailing slash under trailingSlash:
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
@@ -60,6 +69,100 @@ test.describe("basePath + trailingSlash", () => {
     expect(missing.status).toBe(404);
     expect(missing.body).not.toContain("missing-share-token");
     expect(missing.body).toContain('<p id="as-path">/404/</p>');
+  });
+
+  // The /404 page exports getStaticProps and the app has middleware, so the
+  // client replaces the current URL after hydration (`_h: 1`). Its 404 response
+  // must not hard-navigate to the same URL: Next.js's handleHardNavigation()
+  // refuses that, and the reloaded page would repeat it forever.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
+  test("loads an unknown URL once after the hydration query update", async ({ page }) => {
+    const missingPath = "/docs/missing-page/";
+    let documentLoads = 0;
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.resourceType() === "document") documentLoads++;
+    });
+    const hydrationUpdate = page.waitForResponse(
+      (response) =>
+        !response.request().isNavigationRequest() &&
+        new URL(response.url()).pathname === missingPath,
+    );
+
+    await page.goto(`${BASE}${missingPath}`);
+    expect((await hydrationUpdate).status()).toBe(404);
+    // A hard navigation scheduled by the update starts within a task.
+    await page.waitForTimeout(500);
+
+    expect(documentLoads).toBe(1);
+    await expect(page.locator("h1")).toHaveText("404 - Page Not Found");
+  });
+
+  // The same-URL guard compares whole hrefs, like Next.js's
+  // handleHardNavigation(): a hydration-update redirect that changes only the
+  // hash is still followed, as a same-document navigation.
+  test("follows a fallback hydration redirect that changes only the hash", async ({ page }) => {
+    // A fresh slug per run: once generated, the path redirects on the server.
+    const slug = `run-${Date.now()}`;
+    const path = `/docs/fallback-hash-redirect/${slug}/`;
+    let documentLoads = 0;
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.resourceType() === "document") documentLoads++;
+    });
+    const dataResponse = page.waitForResponse((response) =>
+      new URL(response.url()).pathname.endsWith(`/fallback-hash-redirect/${slug}.json`),
+    );
+
+    await page.goto(`${BASE}${path}#old`);
+    expect((await dataResponse).status()).toBe(200);
+
+    await expect(page).toHaveURL(`${BASE}${path}#new`);
+    expect(documentLoads).toBe(1);
+  });
+
+  // History moves to the redirect target before its render commits. The guard
+  // compares against the document the hydration update started on, so a failed
+  // target render still recovers with a hard navigation to the target.
+  test("hard-navigates when a hydration redirect target fails to render", async ({ page }) => {
+    // A fresh slug per run: once generated, the path redirects on the server.
+    const sourcePath = `/docs/fallback-redirect-render-error/run-${Date.now()}/`;
+    const targetPath = "/docs/render-error-target/";
+    const documents: string[] = [];
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.resourceType() === "document") {
+        documents.push(new URL(request.url()).pathname);
+      }
+    });
+
+    await page.goto(`${BASE}${sourcePath}`);
+
+    await expect.poll(() => documents).toEqual([sourcePath, targetPath]);
+    await expect(page.locator("#render-error-target")).toHaveText("render error target");
+    await expect(page).toHaveURL(`${BASE}${targetPath}`);
+  });
+
+  // A hydration redirect chain that comes back to the hydration document is
+  // refused by the same-URL guard. Like Next.js, the refusal schedules no other
+  // hard navigation: reloading the middle URL would redirect back here.
+  test("stops a hydration redirect chain that returns to its document", async ({ page }) => {
+    // A fresh slug per run: once generated, the path redirects on the server.
+    const slug = `run-${Date.now()}`;
+    const sourcePath = `/docs/fallback-redirect-loop/${slug}/`;
+    const documents: string[] = [];
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.resourceType() === "document") {
+        documents.push(new URL(request.url()).pathname);
+      }
+    });
+    const middleData = page.waitForResponse((response) =>
+      new URL(response.url()).pathname.endsWith(`/redirect-loop-middle/${slug}.json`),
+    );
+
+    await page.goto(`${BASE}${sourcePath}`);
+    expect((await middleData).status()).toBe(200);
+    // A hard navigation scheduled by the update starts within a task.
+    await page.waitForTimeout(500);
+
+    expect(documents).toEqual([sourcePath]);
   });
 
   test("replaces state when same asPath but different url", async ({ page }) => {

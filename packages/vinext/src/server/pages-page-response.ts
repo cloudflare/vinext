@@ -22,6 +22,7 @@ import {
 } from "./isr-decision.js";
 import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
 import { pagesPathCacheTag } from "./pages-cache-tag.js";
+import { applyPrerenderCacheLifeHeader } from "./prerender-cache-life-header.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
@@ -46,8 +47,13 @@ import {
   splitDocumentAtMain,
 } from "./pages-document-splice.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
-import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
+import {
+  NEXTJS_CACHE_HEADER,
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_REVALIDATED_CACHE_TAG_HEADER,
+} from "./headers.js";
 import { isPageNotModified } from "./http-conditional.js";
+import { logRequestError } from "./request-error-log.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -88,6 +94,24 @@ export function rendersPagesNotModified(status: number): boolean {
     status === 304 ||
     getCdnCacheAdapter().deferNotModifiedResponse?.() !== true
   );
+}
+
+/**
+ * Hand the revalidate getStaticProps returned to build/prerender.ts, which
+ * records it in vinext-prerender.json like Next.js's `initialRevalidateSeconds`.
+ * The CDN adapter may rewrite Cache-Control, so the build cannot read it there.
+ * Only build-time renders carry this header.
+ */
+export function applyPagesPrerenderRevalidateHeader(
+  headers: Headers,
+  revalidateSeconds: number | false,
+): void {
+  if (typeof process === "undefined" || process.env?.VINEXT_PRERENDER !== "1") return;
+  // A notFound result replaces the policy of the 404 page rendered for it.
+  headers.delete(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
+  if (typeof revalidateSeconds === "number") {
+    applyPrerenderCacheLifeHeader(headers, { revalidate: revalidateSeconds });
+  }
 }
 
 type PagesFontPreload = {
@@ -171,6 +195,8 @@ type RenderPagesPageResponseOptions = {
   setDocumentInitialHead?: ((head: ReactNode[]) => void) | undefined;
   documentReqRes?: PagesDocumentReqRes | null;
   gsspRes: PagesGsspResponse | null;
+  /** A page or custom `_app` getInitialProps render; rendered per request like gSSP. */
+  isInitialPropsRender?: boolean;
   isrCacheKey: (router: string, pathname: string) => string;
   /** Filesystem-route identity used for ISR persistence and cache tags. */
   isrCachePathname?: string;
@@ -443,7 +469,7 @@ async function reportPagesIsrCacheWriteError(
   cacheKey: string,
   routePattern: string,
 ): Promise<void> {
-  console.error(`[vinext] Pages ISR cache write failed for ${cacheKey}:`, error);
+  logRequestError(`[vinext] Pages ISR cache write failed for ${cacheKey}:`, error);
   try {
     await reportRequestError(
       error,
@@ -762,6 +788,7 @@ export async function renderPagesPageResponse(
       cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
       tags: [pathTag],
     });
+    applyPagesPrerenderRevalidateHeader(responseHeaders, options.isrRevalidateSeconds);
     if (options.isOnDemandRevalidate) {
       responseHeaders.set(NEXTJS_CACHE_HEADER, "REVALIDATED");
       responseHeaders.set(VINEXT_REVALIDATED_CACHE_TAG_HEADER, encodeURIComponent(pathTag));
@@ -770,10 +797,15 @@ export async function renderPagesPageResponse(
     }
   } else if (options.isStaticPropsRoute && shouldUseNextDeployCacheControl()) {
     responseHeaders.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
-  } else if (options.gsspRes && !userSetCacheControl) {
-    // Default for getServerSideProps responses, matching Next.js
-    // pages-handler.ts (revalidate: 0 → getCacheControlHeader). Without this,
-    // CDNs and browsers could cache per-request gssp responses.
+  } else if (
+    (options.gsspRes || options.isInitialPropsRender || options.isFallback) &&
+    !userSetCacheControl
+  ) {
+    // Default for every render that is not a getStaticProps result, and for a
+    // getStaticPaths fallback shell, matching Next.js pages-handler.ts
+    // (`!hasStaticProps || isIsrFallback` → revalidate: 0 →
+    // getCacheControlHeader). Without this, CDNs and browsers could cache
+    // per-request gSSP and getInitialProps responses.
     responseHeaders.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
   }
   if (options.fontLinkHeader) {

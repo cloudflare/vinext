@@ -16,7 +16,7 @@ import {
 } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.js";
+import { APP_FIXTURE_DIR, createIsolatedFixture, fetchRsc, testCacheDir } from "./helpers.js";
 
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
@@ -63,11 +63,11 @@ function clientChunkFileByName(clientDir: string, match: (name: string) => boole
   return clientChunks(clientDir).find((chunk) => match(chunk.name))?.file;
 }
 
-function readAllJs(dir: string): string {
+function readAllJs(dir: string, skipDirs: readonly string[] = []): string {
   let out = "";
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out += readAllJs(full);
+    if (entry.isDirectory()) out += skipDirs.includes(entry.name) ? "" : readAllJs(full);
     else if (entry.name.endsWith(".js")) out += fs.readFileSync(full, "utf-8");
   }
   return out;
@@ -157,6 +157,13 @@ describe("App Router Production build", () => {
       expect(clientJs).not.toContain(devOnlyNeedle);
     }
 
+    // A "use cache" module that a Client Component imports reaches the
+    // browser as server references, `.mts` modules included: neither its
+    // function bodies nor its module-scope values are bundled.
+    expect(clientJs).toContain("call-client-imported-mts-cache");
+    expect(clientJs).not.toContain("mts-cache-server-marker");
+    expect(clientJs).not.toContain("client-mts-cache:");
+
     // Ported from the client-reference chunk ownership covered by Next.js:
     // test/e2e/app-dir/client-reference-chunking/client-reference-chunking.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/client-reference-chunking/client-reference-chunking.test.ts
@@ -231,6 +238,24 @@ describe("App Router Production build", () => {
     expect(rscEntry).toContain("__ensureInstrumentation");
     expect(readAllJs(path.join(outDir, "server"))).not.toContain("cloudflare:workers");
     expect(readAllJs(path.join(outDir, "server"))).not.toContain("cloudflare-workers");
+
+    // The Node server renders HTML with React's Node Fizz build, as Next.js
+    // does: the SSR bundle imports the condition-resolved entries, which Node
+    // resolves to server.node / static.node, instead of the edge build.
+    const ssrJs = readAllJs(path.join(outDir, "server", "ssr"));
+    expect(ssrJs).toMatch(/from\s*["'`]react-dom\/server["'`]/);
+    expect(ssrJs).not.toContain("react-dom/server.edge");
+    expect(ssrJs).not.toContain("react-dom/static.edge");
+    // The Flight server is its Node build too, so both schedule their work the
+    // same way (#4770), and plugin-rsc's runtime shares it instead of bundling
+    // the edge build beside it.
+    // Every build of the Flight server exports decodeReplyFromAsyncIterable,
+    // and only the Node build exports decodeReplyFromBusboy.
+    const rscJs = readAllJs(path.join(outDir, "server"), ["ssr"]);
+    const flightExports = rscJs.match(/\.decodeReplyFromAsyncIterable\s*=/g)?.length ?? 0;
+    const nodeFlightExports = rscJs.match(/\.decodeReplyFromBusboy\s*=/g)?.length ?? 0;
+    expect(nodeFlightExports).toBeGreaterThan(0);
+    expect(flightExports).toBe(nodeFlightExports);
 
     // Asset manifest should be generated
     expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);
@@ -624,7 +649,7 @@ export default function Page() {
     }
   }, 30000);
 
-  it("keeps client references out of groups when their browser module lacks a rendered export", async () => {
+  it("groups a client reference whose browser module lacks a rendered export", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-missing-export-"));
 
     try {
@@ -685,12 +710,154 @@ export default function Page() {
         plugins: [vinext({ appDir: tmpDir })],
         logLevel: "silent",
       });
-      // A group would re-export the missing \`Extra\` statically and fail the
-      // build, so the package's reference keeps its own chunk.
       await builder.buildApp();
 
-      const chunkNames = clientChunkNames(path.join(tmpDir, "dist", "client"));
-      expect(chunkNames.some((name) => name.startsWith("browser"))).toBe(true);
+      // The group reads the missing `Extra` as undefined, as the browser
+      // module would.
+      const chunksDir = path.join(tmpDir, "dist", "client", "_next", "static", "chunks");
+      const group = fs
+        .readdirSync(chunksDir)
+        .map((file) => fs.readFileSync(path.join(chunksDir, file), "utf8"))
+        .filter((code) => code.includes("get Foo()"));
+      expect(group).toHaveLength(1);
+      expect(group[0]).toContain("get B()");
+      expect(group[0]).toMatch(/get Extra\(\)\{\}/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("names only emitted chunks in Flight rows, with stylesheets in import order", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-flight-chunks-css-"));
+
+    try {
+      const rootModules = path.resolve(import.meta.dirname, "../node_modules");
+      fs.mkdirSync(path.join(tmpDir, "node_modules"));
+      for (const entry of fs.readdirSync(rootModules)) {
+        fs.symlinkSync(
+          path.join(rootModules, entry),
+          path.join(tmpDir, "node_modules", entry),
+          "junction",
+        );
+      }
+      const write = (file: string, code: string) => {
+        fs.mkdirSync(path.dirname(path.join(tmpDir, file)), { recursive: true });
+        fs.writeFileSync(path.join(tmpDir, file), code);
+      };
+      write(
+        "app/layout.tsx",
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      // Client components on two routes share a module with a stylesheet of
+      // its own. They share another stylesheet with a third route's, which the
+      // build puts in a chunk that holds only CSS and Vite then removes.
+      write("app/pure.css", ".pure { padding: 0; }\n");
+      write("app/shared.css", ".shared { --winner: shared; }\n");
+      write(
+        "app/shared.ts",
+        `import "./shared.css";\nexport function label(name: string) { return name.toUpperCase(); }\n`,
+      );
+      for (const name of ["a", "b"]) {
+        write(`app/${name}/own.css`, `.shared { --winner: ${name}; }\n`);
+        write(
+          `app/${name}/widget.tsx`,
+          `"use client";\nimport "../pure.css";\nimport { label } from "../shared";\nimport "./own.css";\nexport function Widget() { return <p className="shared">{label("${name}")}</p>; }\n`,
+        );
+        write(
+          `app/${name}/page.tsx`,
+          `import { Widget } from "./widget";\nexport default function Page() { return <Widget />; }\n`,
+        );
+      }
+      write(
+        "app/c/widget.tsx",
+        `"use client";\nimport "../pure.css";\nexport function Widget() { return <p>c</p>; }\n`,
+      );
+      write(
+        "app/c/page.tsx",
+        `import { Widget } from "./widget";\nexport default function Page() { return <Widget />; }\n`,
+      );
+
+      const hosts: [file: string, hostId: string][] = [];
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        environments: {
+          client: {
+            build: {
+              modulePreload: {
+                resolveDependencies: (file, deps, { hostId }) => {
+                  hosts.push([file, hostId]);
+                  return deps;
+                },
+              },
+            },
+          },
+        },
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientDir = path.join(tmpDir, "dist", "client");
+      const publicManifest = fs.readFileSync(
+        path.join(clientDir, "vinext-client-entry-manifest.json"),
+        "utf8",
+      );
+      // Source file paths stay with Vite's build manifest, out of the public
+      // assets.
+      expect(publicManifest).not.toContain("widget.tsx");
+      const sources = JSON.parse(
+        fs.readFileSync(
+          path.join(clientDir, ".vite", "vinext-client-reference-sources.json"),
+          "utf8",
+        ),
+      ) as Record<string, string>;
+      expect(sources).toHaveProperty(["app/c/widget.tsx"]);
+      // vinext's own client components load with the browser entry, so their
+      // rows name no chunks. layout-segment-context stays out of the vinext
+      // chunk (see ROUTE_OWNED_CLIENT_SHIMS), so it keeps a chunk of its own.
+      expect(
+        Object.keys(sources)
+          .map((file) => path.basename(file))
+          .sort(),
+      ).toEqual(["layout-segment-context.tsx", "widget.tsx", "widget.tsx", "widget.tsx"]);
+      const { appClientReferenceChunks } = JSON.parse(publicManifest) as {
+        appClientReferenceChunks: {
+          modules: { file: string; imports: string[]; css: string[] }[];
+        };
+      };
+      // resolveDependencies sees the chunk that dynamically imports the
+      // registering modules as the host, as for Vite's own dynamic imports.
+      const viteManifest = JSON.parse(
+        fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf8"),
+      ) as Record<string, { file: string }>;
+      const host = Object.entries(viteManifest).find(([key]) =>
+        key.endsWith("virtual:vinext-client-reference-chunks"),
+      )?.[1].file;
+      const moduleFiles = new Set(appClientReferenceChunks.modules.map((module) => module.file));
+      const moduleHosts = hosts.filter(([file]) => moduleFiles.has(file));
+      expect(moduleHosts.length).toBeGreaterThan(0);
+      for (const [, hostId] of moduleHosts) expect(hostId).toBe(host);
+      const cssOf = (file: string) => fs.readFileSync(path.join(clientDir, file), "utf8");
+      const widgets = appClientReferenceChunks.modules.filter((module) =>
+        module.css.some((file) => /--winner:\s*[ab]\b/.test(cssOf(file))),
+      );
+      expect(widgets).toHaveLength(2);
+      for (const module of appClientReferenceChunks.modules) {
+        for (const file of [module.file, ...module.imports, ...module.css]) {
+          expect(fs.existsSync(path.join(clientDir, file)), file).toBe(true);
+        }
+      }
+      for (const module of widgets) {
+        // As in Vite's preload helper, the stylesheet of the shared module
+        // loads first, so each route's own rule wins.
+        const order = (rule: RegExp) => module.css.findIndex((file) => rule.test(cssOf(file)));
+        expect(order(/--winner:\s*shared/)).toBeGreaterThanOrEqual(0);
+        expect(order(/--winner:\s*shared/)).toBeLessThan(order(/--winner:\s*[ab]\b/));
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1372,8 +1539,8 @@ export default async function OpenGraphImage() {
       const notFoundRes = await fetch(`${previewUrl}/no-such-page`);
       expect(notFoundRes.status).toBe(404);
 
-      // RSC endpoint works
-      const rscRes = await fetch(`${previewUrl}/about.rsc`);
+      // RSC requests work
+      const rscRes = await fetchRsc(previewUrl!, "/about");
       expect(rscRes.status).toBe(200);
       expect(rscRes.headers.get("content-type")).toContain("text/x-component");
     } finally {
@@ -1635,16 +1802,27 @@ describe("use cache production argument isolation", () => {
     );
   }
 
-  // Like Next.js (use-cache-wrapper.ts, `encodeFormData`), only a File's bytes
-  // are keyed, so a File differing only in metadata reuses the entry.
+  // Like Next.js (use-cache-wrapper.ts, `encodeFormData`), a File's name and
+  // MIME type are keyed with its bytes, since the cached function observes them.
   it.each([
     ["filename", { name: "public.txt" }],
-    ["timestamp", { time: "333" }],
     ["mime", { type: "application/pdf" }],
-  ] as const)("reuses the entry for a File differing only in %s", async (label, change) => {
+  ] as const)("serves a File differing only in %s its own entry", async (label, change) => {
     const base = { kind: "file", partition: `metadata-${label}` };
     const first = await request(base);
-    expect(await request({ ...base, ...change })).toEqual(first);
+    const second = await request({ ...base, ...change });
+    expect(second.value).not.toEqual(first.value);
+    expect(second.execution).not.toBe(first.execution);
+    expect(await request(base)).toEqual(first);
+    expect(await request({ ...base, ...change })).toEqual(second);
+  });
+
+  // lastModified defaults to the construction time and does not survive a
+  // multipart submission, so Next.js leaves it out of the key.
+  it("reuses the entry for a File differing only in timestamp", async () => {
+    const base = { kind: "file", partition: "metadata-timestamp" };
+    const first = await request(base);
+    expect(await request({ ...base, time: "333" })).toEqual(first);
   });
 
   it("separates equal-size file contents with identical metadata", async () => {

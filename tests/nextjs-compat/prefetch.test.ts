@@ -11,6 +11,7 @@ import {
   startFixtureServer,
   APP_FIXTURE_DIR,
   fetchHtml,
+  fetchRsc,
   type TestServerResult,
 } from "../helpers.js";
 
@@ -25,10 +26,8 @@ describe("Next.js compat: prefetch", () => {
     await ctx.server.close();
   });
 
-  it("should serve RSC payload at .rsc endpoint", async () => {
-    const res = await fetch(`${ctx.baseUrl}/nextjs-compat/prefetch-test/target.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+  it("should serve the RSC payload for an RSC request", async () => {
+    const res = await fetchRsc(ctx.baseUrl, "/nextjs-compat/prefetch-test/target");
     expect(res.status).toBe(200);
     const contentType = res.headers.get("content-type");
     expect(contentType).toContain("text/x-component");

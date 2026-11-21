@@ -1,5 +1,4 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   consumeDynamicUsage,
   headersContextFromRequest,
@@ -9,7 +8,6 @@ import {
   runWithConnectionProbe,
   runWithHeadersContext,
   runWithDetachedDynamicUsage,
-  runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
@@ -23,7 +21,6 @@ import {
   setCacheHandler,
   unstable_cache,
 } from "../packages/vinext/src/shims/cache.js";
-import { runWithDetachedCacheObservations } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   createRequestContext,
   getRequestContext,
@@ -103,16 +100,7 @@ describe("render dynamic latch", () => {
     });
   });
 
-  it("sees dynamic usage inside a non-unified isolated scope", async () => {
-    await runWithHeadersContext(headersContext(), async () => {
-      const { dynamicDetected } = await runWithIsolatedDynamicUsage(() => markDynamicUsage());
-      expect(dynamicDetected).toBe(true);
-      expect(consumeDynamicUsage()).toBe(false);
-      expect(isRenderDynamicLatched()).toBe(true);
-    });
-  });
-
-  it("sees dynamic usage inside a unified state mutation and an isolated scope", async () => {
+  it("sees dynamic usage inside a unified state mutation", async () => {
     await runWithRequestContext(createRequestContext(), async () => {
       await runWithHeadersContext(headersContext(), async () => {
         await runWithUnifiedStateMutation(
@@ -121,24 +109,6 @@ describe("render dynamic latch", () => {
           },
           () => markDynamicUsage(),
         );
-        expect(isRenderDynamicLatched()).toBe(true);
-      });
-      await runWithHeadersContext(headersContext(), async () => {
-        await runWithIsolatedDynamicUsage(() => markDynamicUsage());
-        expect(consumeDynamicUsage()).toBe(false);
-        expect(isRenderDynamicLatched()).toBe(true);
-      });
-    });
-  });
-
-  it("sees dynamic usage inside the layout probe", async () => {
-    await runWithRequestContext(createRequestContext(), async () => {
-      await runWithHeadersContext(headersContext(), async () => {
-        const tracker = createAppLayoutParamAccessTracker();
-        await tracker.runLayoutProbe("layout:/", async () => {
-          markDynamicUsage();
-        });
-        expect(consumeDynamicUsage()).toBe(false);
         expect(isRenderDynamicLatched()).toBe(true);
       });
     });
@@ -188,13 +158,6 @@ describe("render dynamic latch", () => {
       expect(reloaded.isRenderDynamicLatched()).toBe(true);
     });
 
-    it("shares the latch it creates with an isolated child scope", async () => {
-      const reloaded = await reloadWithPreLatchFallback();
-
-      await reloaded.runWithIsolatedDynamicUsage(() => reloaded.markDynamicUsage());
-      expect(reloaded.isRenderDynamicLatched()).toBe(true);
-    });
-
     it("shares the latch it creates with a connection probe", async () => {
       const reloaded = await reloadWithPreLatchFallback();
 
@@ -212,9 +175,6 @@ describe("render dynamic latch", () => {
 
       expect(ctx.renderDynamicLatch.dynamic).toBe(true);
       await runWithRequestContext(ctx, async () => {
-        await runWithIsolatedDynamicUsage(() => {
-          expect(isRenderDynamicLatched()).toBe(true);
-        });
         expect(isRenderDynamicLatched()).toBe(true);
       });
     });
@@ -242,13 +202,6 @@ describe("render dynamic latch", () => {
       delete ctx.renderDynamicLatch;
       return ctx as ReturnType<typeof createRequestContext>;
     }
-
-    it("shares the latch with an isolated child scope", async () => {
-      await runWithRequestContext(preLatchRequestContext(), async () => {
-        await runWithIsolatedDynamicUsage(() => markDynamicUsage());
-        expect(isRenderDynamicLatched()).toBe(true);
-      });
-    });
 
     it("shares the latch with a connection probe", async () => {
       await runWithRequestContext(preLatchRequestContext(), async () => {
@@ -310,50 +263,27 @@ describe("render dynamic latch", () => {
   });
 
   describe("detached dynamic usage", () => {
-    it("reports a probe's dynamic usage without marking the request", async () => {
+    it("keeps a probe's dynamic usage out of the request", async () => {
       await runWithRequestContext(createRequestContext(), async () => {
-        const outcome = await runWithDetachedDynamicUsage(() => markDynamicUsage());
-        expect(outcome.dynamicDetected).toBe(true);
+        await runWithDetachedDynamicUsage(() => markDynamicUsage());
         expect(consumeDynamicUsage()).toBe(false);
         expect(isRenderDynamicLatched()).toBe(false);
       });
     });
 
-    it("keeps a probe's fetch observations and cacheLife out of the request", async () => {
+    it("keeps a probe's fetch tags and cacheLife out of the request", async () => {
       await runWithRequestContext(createRequestContext(), async () => {
         await runWithDetachedDynamicUsage(() => {
           const probeContext = getRequestContext();
-          probeContext.cacheableFetchUrls.add("https://api.example.test/cached");
           probeContext.currentRequestTags.push("probe-tag");
           probeContext.dynamicFetchUrls.add("https://api.example.test/dynamic");
           probeContext.requestScopedCacheLife = { revalidate: 1 };
         });
 
         const context = getRequestContext();
-        expect([...context.cacheableFetchUrls]).toEqual([]);
         expect(context.currentRequestTags).toEqual([]);
         expect([...context.dynamicFetchUrls]).toEqual([]);
         expect(context.requestScopedCacheLife).toBeNull();
-      });
-    });
-
-    it("returns the probe's cacheLife from scopes that reset the request slot", async () => {
-      await runWithRequestContext(createRequestContext(), async () => {
-        const outcome = await runWithDetachedDynamicUsage(async () => {
-          await runWithUnifiedStateMutation(
-            (context) => {
-              context.requestScopedCacheLife = null;
-            },
-            () => cacheLife({ stale: 45, revalidate: 60, expire: 300 }),
-          );
-          // A background regeneration's claims stay out of the probe's.
-          await runWithDetachedCacheObservations(async () => {
-            cacheLife({ stale: 10, revalidate: 60, expire: 300 });
-          });
-        });
-
-        expect(outcome.cacheLife?.stale).toBe(45);
-        expect(getRequestContext().requestScopedCacheLife).toBeNull();
       });
     });
 
@@ -438,7 +368,7 @@ describe("render dynamic latch", () => {
         });
       });
 
-      it("keeps its cacheLife out of a probe and an enclosing cache", async () => {
+      it("keeps its cacheLife out of an enclosing cache", async () => {
         const getValue = createStaleRead("refresh-probe");
         await runScenario(async (refreshes) => {
           const readOuter = registerCachedFunction(async () => {
@@ -449,11 +379,9 @@ describe("render dynamic latch", () => {
             return value;
           }, "test:refresh-probe:outer");
 
-          const outcome = await runWithDetachedDynamicUsage(() => readOuter());
-
-          expect(outcome.result).toBe("stale");
+          expect(await readOuter()).toBe("stale");
           expect(refreshes).toHaveLength(1);
-          expect(outcome.cacheLife?.stale).toBe(45);
+          expect(getRequestContext().requestScopedCacheLife?.stale).toBe(45);
         });
       });
     });

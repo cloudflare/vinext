@@ -1,7 +1,16 @@
-import { createElement, isValidElement, Suspense } from "react";
+import { createElement, isValidElement, Suspense, type ReactNode } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
+import {
+  decodeMatchedParams,
+  splitPathnameForRouteMatch,
+  splitPathSegments,
+} from "../routing/utils.js";
+import {
+  buildRouteTrie as buildRequestRouteTrie,
+  trieMatchRaw,
+  type TrieNode as RequestRouteTrieNode,
+} from "../routing/route-trie.js";
 import {
   buildOptimisticRouteTrie,
   matchOptimisticRouteTrie,
@@ -18,15 +27,21 @@ import {
   deriveBfcacheSegmentIdentity,
   isNestedBfcacheSlotSegmentId,
 } from "./bfcache-identity.js";
-import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
+import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 import {
   AppElementsWire,
+  APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_STREAMING_METADATA_BODY_ID_PREFIX,
+  setOptimisticStateKeyRebinder,
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
 import {
+  APP_PAGE_DEFAULT_SEGMENT_KEY,
+  APP_PAGE_SEGMENT_KEY,
   canonicalizeAppPageParams,
+  createAppPageSegmentStateKeyRebinder,
   resolveAppPagePatternStateKey,
   resolveAppPageSemanticSegmentStateKey,
 } from "./app-page-segment-state.js";
@@ -40,6 +55,8 @@ export type OptimisticRouteTemplate = {
   omittedBfcacheSegmentIds: readonly string[];
   omittedLayoutIds: readonly string[];
   pageElementIds: readonly string[];
+  /** The navigation params of the URL the template was learned from. */
+  params: Readonly<Record<string, string | string[]>>;
   routeId: string;
 };
 
@@ -52,6 +69,10 @@ type OptimisticNavigationPayload = {
 };
 
 const routeTrieCache = new WeakMap<BrowserRouteManifest, OptimisticRouteTrieNode>();
+const renderedRouteTrieCache = new WeakMap<
+  BrowserRouteManifest,
+  RequestRouteTrieNode<BrowserRouteManifestRoute>
+>();
 // Shared never-settling thenable used to suspend optimistic page segments until
 // the real RSC payload replaces them.
 const OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER = new Promise<never>(() => {});
@@ -105,8 +126,7 @@ function hrefToRouteParts(
   }
 
   stripRscCacheBustingSearchParam(url);
-  const withoutRscSuffix = stripRscSuffix(url.pathname);
-  const appPathname = stripBasePath(withoutRscSuffix, basePath);
+  const appPathname = stripBasePath(url.pathname, basePath);
   const pathname = appPathname === "" ? "/" : appPathname;
   return {
     normalized: splitPathnameForRouteMatch(pathname),
@@ -127,6 +147,25 @@ export function matchOptimisticRouteManifestRoute(options: {
 
   decodeMatchedParams(match.params);
   return match;
+}
+
+/**
+ * The manifest route that rendered a payload, read from its route id, which
+ * holds the pathname the server matched (after rewrites, without basePath),
+ * already decoded once. It is matched like the server matches a request: the
+ * manifest keeps the server's route order, and the server's trie falls back
+ * from a static dead end to a dynamic or catch-all sibling, which the
+ * optimistic trie deliberately doesn't.
+ */
+function matchRenderedRouteId(routeId: string, routeManifest: BrowserRouteManifest): string | null {
+  const parsed = AppElementsWire.parseElementKey(routeId);
+  if (parsed?.kind !== "route") return null;
+  let trie = renderedRouteTrieCache.get(routeManifest);
+  if (trie === undefined) {
+    trie = buildRequestRouteTrie(Array.from(routeManifest.segmentGraph.routes.values()));
+    renderedRouteTrieCache.set(routeManifest, trie);
+  }
+  return trieMatchRaw(trie, splitPathSegments(parsed.path))?.route.id ?? null;
 }
 
 function mergeParams(
@@ -268,6 +307,18 @@ function resolveTargetBfcacheSegmentIdentity(options: {
     const ownerStateKey = ownerLayout
       ? resolveAppPagePatternStateKey(ownerLayout.patternParts, options.targetRouteParams)
       : "";
+    const deriveLevelIdentity = (segmentKeys: readonly string[]) => {
+      const identityKey = JSON.stringify(segmentKeys);
+      return deriveBfcacheSegmentIdentity({
+        activeRouteGraphId: null,
+        boundSegmentKey: ownerStateKey ? JSON.stringify([ownerStateKey, identityKey]) : identityKey,
+        interceptionTargetRouteGraphId: null,
+        kind: "slot",
+        ownerLayoutGraphId: binding.ownerLayoutId,
+        slotGraphId: binding.slotId,
+        state: binding.state,
+      });
+    };
     const boundSegmentKeys: string[] = [];
     let level = 0;
     for (const segment of binding.routeSegments ?? []) {
@@ -281,16 +332,18 @@ function resolveTargetBfcacheSegmentIdentity(options: {
       );
       if (createNestedBfcacheSlotSegmentId(binding.slotId, level) !== options.segmentId) continue;
 
-      const identityKey = JSON.stringify(boundSegmentKeys);
-      return deriveBfcacheSegmentIdentity({
-        activeRouteGraphId: null,
-        boundSegmentKey: ownerStateKey ? JSON.stringify([ownerStateKey, identityKey]) : identityKey,
-        interceptionTargetRouteGraphId: null,
-        kind: "slot",
-        ownerLayoutGraphId: binding.ownerLayoutId,
-        slotGraphId: binding.slotId,
-        state: binding.state,
-      });
+      return deriveLevelIdentity(boundSegmentKeys);
+    }
+    // The level below the last segment is keyed by the page or default it
+    // renders, as the segment plan keys it.
+    if (
+      level > 0 &&
+      createNestedBfcacheSlotSegmentId(binding.slotId, level + 1) === options.segmentId
+    ) {
+      return deriveLevelIdentity([
+        ...boundSegmentKeys,
+        binding.state === "default" ? APP_PAGE_DEFAULT_SEGMENT_KEY : APP_PAGE_SEGMENT_KEY,
+      ]);
     }
 
     if (level === 0 && createNestedBfcacheSlotSegmentId(binding.slotId, 1) === options.segmentId) {
@@ -370,6 +423,13 @@ export function createOptimisticRouteTemplate(options: {
 
   const metadata = AppElementsWire.readMetadata(options.elements);
   if (metadata.interception !== null || metadata.interceptionContext !== null) return null;
+  // A payload rendered by another route than the one the URL matches came
+  // through a rewrite (middleware, or a config rewrite), so it says nothing
+  // about the URL's route. Like Next.js's discoverKnownRoutePart, learn
+  // nothing from it.
+  if (matchRenderedRouteId(metadata.routeId, options.routeManifest) !== match.route.id) {
+    return null;
+  }
 
   const routeElement = options.elements[metadata.routeId];
   // Full-prefetch learning is intentionally heuristic: legacy full prefetches
@@ -390,6 +450,8 @@ export function createOptimisticRouteTemplate(options: {
 
   const pageElementIds = getPageElementIds(options.elements, match.route);
   if (pageElementIds.length === 0) return null;
+  const urlParts = hrefToRouteParts(options.href, options.basePath);
+  if (urlParts === null) return null;
 
   return {
     elements: options.elements,
@@ -403,16 +465,83 @@ export function createOptimisticRouteTemplate(options: {
         ? metadata.layoutIds.filter((layoutId) => !Object.hasOwn(options.elements, layoutId))
         : [],
     pageElementIds,
+    params: resolveOptimisticNavigationParams({
+      match,
+      rawUrlParts: urlParts.raw,
+      routeManifest: options.routeManifest,
+      urlParts: urlParts.normalized,
+    }).navigationParams,
     routeId: match.route.id,
   };
 }
 
-export function createOptimisticRouteElements(template: OptimisticRouteTemplate): AppElements {
+export function createOptimisticRouteElements(
+  template: OptimisticRouteTemplate,
+  params: Readonly<Record<string, string | string[]>> = template.params,
+): AppElements {
   const elements: Record<string, AppElementValue> = { ...template.elements };
   for (const pageElementId of template.pageElementIds) {
     elements[pageElementId] = createElement(OptimisticRouteSegment);
   }
+  // Like Next.js's reifyRouteTree for the route tree it learned: segments keyed
+  // by a param the two URLs bind differently key by the target's value, so the
+  // optimistic segments don't replace the learned URL's retained entry. A
+  // level without a layout keeps its key on a retention boundary inside the
+  // learned tree, which rebinds it with the same function.
+  const reify = createAppPageSegmentStateKeyRebinder(template.params, params);
+  if (reify === null) return elements;
+  setOptimisticStateKeyRebinder(elements, reify);
+
+  const metadata = AppElementsWire.readMetadata(template.elements);
+  const identities = metadata.bfcacheSegmentIdentities;
+  if (Object.keys(identities).length > 0) {
+    elements[APP_BFCACHE_SEGMENT_IDENTITIES_KEY] = Object.fromEntries(
+      Object.entries(identities).map(([id, identity]) => [id, reify(identity)]),
+    );
+  }
   return elements;
+}
+
+function findStreamingMetadataBody(elements: AppElements): string | null {
+  for (const id of Object.keys(elements)) {
+    if (id.startsWith(APP_STREAMING_METADATA_BODY_ID_PREFIX)) return id;
+  }
+  return null;
+}
+
+/**
+ * The optimistic shell reveals the prefetch's streamed metadata, such as its
+ * title. React won't hide revealed content again in a transition, so while the
+ * authoritative payload's own metadata streams, its whole commit, page
+ * included, would wait for it. Render that metadata in a new boundary whose
+ * fallback is the shell's instead, so the page commits as it streams and the
+ * prefetched title stays until the payload's arrives. Next.js likewise renders
+ * the prefetched head until the dynamic one resolves (`Head` in app-router.tsx).
+ *
+ * A payload streams at most one route's metadata. The shell's may carry
+ * another concrete route id, since a template learned for one set of params
+ * is reused for others. `navigationKey` remounts the boundary on every
+ * navigation, so one that already revealed an earlier navigation's metadata
+ * can't hold back the next, as Next.js keys `Head` by its vary path.
+ */
+export function keepOptimisticStreamingMetadata(
+  elements: AppElements,
+  optimisticElements: AppElements,
+  navigationKey: string,
+): AppElements {
+  const id = findStreamingMetadataBody(elements);
+  const optimisticId = findStreamingMetadataBody(optimisticElements);
+  if (id === null || optimisticId === null) return elements;
+  const optimisticMetadata = optimisticElements[optimisticId];
+  if (optimisticMetadata == null) return elements;
+  return {
+    ...elements,
+    [id]: createElement(
+      Suspense,
+      { fallback: optimisticMetadata as ReactNode, key: navigationKey },
+      elements[id] as ReactNode,
+    ),
+  };
 }
 
 /**
@@ -427,11 +556,46 @@ export function canCommitOptimisticRouteTemplate(options: {
   currentElements: AppElements;
   currentLayoutIds: readonly string[];
   currentParams: Readonly<Record<string, string | string[]>>;
+  /** Whether a hidden BFCache entry retains a segment identity. */
+  isBfcacheIdentityRetained?: (identity: string) => boolean;
   routeManifest: BrowserRouteManifest;
+  /**
+   * The elements on screen, when a shell earlier in this navigation replaced
+   * the current ones. Defaults to `currentElements`.
+   */
+  shownElements?: AppElements;
+  /** The shell's elements for the target. */
+  targetElements?: AppElements;
   targetRouteParams: Readonly<Record<string, string | string[]>>;
   targetUrlParts: readonly string[];
   template: OptimisticRouteTemplate;
 }): boolean {
+  const currentIdentities = AppElementsWire.readMetadata(
+    options.currentElements,
+  ).bfcacheSegmentIdentities;
+
+  // A target segment retained in a hidden BFCache entry is shown again with
+  // its state. The shell replaces its page with a placeholder, under
+  // boundaries keyed for the URL it was learned from, so committing it would
+  // remount the entry. Next.js shows the entry's loading state while keeping
+  // it mounted; without the shell, the current page stays until the payload
+  // reveals the entry.
+  const { isBfcacheIdentityRetained, targetElements } = options;
+  if (isBfcacheIdentityRetained && targetElements) {
+    const shownIdentities = new Set(
+      Object.values(
+        options.shownElements
+          ? AppElementsWire.readMetadata(options.shownElements).bfcacheSegmentIdentities
+          : currentIdentities,
+      ),
+    );
+    for (const identity of Object.values(
+      AppElementsWire.readMetadata(targetElements).bfcacheSegmentIdentities,
+    )) {
+      if (!shownIdentities.has(identity) && isBfcacheIdentityRetained(identity)) return false;
+    }
+  }
+
   if (
     options.template.omittedLayoutIds.length === 0 &&
     options.template.omittedBfcacheSegmentIds.length === 0
@@ -440,9 +604,6 @@ export function canCommitOptimisticRouteTemplate(options: {
   }
 
   const currentLayoutIds = new Set(options.currentLayoutIds);
-  const currentIdentities = AppElementsWire.readMetadata(
-    options.currentElements,
-  ).bfcacheSegmentIdentities;
 
   for (const layoutId of options.template.omittedLayoutIds) {
     if (!currentLayoutIds.has(layoutId)) continue;
@@ -531,10 +692,62 @@ export function resolveOptimisticNavigationPayload(options: {
     urlParts: urlParts.normalized,
   });
   return {
-    elements: createOptimisticRouteElements(template),
+    elements: createOptimisticRouteElements(template, navigationParams),
     params: navigationParams,
     routeParams,
     template,
     urlParts: urlParts.normalized,
+  };
+}
+
+export type LearnedOptimisticRouteTemplate = {
+  key: string;
+  template: OptimisticRouteTemplate;
+};
+
+/**
+ * Optimistic route templates and the prefetch sources they were learned from.
+ * `clear()` retires every template, so none can outlive the prefetch payload
+ * it was derived from, and drops any result a learning started before the
+ * clear resolves to. Sources that are still cached are learned again on the
+ * next optimistic navigation.
+ */
+export function createOptimisticRouteTemplateStore() {
+  const templates = new Map<string, OptimisticRouteTemplate>();
+  const learnedSources = new Set<string>();
+  const learning = new Map<string, Promise<void>>();
+  let generation = 0;
+
+  return {
+    templates: templates as ReadonlyMap<string, OptimisticRouteTemplate>,
+    clear(): void {
+      generation += 1;
+      templates.clear();
+      learnedSources.clear();
+      learning.clear();
+    },
+    hasSource(sourceKey: string): boolean {
+      return learnedSources.has(sourceKey) || learning.has(sourceKey);
+    },
+    learn(
+      sourceKey: string,
+      learnTemplate: () => Promise<LearnedOptimisticRouteTemplate | null>,
+    ): Promise<void> {
+      const learnedGeneration = generation;
+      const promise: Promise<void> = learnTemplate()
+        .then((learned) => {
+          if (learned === null || learnedGeneration !== generation) return;
+          templates.set(learned.key, learned.template);
+          learnedSources.add(sourceKey);
+        })
+        .finally(() => {
+          if (learning.get(sourceKey) === promise) learning.delete(sourceKey);
+        });
+      learning.set(sourceKey, promise);
+      return promise;
+    },
+    pendingLearning(): Promise<void>[] {
+      return [...learning.values()];
+    },
   };
 }

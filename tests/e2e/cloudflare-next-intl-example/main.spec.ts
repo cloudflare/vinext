@@ -77,6 +77,22 @@ it('can be used to localize the page', async ({page}) => {
   await expect(page.getByRole('heading', {name: 'next-intl Beispiel'})).toBeVisible();
 });
 
+// vinext: the fixture precompiles its catalogs (`messages.precompile`), and
+// next-intl then only formats messages its catalog loader compiled. Raw
+// catalogs would render the ICU source, e.g. `{locale, select, …}`.
+// https://github.com/cloudflare/vinext/issues/4303
+it('formats arguments and rich text from precompiled catalogs', async ({
+  page
+}) => {
+  await page.goto('/en');
+  const select = page.getByRole('combobox', {name: 'Change language'});
+  await expect(select.getByRole('option')).toHaveText(['English', 'Deutsch']);
+  await expect(page.locator('code', {hasText: 'next-intl'})).toBeVisible();
+
+  await page.goto('/de/pfadnamen');
+  await expect(page.locator('code', {hasText: '/de/pfadnamen'})).toBeVisible();
+});
+
 it('sets a cookie when necessary', async ({page}) => {
   function getCookieValue() {
     return page.evaluate(() => document.cookie);

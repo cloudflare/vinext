@@ -33,8 +33,10 @@ import {
   generateImageAttributes,
   getFillStyle,
   imageOptimizationUrl,
+  isDataOrBlobUrl,
   isRemoteUrl,
   isSvgUrl,
+  parseImageQuality,
   resolveImageSource,
   sanitizeBlurDataURL,
   validateRemoteUrl,
@@ -110,7 +112,7 @@ function preloadImageResource(input: {
   });
 }
 
-const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
+const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   {
     src: srcProp,
     alt,
@@ -185,7 +187,13 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
   const shouldPreload = preload === true || priority === true;
   const priorityFetchPriority = priority ? "high" : undefined;
-  const imageLoading = priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy");
+  // data: and blob: sources are served as-is and never lazy by default (Next.js parity).
+  const isInlineSrc = isDataOrBlobUrl(src);
+  const imageLoading = priority
+    ? "eager"
+    : shouldPreload || isInlineSrc
+      ? loading
+      : (loading ?? "lazy");
 
   const [completedBlurSrc, setCompletedBlurSrc] = useState<string | undefined>(undefined);
   const blurComplete = completedBlurSrc === src;
@@ -272,7 +280,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         }
       : undefined;
 
-  if (_unoptimized === true || __globallyUnoptimized) {
+  if (_unoptimized === true || __globallyUnoptimized || isInlineSrc) {
     // Unoptimized images are fetched directly by the browser, so intentionally
     // skip remote URL validation: there is no server-side optimizer fetch and
     // therefore no SSRF surface. This matches Next.js behavior.
@@ -314,7 +322,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
 
   // If a custom loader is provided, use basic img with loader URL
   if (loader) {
-    const resolvedQuality = typeof quality === "string" ? Number(quality) : (quality ?? 75);
+    const resolvedQuality = parseImageQuality(quality) ?? 75;
     const resolvedSrc = loader({ src, width: imgWidth ?? 0, quality: resolvedQuality });
     preloadImageResource({
       shouldPreload,
@@ -441,7 +449,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
   // SVG sources auto-skip unless dangerouslyAllowSVG is enabled, matching
   // Next.js behavior where .svg triggers unoptimized=true by default.
-  const imgQuality = typeof quality === "string" ? Number(quality) : (quality ?? 75);
+  const imgQuality = parseImageQuality(quality) ?? 75;
   const isSvg = isSvgUrl(src);
   const skipOptimization = isSvg && !__dangerouslyAllowSVG;
 
@@ -512,5 +520,10 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     />
   );
 });
+
+// Annotated so declaration emit references ImageProps by name and keeps its
+// @deprecated tags (https://github.com/vercel/next.js/pull/98597).
+const Image: React.ForwardRefExoticComponent<ImageProps & React.RefAttributes<HTMLImageElement>> =
+  ImageImpl;
 
 export default Image;

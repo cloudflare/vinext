@@ -221,9 +221,12 @@ function isPublicFileLoadError(error: unknown): boolean {
  */
 function isReferencedAsset(server: ViteDevServer, url: string | undefined): boolean {
   if (!url) return false;
-  const { pathname } = new URL(url, "http://localhost");
+  let pathname: string;
   let decodedPathname: string;
   try {
+    // A request target starting with `//` (or `/\`) parses as a host, which
+    // throws when it's not a valid one
+    ({ pathname } = new URL(url, "http://localhost"));
     decodedPathname = decodeURI(pathname);
   } catch {
     return false;

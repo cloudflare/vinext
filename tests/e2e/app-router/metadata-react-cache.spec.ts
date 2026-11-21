@@ -77,18 +77,9 @@ test.describe("React cache() in generateMetadata() and generateViewport()", () =
     await expect(page).toHaveTitle("signal in-render");
   });
 
-  test("shares cache() values in the RSC payload", async ({ request }) => {
-    const response = await request.get("/nextjs-compat/metadata-cache-deduping.rsc", {
-      headers: RSC_HEADERS,
-    });
-    expect(response.status()).toBe(200);
-    const body = await response.text();
-    const title = readTitleValue(body);
-    const value = readTag(body, /"id":"value","children":"([^"]+)"/);
-    expect(title).toBeDefined();
-    expect(title).toBe(value);
-  });
-
+  // Runs before the RSC request below: in production the page's first stored
+  // document is served to every request, bots included, as in Next.js, and
+  // an RSC miss stores the browser's document.
   test("gives html-limited bots a blocking head with the page's cache() value", async ({
     request,
   }) => {
@@ -98,6 +89,18 @@ test.describe("React cache() in generateMetadata() and generateViewport()", () =
     const head = html.slice(0, html.indexOf("</head>"));
     const title = readTitleValue(head);
     const value = readPageValue(html);
+    expect(title).toBeDefined();
+    expect(title).toBe(value);
+  });
+
+  test("shares cache() values in the RSC payload", async ({ request }) => {
+    const response = await request.get("/nextjs-compat/metadata-cache-deduping?_rsc", {
+      headers: RSC_HEADERS,
+    });
+    expect(response.status()).toBe(200);
+    const body = await response.text();
+    const title = readTitleValue(body);
+    const value = readTag(body, /"id":"value","children":"([^"]+)"/);
     expect(title).toBeDefined();
     expect(title).toBe(value);
   });
@@ -124,7 +127,7 @@ test.describe("React cache() in generateMetadata() and generateViewport()", () =
     for (const rsc of [false, true]) {
       for (const user of users) {
         const response = await request.get(
-          rsc ? "/metadata-react-cache/user.rsc" : "/metadata-react-cache/user",
+          rsc ? "/metadata-react-cache/user?_rsc" : "/metadata-react-cache/user",
           { headers: { ...(rsc ? RSC_HEADERS : {}), Cookie: `${USER_COOKIE}=${user}` } },
         );
         expect(response.status()).toBe(200);

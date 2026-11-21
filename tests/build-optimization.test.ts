@@ -61,6 +61,7 @@ const _stripServerExports = (code: string): string | null =>
 // shims-chunk tests would need a real path.
 const clientManualChunks = createClientManualChunks("/vinext/shims/");
 const appClientManualChunks = createClientManualChunks("/vinext/shims/", true);
+const appOnlyClientManualChunks = createClientManualChunks("/vinext/shims/", true, false);
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
 // Next.js behavior). Save/restore globally so tests that call config() don't
@@ -181,8 +182,78 @@ describe("clientManualChunks", () => {
 
   it("keeps shared vinext shims in the runtime chunk", () => {
     expect(clientManualChunks("/vinext/shims/link.js")).toBe("vinext");
-    expect(clientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
     expect(appClientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
+  });
+
+  it("leaves Pages Router page-owned client shims to the pages that import them", () => {
+    expect(clientManualChunks("/vinext/shims/dynamic.js")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/dynamic-preload-chunks.tsx")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/form.tsx")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/image.tsx?client")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/image-config.ts")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/image-props.js")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/legacy-image.tsx")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/offline.ts")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/script.tsx")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/web-vitals.ts")).toBeUndefined();
+    // The Pages client entry imports these, so they stay in the runtime chunk.
+    expect(clientManualChunks("/vinext/shims/router.ts")).toBe("vinext");
+    expect(clientManualChunks("/vinext/shims/head.ts")).toBe("vinext");
+  });
+
+  it("gives the App Router navigation runtime its own chunk when there are Pages Router pages", () => {
+    for (const shim of [
+      "app-router-navigation.ts",
+      "app-router-scroll-state.ts",
+      "internal/app-prefetch-rsc-request.ts",
+    ]) {
+      expect(clientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext-app-router");
+      expect(appClientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext-app-router");
+      // Every App-only page loads the runtime, so it stays in "vinext".
+      expect(appOnlyClientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext");
+    }
+    // next/link, next/router and the config matchers import these too, so
+    // they stay out of the runtime chunk.
+    for (const id of [
+      "client/navigation-runtime.js",
+      "server/headers.js",
+      "utils/external-url.js",
+      "utils/html-limited-bots.js",
+    ]) {
+      expect(clientManualChunks(`/vinext/${id}`)).toBe("vinext");
+      expect(appClientManualChunks(`/vinext/${id}`)).toBe("vinext");
+    }
+    expect(appClientManualChunks("/vinext/server/navigation-planner.js")).toBeUndefined();
+  });
+
+  it("gives the next/navigation hooks their own chunk in Pages Router builds", () => {
+    for (const shim of [
+      "internal/navigation-untracked.ts",
+      "internal/pages-router-accessor.ts",
+      "navigation.ts",
+      "navigation-context-state.ts",
+      "navigation-errors.ts",
+      "ppr-fallback-shell.ts",
+      "readonly-url-search-params.ts",
+      "unrecognized-action-error.ts",
+    ]) {
+      expect(clientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext-navigation");
+      expect(appClientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext");
+    }
+    // next/error imports next/navigation, so it loads only with the pages that use it.
+    expect(clientManualChunks("/vinext/shims/error.tsx")).toBeUndefined();
+    // The Pages router lazily loads config matchers through this module's imports.
+    expect(clientManualChunks("/vinext/shims/internal/hybrid-client-route-owner.ts")).toBe(
+      "vinext",
+    );
+  });
+
+  it("keeps the shared client instrumentation state in the runtime chunk", () => {
+    // Both client entries import it, and so does next/navigation: outside
+    // "vinext", the navigation chunk would import the entry chunk.
+    expect(clientManualChunks("/vinext/client/instrumentation-client-state.js")).toBe("vinext");
+    expect(appClientManualChunks("/vinext/client/instrumentation-client-state.js")).toBe("vinext");
+    expect(clientManualChunks("/vinext/client/instrumentation-client.js")).toBeUndefined();
   });
 
   it("leaves App Router route-owned client shims behind their dynamic boundaries", () => {
@@ -192,6 +263,7 @@ describe("clientManualChunks", () => {
     expect(appClientManualChunks("/vinext/shims/link.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/router.ts")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/image.tsx?client")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/image-config.ts")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/image-props.js")).toBeUndefined();
     expect(
       appClientManualChunks("/vinext/shims/internal/hybrid-client-route-owner.js"),
@@ -212,6 +284,31 @@ describe("clientManualChunks", () => {
   });
 });
 
+describe("App Router client build chunks", () => {
+  it.each([
+    // Every App-only page loads the runtime, so it stays in "vinext".
+    ["app-layout-error", "vinext"],
+    ["app-basic", "vinext-app-router"],
+  ])("puts the navigation runtime of %s in %s", async (fixture, chunkName) => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const mainPlugin = vinext().find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    const result = await (mainPlugin as any).config(
+      { root: path.resolve(import.meta.dirname, "fixtures", fixture), build: {}, plugins: [] },
+      { command: "build" },
+    );
+    const { groups } = result.environments.client.build.rolldownOptions.output.codeSplitting as {
+      groups: { name(id: string): string | null }[];
+    };
+    const runtimeId = path.resolve(
+      import.meta.dirname,
+      "../packages/vinext/src/shims/app-router-navigation.ts",
+    );
+    expect(groups.map((group) => group.name(runtimeId)).filter(Boolean)).toEqual([chunkName]);
+  });
+});
+
 describe("createClientManualChunks (installed layout)", () => {
   // The shimsDir MUST contain node_modules — that's the regression: an installed
   // copy's shims were swallowed by the node_modules early return.
@@ -220,9 +317,7 @@ describe("createClientManualChunks (installed layout)", () => {
   it("groups shims under node_modules into the vinext chunk", () => {
     const chunks = createClientManualChunks(installedShimsDir);
     expect(chunks("/app/node_modules/vinext/dist/shims/slot.js")).toBe("vinext");
-    expect(chunks("/app/node_modules/vinext/dist/shims/navigation-context-state.js")).toBe(
-      "vinext",
-    );
+    expect(chunks("/app/node_modules/vinext/dist/shims/internal/router-context.js")).toBe("vinext");
     expect(chunks("/app/node_modules/vinext/dist/shims/slot.js?v=abc")).toBe("vinext");
   });
 
@@ -301,7 +396,7 @@ describe("next-intl dependency optimization", () => {
     "@formatjs/fast-memoize",
     "intl-messageformat",
   ];
-  const clientDependencies = ["next-intl > use-intl", "next-intl > use-intl/react", "next/link"];
+  const clientDependencies = ["next-intl > use-intl", "next-intl > use-intl/react"];
   const legacyClientDependencies = [
     "next-intl > use-intl/_IntlProvider",
     "next-intl > use-intl/_useLocale",
@@ -373,7 +468,7 @@ describe("next-intl dependency optimization", () => {
       scenario: "explicit exclusions",
       excluded: true,
       expected: ["@formatjs/intl-localematcher", "intl-messageformat"],
-      clientExpected: ["next/link"],
+      clientExpected: [],
     },
     {
       scenario: "dependencies unavailable from root",
@@ -445,7 +540,7 @@ describe("next-intl dependency optimization", () => {
             client: {
               optimizeDeps: {
                 noDiscovery: options.clientNoDiscovery,
-                exclude: options.clientExcluded ? ["use-intl/react", "next/link"] : [],
+                exclude: options.clientExcluded ? ["use-intl/react"] : [],
               },
             },
             rsc: {
@@ -467,6 +562,8 @@ describe("next-intl dependency optimization", () => {
           clientIncludes.includes(id),
         ),
       ).toEqual(options.clientExpected);
+      // An optimized next/link would carry its own copy of vinext's navigation state.
+      expect(clientIncludes).not.toContain("next/link");
       for (const name of ["client", "ssr"]) {
         const otherIncludes = result.environments[name].optimizeDeps.include ?? [];
         expect(dependencies.filter((id) => otherIncludes.includes(id))).toEqual([]);
@@ -486,6 +583,21 @@ describe("optimizeDeps.exclude for vinext", () => {
     "vinext/shims/script",
     "vinext/shims/slot",
     "vinext/shims/offline",
+  ];
+  // Bare specifiers vinext resolves to its shims. An installed vinext lives in
+  // node_modules, so the optimizer would otherwise pre-bundle a second copy.
+  const nextShimExcludes = [
+    "next/link",
+    "next/link.js",
+    "next/navigation",
+    "next/navigation.js",
+    "next/error",
+    "next/form",
+    "next/script",
+    "next/router",
+    "next/headers",
+    "next/dist/client/components/navigation",
+    "next/dist/shared/lib/app-router-context.shared-runtime",
   ];
 
   it("excludes vinext at top level for Pages Router builds", async () => {
@@ -524,6 +636,11 @@ describe("optimizeDeps.exclude for vinext", () => {
       });
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
+      for (const shimExclude of nextShimExcludes) {
+        // The Pages Router client pre-bundles its runtime with the shims.
+        expect(result.optimizeDeps?.exclude).not.toContain(shimExclude);
+        expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
+      }
       // Incoming excludes from other plugins must survive the merge
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
@@ -655,7 +772,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.ssr.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.client.optimizeDeps?.exclude).toContain("vinext");
       expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"false"');
-      for (const shimExclude of rscClientShimExcludes) {
+      for (const shimExclude of [...rscClientShimExcludes, ...nextShimExcludes]) {
         expect(result.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.rsc.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
@@ -709,7 +826,9 @@ describe("optimizeDeps.exclude for vinext", () => {
   const ssrExternalReactEntries = [
     "react",
     "react-dom",
+    "react-dom/server",
     "react-dom/server.edge",
+    "react-dom/static",
     "react-dom/static.edge",
     "react/jsx-runtime",
     "react/jsx-dev-runtime",
@@ -1044,6 +1163,9 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(workerEnvConfig.optimizeDeps.include).toContain(
         "vinext > @vitejs/plugin-rsc/react/rsc",
       );
+      // next/image shim deps, discovered mid-startup otherwise.
+      expect(workerEnvConfig.optimizeDeps.include).toContain("vinext > @unpic/react");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("vinext > ipaddr.js");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("already-excluded");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/fetch-handler");
@@ -1052,6 +1174,258 @@ describe("optimizeDeps.exclude for vinext", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("drops shim specifiers from explicit dev optimizer includes", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.configResolved === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-shim-include-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config({ root: tmpDir, build: {} }, { command: "serve" });
+
+      // Vite pre-bundles included specifiers even when they are excluded.
+      const client = {
+        consumer: "client",
+        optimizeDeps: {
+          include: [
+            "next/link",
+            "next/navigation.js",
+            "some-lib > next/link",
+            "vinext/shims/link",
+            "some-lib",
+            "some-lib > nested-dep",
+            // Vite expands globs later, from the installed package's files.
+            "next/*",
+            "vinext/shims/**",
+            "some-lib > next/{link,image}",
+            "some-lib/*",
+            "@scope/lib/*",
+            "next/dist/compiled/semver/*.js",
+          ],
+        },
+      };
+      const ssr = { consumer: "server", optimizeDeps: { include: ["next/headers", "some-lib"] } };
+      // Client environments that other plugins create get the same treatment.
+      const browser = { consumer: "client", optimizeDeps: { include: ["next/link"] } };
+      await (mainPlugin as any).configResolved({
+        cacheDir: path.join(tmpDir, ".vite"),
+        command: "serve",
+        configFile: false,
+        environments: { client, ssr, browser },
+        logger: createLogger("silent"),
+        plugins: [],
+      });
+
+      expect(client.optimizeDeps.include).toEqual([
+        "some-lib",
+        "some-lib > nested-dep",
+        "some-lib/*",
+        "@scope/lib/*",
+        "next/dist/compiled/semver/*.js",
+        "use-sync-external-store/shim",
+        "use-sync-external-store/shim/index.js",
+        "use-sync-external-store/shim/with-selector",
+        "use-sync-external-store/shim/with-selector.js",
+        "use-sync-external-store/with-selector",
+        "use-sync-external-store/with-selector.js",
+        "vinext > @unpic/react",
+        "vinext > ipaddr.js",
+        "vinext > web-vitals",
+      ]);
+      expect(ssr.optimizeDeps.include).toEqual(["some-lib"]);
+      expect(browser.optimizeDeps.include).not.toContain("next/link");
+      expect(browser.optimizeDeps.include).toContain("vinext > ipaddr.js");
+
+      // A filtered next/image include no longer pre-bundles the shim's
+      // dependencies, so noDiscovery keeps them while the optimizer runs.
+      const noDiscoveryClient = { optimizeDeps: { noDiscovery: true, include: ["next/image"] } };
+      const disabledClient = { optimizeDeps: { noDiscovery: true } };
+      for (const environment of [noDiscoveryClient, disabledClient]) {
+        await (mainPlugin as any).configResolved({
+          cacheDir: path.join(tmpDir, ".vite"),
+          command: "serve",
+          configFile: false,
+          environments: { client: environment },
+          logger: createLogger("silent"),
+          plugins: [],
+        });
+      }
+      expect(noDiscoveryClient.optimizeDeps.include).toEqual([
+        "vinext > @unpic/react",
+        "vinext > ipaddr.js",
+        "vinext > web-vitals",
+      ]);
+      expect(disabledClient.optimizeDeps).toEqual({ noDiscovery: true });
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("leaves the Pages Router client optimizer's shim includes alone", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.configResolved === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-shim-include-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config({ root: tmpDir, build: {} }, { command: "serve" });
+
+      // The client pre-bundles the shims with the Pages Router runtime, so
+      // they share one copy of their module state.
+      const client = { consumer: "client", optimizeDeps: { include: ["next/link", "some-lib"] } };
+      const ssr = { consumer: "server", optimizeDeps: { include: ["next/link", "some-lib"] } };
+      await (mainPlugin as any).configResolved({
+        cacheDir: path.join(tmpDir, ".vite"),
+        command: "serve",
+        configFile: false,
+        environments: { client, ssr },
+        logger: createLogger("silent"),
+        plugins: [],
+      });
+
+      expect(client.optimizeDeps.include).toEqual(["next/link", "some-lib"]);
+      expect(ssr.optimizeDeps.include).toEqual(["some-lib"]);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("keeps shims out of optimizers that other plugins create", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:config" &&
+        typeof p.config === "function" &&
+        typeof p.configEnvironment === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-custom-server-env-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config({ root: tmpDir, build: {} }, { command: "serve" });
+
+      const userPlugin = { name: "user-optimizer-plugin" };
+      const custom: any = {
+        consumer: "server",
+        optimizeDeps: {
+          exclude: ["already-excluded"],
+          rolldownOptions: { plugins: [userPlugin] },
+        },
+      };
+      const client: any = { consumer: "client", optimizeDeps: {} };
+      const browser: any = { consumer: "client" };
+      (mainPlugin as any).configEnvironment("custom-worker", custom);
+      (mainPlugin as any).configEnvironment("client", client);
+      (mainPlugin as any).configEnvironment("browser", browser);
+
+      expect(custom.optimizeDeps.exclude).toEqual(
+        expect.arrayContaining(["already-excluded", "vinext", "next/link", "next/headers"]),
+      );
+      const pluginNames = custom.optimizeDeps.rolldownOptions.plugins.map((p: any) => p.name);
+      expect(pluginNames).toContain("user-optimizer-plugin");
+      expect(pluginNames).toContain("builtin:esm-external-require");
+      // The browser optimizer already turns require() of excluded ids into imports.
+      expect(client.optimizeDeps.rolldownOptions).toBeUndefined();
+      // App Router client environments load the shims raw, like the runtime.
+      expect(browser.optimizeDeps.exclude).toEqual(
+        expect.arrayContaining(["vinext", "next/link", "next/navigation"]),
+      );
+      expect(browser.optimizeDeps.rolldownOptions).toBeUndefined();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("resolves React's edge Fizz entries in Cloudflare server environments", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    const edgePlugin = plugins.find((p: any) => p.name === "vinext:cloudflare-react-dom-edge");
+    expect(mainPlugin).toBeDefined();
+    expect(edgePlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-react-dom-edge-"));
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const resolveIn = async (consumer: "client" | "server", id: string, name = "ssr") => {
+        const resolve = vi.fn(async (target: string) => ({ id: target }));
+        const result = await (edgePlugin as any).resolveId.handler.call(
+          { environment: { name, config: { consumer } }, resolve },
+          id,
+          "/app/entry.ts",
+          {},
+        );
+        return { result, resolve };
+      };
+
+      // Without the Cloudflare plugin, React's exports map picks the build.
+      expect((await resolveIn("server", "react-dom/server")).result).toBeUndefined();
+
+      await (mainPlugin as any).config(
+        { root: tmpDir, build: {}, plugins: [{ name: "vite-plugin-cloudflare" }] },
+        { command: "build" },
+      );
+
+      for (const id of ["react-dom/server", "react-dom/static"]) {
+        const { result, resolve } = await resolveIn("server", id);
+        expect(result).toEqual({ id: `${id}.edge` });
+        expect(resolve).toHaveBeenCalledWith(`${id}.edge`, "/app/entry.ts", { skipSelf: true });
+      }
+      // The Pages Router Worker environment is named after the Worker.
+      expect((await resolveIn("server", "react-dom/server", "my_worker")).result).toEqual({
+        id: "react-dom/server.edge",
+      });
+      // Server Components keep React's react-server entries, and browser code
+      // keeps React's browser build.
+      expect((await resolveIn("server", "react-dom/server", "rsc")).result).toBeUndefined();
+      expect((await resolveIn("client", "react-dom/server")).result).toBeUndefined();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
 
   it("uses server package conditions in RSC and SSR environments", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
@@ -2622,6 +2996,47 @@ describe("computeLazyChunks", () => {
     expect(lazy).not.toContain("assets/main.js");
   });
 
+  it("treats Pages Router page and _app chunks as eager, keeping their dynamic imports lazy", () => {
+    const manifest = {
+      "virtual:vinext-client-entry": {
+        file: "assets/entry.js",
+        src: "virtual:vinext-client-entry",
+        isEntry: true,
+        dynamicImports: ["pages/index.tsx", "pages/_app.tsx"],
+      },
+      "pages/index.tsx": {
+        file: "assets/index.js",
+        isDynamicEntry: true,
+        imports: ["_shared.js"],
+        dynamicImports: ["components/heavy.tsx"],
+      },
+      "pages/_app.tsx": {
+        file: "assets/app.js",
+        isDynamicEntry: true,
+      },
+      "_shared.js": {
+        file: "assets/shared.js",
+      },
+      "components/heavy.tsx": {
+        file: "assets/heavy.js",
+        isDynamicEntry: true,
+      },
+      "virtual:vinext-app-browser-entry": {
+        file: "assets/app-browser-entry.js",
+        isEntry: true,
+        dynamicImports: ["components/client-reference.tsx"],
+      },
+      "components/client-reference.tsx": {
+        file: "assets/client-reference.js",
+        isDynamicEntry: true,
+      },
+    };
+    expect(computeLazyChunks(manifest).sort()).toEqual([
+      "assets/client-reference.js",
+      "assets/heavy.js",
+    ]);
+  });
+
   it("returns empty array for empty manifest", () => {
     expect(computeLazyChunks({})).toEqual([]);
   });
@@ -2699,8 +3114,9 @@ describe("computeLazyChunks", () => {
   it("handles realistic mermaid-like scenario", () => {
     // Simulates: client entry -> page (dynamic) -> streamdown (static from page)
     //            streamdown -> mermaid (dynamic via React.lazy)
-    // The page itself is dynamic from the entry (vinext pattern), but
-    // mermaid is dynamic from streamdown — mermaid should be lazy
+    // The page is a route loader of the Pages client entry, so it and its
+    // static imports are eager, but mermaid is dynamic from streamdown — mermaid
+    // should be lazy
     const manifest = {
       "virtual:vinext-client-entry": {
         file: "assets/vinext-client-entry-abc.js",
@@ -2736,12 +3152,10 @@ describe("computeLazyChunks", () => {
     const lazy = computeLazyChunks(manifest);
     // Mermaid should be lazy — only reachable through dynamic imports
     expect(lazy).toContain("assets/mermaid-NOHMQCX5.js");
-    // Pages are dynamic from entry — they should also be lazy
-    expect(lazy).toContain("assets/index-page.js");
-    expect(lazy).toContain("assets/about-page.js");
-    // streamdown is statically imported by a page, but the page itself is
-    // dynamic from entry — so streamdown is also lazy
-    expect(lazy).toContain("assets/streamdown-chunk.js");
+    // Page chunks and their static imports load with the page's HTML
+    expect(lazy).not.toContain("assets/index-page.js");
+    expect(lazy).not.toContain("assets/about-page.js");
+    expect(lazy).not.toContain("assets/streamdown-chunk.js");
     // Framework and entry should NOT be lazy
     expect(lazy).not.toContain("assets/vinext-client-entry-abc.js");
     expect(lazy).not.toContain("assets/framework-xyz.js");
@@ -3366,6 +3780,50 @@ describe("augmentSsrManifestFromBundle", () => {
     ]);
   });
 
+  it("lists transitive static imports and records the Pages entry's import graph as shared", () => {
+    const bundle = {
+      "assets/entry.js": {
+        type: "chunk" as const,
+        fileName: "assets/entry.js",
+        isEntry: true,
+        facadeModuleId: "\0virtual:vinext-client-entry",
+        imports: ["assets/runtime.js"],
+        modules: { "\0virtual:vinext-client-entry": {} },
+      },
+      "assets/runtime.js": {
+        type: "chunk" as const,
+        fileName: "assets/runtime.js",
+        imports: ["assets/helpers.js"],
+        modules: { "/app/lib/runtime.ts": {} },
+      },
+      "assets/helpers.js": {
+        type: "chunk" as const,
+        fileName: "assets/helpers.js",
+        imports: ["assets/runtime.js"],
+        modules: { "/app/lib/helpers.ts": {} },
+      },
+      "assets/about.js": {
+        type: "chunk" as const,
+        fileName: "assets/about.js",
+        imports: ["assets/runtime.js"],
+        modules: { "/app/pages/about.tsx": {} },
+      },
+    };
+
+    const augmented = _augmentSsrManifestFromBundle({}, bundle, "/app");
+
+    expect(augmented["pages/about.tsx"]).toEqual([
+      "assets/about.js",
+      "assets/runtime.js",
+      "assets/helpers.js",
+    ]);
+    expect(augmented[SSR_MANIFEST_SHARED_CHUNKS_KEY]).toEqual([
+      "assets/entry.js",
+      "assets/runtime.js",
+      "assets/helpers.js",
+    ]);
+  });
+
   it("records shared runtime chunks by chunk name for hash-only file names", () => {
     const bundle = {
       "_next/static/chunks/aB3_x-9Z.js": {
@@ -3675,13 +4133,13 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
     const tags = simulateAssetTagFiltering(ssrFiles, lazyChunks);
 
-    // Entry and framework should have modulepreload + script tags
+    // Entry, framework and the rendered page chunk should have modulepreload + script tags
     expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
     expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
+    expect(tags).toContain('<link rel="modulepreload" href="/assets/page-index.js" />');
 
-    // Page chunk and mermaid are lazy — should have NO tags at all
-    expect(tags.join("\n")).not.toContain("page-index.js");
+    // Mermaid is lazy — should have NO tags at all
     expect(tags.join("\n")).not.toContain("mermaid-big.js");
   });
 
@@ -3852,6 +4310,11 @@ describe("collectAssetTags lazy chunk filtering", () => {
       "virtual:vinext-client-entry": {
         file: "cdn/_next/static/chunks/entry-abc.js",
         isEntry: true,
+        dynamicImports: ["pages/index.tsx"],
+      },
+      "pages/index.tsx": {
+        file: "cdn/_next/static/chunks/page-index.js",
+        isDynamicEntry: true,
         dynamicImports: ["src/widget.tsx"],
       },
       "src/widget.tsx": {
@@ -3896,6 +4359,171 @@ describe("collectAssetTags lazy chunk filtering", () => {
 });
 
 // ─── vinext:async-hooks-stub ───────────────────────────────────────────────────
+
+describe("vinext:react-server-dom-node", () => {
+  type ResolveIdHandler = (
+    this: unknown,
+    id: string,
+    importer: string | undefined,
+    options: object,
+  ) => unknown;
+
+  // Returns the id the Flight server entry is resolved to in a server
+  // environment with these conditions, whose SSR environment (where Fizz
+  // renders) has `ssrConditions`, `ssrExternal` and `ssrExternalConditions`
+  // (Vite's default unless given), or undefined when it is left alone.
+  async function resolvedFlightEntry(
+    id: string,
+    conditions: string[],
+    ssrConditions: string[] | null = conditions,
+    environmentName = "rsc",
+    ssrExternal: true | string[] = [],
+    ssrExternalConditions: string[] = ["node", "module-sync"],
+  ) {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = (vinext() as any[])
+      .flat(Infinity)
+      .find((p: any) => p?.name === "vinext:react-server-dom-node");
+    let resolved: string | undefined;
+    await (plugin.resolveId as { handler: ResolveIdHandler }).handler.call(
+      {
+        environment: {
+          name: environmentName,
+          config: { consumer: "server", resolve: { conditions } },
+          getTopLevelConfig: () => ({
+            environments: ssrConditions
+              ? {
+                  ssr: {
+                    resolve: {
+                      conditions: ssrConditions,
+                      external: ssrExternal,
+                      externalConditions: ssrExternalConditions,
+                    },
+                  },
+                }
+              : {},
+          }),
+        },
+        resolve: async (target: string) => {
+          resolved = target;
+          return { id: target };
+        },
+      },
+      id,
+      "/app/entry.js",
+      {},
+    );
+    return resolved;
+  }
+
+  const SERVER = "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge";
+  const STATIC = "react-server-dom-webpack/static.edge";
+
+  it("pairs the Flight server with react-dom's Node build on Node", async () => {
+    expect(await resolvedFlightEntry(SERVER, ["module", "node"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    expect(await resolvedFlightEntry(STATIC, ["module", "node"])).toBe(
+      "react-server-dom-webpack/static.node",
+    );
+  });
+
+  // react-dom maps `deno` to server.node.js but to static.browser.js.
+  it("follows react-dom's own map for the deno condition", async () => {
+    expect(await resolvedFlightEntry(SERVER, ["deno", "node"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    expect(await resolvedFlightEntry(SERVER, ["deno"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    expect(await resolvedFlightEntry(STATIC, ["deno", "node"])).toBeUndefined();
+  });
+
+  it("keeps the edge build where react-dom's Fizz build is not Node's", async () => {
+    // react-dom/server's Bun and edge builds schedule with setTimeout, as the
+    // Flight server's edge build does.
+    expect(await resolvedFlightEntry(SERVER, ["bun", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["bun", "node"])).toBe(
+      "react-server-dom-webpack/static.node",
+    );
+    expect(await resolvedFlightEntry(SERVER, ["workerd", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["edge-light"])).toBeUndefined();
+  });
+
+  // Fizz renders in the SSR environment, whose conditions are its own.
+  it("follows the SSR environment's conditions, not the RSC environment's", async () => {
+    // react-dom maps `worker` to its browser builds.
+    expect(await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"])).toBeUndefined();
+    expect(await resolvedFlightEntry(SERVER, ["workerd"], ["node"])).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+    // Without an SSR environment, the environment's own conditions decide.
+    expect(await resolvedFlightEntry(SERVER, ["node"], null)).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+  });
+
+  // As in Node dev, where vinext externalizes React for the SSR environment.
+  it("follows Node's own resolution of an externalized react-dom", async () => {
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"], "rsc", ["react-dom"]),
+    ).toBe("@vitejs/plugin-rsc/vendor/react-server-dom/server.node");
+    expect(await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"], "rsc", true)).toBe(
+      "react-server-dom-webpack/static.node",
+    );
+    // An entry's own subpath externalizes only that entry.
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"], "rsc", ["react-dom/server"]),
+    ).toBe("@vitejs/plugin-rsc/vendor/react-server-dom/server.node");
+    expect(
+      await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"], "rsc", ["react-dom/server"]),
+    ).toBeUndefined();
+    expect(
+      await resolvedFlightEntry(STATIC, ["node"], ["worker", "node"], "rsc", ["react-dom/static"]),
+    ).toBe("react-server-dom-webpack/static.node");
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["worker", "node"], "rsc", ["react-dom/static"]),
+    ).toBeUndefined();
+  });
+
+  // The server runs with the conditions Vite resolves externals with, which
+  // can name another runtime than the one building.
+  it("follows the SSR environment's externalConditions for an externalized react-dom", async () => {
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true, ["bun", "node"]),
+    ).toBeUndefined();
+    expect(
+      await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true, ["worker", "node"]),
+    ).toBeUndefined();
+    expect(
+      await resolvedFlightEntry(STATIC, ["node"], ["node"], "rsc", true, ["bun", "node"]),
+    ).toBe("react-server-dom-webpack/static.node");
+  });
+
+  // Vite's default externalConditions name no runtime, so the one building
+  // stands in for it, but an explicit target decides.
+  it("follows the building runtime only where externalConditions are Vite's default", async () => {
+    Object.defineProperty(process.versions, "bun", { value: "1.3.0", configurable: true });
+    try {
+      expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true)).toBeUndefined();
+      expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true, ["node"])).toBe(
+        "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+      );
+    } finally {
+      Reflect.deleteProperty(process.versions, "bun");
+    }
+    expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "rsc", true)).toBe(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/server.node",
+    );
+  });
+
+  // plugin-rsc imports the Flight server in the RSC environment only.
+  it("keeps an edge Flight server import in any other server environment", async () => {
+    expect(await resolvedFlightEntry(SERVER, ["node"], ["node"], "ssr")).toBeUndefined();
+    expect(await resolvedFlightEntry(STATIC, ["node"], ["node"], "custom")).toBeUndefined();
+  });
+});
 
 describe("vinext:async-hooks-stub", () => {
   const VIRTUAL_ID = "\0vinext:async-hooks-stub";
@@ -4597,6 +5225,79 @@ export default function Page() { return null; }
     expect(result).not.toBeNull();
     expect(result).not.toContain("SecretLoader");
     expect(result).not.toContain("secret-base");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("does not treat class field keys as references to same-named helpers", () => {
+    const code = `
+import { Component } from 'react';
+import { loader, query } from '../lib/db';
+
+async function getPosts() {
+  return query('select id, title from posts');
+}
+
+export async function getServerSideProps() {
+  return { props: { posts: await getPosts(), extra: await loader() } };
+}
+
+export default class PostsPage extends Component {
+  getPosts = () => this.props.posts;
+  static query;
+  accessor loader = null;
+  render() { return this.getPosts(); }
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("../lib/db");
+    expect(result).not.toContain("async function getPosts");
+    expect(result).toContain("getPosts = () => this.props.posts");
+    expect(result).toContain("static query;");
+    expect(result).toContain("accessor loader = null;");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps a helper referenced from a computed class field key", () => {
+    const code = `
+import { query } from '../lib/db';
+
+function getPosts() { return query('posts'); }
+
+export async function getServerSideProps() {
+  return { props: { posts: await getPosts() } };
+}
+
+export default class PostsPage {
+  [getPosts] = true;
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("../lib/db");
+    expect(result).toContain("function getPosts()");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("does not treat meta properties or import attribute keys as references", () => {
+    const code = `
+import data from './data.json' with { type: 'json' };
+import { meta, target, type } from '../lib/server-helpers';
+
+export async function getServerSideProps() {
+  return { props: { value: meta() + target() + type(data) } };
+}
+
+export default function Page() {
+  return import.meta.url + String(function f() { return new.target; });
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("server-helpers");
+    expect(result).not.toContain("data.json");
+    expect(result).toContain("import.meta.url");
+    expect(result).toContain("new.target");
     expect(() => parseAst(result!)).not.toThrow();
   });
 

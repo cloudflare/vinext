@@ -366,7 +366,7 @@ function formatNodeLocation(code: string, node: ESTree.Node): string {
   return `:${line}:${column}`;
 }
 
-function toManifestModuleId(root: string, resolvedId: string): string | null {
+export function toManifestModuleId(root: string, resolvedId: string): string | null {
   const cleaned = cleanResolvedId(resolvedId);
   if (!path.isAbsolute(cleaned)) return cleaned.replace(/^\/+/, "");
 

@@ -215,6 +215,45 @@ describe("client `global` define (config)", () => {
     }
   }, 15000);
 
+  it("keeps the CLI's early .env values for an envDir naming the same symlinked root", async () => {
+    const keys = ["NEXT_PUBLIC_EARLY_ENV_EXPANDED", "EARLY_ENV_SOURCE"];
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+    const originalArgv = process.argv;
+    const tmpDir = await setupTmpProject(`export default {};`);
+    const linkedRoot = `${tmpDir}-link`;
+    try {
+      await fsp.symlink(tmpDir, linkedRoot, "junction");
+      await fsp.writeFile(
+        path.join(tmpDir, ".env"),
+        "NEXT_PUBLIC_EARLY_ENV_EXPANDED=${EARLY_ENV_SOURCE:-early}\n",
+      );
+      process.argv = ["node", "/project/node_modules/vite/bin/vite.js", linkedRoot];
+      vi.resetModules();
+      const { default: freshVinext } = await import("../packages/vinext/src/index.js");
+      expect(process.env.NEXT_PUBLIC_EARLY_ENV_EXPANDED).toBe("early");
+      // vite.config runs between the two passes and may change referenced values.
+      process.env.EARLY_ENV_SOURCE = "late";
+
+      const plugins = freshVinext() as VinextPlugin[];
+      const mainPlugin = plugins.find((p) => p.name === "vinext:config");
+      await mainPlugin!.config!(
+        { root: linkedRoot, envDir: linkedRoot, build: {}, plugins: [], optimizeDeps: {} },
+        { command: "serve", mode: "development" },
+      );
+
+      expect(process.env.NEXT_PUBLIC_EARLY_ENV_EXPANDED).toBe("early");
+    } finally {
+      process.argv = originalArgv;
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+      await fsp.rm(linkedRoot, { force: true });
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("excludes .env.local from NEXT_PUBLIC defines in test mode", async () => {
     const previousFromTest = process.env.NEXT_PUBLIC_FROM_TEST_MODE;
     const previousLocalOnly = process.env.NEXT_PUBLIC_LOCAL_ONLY;

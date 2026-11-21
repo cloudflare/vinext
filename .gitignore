@@ -9,6 +9,8 @@ tests/e2e/cloudflare-workers/fixtures/client-module-with-package-type/node_modul
 tests/fixtures/cf-app-basic/node_modules/*
 !tests/fixtures/cf-app-basic/node_modules/module-identity-dependency/
 !tests/fixtures/cf-app-basic/node_modules/module-identity-dependency/**
+!tests/fixtures/cf-app-basic/node_modules/pages-only-dependency/
+!tests/fixtures/cf-app-basic/node_modules/pages-only-dependency/**
 dist/
 !packages/types/next/upstream/dist/
 !packages/types/next/upstream/dist/**
@@ -44,7 +46,6 @@ reports/
 
 # Worktrees
 .worktrees/
-.claude
 
 # Next.js reference clone (for searching source/tests)
 .nextjs-ref/
@@ -54,16 +55,10 @@ reports/
 .DS_Store
 .idea/
 .vscode/
-.claude/
+**/.claude/*
+!/.claude/skills/
 .codex/
 
-# Nix
-result
-result-*
-# The Nix `result` pattern above also matches Next.js compat fixture routes
-# named `result`; re-include them so they don't silently fall out of tracking.
-!tests/fixtures/root-layout-redirect/app/result/
-.direnv/
 .corepack/
 
 .vinext

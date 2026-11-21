@@ -6,6 +6,7 @@ import {
 } from "vinext/shims/internal/app-page-props-cache-key";
 import { ClientPageRoot } from "vinext/shims/client-page-root";
 import {
+  ErrorBoundary,
   ForbiddenBoundary,
   NotFoundBoundary,
   UnauthorizedBoundary,
@@ -15,11 +16,14 @@ import {
   hasAppPageDynamicMetadata,
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
+  resolveInterceptLayoutsBesidePage,
+  slotInterceptKeepsSourceHead,
+  type AppPagePreparedRouteHead,
   type ApplyAppPageFileBasedMetadata,
 } from "./app-page-head.js";
 import {
-  resolveHttpAccessFallbackMetadata,
-  resolveHttpAccessFallbackViewport,
+  createRouteNotFoundHeadPlanOptions,
+  recoverAppPageRouteHead,
 } from "./app-page-http-access-fallback-metadata.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {
@@ -38,6 +42,7 @@ import {
   isAppPageRouteGroupSegment,
   resolveAppPagePatternStateKey,
   resolveAppPageRouteStateKey,
+  resolveAppPageSemanticSegmentStateKey,
   type AppPageSemanticSegment,
 } from "./app-page-segment-state.js";
 import {
@@ -46,21 +51,26 @@ import {
   traceGetLayoutOrPageModule,
 } from "./app-page-tracing.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import { resolveAppPageParentHttpAccessBoundary, type AppPageParams } from "./app-page-boundary.js";
-import { resolveAppPageSpecialError, tagAppPageSlotError } from "./app-page-execution.js";
+import { resolveAppPageLayoutHttpAccessBoundary, type AppPageParams } from "./app-page-boundary.js";
+import { tagAppPagePageError, tagAppPageSlotError } from "./app-page-execution.js";
 import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
-import { matchRoutePattern } from "../routing/route-pattern.js";
+import { resolveSlotParamOverrides } from "./app-page-navigation-params.js";
+import { filterMetadataRoutesForSegments } from "./metadata-route-segments.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
-import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
 import {
-  createAppPageSearchParamsObserver,
+  createAppPageMetadataSearchParamsObserver,
   makeObservedAppPageSearchParamsThenable,
 } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
-import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
+import {
+  createAppPageRouteHeadRef,
+  resolveAppPageRouteHeadRef,
+  type AppPageRouteHeadRef,
+} from "./app-page-route-head-ref.js";
+import { resolveAppPageBranchParams } from "./app-page-params.js";
 import {
   createAppPageRenderDependency,
   invokeAppComponent,
@@ -71,6 +81,82 @@ import {
   type AppPageRenderDependency,
 } from "./app-render-dependency.js";
 import { isPromiseLike } from "../utils/promise.js";
+
+type SiblingInterceptPageOutcome =
+  | { error: unknown }
+  | { result: React.ReactNode | Promise<React.ReactNode> }
+  | { suspended: true };
+
+/**
+ * A sibling intercepting page that renders beside its intercepting layouts,
+ * as Next.js renders each segment. The source route's layouts wait for the
+ * page, so `Starter` invokes it ahead of the layouts, even when one of them
+ * never renders its children, and `Outlet` renders its result where the
+ * innermost layout renders its children.
+ */
+function createSiblingInterceptPageSlot(
+  invokePage: () => React.ReactNode | Promise<React.ReactNode>,
+  releaseRenderDependency: () => void,
+): { Outlet: AppPageComponent; Starter: AppPageComponent } {
+  let outcome: SiblingInterceptPageOutcome | null = null;
+  function Starter(): null {
+    try {
+      const result = invokePage();
+      // A layout that leaves out its children never renders the result.
+      if (isPromiseLike(result)) Promise.resolve(result).catch(() => {});
+      outcome = { result };
+    } catch (error) {
+      if (!isAppRenderSuspension(error)) {
+        outcome = { error };
+      } else {
+        // Like Next.js, which reads the page's data only inside the
+        // intercepting layouts' children, the outlet retries a use()
+        // suspension there, under their Suspense boundaries and loading UI.
+        // A layout that never renders its children never retries the page, so
+        // release its render dependency here, as loading UI does.
+        void Promise.resolve().then(releaseRenderDependency);
+        outcome = { suspended: true };
+      }
+    }
+    return null;
+  }
+  function readOutcome(
+    current: SiblingInterceptPageOutcome,
+  ): React.ReactNode | Promise<React.ReactNode> {
+    if ("error" in current) throw current.error;
+    return "result" in current ? current.result : invokePage();
+  }
+  function Outlet(): React.ReactNode | Promise<React.ReactNode> {
+    // The starter renders ahead of the layouts and never suspends, so it has
+    // settled the outcome by the time the outlet renders.
+    return outcome ? readOutcome(outcome) : invokePage();
+  }
+  return {
+    Outlet: Outlet as unknown as AppPageComponent,
+    Starter: Starter as unknown as AppPageComponent,
+  };
+}
+
+/** How many leading layouts two branches of one slot have in common. */
+function countSharedLeadingLayouts(
+  visibleLayouts: readonly unknown[] | null | undefined,
+  hiddenLayouts: readonly unknown[] | null | undefined,
+): number {
+  const visible = visibleLayouts ?? [];
+  const hidden = hiddenLayouts ?? [];
+  let count = 0;
+  while (count < visible.length && count < hidden.length && visible[count] === hidden[count]) {
+    count++;
+  }
+  return count;
+}
+
+async function AppPageInterceptMetadataOutlet(props: {
+  head: AppPageRouteHeadRef<{ interceptOutlet: Promise<null> }>;
+}): Promise<null> {
+  return resolveAppPageRouteHeadRef(props.head).interceptOutlet;
+}
+AppPageInterceptMetadataOutlet.displayName = "Vinext.InterceptMetadataOutlet";
 
 function resolveInterceptLayoutParams(
   branchSegments: readonly string[],
@@ -146,13 +232,23 @@ export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModul
   interceptNotFoundBranchSegments?: readonly string[] | null;
   interceptNotFound?: TModule | null;
   interceptNotFoundTreePosition?: number | null;
-  interceptForbidden?: TModule | null;
-  interceptForbiddenTreePosition?: number | null;
-  interceptUnauthorized?: TModule | null;
-  interceptUnauthorizedTreePosition?: number | null;
+  interceptForbiddens?: readonly (TModule | null | undefined)[] | null;
+  interceptForbiddenTreePositions?: readonly number[] | null;
+  interceptUnauthorizeds?: readonly (TModule | null | undefined)[] | null;
+  interceptUnauthorizedTreePositions?: readonly number[] | null;
+  interceptErrors?: readonly (AppPageErrorModule | null | undefined)[] | null;
+  interceptErrorTreePositions?: readonly number[] | null;
+  interceptNotFounds?: readonly (TModule | null | undefined)[] | null;
+  interceptNotFoundTreePositions?: readonly number[] | null;
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
   interceptSlotId?: string | null;
+  /**
+   * The render is of the source route beneath its intercepted target, not of
+   * the current route. A slot intercept then renders only what Next.js renders
+   * for the intercepting route, and leaves the rest for the client to keep.
+   */
+  rendersInterceptionSource?: boolean;
   interceptSlotKey?: string | null;
   interceptSourceMatchedUrl?: string | null;
   interceptSourcePageSegments?: readonly string[] | null;
@@ -177,6 +273,12 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   observePageSearchParamsAccess?: boolean;
   /** The route is `dynamic = "force-static"`, so pages read an empty query. */
   isForceStatic?: boolean;
+  /** The render can never be stored (see buildAppPageElements). */
+  isUncacheableRender?: boolean;
+  /** A loading shell without a loading boundary is the route tree (see buildAppPageElements). */
+  routeTreeOnlyPrefetchShell?: boolean;
+  /** Layouts the navigating client holds (see buildAppPageElements). */
+  mountedLayouts?: ReadonlySet<string> | null;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
   /** Whether generated metadata may stream into the response body. */
@@ -190,6 +292,12 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   placeStreamedMetadataInHead?: boolean;
   /** Whether streamed render errors must be sanitized for client transport. */
   isProduction?: boolean;
+  /**
+   * Receives the route's head once this render starts resolving it, so a
+   * special-error fallback after the render can reuse it rather than calling
+   * generateMetadata() again.
+   */
+  onHeadPrepared?: (head: AppPagePreparedRouteHead) => void;
 };
 
 export type BuildPageElementsOptions<
@@ -212,7 +320,6 @@ export type BuildPageElementsOptions<
   rootUnauthorizedModule?: TModule | null;
   /** File-based metadata routes (favicon, manifest, sitemap, etc.). */
   metadataRoutes: readonly MetadataFileRoute[];
-  layoutParamAccess?: AppLayoutParamAccessTracker;
   /**
    * Configured next.config `basePath`. Threaded through `resolveAppPageHead`
    * so file-based metadata route URLs emitted in <head> are prefixed.
@@ -223,28 +330,6 @@ export type BuildPageElementsOptions<
   /** Serialized next.config `htmlLimitedBots` regexp source. */
   htmlLimitedBots?: string;
   scriptNonce?: string;
-};
-
-type AppPageNavigationParamModule = {
-  default?: unknown;
-};
-
-type AppPageNavigationParamSlot = {
-  default?: AppPageNavigationParamModule | null;
-  page?: AppPageNavigationParamModule | null;
-  slotPatternParts?: readonly string[] | null;
-  slotParamNames?: readonly string[] | null;
-};
-
-type AppPageNavigationParamRoute = {
-  params?: readonly string[] | null;
-  slots?: Readonly<Record<string, AppPageNavigationParamSlot>> | null;
-};
-
-type AppPageNavigationParamInterceptOptions = {
-  interceptPage?: unknown;
-  interceptParams?: AppPageParams | null;
-  interceptSlotKey?: string | null;
 };
 
 /**
@@ -279,7 +364,10 @@ export async function buildPageElements<
     rootUnauthorizedModule,
     metadataRoutes,
   } = options;
-  const slotParamOverrides = resolveSlotParamOverrides(route, routePath);
+  const slotParamOverrides = resolveSlotParamOverrides(
+    route,
+    resolveSlotParamsPathname(routePath, options.pageRequest.opts),
+  );
   const {
     opts,
     searchParams,
@@ -289,9 +377,13 @@ export async function buildPageElements<
     observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
     isForceStatic = false,
+    isUncacheableRender = false,
+    routeTreeOnlyPrefetchShell = false,
+    mountedLayouts = null,
     serveStreamingMetadata,
     placeStreamedMetadataInHead = false,
     isProduction = process.env.NODE_ENV === "production",
+    onHeadPrepared,
   } = pageRequest;
 
   const pageModule: AppPageModule | null | undefined = route.page;
@@ -416,6 +508,10 @@ export async function buildPageElements<
               effectiveParams,
             ),
           ),
+          layoutsBesidePage: resolveInterceptLayoutsBesidePage(
+            opts?.interceptLayoutSegments,
+            opts?.interceptBranchSegments,
+          ),
           pageModule: effectivePageModule ?? null,
           params: effectiveParams,
           routeSegments: opts?.interceptSourcePageSegments ?? route.routeSegments ?? [],
@@ -442,19 +538,116 @@ export async function buildPageElements<
         ownerTreePosition: route.routeSegments?.length ?? 0,
       }
     : null;
+  // A slot intercept keeps the source route's head when a page comes before
+  // its slot on Next.js's findHeadInCache walk, such as the source page in
+  // `children`; otherwise the intercepting render heads the route, as a
+  // sibling intercept, which replaces `children`, always does. The server
+  // still resolves a hidden intercept's metadata, and its MetadataOutlet
+  // throws the intercept's errors, such as notFound(), inside the slot.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/reducers/find-head-in-cache.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+  const isSlotIntercept = opts?.interceptPage != null && !isSiblingIntercept;
+  const interceptSlotKey = isSlotIntercept ? (opts?.interceptSlotKey ?? null) : null;
+  const sourceParallelRouteInputs = interceptSlotKey
+    ? resolveActiveParallelRouteHeadInputs({
+        layoutTreePositions: route.layoutTreePositions,
+        params,
+        routeSegments: route.routeSegments ?? [],
+        slotParams: slotParamOverrides,
+        slots: route.slots ?? null,
+      })
+    : null;
+  const keepsSourceHead =
+    interceptSlotKey !== null &&
+    sourceParallelRouteInputs !== null &&
+    slotInterceptKeepsSourceHead({
+      interceptSlotKey,
+      route,
+      sourceParallelRoutes: sourceParallelRouteInputs,
+    });
+  const headParallelRouteInputs =
+    keepsSourceHead && sourceParallelRouteInputs
+      ? sourceParallelRouteInputs
+      : activeParallelRouteHeadInputs;
   const parallelRoutes = [
     ...(primaryParallelRouteHeadInput ? [primaryParallelRouteHeadInput.head] : []),
-    ...activeParallelRouteHeadInputs.map((input) => input.head),
+    ...headParallelRouteInputs.map((input) => input.head),
   ];
-  const metadataSearchParamsObserver = observeMetadataSearchParamsAccess
-    ? createAppPageSearchParamsObserver()
-    : undefined;
-  const headOptions = {
+  // The intercept continues its slot's branch past the layouts it shares with
+  // the visible branch, which resolves them once for both: the slot's own
+  // layout and any layout above both pages, like `@modal/feed/layout.tsx`
+  // over `@modal/feed/page.tsx` and `@modal/feed/(.)photo/page.tsx`.
+  const interceptHeadInput =
+    keepsSourceHead && interceptSlotKey
+      ? activeParallelRouteHeadInputs.find((input) => input.slotKey === interceptSlotKey)
+      : undefined;
+  const interceptSlotIndex = interceptHeadInput
+    ? headParallelRouteInputs.findIndex((input) => input.slotKey === interceptSlotKey)
+    : -1;
+  const hiddenParallelRoutes = interceptHeadInput
+    ? [
+        {
+          parallelRouteIndex:
+            interceptSlotIndex === -1
+              ? -1
+              : interceptSlotIndex + (primaryParallelRouteHeadInput ? 1 : 0),
+          route: interceptHeadInput.head,
+          sharedLayoutCount:
+            interceptSlotIndex === -1
+              ? 0
+              : countSharedLeadingLayouts(
+                  headParallelRouteInputs[interceptSlotIndex].head.layoutModules,
+                  interceptHeadInput.head.layoutModules,
+                ),
+        },
+      ]
+    : null;
+  // A slot intercept that heads the route still throws its own metadata
+  // errors in its page's segment, inside the slot, as Next.js's MetadataOutlet
+  // does in the subtree a navigation renders.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+  const outletSlotIndex =
+    interceptSlotKey !== null && !keepsSourceHead
+      ? headParallelRouteInputs.findIndex((input) => input.slotKey === interceptSlotKey)
+      : -1;
+  const outletParallelRouteIndex =
+    outletSlotIndex === -1 ? null : outletSlotIndex + (primaryParallelRouteHeadInput ? 1 : 0);
+  // Beneath a slot intercept, Next.js renders the intercepting route's tree:
+  // the layouts down to the slot's owner and the intercepting branch, with a
+  // default in every other slot. The client keeps the source page and the
+  // other slots it already shows, and the source's head when that heads the
+  // route, so none of them runs here, under the intercepted target's request.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/ppr-navigations.ts
+  const retainedSourceInterceptInput =
+    opts?.rendersInterceptionSource === true && interceptSlotKey !== null
+      ? activeParallelRouteHeadInputs.find((input) => input.slotKey === interceptSlotKey)
+      : undefined;
+  const retainedSourceLayoutCount = (() => {
+    if (!retainedSourceInterceptInput || !interceptSlotKey) return null;
+    const layoutIndex = route.slots?.[interceptSlotKey]?.layoutIndex;
+    if (layoutIndex === undefined) return null;
+    return (layoutIndex >= 0 ? layoutIndex : route.layouts.length - 1) + 1;
+  })();
+  if (
+    opts?.rendersInterceptionSource === true &&
+    isSlotIntercept &&
+    retainedSourceLayoutCount === null
+  ) {
+    throw new Error(
+      `[vinext] Missing the intercepted slot ${String(interceptSlotKey)} on ${route.pattern}`,
+    );
+  }
+  const metadataSearchParamsObserver = createAppPageMetadataSearchParamsObserver(
+    observeMetadataSearchParamsAccess,
+  );
+  const sourceHeadOptions = {
     applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
+    hiddenParallelRoutes,
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
     metadataRoutes,
+    outletParallelRouteIndex,
     pageModule: isSiblingIntercept ? null : (effectivePageModule ?? null),
     parallelRoutes,
     params: effectiveParams,
@@ -463,6 +656,47 @@ export async function buildPageElements<
     searchParams,
     searchParamsObserver: metadataSearchParamsObserver,
   };
+  // The intercepting tree's head reads the files of the segments down to the
+  // slot's owner and of the intercepted slot's folders above the interception
+  // marker, which the intercepting tree renders, not those of the segments and
+  // the other slots the client keeps.
+  // The folder holding the slot's directory owns it, which can sit below the
+  // layout that renders it, as `app/(group)/@modal` does beneath `app/layout`.
+  const retainedSourceOwnerTreePosition =
+    retainedSourceLayoutCount === null
+      ? undefined
+      : ((interceptSlotKey ? route.slots?.[interceptSlotKey]?.ownerTreePosition : null) ??
+        route.layoutTreePositions?.[retainedSourceLayoutCount - 1]);
+  const headMetadataRoutes =
+    retainedSourceInterceptInput &&
+    interceptSlotKey &&
+    retainedSourceOwnerTreePosition !== undefined
+      ? filterMetadataRoutesForSegments(
+          metadataRoutes,
+          resolveInterceptSlotHeadSegments(
+            (route.routeSegments ?? []).slice(0, retainedSourceOwnerTreePosition),
+            `@${route.slots?.[interceptSlotKey]?.name ?? interceptSlotKey}`,
+            opts?.interceptSourcePageSegments,
+          ),
+        )
+      : metadataRoutes;
+  // The intercepting page's own errors still reach its outlet in the slot.
+  const headOptions =
+    retainedSourceInterceptInput && retainedSourceLayoutCount !== null
+      ? {
+          ...sourceHeadOptions,
+          metadataRoutes: headMetadataRoutes,
+          hiddenParallelRoutes: null,
+          layoutModules: route.layouts.slice(0, retainedSourceLayoutCount),
+          layoutTreePositions:
+            route.layoutTreePositions?.slice(0, retainedSourceLayoutCount) ?? null,
+          outletParallelRouteIndex: 0,
+          pageModule: null,
+          parallelRoutes: [retainedSourceInterceptInput.head],
+        }
+      : sourceHeadOptions;
+  const retainsInterceptionSource = headOptions !== sourceHeadOptions;
+  const retainsSourceHead = retainsInterceptionSource && keepsSourceHead;
   const hasDynamicMetadata = hasAppPageDynamicMetadata(headOptions);
   const { pageSearchParams } = collectAppPageSearchParams(searchParams);
   const streamGeneratedHead =
@@ -474,61 +708,6 @@ export async function buildPageElements<
   const metadataPlacement =
     hasDynamicMetadata && streamGeneratedHead && !placeStreamedMetadataInHead ? "body" : "head";
 
-  const resolveNotFoundFallbackPlanOptions = () => {
-    const routeBoundaryModule = route.notFound;
-    const parentBoundary = resolveAppPageParentHttpAccessBoundary({
-      layoutIndex: route.layouts.length,
-      rootForbiddenModule,
-      rootNotFoundModule,
-      rootUnauthorizedModule,
-      routeForbiddenModules: route.forbiddens,
-      routeNotFoundModules: route.notFounds,
-      routeUnauthorizedModules: route.unauthorizeds,
-      statusCode: 404,
-    });
-    const boundaryModule = routeBoundaryModule ?? parentBoundary.module;
-    const boundaryTreePosition = routeBoundaryModule
-      ? route.notFoundTreePosition
-      : parentBoundary.layoutIndex === null
-        ? null
-        : route.layoutTreePositions?.[parentBoundary.layoutIndex];
-    const boundaryParams =
-      boundaryModule && boundaryTreePosition != null
-        ? resolveAppPageSegmentParams(
-            route.routeSegments ?? [],
-            boundaryTreePosition,
-            effectiveParams,
-          )
-        : {};
-    return {
-      boundaryModule,
-      boundaryParams,
-      boundaryRouteSegments: (route.routeSegments ?? []).slice(0, boundaryTreePosition ?? 0),
-      errorConvention: "not-found" as const,
-      layoutModules: route.layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      parallelBranches: activeParallelRouteHeadInputs,
-      params: effectiveParams,
-      primaryParallelBranch: primaryParallelRouteHeadInput,
-      routeSegments: route.routeSegments ?? null,
-    };
-  };
-
-  const resolveMetadataErrorTags = async (error: unknown) => {
-    const specialError = resolveAppPageSpecialError(error);
-    if (specialError?.kind !== "http-access-fallback") return null;
-
-    // Next resolves the not-found metadata convention for every HTTP access
-    // fallback. Errors from that fallback tag branch are suppressed because
-    // the original digest is still rethrown by the paired outlet.
-    return resolveHttpAccessFallbackMetadata({
-      applyFileBasedMetadata: options.applyFileBasedMetadata,
-      basePath: options.basePath ?? "",
-      ...resolveNotFoundFallbackPlanOptions(),
-      metadataRoutes,
-      routePath: route.pattern,
-    }).catch(() => null);
-  };
   const toClientError = (error: unknown) =>
     isProduction ? sanitizeErrorForClient(error, "production") : error;
   // generateMetadata() and generateViewport() run when Flight first renders the
@@ -537,28 +716,56 @@ export async function buildPageElements<
   // tags and its error outlet share one resolution, and the cache() loaders it
   // calls share their values with the page. A separate render (a PPR warm-up,
   // a revalidation) gets its own.
-  const resolveHead = cache((): AppPageRouteHead => {
+  const resolveHead = cache((): AppPageRouteHead & { interceptOutlet: Promise<null> } => {
     const preparedHead = prepareAppPageHead(headOptions);
+    // Errors from the not-found fallback are suppressed because the original
+    // digest is still rethrown by the paired outlet.
+    const recoveredHead = recoverAppPageRouteHead(preparedHead, {
+      applyFileBasedMetadata: options.applyFileBasedMetadata,
+      basePath: options.basePath ?? "",
+      metadataRoutes: headMetadataRoutes,
+      // The not-found head recovers from the same branches as the visible
+      // head: the source tree's, when a slot intercept keeps the source head.
+      resolvePlanOptions: () =>
+        createRouteNotFoundHeadPlanOptions(
+          retainedSourceInterceptInput && retainedSourceLayoutCount !== null
+            ? {
+                parallelBranches: [retainedSourceInterceptInput],
+                params: effectiveParams,
+                primaryParallelBranch: null,
+                rootNotFoundModule,
+                // Nor do the not-found files of the segments the client keeps.
+                route: {
+                  ...route,
+                  ...resolveRetainedSourceNotFound(route, retainedSourceOwnerTreePosition),
+                  layouts: headOptions.layoutModules,
+                  layoutTreePositions: headOptions.layoutTreePositions,
+                  notFounds: route.notFounds?.slice(0, retainedSourceLayoutCount),
+                },
+              }
+            : {
+                parallelBranches: headParallelRouteInputs,
+                params: effectiveParams,
+                primaryParallelBranch: primaryParallelRouteHeadInput,
+                rootNotFoundModule,
+                route,
+              },
+        ),
+      routePath: route.pattern,
+    });
+    onHeadPrepared?.({ ...recoveredHead, metadataPlacement });
     // Late navigation signals reach the client through the outlet's Flight
     // digest, inside the route's boundaries.
-    const outlet = Promise.all([preparedHead.metadata, preparedHead.viewport]).then(
-      () => null,
-      (error: unknown) => {
-        throw toClientError(error);
-      },
-    );
+    const outlet = preparedHead.routeErrors.then(null, (error: unknown) => {
+      throw toClientError(error);
+    });
     void outlet.catch(() => null);
-    return {
-      metadata: preparedHead.metadata.catch(resolveMetadataErrorTags),
-      outlet,
-      viewport: preparedHead.viewport.catch((error: unknown) =>
-        resolveAppPageSpecialError(error)?.kind === "http-access-fallback"
-          ? resolveHttpAccessFallbackViewport(resolveNotFoundFallbackPlanOptions()).catch(
-              () => ({}),
-            )
-          : {},
-      ),
-    };
+    // A slot intercept's own signals reach its outlet inside the slot instead.
+    const interceptOutlet = preparedHead.hiddenErrors.then(null, (error: unknown) => {
+      throw toClientError(error);
+    });
+    void interceptOutlet.catch(() => null);
+    return { ...recoveredHead, interceptOutlet, outlet };
   });
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
@@ -581,14 +788,16 @@ export async function buildPageElements<
   const hasEmptyClientPageSearchParams =
     isForceStatic || (isProduction && process.env.__NEXT_CONFIG_OUTPUT === "export");
   const pageRenderDependency =
-    EffectivePageComponent && !isReactOwnedAppComponent(EffectivePageComponent)
+    !retainsInterceptionSource &&
+    EffectivePageComponent &&
+    !isReactOwnedAppComponent(EffectivePageComponent)
       ? createAppPageRenderDependency()
       : null;
   const createPageElement = (
     PageComponent: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
     renderDependency?: AppPageRenderDependency | null,
-    slotLayoutIndex?: number,
+    tagError?: (error: unknown) => unknown,
   ) => {
     if (searchParams && isAppClientReference(PageComponent)) {
       // Like Next.js's ClientPageRoot, a client page gets `searchParams` where
@@ -619,6 +828,23 @@ export async function buildPageElements<
       return createElement(PageComponent, withUseCachePageMarker(PageComponent, invocationProps));
     }
 
+    return createElement(
+      createPageInvoker(
+        PageComponent,
+        props,
+        renderDependency,
+        tagError,
+      ) as unknown as AppPageComponent,
+    );
+  };
+  // A server page's invocation, which releases its render dependency and tags
+  // what the page throws with where it renders.
+  const createPageInvoker = (
+    PageComponent: AppPageComponent,
+    props: Readonly<Record<string, unknown>>,
+    renderDependency?: AppPageRenderDependency | null,
+    tagError?: (error: unknown) => unknown,
+  ) => {
     const PageInvoker = () => {
       const invocationProps: Record<string, unknown> = { ...props };
       if (searchParams) {
@@ -633,9 +859,7 @@ export async function buildPageElements<
         const result = invokeAppComponent(
           PageComponent,
           withUseCachePageMarker(PageComponent, invocationProps),
-          slotLayoutIndex === undefined
-            ? undefined
-            : (error) => tagAppPageSlotError(error, slotLayoutIndex),
+          tagError,
         );
         if (isPromiseLike(result)) {
           if (renderDependency) {
@@ -654,10 +878,10 @@ export async function buildPageElements<
                     renderDependency.resultDependencies,
                   )
                 : (resolvedResult as React.ReactNode),
-            slotLayoutIndex === undefined
+            tagError === undefined
               ? undefined
               : (error: unknown) => {
-                  throw tagAppPageSlotError(error, slotLayoutIndex);
+                  throw tagError(error);
                 },
           );
         }
@@ -682,16 +906,29 @@ export async function buildPageElements<
           throw error;
         }
         renderDependency?.release();
-        throw slotLayoutIndex === undefined ? error : tagAppPageSlotError(error, slotLayoutIndex);
+        throw tagError === undefined ? error : tagError(error);
       }
     };
-    return createElement(PageInvoker as unknown as AppPageComponent);
+    return PageInvoker;
   };
   const pageSearchParamsThenable = searchParams ? makeThenableParams(pageSearchParams) : undefined;
 
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 
-  const slotOverrides = buildSlotOverrides(route, params, routePath, opts);
+  // Next.js renders a page's MetadataOutlet in the page's own segment, so a
+  // slot intercept's generateMetadata() signal reaches the intercepting route's
+  // boundaries inside the slot, and the source page stays beside it.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+  const interceptMetadataOutlet =
+    headOptions.hiddenParallelRoutes || headOptions.outletParallelRouteIndex !== null
+      ? (() => {
+          const outlet = createElement(AppPageInterceptMetadataOutlet, {
+            head: createAppPageRouteHeadRef(resolveHead),
+          });
+          return streamGeneratedHead ? createElement(Suspense, { fallback: null }, outlet) : outlet;
+        })()
+      : null;
+  const slotOverrides = buildSlotOverrides(route, params, routePath, opts, interceptMetadataOutlet);
   // For sibling intercepts, wrap the intercepting page in any layouts that
   // live under the interception marker directory (interceptLayouts). In Next.js
   // the intercepting route's segment layouts wrap the intercepting page; the
@@ -705,10 +942,19 @@ export async function buildPageElements<
     metadataOutlet: React.ReactNode,
   ): ReturnType<typeof createElement> | null => {
     if (!isSiblingIntercept || !EffectivePageComponent) return null;
+    const pageSlot =
+      pageRenderDependency && opts?.interceptLayouts?.some((layoutModule) => layoutModule?.default)
+        ? createSiblingInterceptPageSlot(
+            createPageInvoker(EffectivePageComponent, pageProps, pageRenderDependency),
+            pageRenderDependency.release,
+          )
+        : null;
     let element: ReturnType<typeof createElement> = createElement(
       Fragment,
       null,
-      createPageElement(EffectivePageComponent, pageProps, pageRenderDependency),
+      pageSlot
+        ? createElement(pageSlot.Outlet)
+        : createPageElement(EffectivePageComponent, pageProps, pageRenderDependency),
       metadataOutlet,
     );
 
@@ -726,24 +972,52 @@ export async function buildPageElements<
       const treePosition = opts?.interceptLoadingTreePositions?.[index];
       if (treePosition !== undefined) loadingIndexesByTreePosition.set(treePosition, index);
     }
-    // The intercepting route's nearest not-found.tsx, forbidden.tsx and
-    // unauthorized.tsx belong to its own segments, as in Next.js, so they
-    // catch the intercepting page's signals inside that segment's layout,
-    // before the source route's boundaries. Innermost first, in Next.js's
-    // per-segment order: NotFound, then Forbidden, then Unauthorized.
+    // Each not-found.tsx in the intercepting route, and its nearest
+    // forbidden.tsx and unauthorized.tsx, belong to their own segments, as in
+    // Next.js, so they catch the intercepting page's signals inside that
+    // segment's layout, before the source route's boundaries. Innermost first,
+    // in Next.js's per-segment order: NotFound, then Forbidden, then
+    // Unauthorized.
+    const notFoundsByTreePosition = new Map<number, NonNullable<TModule["default"]>>();
+    for (const [index, notFoundModule] of (opts?.interceptNotFounds ?? []).entries()) {
+      const treePosition = opts?.interceptNotFoundTreePositions?.[index];
+      if (notFoundModule?.default && treePosition !== undefined) {
+        notFoundsByTreePosition.set(treePosition, notFoundModule.default);
+      }
+    }
     const accessBoundaries = [
-      [opts?.interceptNotFound, opts?.interceptNotFoundTreePosition, NotFoundBoundary],
-      [opts?.interceptForbidden, opts?.interceptForbiddenTreePosition, ForbiddenBoundary],
-      [opts?.interceptUnauthorized, opts?.interceptUnauthorizedTreePosition, UnauthorizedBoundary],
-    ] as const;
+      ...(opts?.interceptForbiddens ?? []).map(
+        (module, index) =>
+          [module, opts?.interceptForbiddenTreePositions?.[index], ForbiddenBoundary] as const,
+      ),
+      ...(opts?.interceptUnauthorizeds ?? []).map(
+        (module, index) =>
+          [
+            module,
+            opts?.interceptUnauthorizedTreePositions?.[index],
+            UnauthorizedBoundary,
+          ] as const,
+      ),
+    ];
     const accessBoundaryTreePositions = accessBoundaries.flatMap(([module, treePosition]) =>
       module?.default && treePosition != null ? [treePosition] : [],
     );
+    // Its error.tsx files, outside those, catch its page's errors and its
+    // generateMetadata() errors inside their own segments too.
+    const errorsByTreePosition = new Map<number, NonNullable<AppPageErrorModule["default"]>>();
+    for (const [index, errorModule] of (opts?.interceptErrors ?? []).entries()) {
+      const treePosition = opts?.interceptErrorTreePositions?.[index];
+      if (errorModule?.default && treePosition !== undefined) {
+        errorsByTreePosition.set(treePosition, errorModule.default);
+      }
+    }
     const treePositions = Array.from(
       new Set([
         ...layoutIndexesByTreePosition.keys(),
         ...loadingIndexesByTreePosition.keys(),
         ...accessBoundaryTreePositions,
+        ...notFoundsByTreePosition.keys(),
+        ...errorsByTreePosition.keys(),
       ]),
     ).sort((left, right) => left - right);
 
@@ -755,11 +1029,27 @@ export async function buildPageElements<
       if (LoadingComponent) {
         element = createElement(Suspense, { fallback: createElement(LoadingComponent) }, element);
       }
+      const NotFoundComponent = notFoundsByTreePosition.get(treePosition);
+      if (NotFoundComponent) {
+        element = createElement(NotFoundBoundary, {
+          fallback: createElement(NotFoundComponent),
+          // oxlint-disable-next-line react/no-children-prop
+          children: element,
+        });
+      }
       for (const [module, boundaryTreePosition, AccessBoundary] of accessBoundaries) {
         const FallbackComponent = module?.default;
         if (!FallbackComponent || boundaryTreePosition !== treePosition) continue;
         element = createElement(AccessBoundary, {
           fallback: createElement(FallbackComponent),
+          // oxlint-disable-next-line react/no-children-prop
+          children: element,
+        });
+      }
+      const ErrorComponent = errorsByTreePosition.get(treePosition);
+      if (ErrorComponent) {
+        element = createElement(ErrorBoundary, {
+          fallback: ErrorComponent,
           // oxlint-disable-next-line react/no-children-prop
           children: element,
         });
@@ -793,7 +1083,9 @@ export async function buildPageElements<
         );
       }
     }
-    return element;
+    return pageSlot
+      ? createElement(Fragment, null, createElement(pageSlot.Starter), element)
+      : element;
   };
 
   return traceCreateComponentTree(() => {
@@ -802,13 +1094,25 @@ export async function buildPageElements<
     }
     return buildAppPageElements({
       element:
-        !isSiblingIntercept && EffectivePageComponent
-          ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
+        !isSiblingIntercept && !retainsInterceptionSource && EffectivePageComponent
+          ? createPageElement(
+              EffectivePageComponent,
+              pageProps,
+              pageRenderDependency,
+              tagAppPagePageError,
+            )
           : null,
       renderElementWithMetadataOutlet:
         isSiblingIntercept && EffectivePageComponent ? createSiblingInterceptElement : null,
-      createPageElement(component, props, slotLayoutIndex) {
-        return createPageElement(component, props, null, slotLayoutIndex);
+      createPageElement(component, props, slotLayoutIndex, slotNotFoundBoundary) {
+        return createPageElement(
+          component,
+          props,
+          null,
+          slotLayoutIndex === undefined
+            ? undefined
+            : (error) => tagAppPageSlotError(error, slotLayoutIndex, slotNotFoundBoundary),
+        );
       },
       // Fall back to vinext's built-in default global error module so that
       // uncaught client render errors are caught by the route-level
@@ -817,8 +1121,17 @@ export async function buildPageElements<
       globalErrorModule:
         globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
       isRscRequest,
+      isUncacheableRender,
+      routeTreeOnlyPrefetchShell,
       interceptionId: opts?.interceptionId ?? null,
-      layoutParamAccess: options.layoutParamAccess,
+      interceptionSourceRetention: retainsInterceptionSource
+        ? {
+            ownerTreePosition: retainedSourceOwnerTreePosition ?? null,
+            retainsHead: retainsSourceHead,
+            retainsPage: EffectivePageComponent != null,
+          }
+        : null,
+      mountedLayouts,
       mountedSlotIds,
       makeThenableParams,
       matchedParams: params,
@@ -832,6 +1145,15 @@ export async function buildPageElements<
       routePath,
       semanticPageIdentity,
       semanticInterceptionTargetRouteId: opts?.interceptTargetRouteGraphId ?? null,
+      siblingInterceptSegmentKeys: isSiblingIntercept
+        ? resolveSiblingInterceptSegmentKeys(
+            sourcePageSegments,
+            route.routeSegments,
+            opts,
+            params,
+            effectiveParams,
+          )
+        : null,
       sourcePageSegments,
       rootNotFoundModule: rootNotFoundModule ?? null,
       rootForbiddenModule: rootForbiddenModule ?? null,
@@ -846,6 +1168,28 @@ export async function buildPageElements<
 }
 
 /**
+ * The pathname a route's slots take their own params from. Beneath a slot
+ * intercept the route renders for the source, under the target's URL, and the
+ * client keeps the source's other slots as the source's own render gave them,
+ * with params from the source's pathname. It stays as the client sent it, the
+ * form the payload's route identity takes too.
+ */
+function resolveSlotParamsPathname(
+  routePath: string,
+  opts: AppPageInterceptOptions | null | undefined,
+): string {
+  if (
+    opts?.rendersInterceptionSource !== true ||
+    !opts.interceptSourceMatchedUrl ||
+    !opts.interceptSlotKey ||
+    opts.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY
+  ) {
+    return routePath;
+  }
+  return opts.interceptSourceMatchedUrl.split("?")[0];
+}
+
+/**
  * Build the per-request `slotOverrides` map. Combines:
  *  - Interception overrides (existing behavior — swap in the intercepting page
  *    and its layouts when the request is intercepted into this slot).
@@ -855,15 +1199,16 @@ export async function buildPageElements<
  *    slot-scoped params, which `app-page-route-wiring` then hands to the
  *    slot page instead of the route's matched params.
  *
- * `routePath` is the already-normalized request pathname (basePath stripped,
- * RSC suffix removed). Re-parsing `request.url` here would re-introduce the
- * basePath and silently break the match for any app that configures one.
+ * `routePath` is the already-normalized request pathname (basePath stripped).
+ * Re-parsing `request.url` here would re-introduce the basePath and silently
+ * break the match for any app that configures one.
  */
 function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends AppPageErrorModule>(
   route: AppPageBuildRoute<TModule, TErrorModule>,
   routeParams: AppPageParams,
   routePath: string,
   opts?: AppPageInterceptOptions<TModule> | null,
+  interceptMetadataOutlet?: React.ReactNode,
 ): Readonly<Record<string, AppPageSlotOverride<TModule>>> | null {
   const overrides: Record<string, AppPageSlotOverride<TModule>> = {};
 
@@ -879,26 +1224,123 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
         opts.interceptSourcePageSegments,
         opts.interceptSlotKey,
       ),
+      forbiddenModules: opts.interceptForbiddens ?? null,
+      forbiddenTreePositions: opts.interceptForbiddenTreePositions ?? null,
       layoutModules: opts.interceptLayouts || null,
       layoutSegments: opts.interceptLayoutSegments ?? null,
       loadingModules: opts.interceptLoadings || null,
       loadingTreePositions: opts.interceptLoadingTreePositions ?? null,
+      metadataOutlet: interceptMetadataOutlet ?? null,
+      notFoundModules: opts.interceptNotFounds ?? null,
+      notFoundTreePositions: opts.interceptNotFoundTreePositions ?? null,
       pageModule: opts.interceptPage,
       params: opts.interceptParams || routeParams,
       routeSegments: resolveInterceptedSlotSegments(
         opts.interceptSourcePageSegments,
         opts.interceptSlotKey,
       ),
+      unauthorizedModules: opts.interceptUnauthorizeds ?? null,
+      unauthorizedTreePositions: opts.interceptUnauthorizedTreePositions ?? null,
+      errorModules: opts.interceptErrors ?? null,
+      errorTreePositions: opts.interceptErrorTreePositions ?? null,
     };
   }
 
-  const slotParamOverrides = resolveSlotParamOverrides(route, routePath);
+  const slotParamOverrides = resolveSlotParamOverrides(
+    route,
+    resolveSlotParamsPathname(routePath, opts),
+  );
   for (const [slotKey, params] of Object.entries(slotParamOverrides ?? {})) {
     const existing = overrides[slotKey];
     overrides[slotKey] = existing ? { ...existing, params: existing.params ?? params } : { params };
   }
 
   return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+/**
+ * The state key of each segment a sibling intercept's levels retain, from the
+ * app root down to the segment its element renders, so its Activity lists key
+ * like Next.js's for the intercepting route: the marker segment carries its
+ * marker, and a dynamic marker segment keys per value. The intercepting
+ * route's own layouts and boundaries render inside its page element, so the
+ * levels stop above the first of them.
+ */
+export function resolveSiblingInterceptSegmentKeys(
+  sourcePageSegments: readonly string[] | null | undefined,
+  routeSegments: readonly string[] | null | undefined,
+  opts: AppPageInterceptOptions | null | undefined,
+  routeParams: AppPageParams,
+  interceptParams: AppPageParams,
+): readonly string[] | null {
+  if (!sourcePageSegments || !routeSegments) return null;
+  const markerIndex = sourcePageSegments.findIndex((segment) =>
+    APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.some(({ prefix }) => segment.startsWith(prefix)),
+  );
+  if (markerIndex < 0) return null;
+  // The levels above the marker are the rendered route's own spine. Only key
+  // them by the intercepting route when that spine is exactly the marker's
+  // parent directory; any other source keeps its route template keys.
+  if (
+    routeSegments.length !== markerIndex ||
+    routeSegments.some((segment, index) => segment !== sourcePageSegments[index])
+  ) {
+    return null;
+  }
+  // Intercept tree positions count from the directory that owns the marker.
+  const branchTreePositions = [
+    ...(opts?.interceptLayouts ?? []).flatMap((layoutModule, index) =>
+      layoutModule?.default ? [opts?.interceptLayoutSegments?.[index]?.length ?? 0] : [],
+    ),
+    ...(opts?.interceptLoadingTreePositions ?? []),
+    ...(opts?.interceptNotFoundTreePositions ?? []),
+    ...(opts?.interceptForbiddenTreePositions ?? []),
+    ...(opts?.interceptUnauthorizedTreePositions ?? []),
+    ...(opts?.interceptErrorTreePositions ?? []),
+  ];
+  const segmentCount = Math.max(
+    markerIndex,
+    Math.min(sourcePageSegments.length, markerIndex + Math.min(...branchTreePositions) - 1),
+  );
+  return sourcePageSegments.slice(0, segmentCount).map((segment, index) => {
+    const marker =
+      index === markerIndex
+        ? APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.find(({ prefix }) => segment.startsWith(prefix))
+        : undefined;
+    return resolveAppPageSemanticSegmentStateKey(
+      {
+        marker: marker?.prefix ?? null,
+        paramSource: "route",
+        segment: marker ? segment.slice(marker.prefix.length) : segment,
+      },
+      index < markerIndex ? routeParams : interceptParams,
+    );
+  });
+}
+
+/**
+ * The segments whose metadata files head a slot intercept: the owner's, then
+ * the slot's folders down to the interception marker. The intercepting page's
+ * own folders are left out.
+ */
+function resolveInterceptSlotHeadSegments(
+  ownerSegments: readonly string[],
+  slotSegment: string,
+  interceptSourcePageSegments: readonly string[] | null | undefined,
+): string[] {
+  const markerIndex =
+    interceptSourcePageSegments?.findIndex((segment) =>
+      APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.some(({ prefix }) => segment.startsWith(prefix)),
+    ) ?? -1;
+  if (
+    !interceptSourcePageSegments ||
+    markerIndex <= ownerSegments.length ||
+    interceptSourcePageSegments[ownerSegments.length] !== slotSegment ||
+    ownerSegments.some((segment, index) => segment !== interceptSourcePageSegments[index])
+  ) {
+    return [...ownerSegments, slotSegment];
+  }
+  return interceptSourcePageSegments.slice(0, markerIndex);
 }
 
 export const APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS = [
@@ -1032,94 +1474,31 @@ export function resolveInterceptedSlotSegments(
   return routeSegments;
 }
 
-export function resolveSlotParamOverrides(
-  route: AppPageNavigationParamRoute,
-  routePath: string,
-): Readonly<Record<string, AppPageParams>> | null {
-  const overrides: Record<string, AppPageParams> = {};
-  const slots = route.slots;
-  if (slots) {
-    let urlParts: string[] | null = null;
-    const routeParamSet = collectParamNameSet(route.params);
-    for (const [slotKey, slot] of Object.entries(slots)) {
-      const patternParts = slot.slotPatternParts;
-      const paramNames = slot.slotParamNames;
-      if (!patternParts || patternParts.length === 0) continue;
-      // Skip when every slot param is already a route param — the route's
-      // matched params already carry the values the slot page expects.
-      // Empty `paramNames` (slot pattern has no dynamic markers) also skips:
-      // there's nothing to extract, so the route's matched params suffice.
-      if (paramNames && paramNames.every((name) => routeParamSet.has(name))) continue;
-
-      if (urlParts === null) {
-        urlParts = routePath.split("/").filter(Boolean);
-      }
-      const matched = matchRoutePattern(urlParts, patternParts);
-      if (!matched) continue;
-
-      overrides[slotKey] = matched;
-    }
+/**
+ * The not-found file nearest the intercepted slot's owner, at or above it: the
+ * route's own when it sits there, or else the deepest segment's, which can sit
+ * on a segment without a layout.
+ */
+function resolveRetainedSourceNotFound<TModule>(
+  route: {
+    notFound?: TModule | null;
+    notFoundTreePosition?: number | null;
+    segmentNotFounds?: readonly (TModule | null | undefined)[] | null;
+    segmentNotFoundTreePositions?: readonly number[] | null;
+  },
+  ownerTreePosition: number | undefined,
+): { notFound: TModule | null; notFoundTreePosition: number | null } {
+  if (ownerTreePosition === undefined) return { notFound: null, notFoundTreePosition: null };
+  if (route.notFoundTreePosition != null && route.notFoundTreePosition <= ownerTreePosition) {
+    return { notFound: route.notFound ?? null, notFoundTreePosition: route.notFoundTreePosition };
   }
-
-  return Object.keys(overrides).length > 0 ? overrides : null;
-}
-
-function mergeAppPageParams(target: AppPageParams, source: AppPageParams): void {
-  for (const [key, value] of Object.entries(source)) {
-    target[key] = value;
-  }
-}
-
-function isDefaultExportModule(module: unknown): module is AppPageNavigationParamModule {
-  return typeof module === "object" && module !== null;
-}
-
-function hasDefaultExport(module: unknown): boolean {
-  if (!isDefaultExportModule(module)) return false;
-  return module?.default !== null && module?.default !== undefined;
-}
-
-export function resolveAppPageNavigationParams(
-  route: AppPageNavigationParamRoute,
-  routeParams: AppPageParams,
-  routePath: string,
-  opts?: AppPageNavigationParamInterceptOptions | null,
-): AppPageParams {
-  const navigationParams: AppPageParams = { ...routeParams };
-  const slotParamOverrides = resolveSlotParamOverrides(route, routePath);
-
-  for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
-    const isInterceptedSlot =
-      opts?.interceptSlotKey === slotKey &&
-      opts.interceptSlotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
-      hasDefaultExport(opts.interceptPage);
-    // A slot is considered active here if it exports a default component (page or fallback).
-    // This is distinct from the optimistic-routing path (which keys off manifest bindings)
-    // and the route graph (which keys off pagePath existence), but functionally equivalent
-    // for param extraction today since default-only slots do not specify pattern parts.
-    if (!isInterceptedSlot && !hasDefaultExport(slot.page) && !hasDefaultExport(slot.default)) {
-      continue;
-    }
-
-    mergeAppPageParams(
-      navigationParams,
-      isInterceptedSlot
-        ? (opts?.interceptParams ?? routeParams)
-        : // Fallback to routeParams when slotParamOverrides missing — the slot
-          // is active but contributes no new params (all its param names are
-          // already route params, or the slot has no pattern parts). Merging
-          // routeParams here is a deliberate no-op that keeps the loop uniform.
-          (slotParamOverrides?.[slotKey] ?? routeParams),
-    );
-  }
-
-  return navigationParams;
-}
-
-function collectParamNameSet(params: readonly string[] | undefined | null): Set<string> {
-  const set = new Set<string>();
-  if (params) {
-    for (const name of params) set.add(name);
-  }
-  return set;
+  const boundary = resolveAppPageLayoutHttpAccessBoundary({
+    boundaryModules: route.segmentNotFounds ?? [],
+    boundaryTreePositions: route.segmentNotFoundTreePositions ?? [],
+    layoutTreePosition: ownerTreePosition + 1,
+  });
+  return {
+    notFound: boundary?.module ?? null,
+    notFoundTreePosition: boundary?.treePosition ?? null,
+  };
 }

@@ -16,10 +16,41 @@ test("statically prerendered useSearchParams reads the browser query after hydra
   expect(rscRequests).toBe(0);
 });
 
-test("force-static hydration keeps search params empty", async ({ page }) => {
+test("force-static useSearchParams is empty in SSR and reads the browser query after hydration", async ({
+  page,
+  request,
+}) => {
+  // Next.js skips "should have empty search params on force-static" in
+  // app-static.test.ts. Its browser derives useSearchParams from the URL
+  // (canonicalUrl in app-router.tsx), so it reads the query once hydrated.
+  // force-static embeds an empty query in the server-rendered HTML...
+  const html = await (await request.get("/static-test?value=hidden")).text();
+  expect(html).toMatch(/data-testid="force-static-search-params"[^>]*>N\/A</);
+
+  // ...and React switches to the live browser URL snapshot once hydrated,
+  // without a hydration mismatch.
+  const errors = collectPageErrors(page);
   await page.goto("/static-test?value=hidden");
   await waitForAppRouterHydration(page);
-  await expect(page.getByTestId("force-static-search-params")).toHaveText("N/A");
+  await expect(page.getByTestId("force-static-search-params")).toHaveText("hidden");
+  expect(errors).toEqual([]);
+});
+
+test("useSearchParams keeps the hydrated object when the browser query matches", async ({
+  page,
+}) => {
+  // A new object with the same query would re-run effects keyed on it.
+  await page.goto("/static-test");
+  await waitForAppRouterHydration(page);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50))),
+      ),
+  );
+  const searchParams = page.getByTestId("force-static-search-params");
+  await expect(searchParams).toHaveText("N/A");
+  await expect(searchParams).toHaveAttribute("data-search-params-objects", "1");
 });
 
 test("a client page reads its searchParams prop from the URL in the browser", async ({ page }) => {

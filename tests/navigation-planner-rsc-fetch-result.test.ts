@@ -21,7 +21,7 @@ function createFacts(overrides: Partial<RscFetchResultFacts> = {}): RscFetchResu
     redirectDepth: 0,
     requestPreviousNextUrl: null,
     responseOk: true,
-    responseUrl: "https://example.com/current.rsc?_rsc=abc",
+    responseUrl: "https://example.com/current?_rsc=abc",
     source: "live",
     streamedRedirectTarget: null,
     ...overrides,
@@ -52,7 +52,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
   it("hard-navigates non-ok RSC responses as invalid payloads", () => {
     const decision = classify({
       responseOk: false,
-      responseUrl: "https://example.com/error.rsc?_rsc=abc",
+      responseUrl: "https://example.com/error?_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -99,7 +99,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
   it("hard-navigates RSC compatibility mismatches before redirect classification", () => {
     const decision = classify({
       compatibilityIdHeader: "server-build",
-      responseUrl: "https://example.com/redirected.rsc?_rsc=abc",
+      responseUrl: "https://example.com/redirected?_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -120,7 +120,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
       effectiveHistoryUpdateMode: "push",
       redirectDepth: 2,
       requestPreviousNextUrl: "/feed",
-      responseUrl: "https://example.com/target.rsc?tab=1&_rsc=abc",
+      responseUrl: "https://example.com/target?tab=1&_rsc=abc",
     });
 
     expect(decision).toEqual({
@@ -171,7 +171,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
   it("hard-navigates over-budget response-URL redirect chains without discarding the body", () => {
     const decision = classify({
       redirectDepth: 10,
-      responseUrl: "https://example.com/target.rsc?_rsc=abc",
+      responseUrl: "https://example.com/target?_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -192,7 +192,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
     const decision = classify({
       effectiveHistoryUpdateMode: "push",
       requestPreviousNextUrl: "/feed",
-      responseUrl: "https://example.com/current.rsc?_rsc=abc",
+      responseUrl: "https://example.com/current?_rsc=abc",
       streamedRedirectTarget: "/streamed?tab=1#details",
     });
 
@@ -264,7 +264,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
   it("hard-navigates same-target streamed redirects as loop guards", () => {
     const decision = classify({
       currentHref: "/same?tab=1#section",
-      responseUrl: "https://example.com/same.rsc?tab=1&_rsc=abc#section",
+      responseUrl: "https://example.com/same?tab=1&_rsc=abc#section",
       streamedRedirectTarget: "/same?tab=1#section",
     });
 
@@ -285,7 +285,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
   it("preserves streamed redirect target hashes", () => {
     const decision = classify({
       currentHref: "/old#old",
-      responseUrl: "https://example.com/old.rsc?_rsc=abc#old",
+      responseUrl: "https://example.com/old?_rsc=abc#old",
       streamedRedirectTarget: "/new#new",
     });
 
@@ -300,7 +300,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
   it("follows streamed hash-only redirects instead of treating them as loops", () => {
     const decision = classify({
       currentHref: "/same#old",
-      responseUrl: "https://example.com/same.rsc?_rsc=abc#old",
+      responseUrl: "https://example.com/same?_rsc=abc#old",
       streamedRedirectTarget: "/same#new",
     });
 
@@ -314,13 +314,13 @@ describe("navigationPlanner RSC fetch-result classification", () => {
 
   it("preserves streamed visible query params and hashes", () => {
     const decision = classify({
-      streamedRedirectTarget: "/target.rsc?visible=1&_rsc=abc#details",
+      streamedRedirectTarget: "/target?visible=1&_rsc=abc#details",
     });
 
     expect(decision).toMatchObject({
       kind: "followRedirect",
       redirect: {
-        href: "/target.rsc?visible=1&_rsc=abc#details",
+        href: "/target?visible=1&_rsc=abc#details",
       },
     });
   });
@@ -349,7 +349,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
     const compatDecision = classify({
       compatibilityIdHeader: "server-build",
       source: "cached",
-      responseUrl: "https://example.com/cached-target.rsc?_rsc=abc",
+      responseUrl: "https://example.com/cached-target?_rsc=abc",
     });
     expect(compatDecision).toMatchObject({
       kind: "hardNavigate",
@@ -359,7 +359,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
 
     const redirectDecision = classify({
       source: "cached",
-      responseUrl: "https://example.com/cached-target.rsc?_rsc=abc",
+      responseUrl: "https://example.com/cached-target?_rsc=abc",
     });
     expect(redirectDecision).toMatchObject({
       discardBody: false,

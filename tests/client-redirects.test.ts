@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
-import { toClientRedirects } from "../packages/vinext/src/client/client-redirects.js";
+import {
+  toClientRedirects,
+  type ClientRedirect,
+} from "../packages/vinext/src/client/client-redirects.js";
 import { matchClientRedirect } from "../packages/vinext/src/client/client-redirect-matcher.js";
-import type { RequestContext } from "../packages/vinext/src/config/config-matchers.js";
+import {
+  applyLocaleToRoutes,
+  type RequestContext,
+} from "../packages/vinext/src/config/config-matchers.js";
 
 function browserContext(query = ""): RequestContext {
   return {
@@ -106,5 +112,29 @@ describe("client redirects", () => {
     expect(
       matchClientRedirect("/docs/intro", redirects, browserContext("from=link"), basePathState),
     ).toMatchObject({ destination: "/v2/intro", statusCode: 307 });
+  });
+
+  it("keeps the default-locale variant's root slash in the published manifest", () => {
+    // Next.js processRoutes keeps the slash on the /${defaultLocale} variant:
+    // under basePath /docs, /docs/en/r redirects to /docs/ and /docs/fr/r to /docs/fr.
+    const redirects: ClientRedirect[] = JSON.parse(
+      JSON.stringify(
+        toClientRedirects(
+          applyLocaleToRoutes(
+            [{ source: "/r", destination: "/", permanent: false }],
+            { locales: ["en", "fr"], defaultLocale: "en" },
+            "redirect",
+          ),
+        ),
+      ),
+    );
+    const underBasePath = { basePath: "/docs", hadBasePath: true };
+
+    expect(
+      matchClientRedirect("/en/r", redirects, browserContext(), underBasePath)?.destination,
+    ).toBe("/docs/");
+    expect(
+      matchClientRedirect("/fr/r", redirects, browserContext(), underBasePath)?.destination,
+    ).toBe("/docs/fr");
   });
 });

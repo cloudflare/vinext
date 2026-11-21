@@ -40,6 +40,22 @@ export function magicStringTransformResult<TMap = ReturnType<MagicString["genera
 }
 
 /**
+ * Build the result of a transform that replaces a module with Server Function
+ * reference proxies. Like @vitejs/plugin-rsc's `rsc:use-server`, builds return
+ * an empty map so the replaced module's source doesn't ship in sourcemaps.
+ * Rolldown < 1.2.18 (Vite < 8.3.7) refills empty maps with the module's
+ * original code, so this needs Rolldown >= 1.2.18 to take effect.
+ */
+export function serverReferenceProxyResult<TMap = ReturnType<MagicString["generateMap"]>>(
+  environment: { mode: string },
+  output: MagicStringOutput<TMap>,
+  options?: Parameters<MagicString["generateMap"]>[0],
+): MagicStringTransformResult<TMap | { mappings: "" }> {
+  if (environment.mode === "build") return { code: output.toString(), map: { mappings: "" } };
+  return magicStringTransformResult(output, options);
+}
+
+/**
  * Drop the sourcemap from a transform result when the build environment
  * discards it, mirroring Vite's own transforms
  * (`config.build.sourcemap ? s.generateMap(...) : null`). Dev and builds with

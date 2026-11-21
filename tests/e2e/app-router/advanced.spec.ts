@@ -143,6 +143,73 @@ test.describe("Parallel Routes", () => {
 });
 
 test.describe("Intercepting Routes", () => {
+  // A static page in a sibling route group sits outside the slot owner's
+  // layout, so it has no slot to show the modal in: the link opens the target
+  // page itself, without leaving the page's own tree beneath it.
+  test("opens the target from a page in a sibling route group without the slot", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    const navigation = page.waitForResponse(
+      (response) =>
+        response.url().includes("/intercept-source-group/club/static/pics/1") &&
+        response.request().headers()["rsc"] === "1",
+    );
+    await page.getByRole("link", { name: "Pic 1" }).click();
+    expect((await navigation).status()).toBe(200);
+
+    await expect(page).toHaveURL(/\/intercept-source-group\/club\/static\/pics\/1$/);
+    await expect(page.locator("#intercept-source-group-pic")).toHaveText("Pic page: 1");
+    await expect(page.locator("#intercept-source-group-club-layout")).toContainText(
+      "Club layout: static",
+    );
+    await expect(page.locator("#intercept-source-group-static")).toHaveCount(0);
+    await expect(page.locator("#intercept-source-group-modal")).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("opens the modal from a page whose middleware rewrite reaches the slot", async ({
+    page,
+  }) => {
+    // `/club/moved` names a static page without the slot, but middleware
+    // rewrites it to `/club/acme`, which has it.
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/moved`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#intercept-source-group-club-layout")).toContainText(
+      "Club layout: acme",
+    );
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    const navigation = page.waitForResponse(
+      (response) =>
+        response.url().includes("/intercept-source-group/club/acme/pics/1") &&
+        response.request().headers()["rsc"] === "1",
+    );
+    await page.getByRole("link", { name: "Club pic 1" }).click();
+    expect((await navigation).status()).toBe(200);
+
+    await expect(page).toHaveURL(/\/intercept-source-group\/club\/acme\/pics\/1$/);
+    await expect(page.locator("#intercept-source-group-modal")).toHaveText("Pic modal: 1");
+    await expect(page.locator("#intercept-source-group-club-page")).toBeVisible();
+    await expect(page.locator("#intercept-source-group-pic")).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
   // Ported and strengthened from Next.js intercepted route coverage:
   // - test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
   //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
@@ -927,6 +994,30 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     await expect(page).toHaveURL(/\/about$/);
     await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
     await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /about");
+  });
+
+  test("replaceState entry renders its own page after a reload", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+    await waitForAppRouterHydration(page);
+
+    // The entry's copied tree lived in the first document's memory. A new
+    // document must render the entry's URL instead of its own current tree.
+    await page.evaluate(() => window.history.replaceState(null, "", "/shallow-test?sort=name"));
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.push("/about");
+    });
+    await expect(page.locator("h1#app-page")).toHaveText("About");
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("h1#app-page")).toHaveText("About");
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/shallow-test?sort=name`);
+    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: sort=name");
   });
 
   test("pushState entry keeps its copied tree across router refresh", async ({ page }) => {

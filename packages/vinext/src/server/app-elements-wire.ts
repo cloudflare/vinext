@@ -10,9 +10,7 @@ import type {
   CacheProofFallbackScope,
   CacheProofRejectionCode,
 } from "./cache-proof.js";
-import type { ClientReuseManifestSkipDisposition } from "./client-reuse-manifest.js";
 import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
-import { releaseAppElementRenderDependency } from "./app-render-dependency.js";
 import type { BfcacheSegmentIdentity } from "./bfcache-identity.js";
 import { compareStrings } from "../utils/compare.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -32,9 +30,13 @@ export const APP_DYNAMIC_STALE_TIME_KEY = "__dynamicStaleTime";
 export const APP_INTERCEPTION_KEY = "__interception";
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
 export const APP_LAYOUT_IDS_KEY = "__layoutIds";
-export const APP_LAYOUT_FLAGS_KEY = "__layoutFlags";
 export const APP_ROUTE_KEY = "__route";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
+/**
+ * Elements a payload leaves for the client to keep, as Next.js keeps the
+ * source page it shows beneath an intercepted route.
+ */
+export const APP_RETAINED_ELEMENT_IDS_KEY = "__retainedElementIds";
 export const APP_SKIPPED_LAYOUT_IDS_KEY = "__skippedLayoutIds";
 export const APP_SOURCE_PAGE_SEGMENTS_KEY = "__srcPage";
 export const APP_SLOT_BINDINGS_KEY = "__slotBindings";
@@ -49,10 +51,21 @@ export const APP_BFCACHE_SEGMENT_IDENTITIES_KEY = "__bfcacheSegmentIdentities";
  * segments (issue cloudflare/vinext#1525).
  */
 export const APP_STATIC_SIBLINGS_KEY = "__staticSiblings";
+/** Prefix of the element that streams a route's generateMetadata() tags in the body. */
+export const APP_STREAMING_METADATA_BODY_ID_PREFIX = "__vinext_streaming_metadata_body:";
+/** Prefix of the element that rethrows a route's head errors inside its boundaries. */
+export const APP_STREAMING_METADATA_OUTLET_ID_PREFIX = "__vinext_streaming_metadata_outlet:";
+/** Prefix of the element that renders a route's head, beside its layout tree. */
+export const APP_ROUTE_HEAD_ID_PREFIX = "__vinext_route_head:";
+/**
+ * Prefix of the element that renders an access boundary's not-found,
+ * forbidden or unauthorized file in a route that has parallel slots, so a
+ * payload can leave it for the client to keep with the segment it belongs to.
+ */
+export const APP_ROUTE_FALLBACK_ID_PREFIX = "__vinext_route_fallback:";
 export const APP_UNMATCHED_SLOT_WIRE_VALUE = "__VINEXT_UNMATCHED_SLOT__";
 
 export const UNMATCHED_SLOT = Symbol.for("vinext.unmatchedSlot");
-const EMPTY_SKIPPED_LAYOUT_IDS: ReadonlySet<string> = new Set();
 
 function createCacheProofRejectionCodeSet<const T extends readonly CacheProofRejectionCode[]>(
   codes: T &
@@ -105,9 +118,56 @@ export type AppElementsSlotBinding = Readonly<{
   interceptionId?: string | null;
   interceptionSourceMatchedUrl?: string | null;
   ownerLayoutId: string | null;
+  /**
+   * The browser pathname, without basePath, of the navigation whose response
+   * rendered this active slot. The client sets it when it commits or merges a
+   * response, never the server, so a cached payload holds no request's
+   * spelling. A refresh refetches a slot an earlier page left at this URL, as
+   * Next.js refetches a reused segment at the URL of the route it came from.
+   * Ref: packages/next/src/client/components/router-reducer/ppr-navigations.ts
+   * (reuseActiveSegmentInDefaultSlot)
+   */
+  refreshPathname?: string;
   slotId: string;
   state: AppElementsSlotBindingState;
 }>;
+
+/**
+ * Whether a pathname can only name a path on the current origin: one leading
+ * slash, no `?` or `#`, no backslash (a URL parser reads it as `/`), and no
+ * control character (a URL parser drops tabs and newlines, so `/\t/x` would
+ * become `//x`).
+ */
+export function isSameOriginRefreshPathname(value: unknown): value is string {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f || value[index] === "?" || value[index] === "#") return false;
+    if (value[index] === "\\") return false;
+  }
+  return true;
+}
+
+/**
+ * Records the pathname a response was fetched for on each active slot it
+ * rendered. Slots that already carry one keep it: they came from an earlier
+ * response through a client merge. Returns the same elements when nothing
+ * changes, and a shallow copy otherwise, so a cached payload is not mutated.
+ */
+export function bindAppElementsSlotRefreshPathname(
+  elements: AppElements,
+  refreshPathname: string,
+): AppElements {
+  const bindings = elements[APP_SLOT_BINDINGS_KEY];
+  if (!Array.isArray(bindings) || !isSameOriginRefreshPathname(refreshPathname)) return elements;
+  let changed = false;
+  const bound = (bindings as readonly AppElementsSlotBinding[]).map((binding) => {
+    if (binding.state !== "active" || binding.refreshPathname !== undefined) return binding;
+    changed = true;
+    return { ...binding, refreshPathname };
+  });
+  return changed ? { ...elements, [APP_SLOT_BINDINGS_KEY]: bound } : elements;
+}
 
 export type AppElementsInterception = Readonly<{
   sourceMatchedUrl: string;
@@ -161,7 +221,6 @@ export type AppElementValue =
   | typeof UNMATCHED_SLOT
   | string
   | null
-  | LayoutFlags
   | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
@@ -172,7 +231,6 @@ type AppWireElementValue =
   | ReactNode
   | string
   | null
-  | LayoutFlags
   | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
@@ -183,25 +241,6 @@ type AppWireElementValue =
 export type AppElements = Readonly<Record<string, AppElementValue>>;
 export type AppWireElements = Readonly<Record<string, AppWireElementValue>>;
 
-/**
- * Per-layout static/dynamic flags. `"s"` = static (skippable on next nav);
- * `"d"` = dynamic (must always render).
- *
- * Lifecycle (partial — later PRs extend this):
- *
- *   1. PROBE   — probeAppPageLayouts (server/app-page-execution.ts) returns
- *                LayoutFlags for every layout in the route at render time.
- *
- *   2. ATTACH  — AppElementsWire.encodeOutgoingPayload writes `__layoutFlags`
- *                into the outgoing App Router payload record.
- *
- *   3. WIRE    — renderToReadableStream serializes the record as RSC row 0.
- *
- *   4. PARSE   — AppElementsWire.readMetadata extracts layoutFlags from the
- *                wire payload on the client side.
- */
-export type LayoutFlags = Readonly<Record<string, "s" | "d">>;
-
 export type AppElementsBfcacheSegmentIdentities = Readonly<Record<string, BfcacheSegmentIdentity>>;
 
 type AppElementsMetadata = {
@@ -211,10 +250,10 @@ type AppElementsMetadata = {
   interception: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutIds: readonly string[];
-  layoutFlags: LayoutFlags;
   routeId: string;
   rootLayoutTreePath: string | null;
   bfcacheSegmentIdentities: AppElementsBfcacheSegmentIdentities;
+  retainedElementIds: readonly string[];
   skippedLayoutIds: readonly string[];
   slotBindings: readonly AppElementsSlotBinding[];
   sourcePage: string | null;
@@ -246,15 +285,14 @@ type AppElementsWireMetadataEntries = Readonly<{
 
 /**
  * The outgoing wire payload shape. Includes ReactNode values for the
- * rendered tree plus metadata values like LayoutFlags attached under
- * known keys (e.g. __layoutFlags). Distinct from AppElements / AppWireElements
+ * rendered tree plus metadata values attached under known keys (e.g.
+ * __artifactCompatibility). Distinct from AppElements / AppWireElements
  * which only carry render-time values.
  */
 export type AppOutgoingElements = Readonly<
   Record<
     string,
     | ReactNode
-    | LayoutFlags
     | AppElementsBfcacheSegmentIdentities
     | ArtifactCompatibilityEnvelope
     | CacheEntryReuseProof
@@ -272,10 +310,10 @@ type AppElementsWireKeys = {
   readonly interception: typeof APP_INTERCEPTION_KEY;
   readonly interceptionContext: typeof APP_INTERCEPTION_CONTEXT_KEY;
   readonly layoutIds: typeof APP_LAYOUT_IDS_KEY;
-  readonly layoutFlags: typeof APP_LAYOUT_FLAGS_KEY;
   readonly rootLayout: typeof APP_ROOT_LAYOUT_KEY;
   readonly route: typeof APP_ROUTE_KEY;
   readonly bfcacheSegmentIdentities: typeof APP_BFCACHE_SEGMENT_IDENTITIES_KEY;
+  readonly retainedElementIds: typeof APP_RETAINED_ELEMENT_IDS_KEY;
   readonly skippedLayoutIds: typeof APP_SKIPPED_LAYOUT_IDS_KEY;
   readonly slotBindings: typeof APP_SLOT_BINDINGS_KEY;
   readonly sourcePageSegments: typeof APP_SOURCE_PAGE_SEGMENTS_KEY;
@@ -286,6 +324,7 @@ type AppElementsWireCodec = {
   readonly unmatchedSlotValue: typeof APP_UNMATCHED_SLOT_WIRE_VALUE;
   createMetadataEntries(input: AppElementsWireMetadataInput): AppElementsWireMetadataEntries;
   decode(elements: AppWireElements): AppElements;
+  decodeCacheKey(cacheKey: string): { interceptionContext: string | null; rscUrl: string };
   encodeCacheKey(rscUrl: string, interceptionContext: string | null): string;
   encodeLayoutId(treePath: string): string;
   encodeOutgoingPayload(input: {
@@ -293,20 +332,20 @@ type AppElementsWireCodec = {
     artifactCompatibility?: ArtifactCompatibilityEnvelope;
     cacheEntryReuseProof?: CacheEntryReuseProof;
     dynamicStaleTimeSeconds?: number;
-    layoutFlags: LayoutFlags;
-    skipDisposition?: ClientReuseManifestSkipDisposition;
   }): ReactNode | AppOutgoingElements;
   encodePageId(routePath: string, interceptionContext: string | null): string;
+  encodeRouteFallbackId(
+    routeId: string,
+    status: 401 | 403 | 404,
+    position: number | "page",
+  ): string;
   encodeRouteId(routePath: string, interceptionContext: string | null): string;
   encodeSlotId(slotName: string, treePath: string): string;
   encodeTemplateId(treePath: string): string;
+  isRouteFallbackIdFor(id: string, routeId: string): boolean;
   isSlotId(key: string): boolean;
   parseElementKey(key: string): AppElementsWireElementKey | null;
   readMetadata(elements: Readonly<Record<string, unknown>>): AppElementsMetadata;
-  withLayoutFlags<T extends Record<string, unknown>>(
-    elements: T,
-    layoutFlags: LayoutFlags,
-  ): T & { [APP_LAYOUT_FLAGS_KEY]: LayoutFlags };
 };
 
 function appendInterceptionContext(identity: string, interceptionContext: string | null): string {
@@ -317,6 +356,28 @@ function appendInterceptionContext(identity: string, interceptionContext: string
 
 function createAppPayloadRouteId(routePath: string, interceptionContext: string | null): string {
   return appendInterceptionContext(`route:${routePath}`, interceptionContext);
+}
+
+/**
+ * The element id of a route's access boundary fallback at `position`, a tree
+ * position or `page` for the boundaries around the route's own page.
+ */
+function createAppRouteFallbackId(
+  routeId: string,
+  status: 401 | 403 | 404,
+  position: number | "page",
+): string {
+  return `${APP_ROUTE_FALLBACK_ID_PREFIX}${status}:${position}:${routeId}`;
+}
+
+function isAppRouteFallbackIdFor(id: string, routeId: string): boolean {
+  if (!id.startsWith(APP_ROUTE_FALLBACK_ID_PREFIX)) return false;
+  const [status, position, ...rest] = id.slice(APP_ROUTE_FALLBACK_ID_PREFIX.length).split(":");
+  return (
+    (status === "401" || status === "403" || status === "404") &&
+    (position === "page" || /^\d+$/.test(position ?? "")) &&
+    rest.join(":") === routeId
+  );
 }
 
 function createAppPayloadPageId(routePath: string, interceptionContext: string | null): string {
@@ -333,6 +394,20 @@ function createAppPayloadTemplateId(treePath: string): string {
 
 function createAppPayloadCacheKey(rscUrl: string, interceptionContext: string | null): string {
   return appendInterceptionContext(rscUrl, interceptionContext);
+}
+
+function parseAppPayloadCacheKey(cacheKey: string): {
+  interceptionContext: string | null;
+  rscUrl: string;
+} {
+  const separatorIndex = cacheKey.indexOf(APP_INTERCEPTION_SEPARATOR);
+  if (separatorIndex === -1) {
+    return { interceptionContext: null, rscUrl: cacheKey };
+  }
+  return {
+    interceptionContext: cacheKey.slice(separatorIndex + APP_INTERCEPTION_SEPARATOR.length),
+    rscUrl: cacheKey.slice(0, separatorIndex),
+  };
 }
 
 function isAppElementsWireBfcacheIdentityId(key: string): boolean {
@@ -416,19 +491,6 @@ export function normalizeAppElements(elements: AppWireElements): AppElements {
   return normalized;
 }
 
-function isLayoutFlagsRecord(value: unknown): value is LayoutFlags {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  for (const v of Object.values(value)) {
-    if (v !== "s" && v !== "d") return false;
-  }
-  return true;
-}
-
-function parseLayoutFlags(value: unknown): LayoutFlags {
-  if (isLayoutFlagsRecord(value)) return value;
-  return {};
-}
-
 function parseLayoutIdList(value: unknown, fieldName: string): readonly string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
@@ -461,6 +523,32 @@ function parseLayoutIds(value: unknown): readonly string[] {
 
 function parseSkippedLayoutIds(value: unknown): readonly string[] {
   return parseLayoutIdList(value, APP_SKIPPED_LAYOUT_IDS_KEY);
+}
+
+const RETAINED_ELEMENT_ID_PREFIXES = [
+  APP_ROUTE_FALLBACK_ID_PREFIX,
+  APP_ROUTE_HEAD_ID_PREFIX,
+  APP_STREAMING_METADATA_BODY_ID_PREFIX,
+  APP_STREAMING_METADATA_OUTLET_ID_PREFIX,
+] as const;
+
+function isRetainableElementId(id: string): boolean {
+  if (RETAINED_ELEMENT_ID_PREFIXES.some((prefix) => id.startsWith(prefix))) return true;
+  const kind = parseAppElementsWireElementKey(id)?.kind;
+  return kind === "layout" || kind === "page" || kind === "slot" || kind === "template";
+}
+
+function parseRetainedElementIds(value: unknown): readonly string[] {
+  if (value === undefined) return [];
+  if (
+    !Array.isArray(value) ||
+    !value.every((entry) => typeof entry === "string" && isRetainableElementId(entry))
+  ) {
+    throw new Error(
+      `[vinext] Invalid ${APP_RETAINED_ELEMENT_IDS_KEY} in App Router payload: expected element ids`,
+    );
+  }
+  return value;
 }
 
 function isSlotBindingState(value: unknown): value is AppElementsSlotBindingState {
@@ -541,11 +629,19 @@ function parseSlotBindings(
       parseInterceptionMatchedUrl(interceptionSourceMatchedUrl);
     }
 
+    const refreshPathname = entry.refreshPathname;
+    if (refreshPathname !== undefined && !isSameOriginRefreshPathname(refreshPathname)) {
+      throw new Error(
+        "[vinext] Invalid __slotBindings in App Router payload: expected refresh pathnames",
+      );
+    }
+
     slotBindings.push({
       ...(activeRouteId !== undefined ? { activeRouteId } : {}),
       ...(interceptionId !== undefined ? { interceptionId } : {}),
       ...(interceptionSourceMatchedUrl !== undefined ? { interceptionSourceMatchedUrl } : {}),
       ownerLayoutId,
+      ...(refreshPathname !== undefined ? { refreshPathname } : {}),
       slotId,
       state,
     });
@@ -622,7 +718,7 @@ function parseInterceptionMetadata(value: unknown): AppElementsInterception | nu
  * Used to distinguish the App Router payload object from bare React elements at
  * the render boundary. Narrows to `Readonly<Record<string, unknown>>` because
  * the outgoing payload carries heterogeneous values (ReactNodes for the rendered
- * tree, plus metadata like `__layoutFlags` which is a plain object). Delegates
+ * tree, plus metadata like `__artifactCompatibility`, a plain object). Delegates
  * to React's canonical `isValidElement` so we don't depend on React's internal
  * `$$typeof` marker scheme.
  */
@@ -633,29 +729,18 @@ export function isAppElementsRecord(value: unknown): value is Readonly<Record<st
   return true;
 }
 
-export function withLayoutFlags<T extends Record<string, unknown>>(
-  elements: T,
-  layoutFlags: LayoutFlags,
-): T & { [APP_LAYOUT_FLAGS_KEY]: LayoutFlags } {
-  return { ...elements, [APP_LAYOUT_FLAGS_KEY]: layoutFlags };
-}
-
 export function buildOutgoingAppPayload(input: {
   element: ReactNode | AppElements;
   artifactCompatibility?: ArtifactCompatibilityEnvelope;
   cacheEntryReuseProof?: CacheEntryReuseProof;
   dynamicStaleTimeSeconds?: number;
-  layoutFlags: LayoutFlags;
-  skipDisposition?: ClientReuseManifestSkipDisposition;
 }): ReactNode | AppOutgoingElements {
   if (!isAppElementsRecord(input.element)) {
     return input.element;
   }
-  const skippedLayoutIds = createSkippedLayoutIds(input.skipDisposition);
   const payload: Record<
     string,
     | ReactNode
-    | LayoutFlags
     | AppElementsBfcacheSegmentIdentities
     | ArtifactCompatibilityEnvelope
     | CacheEntryReuseProof
@@ -665,15 +750,7 @@ export function buildOutgoingAppPayload(input: {
     | readonly AppElementsSlotBinding[]
   > = {};
   for (const [key, value] of Object.entries(input.element)) {
-    if (skippedLayoutIds.has(key)) {
-      releaseAppElementRenderDependency(input.element, key);
-      continue;
-    }
     payload[key] = value === UNMATCHED_SLOT ? APP_UNMATCHED_SLOT_WIRE_VALUE : value;
-  }
-  payload[APP_LAYOUT_FLAGS_KEY] = input.layoutFlags;
-  if (skippedLayoutIds.size > 0) {
-    payload[APP_SKIPPED_LAYOUT_IDS_KEY] = [...skippedLayoutIds];
   }
   payload[APP_ARTIFACT_COMPATIBILITY_KEY] =
     input.artifactCompatibility ?? createArtifactCompatibilityEnvelope();
@@ -686,28 +763,14 @@ export function buildOutgoingAppPayload(input: {
   return payload;
 }
 
-function createSkippedLayoutIds(
-  skipDisposition: ClientReuseManifestSkipDisposition | undefined,
-): ReadonlySet<string> {
-  if (skipDisposition?.enabled !== true) return EMPTY_SKIPPED_LAYOUT_IDS;
-
-  const skippedLayoutIds = new Set<string>();
-  for (const id of skipDisposition.skippedEntryIds) {
-    if (parseAppElementsWireElementKey(id)?.kind === "layout") {
-      skippedLayoutIds.add(id);
-    }
-  }
-  return skippedLayoutIds;
-}
-
 function readArtifactCompatibilityMetadata(value: unknown): ArtifactCompatibilityEnvelope {
   if (value === undefined) return createArtifactCompatibilityEnvelope();
 
   const artifactCompatibility = parseArtifactCompatibilityEnvelope(value);
   // TODO(#726-COMPAT-04): hard-fail malformed compatibility metadata once
   // cache/skip consumers depend on this proof. During Wave01 the field is
-  // emitted as scaffolding, so bad or future-version values degrade like
-  // missing __layoutFlags instead of crashing render paths that do not read it.
+  // emitted as scaffolding, so bad or future-version values degrade to an
+  // empty envelope instead of crashing render paths that do not read it.
   return artifactCompatibility ?? createArtifactCompatibilityEnvelope();
 }
 
@@ -835,9 +898,9 @@ export function readAppElementsMetadata(
     throw new Error("[vinext] Invalid __rootLayout in App Router payload: expected string or null");
   }
 
-  const layoutFlags = parseLayoutFlags(elements[APP_LAYOUT_FLAGS_KEY]);
   const layoutIds = parseLayoutIds(elements[APP_LAYOUT_IDS_KEY]);
   const skippedLayoutIds = parseSkippedLayoutIds(elements[APP_SKIPPED_LAYOUT_IDS_KEY]);
+  const retainedElementIds = parseRetainedElementIds(elements[APP_RETAINED_ELEMENT_IDS_KEY]);
   const slotBindings = parseSlotBindings(elements[APP_SLOT_BINDINGS_KEY], { layoutIds });
   const interception = parseInterceptionMetadata(elements[APP_INTERCEPTION_KEY]);
   const artifactCompatibility = readArtifactCompatibilityMetadata(
@@ -870,10 +933,10 @@ export function readAppElementsMetadata(
     interception,
     interceptionContext: interceptionContext ?? null,
     layoutIds,
-    layoutFlags,
     routeId,
     rootLayoutTreePath,
     bfcacheSegmentIdentities,
+    retainedElementIds,
     skippedLayoutIds,
     slotBindings,
     sourcePage,
@@ -890,10 +953,10 @@ export const AppElementsWire: AppElementsWireCodec = {
     interception: APP_INTERCEPTION_KEY,
     interceptionContext: APP_INTERCEPTION_CONTEXT_KEY,
     layoutIds: APP_LAYOUT_IDS_KEY,
-    layoutFlags: APP_LAYOUT_FLAGS_KEY,
     rootLayout: APP_ROOT_LAYOUT_KEY,
     route: APP_ROUTE_KEY,
     bfcacheSegmentIdentities: APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
+    retainedElementIds: APP_RETAINED_ELEMENT_IDS_KEY,
     skippedLayoutIds: APP_SKIPPED_LAYOUT_IDS_KEY,
     slotBindings: APP_SLOT_BINDINGS_KEY,
     sourcePageSegments: APP_SOURCE_PAGE_SEGMENTS_KEY,
@@ -901,15 +964,17 @@ export const AppElementsWire: AppElementsWireCodec = {
   unmatchedSlotValue: APP_UNMATCHED_SLOT_WIRE_VALUE,
   createMetadataEntries: createAppElementsWireMetadataEntries,
   decode: normalizeAppElements,
+  decodeCacheKey: parseAppPayloadCacheKey,
   encodeCacheKey: createAppPayloadCacheKey,
   encodeLayoutId: createAppPayloadLayoutId,
   encodeOutgoingPayload: buildOutgoingAppPayload,
   encodePageId: createAppPayloadPageId,
+  encodeRouteFallbackId: createAppRouteFallbackId,
   encodeRouteId: createAppPayloadRouteId,
   encodeSlotId: createAppElementsWireSlotId,
   encodeTemplateId: createAppPayloadTemplateId,
+  isRouteFallbackIdFor: isAppRouteFallbackIdFor,
   isSlotId: isAppElementsWireSlotId,
   parseElementKey: parseAppElementsWireElementKey,
   readMetadata: readAppElementsMetadata,
-  withLayoutFlags,
 };

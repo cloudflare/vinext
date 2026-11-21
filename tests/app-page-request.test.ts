@@ -1,4 +1,7 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { revalidatePath } from "../packages/vinext/src/shims/cache.js";
 import { resolveAppPageSpecialError } from "../packages/vinext/src/server/app-page-execution.js";
 import {
   buildAppPageElement,
@@ -7,14 +10,130 @@ import {
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageGenerateStaticParamsSources,
   validateAppPageDynamicParams,
+  validateAppPageRouteDynamicParams,
 } from "../packages/vinext/src/server/app-page-request.js";
-import { cookies, headersContextFromRequest } from "../packages/vinext/src/shims/headers.js";
+import {
+  cookies,
+  headersContextFromRequest,
+  runStaticParamsCheckDetached,
+} from "../packages/vinext/src/shims/headers.js";
 import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 
 describe("app page request helpers", () => {
+  it("keeps an on-demand revalidation from refreshing generateStaticParams' cached data", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    try {
+      for (const isOnDemandRevalidate of [false, true]) {
+        const response = await runWithRequestContext(
+          createRequestContext({ isOnDemandRevalidate }),
+          () =>
+            runStaticParamsCheckDetached(() =>
+              validateAppPageRouteDynamicParams({
+                dynamicParamsConfig: false,
+                async generateStaticParams() {
+                  await (await fetch(url, { cache: "force-cache" })).text();
+                  return [{ slug: "known" }];
+                },
+                isDynamicRoute: true,
+                isProduction: true,
+                params: { slug: "unknown" },
+                pathname: "/posts/unknown",
+                routePattern: "/posts/:slug",
+              }),
+            ),
+        );
+        expect(response?.status).toBe(404);
+      }
+      // Next.js runs generateStaticParams outside the revalidation, so the
+      // generator reads its cached fetch.
+      expect(hits).toBe(1);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("runs a route's generateStaticParams with its fetchCache, as Next.js does", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    try {
+      for (let request = 0; request < 2; request++) {
+        const response = await runWithRequestContext(createRequestContext(), () =>
+          runStaticParamsCheckDetached(() =>
+            validateAppPageRouteDynamicParams({
+              dynamicParamsConfig: false,
+              fetchCache: "force-no-store",
+              async generateStaticParams() {
+                await (await fetch(url, { cache: "force-cache" })).text();
+                return [{ slug: "known" }];
+              },
+              isDynamicRoute: true,
+              isProduction: true,
+              params: { slug: "unknown" },
+              pathname: "/posts/unknown",
+              routePattern: "/posts/:slug",
+            }),
+          ),
+        );
+        expect(response?.status).toBe(404);
+      }
+      // force-no-store keeps the generator's force-cache fetch out of the cache.
+      expect(hits).toBe(2);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("tags generateStaticParams' fetches with the route's implicit tags, as Next.js does", async () => {
+    let hits = 0;
+    const server = createServer((_request, response) => {
+      hits += 1;
+      response.end(String(hits));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/slugs`;
+    const check = () =>
+      runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          validateAppPageRouteDynamicParams({
+            dynamicParamsConfig: false,
+            async generateStaticParams() {
+              await (await fetch(url, { cache: "force-cache" })).text();
+              return [{ slug: "known" }];
+            },
+            isDynamicRoute: true,
+            isProduction: true,
+            params: { slug: "unknown" },
+            pathname: "/tagged-posts/unknown",
+            routePattern: "/tagged-posts/:slug",
+            routeSegments: ["tagged-posts", "[slug]"],
+          }),
+        ),
+      );
+    try {
+      await check();
+      revalidatePath("/tagged-posts/[slug]", "page");
+      await check();
+      // revalidatePath() expires the cached fetch through the page's tag.
+      expect(hits).toBe(2);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it("returns 404 when dynamicParams=false receives unknown params", async () => {
     const response = await validateAppPageDynamicParams({
       enforceStaticParamsOnly: true,
@@ -759,11 +878,18 @@ describe("app page request helpers", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        // The source route renders only the intercepting tree.
+        rendersInterceptionSource: true,
       },
       new URLSearchParams("from=feed"),
-      undefined,
     );
     expect(renderInterceptResponse).toHaveBeenCalledTimes(1);
+    // The response carries the same params for the client's useParams().
+    expect(renderInterceptResponse).toHaveBeenCalledWith(
+      sourceRoute,
+      { type: "intercept-element" },
+      { locale: "en", tab: "recent", id: "123", catchAll: ["photos", "123"] },
+    );
   });
 
   it("returns intercept opts when the source route is the current route", async () => {
@@ -812,6 +938,7 @@ describe("app page request helpers", () => {
       interceptPage: { default: "modal-page" },
       interceptParams: { id: "123" },
       interceptSlotKey: "modal@app/feed/@modal",
+      rendersInterceptionSource: true,
     });
   });
 
@@ -894,7 +1021,10 @@ describe("resolveAppPageInterceptionRerenderTarget intercept loading", () => {
     // sourceParams keeps only the params declared by the source route.
     // /feed has no dynamic params, so the slice is empty.
     expect(result.params).toEqual({});
-    expect(result.interceptOpts).toEqual(toInterceptOpts(intercept));
+    expect(result.interceptOpts).toEqual({
+      ...toInterceptOpts(intercept),
+      rendersInterceptionSource: true,
+    });
   });
 
   it("deduplicates concurrent intercept page and layout loads", async () => {
@@ -1098,12 +1228,78 @@ describe("resolveAppPageActionRerenderTarget", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
       },
       navigationParams: { id: "123" },
       params: { id: "123" },
       route: currentRoute,
     });
     expect(findIntercept).toHaveBeenCalledTimes(1);
+  });
+
+  // `/photos/1` to `/photos/2` beside `@modal/(.)[id]`: Next.js keeps the
+  // `/photos/1` page beneath the modal, while the client reads the target's
+  // params.
+  it("renders a current-route interception beneath the source's params", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/2",
+      currentParams: { id: "2" },
+      currentRoute,
+      findIntercept: () => ({
+        matchedParams: { id: "2" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceMatchedParams: { id: "1" },
+        sourceRouteIndex: 0,
+      }),
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => currentRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: {
+        interceptPage: { default: "modal-page" },
+        interceptParams: { id: "2" },
+        interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
+      },
+      navigationParams: { id: "2" },
+      params: { id: "1" },
+      route: currentRoute,
+    });
+  });
+
+  it("renders a current-route interception whole when its source names no route", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/2",
+      currentParams: { id: "2" },
+      currentRoute,
+      findIntercept: () => ({
+        matchedParams: { id: "2" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceMatchedParams: {},
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: false,
+      }),
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => currentRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: {
+        interceptPage: { default: "modal-page" },
+        interceptParams: { id: "2" },
+        interceptSlotKey: "modal@app/feed/@modal",
+      },
+      navigationParams: { id: "2" },
+      params: { id: "2" },
+      route: currentRoute,
+    });
   });
 
   it("preserves current-route intercept opts when action rerender stays on the direct route", async () => {
@@ -1128,6 +1324,7 @@ describe("resolveAppPageActionRerenderTarget", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
       },
       navigationParams: { id: "123" },
       params: { id: "123" },
@@ -1162,6 +1359,7 @@ describe("resolveAppPageActionRerenderTarget", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
       },
       navigationParams: { locale: "en", tab: "recent", id: "123" },
       params: { locale: "en", tab: "recent" },

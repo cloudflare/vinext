@@ -1,9 +1,14 @@
 import { decode as decodeQueryString } from "node:querystring";
-import { Readable, Writable } from "node:stream";
+import { Readable, Writable, Stream } from "node:stream";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import {
+  PagesBodyParseError,
+  createPagesBodyDecoder,
+  isJsonMediaType,
+  type PagesBodyDecoder,
+} from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
@@ -30,7 +35,7 @@ export type PagesRequestQuery = Record<string, string | string[]>;
 export type PagesReqResRequest = Readable & {
   method: string;
   url: string;
-  headers: Record<string, string>;
+  headers: Record<string, string | string[] | undefined>;
   query: PagesRequestQuery;
   body: unknown;
   cookies: Record<string, string>;
@@ -128,14 +133,31 @@ type CreatePagesReqResResult<Res extends PagesReqResResponse = PagesReqResRespon
   responsePromise: Promise<Response>;
 };
 
-async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
+/** The decoded body, or undefined when the request carried no body bytes. */
+async function readPagesRequestBodyWithLimit(
+  request: Request,
+  maxBytes: number,
+  decoder: PagesBodyDecoder,
+): Promise<string | undefined> {
   if (!request.body) {
-    return "";
+    return undefined;
   }
 
-  return readStreamAsTextWithLimit(request.body, maxBytes, () => {
-    throw new PagesBodyParseError("Request body too large", 413);
-  });
+  let byteLength = 0;
+  const text = await readStreamAsTextWithLimit(
+    request.body,
+    maxBytes,
+    () => {
+      throw new PagesBodyParseError("Request body too large", 413);
+    },
+    {
+      decode(input, options) {
+        byteLength += input?.byteLength ?? 0;
+        return decoder.decode(input, options);
+      },
+    },
+  );
+  return byteLength > 0 ? text : undefined;
 }
 
 /**
@@ -152,14 +174,16 @@ export async function parsePagesApiBody(
   request: Request,
   maxBytes = MAX_PAGES_API_BODY_SIZE,
 ): Promise<unknown> {
+  // Like Next.js (raw-body), an undecodable charset is rejected before the size.
+  const { mediaType, decoder } = await createPagesBodyDecoder(request.headers.get("content-type"));
   const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
   if (contentLength > maxBytes) {
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
-  let rawBody = "";
+  let rawBody: string | undefined;
   try {
-    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes);
+    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes, decoder);
   } catch (err) {
     if (err instanceof PagesBodyParseError) {
       throw err;
@@ -167,13 +191,14 @@ export async function parsePagesApiBody(
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
-  const mediaType = getMediaType(request.headers.get("content-type"));
   if (!rawBody) {
+    // A body that decodes to nothing, such as a lone BOM, stays "" like in
+    // Next.js; only a request without body bytes gets undefined.
     return isJsonMediaType(mediaType)
       ? {}
       : mediaType === "application/x-www-form-urlencoded"
-        ? decodeQueryString(rawBody)
-        : undefined;
+        ? decodeQueryString("")
+        : rawBody;
   }
 
   if (isJsonMediaType(mediaType)) {
@@ -191,39 +216,54 @@ export async function parsePagesApiBody(
   return rawBody;
 }
 
-async function* requestBodyChunks(request: Request): AsyncGenerator<Buffer> {
-  if (!request.body || request.bodyUsed) {
-    return;
-  }
+function createRequestReadable(request: Request): Readable {
+  const body = request.bodyUsed ? null : request.body;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
-  const reader = request.body.getReader();
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) {
+  // A byte stream like `IncomingMessage` (`setEncoding()`/`read(n)` byte
+  // semantics, byte-based highWaterMark). The body is only locked on the
+  // first read: a handler that never consumes it must not observe a client
+  // abort as an unhandled `error` event, and `Readable.fromWeb` would attach
+  // to the body eagerly. `destroy()` cancels a pending read directly, so a
+  // stalled upload still emits `close`.
+  return new Readable({
+    read() {
+      if (!body) {
+        this.push(null);
         return;
       }
-      // Node `IncomingMessage` yields `Buffer` chunks, not `Uint8Array`:
-      // handler code routinely calls `chunk.toString("utf8")`, which on a
-      // raw Uint8Array comma-joins the byte values instead of decoding.
-      // Buffer.from(buffer, offset, length) is a zero-copy view.
-      yield Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // Ignore cancellation errors from the upstream source.
-    }
-    reader.releaseLock();
-  }
-}
-
-function createRequestReadable(request: Request): Readable {
-  // `Readable.from` defaults to objectMode — opt out so the request is a
-  // byte stream like `IncomingMessage` (`setEncoding()`/`read(n)` byte
-  // semantics, byte-based highWaterMark).
-  return Readable.from(requestBodyChunks(request), { objectMode: false });
+      reader ??= body.getReader();
+      reader.read().then(
+        ({ value, done }) => {
+          if (this.destroyed) return;
+          if (done) {
+            this.push(null);
+            return;
+          }
+          // Node `IncomingMessage` yields `Buffer` chunks, not `Uint8Array`:
+          // handler code routinely calls `chunk.toString("utf8")`, which on a
+          // raw Uint8Array comma-joins the byte values instead of decoding.
+          // Buffer.from(buffer, offset, length) is a zero-copy view.
+          this.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+        },
+        (error: unknown) => this.destroy(error as Error),
+      );
+    },
+    destroy(error, callback) {
+      const cancelled = reader
+        ? reader.cancel(error ?? undefined)
+        : body?.cancel(error ?? undefined);
+      if (!cancelled) {
+        callback(error);
+        return;
+      }
+      // Cancellation errors from the upstream source are not the consumer's.
+      cancelled.then(
+        () => callback(error),
+        () => callback(error),
+      );
+    },
+  });
 }
 
 function parsePagesRequestCookies(cookieHeader: string | string[] | null | undefined) {
@@ -361,11 +401,33 @@ class PagesResponseStream extends Writable {
   }
 
   json(data: unknown): void {
-    this.resHeaders["content-type"] = "application/json";
+    this.resHeaders["content-type"] = "application/json; charset=utf-8";
     this.end(JSON.stringify(data));
   }
 
   send(data: unknown): void {
+    // Next.js ends a nullish send without a body.
+    if (data === null || data === undefined) {
+      this.end();
+      return;
+    }
+
+    // Next.js's sendData() ends 204/304 responses before it inspects the data,
+    // so a stream is never piped into them. Fetch also forbids a 205 body.
+    // resolveOnce() strips the headers.
+    if (NO_BODY_RESPONSE_STATUSES.has(this.resStatusCode)) {
+      this.end();
+      return;
+    }
+
+    if (data instanceof Stream) {
+      if (!this.resHeaders["content-type"]) {
+        this.resHeaders["content-type"] = "application/octet-stream";
+      }
+      data.pipe(this);
+      return;
+    }
+
     if (Buffer.isBuffer(data)) {
       if (!this.resHeaders["content-type"]) {
         this.resHeaders["content-type"] = "application/octet-stream";
@@ -375,8 +437,8 @@ class PagesResponseStream extends Writable {
       return;
     }
 
-    if (typeof data === "object" && data !== null) {
-      this.resHeaders["content-type"] = "application/json";
+    if (typeof data === "object" || typeof data === "number" || typeof data === "boolean") {
+      this.resHeaders["content-type"] = "application/json; charset=utf-8";
       this.end(JSON.stringify(data));
       return;
     }
@@ -384,7 +446,7 @@ class PagesResponseStream extends Writable {
     if (!this.resHeaders["content-type"]) {
       this.resHeaders["content-type"] = "text/plain";
     }
-    this.end(String(data));
+    this.end(String(data as unknown));
   }
 
   redirect(statusOrUrl: number | string, url?: string): PagesReqResResponse {
@@ -612,10 +674,14 @@ export function isVinextStreamedApiResponse(response: Response): boolean {
 }
 
 export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePagesReqResResult {
-  const headersObj: Record<string, string> = {};
+  const headersObj: Record<string, string | string[]> = {};
   for (const [key, value] of options.request.headers) {
     headersObj[key.toLowerCase()] = value;
   }
+  // Iteration yields each Set-Cookie separately. Like Next.js's
+  // toNodeOutgoingHttpHeaders, keep several of them as an array.
+  const setCookies = options.request.headers.getSetCookie();
+  if (setCookies.length > 1) headersObj["set-cookie"] = setCookies;
 
   // Next.js Pages API routes receive Node IncomingMessage/ServerResponse
   // objects. The Workers/prod adapter starts from a Fetch Request, so expose a

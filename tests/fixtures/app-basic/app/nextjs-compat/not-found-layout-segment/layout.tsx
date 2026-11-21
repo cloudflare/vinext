@@ -15,6 +15,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <nav>
         <Link href={`${BASE}/shop/hello`}>Item</Link>
         <Link href={`${BASE}/shop/gone`}>Gone</Link>
+        <Link href={`${BASE}/guard/hello`}>Guard pass</Link>
+        <Link href={`${BASE}/guard/gone`}>Guard fail</Link>
         <Link href={`${BASE}/slow/invalid`}>Slow</Link>
         <Link href={`${BASE}/slow/hello`}>Slow item</Link>
         <Link href={`${BASE}/team`}>Team</Link>

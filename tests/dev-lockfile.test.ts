@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { toSlash } from "pathslash";
 
 import {
@@ -16,6 +16,7 @@ import {
   formatAlreadyRunningError,
   getLockfilePath,
   isPidAlive,
+  predatesCurrentBoot,
   readLockfile,
   tryAcquireLockfile,
 } from "../packages/vinext/src/server/dev-lockfile.js";
@@ -68,6 +69,42 @@ describe("isPidAlive", () => {
   it("returns false for a very large unused pid", () => {
     // PIDs above the typical kernel max are extremely unlikely to exist.
     expect(isPidAlive(2_147_000_000)).toBe(false);
+  });
+});
+
+function bootTime(): number {
+  return Date.now() - os.uptime() * 1000;
+}
+
+/** A `startedAt` one minute before the machine booted. */
+function beforeBoot(): number {
+  return bootTime() - 60_000;
+}
+
+describe("predatesCurrentBoot", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns false for a lock written during this boot", () => {
+    expect(predatesCurrentBoot(Date.now())).toBe(false);
+  });
+
+  it("tolerates a lock that predates the derived boot time by a few seconds", () => {
+    // os.uptime() is whole seconds on macOS, so a lock written right after
+    // boot can appear to predate it slightly.
+    expect(predatesCurrentBoot(bootTime() - 4_000)).toBe(false);
+  });
+
+  it("returns true for a lock written before this boot", () => {
+    expect(predatesCurrentBoot(beforeBoot())).toBe(true);
+  });
+
+  it("falls back to the PID check when os.uptime() throws", () => {
+    vi.spyOn(os, "uptime").mockImplementation(() => {
+      throw new Error("uv_uptime failed");
+    });
+    expect(predatesCurrentBoot(0)).toBe(false);
   });
 });
 
@@ -162,6 +199,40 @@ describe("tryAcquireLockfile", () => {
     if (!result.ok) return;
     expect(readLockfile(lockPath)).toEqual(info);
     result.lockfile.release();
+  });
+
+  it("takes over a lock written before the current boot even when its PID is alive", () => {
+    // After a restart the old server's PID is often reused by an unrelated
+    // process, so the PID check alone would report the lock as held.
+    const stale = baseInfo({ pid: process.pid, startedAt: beforeBoot(), cwd: root });
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify(stale));
+
+    const info = baseInfo({ pid: process.pid + 1, port: 4000, cwd: root });
+    const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(readLockfile(lockPath)).toEqual(info);
+    result.lockfile.release();
+  });
+
+  it("leaves a lock written before the current boot in place when takeOverStale is false", () => {
+    const stale = baseInfo({ pid: process.pid, startedAt: beforeBoot(), cwd: root });
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify(stale));
+
+    const result = tryAcquireLockfile({
+      root,
+      info: baseInfo({ pid: process.pid + 1, cwd: root }),
+      takeOverStale: false,
+      unlockOnExit: false,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.existing).toEqual(stale);
+    expect(readLockfile(lockPath)).toEqual(stale);
   });
 
   it("does not take over stale entries when takeOverStale is false", () => {

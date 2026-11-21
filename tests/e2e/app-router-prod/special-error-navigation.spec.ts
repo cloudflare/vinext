@@ -45,9 +45,9 @@ test("serves the RSC payload of a page that calls notFound() or redirect() from 
     { pathname: "/nextjs-compat/nav-redirect-server", digest: "NEXT_REDIRECT;", status: 200 },
   ]) {
     // The first request may already hit an entry stored by an earlier test.
-    await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS, maxRedirects: 0 });
+    await request.get(`${pathname}?_rsc`, { headers: RSC_HEADERS, maxRedirects: 0 });
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const response = await request.get(`${pathname}.rsc`, {
+    const response = await request.get(`${pathname}?_rsc`, {
       headers: RSC_HEADERS,
       maxRedirects: 0,
     });
@@ -89,7 +89,7 @@ test("serves the document of an ISR page that calls notFound() or redirect() fro
     expect(response.headers()["cache-control"]).toContain("s-maxage=60");
 
     // The same render stored the page's RSC payload, with the same status.
-    const rscResponse = await request.get(`${pathname}.rsc`, {
+    const rscResponse = await request.get(`${pathname}?_rsc`, {
       headers: RSC_HEADERS,
       maxRedirects: 0,
     });
@@ -112,7 +112,7 @@ test.describe("client navigation to a stored notFound() page", () => {
     await expect
       .poll(async () => (await request.get(target)).headers()["x-vinext-cache"])
       .toBe("HIT");
-    const rsc = await request.get(`${target}.rsc`, { headers: RSC_HEADERS });
+    const rsc = await request.get(`${target}?_rsc`, { headers: RSC_HEADERS });
     expect(rsc.status()).toBe(404);
     expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
     // vinext's internal marker for the request stage never reaches the client.
@@ -195,17 +195,17 @@ test("stores the status of an ISR page's special error from the RSC request that
   ]) {
     const rscOptions = { headers: RSC_HEADERS, maxRedirects: 0 };
     // The miss has already streamed its 200 when the status is resolved.
-    const miss = await request.get(`${pathname}.rsc`, rscOptions);
+    const miss = await request.get(`${pathname}?_rsc`, rscOptions);
     expect(miss.status(), pathname).toBe(200);
     expect(await miss.text(), pathname).toContain(digest);
 
     await expect
       .poll(async () => {
-        const response = await request.get(`${pathname}.rsc`, rscOptions);
+        const response = await request.get(`${pathname}?_rsc`, rscOptions);
         return [response.headers()["x-vinext-cache"], response.status()];
       })
       .toEqual(["HIT", rscStatus]);
-    const hit = await request.get(`${pathname}.rsc`, rscOptions);
+    const hit = await request.get(`${pathname}?_rsc`, rscOptions);
     expect(hit.headers()["location"], pathname).toBe(location);
     expect(await hit.text(), pathname).toContain(digest);
   }
@@ -253,7 +253,7 @@ test("stores the 404 document of an ISR page whose generateMetadata() calls notF
   expect(hit.status()).toBe(404);
   expect(hit.headers()["x-vinext-cache"]).toBe("HIT");
   expect(hit.headers()["cache-control"]).toContain("s-maxage=60");
-  const rsc = await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS });
+  const rsc = await request.get(`${pathname}?_rsc`, { headers: RSC_HEADERS });
   expect(rsc.status()).toBe(404);
   expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
 });
@@ -267,13 +267,13 @@ test("stores nothing from an html-limited bot's RSC request to an ISR page whose
 }) => {
   const pathname = "/nextjs-compat/isr-special-error/metadata-not-found-rsc-first-bot";
   const botRscOptions = { headers: { ...RSC_HEADERS, ...HTML_LIMITED_BOT }, maxRedirects: 0 };
-  const botMiss = await request.get(`${pathname}.rsc`, botRscOptions);
+  const botMiss = await request.get(`${pathname}?_rsc`, botRscOptions);
   expect(botMiss.headers()["x-vinext-cache"]).toBe("MISS");
   expect(await botMiss.text()).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
 
   // The bot's render stored nothing, so both requests miss.
   await new Promise((resolve) => setTimeout(resolve, 1_000));
-  const botRsc = await request.get(`${pathname}.rsc`, botRscOptions);
+  const botRsc = await request.get(`${pathname}?_rsc`, botRscOptions);
   expect(botRsc.headers()["x-vinext-cache"]).toBe("MISS");
   await botRsc.text();
   await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -288,7 +288,7 @@ test("stores nothing from an html-limited bot's RSC request to an ISR page whose
       return [response.headers()["x-vinext-cache"], response.status()];
     })
     .toEqual(["HIT", 200]);
-  const rsc = await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS });
+  const rsc = await request.get(`${pathname}?_rsc`, { headers: RSC_HEADERS });
   expect(rsc.status()).toBe(200);
   expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
 });
@@ -312,7 +312,7 @@ test("stores the 200 document of an ISR page whose generateMetadata() calls notF
   expect(html).toContain("metadata not-found streaming page");
   expect(html).toContain('<template data-dgst="NEXT_HTTP_ERROR_FALLBACK;404"');
   expect(html).toContain('<meta name="robots" content="noindex"/>');
-  const rsc = await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS });
+  const rsc = await request.get(`${pathname}?_rsc`, { headers: RSC_HEADERS });
   expect(rsc.status()).toBe(200);
   expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
   expect(await rsc.text()).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
@@ -360,7 +360,7 @@ test("regenerates an ISR page whose generateMetadata() starts calling notFound()
 test("sends an unmatched route's 404 with the never-cache policy", async ({ request }) => {
   for (const [pathname, headers] of [
     ["/nextjs-compat/isr-special-error/does-not-exist", {}],
-    ["/nextjs-compat/isr-special-error/does-not-exist.rsc", RSC_HEADERS],
+    ["/nextjs-compat/isr-special-error/does-not-exist?_rsc", RSC_HEADERS],
   ] as const) {
     const response = await request.get(pathname, { headers });
     expect(response.status(), pathname).toBe(404);
@@ -409,7 +409,7 @@ test.describe("an ISR page whose special error its loading.tsx catches", () => {
       expect(hitHtml, pathname).toContain(`<template data-dgst="${digest}`);
       expect(hitHtml, pathname).toContain(head);
 
-      const rsc = await request.get(`${pathname}.rsc`, { headers: RSC_HEADERS, maxRedirects: 0 });
+      const rsc = await request.get(`${pathname}?_rsc`, { headers: RSC_HEADERS, maxRedirects: 0 });
       expect(rsc.status(), pathname).toBe(200);
       expect(rsc.headers()["x-vinext-cache"], pathname).toBe("HIT");
       expect(rsc.headers()["location"], pathname).toBeUndefined();

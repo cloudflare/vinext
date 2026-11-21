@@ -1,5 +1,6 @@
 import http from "node:http";
 import { test, expect } from "@playwright/test";
+import { getWithHost, startRewriteUpstream } from "../helpers";
 
 // tests/fixtures/app-router-nitro-server built with `vite build` and served by
 // Nitro's Node server, which serves the static output itself.
@@ -65,6 +66,31 @@ test.describe("App Router on Nitro (node server)", () => {
     expect(response.headers["x-vinext-middleware"]).toBe("active");
   });
 
+  // Nitro's Node server keeps a `#fragment` sent on the request line; Next.js
+  // drops it before handlers run, so it never reaches the pathname-keyed entry.
+  test("drops a request-line fragment before a cached route handler", async ({
+    baseURL,
+    request,
+  }) => {
+    const planted = await new Promise<string>((resolve, reject) => {
+      http
+        .get(
+          { host: "localhost", port: new URL(baseURL!).port, path: "/api/url-fragment#planted" },
+          (res) => {
+            let body = "";
+            res.setEncoding("utf8");
+            res.on("data", (chunk: string) => (body += chunk));
+            res.on("end", () => resolve(body));
+          },
+        )
+        .on("error", reject);
+    });
+    expect(JSON.parse(planted)).toEqual({ pathname: "/api/url-fragment", hash: "" });
+
+    const visitor = await request.get("/api/url-fragment");
+    expect(await visitor.json()).toEqual({ pathname: "/api/url-fragment", hash: "" });
+  });
+
   test("serves a public file that a rewrite resolves to", async ({ request }) => {
     const response = await request.get("/rewrite-to-public");
     expect(response.status()).toBe(200);
@@ -90,5 +116,34 @@ test.describe("App Router on Nitro (node server)", () => {
     const directory = await request.get("/docs");
     expect(directory.status()).toBe(404);
     expect(await directory.text()).not.toContain("Docs from public/");
+  });
+
+  // Next.js decides whether a middleware rewrite is external against its own
+  // hostname and port. Nitro's Node server builds the request URL from the
+  // Host header, which must not make a rewrite to the host it names internal
+  // and serve the target path without middleware's check for it.
+  test("a Host header cannot turn an external middleware rewrite into an internal one", async ({
+    baseURL,
+  }) => {
+    const upstream = await startRewriteUpstream();
+    try {
+      const attack = await getWithHost(baseURL!, "/legacy/blocked.txt", upstream.host, {
+        "x-legacy-origin": `http://${upstream.host}`,
+      });
+      expect({ status: attack.status, body: attack.body }).toEqual({
+        status: 200,
+        body: "external upstream",
+      });
+      expect(upstream.hits).toEqual(["/blocked.txt"]);
+    } finally {
+      await upstream.close();
+    }
+
+    // Middleware's `new URL(path, request.url)` rewrites stay internal for any Host.
+    const rewritten = await getWithHost(baseURL!, "/rewrite-to-hello", "public.example");
+    expect({ status: rewritten.status, body: rewritten.body }).toEqual({
+      status: 200,
+      body: "Hello from public/\n",
+    });
   });
 });

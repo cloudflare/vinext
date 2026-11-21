@@ -155,6 +155,18 @@ test.describe('"use cache" file-level directive', () => {
   });
 });
 
+// cacheLife() throws for a profile next.config does not define, so these
+// render only when the configured profiles reach the dev server's RSC graph.
+test.describe("next.config cacheLife profiles in dev", () => {
+  for (const path of ["/use-cache-custom-profile", "/use-cache-overridden-profile"]) {
+    test(`${path} renders with its configured profile`, async ({ request }) => {
+      const res = await request.get(`${BASE}${path}`);
+      expect(res.status()).toBe(200);
+      expect(await res.text()).toContain(`data-testid="${path.slice(1)}-page"`);
+    });
+  }
+});
+
 test.describe('"use cache" function-level directive', () => {
   test("function-level use-cache page renders correctly", async ({ page }) => {
     await page.goto(`${BASE}/use-cache-fn-test`);
@@ -198,6 +210,25 @@ test.describe('"use cache" direct client imports', () => {
         { timeout: 2000 },
       );
     }).toPass({ timeout: 15_000 });
+  });
+
+  test("cached exports of an .mts module become callable server references", async ({ page }) => {
+    // The call is a server action request, not the module body run in the
+    // browser (dev bypasses the shared cache, so results are not compared).
+    const serverActionRequests: string[] = [];
+    page.on("request", (request) => {
+      const actionId = request.headers()["x-rsc-action"];
+      if (request.method() === "POST" && actionId) serverActionRequests.push(actionId);
+    });
+    await page.goto(`${BASE}/use-cache-client-import`);
+    await expect(async () => {
+      await page.locator("#call-client-imported-mts-cache").click();
+      await expect(page.getByTestId("client-imported-cache-result")).toHaveText(
+        /^client-mts-cache:direct:mts-cache-server-marker:[0-9.e+-]+$/,
+        { timeout: 2000 },
+      );
+    }).toPass({ timeout: 15_000 });
+    expect(serverActionRequests).not.toHaveLength(0);
   });
 
   test("default-exported server actions remain callable from cached modules", async ({ page }) => {

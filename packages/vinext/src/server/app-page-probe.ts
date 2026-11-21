@@ -1,10 +1,4 @@
 import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
-import {
-  probeAppPageLayouts,
-  type AppPageSpecialError,
-  type LayoutClassificationOptions,
-  type LayoutFlags,
-} from "./app-page-execution.js";
 import { isPromiseLike } from "../utils/promise.js";
 
 const DEFAULT_SUBTREE_PROBE_MAX_DEPTH = 32;
@@ -113,10 +107,9 @@ async function resolveReactLazyType(lazyType: ReactLazyType): Promise<unknown> {
 }
 
 /**
- * Invokes server-component children returned by a layout probe so per-layout
- * skip eligibility observes data dependencies created below the layout's
- * immediate function body. The real RSC render remains authoritative; probe
- * failures only make static-layout skip fall back to render-and-send.
+ * Invokes the server components a layout renders, so the error-path layout
+ * probe sees an HTTP access fallback thrown below the layout's own function
+ * body. The real RSC render remains authoritative.
  */
 export async function probeReactServerSubtree(
   node: unknown,
@@ -211,65 +204,4 @@ export async function probeReactServerSubtree(
   };
 
   await visit(node, 0);
-}
-
-type ProbeAppPageBeforeRenderResult = {
-  response: Response | null;
-  layoutFlags: LayoutFlags;
-};
-
-type ProbeAppPageBeforeRenderOptions = {
-  skipProbes?: boolean;
-  layoutCount: number;
-  probeLayoutAt: (layoutIndex: number) => unknown;
-  renderLayoutSpecialError: (
-    specialError: AppPageSpecialError,
-    layoutIndex: number,
-  ) => Promise<Response>;
-  resolveSpecialError: (error: unknown) => AppPageSpecialError | null;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-  /** When provided, enables per-layout static/dynamic classification. */
-  classification?: LayoutClassificationOptions | null;
-};
-
-export async function probeAppPageBeforeRender(
-  options: ProbeAppPageBeforeRenderOptions,
-): Promise<ProbeAppPageBeforeRenderResult> {
-  let layoutFlags: LayoutFlags = {};
-
-  if (options.skipProbes) {
-    return { response: null, layoutFlags };
-  }
-
-  // A layout's special error renders the boundary above that layout, so it is
-  // resolved before the render.
-  if (options.layoutCount > 0) {
-    const layoutProbeResult = await probeAppPageLayouts({
-      layoutCount: options.layoutCount,
-      async onLayoutError(layoutError, layoutIndex) {
-        const specialError = options.resolveSpecialError(layoutError);
-        if (!specialError) {
-          return null;
-        }
-
-        return options.renderLayoutSpecialError(specialError, layoutIndex);
-      },
-      probeLayoutAt: options.probeLayoutAt,
-      runWithSuppressedHookWarning(probe) {
-        return options.runWithSuppressedHookWarning(probe);
-      },
-      classification: options.classification,
-    });
-
-    layoutFlags = layoutProbeResult.layoutFlags;
-
-    if (layoutProbeResult.response) {
-      return { response: layoutProbeResult.response, layoutFlags };
-    }
-  }
-
-  // The page itself is never probed. As in Next.js, its redirect() and
-  // notFound() come from the render: before the first byte for HTML, and as a
-  // Flight digest the client router handles for RSC.
-  return { response: null, layoutFlags };
 }

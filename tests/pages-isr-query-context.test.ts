@@ -227,6 +227,20 @@ describe("Pages ISR request query context in production", () => {
     expectSharedStatusDocument(attacker.html, "/404", token);
   });
 
+  // Ported from Next.js: test/integration/500-page/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/500-page/test/index.test.ts
+  it("answers a direct request for the getStaticProps /500 page with 500", async () => {
+    // The nl document is used only here, so the shared /500 test below still
+    // starts from a cold entry.
+    const res = await fetch(`${baseUrl}${BASE_PATH}/nl/500`);
+    expect(res.status).toBe(500);
+    expect(await res.text()).toContain("Shared ISR 500");
+
+    const cached = await fetchCacheHit(`${baseUrl}${BASE_PATH}/nl/500`);
+    expect(cached.response.status).toBe(500);
+    expect(cached.html).toContain("Shared ISR 500");
+  });
+
   it("does not store the failing request's path in the shared /500 document", async () => {
     const token = "SHARED_500_PATH_TOKEN";
     const victim = await fetch(`${baseUrl}${BASE_PATH}/throws/${token}`);

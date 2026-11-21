@@ -13,7 +13,9 @@ import {
 export type MatcherConfig = string | Array<string | MiddlewareMatcherObject>;
 
 export type MiddlewareLocaleMatchContext =
-  | { kind: "defaulted"; defaultLocale: string }
+  // `restoreRootTrailingSlash` spells the defaulted root `/en/`, as Next.js's
+  // router server does under `trailingSlash` (`shouldRestoreLocaleRootTrailingSlash`).
+  | { kind: "defaulted"; defaultLocale: string; restoreRootTrailingSlash?: boolean }
   | { kind: "internal" | "literal" }
   // A raw `_next/data` URL Next.js does not normalize before matching (a stale
   // buildId). It is matched against Next.js's compiled matcher shape instead.
@@ -130,18 +132,18 @@ function matchMatcherPattern(
   if (localeContext?.kind === "next-data") {
     return matchNextDataPattern(pathname, pattern, i18nConfig, true);
   }
-  if (!i18nConfig) return matchPattern(pathname, pattern);
+  if (!i18nConfig) return matchRequestPattern(pathname, pattern);
 
   if (localeContext) {
     if (localeContext.kind === "internal") return false;
-    return matchPattern(
+    return matchRequestPattern(
       localeContext.kind === "literal" ? stripFirstPathSegment(pathname) : pathname,
       pattern,
     );
   }
 
   const localeStrippedPathname = stripLocalePrefix(pathname, i18nConfig);
-  return matchPattern(localeStrippedPathname ?? pathname, pattern);
+  return matchRequestPattern(localeStrippedPathname ?? pathname, pattern);
 }
 
 function matchObjectMatcher(
@@ -159,9 +161,30 @@ function matchObjectMatcher(
 
   const matchPathname =
     localeContext?.kind === "defaulted"
-      ? `/${localeContext.defaultLocale}${pathname === "/" ? "" : pathname}`
+      ? `/${localeContext.defaultLocale}${
+          pathname !== "/" ? pathname : localeContext.restoreRootTrailingSlash ? "/" : ""
+        }`
       : pathname;
-  return matchPattern(matchPathname, matcher.source);
+  return matchRequestPattern(matchPathname, matcher.source);
+}
+
+const APP_ROUTE_TRANSPORT_SUFFIX = "\\.rsc|\\.segments/.+\\.segment\\.rsc";
+const APP_ROUTE_TRANSPORT_SUFFIX_RE = /(?:\.rsc|\.segments\/.+\.segment\.rsc)$/;
+
+/**
+ * Next.js compiles every matcher with optional App Router transport suffixes,
+ * so a matcher for `/about` runs middleware for `/about.rsc` too. Middleware
+ * still sees the path as requested.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/analysis/get-page-static-info.ts
+ */
+function matchRequestPattern(pathname: string, source: string): boolean {
+  if (matchPattern(pathname, source)) return true;
+  if (!APP_ROUTE_TRANSPORT_SUFFIX_RE.test(pathname)) return false;
+  const transportSource =
+    source === "/"
+      ? `/(/?index(?:${APP_ROUTE_TRANSPORT_SUFFIX}))?`
+      : `${source}{(${APP_ROUTE_TRANSPORT_SUFFIX})}?`;
+  return matchPattern(pathname, transportSource);
 }
 
 function matchNextDataPattern(
@@ -178,8 +201,8 @@ function matchNextDataPattern(
 /**
  * The source Next.js compiles for a matcher: an optional `_next/data/<buildId>`
  * prefix, an internal locale segment under i18n, and an optional data suffix.
- * Next.js also accepts App Router transport suffixes, which end in `.rsc` and
- * so can never match a `.json` data URL.
+ * Its App Router transport suffixes end in `.rsc`, so they can never match a
+ * `.json` data URL.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/analysis/get-page-static-info.ts
  */
 function nextDataMatcherSource(

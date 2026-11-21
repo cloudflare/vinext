@@ -18,6 +18,9 @@ const ROUTE_OWNED_CLIENT_SHIMS = new Set([
   "dynamic-preload-chunks",
   "form",
   "image",
+  // Only image-props imports it. A group also takes in its modules'
+  // dependencies, so in "vinext" it would load ipaddr.js on every page.
+  "image-config",
   "image-props",
   "internal/hybrid-client-route-owner",
   "layout-segment-context",
@@ -27,6 +30,68 @@ const ROUTE_OWNED_CLIENT_SHIMS = new Set([
   "router",
   "script",
   "web-vitals",
+]);
+
+// Shims that only pages import: the Pages client entry and router never do.
+// Pages builds leave them to graph-based chunking so they load with the pages
+// that use them, instead of with the shared "vinext" chunk on every page. The
+// shims the entry imports stay in "vinext", so page chunks never import the
+// entry chunk. `image-config` is listed because a group also takes in its
+// modules' dependencies, so it would keep ipaddr.js in "vinext".
+const PAGE_OWNED_CLIENT_SHIMS = new Set([
+  "dynamic",
+  "dynamic-preload-chunks",
+  "form",
+  "image",
+  "image-config",
+  "image-props",
+  "legacy-image",
+  "offline",
+  "script",
+  "web-vitals",
+  // next/error imports next/navigation. The router still loads it lazily for
+  // the default error page.
+  "error",
+]);
+
+// The App Router navigation runtime: the prefetch cache, history writes and
+// navigation. Only the App Router browser entry imports it statically; next/link
+// loads it lazily and next/form imports it. Builds with Pages Router pages give
+// it a chunk of its own. In "vinext" it, and its server/ dependencies, would
+// load on every Pages Router page; left to graph-based chunking, Link's lazy App
+// Router imports would split it into many small chunks. App-only builds keep it
+// in "vinext": every page loads it, so its own chunk would be an extra request.
+const APP_ROUTER_RUNTIME_SHIMS = new Set([
+  "app-router-navigation",
+  "app-router-scroll-state",
+  "internal/app-prefetch-rsc-request",
+]);
+
+// Modules the App Router navigation runtime shares with next/link, next/router
+// and the config matchers. A group also takes in its modules' dependencies, so
+// these would otherwise join "vinext-app-router" and every page using those
+// shims would load the runtime.
+const APP_ROUTER_RUNTIME_SHARED_MODULES = new Set([
+  "client/navigation-runtime",
+  "server/headers",
+  "utils/external-url",
+  "utils/html-limited-bots",
+]);
+
+// The next/navigation hooks and the client navigation state they read. A
+// Pages-only build gives them a chunk of their own, which loads only with the
+// pages that import next/navigation or next/error. They can't join the App
+// Router runtime's chunk, which imports them: those pages would load the
+// runtime too.
+const PAGES_NAVIGATION_SHIMS = new Set([
+  "internal/navigation-untracked",
+  "internal/pages-router-accessor",
+  "navigation",
+  "navigation-context-state",
+  "navigation-errors",
+  "ppr-fallback-shell",
+  "readonly-url-search-params",
+  "unrecognized-action-error",
 ]);
 
 // Next.js emits CSS under `static/css/` as `[contenthash].css` and CSS url()
@@ -91,14 +156,26 @@ function getPackageName(id: string): string | null {
 }
 
 /**
+ * The App Router client build module that registers the client references
+ * whose modules are in the "vinext" chunk (see
+ * plugins/rsc-client-reference-loaders.ts). It joins that chunk, so it loads
+ * with the browser entry without adding to the entry's own chunk.
+ */
+export const RESOLVED_EAGER_CLIENT_REFERENCES_ID = "\0virtual:vinext-client-reference-eager";
+
+/**
  * Create a manualChunks function for client builds.
  *
  * Splits the client bundle into:
  * - "framework" — React, ReactDOM, and scheduler (loaded on every page)
  * - "vinext"    — shared vinext runtime shims
+ * - "vinext-navigation" — the next/navigation hooks, in Pages Router builds
+ * - "vinext-app-router" — the App Router navigation runtime, in builds with
+ *   Pages Router pages
  *
- * Route-owned client shims and all other vendor code are left to the bundler's
- * graph-based chunking so they stay behind their client-reference boundaries.
+ * Route-owned (App Router) or page-owned (Pages Router) client shims and all
+ * other vendor code are left to the bundler's graph-based chunking so they
+ * load only where they're used.
  *
  * Why not split every npm package into its own chunk?
  * - Per-package splitting (`vendor-X`) creates 50-200+ chunks for a
@@ -115,7 +192,15 @@ function getPackageName(id: string): string | null {
  *   well: shared dependencies between routes get their own chunks,
  *   and route-specific code stays in route chunks.
  */
-export function createClientManualChunks(shimsDir: string, preserveRouteBoundaries = false) {
+export function createClientManualChunks(
+  shimsDir: string,
+  preserveRouteBoundaries = false,
+  splitAppRouterRuntime = true,
+) {
+  // Both client entries import this hook state, and so does next/navigation.
+  // Keep it in "vinext" so a navigation chunk never imports the entry chunk.
+  const instrumentationStatePrefix = path.join(shimsDir, "../client/instrumentation-client-state.");
+  const sourceDir = toSlash(path.join(shimsDir, "../"));
   return function clientManualChunks(id: string): string | undefined {
     // Check the shims prefix before the node_modules branch: for an installed
     // copy the shims live under <app>/node_modules/vinext/dist/shims/, so the
@@ -125,15 +210,30 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
     //
     // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
     // id can carry native backslashes on Windows, so slash it before matching.
+    if (id === RESOLVED_EAGER_CLIENT_REFERENCES_ID) return "vinext";
     const slashedId = toSlash(id);
     if (slashedId.startsWith(shimsDir)) {
-      if (preserveRouteBoundaries) {
-        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
-        const extensionIndex = relativeId.lastIndexOf(".");
-        const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
-        if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
+      const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
+      const extensionIndex = relativeId.lastIndexOf(".");
+      const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+      const ownedShims = preserveRouteBoundaries
+        ? ROUTE_OWNED_CLIENT_SHIMS
+        : PAGE_OWNED_CLIENT_SHIMS;
+      if (ownedShims.has(shimName)) return undefined;
+      if (splitAppRouterRuntime && APP_ROUTER_RUNTIME_SHIMS.has(shimName)) {
+        return "vinext-app-router";
+      }
+      if (!preserveRouteBoundaries && PAGES_NAVIGATION_SHIMS.has(shimName)) {
+        return "vinext-navigation";
       }
       return "vinext";
+    }
+    if (slashedId.startsWith(instrumentationStatePrefix)) return "vinext";
+    if (slashedId.startsWith(sourceDir)) {
+      const relativeId = slashedId.slice(sourceDir.length).split("?", 1)[0] ?? "";
+      const extensionIndex = relativeId.lastIndexOf(".");
+      const moduleName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+      if (APP_ROUTER_RUNTIME_SHARED_MODULES.has(moduleName)) return "vinext";
     }
 
     // React framework — always loaded, shared across all pages.
@@ -319,14 +419,31 @@ export function findUnsupportedClientOutputFileNames(
 export function createClientCodeSplittingConfig(
   clientManualChunks: (id: string) => string | undefined,
 ) {
+  const chunkGroup = (chunkName: string) => ({
+    name(moduleId: string) {
+      return clientManualChunks(moduleId) === chunkName ? chunkName : null;
+    },
+  });
+  // A group also takes in its modules' dependencies that no earlier group has
+  // taken. Groups are ordered from the most widely loaded chunk down, so
+  // "vinext" (every page) never imports "vinext-navigation" (the pages that use
+  // next/navigation), and neither imports "vinext-app-router". They keep the
+  // default priority so user and plugin groups, merged ahead of them, still
+  // win. The next/navigation hooks are smaller than `minSize`, which would drop
+  // their chunk and leave them to the App Router runtime's.
   return {
     minSize: 10_000,
     groups: [
       {
         name(moduleId: string) {
-          return clientManualChunks(moduleId) ?? null;
+          const chunkName = clientManualChunks(moduleId);
+          return chunkName === "vinext-navigation" || chunkName === "vinext-app-router"
+            ? null
+            : (chunkName ?? null);
         },
       },
+      { ...chunkGroup("vinext-navigation"), minSize: 0 },
+      chunkGroup("vinext-app-router"),
     ],
   };
 }
@@ -515,13 +632,16 @@ export function createMultiStageChunkFileNames(
  */
 export function assertClientOutDirIsSeparate(
   root: string,
-  dirs: { clientOutDir?: string; rscOutDir?: string; ssrOutDir?: string },
+  dirs: { clientOutDir?: string; outDir?: string; rscOutDir?: string; ssrOutDir?: string },
 ): void {
   if (!dirs.clientOutDir) return;
   const clientOutDir = path.resolve(root, dirs.clientOutDir);
+  const outDir = dirs.outDir ?? "dist";
   const serverOutDirs = [
-    ["rscOutDir", dirs.rscOutDir ?? "dist/server"],
-    ["ssrOutDir", dirs.ssrOutDir ?? "dist/server/ssr"],
+    ["rscOutDir", dirs.rscOutDir ?? path.join(outDir, "server")],
+    ["ssrOutDir", dirs.ssrOutDir ?? path.join(outDir, "server", "ssr")],
+    // BUILD_ID, vinext-server.json and the prerender output live here.
+    ["the server metadata directory", path.join(outDir, "server")],
   ] as const;
   for (const [name, dir] of serverOutDirs) {
     const relative = path.relative(clientOutDir, path.resolve(root, dir));

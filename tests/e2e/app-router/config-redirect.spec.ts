@@ -11,12 +11,15 @@ import { waitForAppRouterHydration } from "../helpers";
 const BASE = "http://localhost:4174";
 
 test.describe("Config Redirects (OpenNext compat)", () => {
-  test("config redirects are applied to direct RSC requests", async ({ page }) => {
-    await page.goto(`${BASE}/redirect-test-config.rsc`);
-    expect(page.url()).toMatch(/\/about/);
-
-    const el = page.getByText("About", { exact: true });
-    await expect(el).toBeVisible();
+  test("config redirects are applied to direct RSC requests", async ({ request }) => {
+    const rsc = await request.get(`${BASE}/redirect-test-config?_rsc`, {
+      maxRedirects: 0,
+      headers: { RSC: "1" },
+    });
+    expect(rsc.status()).toBe(307);
+    const location = new URL(rsc.headers()["location"], BASE);
+    expect(location.pathname).toBe("/about");
+    expect(location.searchParams.has("_rsc")).toBe(true);
   });
 
   test("config redirects are applied to soft-nav RSC requests and update request path", async ({
@@ -134,6 +137,50 @@ test.describe("Config Redirects (OpenNext compat)", () => {
       expect(resolved.origin).toBe(BASE);
       expect(resolved.pathname).toBe("/evil.test");
     }
+  });
+
+  // A captured control character is percent-encoded in the Location; an RSC
+  // navigation must be redirected to the same path as a document request.
+  test("RSC and document redirects agree on a captured control character", async ({ request }) => {
+    const document = await request.get(`${BASE}/control-capture-redirect?x=a%0Afoo`, {
+      maxRedirects: 0,
+    });
+    const rsc = await request.get(`${BASE}/control-capture-redirect?x=a%0Afoo&_rsc`, {
+      maxRedirects: 0,
+      headers: { RSC: "1" },
+    });
+    expect(document.status()).toBe(307);
+    expect(rsc.status()).toBe(307);
+    expect(new URL(document.headers()["location"], BASE).pathname).toBe("/target/a%0Afoo");
+    expect(new URL(rsc.headers()["location"], BASE).pathname).toBe("/target/a%0Afoo");
+  });
+
+  // Next.js 16.2.7 sends the same Locations for the path, hash, host and the
+  // parsed template. It answers 500 for a non-ASCII destination query.
+  test("percent-encodes non-ASCII destination characters in the Location", async ({
+    page,
+    request,
+  }) => {
+    for (const [pathname, status, location] of [
+      [
+        "/non-ascii-redirect/%EC%84%9C%20a?x=%EC%B9%98",
+        308,
+        "/blog/%EC%B9%98%EA%B3%BC-%EC%84%9C%20a?x=%EC%B9%98#%EC%84%B9%EC%85%98",
+      ],
+      ["/non-ascii-query-redirect", 307, "/about?from=%EC%84%9C%EC%9A%B8"],
+      ["/normalized-redirect/abc", 307, "/blog/abc"],
+      ["/non-ascii-external-redirect", 307, "https://xn--3e0b707e.example/%EC%B9%98%EA%B3%BC"],
+    ] as const) {
+      const res = await request.get(`${BASE}${pathname}`, { maxRedirects: 0 });
+      expect(res.status()).toBe(status);
+      expect(res.headers()["location"]).toBe(location);
+    }
+
+    await page.goto(`${BASE}/non-ascii-redirect/%EC%84%9C`);
+    await expect(page.getByTestId("blog-page-slug")).toHaveText(
+      "Slug: %EC%B9%98%EA%B3%BC-%EC%84%9C",
+    );
+    expect(page.url()).toBe(`${BASE}/blog/%EC%B9%98%EA%B3%BC-%EC%84%9C#%EC%84%B9%EC%85%98`);
   });
 });
 

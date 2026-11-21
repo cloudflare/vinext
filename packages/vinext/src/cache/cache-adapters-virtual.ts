@@ -84,6 +84,8 @@ export type CacheAdapterBuildOutput = {
   finalizePrerenderOutput?: (output: {
     root: string;
     clientOutDir: string;
+    /** Holds vinext-prerender.json and prerendered-routes/. */
+    serverDir: string;
   }) => Promise<void> | void;
 };
 
@@ -146,12 +148,15 @@ export function hasCacheAdapterPrerenderOutput(cache?: VinextCacheConfig | null)
 export async function finalizeCacheAdapterPrerenderOutput(
   cache: VinextCacheConfig | null | undefined,
   root: string,
-  output: { clientOutDir?: string } = {},
+  output: { clientOutDir?: string; outDir?: string } = {},
 ): Promise<void> {
+  // Vite's `build.outDir`, "dist" by default.
+  const outDir = path.resolve(root, output.outDir ?? "dist");
   for (const finalize of new Set(prerenderOutputFinalizers(cache))) {
     await finalize({
       root,
-      clientOutDir: path.resolve(root, output.clientOutDir ?? "dist/client"),
+      clientOutDir: path.resolve(root, output.clientOutDir ?? path.join(outDir, "client")),
+      serverDir: path.join(outDir, "server"),
     });
   }
 }

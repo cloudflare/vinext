@@ -279,7 +279,7 @@ export function cacheabilityRequestIdentity(
   if (/(?:^|\/)_next\/data\/[^/]+\/.+\.json$/.test(url.pathname)) {
     return { representation: "pages-data", requestKey };
   }
-  const isRsc = request.headers.get(RSC_HEADER) === "1" || url.pathname.endsWith(".rsc");
+  const isRsc = request.headers.get(RSC_HEADER) === "1";
   if (!isRsc) {
     const accept = request.headers.get("Accept")?.toLowerCase() ?? "";
     return accept.includes("text/html")
@@ -318,11 +318,6 @@ export function cacheabilityRoutePathname(
   representation: CacheabilityRepresentation,
 ): string {
   const normalized = new URL(pathname, "http://vinext.local").pathname;
-  if (representation === "rsc-full" || representation === "rsc-loading-shell") {
-    return normalizeCacheabilityRoutePathname(
-      normalized.endsWith(".rsc") ? normalized.slice(0, -4) : normalized,
-    );
-  }
   if (representation !== "pages-data") return normalizeCacheabilityRoutePathname(normalized);
 
   const marker = normalized.indexOf("/_next/data/");

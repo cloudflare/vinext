@@ -85,10 +85,11 @@ test.describe("Error Boundaries", () => {
     }
   });
 
-  test("server component error renders error.tsx boundary with 200", async ({ page }) => {
+  test("server component error renders error.tsx boundary", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-server-test`);
-    // Next.js returns 200 when error.tsx catches an error (it's "handled")
-    expect(response?.status()).toBe(200);
+    // Like Next.js, an error that rejects the shell answers 500 with the error
+    // document, and the browser renders the error.tsx its payload carries.
+    expect(response?.status()).toBe(500);
     await expect(page.locator('[data-testid="server-error-boundary"]')).toBeVisible();
     await expect(page.locator('[data-testid="server-error-message"]')).toContainText(
       "Server component error",
@@ -97,12 +98,35 @@ test.describe("Error Boundaries", () => {
 
   test("nested server component error renders child error.tsx boundary", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-nested-test/child`);
-    expect(response?.status()).toBe(200);
+    expect(response?.status()).toBe(500);
     // Should render the child's error.tsx, not the parent's
     await expect(page.locator('[data-testid="inner-error-boundary"]')).toBeVisible();
     await expect(page.locator('[data-testid="inner-error-message"]')).toContainText(
       "Nested child error",
     );
+  });
+
+  test("route group error.tsx without a sibling layout catches a descendant server error", async ({
+    page,
+  }) => {
+    // Next.js loader trees attach error conventions to the segment even when
+    // that segment has no layout:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+    const response = await page.goto(`${BASE}/nextjs-compat/route-group-error/child`);
+    expect(response?.status()).toBe(500);
+    await expect(page.locator("#route-group-error-boundary")).toHaveText(
+      "Route group error boundary",
+    );
+    await expect(page.locator('[data-testid="global-error"]')).toHaveCount(0);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/global-error/error-in-global-error/error-in-global-error.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/error-in-global-error/error-in-global-error.test.ts
+  test("a global-error.tsx that throws renders the built-in fallback", async ({ page }) => {
+    const response = await page.goto(`${BASE}/nextjs-compat/global-error-self-throw`);
+    expect(response?.status()).toBe(500);
+    await expect(page.getByRole("heading", { name: "This page couldn’t load" })).toBeVisible();
+    await expect(page.locator('[data-testid="global-error"]')).toHaveCount(0);
   });
 
   test("parent route without error renders normally", async ({ page }) => {
@@ -242,6 +266,38 @@ test.describe("Not Found", () => {
     ).toBe(true);
   });
 
+  test("notFound() from a component a layout renders is caught above that layout", async ({
+    page,
+  }) => {
+    // The document fails before streaming, so it answers with the boundary
+    // above the guarded layout, not the one beside its page.
+    const response = await page.goto(
+      `${BASE}/nextjs-compat/not-found-layout-segment/en/guard/gone`,
+    );
+    expect(response?.status()).toBe(404);
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-layout")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-guard")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-guard-nf")).toHaveCount(0);
+
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Guard pass" }).click();
+    await expect(page.locator("#not-found-layout-segment-guard-page")).toHaveText(
+      "Guarded item: hello",
+    );
+    await expect(page.locator("#not-found-layout-segment-guard-ok")).toBeVisible();
+    const counter = page.locator("#not-found-layout-segment-counter");
+    await counter.click();
+    await expect(counter).toHaveText("count:1");
+
+    // A client navigation lands on the same boundary, keeping the layout above.
+    await page.getByRole("link", { name: "Guard fail" }).click();
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-guard")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-guard-nf")).toHaveCount(0);
+    await expect(counter).toHaveText("count:1");
+  });
+
   // https://github.com/cloudflare/vinext/issues/4045
   test("a layout's notFound() below a loading.tsx renders the segment boundary above it", async ({
     page,
@@ -303,6 +359,125 @@ test.describe("Not Found", () => {
     ).toBe(true);
   });
 
+  test("a page's own not-found stays beneath a modal opened from it", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-not-found/notes/missing`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#intercept-source-not-found-nf")).toBeVisible();
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    // Like Next.js, the note's segment keeps its own not-found under the modal.
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page).toHaveURL(/\/intercept-source-not-found\/photos\/1$/);
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#intercept-source-not-found-nf")).toBeVisible();
+    await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+    await expect(page.locator("#intercept-source-not-found-photo")).toHaveCount(0);
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("a page's not-found file that renders nothing stays beneath a modal opened from it", async ({
+    page,
+  }) => {
+    const response = await page.goto(
+      `${BASE}/nextjs-compat/intercept-source-not-found/notes/empty`,
+    );
+    expect(response?.status()).toBe(404);
+    await waitForAppRouterHydration(page);
+    // The segment's own not-found catches the signal, so the root's never shows.
+    await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+    await expect(page.getByText("404 - Page Not Found")).toHaveCount(0);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page).toHaveURL(/\/intercept-source-not-found\/photos\/1$/);
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+    await expect(page.getByText("404 - Page Not Found")).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  for (const { kind, path, status, selector } of [
+    {
+      kind: "not-found",
+      path: "gone",
+      status: 404,
+      selector: "#intercept-source-not-found-gone-nf",
+    },
+    {
+      kind: "forbidden",
+      path: "denied",
+      status: 403,
+      selector: "#intercept-source-not-found-denied",
+    },
+  ]) {
+    test(`a page's own ${kind} document stays beneath a modal opened from it`, async ({ page }) => {
+      // Without a loading UI the page's signal sets the document's status.
+      const response = await page.goto(
+        `${BASE}/nextjs-compat/intercept-source-not-found/notes/${path}`,
+      );
+      expect(response?.status()).toBe(status);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator(selector)).toBeVisible();
+      await page.evaluate(() => {
+        (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+      });
+
+      // Like Next.js, the note's segment keeps its own fallback under the modal.
+      await page.getByRole("link", { name: "Photo 1" }).click();
+      await expect(page).toHaveURL(/\/intercept-source-not-found\/photos\/1$/);
+      await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+      await expect(page.locator(selector)).toBeVisible();
+      await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+      await expect(page.locator("#intercept-source-not-found-photo")).toHaveCount(0);
+
+      expect(
+        await page.evaluate(
+          () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+        ),
+      ).toBe(true);
+    });
+  }
+
+  test("a page's loading UI stays beneath a modal opened while it streams", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-not-found/notes/1`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Slow note" }).click();
+    await expect(page.locator("#intercept-source-not-found-loading")).toBeVisible();
+    await expect(page).toHaveURL(/\/intercept-source-not-found\/notes\/slow$/);
+
+    // Like Next.js, the still-streaming note keeps its loading UI under the
+    // modal until it arrives.
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#intercept-source-not-found-loading")).toBeVisible();
+    await expect(page.locator("#intercept-source-not-found-note")).toHaveText(/Note: slow/, {
+      timeout: 10_000,
+    });
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
   test("a sibling intercepting page's notFound() renders the not-found beside it", async ({
     page,
   }) => {
@@ -356,6 +531,31 @@ test.describe("Not Found", () => {
     await expect(page.locator("#not-found-sibling-intercept-source-nf")).toHaveCount(0);
   });
 
+  test("a sibling intercepting layout's notFound() reaches the source segment's not-found", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-sibling-intercept`);
+    await waitForAppRouterHydration(page);
+
+    // The (.)item/[id] layout's signal skips the not-found inside it, and with
+    // none above it in the intercepting route, Next.js renders the source
+    // segment's not-found in place of the intercepting route.
+    await page.getByRole("link", { name: "Layout not found" }).click();
+    await expect(page).toHaveURL(/\/not-found-sibling-intercept\/item\/layout-missing$/);
+    await expect(
+      page.locator("#not-found-sibling-intercept-layout #not-found-sibling-intercept-source-nf"),
+    ).toBeVisible();
+    await expect(page.locator("#not-found-sibling-intercept-intercept-layout")).toHaveCount(0);
+    await expect(page.locator("#not-found-sibling-intercept-intercept-nf")).toHaveCount(0);
+
+    // It clears when the intercepted navigation moves on to another item.
+    await page.getByRole("link", { name: "Item 1" }).click();
+    await expect(page.locator("#not-found-sibling-intercept-intercepted")).toHaveText(
+      "Intercepted item: 1",
+    );
+    await expect(page.locator("#not-found-sibling-intercept-source-nf")).toHaveCount(0);
+  });
+
   test("a parallel slot's notFound() renders the same boundary in the document and on navigation", async ({
     page,
   }) => {
@@ -398,6 +598,317 @@ test.describe("Not Found", () => {
     await expect(page.locator("#not-found-layout-segment-crew-nf")).toHaveCount(0);
     await expect(page.locator("#not-found-layout-segment-roles-nf")).toHaveCount(0);
   });
+
+  test("a parallel slot's own not-found catches its notFound() inside the slot on navigation", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/ok`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#slot-own-team")).toHaveText("Team ok");
+
+    // Like Next.js, the @team slot's not-found.tsx catches its page's signal,
+    // and the route's layout and page keep rendering beside it.
+    await page.getByRole("link", { name: "Team missing" }).click();
+    await expect(page).toHaveURL(/\/team\/missing$/);
+    await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
+    await expect(page.locator("#slot-own-main")).toBeVisible();
+    await expect(page.locator("#slot-own-segment-nf")).toHaveCount(0);
+    await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
+
+    // A nested slot page without its own file is caught by the slot root's.
+    await page.getByRole("link", { name: "Members missing" }).click();
+    await expect(page).toHaveURL(/\/team\/missing\/members$/);
+    await expect(page.locator("#slot-own-main-members")).toBeVisible();
+    await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
+    await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
+
+    // A nested slot layout's own notFound() skips the not-found inside it and
+    // reaches the slot root's.
+    await page.getByRole("link", { name: "Roster missing" }).click();
+    await expect(page).toHaveURL(/\/team\/missing\/roster$/);
+    await expect(page.locator("#slot-own-main-roster")).toBeVisible();
+    await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
+    await expect(page.locator("#slot-own-roster-nf")).toHaveCount(0);
+    await expect(page.locator("#slot-own-segment-nf")).toHaveCount(0);
+
+    // It clears when the slot renders again.
+    await page.getByRole("link", { name: "Team ok" }).click();
+    await expect(page.locator("#slot-own-team")).toHaveText("Team ok");
+    await expect(page.locator("#slot-own-team-nf")).toHaveCount(0);
+  });
+
+  test("a parallel slot's own not-found catches its notFound() inside the slot in the document", async ({
+    page,
+    request,
+  }) => {
+    // Next.js sends a 404 error shell and renders the slot's own not-found in
+    // the browser, beside the rest of the route. The document renders it.
+    for (const [path, mainId] of [
+      ["team/missing", "slot-own-main"],
+      // A nested slot page without its own file is caught by the slot root's.
+      ["team/missing/members", "slot-own-main-members"],
+      // A nested slot layout's own notFound() skips the not-found inside it.
+      ["team/missing/roster", "slot-own-main-roster"],
+    ]) {
+      const response = await request.get(`${BASE}/nextjs-compat/not-found-slot-own/${path}`);
+      expect(response.status(), path).toBe(404);
+      const html = await response.text();
+      expect(html, path).toContain('id="slot-own-team-nf"');
+      expect(html, path).toContain(`id="${mainId}"`);
+      expect(html, path).toContain('<meta name="robots" content="noindex"');
+      expect(html, path).not.toContain('id="slot-own-segment-nf"');
+      expect(html, path).not.toContain('id="slot-own-root-nf"');
+      expect(html, path).not.toContain('id="slot-own-roster-nf"');
+    }
+
+    const errors: string[] = [];
+    page.on("console", (message) => {
+      // The browser logs the document's own 404.
+      if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) {
+        errors.push(message.text());
+      }
+    });
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/missing`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
+    await expect(page.locator("#slot-own-main")).toBeVisible();
+    // The boundary hydrates caught, so React doesn't recover by client rendering.
+    expect(errors).toEqual([]);
+
+    // It clears when the slot renders again, and doesn't stick on a later visit.
+    await page.getByRole("link", { name: "Team ok" }).click();
+    await expect(page.locator("#slot-own-team")).toHaveText("Team ok");
+    await expect(page.locator("#slot-own-team-nf")).toHaveCount(0);
+    await page.getByRole("link", { name: "Members missing" }).click();
+    await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
+    await page.goBack();
+    await expect(page.locator("#slot-own-team")).toHaveText("Team ok");
+  });
+
+  test("a parallel slot's default.tsx notFound() skips the slot's own not-found", async ({
+    page,
+  }) => {
+    // Next.js renders an unmatched slot as a `__DEFAULT__` segment without the
+    // slot directory's files, so @panel/not-found.tsx doesn't catch it and the
+    // not-found above the panel layout does.
+    const response = await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/panel`);
+    expect(response?.status()).toBe(404);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#slot-own-layout #slot-own-root-nf")).toBeVisible();
+    await expect(page.locator("#slot-own-panel-layout")).toHaveCount(0);
+    await expect(page.locator("#slot-own-panel-nf")).toHaveCount(0);
+    await expect(page.locator("#slot-own-panel-segment-nf")).toHaveCount(0);
+    // Like Next.js once its error shell hydrates, the title is the route's own,
+    // not a not-found's.
+    await expect(page).toHaveTitle("Slot own layout");
+
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Panel default" }).click();
+    await expect(page).toHaveURL(/\/panel$/);
+    await expect(page.locator("#slot-own-layout #slot-own-root-nf")).toBeVisible();
+    await expect(page.locator("#slot-own-panel-layout")).toHaveCount(0);
+    await expect(page.locator("#slot-own-panel-nf")).toHaveCount(0);
+    await expect(page.locator("#slot-own-panel-segment-nf")).toHaveCount(0);
+    await expect(page).toHaveTitle("Slot own layout");
+  });
+
+  test("a page's and a slot's notFound() keep the layout rendering the slot", async ({ page }) => {
+    // The team segment's not-found catches the page's inside the team layout,
+    // and the slot's own not-found catches the slot's. "late" throws the
+    // page's from below a Suspense boundary.
+    const errors: string[] = [];
+    page.on("console", (message) => {
+      // The browser logs the document's own 404.
+      if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) {
+        errors.push(message.text());
+      }
+    });
+    page.on("pageerror", (error) => errors.push(error.message));
+    for (const id of ["both", "late"]) {
+      const response = await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/${id}`);
+      expect(response?.status(), id).toBe(404);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator("#slot-own-team-layout #slot-own-segment-nf")).toBeVisible();
+      await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
+      await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
+      // The route's own title, where Turbopack's slot page's wins over the
+      // page's, never a not-found's.
+      await expect(page, id).toHaveTitle("Team slot page");
+    }
+    // Both boundaries hydrate caught, so React doesn't recover by client rendering.
+    expect(errors).toEqual([]);
+
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/ok`);
+    await waitForAppRouterHydration(page);
+    await expect(page).toHaveTitle("Team slot page");
+    for (const id of ["both", "late"]) {
+      await page.getByRole("link", { name: `Team ${id}` }).click();
+      await expect(page).toHaveURL(new RegExp(`/team/${id}$`));
+      await expect(page.locator("#slot-own-team-layout #slot-own-segment-nf")).toBeVisible();
+      await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
+      await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
+      await expect(page, id).toHaveTitle("Team slot page");
+    }
+  });
+
+  test("a layout's or a template's notFound() beside a slot's is caught above that layout", async ({
+    page,
+  }) => {
+    const cases = [
+      { link: "Team gone", path: "team/gone", layout: "#slot-own-team-layout" },
+      { link: "Template", path: "tmpl", layout: "#slot-own-tmpl-layout" },
+    ];
+    for (const { path, layout } of cases) {
+      const response = await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/${path}`);
+      expect(response?.status(), path).toBe(404);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator("#slot-own-layout #slot-own-root-nf")).toBeVisible();
+      await expect(page.locator(layout)).toHaveCount(0);
+    }
+
+    for (const { link, path, layout } of cases) {
+      await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/ok`);
+      await waitForAppRouterHydration(page);
+      await page.getByRole("link", { name: link, exact: true }).click();
+      await expect(page).toHaveURL(new RegExp(`/${path}$`));
+      await expect(page.locator("#slot-own-layout #slot-own-root-nf")).toBeVisible();
+      await expect(page.locator(layout)).toHaveCount(0);
+    }
+  });
+
+  test("a slot intercept below a slot segment keeps that segment's layout and not-found", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/ok/roster`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByRole("link", { name: "Player missing" }).click();
+    await expect(page).toHaveURL(/\/team\/ok\/roster\/player\/missing$/);
+    await expect(
+      page.locator("#slot-own-team-slot #slot-own-roster-layout #slot-own-roster-nf"),
+    ).toBeVisible();
+    await expect(page.locator("#slot-own-team-nf")).toHaveCount(0);
+
+    await page.getByRole("link", { name: "Player ok" }).click();
+    await expect(page.locator("#slot-own-roster-layout #slot-own-roster-player")).toHaveText(
+      "Player ok",
+    );
+    await expect(page.locator("#slot-own-roster-nf")).toHaveCount(0);
+  });
+
+  test("an intercepting modal's own not-found catches its notFound() inside the modal", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByRole("link", { name: "Item missing" }).click();
+    await expect(page).toHaveURL(/\/item\/missing$/);
+    await expect(page.locator("#slot-own-modal #slot-own-modal-nf")).toBeVisible();
+    // The source page stays behind the modal.
+    await expect(page.locator("#slot-own-home")).toBeVisible();
+    await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
+    // Like Next.js, a slot intercept keeps the source route's title.
+    await expect(page).toHaveTitle("Slot own layout");
+
+    await page.getByRole("link", { name: "Item ok" }).click();
+    await expect(page.locator("#slot-own-modal-item")).toHaveText("Modal item ok");
+    await expect(page.locator("#slot-own-modal-nf")).toHaveCount(0);
+    await expect(page).toHaveTitle("Slot own layout");
+
+    // The intercepted route's own document uses its page's title.
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/item/ok`);
+    await waitForAppRouterHydration(page);
+    await expect(page).toHaveTitle("Item page");
+  });
+
+  test("an intercepting modal's generateMetadata() notFound() renders its own not-found inside the modal", async ({
+    page,
+  }) => {
+    // Next.js 16.2.7 renders the MetadataOutlet in the intercepting page's
+    // segment, so the signal stays inside the modal beside the source page.
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByRole("link", { name: "Item metadata missing" }).click();
+    await expect(page).toHaveURL(/\/item\/meta-missing$/);
+    await expect(page.locator("#slot-own-modal #slot-own-modal-nf")).toBeVisible();
+    await expect(page.locator("#slot-own-home")).toBeVisible();
+    await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
+    await expect(page).toHaveTitle("Slot own layout");
+  });
+
+  for (const kind of ["forbidden", "unauthorized"]) {
+    test(`an intercepting modal's generateMetadata() ${kind}() renders its own ${kind} inside the modal`, async ({
+      page,
+    }) => {
+      // Next.js 16.2.7 (Turbopack) catches it in the intercepting page's own
+      // segment too, with the source page and its title kept.
+      await page.goto(`${BASE}/nextjs-compat/not-found-slot-own`);
+      await waitForAppRouterHydration(page);
+
+      await page.getByRole("link", { name: `Item metadata ${kind}` }).click();
+      await expect(page).toHaveURL(new RegExp(`/item/meta-${kind}$`));
+      await expect(page.locator(`#slot-own-modal #slot-own-modal-${kind}`)).toBeVisible();
+      await expect(page.locator("#slot-own-home")).toBeVisible();
+      await expect(page).toHaveTitle("Slot own layout");
+    });
+  }
+
+  test("an intercepting modal's generateMetadata() error renders its own segment's error.tsx inside the modal", async ({
+    page,
+  }) => {
+    // Next.js renders the MetadataOutlet in the intercepting page's segment,
+    // under that segment's error boundary: @modal/(.)item/[id]/error.tsx.
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByRole("link", { name: "Item metadata error" }).click();
+    await expect(page).toHaveURL(/\/item\/meta-error$/);
+    await expect(page.locator("#slot-own-modal #slot-own-modal-error")).toBeVisible();
+    await expect(page.locator("#slot-own-home")).toBeVisible();
+  });
+
+  test("a slot intercept with no page before its slot takes the intercepting page's title", async ({
+    page,
+  }) => {
+    // Next.js 16.2.7 (Turbopack) titles this navigation by the intercept:
+    // its head walk skips `children`, which renders nothing here.
+    await page.goto(`${BASE}/nextjs-compat/slot-only-intercept/first`);
+    await waitForAppRouterHydration(page);
+    await expect(page).toHaveTitle("Slot only first");
+
+    await page.getByRole("link", { name: "Photo" }).click();
+    await expect(page).toHaveURL(/\/slot-only-intercept\/photo$/);
+    await expect(page.locator("#slot-only-bar-intercept")).toBeVisible();
+    await expect(page).toHaveTitle("Slot only photo intercept");
+  });
+
+  for (const { boundary, kind } of [
+    { boundary: "nf", kind: "missing" },
+    { boundary: "forbidden", kind: "forbidden" },
+    { boundary: "unauthorized", kind: "unauthorized" },
+  ]) {
+    test(`a heading slot intercept's generateMetadata() ${kind} signal renders its own boundary in the slot`, async ({
+      page,
+    }) => {
+      // Next.js 16.2.7 (Turbopack) throws the signal in the intercepting page's
+      // segment, so its own not-found, forbidden or unauthorized file renders
+      // inside the slot, the layout stays, and the layouts title the page.
+      await page.goto(`${BASE}/nextjs-compat/slot-only-intercept/first`);
+      await waitForAppRouterHydration(page);
+
+      await page.getByRole("link", { name: `Signal ${kind}` }).click();
+      await expect(page).toHaveURL(new RegExp(`/slot-only-intercept/signal/${kind}$`));
+      await expect(
+        page.locator(`#slot-only-layout #slot-only-bar #slot-only-bar-signal-${boundary}`),
+      ).toBeVisible();
+      await expect(page.locator("#slot-only-bar-signal")).toHaveCount(0);
+      await expect(page).toHaveTitle("Slot only layout");
+    });
+  }
 });
 
 test.describe("Forbidden & Unauthorized", () => {

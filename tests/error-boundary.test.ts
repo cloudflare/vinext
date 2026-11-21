@@ -711,3 +711,49 @@ describe("HTTP access boundary reset", () => {
     }
   });
 });
+
+// Fizz has no error boundaries, so the document renders the parallel slot
+// boundaries that catch a slot's notFound() caught, from the same payload.
+describe("NotFoundBoundary caught in the document", () => {
+  it("renders its fallback when its id is caught, and its children otherwise", async () => {
+    const React = await import("react");
+    const { renderToString } = await import("react-dom/server");
+    const { NotFoundBoundary } = await import("../packages/vinext/src/shims/error-boundary.js");
+    const { withCaughtNotFoundBoundaries } =
+      await import("../packages/vinext/src/shims/caught-not-found-boundaries.js");
+    const Boundary = NotFoundBoundary as React.ComponentType<{
+      caughtId?: string;
+      children?: React.ReactNode;
+      fallback: React.ReactNode;
+    }>;
+    const boundary = (caughtId?: string) =>
+      React.createElement(
+        Boundary,
+        { caughtId, fallback: React.createElement("p", null, "slot not found") },
+        React.createElement("p", null, "slot page"),
+      );
+    const caught = {
+      ids: new Set(["slot:team:/:0", "slot:team:/:1"]),
+      rendered: new Set<string>(),
+    };
+    const render = (element: React.ReactElement) =>
+      renderToString(withCaughtNotFoundBoundaries(caught, element));
+
+    expect(render(boundary("slot:team:/:0"))).toContain("slot not found");
+    expect(render(boundary("slot:team:/:0"))).not.toContain("slot page");
+    expect(render(boundary("slot:team:/:2"))).toContain("slot page");
+    expect(render(boundary())).toContain("slot page");
+    expect(renderToString(boundary("slot:team:/:0"))).toContain("slot page");
+    expect([...caught.rendered]).toEqual(["slot:team:/:0"]);
+
+    // A caught boundary inside another never renders, so its id isn't sent.
+    caught.rendered.clear();
+    const outer = React.createElement(
+      Boundary,
+      { caughtId: "slot:team:/:0", fallback: React.createElement("p", null, "outer not found") },
+      boundary("slot:team:/:1"),
+    );
+    expect(render(outer)).toContain("outer not found");
+    expect([...caught.rendered]).toEqual(["slot:team:/:0"]);
+  });
+});

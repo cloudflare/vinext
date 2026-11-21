@@ -10,12 +10,13 @@ import type {
   CacheHandlerValue,
   CacheControlMetadata,
 } from "vinext/shims/cache-handler";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-preview.js";
 import {
+  applyPagesPrerenderRevalidateHeader,
   generatePagesETag,
   isPagesStreamingBot,
   rendersPagesNotModified,
@@ -32,7 +33,11 @@ import {
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
 import { buildNextDataPropsJsonResponse } from "./pages-data-route.js";
-import { NEXTJS_CACHE_HEADER, NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import {
+  NEXTJS_CACHE_HEADER,
+  NEXTJS_DEPLOYMENT_ID_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+} from "./headers.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -467,6 +472,23 @@ function buildPagesNotFoundResult(
   };
 }
 
+/**
+ * Write a Pages res header the way Node sends it: an array sends one header
+ * line per item, so `[]` sends none.
+ */
+export function setPagesResponseHeader(
+  headers: Headers,
+  name: string,
+  value: string | number | boolean | string[],
+): void {
+  headers.delete(name);
+  if (!Array.isArray(value)) {
+    headers.set(name, String(value));
+    return;
+  }
+  for (const item of value) headers.append(name, String(item));
+}
+
 export function mergePagesNotFoundSourceHeaders(
   response: Response,
   sourceHeaders: Record<string, string | number | boolean | string[]> | undefined,
@@ -476,14 +498,7 @@ export function mergePagesNotFoundSourceHeaders(
   const headers = new Headers(response.headers);
 
   for (const [name, value] of Object.entries(sourceHeaders)) {
-    const lowerName = name.toLowerCase();
-    if (lowerName === "set-cookie") {
-      headers.delete("set-cookie");
-      const cookies = Array.isArray(value) ? value : [value];
-      for (const cookie of cookies) headers.append("set-cookie", String(cookie));
-    } else {
-      headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
-    }
+    setPagesResponseHeader(headers, name, value);
   }
 
   return new Response(response.body, {
@@ -510,6 +525,7 @@ function applyPagesTerminalMissHeaders(
   for (const [name, value] of Object.entries(buildCacheStateHeaders("MISS"))) {
     response.headers.set(name, value);
   }
+  applyPagesPrerenderRevalidateHeader(response.headers, revalidateSeconds);
   return response;
 }
 
@@ -734,6 +750,16 @@ async function loadPagesAppInitialRenderProps(
 }
 
 /**
+ * Marks a plain 500 for a page that could not render, so the prerenderer can
+ * tell it apart from the custom `/500` page answering with its own status.
+ */
+export function markPagesPrerenderRenderError(headers: Headers): void {
+  if (typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1") {
+    headers.set(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+  }
+}
+
+/**
  * Build the response for a `getServerSideProps` / `getStaticProps`
  * `{ redirect }` result.
  *
@@ -788,6 +814,7 @@ function buildPagesRedirectResponse(
     if (options.deploymentId) {
       headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, options.deploymentId);
     }
+    markPagesPrerenderRenderError(headers);
     return new Response("Invalid redirect destination", { status: 500, headers });
   }
 
@@ -815,6 +842,16 @@ function buildPagesRedirectResponse(
       headers,
     },
   );
+}
+
+/**
+ * Next.js pages-handler.ts gives a getServerSideProps result `revalidate: 0`,
+ * so its redirect and notFound exits are answered private/no-store unless the
+ * handler set its own Cache-Control. Like Next's `!res.getHeader(...)`, this
+ * reads the raw value, so `""` and `0` count as unset.
+ */
+function applyPagesGsspCacheControlDefault(headers: Headers, res: PagesGsspResponse): void {
+  if (!res.getHeaders()["cache-control"]) headers.set("Cache-Control", NEVER_CACHE_CONTROL);
 }
 
 function getPagesGsspResponseHeaders(res: PagesGsspResponse): Headers {
@@ -1113,6 +1150,10 @@ export async function resolvePagesPageData(
   const userFacingParams: Record<string, unknown> | null = options.route.isDynamic
     ? options.params
     : null;
+  // Next.js answers a `/500` data request with the page's HTML document:
+  // "if we are rendering the error page it's not a data request anymore".
+  // Its notFound and redirect results still use the data protocol.
+  const sendsPagePropsJson = options.isDataReq === true && options.routePattern !== "/500";
 
   // Set when `getStaticPaths: { fallback: true }` is configured and the
   // requested path is NOT in the pre-rendered list. When true, we render the
@@ -1140,7 +1181,7 @@ export async function resolvePagesPageData(
     );
     const value = cached?.value.value;
     if (cached && !cached.isStale && !cached.isExpired && value?.kind === "PAGES") {
-      const response = options.isDataReq
+      const response = sendsPagePropsJson
         ? applyCachedPagesRepresentationHeaders(
             buildNextDataPropsJsonResponse(
               normalizePagesRenderProps(value.pageData as Record<string, unknown>),
@@ -1166,7 +1207,7 @@ export async function resolvePagesPageData(
       return finalizeCachedPagesResponse(
         response,
         options,
-        options.isDataReq ? undefined : value.html,
+        sendsPagePropsJson ? undefined : value.html,
       );
     }
   }
@@ -1378,6 +1419,8 @@ export async function resolvePagesPageData(
     }
 
     if (result?.redirect) {
+      const responseHeaders = getPagesGsspResponseHeaders(res);
+      applyPagesGsspCacheControlDefault(responseHeaders, res);
       return {
         kind: "response",
         response: buildPagesRedirectResponse(
@@ -1385,20 +1428,25 @@ export async function resolvePagesPageData(
           options,
           renderProps,
           "getServerSideProps",
-          getPagesGsspResponseHeaders(res),
+          responseHeaders,
         ),
       };
     }
 
     if (result?.notFound) {
       const responseHeaders = res.getHeaders();
-      return buildPagesNotFoundResult(
+      const notFoundResult = buildPagesNotFoundResult(
         options,
         undefined,
         undefined,
         undefined,
         Object.keys(responseHeaders).length > 0 ? responseHeaders : undefined,
       );
+      // The document 404 takes this default from the not-found render instead.
+      if (notFoundResult.kind === "response") {
+        applyPagesGsspCacheControlDefault(notFoundResult.response.headers, res);
+      }
+      return notFoundResult;
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`
@@ -1558,7 +1606,7 @@ export async function resolvePagesPageData(
           options,
         );
       }
-      if (options.isDataReq && cachedValue?.kind === "PAGES") {
+      if (sendsPagePropsJson && cachedValue?.kind === "PAGES") {
         const response = buildNextDataPropsJsonResponse(
           normalizePagesRenderProps(cachedValue.pageData as Record<string, unknown>),
           options.safeJsonStringify,
@@ -1587,7 +1635,7 @@ export async function resolvePagesPageData(
       cached &&
       !cached.isStale &&
       !options.scriptNonce &&
-      !options.isDataReq &&
+      !sendsPagePropsJson &&
       previewData === false
     ) {
       const hitResponse = buildPagesCacheResponse(
@@ -1597,7 +1645,7 @@ export async function resolvePagesPageData(
         undefined,
         options.expireSeconds,
         cached.value.cacheControl,
-        cachedValue.status,
+        options.statusCode ?? cachedValue.status,
         cachedValue.headers,
       );
       return finalizeCachedPagesResponse(hitResponse, options, cachedValue.html);
@@ -1613,7 +1661,7 @@ export async function resolvePagesPageData(
       (cachedValue === null ||
         cachedRedirect !== null ||
         isLegacyCachedNotFound ||
-        options.isDataReq)
+        sendsPagePropsJson)
     ) {
       scheduleStaleRegeneration();
       if (cachedValue === null)
@@ -1655,7 +1703,7 @@ export async function resolvePagesPageData(
       cached.isStale &&
       !cached.isExpired &&
       !options.scriptNonce &&
-      !options.isDataReq &&
+      !sendsPagePropsJson &&
       previewData === false
     ) {
       scheduleStaleRegeneration();
@@ -1667,7 +1715,7 @@ export async function resolvePagesPageData(
         undefined,
         options.expireSeconds,
         cached.value.cacheControl,
-        cachedValue.status,
+        options.statusCode ?? cachedValue.status,
         cachedValue.headers,
       );
       return finalizeCachedPagesResponse(staleResponse, options, cachedValue.html);
@@ -1858,7 +1906,7 @@ export async function resolvePagesPageData(
   }
 
   // The HTML render stores the entry and returns the sent response itself.
-  if (options.isDataReq) {
+  if (sendsPagePropsJson) {
     const sentResponse = await takeSentResponse();
     if (sentResponse) return sentResponse;
   }

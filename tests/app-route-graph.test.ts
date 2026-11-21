@@ -307,6 +307,7 @@ describe("App Router route graph builder", () => {
         id: "slot:children:/nested",
         ownerTreePath: "/nested",
         state: "default",
+        synthetic: true,
       });
       const subBar = subroute.parallelSlots.find((slot) => slot.name === "bar");
       const subFoo = subroute.parallelSlots.find((slot) => slot.name === "foo");
@@ -361,6 +362,7 @@ describe("App Router route graph builder", () => {
         id: "slot:children:/nested",
         ownerTreePath: "/nested",
         state: "default",
+        synthetic: true,
       });
     });
   });
@@ -395,6 +397,7 @@ describe("App Router route graph builder", () => {
         id: "slot:children:/dashboard/team",
         ownerTreePath: "/dashboard/team",
         state: "default",
+        synthetic: true,
       });
       expect(
         graph.routeManifest.segmentGraph.slotBindings.get(
@@ -632,6 +635,11 @@ describe("App Router route graph builder", () => {
 
         // Children fall through to the sibling catch-all (not null → no hang).
         expect(baz.pagePath).toBe(canonical(appDir, "[...catchAll]/page.tsx"));
+        // Its children slot is active, but its segments name the slot page,
+        // not the catch-all, unlike a real page's.
+        expect(baz.childrenSlot).toMatchObject({ state: "active", synthetic: true });
+        expect(findRoute(graph.routes, "/foo").childrenSlot).toMatchObject({ state: "active" });
+        expect(findRoute(graph.routes, "/foo").childrenSlot?.synthetic).toBeUndefined();
 
         // The @slot slot resolves to the explicit @slot/baz page, not the
         // slot's catch-all.

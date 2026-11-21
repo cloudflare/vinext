@@ -56,6 +56,10 @@ test.describe("image optimization source behind middleware", () => {
       expect(image.headers()["content-security-policy"], source).toBe(
         "script-src 'none'; frame-src 'none'; sandbox;",
       );
+      // Next.js's image policy at the default `images.minimumCacheTTL`.
+      expect(image.headers()["cache-control"], source).toBe(
+        "public, max-age=14400, must-revalidate",
+      );
       expect(Buffer.from(await image.body()).equals(heartPng), source).toBe(true);
     }
   });
@@ -72,7 +76,9 @@ test.describe("image optimization source behind middleware", () => {
     for (const source of ["/logo.svg", "/logo.svg?.png"]) {
       const svg = await request.get(imagePath(source));
       expect(svg.status(), source).toBe(400);
-      expect(await svg.text(), source).toBe("The requested resource is not an allowed image type");
+      expect(await svg.text(), source).toBe(
+        '"url" parameter is valid but image type is not allowed',
+      );
     }
   });
 });

@@ -1,7 +1,7 @@
-import { AppElementsWire } from "./app-elements.js";
+import { AppElementsWire, isSameOriginRefreshPathname } from "./app-elements.js";
 import type { TraverseDirection } from "./navigation-planner.js";
 import { isNonNegativeSafeInteger } from "../utils/number.js";
-import { isBfcacheSegmentId } from "./app-bfcache-id.js";
+import { isBfcacheSegmentId } from "./app-bfcache-identity.js";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
@@ -329,11 +329,11 @@ export function createAppOwnedHistoryState(state: unknown): unknown {
 
 export function createHistoryStateWithTreeSnapshotId(
   state: unknown,
-  treeSnapshotId: number | null,
+  treeSnapshotId: string | null,
 ): unknown {
   const nextState = cloneHistoryState(state);
   const previousTreeSnapshotId = readHistoryStateTreeSnapshotId(nextState);
-  if (isNonNegativeSafeInteger(treeSnapshotId)) {
+  if (isTreeSnapshotId(treeSnapshotId)) {
     nextState[VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY] = treeSnapshotId;
     if (previousTreeSnapshotId !== treeSnapshotId) {
       delete nextState[VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY];
@@ -363,9 +363,13 @@ export function clearHistoryStateTreeSnapshotId(state: unknown): unknown {
   return createHistoryStateWithTreeSnapshotId(state, null);
 }
 
-export function readHistoryStateTreeSnapshotId(state: unknown): number | null {
+export function readHistoryStateTreeSnapshotId(state: unknown): string | null {
   const value = readHistoryStateRecord(state)?.[VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY];
-  return isNonNegativeSafeInteger(value) ? value : null;
+  return isTreeSnapshotId(value) ? value : null;
+}
+
+function isTreeSnapshotId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 export function readHistoryStateActiveRoutePaths(state: unknown): readonly string[] | null {
@@ -373,25 +377,23 @@ export function readHistoryStateActiveRoutePaths(state: unknown): readonly strin
   if (!Array.isArray(value)) return null;
   const paths: string[] = [];
   for (const entry of value) {
-    if (
-      typeof entry !== "string" ||
-      !entry.startsWith("/") ||
-      entry.startsWith("//") ||
-      entry.includes("?") ||
-      entry.includes("#") ||
-      entry.includes("\\") ||
-      entry.includes("\0")
-    ) {
-      return null;
-    }
+    if (!isSameOriginRefreshPathname(entry)) return null;
     paths.push(entry);
   }
   return paths.length > 0 ? [...new Set(paths)] : null;
 }
 
+/**
+ * The pathnames, without basePath, at which a refresh or traversal refetches
+ * the active slots: the URL of the navigation that rendered each slot, which
+ * the client records on its binding. The slots the current page rendered carry
+ * its own URL, which the refresh request already covers. A binding without
+ * one falls back to its route path.
+ */
 export function resolveActiveRoutePaths(
   slotBindings: readonly {
     activeRouteId?: string | null;
+    refreshPathname?: string;
     state: string;
   }[],
 ): string[] {
@@ -399,7 +401,9 @@ export function resolveActiveRoutePaths(
   for (const binding of slotBindings) {
     if (binding.state !== "active" || binding.activeRouteId == null) continue;
     const route = AppElementsWire.parseElementKey(binding.activeRouteId);
-    if (route?.kind === "route" && route.interceptionContext === null) paths.add(route.path);
+    if (route?.kind === "route" && route.interceptionContext === null) {
+      paths.add(binding.refreshPathname ?? route.path);
+    }
   }
   return [...paths];
 }

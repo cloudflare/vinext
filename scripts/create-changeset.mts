@@ -88,6 +88,9 @@ export function maxBump(a: Bump | null, b: Bump | null): Bump | null {
   return BUMP_ORDER.indexOf(a) <= BUMP_ORDER.indexOf(b) ? a : b;
 }
 
+/** A package's own tests, which never ship and so never release the package. */
+const PACKAGE_TEST_PATH = /(^|\/)tests\/|\.(test|spec)\.[cm]?[jt]sx?$/;
+
 /** Affected publishable package names for the given changed paths, sorted. */
 export function affectedPackages(
   changedPaths: string[],
@@ -100,7 +103,9 @@ export function affectedPackages(
     const norm = path.replace(/\\/g, "/");
     for (const dir of dirs) {
       if (norm.startsWith(`${dir}/`)) {
-        affected.add(packageDirToName[dir]);
+        if (!PACKAGE_TEST_PATH.test(norm.slice(dir.length + 1))) {
+          affected.add(packageDirToName[dir]);
+        }
         break;
       }
     }

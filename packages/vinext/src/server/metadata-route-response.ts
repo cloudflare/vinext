@@ -6,6 +6,7 @@ import {
   robotsToText,
   sitemapToXml,
   type ManifestConfig,
+  metadataRouteLinkSearch,
   type MetadataFileRoute,
   type RobotsConfig,
   type SitemapEntry,
@@ -18,13 +19,21 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
-import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
+import { runStaticParamsGeneration } from "./static-params-generation.js";
+import {
+  coalesceOnDemandResponse,
+  isrCacheControl,
+  type ISRCacheEntry,
+  type IsrWritePolicy,
+} from "./isr-cache.js";
 import {
   buildAppRouteCacheValue,
   buildRouteHandlerCachedResponse,
+  stripRouteHandlerFramingHeaders,
 } from "./app-route-handler-response.js";
 import {
   _consumeRequestScopedCacheLife,
+  _isOnDemandRevalidate,
   type CacheLifeConfig,
 } from "vinext/shims/cache-request-state";
 import {
@@ -44,6 +53,7 @@ import {
   recordRouteCacheability,
 } from "vinext/shims/cacheability-classification";
 import {
+  applyCdnResponseBuildIdentityHeaders,
   applyCdnResponseHeaders,
   hasCdnResponsePolicy,
   NEVER_CACHE_CONTROL,
@@ -62,7 +72,7 @@ import {
 import { completeAppRouteHandlerResponse } from "./app-route-handler-execution.js";
 import { buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
-import { decodeMatchedParams } from "../routing/utils.js";
+import { decodeMatchedParams, normalizePathnameForRouteMatch } from "../routing/utils.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type MetadataRouteFunction = (props: Record<string, unknown>) => unknown;
@@ -94,6 +104,11 @@ type MetadataRouteRequestOptions = {
   isrRouteKey?: (pathname: string) => string;
   isrSet?: MetadataRouteCacheSetter;
   makeThenableParams: MetadataRouteMakeThenableParams;
+  /**
+   * The pathname params are read from. A direct request passes its raw path
+   * here and its decoded path as `cleanPathname`; a rewrite passes its
+   * destination, still percent-encoded, as both.
+   */
   routePathname?: string;
   scheduleBackgroundRegeneration?: MetadataRouteBackgroundRegenerator;
 };
@@ -117,6 +132,18 @@ export type PrerenderableMetadataRoute = {
   routePattern: string;
   routeSegments: string[];
 };
+
+/**
+ * A metadata route for CDN warming: its concrete paths, the raw
+ * `generateStaticParams` results to fill into `routePattern`, or, when dynamic
+ * paths aren't enumerated, the shape of the paths it serves (`params` fills
+ * `routePattern`, `image` adds an image id, `sitemap` replaces `.xml` with
+ * `/<id>.xml`). `search` is the query a page links it with.
+ */
+export type WarmableMetadataRoute = { routePattern: string; search?: string } & (
+  | { paths: string[] }
+  | { staticParams: unknown }
+);
 
 type RenderedMetadataRoute = {
   browserCacheControl?: string;
@@ -203,10 +230,11 @@ function beginMetadataRouteCacheability(route: MetadataRuntimeRoute): void {
     });
     replaceHeadersContext(staticContext);
   }
-  beginRouteCacheability(
-    "app-route",
-    route.patternParts ? `/${route.patternParts.join("/")}` : route.servedUrl,
-  );
+  beginRouteCacheability("app-route", metadataRouteCacheabilityPattern(route));
+}
+
+function metadataRouteCacheabilityPattern(route: MetadataRuntimeRoute): string {
+  return route.patternParts ? `/${route.patternParts.join("/")}` : route.servedUrl;
 }
 
 function getMetadataRouteFunctions(route: MetadataRuntimeRoute): MetadataRouteFunctions {
@@ -240,6 +268,26 @@ function getMetadataRouteFunctions(route: MetadataRuntimeRoute): MetadataRouteFu
   return functions;
 }
 
+/**
+ * Next.js compiles a metadata route into a Route Handler, and under a dynamic
+ * segment its build stores it only when the route's own module generates its
+ * params or is `force-static`/`error` (collectAppRouteSegments reads no parent
+ * layout). Its metadata loader adds generateStaticParams for
+ * generateImageMetadata. Probed on next@16.2.7: a parent layout's
+ * generateStaticParams, `revalidate` or `dynamicParams` leave the route
+ * dynamic. Generated sitemaps are only served below a static prefix.
+ */
+function isMetadataRouteStaticGenEnabled(route: MetadataRuntimeRoute): boolean {
+  if (!route.isDynamic || !route.patternParts) return true;
+  const functions = getMetadataRouteFunctions(route);
+  return (
+    route.module?.dynamic === "force-static" ||
+    route.module?.dynamic === "error" ||
+    functions.generateStaticParams !== null ||
+    functions.generateImageMetadata !== null
+  );
+}
+
 function isUseCacheFunction(value: MetadataRouteFunction | null): boolean {
   return value !== null && Reflect.get(value, USE_CACHE_FUNCTION_SYMBOL) === true;
 }
@@ -269,17 +317,11 @@ export async function getPrerenderableMetadataRoutePaths(
       continue;
     }
 
-    const entries = await functions.generateSitemaps({});
-    if (!Array.isArray(entries)) continue;
-    const sitemapPrefix = route.servedUrl.slice(0, -4);
-    for (const entry of entries) {
-      if (!isObject(entry) || Reflect.get(entry, "id") == null) {
-        throw new Error("id property is required for every item returned from generateSitemaps");
-      }
-      const id = String(Reflect.get(entry, "id"));
-      if (!id || id.includes("/")) continue;
+    const generateSitemaps = functions.generateSitemaps;
+    const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}));
+    for (const path of generatedSitemapPaths(route, sitemaps)) {
       paths.push({
-        path: `${sitemapPrefix}/${encodeURIComponent(id)}.xml`,
+        path,
         routePattern: route.servedUrl,
         routeSegments: route.routeSegments ?? [],
       });
@@ -287,6 +329,138 @@ export async function getPrerenderableMetadataRoutePaths(
   }
 
   return paths;
+}
+
+/**
+ * Runs one of a metadata route's generators for discovery the way Next.js'
+ * build does, through the generateStaticParams its metadata loader gives the
+ * route: request APIs throw, and the discovery request's state stays its own.
+ */
+function runMetadataRouteGenerator<T>(
+  route: MetadataRuntimeRoute,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return runStaticParamsGeneration(
+    route.module ?? {},
+    metadataRouteCacheabilityPattern(route),
+    route.routeSegments ?? [],
+    fn,
+  );
+}
+
+/**
+ * The items a generator returned. Next.js' generated generateStaticParams
+ * iterates them with `for...of`, so a result that isn't iterable fails the
+ * build.
+ */
+function generatorItems(result: unknown, generator: string): Iterable<unknown> {
+  if (result == null || typeof Reflect.get(Object(result), Symbol.iterator) !== "function") {
+    throw new TypeError(`${generator}() must return an array`);
+  }
+  return result as Iterable<unknown>;
+}
+
+function generatedSitemapPaths(route: MetadataRuntimeRoute, entries: unknown): string[] {
+  const sitemapPrefix = route.servedUrl.slice(0, -4);
+  const paths: string[] = [];
+  for (const entry of generatorItems(entries, "generateSitemaps")) {
+    if (!isObject(entry) || Reflect.get(entry, "id") == null) {
+      throw new Error("id property is required for every item returned from generateSitemaps");
+    }
+    const id = String(Reflect.get(entry, "id"));
+    if (!id || id.includes("/")) continue;
+    paths.push(`${sitemapPrefix}/${encodeURIComponent(id)}.xml`);
+  }
+  return paths;
+}
+
+function generatedImagePaths(route: MetadataRuntimeRoute, imageMetadata: unknown): string[] {
+  const paths: string[] = [];
+  for (const item of generatorItems(imageMetadata, "generateImageMetadata")) {
+    if (!isObject(item) || Reflect.get(item, "id") == null) {
+      throw new Error("id property is required for every item returned from generateImageMetadata");
+    }
+    // The request handler serves only valid ids (findGeneratedImageId).
+    const id = String(Reflect.get(item, "id"));
+    if (isValidMetadataImageId(id)) paths.push(`${route.servedUrl}/${id}`);
+  }
+  return paths;
+}
+
+/**
+ * List the code-generated metadata routes a Next.js build prerenders, for CDN
+ * warming. Next.js compiles each into a GET Route Handler that is static
+ * unless it uses a request-time API or dynamic config (`dynamic =
+ * "force-dynamic"`, `revalidate = 0`); a render that turns out dynamic is
+ * left to the warm-up's cacheability check. Like any Route Handler, one under
+ * a dynamic segment is prerendered only for its own `generateStaticParams`
+ * (collectAppRouteSegments reads no page or layout).
+ * `generateSitemaps` and `generateImageMetadata` give the ids below a static
+ * prefix; under a dynamic segment their ids lack the segment's params, so none
+ * is prerendered. Probed on next@16.2.7 with webpack and Turbopack.
+ *
+ * Without `enumerateDynamicPaths` (traffic-aware warming), a route whose paths
+ * need generating is skipped.
+ *
+ * Static metadata files are always static, at the hash this build links them
+ * with.
+ */
+export async function getWarmableMetadataRoutes(
+  metadataRoutes: readonly MetadataRuntimeRoute[],
+  options: { enumerateDynamicPaths: boolean },
+): Promise<WarmableMetadataRoute[]> {
+  const routes: WarmableMetadataRoute[] = [];
+
+  for (const route of metadataRoutes) {
+    const search = metadataRouteLinkSearch(route);
+    const base = {
+      routePattern: metadataRouteCacheabilityPattern(route),
+      ...(search ? { search } : {}),
+    };
+    if (!route.isDynamic) {
+      routes.push({ ...base, paths: [route.servedUrl] });
+      continue;
+    }
+    if (route.module?.dynamic === "force-dynamic" || route.module?.revalidate === 0) continue;
+    const functions = getMetadataRouteFunctions(route);
+    if (!functions.defaultExport) continue;
+
+    const generatesPaths =
+      (route.type === "sitemap" && functions.generateSitemaps) ||
+      functions.generateImageMetadata ||
+      route.patternParts;
+    // Without enumeration (traffic-aware warming), only one-URL routes are
+    // listed; generating the others' paths is left to request time.
+    if (generatesPaths && !options.enumerateDynamicPaths) continue;
+
+    if (route.type === "sitemap" && functions.generateSitemaps) {
+      if (route.patternParts) continue;
+      const generateSitemaps = functions.generateSitemaps;
+      const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}));
+      routes.push({ ...base, paths: generatedSitemapPaths(route, sitemaps) });
+    } else if (functions.generateImageMetadata) {
+      if (route.patternParts) continue;
+      // Next.js's generated generateStaticParams passes its plain params.
+      const generateImageMetadata = functions.generateImageMetadata;
+      const imageMetadata = await runMetadataRouteGenerator(route, async () =>
+        generateImageMetadata({ params: {} }),
+      );
+      routes.push({ ...base, paths: generatedImagePaths(route, imageMetadata) });
+    } else if (route.patternParts) {
+      const generateStaticParams = functions.generateStaticParams;
+      if (!generateStaticParams) continue;
+      const staticParams = await runMetadataRouteGenerator(route, async () =>
+        generateStaticParams({ params: {} }),
+      );
+      // JSON drops an undefined value, so send null to keep the route named in
+      // the discovery error.
+      routes.push({ ...base, staticParams: staticParams ?? null });
+    } else {
+      routes.push({ ...base, paths: [route.servedUrl] });
+    }
+  }
+
+  return routes;
 }
 
 function getCachedMetadataRouteValue(entry: ISRCacheEntry | null): CachedRouteValue | null {
@@ -347,12 +521,15 @@ async function captureRenderedMetadataRoute(
   const frameworkRevalidate = Math.min(observedCacheLife?.revalidate ?? Infinity, revalidate);
   const cacheLife = { ...observedCacheLife, revalidate: frameworkRevalidate };
   const cacheable =
-    (response.status < 400 || response.status === 404) &&
+    // Like Next.js's ResponseCache, an on-demand revalidation stores whatever
+    // status the route answers with, as route handlers do.
+    (_isOnDemandRevalidate() || response.status < 400 || response.status === 404) &&
     completed &&
     !isRenderDynamicLatched() &&
     !getActiveDraftModeState() &&
     !hasDraftModeCookieHeader() &&
     route.module?.dynamic !== "force-dynamic" &&
+    isMetadataRouteStaticGenEnabled(route) &&
     frameworkRevalidate > 0 &&
     !response.headers.has("set-cookie");
   const cacheControl = cacheable
@@ -447,24 +624,65 @@ async function runMetadataRouteRegeneration(
   }
 }
 
+/** The outer ISR key for a matched metadata route, or null if it's never cached. */
+function getOuterMetadataCacheKey(
+  options: MetadataRouteRequestOptions,
+  route: MetadataRuntimeRoute,
+): string | null {
+  if (
+    !isOuterMetadataCacheEnabled() ||
+    !options.isrRouteKey ||
+    getActiveDraftModeState() ||
+    hasDraftModeCookieHeader() ||
+    route.module?.dynamic === "force-dynamic" ||
+    route.module?.revalidate === 0 ||
+    !isMetadataRouteStaticGenEnabled(route)
+  ) {
+    return null;
+  }
+  return options.isrRouteKey(options.cleanPathname);
+}
+
+/**
+ * Renders a matched metadata route that wasn't served from the cache, and
+ * stores it. Concurrent on-demand revalidations of one entry share a single
+ * render, as Next.js batches ResponseCache work by its key and
+ * isOnDemandRevalidate.
+ */
+async function renderMetadataRouteMiss(
+  options: MetadataRouteRequestOptions,
+  route: MetadataRuntimeRoute,
+  render: () => Promise<RenderedMetadataRoute | null>,
+  cachedEntry: ISRCacheEntry | null,
+): Promise<Response | null> {
+  const renderAndStore = async () => {
+    const rendered = await render();
+    if (!rendered) return null;
+    await writeMetadataRouteMiss(options, route, rendered, cachedEntry);
+    return stripRouteHandlerFramingHeaders(rendered.response);
+  };
+  const routeKey = _isOnDemandRevalidate() ? getOuterMetadataCacheKey(options, route) : null;
+  if (routeKey === null || !options.isrSet) return renderAndStore();
+  // A metadata route answers every method with the same response.
+  return coalesceOnDemandResponse(routeKey, "GET", renderAndStore);
+}
+
 async function readMatchedPrerenderedMetadataRouteResponse(
   options: MetadataRouteRequestOptions,
   route: MetadataRuntimeRoute,
   render: () => Promise<RenderedMetadataRoute | null>,
 ): Promise<{ cachedEntry: ISRCacheEntry | null; response: Response | null }> {
+  const routeKey = getOuterMetadataCacheKey(options, route);
   if (
-    !isOuterMetadataCacheEnabled() ||
+    routeKey === null ||
     !options.isrGet ||
-    !options.isrRouteKey ||
-    getActiveDraftModeState() ||
-    hasDraftModeCookieHeader() ||
-    route.module?.dynamic === "force-dynamic" ||
-    route.module?.revalidate === 0
+    // Like Next.js's ResponseCache, an authorized on-demand revalidation never
+    // serves the stored entry: it renders in the foreground and stores that.
+    _isOnDemandRevalidate()
   ) {
     return { cachedEntry: null, response: null };
   }
 
-  const routeKey = options.isrRouteKey(options.cleanPathname);
   let cached: ISRCacheEntry | null;
   try {
     cached = await options.isrGet(routeKey);
@@ -557,19 +775,6 @@ function matchMetadataRoute(
   return cleanPathname === route.servedUrl ? { params: null, imageId: null } : null;
 }
 
-function metadataRouteParamNames(patternParts: readonly string[]): string[] {
-  return patternParts.flatMap((part) => {
-    if (!part.startsWith(":")) return [];
-    return [part.slice(1, part.endsWith("+") || part.endsWith("*") ? -1 : undefined)];
-  });
-}
-
-function metadataRouteOptionalCatchAllParamNames(patternParts: readonly string[]): string[] {
-  return patternParts.flatMap((part) =>
-    part.startsWith(":") && part.endsWith("*") ? [part.slice(1, -1)] : [],
-  );
-}
-
 function metadataRouteRawParams(
   route: MetadataRuntimeRoute,
   match: MatchedMetadataRoute,
@@ -603,22 +808,16 @@ function metadataRouteRawParams(
   return params;
 }
 
+/** Like Next.js' generated sitemap GET, which reads every item with `for...of`. */
 function findGeneratedSitemapId(entries: unknown, rawId: string): string | null {
-  if (!Array.isArray(entries)) {
-    return null;
-  }
-
-  for (const entry of entries) {
+  let found: string | null = null;
+  for (const entry of generatorItems(entries, "generateSitemaps")) {
     if (!isObject(entry) || Reflect.get(entry, "id") == null) {
       throw new Error("id property is required for every item returned from generateSitemaps");
     }
-    const id = Reflect.get(entry, "id");
-    if (String(id) === rawId) {
-      return rawId;
-    }
+    if (String(Reflect.get(entry, "id")) === rawId) found = rawId;
   }
-
-  return null;
+  return found;
 }
 
 function makeThenableMetadataRouteId(id: string) {
@@ -871,19 +1070,57 @@ async function writeMetadataRouteMiss(
 }
 
 export async function handleMetadataRouteRequest(
-  options: MetadataRouteRequestOptions,
+  requestOptions: MetadataRouteRequestOptions,
 ): Promise<Response | null> {
+  // Like a Route Handler response, a metadata route response carries the
+  // adapter's build identity, which deploy warm-up checks against the staged
+  // version.
+  const response = await renderMetadataRouteRequest(requestOptions);
+  return response ? applyCdnResponseBuildIdentityHeaders(response) : null;
+}
+
+async function renderMetadataRouteRequest(
+  requestOptions: MetadataRouteRequestOptions,
+): Promise<Response | null> {
+  // Serve a rewrite like a direct request to its destination: match, key and
+  // tag the decoded pathname, and read params from the encoded one, so an
+  // entry only holds the params its key spells. Next.js keys the resolved
+  // pathname: a rewrite shares the destination's entry, and a double-encoded
+  // spelling of it keeps its own.
+  const options =
+    requestOptions.routePathname === requestOptions.cleanPathname
+      ? {
+          ...requestOptions,
+          cleanPathname: normalizePathnameForRouteMatch(requestOptions.cleanPathname),
+        }
+      : requestOptions;
   // `cleanPathname` is invariant across the loop, so its split is computed
   // lazily and memoized: only dynamic (`patternParts`) routes need it, and the
   // common case of zero dynamic metadata routes never splits at all.
   let urlParts: string[] | undefined;
   const getUrlParts = () => (urlParts ??= options.cleanPathname.split("/").filter(Boolean));
+  // Next.js selects a metadata route by the pathname as sent, like any App
+  // route, so `/%70ortal/sitemap.xml` is not `/portal/sitemap.xml`. The
+  // decoded `cleanPathname` still supplies the match, cache key and tags.
+  const routePathname = options.routePathname ?? options.cleanPathname;
+  let routeUrlParts: string[] | undefined;
+  const getRouteUrlParts = () => (routeUrlParts ??= routePathname.split("/").filter(Boolean));
+  // The shared cache entry under `cleanPathname` belongs to the first route
+  // the decoded pathname names. Once the raw pathname skips that route, a later
+  // one renders without reading or writing the entry.
+  let cacheOptions = options;
+  const skipDecodedOwner = () => {
+    cacheOptions = { ...options, isrGet: undefined, isrRouteKey: undefined, isrSet: undefined };
+  };
 
   for (const route of options.metadataRoutes) {
     const functions = getMetadataRouteFunctions(route);
     if (route.type === "sitemap" && route.isDynamic) {
       if (functions.generateSitemaps) {
-        if (isGeneratedSitemapPath(route, options.cleanPathname)) {
+        if (!isGeneratedSitemapPath(route, options.cleanPathname)) continue;
+        if (!isGeneratedSitemapPath(route, routePathname)) {
+          skipDecodedOwner();
+        } else {
           beginMetadataRouteCacheability(route);
           const render = async (): Promise<RenderedMetadataRoute | null> => {
             setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
@@ -892,13 +1129,19 @@ export async function handleMetadataRouteRequest(
               ? captureRenderedMetadataRoute(response, route, options.cleanPathname)
               : null;
           };
-          const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
+          const cached = await readMatchedPrerenderedMetadataRouteResponse(
+            cacheOptions,
+            route,
+            render,
+          );
           if (cached.response) return cached.response;
-          const rendered = await render();
-          if (rendered) {
-            await writeMetadataRouteMiss(options, route, rendered, cached.cachedEntry);
-            return rendered.response;
-          }
+          const response = await renderMetadataRouteMiss(
+            cacheOptions,
+            route,
+            render,
+            cached.cachedEntry,
+          );
+          if (response) return response;
         }
 
         // Next.js serves only generated sitemap children when generateSitemaps()
@@ -908,13 +1151,15 @@ export async function handleMetadataRouteRequest(
     }
 
     const match = matchMetadataRoute(route, options.cleanPathname, functions, getUrlParts);
-    if (!match) {
+    if (!match) continue;
+    if (!matchMetadataRoute(route, routePathname, functions, getRouteUrlParts)) {
+      skipDecodedOwner();
       continue;
     }
     beginMetadataRouteCacheability(route);
 
     const rawParams = route.patternParts
-      ? metadataRouteRawParams(route, match, options.routePathname ?? options.cleanPathname)
+      ? metadataRouteRawParams(route, match, routePathname)
       : Object.create(null);
     if (route.patternParts) {
       const runtimeParams = { ...rawParams };
@@ -929,7 +1174,7 @@ export async function handleMetadataRouteRequest(
         : serveStaticMetadataRoute(route);
       return captureRenderedMetadataRoute(response, route, options.cleanPathname);
     };
-    const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
+    const cached = await readMatchedPrerenderedMetadataRouteResponse(cacheOptions, route, render);
     if (cached.response) return cached.response;
 
     // A deployment stores only the params it allows, so a cached response
@@ -938,23 +1183,25 @@ export async function handleMetadataRouteRequest(
     if (route.isDynamic && isImageMetadataRoute(route) && functions.dynamicParams === false) {
       const validationParams = { ...rawParams };
       canonicalizeAppPageParams(validationParams);
-      const { validateAppPageDynamicParams } = await import("./app-page-request.js");
+      const {
+        routePatternOptionalCatchAllParamNames,
+        routePatternParamNames,
+        validateAppPageDynamicParams,
+      } = await import("./app-page-request.js");
       const dynamicParamsResponse = await validateAppPageDynamicParams({
         enforceStaticParamsOnly: true,
         generateStaticParams: functions.generateStaticParams,
         isDynamicRoute: Boolean(route.patternParts),
-        optionalCatchAllParamNames: metadataRouteOptionalCatchAllParamNames(
+        optionalCatchAllParamNames: routePatternOptionalCatchAllParamNames(
           route.patternParts ?? [],
         ),
         params: validationParams,
-        requiredParamNames: metadataRouteParamNames(route.patternParts ?? []),
+        requiredParamNames: routePatternParamNames(route.patternParts ?? []),
       });
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }
 
-    const rendered = await render();
-    await writeMetadataRouteMiss(options, route, rendered, cached.cachedEntry);
-    return rendered.response;
+    return renderMetadataRouteMiss(cacheOptions, route, render, cached.cachedEntry);
   }
 
   return null;

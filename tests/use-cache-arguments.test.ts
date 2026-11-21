@@ -144,14 +144,16 @@ describe("use cache argument identity", () => {
             };
     const fn = vi.fn(async (_value: unknown) => crypto.randomUUID());
     const cached = registerCachedFunction(fn, "test:binary-path");
-    const first = await cached(wrap(file("blob", "X", 111)));
-    expect(await cached(wrap(file("other", "X", 222)))).toBe(first);
+    // A Blob reaches the multipart reply as a File named "blob".
+    const first = await cached(wrap(file("blob", "X", 111, "")));
+    expect(await cached(wrap(file("blob", "X", 222, "")))).toBe(first);
     expect(await cached(wrap(new Blob(["X"])))).toBe(first);
+    expect(await cached(wrap(file("other", "X", 111, "")))).not.toBe(first);
     const blob = await cached(wrap(new Blob(["Y"])));
     expect(blob).not.toBe(first);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(await cached(wrap(new Blob(["Y"])))).toBe(blob);
-    expect(fn).toHaveBeenCalledTimes(2);
+    expect(fn).toHaveBeenCalledTimes(3);
   });
 
   const describeFile = async (value: File) => ({
@@ -170,17 +172,29 @@ describe("use cache argument identity", () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
-  // Like Next.js (use-cache-wrapper.ts, `encodeFormData`), only a File's bytes
-  // are keyed, so a File differing only in metadata reuses the entry.
+  // Like Next.js (use-cache-wrapper.ts, `encodeFormData`), a File's name and
+  // MIME type are keyed with its bytes, since the cached function observes them.
   it.each([
     ["name", () => file("public.txt")],
-    ["timestamp", () => file("private.txt", "", 333)],
     ["type", () => file("private.txt", "", 111, "application/pdf")],
-  ])("reuses the entry for a File differing only in %s", async (_label, different) => {
+  ])("serves a File differing only in %s its own entry", async (_label, different) => {
     const fn = vi.fn(describeFile);
     const cached = registerCachedFunction(fn, "test:file-metadata");
     const first = await cached(file());
-    expect(await cached(different())).toEqual(first);
+    const second = different();
+    const expected = { ...(await describeFile(second)), lastModified: 111 };
+    expect(first).not.toEqual(expected);
+    expect(await cached(second)).toEqual(expected);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  // lastModified defaults to the construction time and does not survive a
+  // multipart submission, so Next.js leaves it out of the key.
+  it("reuses the entry for a File differing only in timestamp", async () => {
+    const fn = vi.fn(describeFile);
+    const cached = registerCachedFunction(fn, "test:file-timestamp");
+    const first = await cached(file());
+    expect(await cached(file("private.txt", "", 333))).toEqual(first);
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
@@ -197,13 +211,15 @@ describe("use cache argument identity", () => {
         return form;
       },
     ],
-  ])("keys File bytes, not metadata, inside a %s", async (_label, wrap) => {
+  ])("keys File bytes, name and type, not timestamp, inside a %s", async (_label, wrap) => {
     const fn = vi.fn(async (_value: unknown) => crypto.randomUUID());
     const cached = registerCachedFunction(fn, "test:nested-file");
     const first = await cached(wrap(file()));
     expect(await cached(wrap(file("private.txt", "X")))).not.toBe(first);
+    expect(await cached(wrap(file("public.txt")))).not.toBe(first);
+    expect(await cached(wrap(file("private.txt", "", 111, "application/pdf")))).not.toBe(first);
     expect(await cached(wrap(file("private.txt", "", 333)))).toBe(first);
-    expect(fn).toHaveBeenCalledTimes(2);
+    expect(fn).toHaveBeenCalledTimes(4);
   });
 
   // Adapted from Next.js's "should cache complex args" regression:
@@ -227,6 +243,44 @@ describe("use cache argument identity", () => {
     expect(await cached(input(0xa1))).toBe(first);
     expect(fn).toHaveBeenCalledTimes(2);
   });
+
+  it.each([
+    ["Blob", (bytes: Uint8Array<ArrayBuffer>) => new Blob([bytes])],
+    ["File", (bytes: Uint8Array<ArrayBuffer>) => new File([bytes], "id.bin")],
+    ["ArrayBuffer", (bytes: Uint8Array<ArrayBuffer>) => bytes.buffer],
+    ["typed array", (bytes: Uint8Array<ArrayBuffer>) => bytes],
+    ["DataView", (bytes: Uint8Array<ArrayBuffer>) => new DataView(bytes.buffer)],
+    [
+      "FormData",
+      (bytes: Uint8Array<ArrayBuffer>) => {
+        const form = new FormData();
+        form.append("id", new Blob([bytes]));
+        return form;
+      },
+    ],
+  ])(
+    "serves %s callers differing only in a trailing zero byte their own entries",
+    async (_label, wrap) => {
+      const short = () => new Uint8Array([0x44]);
+      const long = () => new Uint8Array([0x44, 0x00]);
+      for (const [first, second] of [
+        [short, long],
+        [long, short],
+      ]) {
+        setCacheHandler(new MemoryCacheHandler());
+        const fn = vi.fn(async (value: unknown) => {
+          const binary = value instanceof FormData ? value.get("id") : value;
+          if (binary instanceof Blob) return binary.size;
+          if (binary instanceof ArrayBuffer || ArrayBuffer.isView(binary)) return binary.byteLength;
+          throw new Error("unexpected argument");
+        });
+        const cached = registerCachedFunction(fn, "test:binary-length");
+        expect(await cached(wrap(first()))).toBe(first().length);
+        expect(await cached(wrap(second()))).toBe(second().length);
+        expect(fn).toHaveBeenCalledTimes(2);
+      }
+    },
+  );
 
   it("serves each Map-scoped caller its own entry", async () => {
     const fn = vi.fn(async (scope: Map<string, string>) => `record:${scope.get("tenant")}`);
@@ -569,4 +623,26 @@ describe("binary cache key framing", () => {
       expect(await replyToCacheKey(first)).not.toBe(await replyToCacheKey(second));
     },
   );
+
+  const binaryReply = (bytes: number[]) => {
+    const form = new FormData();
+    form.append("0", new Blob([new Uint8Array(bytes)]));
+    return form;
+  };
+
+  it.each([
+    [[0x44], [0x44, 0x00]],
+    [[0x44], [0x00, 0x44]],
+    [[], [0x00]],
+  ])("keys binary entries by their exact bytes (%j vs %j)", async (first, second) => {
+    expect(await replyToCacheKey(binaryReply(first))).not.toBe(
+      await replyToCacheKey(binaryReply(second)),
+    );
+  });
+
+  it("distinguishes a binary entry from a string entry", async () => {
+    const text = new FormData();
+    text.append("0", "D");
+    expect(await replyToCacheKey(binaryReply([0x44]))).not.toBe(await replyToCacheKey(text));
+  });
 });

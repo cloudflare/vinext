@@ -82,3 +82,55 @@ test.describe("Config destination query params (Pages Router production)", () =>
     }
   });
 });
+
+test.describe("Config redirect captured control characters (Pages Router production)", () => {
+  // The server percent-encodes the captured LF in its Location; a soft
+  // navigation must follow the redirect to the same path.
+  test("client navigation and the server agree on the redirect path", async ({ page, request }) => {
+    const res = await request.get(`${BASE}/control-capture-redirect?x=a%0Afoo`, {
+      maxRedirects: 0,
+    });
+    expect(res.status()).toBe(307);
+    expect(new URL(res.headers()["location"], BASE).pathname).toBe("/target/a%0Afoo");
+
+    await page.goto(`${BASE}/`);
+    await waitForHydration(page);
+    const documentRequest = page.waitForRequest(
+      (req) => req.isNavigationRequest() && new URL(req.url()).pathname.startsWith("/target/"),
+    );
+    await page.evaluate(() => {
+      void (
+        window as unknown as { next: { router: { push(url: string): Promise<boolean> } } }
+      ).next.router.push("/control-capture-redirect?x=a%0Afoo");
+    });
+    expect(new URL((await documentRequest).url()).pathname).toBe("/target/a%0Afoo");
+  });
+});
+
+test.describe("Config redirect non-ASCII destinations (Pages Router production)", () => {
+  // Next.js 16.2.7 sends the same Locations for the path, hash, host and the
+  // parsed template. It answers 500 for a non-ASCII destination query.
+  test("percent-encodes non-ASCII destination characters in the Location", async ({
+    page,
+    request,
+  }) => {
+    for (const [pathname, status, location] of [
+      [
+        "/non-ascii-redirect/%EC%84%9C%20a?x=%EC%B9%98",
+        308,
+        "/docs/%EC%B9%98%EA%B3%BC/%EC%84%9C%20a?x=%EC%B9%98#%EC%84%B9%EC%85%98",
+      ],
+      ["/non-ascii-query-redirect", 307, "/about?from=%EC%84%9C%EC%9A%B8"],
+      ["/normalized-redirect/abc", 307, "/docs/abc"],
+      ["/non-ascii-external-redirect", 307, "https://xn--3e0b707e.example/%EC%B9%98%EA%B3%BC"],
+    ] as const) {
+      const res = await request.get(`${BASE}${pathname}`, { maxRedirects: 0 });
+      expect(res.status()).toBe(status);
+      expect(res.headers()["location"]).toBe(location);
+    }
+
+    await page.goto(`${BASE}/non-ascii-redirect/%EC%84%9C`);
+    await expect(page.getByTestId("docs-slug")).toHaveText("Path: 치과/서");
+    expect(page.url()).toBe(`${BASE}/docs/%EC%B9%98%EA%B3%BC/%EC%84%9C#%EC%84%B9%EC%85%98`);
+  });
+});

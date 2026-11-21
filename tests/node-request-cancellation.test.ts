@@ -1,6 +1,7 @@
 import http from "node:http";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { queryObjects } from "node:v8";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { Logger, ViteDevServer } from "vite";
 import {
@@ -545,6 +546,20 @@ describe.each(targets)(
           aborted: false,
           reason: null,
         });
+      }, 30_000);
+
+      // Undici's FinalizationRegistry strongly holds the signal each Request
+      // follows until that request is collected, so nothing the host signal
+      // retains may follow it.
+      it("frees each request once its response is done", async () => {
+        // Each count runs a full GC. A FinalizationRegistry only releases what
+        // it held for collected targets in a task between two of them.
+        const liveRequests = () => queryObjects(Request, { format: "count" });
+        const before = liveRequests();
+        for (let i = 0; i < 200; i++) {
+          expect(await readProbe(baseUrl, probePath, "gc")).toBeNull();
+        }
+        await expect.poll(liveRequests, { timeout: 10_000 }).toBeLessThan(before + 50);
       }, 30_000);
     });
   },

@@ -32,6 +32,23 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
     stopFixtureDevServer(server?.process);
   });
 
+  test("hints every script with the CSP nonce on first and later requests", async ({ request }) => {
+    // plugin-rsc hints a client component's scripts without the nonce, which
+    // the fixture's `script-src 'nonce-…'` policy blocks.
+    for (const route of ["/dynamic-preload", "/top-level-await"]) {
+      for (const pass of ["first", "second"]) {
+        const response = await request.get(`${BASE_URL}${route}`);
+        expect(response.status()).toBe(200);
+        const preloads = (await response.text()).match(/<link\b[^>]*\brel="modulepreload"[^>]*>/g);
+        expect(preloads?.length, `${route} (${pass})`).toBeGreaterThan(1);
+        expect(
+          preloads!.filter((tag) => !tag.includes('nonce="vinext-test-nonce"')),
+          `${route} (${pass})`,
+        ).toEqual([]);
+      }
+    }
+  });
+
   test("preloads dynamic assets with the CSP nonce in a pure App Worker", async ({
     page,
     consoleErrors,

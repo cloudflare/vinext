@@ -35,6 +35,7 @@ import {
 import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
 import type { RenderObservation } from "./cache-proof.js";
 import { PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER } from "../utils/protocol-headers.js";
+import { logRequestError } from "./request-error-log.js";
 export { normalizeMountedSlotsHeader };
 
 /**
@@ -250,6 +251,41 @@ export function coalesceOnDemandRevalidation<T>(
 }
 
 /**
+ * Coalesce same-key on-demand revalidations whose render answers with a
+ * Response, or null for no match. Every caller gets its own copy of the one
+ * render's response. `method` is the request method the response answers.
+ */
+export async function coalesceOnDemandResponse<R extends Response | null>(
+  key: string,
+  method: string,
+  renderFn: () => Promise<R>,
+): Promise<R> {
+  const snapshot = await coalesceOnDemandRevalidation(key, async () => {
+    const response = await renderFn();
+    if (!response) return null;
+    const hasBody =
+      method !== "HEAD" &&
+      response.status !== 204 &&
+      response.status !== 205 &&
+      response.status !== 304;
+    // An omitted body is released rather than held until it's collected.
+    if (!hasBody) await response.body?.cancel();
+    return {
+      body: hasBody ? new Uint8Array(await response.arrayBuffer()) : null,
+      headers: [...response.headers.entries()] as Array<[string, string]>,
+      status: response.status,
+      statusText: response.statusText,
+    };
+  });
+  if (!snapshot) return null as R;
+  return new Response(snapshot.body?.slice() ?? null, {
+    headers: snapshot.headers,
+    status: snapshot.status,
+    statusText: snapshot.statusText,
+  }) as R;
+}
+
+/**
  * Trigger a background regeneration for a cache key.
  *
  * If a regeneration for this key is already in progress, this is a no-op.
@@ -281,7 +317,11 @@ export function triggerBackgroundRegeneration(
 
   const promise = renderFn()
     .catch(async (err) => {
-      console.error(`[vinext] ISR background regeneration failed for ${key}:`, err);
+      const message = `[vinext] ISR background regeneration failed for ${key}:`;
+      // Without a context the failure isn't reported, so VINEXT_QUIET doesn't
+      // silence it.
+      if (errorContext) logRequestError(message, err);
+      else console.error(message, err);
       if (errorContext && (errorContext.shouldReport?.(err) ?? true)) {
         await reportRequestError(
           err,

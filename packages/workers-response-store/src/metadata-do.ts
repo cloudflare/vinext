@@ -23,6 +23,11 @@ type PublicationResult = {
   edgePurgeRequired: boolean;
   entry: StoredEntry | null;
   published: boolean;
+  /**
+   * Published stale, or expired: generated before an invalidation, or with no fresh window
+   * left by this transaction's clock.
+   */
+  publishedStale?: true;
 };
 
 type WriteReservation = {
@@ -38,19 +43,39 @@ type RegenerationReservation = {
 
 export type PurgeReservation = {
   backingStoreUpdated: boolean;
+  /** The alarm sends the queued edge work at the requested flush time, not the caller. */
+  edgeFlushScheduled?: true;
   pendingTombstones: number;
   tombstoneSequence: number;
 };
 
-type TombstoneDrainResult = {
+/** The revision a refresh read stale, and the expiration of the soft tags that read saw. */
+export type RefreshedRevision = {
+  revision: number;
+  tags?: string[];
+  tagExpiration?: number;
+};
+
+/** A backlog's flush runs send only edge work queued before its first run started. */
+type EdgeFlushBacklog = {
+  queuedThrough: number;
+  /** The earliest flush that work queued during the backlog scheduled. */
+  flushAt?: number;
+};
+
+type TombstoneFlush = { state: "none" | "queued" | "backlog"; flushAt?: number };
+
+export type TombstoneDrainResult = {
   cursor?: string;
+  /** The alarm sends the purged entries' edge purges at the requested flush time. */
+  edgeFlushScheduled?: true;
   failures: string[];
   pending: PurgedEntry[];
   purged: PurgedEntry[];
 };
 
 type R2TombstoneEdgePurger = {
-  purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<boolean>;
+  purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<PurgedEntry[]>;
 };
 
 export type CacheMetadataStub = DurableObjectStub & {
@@ -96,8 +121,14 @@ export type CacheMetadataStub = DurableObjectStub & {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey?: string,
+    replaces?: RefreshedRevision,
   ): Promise<PublicationResult>;
-  invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
+  invalidatePublishedRevision(
+    keyHash: string,
+    revision: number,
+    edgeFlushAt?: number,
+  ): Promise<TombstoneDrainResult>;
+  queueEdgePurge(keyHash: string, revision: number, edgeFlushAt: number): Promise<boolean>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
   getTagExpiration(tags: string[]): Promise<number>;
   findRefreshCandidates(options: ResponseStoreRefreshOptions): Promise<StoredEntry[]>;
@@ -108,11 +139,13 @@ export type CacheMetadataStub = DurableObjectStub & {
   purgeMatching(
     options: ResponseStorePurgeOptions,
     invalidatedAt?: number,
+    edgeFlushAt?: number,
   ): Promise<PurgeReservation>;
   invalidateMatching(
     options: Pick<ResponseStoreInvalidateOptions, "tags" | "pathPrefixes">,
     invalidatedAt: number,
     expiresAt?: number,
+    edgeFlushAt?: number,
   ): Promise<PurgeReservation>;
   drainPendingTombstones(
     limit: number,
@@ -149,6 +182,8 @@ type EntryRow = Record<string, SqlStorageValue> & {
   expiry_behavior: string | null;
   cache_tags: string | null;
   tombstoned: number;
+  replaced_revision: number | null;
+  invalidated_revision: number | null;
 };
 
 type PurgeEntryRow = Pick<EntryRow, "key_hash" | "cache_key" | "latest_revision" | "object_key">;
@@ -172,10 +207,22 @@ const REFRESHABLE_ENTRY = `tombstoned = 0 AND active_revision IS NOT NULL
   AND object_key IS NOT NULL AND response_headers IS NOT NULL
   AND fresh_until IS NOT NULL AND swr_until IS NOT NULL`;
 
+// Invalidations before schema 9 weren't recorded, so an entry from before it counts the revision
+// active at the upgrade as one. Rewriting every entry would make the migration scale with the
+// table, so they're marked by the column's default instead, and publish() resolves the mark from
+// the active revision it replaces. Until then the entry has no replaced revision to compare it to.
+// The mark is newer than any revision, so code from before it, after a rollback, never drops a
+// refresh over a marked entry. Upgraded stores keep the default, so inserts into entries name the
+// column; older code that doesn't marks its new entries too, which at worst lets a duplicate
+// refresh land.
+const PRE_UPGRADE_INVALIDATED_REVISION = Number.MAX_SAFE_INTEGER;
 const MAX_SQL_PARAMETERS = 100;
 const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
 const ORPHAN_CLEANUP_LIMIT = 100;
 const ORPHAN_CLEANUP_RETRY_MS = 60 * 1000;
+// A multiple of the 100 tags a Workers Cache purge takes, so a flush's requests are full.
+const PENDING_TOMBSTONE_FLUSH_LIMIT = 400;
+const EDGE_FLUSH_BACKLOG_KEY = "edgeFlushBacklog";
 const MAX_R2_CAS_ATTEMPTS = 3;
 
 type CacheMetadataEnv = {
@@ -298,7 +345,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           revalidator_args TEXT,
           expiry_behavior TEXT,
           cache_tags TEXT,
-          tombstoned INTEGER NOT NULL DEFAULT 0
+          tombstoned INTEGER NOT NULL DEFAULT 0,
+          replaced_revision INTEGER,
+          invalidated_revision INTEGER
         );
         CREATE INDEX IF NOT EXISTS entries_cache_key ON entries(cache_key);
         CREATE INDEX IF NOT EXISTS entries_active_object_key
@@ -321,7 +370,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           tag TEXT PRIMARY KEY,
           invalidated_at INTEGER NOT NULL,
           invalidation_sequence INTEGER NOT NULL DEFAULT 0,
-          expires_at INTEGER
+          expires_at INTEGER,
+          stale_at INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS metadata_schema_migrations (
           version INTEGER PRIMARY KEY
@@ -362,12 +412,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         const migrations = new Set(
           ctx.storage.sql
             .exec<{ version: number }>(
-              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8)",
+              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9, 10)",
             )
             .toArray()
             .map(({ version }) => version),
         );
-        if (migrations.size === 7) return;
+        if (migrations.size === 9) return;
 
         const schemas = ctx.storage.sql
           .exec<{ name: string; sql: string }>(
@@ -471,6 +521,26 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           }
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (8)");
         }
+        if (!migrations.has(9)) {
+          const entries = schemas.find(({ name }) => name === "entries")?.sql;
+          if (!entries?.includes("replaced_revision")) {
+            ctx.storage.sql.exec(`
+              ALTER TABLE entries ADD COLUMN replaced_revision INTEGER;
+              ALTER TABLE entries ADD COLUMN invalidated_revision INTEGER
+                DEFAULT ${PRE_UPGRADE_INVALIDATED_REVISION};
+            `);
+          }
+          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (9)");
+        }
+        if (!migrations.has(10)) {
+          const tagInvalidations = schemas.find(({ name }) => name === "tag_invalidations")?.sql;
+          if (!tagInvalidations?.includes("stale_at")) {
+            ctx.storage.sql.exec(
+              "ALTER TABLE tag_invalidations ADD COLUMN stale_at INTEGER NOT NULL DEFAULT 0",
+            );
+          }
+          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (10)");
+        }
       });
       ctx.storage.sql.exec(`
         CREATE INDEX IF NOT EXISTS pending_r2_tombstones_r2_pending
@@ -499,6 +569,30 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       await this.ctx.storage.setAlarm(scheduledTime);
     }
     this.cleanupAlarmKnown = true;
+  }
+
+  /**
+   * Schedule the alarm that retries queued R2 and edge work, or with `edgeFlushAt` sends the edge
+   * work then. Returns whether the alarm sends it, so the caller sends it otherwise.
+   */
+  private async scheduleEdgeFlush(edgeFlushAt?: number): Promise<boolean> {
+    try {
+      if (edgeFlushAt !== undefined) {
+        // A backlog's reruns replace the alarm, so its last run restores this flush.
+        const backlog = await this.ctx.storage.get<EdgeFlushBacklog>(EDGE_FLUSH_BACKLOG_KEY);
+        if (backlog && (backlog.flushAt ?? Infinity) > edgeFlushAt) {
+          await this.ctx.storage.put<EdgeFlushBacklog>(EDGE_FLUSH_BACKLOG_KEY, {
+            ...backlog,
+            flushAt: edgeFlushAt,
+          });
+        }
+      }
+      await this.scheduleCleanupAlarm(edgeFlushAt ?? Date.now() + ORPHAN_CLEANUP_RETRY_MS);
+      return edgeFlushAt !== undefined;
+    } catch (error) {
+      this.logCleanupFailure(error);
+      return false;
+    }
   }
 
   private logCleanupFailure(error: unknown): void {
@@ -714,9 +808,34 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   async alarm(): Promise<void> {
     try {
-      if (await this.retryPendingTombstones()) {
+      const remaining = await this.flushPendingTombstones();
+      if (remaining.state === "backlog") {
         await this.ctx.storage.setAlarm(Date.now());
         this.cleanupAlarmKnown = true;
+        return;
+      }
+      if (remaining.state === "queued") {
+        // Work queued while this ran scheduled its own flush, which a backlog's reruns replaced
+        // and this restores, or its caller is sending it now. A flush it scheduled stays, so the
+        // work isn't sent ahead of its batch; otherwise this backs up its caller. R2 work left
+        // over, which reads see, is retried within the minute either way.
+        const flushAt = Math.min(
+          remaining.flushAt ?? Infinity,
+          (await this.ctx.storage.getAlarm()) ?? Infinity,
+        );
+        const r2Pending =
+          this.ctx.storage.sql
+            .exec<{
+              pending: number;
+            }>(
+              "SELECT EXISTS(SELECT 1 FROM pending_r2_tombstones WHERE r2_complete = 0) AS pending",
+            )
+            .one().pending === 1;
+        await this.scheduleCleanupAlarm(
+          flushAt === Infinity || r2Pending
+            ? Math.min(flushAt, Date.now() + ORPHAN_CLEANUP_RETRY_MS)
+            : flushAt,
+        );
         return;
       }
       await this.sweepExpiredPendingObjects();
@@ -727,31 +846,80 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           error: error instanceof Error ? error.message : String(error),
         }),
       );
-      await this.ctx.storage.setAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
-      this.cleanupAlarmKnown = true;
+      // Work queued since this started keeps an earlier flush it scheduled, and work queued during
+      // a backlog the flush it recorded.
+      const backlog = await this.ctx.storage.get<EdgeFlushBacklog>(EDGE_FLUSH_BACKLOG_KEY);
+      await this.scheduleCleanupAlarm(
+        Math.min(backlog?.flushAt ?? Infinity, Date.now() + ORPHAN_CLEANUP_RETRY_MS),
+      );
     }
   }
 
   async retryPendingTombstones(): Promise<boolean> {
-    const drained = await this.drainPendingTombstones(400);
+    return (await this.flushPendingTombstones()).state !== "none";
+  }
+
+  /** Whether R2 or edge work is left once this run's batch is flushed, and why. */
+  private async flushPendingTombstones(): Promise<TombstoneFlush> {
+    const backlog = await this.ctx.storage.get<EdgeFlushBacklog>(EDGE_FLUSH_BACKLOG_KEY);
+    // Edge work queued while this runs, or the backlog it continues, waits for the flush it
+    // scheduled.
+    const queuedThrough = backlog?.queuedThrough ?? this.tombstoneSequence();
+    const drained = await this.drainPendingTombstones(PENDING_TOMBSTONE_FLUSH_LIMIT);
     if (drained.failures.length) {
       throw new AggregateError(
         drained.failures.map((failure) => new Error(failure)),
         "R2 tombstone cleanup failed",
       );
     }
-    const edgeEntries = this.listPendingEdgePurges(400);
+    // Purges and invalidations are separate requests, so each kind gets a full flush's worth.
+    const edgeBatches = [0, 1].map((edgeInvalidate) =>
+      this.ctx.storage.sql
+        .exec<PendingTombstoneRow>(
+          `SELECT * FROM pending_r2_tombstones
+          WHERE r2_complete = 1 AND edge_purge_complete = 0 AND edge_invalidate = ?
+            AND tombstone_sequence <= ?
+          ORDER BY key_hash LIMIT ?`,
+          edgeInvalidate,
+          queuedThrough,
+          PENDING_TOMBSTONE_FLUSH_LIMIT,
+        )
+        .toArray()
+        .map(pendingEntryFromRow),
+    );
+    const edgeEntries = edgeBatches.flat();
     if (edgeEntries.length) {
-      if (!(await this.getR2TombstoneEdgePurger().purgeR2TombstoneEdges(edgeEntries))) {
+      const accepted = await this.getR2TombstoneEdgePurger().purgeR2TombstoneEdges(edgeEntries);
+      // The retry sends only the requests that weren't accepted.
+      if (accepted.length) this.markTombstonesEdgePurged(accepted);
+      if (accepted.length < edgeEntries.length) {
         throw new Error("Workers Response Store cache purge is unavailable");
       }
-      this.markTombstonesEdgePurged(edgeEntries);
     }
-    return (
+    if (
+      drained.pending.length === PENDING_TOMBSTONE_FLUSH_LIMIT ||
+      edgeBatches.some((batch) => batch.length === PENDING_TOMBSTONE_FLUSH_LIMIT)
+    ) {
+      // The backlog's rerun replaces any flush that work queued during this run scheduled.
+      const scheduled = (await this.ctx.storage.getAlarm()) ?? Infinity;
+      const flushAt = Math.min(backlog?.flushAt ?? Infinity, scheduled);
+      await this.ctx.storage.put<EdgeFlushBacklog>(EDGE_FLUSH_BACKLOG_KEY, {
+        queuedThrough,
+        ...(flushAt === Infinity ? {} : { flushAt }),
+      });
+      return { state: "backlog" };
+    }
+    if (backlog) await this.ctx.storage.delete(EDGE_FLUSH_BACKLOG_KEY);
+    const queued =
       this.ctx.storage.sql
-        .exec<{ pending: number }>("SELECT EXISTS(SELECT 1 FROM pending_r2_tombstones) AS pending")
-        .one().pending === 1
-    );
+        .exec<{
+          pending: number;
+        }>("SELECT EXISTS(SELECT 1 FROM pending_r2_tombstones) AS pending")
+        .one().pending === 1;
+    return {
+      state: queued ? "queued" : "none",
+      ...(backlog?.flushAt === undefined ? {} : { flushAt: backlog.flushAt }),
+    };
   }
 
   async claimRevalidation(
@@ -830,7 +998,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
     if (!current) {
       this.ctx.storage.sql.exec(
-        "INSERT INTO entries (key_hash, cache_key, latest_revision, tombstoned) VALUES (?, ?, ?, 1)",
+        `INSERT INTO entries (key_hash, cache_key, latest_revision, tombstoned, invalidated_revision)
+        VALUES (?, ?, ?, 1, NULL)`,
         keyHash,
         cacheKey,
         revision,
@@ -988,6 +1157,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey = metadata.objectKey,
+    replaces?: RefreshedRevision,
   ): Promise<PublicationResult> {
     return this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
@@ -1015,6 +1185,20 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         current.pending_publishable !== 1 ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
+        // Another refresh of the revision this one read is already published and fresh. Like
+        // Next.js, any other write still lands, last writer wins. Once that refresh is stale,
+        // so is its edge copy, and this one lands without a purge, which also heals a key
+        // whose winning refresh never reached R2. After an invalidation or purge of the key,
+        // or of the soft tags the caller checked when reading (e.g. revalidatePath()), the two
+        // may straddle it, so both land.
+        (replaces !== undefined &&
+          current.replaced_revision === replaces.revision &&
+          (current.invalidated_revision === null ||
+            current.invalidated_revision <= replaces.revision) &&
+          current.fresh_until !== null &&
+          Date.now() < current.fresh_until &&
+          (replaces.tags === undefined ||
+            this.getTagExpiration(replaces.tags) <= replaces.tagExpiration!)) ||
         (claimId !== undefined &&
           (current.claim_id !== claimId ||
             current.claim_revision !== revision ||
@@ -1044,14 +1228,43 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
       // Like Next.js, a tag's pending `expire` deadline also expires entries
       // published before it.
-      const deadline = this.getTagExpiryDeadline(metadata.cacheTags, Date.now());
-      const freshUntil = Math.min(metadata.freshUntil, deadline);
-      const swrUntil = Math.min(metadata.swrUntil, deadline);
+      const now = Date.now();
+      const deadline = this.getTagExpiryDeadline(metadata.cacheTags, now);
+      let freshUntil = Math.min(metadata.freshUntil, deadline);
+      let swrUntil = Math.min(metadata.swrUntil, deadline);
+      // Like Next.js "use cache", an entry whose generation started before its tags were
+      // purged, or before an `expire` deadline that has since passed, lands expired, and one
+      // that started before they were invalidated lands stale. Only an invalidation between
+      // generation start and the write's reservation gets here: the fence above drops a write
+      // reserved before one. Workers clocks are coarse and frozen between I/O, so an
+      // invalidation in the same millisecond as the start counts as after it.
+      let startedBeforeInvalidation = false;
+      if (metadata.generatedAt !== undefined) {
+        if (
+          this.getTagInvalidationMaximum(metadata.cacheTags, "invalidated_at") >=
+            metadata.generatedAt ||
+          this.hasTagExpiredSince(metadata.cacheTags, metadata.generatedAt, now)
+        ) {
+          freshUntil = Math.min(freshUntil, now);
+          swrUntil = Math.min(swrUntil, now);
+          startedBeforeInvalidation = true;
+        } else if (
+          this.getTagInvalidationMaximum(metadata.cacheTags, "stale_at") >= metadata.generatedAt
+        ) {
+          freshUntil = Math.min(freshUntil, now);
+          startedBeforeInvalidation = true;
+        }
+      }
       const update = this.ctx.storage.sql.exec<{ key_hash: string }>(
         `UPDATE entries SET
           active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
           fresh_until = ?, swr_until = ?,
-          revalidator_id = ?, revalidator_args = ?, expiry_behavior = ?, cache_tags = ?, tombstoned = 0
+          revalidator_id = ?, revalidator_args = ?, expiry_behavior = ?, cache_tags = ?, tombstoned = 0,
+          replaced_revision = ?,
+          invalidated_revision = CASE invalidated_revision
+            WHEN ${PRE_UPGRADE_INVALIDATED_REVISION} THEN active_revision
+            ELSE invalidated_revision
+          END
         WHERE key_hash = ? AND latest_revision >= ?
           AND (active_revision IS NULL OR active_revision < ?)
         RETURNING key_hash`,
@@ -1065,6 +1278,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
         metadata.expiryBehavior === "miss" ? "miss" : null,
         JSON.stringify(metadata.cacheTags),
+        // Only a revision the key has reached is one this write can have replaced; 0 is a
+        // miss of a key without one.
+        replaces !== undefined && replaces.revision <= (current.active_revision ?? 0)
+          ? replaces.revision
+          : null,
         keyHash,
         revision,
         revision,
@@ -1101,10 +1319,27 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         cacheTags: metadata.cacheTags,
       };
 
+      // Like a first write, replacing a stale entry needs no purge: its edge copy went stale
+      // with it. One without a revalidator ended there; Workers Cache revalidates one with a
+      // revalidator on its next read, and gets this replacement. Nor does replacing a
+      // tombstone once its edge purge completed: the edge holds no copy of the key, short of a
+      // fill racing that purge (see the README). Either still needs one while a purge() or
+      // invalidate() edge update for the key is queued.
+      const replacedEdgeCopyGone =
+        (current.tombstoned || (current.fresh_until !== null && now >= current.fresh_until)) &&
+        this.ctx.storage.sql
+          .exec(
+            "SELECT 1 FROM pending_r2_tombstones WHERE key_hash = ? AND edge_purge_complete = 0",
+            keyHash,
+          )
+          .toArray().length === 0;
       return {
-        edgePurgeRequired: published && current.active_revision !== null,
+        edgePurgeRequired: published && current.active_revision !== null && !replacedEdgeCopyGone,
         entry: published ? entry : null,
         published,
+        ...(published && (startedBeforeInvalidation || freshUntil <= now)
+          ? { publishedStale: true }
+          : {}),
       };
     });
   }
@@ -1112,6 +1347,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   async invalidatePublishedRevision(
     keyHash: string,
     revision: number,
+    edgeFlushAt?: number,
   ): Promise<TombstoneDrainResult> {
     const queued = this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
@@ -1138,8 +1374,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           latest_revision = ?, active_revision = ?, object_key = NULL,
           status_text = NULL, response_headers = NULL, fresh_until = NULL,
           swr_until = NULL, revalidator_id = NULL, revalidator_args = NULL,
-          expiry_behavior = NULL, cache_tags = NULL, tombstoned = 1
+          expiry_behavior = NULL, cache_tags = NULL, tombstoned = 1, invalidated_revision = ?
         WHERE key_hash = ? AND active_revision = ?`,
+        tombstoneRevision,
         tombstoneRevision,
         tombstoneRevision,
         keyHash,
@@ -1151,10 +1388,45 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     });
 
     if (!queued) return { failures: [], pending: [], purged: [] };
-    await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
-      this.logCleanupFailure(error),
+    const edgeFlushScheduled = await this.scheduleEdgeFlush(edgeFlushAt);
+    return {
+      ...(await this.drainPendingTombstones(1, keyHash)),
+      ...(edgeFlushScheduled ? { edgeFlushScheduled: true as const } : {}),
+    };
+  }
+
+  /**
+   * Queue a purge of the key's edge copy, which a put replacing the entry needs, for the alarm
+   * to send at `edgeFlushAt` with the rest of the queued edge work. Called once the
+   * replacement is in R2, so the edge can only refill with it. Work already queued for the
+   * key purges instead of invalidating, and gets this revision, so a flush that listed it
+   * before can't mark this purge sent. Returns whether the alarm will send it; if not, the
+   * caller sends it and marks it sent.
+   */
+  async queueEdgePurge(keyHash: string, revision: number, edgeFlushAt: number): Promise<boolean> {
+    this.ctx.storage.transactionSync(() =>
+      this.ctx.storage.sql.exec(
+        `INSERT INTO pending_r2_tombstones
+        (key_hash, cache_key, object_key, revision, r2_complete, tombstone_sequence)
+        SELECT key_hash, cache_key, COALESCE(object_key, ''), ?, 1, ?
+        FROM entries WHERE key_hash = ?
+      ON CONFLICT(key_hash) DO UPDATE SET
+        revision = CASE
+          WHEN pending_r2_tombstones.r2_complete = 1 THEN excluded.revision
+          ELSE pending_r2_tombstones.revision
+        END,
+        tombstone_sequence = CASE
+          WHEN pending_r2_tombstones.r2_complete = 1 THEN excluded.tombstone_sequence
+          ELSE pending_r2_tombstones.tombstone_sequence
+        END,
+        edge_invalidate = 0,
+        edge_purge_complete = 0`,
+        revision,
+        this.tombstoneSequence(true),
+        keyHash,
+      ),
     );
-    return this.drainPendingTombstones(1, keyHash);
+    return this.scheduleEdgeFlush(edgeFlushAt);
   }
 
   getEntry(keyHash: string): StoredEntry | null {
@@ -1166,7 +1438,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   private getTagInvalidationMaximum(
     tags: string[],
-    column: "invalidated_at" | "invalidation_sequence",
+    column: "invalidated_at" | "invalidation_sequence" | "stale_at",
   ): number {
     const normalized = normalizeTags(tags);
     let expiration = 0;
@@ -1203,6 +1475,24 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return deadline;
   }
 
+  /** Whether an `expire` deadline among `tags` passed at or after `since`, by `now`. */
+  private hasTagExpiredSince(tags: string[], since: number, now: number): boolean {
+    for (const batch of batches(normalizeTags(tags), MAX_SQL_PARAMETERS - 2)) {
+      const expired = this.ctx.storage.sql
+        .exec(
+          `SELECT 1 FROM tag_invalidations
+          WHERE expires_at >= ? AND expires_at <= ? AND tag IN (${batch.map(() => "?").join(", ")})
+          LIMIT 1`,
+          since,
+          now,
+          ...batch,
+        )
+        .toArray();
+      if (expired.length) return true;
+    }
+    return false;
+  }
+
   getTagExpiration(tags: string[]): number {
     return this.getTagInvalidationMaximum(tags, "invalidated_at");
   }
@@ -1233,12 +1523,15 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
    * `invalidatedAt` also expires the tags for soft-tag reads; pass 0 to leave
    * their expiration unchanged. Like Next.js, `expiresAt` replaces the tags'
    * deadline for entries published before it; null keeps the current one.
+   * `staleAt` marks the tags stale for entries generated before it; pass 0 to
+   * leave it unchanged.
    */
   private recordInvalidations(
     keyHashes: string[],
     tags: string[],
     invalidatedAt: number,
     expiresAt: number | null,
+    staleAt: number,
   ): void {
     this.ctx.storage.sql.exec(
       `UPDATE metadata_state SET tag_invalidation_sequence = tag_invalidation_sequence + 1
@@ -1256,23 +1549,24 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         ...batch,
       );
     }
-    for (const batch of batches(tags, Math.floor(MAX_SQL_PARAMETERS / 3))) {
+    for (const batch of batches(tags, Math.floor(MAX_SQL_PARAMETERS / 4))) {
       this.ctx.storage.sql.exec(
         `INSERT INTO tag_invalidations
-          (tag, invalidated_at, expires_at, invalidation_sequence) VALUES ${batch
+          (tag, invalidated_at, expires_at, stale_at, invalidation_sequence) VALUES ${batch
             .map(
               () =>
-                "(?, ?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
+                "(?, ?, ?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
             )
             .join(", ")}
         ON CONFLICT(tag) DO UPDATE SET invalidated_at =
           MAX(tag_invalidations.invalidated_at, excluded.invalidated_at),
           expires_at = COALESCE(excluded.expires_at, tag_invalidations.expires_at),
+          stale_at = MAX(tag_invalidations.stale_at, excluded.stale_at),
           invalidation_sequence = MAX(
             tag_invalidations.invalidation_sequence,
             excluded.invalidation_sequence
           )`,
-        ...batch.flatMap((tag) => [tag, invalidatedAt, expiresAt]),
+        ...batch.flatMap((tag) => [tag, invalidatedAt, expiresAt, staleAt]),
       );
     }
   }
@@ -1280,6 +1574,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   async purgeMatching(
     options: ResponseStorePurgeOptions,
     invalidatedAt = Date.now(),
+    edgeFlushAt?: number,
   ): Promise<PurgeReservation> {
     const reservation = this.ctx.storage.transactionSync(() => {
       const matches = this.findMatchingEntryRows(options, "purge");
@@ -1294,6 +1589,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         tags,
         invalidatedAt,
         invalidatedAt,
+        0,
       );
 
       for (const batch of batches(matches, MAX_SQL_PARAMETERS - 1)) {
@@ -1328,7 +1624,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             revalidator_args = NULL,
             expiry_behavior = NULL,
             cache_tags = NULL,
-            tombstoned = 1
+            tombstoned = 1,
+            invalidated_revision = latest_revision + 1
           WHERE key_hash IN (${placeholders})`,
           ...keyHashes,
         );
@@ -1348,10 +1645,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         tombstoneSequence,
       };
     });
-    if (reservation.pendingTombstones > 0) {
-      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
-        this.logCleanupFailure(error),
-      );
+    // Without a flush time, the caller sends the edge work, and the alarm only retries it.
+    if (reservation.pendingTombstones > 0 && (await this.scheduleEdgeFlush(edgeFlushAt))) {
+      return { ...reservation, edgeFlushScheduled: true };
     }
     return reservation;
   }
@@ -1366,6 +1662,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     options: Pick<ResponseStoreInvalidateOptions, "tags" | "pathPrefixes">,
     invalidatedAt: number,
     expiresAt?: number,
+    edgeFlushAt?: number,
   ): Promise<PurgeReservation> {
     const reservation = this.ctx.storage.transactionSync(() => {
       const rows = this.findMatchingEntryRows(options, "invalidate");
@@ -1373,7 +1670,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         Boolean(row.refreshable),
       );
       // A path can also match a key whose first write is still in flight. Like
-      // purge, advance its revision so that write cannot publish.
+      // purge, advance its revision so that write cannot publish, and record it as
+      // invalidated, so a fill of the miss read before it isn't dropped as a duplicate.
       const reserved = rows.filter((row) => !row.refreshable).map((row) => row.key_hash);
       const tags = normalizeTags(options.tags ?? []);
       const tombstoneSequence = this.tombstoneSequence(matches.length > 0);
@@ -1382,12 +1680,14 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         tags,
         0,
         expiresAt ?? null,
+        invalidatedAt,
       );
       for (const batch of batches(reserved, MAX_SQL_PARAMETERS)) {
         this.ctx.storage.sql.exec(
           `UPDATE entries SET
             latest_revision = latest_revision + 1,
-            active_revision = latest_revision + 1
+            active_revision = latest_revision + 1,
+            invalidated_revision = latest_revision + 1
           WHERE tombstoned = 1 AND key_hash IN (${batch.map(() => "?").join(", ")})`,
           ...batch,
         );
@@ -1440,7 +1740,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             latest_revision = latest_revision + 1,
             active_revision = latest_revision + 1,
             fresh_until = MIN(fresh_until, ?),
-            swr_until = MIN(swr_until, COALESCE(?, swr_until))
+            swr_until = MIN(swr_until, COALESCE(?, swr_until)),
+            invalidated_revision = latest_revision + 1
           WHERE key_hash IN (${placeholders})`,
           invalidatedAt,
           expiresAt ?? null,
@@ -1458,10 +1759,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         tombstoneSequence,
       };
     });
-    if (reservation.pendingTombstones > 0) {
-      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
-        this.logCleanupFailure(error),
-      );
+    // Without a flush time, the caller sends the edge work, and the alarm only retries it.
+    if (reservation.pendingTombstones > 0 && (await this.scheduleEdgeFlush(edgeFlushAt))) {
+      return { ...reservation, edgeFlushScheduled: true };
     }
     return reservation;
   }
@@ -1586,9 +1886,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         );
         for (const batch of batches(completed, MAX_SQL_PARAMETERS / 2 - 1)) {
           this.ctx.storage.sql.exec(
-            `UPDATE pending_r2_tombstones SET r2_complete = 1, edge_invalidate = ? WHERE ${batch
-              .map(() => "(key_hash = ? AND revision = ?)")
-              .join(" OR ")}`,
+            // A purge queued for the key while the R2 write ran stays a purge.
+            `UPDATE pending_r2_tombstones SET r2_complete = 1,
+              edge_invalidate = MIN(edge_invalidate, ?) WHERE ${batch
+                .map(() => "(key_hash = ? AND revision = ?)")
+                .join(" OR ")}`,
             Number(edgeInvalidate),
             ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
           );
@@ -1596,13 +1898,21 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       }
       this.finishCompletedTombstones(purged);
     });
+    const failures = settled.flatMap((result) =>
+      result.status === "rejected"
+        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+        : [],
+    );
+    // A failed rewrite is retried within the minute, even when its edge work waits for a later
+    // batch.
+    if (failures.length) {
+      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
+        this.logCleanupFailure(error),
+      );
+    }
     return {
       ...(rows.length ? { cursor: rows.at(-1)!.key_hash } : {}),
-      failures: settled.flatMap((result) =>
-        result.status === "rejected"
-          ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
-          : [],
-      ),
+      failures,
       pending,
       purged,
     };

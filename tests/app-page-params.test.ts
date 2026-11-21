@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   resolveAppPageBranchParams,
-  resolveAppPageSegmentParamScopeKeys,
   resolveAppPageSegmentParams,
 } from "../packages/vinext/src/server/app-page-params.js";
 
@@ -49,11 +48,10 @@ describe("app page params helpers", () => {
     });
   });
 
-  it("keeps optional catch-all names in structural layout param scope", () => {
+  it("resolves an empty optional catch-all to no layout params", () => {
     const routeSegments = ["docs", "[[...slug]]"];
 
     expect(resolveAppPageSegmentParams(routeSegments, 2, { slug: [] })).toEqual({});
-    expect(resolveAppPageSegmentParamScopeKeys(routeSegments, 2)).toEqual(["slug"]);
   });
 
   it("preserves ancestor params while scoping parallel branch params", () => {

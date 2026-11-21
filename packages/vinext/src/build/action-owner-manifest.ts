@@ -68,7 +68,9 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
       slot.loadingPath,
       ...(slot.loadingPaths ?? []),
       slot.errorPath,
+      ...(slot.errorPaths ?? []),
       slot.notFoundPath,
+      ...(slot.notFoundPaths ?? []),
       ...slot.interceptingRoutes.flatMap((intercept) => [
         intercept.pagePath,
         ...intercept.layoutPaths,
@@ -76,6 +78,10 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
         intercept.notFoundPath,
         intercept.forbiddenPath,
         intercept.unauthorizedPath,
+        ...(intercept.notFoundPaths ?? []),
+        ...(intercept.forbiddenPaths ?? []),
+        ...(intercept.unauthorizedPaths ?? []),
+        ...(intercept.errorPaths ?? []),
       ]),
     ]),
     ...route.siblingIntercepts.flatMap((intercept) => [
@@ -85,6 +91,10 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
       intercept.notFoundPath,
       intercept.forbiddenPath,
       intercept.unauthorizedPath,
+      ...(intercept.notFoundPaths ?? []),
+      ...(intercept.forbiddenPaths ?? []),
+      ...(intercept.unauthorizedPaths ?? []),
+      ...(intercept.errorPaths ?? []),
     ]),
   ].filter((value): value is string => typeof value === "string");
 }

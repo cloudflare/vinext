@@ -450,6 +450,31 @@ describe("generic HTTP multi-stage transport", () => {
     expect(res.headers.get("x-auth-source")).toBe("middleware");
   });
 
+  it("resolves config header collisions with response-stage Route Handlers by runtime", async () => {
+    const results = [];
+    for (const pathname of ["/api/config-header-collision", "/api/config-header-collision/edge"]) {
+      const res = await fetch(`${requestServer.origin}${pathname}`);
+      await res.text();
+      results.push({
+        pathname,
+        collision: res.headers.get("x-config-collision"),
+        challenge: res.headers.get("www-authenticate"),
+      });
+    }
+    expect(results).toEqual([
+      {
+        pathname: "/api/config-header-collision",
+        collision: "config",
+        challenge: "Bearer realm=config, Basic realm=handler",
+      },
+      {
+        pathname: "/api/config-header-collision/edge",
+        collision: "config, handler",
+        challenge: "Bearer realm=config, Basic realm=handler",
+      },
+    ]);
+  });
+
   it("clears stale shared-cache policy when an admitted response becomes private", () => {
     expect(
       createHttpStageCacheAdapter().buildResponseHeaders({

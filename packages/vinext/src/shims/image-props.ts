@@ -55,6 +55,16 @@ const __imageSizes: number[] = (() => {
     return [32, 48, 64, 96, 128, 256, 384];
   }
 })();
+// `images.qualities`, or null when unset. Sorted ascending like Next.js's
+// image config, so a tie in findClosestQuality resolves to the lower quality.
+const __imageQualities: number[] | null = (() => {
+  try {
+    const qualities: number[] | null = JSON.parse(process.env.__VINEXT_IMAGE_QUALITIES ?? "null");
+    return Array.isArray(qualities) ? qualities.sort((a, b) => a - b) : null;
+  } catch {
+    return null;
+  }
+})();
 /**
  * Whether dangerouslyAllowSVG is enabled in next.config.js.
  * When false (default), .svg sources auto-skip the optimization endpoint
@@ -152,6 +162,15 @@ export function isRemoteUrl(src: string): boolean {
   return src.startsWith("http://") || src.startsWith("https://") || src.startsWith("//");
 }
 
+/**
+ * `data:` and `blob:` sources are served as-is and never lazy, matching
+ * Next.js `get-img-props.js`:
+ * `if (!src || src.startsWith('data:') || src.startsWith('blob:')) { unoptimized = true; isLazy = false; }`
+ */
+export function isDataOrBlobUrl(src: string): boolean {
+  return src.startsWith("data:") || src.startsWith("blob:");
+}
+
 export function isSvgUrl(src: string): boolean {
   try {
     return new URL(src, "http://vinext.local").pathname.toLowerCase().endsWith(".svg");
@@ -233,6 +252,38 @@ const __imageEndpoint = `${process.env.__NEXT_ROUTER_BASEPATH ?? ""}/_next/image
 }`;
 
 /**
+ * Parse a `quality` prop like Next.js's `getInt` (shared/lib/get-img-props.ts):
+ * finite numbers and digit-only strings pass, anything else becomes NaN, which
+ * the default loader treats as 75.
+ */
+export function parseImageQuality(quality: unknown): number | undefined {
+  if (quality === undefined) return undefined;
+  if (typeof quality === "number") return Number.isFinite(quality) ? quality : NaN;
+  if (typeof quality === "string" && /^[0-9]+$/.test(quality)) return parseInt(quality, 10);
+  return NaN;
+}
+
+/**
+ * Round a `quality` prop to the closest entry of `images.qualities`, as the
+ * Next.js default loader does (shared/lib/find-closest-quality.ts), so the
+ * URL is one the optimization endpoint accepts.
+ *
+ * With no list configured the prop is used as written (75 when absent). This
+ * is deliberate: Next.js 16 defaults the list to `[75]` and would round every
+ * quality to 75, but vinext keeps the Next.js 14/15 behaviour for an unset
+ * list so migrating apps keep the qualities they ask for (see
+ * ImageConfig.qualities in server/image-optimization.ts).
+ */
+function findClosestQuality(quality: number): number {
+  const q = quality || 75;
+  if (!__imageQualities?.length) return q;
+  return __imageQualities.reduce(
+    (prev, cur) => (Math.abs(cur - q) < Math.abs(prev - q) ? cur : prev),
+    __imageQualities[0],
+  );
+}
+
+/**
  * Build a `/_next/image` optimization URL.
  *
  * In production (Cloudflare Workers), the worker intercepts this path and uses
@@ -240,10 +291,11 @@ const __imageEndpoint = `${process.env.__NEXT_ROUTER_BASEPATH ?? ""}/_next/image
  * server handles it as a passthrough (serves the original file).
  */
 export function imageOptimizationUrl(src: string, width: number, quality: number = 75): string {
+  const q = findClosestQuality(quality);
   const source = extractLocalDeploymentId(src);
   const deploymentQuery =
     source.src.startsWith("/") && source.deploymentId ? `&dpl=${source.deploymentId}` : "";
-  return `${__imageEndpoint}?url=${encodeURIComponent(source.src)}&w=${width}&q=${quality}${deploymentQuery}`;
+  return `${__imageEndpoint}?url=${encodeURIComponent(source.src)}&w=${width}&q=${q}${deploymentQuery}`;
 }
 
 /**
@@ -338,8 +390,9 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
     blurDataURL: imgBlurDataURL,
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL: blurDataURLProp });
   const shouldPreload = _preload === true || priority === true;
+  const isInlineSrc = isDataOrBlobUrl(src);
 
-  if (_unoptimized === true || __globallyUnoptimized) {
+  if (_unoptimized === true || __globallyUnoptimized || isInlineSrc) {
     // As in the component path, unoptimized images never reach the server-side
     // optimizer, so remote URL validation is intentionally unnecessary.
     const renderedSrc = overrideSrc || src;
@@ -358,13 +411,14 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
       alt,
       width: fill ? undefined : imgWidth,
       height: fill ? undefined : imgHeight,
-      loading: priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy"),
+      loading: priority ? "eager" : shouldPreload || isInlineSrc ? loading : (loading ?? "lazy"),
       fetchPriority: priority ? ("high" as const) : undefined,
       decoding: "async" as const,
       className,
       style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
       ...rest,
-      sizes: sizes ?? (fill ? "100vw" : undefined),
+      // Next.js generateImgAttrs() returns `sizes: undefined` for inline sources.
+      sizes: isInlineSrc ? undefined : (sizes ?? (fill ? "100vw" : undefined)),
       srcSet: undefined,
     };
     return { props: Object.assign(imageProps, { "data-nimg": fill ? "fill" : "1" }) };
@@ -385,7 +439,7 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
   }
 
   // Resolve src through custom loader if provided
-  const imgQuality = typeof _quality === "string" ? Number(_quality) : (_quality ?? 75);
+  const imgQuality = parseImageQuality(_quality) ?? 75;
   const resolvedSrc = blockedInProd
     ? ""
     : loader

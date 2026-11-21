@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { createElement, Fragment, isValidElement, type ReactElement } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { describe, expect, it } from "vite-plus/test";
+import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import {
   createAppRenderDependency,
   invokeAppComponent,
@@ -27,6 +28,19 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
   }
 
   return text + decoder.decode();
+}
+
+/** How `result` settled, read as React's Flight server reads a thenable. */
+async function readThenableOutcome(
+  result: unknown,
+): Promise<{ reason?: unknown; status?: unknown }> {
+  if (!isPromiseLike(result)) throw new Error("expected a thenable");
+  await Promise.resolve(result).then(
+    () => {},
+    () => {},
+  );
+  const { reason, status } = result as { reason?: unknown; status?: unknown };
+  return { reason, status };
 }
 
 async function renderHtml(element: React.ReactNode): Promise<string> {
@@ -291,7 +305,102 @@ describe("app render dependency helpers", () => {
     expect(() => invokeInner(SyncPage)).toThrow(
       expect.objectContaining({ mapped: thrown }) as unknown as Error,
     );
-    await expect(invokeInner(AsyncPage)).rejects.toEqual({ mapped: rejected });
+    expect(await readThenableOutcome(invokeInner(AsyncPage))).toEqual({
+      reason: { mapped: rejected },
+      status: "rejected",
+    });
+  });
+
+  it("reports once how a component rendered, including a CSS-wrapped one's inner component", async () => {
+    const mapError = (error: unknown) => ({ mapped: error });
+    const settle = () => {
+      const calls: unknown[] = [];
+      return { calls, onSettled: (failure?: { error: unknown }) => calls.push(failure) };
+    };
+
+    const sync = settle();
+    void invokeAppComponentMappingErrors(() => createElement("p"), {}, mapError, sync.onSettled);
+    expect(sync.calls).toEqual([undefined]);
+
+    const rejected = new Error("rejected");
+    const async = settle();
+    expect(
+      await readThenableOutcome(
+        invokeAppComponentMappingErrors(
+          async () => {
+            throw rejected;
+          },
+          {},
+          mapError,
+          async.onSettled,
+        ),
+      ),
+    ).toEqual({ reason: { mapped: rejected }, status: "rejected" });
+    expect(async.calls).toEqual([{ error: { mapped: rejected } }]);
+
+    // A suspension isn't an end: React renders the component again.
+    const suspended = settle();
+    const thenable = Promise.resolve();
+    expect(() =>
+      invokeAppComponentMappingErrors(
+        () => {
+          throw thenable;
+        },
+        {},
+        mapError,
+        suspended.onSettled,
+      ),
+    ).toThrow();
+    expect(suspended.calls).toEqual([]);
+
+    // A CSS-wrapped export returns before its inner component renders.
+    const thrown = new Error("thrown");
+    function Inner(): never {
+      throw thrown;
+    }
+    function CssWrapper(wrapperProps: Record<string, unknown>) {
+      return createElement(Fragment, null, "css", createElement(Inner, wrapperProps));
+    }
+    const wrapped = settle();
+    const result = invokeAppComponentMappingErrors(CssWrapper, {}, mapError, wrapped.onSettled);
+    expect(wrapped.calls).toEqual([]);
+    if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
+      throw new Error("expected an element");
+    }
+    expect(() => (result.props.children[1].type as () => unknown)()).toThrow();
+    expect(wrapped.calls).toEqual([{ error: { mapped: thrown } }]);
+  });
+
+  it("hands React a component's own promise, through a dependency barrier too", async () => {
+    const mapError = (error: unknown) => ({ mapped: error });
+    const resolved = Promise.resolve(createElement("p"));
+    expect(invokeAppComponentMappingErrors(() => resolved, {}, mapError)).toBe(resolved);
+    expect(await readThenableOutcome(resolved)).toEqual({ status: "fulfilled" });
+
+    // One that something already tracks is mapped on a new promise.
+    const rejected = new Error("rejected");
+    const tracked = Object.assign(Promise.reject(rejected), { status: "pending" });
+    const mapped = invokeAppComponentMappingErrors(() => tracked, {}, mapError);
+    expect(mapped).not.toBe(tracked);
+    await expect(mapped).rejects.toEqual({ mapped: rejected });
+
+    const dependency = createAppRenderDependency();
+    const failing = Promise.reject(rejected);
+    const barrier = renderAppComponentWithDependencyBarrier(
+      () => failing,
+      {},
+      dependency,
+      mapError,
+    );
+    if (!isValidElement(barrier)) throw new Error("expected an element");
+    const Barrier = barrier.type as () => unknown;
+    expect(Barrier()).toBe(failing);
+    expect(await readThenableOutcome(failing)).toEqual({
+      reason: { mapped: rejected },
+      status: "rejected",
+    });
+    // The barrier released its dependents.
+    await dependency.promise;
   });
 
   it("keeps a keyed element in the fragment as rendered", () => {

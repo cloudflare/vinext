@@ -127,21 +127,46 @@ export function augmentSsrManifestFromBundle(
     }
   }
 
+  // A chunk's static imports must all load before it evaluates, so preload
+  // them transitively: the browser would otherwise find each level only after
+  // fetching the one above it.
+  const staticImportClosures = new Map<string, string[]>();
+  const getStaticImportClosure = (fileName: string): string[] => {
+    let closure = staticImportClosures.get(fileName);
+    if (closure) return closure;
+    const files = new Set<string>();
+    const visit = (importer: string) => {
+      const chunk = bundle[importer];
+      if (chunk?.type !== "chunk") return;
+      for (const importedFile of (chunk as BundleBackfillChunk).imports ?? []) {
+        if (importedFile === fileName || files.has(importedFile)) continue;
+        files.add(importedFile);
+        visit(importedFile);
+      }
+    };
+    visit(fileName);
+    closure = [...files];
+    staticImportClosures.set(fileName, closure);
+    return closure;
+  };
+
   for (const item of Object.values(bundle)) {
     if (item.type !== "chunk") continue;
     const chunk = item as BundleBackfillChunk;
 
-    if (
-      chunk.fileName.endsWith(".js") &&
-      (isSharedClientChunkName(chunk.name) ||
-        (chunk.isEntry && isPagesClientEntryFacade(chunk.facadeModuleId)))
-    ) {
+    if (chunk.fileName.endsWith(".js") && isSharedClientChunkName(chunk.name)) {
       sharedChunkFiles.add(manifestFileWithBase(chunk.fileName, base));
+    }
+    if (chunk.isEntry && isPagesClientEntryFacade(chunk.facadeModuleId)) {
+      sharedChunkFiles.add(manifestFileWithBase(chunk.fileName, base));
+      for (const importedFile of getStaticImportClosure(chunk.fileName)) {
+        sharedChunkFiles.add(manifestFileWithBase(importedFile, base));
+      }
     }
 
     const files = new Set<string>();
     files.add(manifestFileWithBase(chunk.fileName, base));
-    for (const importedFile of chunk.imports ?? []) {
+    for (const importedFile of getStaticImportClosure(chunk.fileName)) {
       files.add(manifestFileWithBase(importedFile, base));
     }
     for (const cssFile of chunk.viteMetadata?.importedCss ?? []) {

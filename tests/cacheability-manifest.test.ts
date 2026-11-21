@@ -212,7 +212,7 @@ describe("cacheability manifest", () => {
       "/docs/products/one",
     );
     expect(cacheabilityRoutePathname("/docs/products/one.rsc", "rsc-full")).toBe(
-      "/docs/products/one",
+      "/docs/products/one.rsc",
     );
   });
 

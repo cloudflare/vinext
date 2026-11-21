@@ -1,13 +1,23 @@
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import type { EdgeApiExecutionRuntime } from "./edge-api-runtime.js";
 import type { MiddlewareResponseMergeOptions } from "./middleware-response-headers.js";
-import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
+import {
+  beginRouteCacheability,
+  markRouteCacheabilityDynamic,
+} from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
+import { isLocaleRedirect, markLocaleRedirect } from "./pages-i18n.js";
+import type { RuntimePagesDataKind } from "./pages-route-data-kind.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
+import { VINEXT_PRERENDER_NOT_FOUND_HEADER } from "./headers.js";
+import { hasPrerenderNotFoundMarker } from "./prerender-not-found.js";
 import { mergeHeaders } from "./worker-utils.js";
+import { stripBasePath } from "../utils/base-path.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 export type PagesEntry = {
+  getRuntimePageDataKind?: (url: string, request: Request) => RuntimePagesDataKind;
   handleApiRoute?: (
     request: Request,
     url: string,
@@ -84,6 +94,14 @@ type RenderPagesFallbackOptions = {
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
+  /**
+   * The basePath `request.url` still carries. The page renderer receives the
+   * URL without it, as in the Pages Router pipeline, so `req.url` and `asPath`
+   * leave it out like Next.js.
+   */
+  requestBasePath?: string;
+  /** The shared cache entry answers every host; a request-time render is not stored. */
+  sharedAcrossHosts?: boolean;
   url: URL;
 };
 
@@ -129,6 +147,8 @@ export async function renderPagesFallback(
     pathname = options.url.pathname,
     pagesDataRequest = null,
     request,
+    requestBasePath = "",
+    sharedAcrossHosts = false,
     url,
   } = options;
   const {
@@ -142,9 +162,17 @@ export async function renderPagesFallback(
 
   const pagesEntry = await loadPagesEntry();
 
-  const pagesRequestHeaders = middlewareContext.requestHeaders
+  let pagesRequestHeaders = middlewareContext.requestHeaders
     ? buildRequestHeaders(request.headers, middlewareContext.requestHeaders)
     : null;
+  // The App handler never hands the prerender step's 404 request to Pages,
+  // not even after a rewrite that keeps its path, so a 404 marker here was
+  // forwarded by a subrequest or set by middleware. Drop it, or the Pages
+  // handler would treat a rewrite to the 404 path as a miss.
+  if (hasPrerenderNotFoundMarker(pagesRequestHeaders ?? request.headers)) {
+    pagesRequestHeaders = new Headers(pagesRequestHeaders ?? request.headers);
+    pagesRequestHeaders.delete(VINEXT_PRERENDER_NOT_FOUND_HEADER);
+  }
 
   // Matching only reads headers. Moving the body into a header-overriding
   // clone before a Pages route claims the request would leave it unusable for
@@ -195,6 +223,8 @@ export async function renderPagesFallback(
     const pagesApiResponse = await (initialResponseHeaders
       ? pagesEntry.handleApiRoute(...apiArgs, initialResponseHeaders)
       : pagesEntry.handleApiRoute(...apiArgs));
+    // An edge API route's WebSocket upgrade cannot be rebuilt with headers.
+    if (isWebSocketUpgradeResponse(pagesApiResponse)) return pagesApiResponse;
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(
       // A Node-runtime Pages API handler in Next.js writes to the response that
@@ -226,11 +256,28 @@ export async function renderPagesFallback(
     // can use a separate module graph. Register ownership here so the outer
     // admission finalizer can apply the Pages manifest decision.
     beginRouteCacheability("pages-page", pageMatch.route.pattern);
+    const runtimeDataKind = sharedAcrossHosts
+      ? pagesEntry.getRuntimePageDataKind?.(pagesUrl, matchRequest)
+      : undefined;
+    if (runtimeDataKind === "server" || runtimeDataKind === "initial") {
+      // The build keeps the host in the key of a page that names getInitialProps,
+      // or under a custom _app that does. One an imported wrapper attaches is only
+      // seen here, after the key was chosen, and it can read the host this entry
+      // is shared across, so the render isn't stored. It counts as dynamic, as
+      // Next.js counts a getInitialProps page, so a Workers Cache probe of
+      // the shared dispatch classifies it as one too.
+      markRouteCacheabilityDynamic("getInitialProps render shares a cache entry across hosts");
+    }
   }
   const pagesRequest = claimPagesRequest();
-  const renderRequest = pagesDataRequest
-    ? cloneRequestWithUrl(pagesRequest, pagesDataRequest.url)
-    : pagesRequest;
+  const renderRequestUrl = new URL(pagesDataRequest?.url ?? pagesRequest.url);
+  if (!pagesDataRequest) {
+    renderRequestUrl.pathname = stripBasePath(renderRequestUrl.pathname, requestBasePath);
+  }
+  const renderRequest =
+    renderRequestUrl.href === pagesRequest.url
+      ? pagesRequest
+      : cloneRequestWithUrl(pagesRequest, renderRequestUrl.href);
   const renderArgs = [
     renderRequest,
     pagesUrl,
@@ -246,10 +293,11 @@ export async function renderPagesFallback(
         ? pagesEntry.renderPage(...renderArgs, undefined, initialResponseHeaders)
         : pagesEntry.renderPage(...renderArgs));
   if (pagesRes.status === 404 && pageMatch === null) return null;
-  return applyDraftModeCookie(
+  const response = applyDraftModeCookie(
     applyPagesMiddlewareContext(pagesRes, middlewareContext),
     getDraftModeCookieHeader(),
   );
+  return isLocaleRedirect(pagesRes) ? markLocaleRedirect(response) : response;
 }
 
 /**

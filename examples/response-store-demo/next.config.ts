@@ -4,10 +4,18 @@ const personalizedPaths = ["/prewarm-target", "/pages-prewarm", "/api/browser-ca
 const personalizedVisitors = ["config-a", "config-b"] as const;
 
 export default {
+  // Issue #4705: a config redirect and an external rewrite answer in the
+  // request stage, so warming should skip them.
+  redirects: async () => [{ source: "/config-redirect", destination: "/", permanent: false }],
+  rewrites: async () => [
+    { source: "/rewritten/:slug", destination: "/cached/:slug" },
+    { source: "/config-external", destination: "https://upstream.test/docs" },
+  ],
   headers: async () => [
     { source: "/storage-policy/short-browser", headers: [{ key: "Cache-Control", value: "public, max-age=1" }] },
     { source: "/storage-policy/long-browser", headers: [{ key: "Cache-Control", value: "private, max-age=300" }] },
     { source: "/storage-policy/no-store", headers: [{ key: "Cache-Control", value: "no-store" }] },
+    { source: "/cached/public-policy", headers: [{ key: "Cache-Control", value: "public, s-maxage=300" }] },
     {
       source: "/vary-cookie",
       headers: [
@@ -15,6 +23,9 @@ export default {
         { key: "Vary", value: "Cookie" },
       ],
     },
+    { source: "/api/host-redirect", headers: [{ key: "CDN-Cache-Control", value: "public, s-maxage=60" }] },
+    { source: "/api/redirect-to-host", headers: [{ key: "CDN-Cache-Control", value: "public, s-maxage=60" }] },
+    { source: "/config-policy-host", headers: [{ key: "CDN-Cache-Control", value: "public, s-maxage=60" }] },
     ...personalizedPaths.flatMap((source) =>
       personalizedVisitors.map((visitor) => ({
         source,

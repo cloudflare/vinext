@@ -61,6 +61,20 @@ test.describe("middleware matcher guards Pages data requests", () => {
     expect(await member.text()).not.toContain(RECORD);
   });
 
+  test("does not route data URLs whose page path strips to a dot segment", async ({ request }) => {
+    // Removing `.json` leaves `/members/..`, which the exact matcher does not
+    // cover while the page URL built from it resolves elsewhere. Next.js 16.2.7
+    // answers these with a 404 with and without skipProxyUrlNormalize.
+    const buildId = await getBuildId(request);
+    for (const page of ["members/...json", "members/x/...json", "members/%2e%2e.json"]) {
+      for (const headers of [{}, MEMBER_COOKIE]) {
+        const response = await request.get(`/_next/data/${buildId}/${page}`, { headers });
+        expect(response.status(), page).toBe(404);
+        expect(await response.text(), page).not.toContain(RECORD);
+      }
+    }
+  });
+
   test("serves the page and its data to an authorized member", async ({ request }) => {
     const page = await request.get("/members", { headers: MEMBER_COOKIE });
     expect(page.status()).toBe(200);

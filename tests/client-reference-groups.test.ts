@@ -88,6 +88,7 @@ describe("collectClientReferenceRouteSignatures", () => {
         "/grid.tsx",
         "/denied.tsx",
         "/sign-in.tsx",
+        "/missing.tsx",
       ]),
       getModuleInfo: moduleInfo({
         "/repo/app/global-error.tsx": ["/retry.tsx"],
@@ -97,6 +98,7 @@ describe("collectClientReferenceRouteSignatures", () => {
         "/repo/app/@modal/(.)photo/forbidden.tsx": ["/denied.tsx"],
         "/repo/app/@modal/(.)photo/unauthorized.tsx": ["/sign-in.tsx"],
         "/repo/app/photos/@drawer/(.)photo/page.tsx": ["/drawer.tsx"],
+        "/repo/app/photos/@drawer/not-found.tsx": ["/missing.tsx"],
       }),
       root: "/repo",
       routes: [
@@ -108,6 +110,7 @@ describe("collectClientReferenceRouteSignatures", () => {
                 {
                   layoutPaths: [],
                   notFoundPath: null,
+                  notFoundPaths: ["/repo/app/photos/@drawer/not-found.tsx"],
                   pagePath: "/repo/app/photos/@drawer/(.)photo/page.tsx",
                 },
               ],
@@ -133,6 +136,7 @@ describe("collectClientReferenceRouteSignatures", () => {
       "/denied.tsx": "app/@modal/(.)photo/page.tsx",
       "/sign-in.tsx": "app/@modal/(.)photo/page.tsx",
       "/drawer.tsx": "app/photos/@drawer/(.)photo/page.tsx",
+      "/missing.tsx": "app/photos/@drawer/(.)photo/page.tsx",
       "/retry.tsx": "app/global-error.tsx",
       "/search.tsx": "app/global-not-found.tsx",
     });
@@ -395,6 +399,106 @@ describe("collectClientReferencePreloadPlan", () => {
     expect(plan.always).toEqual([]);
     expect(preloads(plan, plan.routes.get("/")!)).toEqual(["/app/error.tsx"]);
     expect(preloads(plan, plan.routes.get("/client")!)).toEqual(["/app/client/page.tsx"]);
+  });
+
+  it("lists the files a route renders whatever happens, not its boundaries", () => {
+    const files = {
+      layout: "/app/layout.tsx",
+      template: "/app/dash/template.tsx",
+      page: "/app/dash/page.tsx",
+      loading: "/app/dash/loading.tsx",
+      error: "/app/dash/error.tsx",
+      notFound: "/app/not-found.tsx",
+      feedDefault: "/app/dash/@feed/default.tsx",
+      feedLayout: "/app/dash/@feed/layout.tsx",
+      feedLoading: "/app/dash/@feed/loading.tsx",
+      teamPage: "/app/dash/@team/page.tsx",
+      teamDefault: "/app/dash/@team/default.tsx",
+      teamLayout: "/app/dash/@team/layout.tsx",
+    };
+    // Each file imports a client reference of its own, named after it.
+    const plan = collectClientReferencePreloadPlan({
+      clientReferenceIds: new Set(Object.keys(files).map((name) => `/${name}-ref.tsx`)),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo(
+        Object.fromEntries(
+          Object.entries(files).map(([name, file]) => [file, [`/${name}-ref.tsx`]]),
+        ),
+      ),
+      routes: [
+        {
+          ...route("/dash", files.page, [files.layout]),
+          templates: [files.template],
+          loadingPath: files.loading,
+          errorPath: files.error,
+          notFoundPath: files.notFound,
+          parallelSlots: [
+            {
+              pagePath: null,
+              defaultPath: files.feedDefault,
+              layoutPath: files.feedLayout,
+              loadingPath: files.feedLoading,
+              errorPath: null,
+              interceptingRoutes: [],
+            },
+            {
+              pagePath: files.teamPage,
+              defaultPath: files.teamDefault,
+              layoutPath: files.teamLayout,
+              loadingPath: null,
+              errorPath: null,
+              interceptingRoutes: [],
+            },
+          ],
+        } as never,
+      ],
+    });
+
+    const reached = (indices: number[]) => indices.flatMap((file) => plan.files[file]!);
+    expect(reached(plan.routes.get("/dash")!)).toHaveLength(Object.keys(files).length);
+    // In render order, outer segments first. A slot's own layout wraps only
+    // its page, not its default.
+    expect(reached(plan.rendered.get("/dash")!)).toEqual([
+      "/layout-ref.tsx",
+      "/template-ref.tsx",
+      "/page-ref.tsx",
+      "/teamLayout-ref.tsx",
+      "/feedDefault-ref.tsx",
+      "/teamPage-ref.tsx",
+    ]);
+  });
+
+  it("lists what each rendered file reaches through static imports alone", () => {
+    const plan = collectClientReferencePreloadPlan({
+      alwaysRoots: ["/app/global-error.tsx"],
+      clientReferenceIds: new Set(["/link.tsx", "/shared.tsx", "/lazy.tsx", "/boundary.tsx"]),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo(
+        {
+          "/app/page.tsx": ["/app/view.tsx", "/link.tsx"],
+          "/app/view.tsx": ["/shared.tsx"],
+          "/app/error.tsx": ["/boundary.tsx"],
+          "/app/global-error.tsx": ["/link.tsx"],
+        },
+        {
+          "\0entry": ["/app/page.tsx", "/app/about/page.tsx"],
+          "/app/page.tsx": ["/lazy.tsx"],
+          "/app/about/page.tsx": ["/shared.tsx"],
+        },
+      ),
+      routes: [
+        { ...route("/", "/app/page.tsx"), errorPath: "/app/error.tsx" } as never,
+        route("/about", "/app/about/page.tsx"),
+      ],
+    });
+
+    // Neither "/link.tsx" (global-error reaches it too) nor "/shared.tsx"
+    // (another page imports it dynamically) is left out.
+    const [page] = plan.rendered.get("/")!;
+    expect(plan.staticFiles[page!]).toEqual(["/shared.tsx", "/link.tsx"]);
+    expect(plan.staticFiles.flat()).not.toContain("/boundary.tsx");
+    expect(plan.staticOnly).not.toContain("/shared.tsx");
+    expect(plan.always).toContain("/link.tsx");
   });
 
   it("canonicalizes route files and entry stops", () => {
