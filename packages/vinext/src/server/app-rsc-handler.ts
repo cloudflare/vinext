@@ -1175,7 +1175,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const {
     url,
     isRscRequest,
-    interceptionContextHeader,
+    interceptionContextHeader: normalizedInterceptionContext,
     interceptionIdHeader,
     mountedSlotsHeader,
     renderMode,
@@ -1197,15 +1197,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // header for the route matcher's deliberate one-decode contract, while
   // carrying the decoded canonical pathname for middleware authorization.
   let interceptionSourcePathname: string | null = null;
-  if (isRscRequest && interceptionContextHeader !== null) {
+  if (isRscRequest && normalizedInterceptionContext !== null) {
     try {
-      interceptionSourcePathname = decodeInterceptionSourcePathname(interceptionContextHeader);
+      interceptionSourcePathname = decodeInterceptionSourcePathname(normalizedInterceptionContext);
     } catch {
-      options.clearRequestContext();
-      setInterceptionResponseUncacheable(true);
-      return badRequestResponse();
+      // Next.js never rejects a request over its `Next-Url`, so a context that
+      // names no canonical source is treated as absent and the target renders
+      // on its own.
     }
   }
+  // An unusable context then routes exactly like an absent one, while its raw
+  // value still keeps the response out of shared caches above.
+  const interceptionContextHeader =
+    isRscRequest && interceptionSourcePathname === null ? null : normalizedInterceptionContext;
   const { pathname, requestPathname } = normalized;
   let cleanPathname = pathname;
   let resolvedUrl = cleanPathname + url.search;
