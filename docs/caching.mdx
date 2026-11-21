@@ -363,6 +363,33 @@ The default warmup makes one fill request per admitted cache identity. Add `--wa
 
 Only discoverable, cacheable route identities are warmed; dynamic parameters and query variants are not all enumerated automatically. HTML, RSC, and Pages Router data use separate requests where applicable. For Workers Cache, a warm request does not guarantee a cache hit in every region. See [Cloudflare's Workers Caching documentation](https://developers.cloudflare.com/workers/cache/).
 
+File-based [metadata routes](https://nextjs.org/docs/app/api-reference/file-conventions/metadata) are warmed where Next.js prerenders them, and the warm report lists them as `Metadata route`:
+
+- Static files such as `favicon.ico`, `robots.txt`, or `opengraph-image.png`, including ones under a dynamic segment (served at a `-` path, for example `/shop/-/opengraph-image.png`).
+- Code routes such as `sitemap.ts`, `robots.ts`, or `opengraph-image.tsx`, unless they export `dynamic = "force-dynamic"` or `revalidate = 0`.
+- A code route under a dynamic segment, for each path its own `generateStaticParams()` returns. Like Next.js, vinext does not use the page's `generateStaticParams()` for it; without its own, the route renders on request.
+- Each id from `generateSitemaps()` or `generateImageMetadata()`, when the route is not under a dynamic segment.
+
+A route that reads `headers()`, `cookies()`, or another request-time API renders dynamically and is skipped at warm time, like a dynamic Route Handler. Image and icon routes are warmed at the `?<hash>` URL that rendered `<link>` and `<meta>` tags use, which is the entry Workers Cache serves them from; the Response Store and KV key them without the query. Traffic-aware warming doesn't run generators, so it warms only visited metadata routes with a single URL; paths from `generateStaticParams()`, `generateSitemaps()`, or `generateImageMetadata()` are left to request time.
+
+### Sites behind an auth proxy
+
+Every discovery, readiness, warm-up, and probe request goes to the deployed Worker through its production URL. If [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) or another auth proxy sits in front of it, those requests get the proxy's sign-in redirect and the deploy fails. Give the deploy the headers the proxy accepts, such as the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers of an Access [service token](https://developers.cloudflare.com/cloudflare-one/identity/service-tokens/).
+
+Set `VINEXT_WARM_CACHE_HEADERS` to one `Name: value` header per line, so secrets stay out of shell history and process listings. The deploy also reads it from the `.env` files it loads, such as `.env.production.local`. In GitHub Actions:
+
+```yaml
+- run: npx @vinext/cloudflare deploy --warm-cache
+  env:
+    VINEXT_WARM_CACHE_HEADERS: |
+      CF-Access-Client-Id: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF-Access-Client-Secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+```
+
+For headers that are not secret, pass `--warm-cache-header "Name: value"`, once per header. A flag replaces an env entry with the same name. The deploy logs the configured header names, never their values, and sends the headers only to the Worker, not to the Cloudflare API. Warm-up requests do not follow redirects, so the headers never reach another origin.
+
+The deploy rejects names that vinext sets itself or that change how the Worker treats a request: `Accept`, `Cache-Control`, `Pragma`, `User-Agent`, `Host`, `RSC`, `Cloudflare-Workers-Version-Overrides`, `X-Deployment-Id`, `X-RSC-Action`, the conditional and range headers (`If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`, `Range`), and names starting with `Next-`, `X-Middleware-`, `X-Nextjs-`, `X-Prerender-Revalidate`, or `X-Vinext-`. It also rejects `Connection`, `Content-Length`, `Expect`, `Keep-Alive`, `Sec-Fetch-Mode`, `Transfer-Encoding`, and `Upgrade`, which `fetch()` does not allow or controls itself. Warm-up responses fill the same cache entries as visitor requests, so a cacheable page must not render differently based on them.
+
 ### Traffic-aware warming
 
 For apps with many routes, use traffic-aware warming to prioritize pages people actually visit:

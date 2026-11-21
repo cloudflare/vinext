@@ -1,11 +1,16 @@
 import { expect, test, type APIResponse } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveBuildOutputDefaultWorkerDir } from "../../../packages/cloudflare/src/build-output.js";
 import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
-const staticCacheDir = path.resolve(
-  "examples/static-assets-cache/.cloudflare/output/v0/workers/default/assets/_vinext/static-cache",
-);
+// Resolved lazily: the example is built by the web server after this module loads.
+function staticCacheDir(): string {
+  return path.join(
+    resolveBuildOutputDefaultWorkerDir(path.resolve("examples/static-assets-cache")),
+    "assets/_vinext/static-cache",
+  );
+}
 const buildTimeSource = '<span id="render-source">build-time</span>';
 
 function expectCacheHit(response: APIResponse): void {
@@ -24,7 +29,7 @@ test("build packages prerendered HTML, RSC, and metadata into Static Assets", ({
   test.skip(Boolean(process.env.VINEXT_E2E_BASE_URL), "inspects the local build output");
   expect(baseURL).toBeDefined();
   const index = JSON.parse(
-    fs.readFileSync(path.join(staticCacheDir, "index.json"), "utf8"),
+    fs.readFileSync(path.join(staticCacheDir(), "index.json"), "utf8"),
   ) as Record<string, { kind: string }>;
   const kinds = Object.values(index).map((entry) => entry.kind);
   // `/`, `/about`, both generateStaticParams posts, and the prerendered not-found page.
@@ -32,7 +37,7 @@ test("build packages prerendered HTML, RSC, and metadata into Static Assets", ({
   expect(kinds.filter((kind) => kind === "rsc")).toHaveLength(4);
   expect(kinds.filter((kind) => kind === "route")).toHaveLength(1);
   for (const [id, entry] of Object.entries(index)) {
-    expect(fs.existsSync(path.join(staticCacheDir, `${id}.${entry.kind}`))).toBe(true);
+    expect(fs.existsSync(path.join(staticCacheDir(), `${id}.${entry.kind}`))).toBe(true);
   }
 });
 

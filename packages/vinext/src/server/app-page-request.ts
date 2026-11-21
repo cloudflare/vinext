@@ -11,6 +11,8 @@ import { buildAppStaticParamsTags } from "./implicit-tags.js";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { removeTrailingSlash } from "../utils/base-path.js";
+import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import {
   loadAppInterceptLayouts,
   loadAppInterceptNotFound,
@@ -124,6 +126,8 @@ type AppPageInterceptMatch<TPage = unknown> = {
   slotKey: string;
   sourceRouteIndex: number;
   sourcePageSegments?: readonly string[] | null;
+  /** False when the source URL resolved to no route of its own. */
+  sourceRouteIsConcrete?: boolean;
   targetPatternParts?: readonly string[];
   targetRouteGraphId?: string | null;
 };
@@ -213,6 +217,9 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
 
 type ResolveAppPageInterceptResult<TInterceptOpts> = {
   interceptOpts: TInterceptOpts | undefined;
+  /** The params a current-route interception renders with, when it differs. */
+  navigationParams?: AppPageParams;
+  params?: AppPageParams;
   response: Response | null;
 };
 
@@ -761,8 +768,26 @@ type ValidateAppPageRouteDynamicParamsOptions = {
   isDynamicRoute: boolean;
   isProduction: boolean;
   params: AppPageParams;
+  /** The request's route-match pathname, compared with the exported paths. */
+  pathname: string;
+  routePattern: string;
   routeSegments?: readonly string[];
 };
+
+/**
+ * Whether a dynamic page admits only the params its generateStaticParams
+ * lists. Under `output: "export"` Next.js writes only those params as files
+ * and rejects `dynamicParams: true`, so the host answers 404 for every other
+ * URL: a production export behaves as `dynamicParams = false`.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+ */
+export function isAppPageStaticParamsOnly(
+  dynamicParamsConfig: boolean | undefined,
+  isProduction: boolean,
+): boolean {
+  if (dynamicParamsConfig === false) return true;
+  return isProduction && process.env.__NEXT_CONFIG_OUTPUT === "export";
+}
 
 /**
  * Next.js rejects a `dynamicParams = false` miss while routing, before any of
@@ -778,6 +803,21 @@ export function validateAppPageRouteDynamicParams(
   if (options.isProduction && options.dynamicConfig === "force-dynamic") {
     return Promise.resolve(null);
   }
+  // A deployed export serves a dynamic page only at the paths its build wrote,
+  // whatever generateStaticParams returns now. The prerender that writes them
+  // still checks the generators. It records `/about` for the `/about/` that
+  // trailingSlash routes, so compare without the trailing slash.
+  if (
+    options.isDynamicRoute &&
+    options.isProduction &&
+    process.env.__NEXT_CONFIG_OUTPUT === "export" &&
+    process.env.VINEXT_PRERENDER !== "1"
+  ) {
+    const exported = getRenderedConcreteUrlPathsForRoute(options.routePattern)?.has(
+      removeTrailingSlash(options.pathname),
+    );
+    return Promise.resolve(exported === true ? null : notFoundResponse());
+  }
   // Next.js runs generateStaticParams in a work store of its own: the route's
   // fetchCache and implicit tags, and no revalidate or force-dynamic default.
   // Callers run this check apart from the request, so these stay out of it.
@@ -787,7 +827,10 @@ export function validateAppPageRouteDynamicParams(
   setCurrentFetchRevalidate(null);
   setCurrentForceDynamicFetchDefault(false);
   return validateAppPageDynamicParams({
-    enforceStaticParamsOnly: options.dynamicParamsConfig === false,
+    enforceStaticParamsOnly: isAppPageStaticParamsOnly(
+      options.dynamicParamsConfig,
+      options.isProduction,
+    ),
     generateStaticParams: options.generateStaticParams,
     isDynamicRoute: options.isDynamicRoute,
     params: options.params,
@@ -832,6 +875,17 @@ export async function resolveAppPageInterceptState<TRoute, TPage>(
   return { kind: "source-route", intercept, sourceRoute };
 }
 
+/**
+ * Marks the opts of a render of the source route beneath its intercepted
+ * target, which renders only the intercepting route's tree (see
+ * app-page-element-builder.ts).
+ */
+function markInterceptionSourceRender<TInterceptOpts>(opts: TInterceptOpts): TInterceptOpts {
+  return typeof opts === "object" && opts !== null
+    ? { ...opts, rendersInterceptionSource: true }
+    : opts;
+}
+
 export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TInterceptOpts>(
   options: ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts>,
 ): Promise<ResolveAppPageInterceptionRerenderTargetResult<TRoute, TInterceptOpts>> {
@@ -848,7 +902,9 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     const sourceMatchedParams =
       interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams;
     return {
-      interceptOpts: options.toInterceptOpts(interceptState.intercept),
+      interceptOpts: markInterceptionSourceRender(
+        options.toInterceptOpts(interceptState.intercept),
+      ),
       navigationParams: {
         ...sourceMatchedParams,
         ...interceptState.intercept.matchedParams,
@@ -861,6 +917,22 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     };
   }
 
+  if (
+    interceptState.kind === "current-route" &&
+    rendersCurrentRouteAsSource(interceptState.intercept)
+  ) {
+    return {
+      ...resolveAppPageCurrentRouteSourceParams(
+        interceptState.intercept,
+        options.getRouteParamNames(options.currentRoute),
+      ),
+      interceptOpts: markInterceptionSourceRender(
+        options.toInterceptOpts(interceptState.intercept),
+      ),
+      route: options.currentRoute,
+    };
+  }
+
   return {
     interceptOpts:
       interceptState.kind === "current-route"
@@ -869,6 +941,32 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     navigationParams: options.currentParams,
     params: options.currentParams,
     route: options.currentRoute,
+  };
+}
+
+/**
+ * A source URL that resolved to no route of its own (`/shots` beside
+ * `shots/@modal/(.)[id]` with no `shots/page`) names no page beneath the
+ * modal, so the matched route renders whole with the target's params.
+ */
+function rendersCurrentRouteAsSource<TPage>(intercept: AppPageInterceptMatch<TPage>): boolean {
+  return intercept.sourceRouteIsConcrete !== false;
+}
+
+/**
+ * An interception whose source is the matched route itself (`/shots/1` to
+ * `/shots/2` beside `@modal/(.)[id]`) still renders beneath the source's
+ * params, as Next.js keeps the source page under the modal. The client reads
+ * the target's from the navigation params.
+ */
+function resolveAppPageCurrentRouteSourceParams<TPage>(
+  intercept: AppPageInterceptMatch<TPage>,
+  routeParamNames: readonly string[],
+): { navigationParams: AppPageParams; params: AppPageParams } {
+  const sourceMatchedParams = intercept.sourceMatchedParams ?? intercept.matchedParams;
+  return {
+    navigationParams: { ...sourceMatchedParams, ...intercept.matchedParams },
+    params: pickRouteParams(sourceMatchedParams, routeParamNames),
   };
 }
 
@@ -892,7 +990,9 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
 
   if (interceptState.kind === "source-route") {
     const renderRoute = interceptState.sourceRoute;
-    const interceptOpts = options.toInterceptOpts(interceptState.intercept);
+    const interceptOpts = markInterceptionSourceRender(
+      options.toInterceptOpts(interceptState.intercept),
+    );
     const sourceMatchedParams =
       interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams;
     const navigationParams = {
@@ -935,8 +1035,23 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
     };
   }
 
-  // Reproduce the current-route-is-source branch where we still need the opts
-  // bag even though we did not render a separate intercepted response.
+  // The current route is the source: it renders as itself, with the opts bag
+  // and the source's params, rather than as a separate intercepted response.
+  if (
+    interceptState.kind === "current-route" &&
+    rendersCurrentRouteAsSource(interceptState.intercept)
+  ) {
+    return {
+      ...resolveAppPageCurrentRouteSourceParams(
+        interceptState.intercept,
+        options.getRouteParamNames(options.currentRoute),
+      ),
+      interceptOpts: markInterceptionSourceRender(
+        options.toInterceptOpts(interceptState.intercept),
+      ),
+      response: null,
+    };
+  }
   return {
     interceptOpts:
       interceptState.kind === "current-route"

@@ -646,8 +646,8 @@ const __requestHandler = createAppRscRequestHandler({
   matchRoute,
   matchRequestRoute,
   matchRawRequestRoute,
-  matchInterceptRoute(pathname, sourcePathname, interceptionId) {
-    const intercept = __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId);
+  matchInterceptRoute(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot) {
+    const intercept = __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot);
     if (!intercept) return null;
     const route = __routes[intercept.sourceRouteIndex];
     const authorizationRoute = __routes[intercept.authorizationSourceRouteIndex];
@@ -663,6 +663,9 @@ const __requestHandler = createAppRscRequestHandler({
       authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams),
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+      interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+      interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
+      interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
       route,
       params: pickParams(route, intercept.sourceMatchedParams),
     };
@@ -1027,6 +1030,7 @@ ${
     : ""
 }
 import {
+  isAppPageStaticParamsOnly as __isAppPageStaticParamsOnly,
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
   validateAppPageRouteDynamicParams as __validateAppPageRouteDynamicParams,
 } from ${JSON.stringify(appPageRequestPath)};
@@ -1374,8 +1378,8 @@ function matchRawRequestRoute(url) {
  * Check if a pathname matches any intercepting route.
  * Returns the match info or null.
  */
-function findIntercept(pathname, sourcePathname = null, interceptionId = null) {
-  return __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId);
+function findIntercept(pathname, sourcePathname = null, interceptionId = null, acceptsSourceWithoutSlot = false) {
+  return __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot);
 }
 
 function hasInterceptionId(interceptionId) {
@@ -1488,10 +1492,12 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,
-  async isDynamicParamsMiss(route, params) {
+  async isDynamicParamsMiss(route, params, pathname) {
     if (!route.isDynamic) return false;
     const __segmentConfig = __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route));
-    if (__segmentConfig.dynamicParamsConfig !== false) return false;
+    if (!__isAppPageStaticParamsOnly(__segmentConfig.dynamicParamsConfig, process.env.NODE_ENV === "production")) {
+      return false;
+    }
     return (await __validateAppPageRouteDynamicParams({
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
@@ -1500,6 +1506,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isDynamicRoute: route.isDynamic,
       isProduction: process.env.NODE_ENV === "production",
       params,
+      pathname,
+      routePattern: route.pattern,
       routeSegments: route.routeSegments,
     })) !== null;
   },
@@ -2072,10 +2080,14 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
   ${
     (metadataRoutes?.length ?? 0) > 0
-      ? `async getPrerenderMetadataRoutePaths() {
-    const { getPrerenderableMetadataRoutePaths: __getPrerenderableMetadataRoutePaths } =
-      await __loadMetadataRouteResponse();
-    return __getPrerenderableMetadataRoutePaths(metadataRoutes);
+      ? `async getPrerenderMetadataRoutePaths(request) {
+    const {
+      getPrerenderableMetadataRoutePaths: __getPrerenderableMetadataRoutePaths,
+      getWarmableMetadataRoutes: __getWarmableMetadataRoutes,
+    } = await __loadMetadataRouteResponse();
+    return request.warm
+      ? __getWarmableMetadataRoutes(metadataRoutes, request)
+      : __getPrerenderableMetadataRoutePaths(metadataRoutes);
   },`
       : ""
   }
@@ -2110,8 +2122,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   matchRequestRoute,
   matchRawRequestRoute,
   hasInterceptionId,
-  matchInterceptRoute(pathname, sourcePathname, interceptionId) {
-    const intercept = findIntercept(pathname, sourcePathname, interceptionId);
+  matchInterceptRoute(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot) {
+    const intercept = findIntercept(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot);
     if (!intercept) return null;
     const route = routes[intercept.sourceRouteIndex];
     const authorizationRoute = routes[intercept.authorizationSourceRouteIndex];
@@ -2127,6 +2139,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams),
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+      interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+      interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
+      interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
       route,
       params: pickParams(route, intercept.sourceMatchedParams),
     };

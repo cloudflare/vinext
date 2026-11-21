@@ -14,6 +14,7 @@ import {
   parseWorkersDevUrl,
   parseWranglerDeploymentStatusOutput,
   parseWranglerVersionUploadOutput,
+  readBuildOutputWorkerName,
   runCfVersionUpload,
   runCfDeploymentStatus,
   runCfVersionDeploy,
@@ -101,6 +102,16 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       [path.join(root, "node_modules/cf/bin/cf"), "workers", "versions", "create", "--prebuilt"],
       expect.objectContaining({ cwd: root, shell: false }),
     );
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("reads the Worker name from v1 Build Output", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-v1-output-"));
+    const configPath = path.join(root, ".cloudflare/output/v1/workers/default/worker.config.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ name: "my-v1-worker" }));
+
+    expect(readBuildOutputWorkerName(root)).toBe("my-v1-worker");
     fs.rmSync(root, { recursive: true, force: true });
   });
 
