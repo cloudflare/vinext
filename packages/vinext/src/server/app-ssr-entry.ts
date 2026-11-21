@@ -40,8 +40,11 @@ import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { withAppRouterTree } from "vinext/shims/app-router-tree-context";
 import {
   CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL,
+  countPageEntryRejections,
   withCaughtNotFoundBoundaries,
+  withRenderedPageEntry,
   type CaughtNotFoundBoundaries,
+  type RenderedPageEntry,
 } from "vinext/shims/caught-not-found-boundaries";
 import {
   BeforeInteractiveContext,
@@ -470,11 +473,17 @@ export async function handleSsr(
      */
     isServerComponentError?: (error: unknown) => boolean;
     /**
-     * The parallel slot not-found boundaries that catch the error that
-     * rejected the shell, or null when none catches it. The document then
-     * renders again from the same payload with them caught.
+     * The boundaries that catch the error that rejected the shell, a parallel
+     * slot's not-found or the route's own, or null when none catches it. The
+     * document then renders again from the same payload with them caught.
+     * `countPageRejections` counts the error's copies that only the route's
+     * page entry rendered, from the page's component or any component in its
+     * subtree.
      */
-    resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
+    resolveCaughtNotFoundBoundaries?: (
+      error: unknown,
+      countPageRejections: () => number,
+    ) => readonly string[] | null;
     dynamicStaleTimeSeconds?: number;
     getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   },
@@ -694,8 +703,11 @@ export async function handleSsr(
           { value: registerBeforeInteractiveInlineScript },
           ssrTree,
         );
+        // The page entry the document renders, so a shell error can be traced
+        // to the page's subtree.
+        const renderedPageEntry: RenderedPageEntry = {};
         const ssrRoot = withScriptNonce(
-          withAppRouterTree(treeWithBeforeInteractive),
+          withAppRouterTree(withRenderedPageEntry(renderedPageEntry, treeWithBeforeInteractive)),
           options?.scriptNonce,
         );
 
@@ -809,14 +821,17 @@ export async function handleSsr(
         let caughtShellError: unknown;
         let caughtBoundaries: CaughtNotFoundBoundaries | null = null;
         let shouldDelayInitialHtmlPull = false;
-        // Fizz has no error boundaries, so a parallel slot's notFound() rejects
-        // the shell. The root to render the document again with, from the same
-        // payload, with the slot boundaries that catch it on the client
-        // rendering their fallback, or null when any copy isn't caught in its
-        // slot. No server component runs again.
+        // Fizz has no error boundaries, so a parallel slot's notFound(), or the
+        // page's own signal in a route with parallel slots, rejects the shell.
+        // The root to render the document again with, from the same
+        // payload, with the boundaries that catch it on the client rendering
+        // their fallback, or null when any copy isn't caught in the tree. No
+        // server component runs again.
         const prepareCaughtNotFoundRoot = (error: unknown): ReactElement | null => {
           const caughtNotFoundBoundaries =
-            options?.resolveCaughtNotFoundBoundaries?.(error) ?? null;
+            options?.resolveCaughtNotFoundBoundaries?.(error, () =>
+              countPageEntryRejections(renderedPageEntry, error),
+            ) ?? null;
           if (!caughtNotFoundBoundaries || caughtNotFoundBoundaries.length === 0) return null;
           // Decode the payload again inside this render, so that it hints the
           // client references' stylesheets and modules to this document, like
@@ -832,7 +847,7 @@ export async function handleSsr(
           flightRoot = null;
           beforeInteractiveInlineScripts.length = 0;
           clearServerInsertedHTML();
-          // The caught boundaries replace their slots' files, which the
+          // The caught boundaries replace the files below them, which the
           // route's linked stylesheets include. Next.js sends an error shell
           // without stylesheets here, so link only what this render reads.
           resetStreamedClientReferences(
@@ -871,8 +886,15 @@ export async function handleSsr(
           } catch (error) {
             const caughtRoot = prepareCaughtNotFoundRoot(error);
             if (!caughtRoot) throw error;
-            // A slot's not-found boundary that throws replaces the 404.
-            htmlStream = await prerenderFallbackShell(caughtRoot);
+            try {
+              htmlStream = await prerenderFallbackShell(caughtRoot);
+            } catch {
+              // A caught document that can't render leaves the shell's own
+              // error to its fallback document. An error outside the caught
+              // boundaries keeps that error's status there, and a caught
+              // boundary that redirects or throws does so there again.
+              throw error;
+            }
             caughtShellError = error;
           }
         } else {
@@ -902,10 +924,13 @@ export async function handleSsr(
                   renderToReadableStream(caughtRoot, renderOptions),
                 );
                 if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
-              } catch (caughtRenderError) {
-                // A slot's not-found boundary that throws replaces the 404.
+              } catch {
+                // A caught document that can't render leaves the shell's own
+                // error to its fallback document. An error outside the caught
+                // boundaries keeps that error's status there, and a caught
+                // boundary that redirects or throws does so there again.
                 void caughtHtmlStream?.cancel().catch(() => {});
-                throw caughtRenderError;
+                throw error;
               }
               renderComplete = caughtHtmlStream.allReady;
               shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;

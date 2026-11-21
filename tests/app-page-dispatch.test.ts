@@ -6,6 +6,7 @@ import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
 import {
   tagAppPageLayoutError,
+  tagAppPagePageError,
   tagAppPageSlotError,
 } from "../packages/vinext/src/server/app-page-execution.js";
 import {
@@ -690,6 +691,69 @@ describe("app page dispatch", () => {
     // The loading at position 1 catches descendants, but not a layout at the
     // same position. Probe the root and co-located layout only.
     expect(probeLayoutAt.mock.calls.map(([layoutIndex]) => layoutIndex)).toEqual([0, 1]);
+  });
+
+  it("catches a page's signal beside the route's parallel slots whichever user agent renders", async () => {
+    // Next.js stores one error shell for every user agent, so the route alone
+    // decides whether the page's boundary catches in the document, and only
+    // the page's own signal: the flat payload still renders the entries below
+    // a layout that threw.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;403";
+    const resolveCaught = async (
+      userAgent: string,
+      tag: (error: Error) => Error,
+      slots: TestRoute["slots"],
+      pageRejections = 0,
+    ) => {
+      let caught: readonly string[] | null | undefined;
+      const { options } = createDispatchOptions({
+        request: new Request("https://example.test/posts/hello", {
+          headers: { "user-agent": userAgent },
+        }),
+        route: createRoute({
+          layouts: [{}, {}],
+          layoutTreePositions: [0, 1],
+          ...(slots ? { slots } : {}),
+        }),
+        renderToReadableStream(_element, { onError }) {
+          onError(tag(Object.assign(new Error(digest), { digest })), undefined, undefined);
+          return createStream(["flight"]);
+        },
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
+            caught = ssrOptions?.resolveCaughtNotFoundBoundaries?.(
+              Object.assign(new Error(digest), { digest }),
+              () => pageRejections,
+            );
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+      });
+      await (await dispatchAppPage(options)).text();
+      return caught;
+    };
+    const slots: TestRoute["slots"] = {
+      "sidebar@app/posts/@sidebar": { slotParamNames: [], slotPatternParts: [] },
+    };
+    const browser = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    const bot = "Mozilla/5.0 (compatible; Twitterbot/1.0)";
+
+    for (const userAgent of [browser, bot]) {
+      expect(await resolveCaught(userAgent, tagAppPagePageError, slots)).toEqual(["page:403"]);
+      // A layout's signal, and one nothing tags, keep the fallback.
+      expect(
+        await resolveCaught(userAgent, (error) => tagAppPageLayoutError(error, 1), slots),
+      ).toBeNull();
+      expect(await resolveCaught(userAgent, (error) => error, slots)).toBeNull();
+      // One a component in the page's subtree threw, which only the page's
+      // entry renders, is the page's too.
+      expect(await resolveCaught(userAgent, (error) => error, slots, 1)).toEqual(["page:403"]);
+      expect(
+        await resolveCaught(userAgent, (error) => tagAppPageLayoutError(error, 1), slots, 1),
+      ).toBeNull();
+    }
+    // Without named slots, the fallback document renders.
+    expect(await resolveCaught(browser, tagAppPagePageError, undefined)).toBeNull();
   });
 
   it.each([

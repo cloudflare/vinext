@@ -945,3 +945,142 @@ test.describe("Forbidden & Unauthorized", () => {
     expect(response?.status()).toBe(401);
   });
 });
+
+test.describe("Access boundaries beside parallel slots", () => {
+  // Next.js wraps only a segment's `children` in its access boundaries, so the
+  // layout's @sidebar slot keeps rendering beside the boundary that catches
+  // the page's notFound(), forbidden() or unauthorized(), in the document and
+  // on navigation, and stays mounted with its state.
+  // Observed in Next.js 16.2.7, webpack and Turbopack.
+  const SIBLING_SLOTS = `${BASE}/notfound-sibling-slots`;
+  const cases = [
+    { path: "missing", link: "Missing", status: 404, boundaryId: "notfound-sibling-slots-nf" },
+    {
+      path: "denied",
+      link: "Denied",
+      status: 403,
+      boundaryId: "notfound-sibling-slots-forbidden",
+    },
+    {
+      path: "unauth",
+      link: "Unauth",
+      status: 401,
+      boundaryId: "notfound-sibling-slots-unauthorized",
+    },
+  ];
+
+  // A Server Component the page renders throws to the page's boundary too,
+  // as Next.js wraps the whole children subtree in it.
+  const nestedCases = [
+    { path: "nested-missing", status: 404, boundaryId: "notfound-sibling-slots-nf" },
+    { path: "nested-denied", status: 403, boundaryId: "notfound-sibling-slots-forbidden" },
+    { path: "nested-unauth", status: 401, boundaryId: "notfound-sibling-slots-unauthorized" },
+  ];
+
+  for (const { path, status, boundaryId } of [...cases, ...nestedCases]) {
+    test(`the ${path} document keeps the sidebar slot beside the boundary`, async ({
+      page,
+      request,
+    }) => {
+      const response = await request.get(`${SIBLING_SLOTS}/${path}`);
+      expect(response.status()).toBe(status);
+      const html = await response.text();
+      expect(html).toContain('id="notfound-sibling-slots-layout"');
+      expect(html).toContain(`id="${boundaryId}"`);
+      expect(html).toContain('id="notfound-sibling-slots-sidebar"');
+      expect(html).toContain("SIDEBAR");
+
+      const errors: string[] = [];
+      page.on("console", (message) => {
+        // The browser logs the document's own status.
+        if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) {
+          errors.push(message.text());
+        }
+      });
+      page.on("pageerror", (error) => errors.push(error.message));
+      const pageResponse = await page.goto(`${SIBLING_SLOTS}/${path}`);
+      expect(pageResponse?.status()).toBe(status);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator(`#notfound-sibling-slots-children #${boundaryId}`)).toBeVisible();
+      await expect(page.locator("#notfound-sibling-slots-nested")).toHaveCount(0);
+      const sidebar = page.locator(
+        "#notfound-sibling-slots-layout #notfound-sibling-slots-sidebar",
+      );
+      await expect(sidebar).toContainText("SIDEBAR");
+      // The slot hydrated, so its state updates.
+      const counter = page.locator("#notfound-sibling-slots-sidebar-count");
+      await expect(counter).toHaveText("Count: 0");
+      await counter.click();
+      await expect(counter).toHaveText("Count: 1");
+      // The boundary hydrates caught, so React doesn't recover by client rendering.
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test("a layout's notFound() keeps what renders below it out of the document", async ({
+    page,
+    request,
+  }) => {
+    const response = await request.get(`${SIBLING_SLOTS}/sub`);
+    expect(response.status()).toBe(404);
+    const html = await response.text();
+    expect(html).toContain('id="notfound-sibling-slots-nf"');
+    // Not in the markup, nor in the inline payload.
+    expect(html).not.toContain("Sub page");
+
+    const pageResponse = await page.goto(`${SIBLING_SLOTS}/sub`);
+    expect(pageResponse?.status()).toBe(404);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#notfound-sibling-slots-nf")).toBeVisible();
+    await expect(page.locator("#notfound-sibling-slots-sub")).toHaveCount(0);
+  });
+
+  test("navigating to each boundary keeps the sidebar slot and its state", async ({ page }) => {
+    await page.goto(SIBLING_SLOTS);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#notfound-sibling-slots-home")).toBeVisible();
+    await page.evaluate(() => {
+      (window as Window & { __siblingSlotsMarker?: boolean }).__siblingSlotsMarker = true;
+    });
+    const counter = page.locator("#notfound-sibling-slots-sidebar-count");
+    await counter.click();
+    await expect(counter).toHaveText("Count: 1");
+    const nav = page.locator("#notfound-sibling-slots-layout nav");
+
+    for (const { path, link, boundaryId } of cases) {
+      await nav.getByRole("link", { name: link, exact: true }).click();
+      await expect(page).toHaveURL(new RegExp(`/notfound-sibling-slots/${path}$`));
+      await expect(page.locator(`#notfound-sibling-slots-children #${boundaryId}`)).toBeVisible();
+      await expect(page.locator("#notfound-sibling-slots-sidebar")).toContainText("SIDEBAR");
+      await expect(counter).toHaveText("Count: 1");
+
+      await nav.getByRole("link", { name: "Home", exact: true }).click();
+      await expect(page.locator("#notfound-sibling-slots-home")).toBeVisible();
+      await expect(counter).toHaveText("Count: 1");
+    }
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __siblingSlotsMarker?: boolean }).__siblingSlotsMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("navigating to a layout's notFound() never shows what renders below it", async ({
+    page,
+    request,
+  }) => {
+    // The navigation's own payload carries nothing below the layout either.
+    const payload = await request.get(`${SIBLING_SLOTS}/sub`, { headers: { RSC: "1" } });
+    expect(payload.status()).toBe(404);
+    expect(await payload.text()).not.toContain("Sub page");
+
+    await page.goto(SIBLING_SLOTS);
+    await waitForAppRouterHydration(page);
+    const nav = page.locator("#notfound-sibling-slots-layout nav");
+    await nav.getByRole("link", { name: "Sub", exact: true }).click();
+    await expect(page).toHaveURL(/\/notfound-sibling-slots\/sub$/);
+    await expect(page.locator("#notfound-sibling-slots-nf")).toBeVisible();
+    await expect(page.locator("#notfound-sibling-slots-sub")).toHaveCount(0);
+    expect(await page.content()).not.toContain("Sub page");
+  });
+});
