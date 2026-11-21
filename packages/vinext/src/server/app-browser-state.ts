@@ -758,8 +758,9 @@ export type NavigationInterceptionSource = {
  * context. An intercepted entry sends the source it keeps. One that renders an
  * intercepting route's own tree, a sibling intercept or a whole intercepting
  * route, navigates from the path of that tree instead, which stops at the
- * interception marker, as Next.js's `nextUrl` does: the owner's path, with the
- * source's values for its params. Its refreshes and traversals still send the
+ * interception marker, as Next.js's `nextUrl` does: the path of the folders
+ * above the marker, with the source's values for their params. Its refreshes
+ * and traversals still send the
  * source it keeps.
  */
 export function resolveNavigationInterceptionSource(
@@ -769,13 +770,16 @@ export function resolveNavigationInterceptionSource(
   const source = resolveInterceptionContextFromPreviousNextUrl(state.previousNextUrl, basePath);
   const metadata = AppElementsWire.readMetadata(state.elements);
   const segments = metadata.sourcePage?.slice(1).split("/") ?? [];
+  const markerIndex = segments.findIndex(isInterceptionMarkerSegment);
+  // A whole intercepting route's source page runs through the slot's folders
+  // to the marker; one without a marker stops at the owner.
   const ownerSegments =
     source === null
       ? null
       : metadata.wholeInterceptionSource !== null
-        ? segments.slice(0, -1)
+        ? segments.slice(0, markerIndex === -1 ? -1 : markerIndex)
         : rendersSiblingIntercept(metadata)
-          ? segments.slice(0, segments.findIndex(isInterceptionMarkerSegment))
+          ? segments.slice(0, markerIndex)
           : null;
   if (source === null || ownerSegments === null) {
     return { previousNextUrl: state.previousNextUrl, pathname: null };

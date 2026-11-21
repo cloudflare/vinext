@@ -438,9 +438,14 @@ export async function buildPageElements<
   // to `pageModule?.default` since `effectivePageModule === pageModule`.
   const EffectivePageComponent = effectivePageModule?.default;
   const effectiveParams = isSiblingIntercept ? (opts!.interceptParams ?? params) : params;
+  // A whole intercepting route's tree reaches its page through the slot, so
+  // its source page is the intercepting page's, without the slot's own
+  // segment, as Next.js reports it.
   const sourcePageSegments = isSiblingIntercept
     ? opts?.interceptSourcePageSegments
-    : route.routeSegments;
+    : rendersWholeInterceptingRoute && opts?.interceptSourcePageSegments
+      ? opts.interceptSourcePageSegments.filter((segment) => !segment.startsWith("@"))
+      : route.routeSegments;
   const semanticPageIdentity = isSiblingIntercept
     ? route.ids?.route && opts?.interceptGraphId && opts.interceptTargetPatternParts
       ? {
