@@ -2305,7 +2305,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (
       HAS_CONFIG_REWRITES &&
       !droppedSource &&
-      (options.configRewrites.beforeFiles.length || options.configRewrites.afterFiles.length)
+      (options.configRewrites.beforeFiles.length ||
+        options.configRewrites.afterFiles.length ||
+        options.configRewrites.fallback.length)
     ) {
       const { matchRewrite } = await import("../config/config-matchers.js");
       // The source request shares the target's query. Its headers and cookies
@@ -2344,12 +2346,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // A direct request that reaches a dynamic route after beforeFiles still
       // takes the afterFiles rules before that route is accepted, so a rule
       // that rewrites the source away for this client refuses it here too. A
-      // static route is final before afterFiles.
+      // static route is final before afterFiles. A /_not-found that a
+      // root-level owner stands in for matches no route, so it takes the
+      // afterFiles and then the fallback rules.
+      const matchesNoRoute = (): boolean =>
+        interceptionSourceMatch?.interceptionRendersRootOwnerFromRouteMiss === true;
       if (
         (!rewriteSource(options.configRewrites.beforeFiles, false) ||
-          ((interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route)
-            .isDynamic &&
-            !rewriteSource(options.configRewrites.afterFiles, true))) &&
+          ((matchesNoRoute() ||
+            (interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route)
+              .isDynamic) &&
+            !rewriteSource(options.configRewrites.afterFiles, true)) ||
+          (matchesNoRoute() && !rewriteSource(options.configRewrites.fallback, true))) &&
         !dropsRefusedSource()
       ) {
         options.clearRequestContext();

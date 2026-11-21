@@ -8876,17 +8876,20 @@ describe("createAppRscHandler", () => {
   // matches it: its own owner, the root page for a sibling intercept or a root
   // route group's page for its slot, renders as Next.js's interception rewrite
   // does. The source pass still decides, and another context with no route of
-  // its own still renders the target directly, or is refused with an id.
-  it.each([
-    { owner: "group slot", context: "/_not-found", outcome: "none" },
-    { owner: "group slot", context: "/_not-found", outcome: "same-path rewrite" },
-    { owner: "group slot", context: "/_not-found", outcome: "redirect" },
-    { owner: "group slot", context: "/missing", outcome: "none" },
-    { owner: "sibling", context: "/_not-found", outcome: "none" },
-    { owner: "sibling", context: "/_not-found", outcome: "same-path rewrite" },
-    { owner: "sibling", context: "/_not-found", outcome: "redirect" },
-    { owner: "sibling", context: "/missing", outcome: "none" },
-  ])(
+  // its own still renders the target directly, or is refused with an id. As
+  // /_not-found matches no route here, its afterFiles and fallback rules apply
+  // too, as they do to a direct request to it.
+  it.each(
+    ["group slot", "sibling"].flatMap((owner) => [
+      { owner, context: "/_not-found", outcome: "none" },
+      { owner, context: "/_not-found", outcome: "same-path rewrite" },
+      { owner, context: "/_not-found", outcome: "redirect" },
+      { owner, context: "/_not-found", outcome: "afterFiles external rewrite" },
+      { owner, context: "/_not-found", outcome: "fallback external rewrite" },
+      { owner, context: "/missing", outcome: "none" },
+      { owner, context: "/missing", outcome: "rewrite to /_not-found" },
+    ]),
+  )(
     "intercepts a root-level $owner from /_not-found without a route of its own (context: $context, source: $outcome)",
     async ({ owner, context, outcome }) => {
       const ownerMatcherRoute =
@@ -8962,8 +8965,14 @@ describe("createAppRscHandler", () => {
       const interceptionId = matcher.findIntercept("/photos/1", "/_not-found")?.interceptionId;
       if (!interceptionId) throw new Error("Expected a graph-owned interception id");
       const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const externalRewrite = [{ source: "/_not-found", destination: "https://upstream.example/" }];
       const handler = createHandler({
         configHeaders: [],
+        configRewrites: {
+          afterFiles: outcome === "afterFiles external rewrite" ? externalRewrite : [],
+          beforeFiles: [],
+          fallback: outcome === "fallback external rewrite" ? externalRewrite : [],
+        },
         dispatchMatchedPage,
         hasInterceptionId: (id) => matcher.hasInterceptionId(id),
         matchInterceptRoute(pathname, sourcePathname, id, acceptsSourceWithoutSlot) {
@@ -8990,6 +8999,11 @@ describe("createAppRscHandler", () => {
             if (request.nextUrl.pathname === context && outcome === "redirect") {
               return Response.redirect("https://example.test/docs/login", 307);
             }
+            if (request.nextUrl.pathname === context && outcome === "rewrite to /_not-found") {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/_not-found" },
+              });
+            }
             if (request.nextUrl.pathname === context && outcome === "same-path rewrite") {
               return new Response(null, {
                 headers: { "x-middleware-rewrite": request.nextUrl.href },
@@ -9008,11 +9022,17 @@ describe("createAppRscHandler", () => {
         return handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
       };
 
-      const intercepts = context === "/_not-found" && outcome !== "redirect";
+      const intercepts =
+        context === "/_not-found" && (outcome === "none" || outcome === "same-path rewrite");
       const withId = await request(interceptionId);
       expect(withId.status).toBe(intercepts ? 200 : 400);
       const response = await request();
-      expect(response.status).toBe(200);
+      // Any other source a rewrite refuses answers as its direct request would.
+      expect(response.status).toBe(outcome === "rewrite to /_not-found" ? 404 : 200);
+      if (response.status === 404) {
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+        return;
+      }
       expect(response.headers.get("location")).toBeNull();
       expect(dispatchMatchedPage).toHaveBeenLastCalledWith(
         expect.objectContaining({
