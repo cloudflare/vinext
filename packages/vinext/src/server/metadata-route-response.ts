@@ -1048,6 +1048,44 @@ export function isMetadataRouteRequestPath(
   return false;
 }
 
+/**
+ * Whether a metadata route answers a rewrite destination, as
+ * `renderMetadataRouteRequest` selects one, without running the route. The
+ * base of a sitemap with generateSitemaps, a child of a sitemap without it,
+ * and an image child without generateImageMetadata get no response there and
+ * fall through to later routing.
+ */
+export function metadataRouteAnswersRewrittenPath(
+  metadataRoutes: readonly MetadataRuntimeRoute[],
+  routePathname: string,
+): boolean {
+  const cleanPathname = normalizePathnameForRouteMatch(routePathname);
+  let urlParts: string[] | undefined;
+  const getUrlParts = () => (urlParts ??= cleanPathname.split("/").filter(Boolean));
+  let routeUrlParts: string[] | undefined;
+  const getRouteUrlParts = () => (routeUrlParts ??= routePathname.split("/").filter(Boolean));
+  for (const route of metadataRoutes) {
+    const functions = getMetadataRouteFunctions(route);
+    if (route.type === "sitemap" && route.isDynamic && functions.generateSitemaps) {
+      if (
+        functions.defaultExport &&
+        isGeneratedSitemapPath(route, cleanPathname) &&
+        isGeneratedSitemapPath(route, routePathname)
+      ) {
+        return true;
+      }
+      continue;
+    }
+    if (
+      matchMetadataRoute(route, cleanPathname, functions, getUrlParts) &&
+      matchMetadataRoute(route, routePathname, functions, getRouteUrlParts)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function writeMetadataRouteMiss(
   options: MetadataRouteRequestOptions,
   route: MetadataRuntimeRoute,
