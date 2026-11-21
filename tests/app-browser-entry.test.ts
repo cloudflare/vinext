@@ -2118,7 +2118,26 @@ describe("app browser entry state helpers", () => {
       previousNextUrl: null,
       pathname: "/acme",
     });
-    // Whole intercepting routes.
+    // Whole intercepting routes, through the slot's folders above the marker.
+    expect(
+      source(
+        "/nextjs-compat/intercept-source-group/(shared)/club/[slug]/[album]/(.)tracks/[id]/page",
+        "/nextjs-compat/intercept-source-group/club/static/one",
+        { whole: true },
+      ),
+    ).toEqual({
+      previousNextUrl: null,
+      pathname: "/nextjs-compat/intercept-source-group/club/static/one",
+    });
+    expect(source("/(g)/(.)photos/[id]/page", "/_not-found", { whole: true })).toEqual({
+      previousNextUrl: null,
+      pathname: "/",
+    });
+    expect(source("/[slug]/(.)photos/[id]/page", "/_not-found", { whole: true })).toEqual({
+      previousNextUrl: null,
+      pathname: "/_not-found",
+    });
+    // A source page without a marker stops at the owner.
     expect(source("/(g)/page", "/_not-found", { whole: true })).toEqual({
       previousNextUrl: null,
       pathname: "/",
