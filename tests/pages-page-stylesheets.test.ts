@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   appendToChunkCode,
-  builtUrlExpression,
   collectPagesPageStylesheets,
+  pagesStylesheetUrl,
   withoutPreloadedStylesheets,
 } from "../packages/vinext/src/build/pages-page-stylesheets.js";
+import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags.js";
 import { withAbsoluteUrls } from "../packages/vinext/src/shims/internal/pages-stylesheets.js";
+import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 
 function chunk(
   fileName: string,
@@ -76,7 +78,8 @@ describe("collectPagesPageStylesheets", () => {
     ).toEqual({ routes: { "/alpha": ["alpha.css"] }, shared: [], unpreloaded: ["alpha.css"] });
   });
 
-  // Next.js lists these in its dynamic CSS manifest, which keeps their server links.
+  // Next.js lists these in its dynamic CSS manifest, which keeps their server
+  // links. That includes a page that another page imports with `import()`.
   it("keeps the links of page stylesheets that other dynamic imports load too", () => {
     expect(
       collect([
@@ -93,7 +96,7 @@ describe("collectPagesPageStylesheets", () => {
       ]),
     ).toEqual({
       routes: { "/alpha": ["card.css", "alpha.css"], "/beta": ["beta.css"] },
-      shared: ["card.css"],
+      shared: ["card.css", "beta.css"],
       unpreloaded: ["card.css", "alpha.css", "beta.css"],
     });
   });
@@ -199,43 +202,34 @@ describe("appendToChunkCode", () => {
   });
 });
 
-describe("builtUrlExpression", () => {
+describe("pagesStylesheetUrl", () => {
   const file = "_next/static/css/alpha.css";
-  const hostId = "_next/static/chunks/entry.js";
-  const relativeUrl = 'new URL("../css/alpha.css",import.meta.url).href';
+  const options: Parameters<typeof pagesStylesheetUrl>[1] = {
+    base: "/",
+    basePath: "",
+    assetPrefix: "",
+  };
 
-  it("joins the base and the file", () => {
-    expect(builtUrlExpression(file, hostId, { base: "/docs/" })).toBe(
-      '"/docs/_next/static/css/alpha.css"',
-    );
-  });
-
-  // Vite resolves relative-base URLs in JavaScript against the chunk, not the page.
-  it.each(["./", ""])("resolves the file against the chunk with base %j", (base) => {
-    expect(builtUrlExpression(file, hostId, { base })).toBe(relativeUrl);
-  });
-
-  it("uses what renderBuiltUrl returns", () => {
-    const renderBuiltUrl = (filename: string, context: { hostId: string; hostType: string }) =>
-      `https://cdn.example.com/${filename}?host=${context.hostType}:${context.hostId}`;
-    expect(builtUrlExpression(file, hostId, { base: "/", renderBuiltUrl })).toBe(
-      JSON.stringify(`https://cdn.example.com/${file}?host=js:${hostId}`),
-    );
-    expect(
-      builtUrlExpression(file, hostId, {
-        base: "/",
-        renderBuiltUrl: () => ({ runtime: "assetUrl(name)" }),
-      }),
-    ).toBe("(assetUrl(name))");
-    expect(
-      builtUrlExpression(file, hostId, { base: "/", renderBuiltUrl: () => ({ relative: true }) }),
-    ).toBe(relativeUrl);
-    expect(
-      builtUrlExpression(file, hostId, { base: "./", renderBuiltUrl: () => ({ relative: false }) }),
-    ).toBe('"./_next/static/css/alpha.css"');
-    expect(
-      builtUrlExpression(file, hostId, { base: "/docs/", renderBuiltUrl: () => undefined }),
-    ).toBe('"/docs/_next/static/css/alpha.css"');
+  // As the server links them.
+  it.each([
+    [options, "/_next/static/css/alpha.css"],
+    [{ ...options, base: "/docs/", basePath: "/docs" }, "/docs/_next/static/css/alpha.css"],
+    [
+      { ...options, base: "/docs/", basePath: "/docs", assetPrefix: "https://cdn.example.com" },
+      "https://cdn.example.com/_next/static/css/alpha.css",
+    ],
+    [{ ...options, deploymentId: "1" }, "/_next/static/css/alpha.css?dpl=1"],
+  ])("links %o's stylesheets at %s", (config, url) => {
+    expect(pagesStylesheetUrl(file, config)).toBe(url);
+    const tags = collectAssetTags({
+      manifest: { "pages/alpha.tsx": [manifestFileWithBase(file, config.base)] },
+      moduleIds: ["pages/alpha.tsx"],
+      disableOptimizedLoading: false,
+      basePath: config.basePath,
+      assetPrefix: config.assetPrefix,
+      deploymentId: config.deploymentId,
+    });
+    expect(tags).toContain(`<link rel="stylesheet" href="${url}" />`);
   });
 });
 
@@ -266,6 +260,16 @@ describe("withAbsoluteUrls", () => {
       '/* url(a.png) */.a{content:"url(b.png)"}' +
         '.c{x:url("https://example.com/_next/static/css/c%20(1).png")}' +
         '.d{x:url("https://example.com/_next/static/css/d.png")}',
+    );
+  });
+
+  it("decodes the escapes in url()s", () => {
+    expect(
+      withAbsoluteUrls('.a{x:url(a\\).png)}.b{x:url("b\\"c.png")}.c{x:url(\\64 .png)}', href),
+    ).toBe(
+      '.a{x:url("https://example.com/_next/static/css/a).png")}' +
+        '.b{x:url("https://example.com/_next/static/css/b%22c.png")}' +
+        '.c{x:url("https://example.com/_next/static/css/d.png")}',
     );
   });
 

@@ -1,6 +1,8 @@
 import path from "pathslash";
 import type { ESTree, RenderBuiltAssetUrl } from "vite";
 import { parseProgram } from "../plugins/ast-utils.js";
+import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
+import { assetServingUrlFromBaseAnchored, manifestFileWithBase } from "../utils/manifest-paths.js";
 
 type BundleItem = {
   type: string;
@@ -74,11 +76,12 @@ export function collectPagesPageStylesheets(
     chunk.facadeModuleId ? options.routeOf(chunk.facadeModuleId) : undefined;
   const isAlwaysLoaded = (chunk: BundleItem) =>
     !!chunk.facadeModuleId && options.isAlwaysLoaded(chunk.facadeModuleId);
-  // The stylesheets of a dynamic import that isn't a page.
+  // The stylesheets of a dynamic import other than the loader chunk's pages.
   const otherDynamicStylesheets = (chunk: BundleItem): string[] =>
     (chunk.dynamicImports ?? []).flatMap((fileName) => {
       const imported = chunks.get(fileName);
-      if (!imported || routeOf(imported) !== undefined || isAlwaysLoaded(imported)) return [];
+      if (!imported || isAlwaysLoaded(imported)) return [];
+      if (chunk.fileName === options.loaderChunk && routeOf(imported) !== undefined) return [];
       return stylesheetsOf(fileName);
     });
 
@@ -249,26 +252,20 @@ export function appendToChunkCode(chunkCode: string, code: string): string {
 }
 
 /**
- * The JavaScript expression for `file`'s URL in the chunk `hostId`, as Vite
- * renders a built asset's URL in JavaScript: `renderBuiltUrl`'s result, or a
- * URL relative to the chunk with a relative `base`, or `base` and the file.
+ * The URL that the server links `file` with: under `basePath`, or under
+ * `assetPrefix` in its place, with the deployment ID query that Next.js adds to
+ * stylesheets. Client navigations tell a page's server links by it.
  */
-export function builtUrlExpression(
+export function pagesStylesheetUrl(
   file: string,
-  hostId: string,
-  options: { base: string; renderBuiltUrl?: RenderBuiltAssetUrl },
+  options: { base: string; basePath: string; assetPrefix: string; deploymentId?: string },
 ): string {
-  let relative = options.base === "" || options.base === "./";
-  const result = options.renderBuiltUrl?.(file, {
-    type: "asset",
-    hostId,
-    hostType: "js",
-    ssr: false,
-  });
-  if (typeof result === "string") return JSON.stringify(result);
-  if (result?.runtime) return `(${result.runtime})`;
-  if (typeof result?.relative === "boolean") relative = result.relative;
-  if (!relative) return JSON.stringify(options.base + file);
-  const url = path.posix.relative(path.posix.dirname(hostId), file);
-  return `new URL(${JSON.stringify(url)},import.meta.url).href`;
+  return appendDeploymentIdQuery(
+    assetServingUrlFromBaseAnchored(
+      manifestFileWithBase(file, options.base),
+      options.basePath,
+      options.assetPrefix,
+    ),
+    options.deploymentId,
+  );
 }

@@ -32,6 +32,17 @@ const createdLinkSlots = new Map<string, Comment>();
 // Not root-relative, not a fragment, and without a scheme.
 const RELATIVE_URL = /^(?![/#]|[a-z][a-z\d+.-]*:)/i;
 
+/** `value` with its CSS escapes decoded. */
+function withoutCssEscapes(value: string): string {
+  return value.replace(/\\(?:([\da-f]{1,6})[ \t\n\r\f]?|\n|([^]))/gi, (_escape, hex, char) => {
+    if (hex === undefined) return char ?? "";
+    const codePoint = Number.parseInt(hex, 16);
+    return codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)
+      ? "\ufffd"
+      : String.fromCodePoint(codePoint);
+  });
+}
+
 /** Where the CSS string or comment at `start` ends. */
 function endOfStringOrComment(text: string, start: number): number {
   if (text.startsWith("/*", start)) {
@@ -80,8 +91,9 @@ export function withAbsoluteUrls(text: string, href: string): string {
       end = valueEnd;
       while (/\s/.test(text[end] ?? "")) end++;
     } else {
-      const close = text.indexOf(")", end);
-      if (close === -1) break;
+      let close = end;
+      while (close < text.length && text[close] !== ")") close += text[close] === "\\" ? 2 : 1;
+      if (close >= text.length) break;
       url = text.slice(end, close).trimEnd();
       end = close;
     }
@@ -90,8 +102,8 @@ export function withAbsoluteUrls(text: string, href: string): string {
       continue;
     }
     end++;
-    // Escapes would need decoding first.
-    if (url && !url.includes("\\") && RELATIVE_URL.test(url)) {
+    url = withoutCssEscapes(url);
+    if (url && RELATIVE_URL.test(url)) {
       result += `${text.slice(copied, index)}url(${JSON.stringify(new URL(url, href).href)})`;
       copied = end;
     }

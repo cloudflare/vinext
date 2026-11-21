@@ -258,8 +258,8 @@ import {
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import {
   appendToChunkCode,
-  builtUrlExpression,
   collectPagesPageStylesheets,
+  pagesStylesheetUrl,
   withoutPreloadedStylesheets,
 } from "./build/pages-page-stylesheets.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
@@ -9813,21 +9813,20 @@ export const loadServerActionClient = ${
           isAlwaysLoaded: (id) => id === RESOLVED_CLIENT_ENTRY || canonicalize(id) === appId,
           loaderChunk: entry.fileName,
         });
-        // The URLs Vite loads these from (with the deployment ID query that
-        // Next.js adds to stylesheets), as the entry's JavaScript.
-        const urls = (files: string[]) =>
-          `[${files
-            .map((file) =>
-              builtUrlExpression(file, entry.fileName, {
-                base: environment.config.base,
-                renderBuiltUrl: environment.config.experimental.renderBuiltUrl,
-              }),
-            )
-            .join(",")}]`;
-        const routeUrls = Object.entries(stylesheets.routes).map(
-          ([route, files]) => `${JSON.stringify(route)}:${urls(files)}`,
-        );
-        const manifest = `{routes:{${routeUrls.join(",")}},shared:${urls(stylesheets.shared)}}`;
+        // The URLs the server links these with.
+        const url = (file: string) =>
+          pagesStylesheetUrl(file, {
+            base: environment.config.base,
+            basePath: nextConfig.basePath,
+            assetPrefix: nextConfig.assetPrefix,
+            deploymentId: nextConfig.deploymentId,
+          });
+        const manifest = {
+          routes: Object.fromEntries(
+            Object.entries(stylesheets.routes).map(([route, files]) => [route, files.map(url)]),
+          ),
+          shared: stylesheets.shared.map(url),
+        };
         // The page loaders' dynamic imports leave page stylesheets to the
         // router, which turns them on as each page renders.
         entry.code = withoutPreloadedStylesheets(
@@ -9838,7 +9837,7 @@ export const loadServerActionClient = ${
         // Appended, so the entry's source map still lines up.
         entry.code = appendToChunkCode(
           entry.code,
-          `window.__VINEXT_PAGE_STYLESHEETS__=${manifest};`,
+          `window.__VINEXT_PAGE_STYLESHEETS__=${JSON.stringify(manifest)};`,
         );
       },
     },
