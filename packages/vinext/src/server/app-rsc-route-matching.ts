@@ -569,9 +569,11 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           ownerDefault: entry.__loadState.ownerDefault,
           // A source without the slot never skips source authorization, since
           // its middleware can rewrite it to a route with the slot, which then
-          // renders as the source instead.
+          // renders as the source instead. Nor does the whole intercepting
+          // route, whose source decides whether it renders at all.
           rendersTargetLayouts:
             !sourceRouteLacksSlot &&
+            !rendersWholeInterceptingRoute &&
             rendersTargetLayouts(
               entry,
               renderedSourceSegments,
@@ -582,6 +584,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
             ),
           rawRendersTargetLayouts:
             !sourceRouteLacksSlot &&
+            !rendersWholeInterceptingRoute &&
             rendersTargetLayouts(
               entry,
               renderedSourceSegments,

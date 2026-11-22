@@ -8928,8 +8928,8 @@ describe("createAppRscHandler", () => {
   // its own still renders the target directly, or is refused with an id. As
   // /_not-found matches no route here, its afterFiles and fallback rules apply
   // too, as they do to a direct request to it.
-  it.each(
-    ["group slot", "sibling"].flatMap((owner) => [
+  it.each([
+    ...["group slot", "sibling"].flatMap((owner) => [
       { owner, context: "/_not-found", outcome: "none" },
       { owner, context: "/_not-found", outcome: "same-path rewrite" },
       { owner, context: "/_not-found", outcome: "redirect" },
@@ -8938,11 +8938,22 @@ describe("createAppRscHandler", () => {
       { owner, context: "/missing", outcome: "none" },
       { owner, context: "/missing", outcome: "rewrite to /_not-found" },
     ]),
-  )(
+    // A target in the slot's own group shares its layouts with the owner, yet
+    // the whole intercepting route still needs its source authorized.
+    ...["none", "redirect", "afterFiles external rewrite"].map((outcome) => ({
+      owner: "group slot over a target in its group",
+      context: "/_not-found",
+      outcome,
+    })),
+  ])(
     "intercepts a root-level $owner from /_not-found without a route of its own (context: $context, source: $outcome)",
     async ({ owner, context, outcome }) => {
+      const targetSegments =
+        owner === "group slot over a target in its group"
+          ? ["(g)", "photos", "[id]"]
+          : ["photos", "[id]"];
       const ownerMatcherRoute =
-        owner === "group slot"
+        owner !== "sibling"
           ? {
               params: [],
               pattern: "/",
@@ -8989,7 +9000,7 @@ describe("createAppRscHandler", () => {
           params: ["id"],
           pattern: "/photos/:id",
           patternParts: ["photos", ":id"],
-          routeSegments: ["photos", "[id]"],
+          routeSegments: targetSegments,
         },
       ];
       const matcher = createAppRscRouteMatcher(matcherRoutes as any);
@@ -9001,7 +9012,7 @@ describe("createAppRscHandler", () => {
         isDynamic: true,
         params: ["id"],
         pattern: "/photos/:id",
-        routeSegments: ["photos", "[id]"],
+        routeSegments: targetSegments,
       });
       const handlerRoutes = new Map<string, TestRoute>([
         ["/", ownerRoute],

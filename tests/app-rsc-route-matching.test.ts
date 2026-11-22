@@ -1633,6 +1633,50 @@ describe("App RSC route matching", () => {
       expect(withoutGroupPage.findIntercept("/photos/1", "/_not-found")).toBeNull();
     });
 
+    // The whole intercepting route renders only when its source passes, so it
+    // never skips that source's authorization, even for a target in the
+    // slot's own group, whose layouts the target's request renders too.
+    it("never lets the whole intercepting route skip its source's authorization", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          ...route("/", [], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/",
+                  sourcePageSegments: ["(g)", "@modal", "(.)photos", "[id]"],
+                  targetPattern: "/photos/:id",
+                  interceptLayouts: [],
+                  page: "group-photos-modal",
+                  params: ["id"],
+                },
+              ],
+            },
+          }),
+          routeSegments: ["(g)"],
+        },
+        {
+          ...route("/photos/:id", ["photos", ":id"]),
+          routeSegments: ["(g)", "photos", "[id]"],
+        },
+        { ...route("/about", ["about"]), routeSegments: ["(other)", "about"] },
+      ] as any);
+
+      // From the group's own page the target's request renders the same tree.
+      expect(matcher.findIntercept("/photos/1", "/")).toMatchObject({
+        rendersWholeInterceptingRoute: false,
+        rendersTargetLayouts: true,
+        rawRendersTargetLayouts: true,
+      });
+      for (const sourcePathname of ["/_not-found", "/about"]) {
+        expect(matcher.findIntercept("/photos/1", sourcePathname)).toMatchObject({
+          rendersWholeInterceptingRoute: true,
+          rendersTargetLayouts: false,
+          rawRendersTargetLayouts: false,
+        });
+      }
+    });
+
     // A page in a route group below the slot's directory, such as
     // `club/[slug]/(children)/page.tsx`, is the slot owner's own route, as the
     // route graph places the slot at its URL level. A route a visible segment
