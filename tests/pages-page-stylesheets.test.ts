@@ -75,7 +75,11 @@ describe("collectPagesPageStylesheets", () => {
         }),
         chunk("bare.js", { module: "/pages/bare.tsx", imports: ["shared.js"] }),
       ]),
-    ).toEqual({ routes: { "/alpha": ["alpha.css"] }, shared: [], unpreloaded: ["alpha.css"] });
+    ).toEqual({
+      routes: { "/alpha": ["alpha.css"] },
+      shared: [],
+      routeChunks: ["alpha.js", "bare.js"],
+    });
   });
 
   // Next.js lists these in its dynamic CSS manifest, which keeps their server
@@ -97,32 +101,31 @@ describe("collectPagesPageStylesheets", () => {
     ).toEqual({
       routes: { "/alpha": ["card.css", "alpha.css"], "/beta": ["beta.css"] },
       shared: ["card.css", "beta.css"],
-      unpreloaded: ["card.css", "alpha.css", "beta.css"],
+      routeChunks: ["alpha.js", "beta.js"],
     });
-  });
-
-  it("lets the loader chunk's other dynamic imports preload their stylesheets", () => {
-    expect(
-      collect([
-        chunk("entry.js", { module: "entry", dynamicImports: ["alpha.js", "widget.js"] }),
-        chunk("alpha.js", { module: "/pages/alpha.tsx", imports: ["card.js"] }),
-        chunk("widget.js", { module: "/lib/widget.tsx", imports: ["card.js"] }),
-        chunk("card.js", { css: ["card.css"] }),
-      ]).unpreloaded,
-    ).toEqual([]);
   });
 });
 
 describe("withoutPreloadedStylesheets", () => {
   const code =
     'const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["/_next/static/chunks/alpha.js","/_next/static/css/alpha.css?dpl=1","/_next/static/css/app.css?dpl=1"])))=>i.map(i=>d[i]);\n' +
-    'a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]));b(()=>import("./beta.js"),__vite__mapDeps([1]));';
-
-  it("keeps page stylesheets out of what dynamic imports preload", () => {
-    const result = withoutPreloadedStylesheets(
-      { code, fileName: "_next/static/chunks/entry.js" },
-      new Set(["_next/static/css/alpha.css"]),
+    'a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]));b(()=>import(`./beta.js`),__vite__mapDeps([1]));';
+  const strip = (
+    source: string,
+    stylesheets: string[],
+    renderBuiltUrl?: Parameters<typeof withoutPreloadedStylesheets>[1]["renderBuiltUrl"],
+  ) =>
+    withoutPreloadedStylesheets(
+      { code: source, fileName: "_next/static/chunks/entry.js" },
+      {
+        stylesheets: new Set(stylesheets),
+        routeChunks: new Set(["_next/static/chunks/alpha.js", "_next/static/chunks/beta.js"]),
+        renderBuiltUrl,
+      },
     );
+
+  it("keeps page stylesheets out of what page loaders preload", () => {
+    const result = strip(code, ["_next/static/css/alpha.css"]);
     expect(result).toContain("__vite__mapDeps([0,2  ])");
     expect(result).toContain("__vite__mapDeps([ ])");
     // The same length on each line keeps the source map lined up.
@@ -131,14 +134,23 @@ describe("withoutPreloadedStylesheets", () => {
     );
   });
 
+  // Such as a `next/dynamic` component that `instrumentation-client` imports.
+  it("lets the chunk's other dynamic imports preload them", () => {
+    const widget = code.replace("b(()=>import(`./beta.js`)", 'b(()=>import("./widget.js")');
+    expect(strip(widget, ["_next/static/css/alpha.css"])).toContain(
+      'b(()=>import("./widget.js"),__vite__mapDeps([1]))',
+    );
+  });
+
+  it("leaves strings and comments alone", () => {
+    const text = `${code}\nconst s="__vite__mapDeps([1])";/* __vite__mapDeps([1]) */`;
+    const result = strip(text, ["_next/static/css/alpha.css"]);
+    expect(result).toContain('const s="__vite__mapDeps([1])";/* __vite__mapDeps([1]) */');
+  });
+
   it("resolves relative preload URLs against the chunk", () => {
     const relative = code.replaceAll("/_next/static/css/", "../css/");
-    expect(
-      withoutPreloadedStylesheets(
-        { code: relative, fileName: "_next/static/chunks/entry.js" },
-        new Set(["_next/static/css/app.css"]),
-      ),
-    ).toContain("__vite__mapDeps([0,1  ])");
+    expect(strip(relative, ["_next/static/css/app.css"])).toContain("__vite__mapDeps([0,1  ])");
   });
 
   // Vite adds the runtime expressions that `renderBuiltUrl` returns as they are.
@@ -156,11 +168,7 @@ describe("withoutPreloadedStylesheets", () => {
       `const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[${table}])))=>i.map(i=>d[i]);\n` +
       'a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]));';
     expect(
-      withoutPreloadedStylesheets(
-        { code: runtimeCode, fileName: "_next/static/chunks/entry.js" },
-        new Set(["_next/static/css/alpha.css"]),
-        (file) => ({ runtime: runtime(file) }),
-      ),
+      strip(runtimeCode, ["_next/static/css/alpha.css"], (file) => ({ runtime: runtime(file) })),
     ).toContain("__vite__mapDeps([0,2  ])");
   });
 
@@ -170,23 +178,15 @@ describe("withoutPreloadedStylesheets", () => {
       '"https://cdn.example.com/page.css"',
     );
     expect(
-      withoutPreloadedStylesheets(
-        { code: cdnCode, fileName: "_next/static/chunks/entry.js" },
-        new Set(["_next/static/css/alpha.css"]),
-        (file) =>
-          file === "_next/static/css/alpha.css" ? "https://cdn.example.com/page.css" : undefined,
+      strip(cdnCode, ["_next/static/css/alpha.css"], (file) =>
+        file === "_next/static/css/alpha.css" ? "https://cdn.example.com/page.css" : undefined,
       ),
     ).toContain("__vite__mapDeps([0,2  ])");
   });
 
   it("leaves chunks without preloads alone", () => {
     const plain = 'a(()=>import("./alpha.js"),[]);';
-    expect(
-      withoutPreloadedStylesheets(
-        { code: plain, fileName: "entry.js" },
-        new Set(["_next/static/css/alpha.css"]),
-      ),
-    ).toBe(plain);
+    expect(strip(plain, ["_next/static/css/alpha.css"])).toBe(plain);
   });
 });
 

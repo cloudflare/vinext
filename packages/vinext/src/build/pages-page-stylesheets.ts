@@ -31,8 +31,8 @@ export type PagesPageStylesheets = {
    * its dynamic CSS manifest.
    */
   shared: string[];
-  /** Route stylesheets for the page loaders to leave to the router. */
-  unpreloaded: string[];
+  /** The chunks of the pages, whose loaders leave their stylesheets to the router. */
+  routeChunks: string[];
 };
 
 /**
@@ -96,46 +96,46 @@ export function collectPagesPageStylesheets(
 
   const routes: Record<string, string[]> = {};
   const routed = new Set<string>();
+  const routeChunks: string[] = [];
   for (const chunk of chunks.values()) {
     const route = routeOf(chunk);
     if (route === undefined) continue;
+    routeChunks.push(chunk.fileName);
     const files = stylesheetsOf(chunk.fileName).filter((file) => !alwaysLoaded.has(file));
     if (files.length === 0) continue;
     routes[route] = files;
     for (const file of files) routed.add(file);
   }
 
-  // The loader chunk's other dynamic imports still load their stylesheets.
-  const loader = chunks.get(options.loaderChunk);
-  const loaderOwn = new Set(loader ? otherDynamicStylesheets(loader) : []);
-  return {
-    routes,
-    shared: [...routed].filter((file) => dynamic.has(file)),
-    unpreloaded: [...routed].filter((file) => !loaderOwn.has(file)),
-  };
+  return { routes, shared: [...routed].filter((file) => dynamic.has(file)), routeChunks };
 }
 
 // The table of files that Vite's dynamic imports preload, which Vite adds at
 // the start of the chunk.
 const PRELOAD_FILES_START = "const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=";
-const PRELOAD_CALL = /__vite__mapDeps\(\[([\d,]*)\]\)/g;
 
 /**
- * Removes `stylesheets` from what the chunk's dynamic imports preload. Vite
- * adds a dynamic import's stylesheets as `<link>`s when it loads, so a page
- * prefetch would apply that page's stylesheets to the current one. Next.js
- * only turns a page's stylesheets on when it renders.
+ * Removes `stylesheets` from what the chunk's dynamic imports of `routeChunks`
+ * preload. Vite adds a dynamic import's stylesheets as `<link>`s when it
+ * loads, so a page prefetch would apply that page's stylesheets to the
+ * current one. Next.js only turns a page's stylesheets on when it renders.
+ * The chunk's other dynamic imports still preload theirs.
  *
  * Each call keeps its length, so the chunk's source map still lines up.
  */
 export function withoutPreloadedStylesheets(
   chunk: { code: string; fileName: string },
-  stylesheets: ReadonlySet<string>,
-  renderBuiltUrl?: RenderBuiltAssetUrl,
+  options: {
+    stylesheets: ReadonlySet<string>;
+    routeChunks: ReadonlySet<string>;
+    renderBuiltUrl?: RenderBuiltAssetUrl;
+  },
 ): string {
+  const { stylesheets, renderBuiltUrl } = options;
   if (!chunk.code.includes(PRELOAD_FILES_START)) return chunk.code;
-  const files = preloadTable(chunk.code);
-  if (!files) return chunk.code;
+  const program = parseOrUndefined(chunk.code);
+  const files = program && preloadTable(program, chunk.code);
+  if (!program || !files) return chunk.code;
 
   // The URLs that `renderBuiltUrl` renders, which Vite adds to the table as
   // they are: strings, or runtime expressions.
@@ -150,7 +150,9 @@ export function withoutPreloadedStylesheets(
     });
     if (typeof result === "string") renderedUrls.add(result);
     if (typeof result !== "object" || !result?.runtime) continue;
-    const expression = preloadTable(`${PRELOAD_FILES_START}[${result.runtime}])))=>i;`);
+    const code = `${PRELOAD_FILES_START}[${result.runtime}])))=>i;`;
+    const parsed = parseOrUndefined(code);
+    const expression = parsed && preloadTable(parsed, code);
     if (expression?.length === 1) runtimeUrls.add(expression[0].source);
   }
 
@@ -167,16 +169,61 @@ export function withoutPreloadedStylesheets(
     }
     return false;
   };
-  const removed = new Set<string>();
+  const removed = new Set<number>();
   files.forEach((element, index) => {
-    if (isStylesheet(element)) removed.add(String(index));
+    if (isStylesheet(element)) removed.add(index);
   });
   if (removed.size === 0) return chunk.code;
 
-  return chunk.code.replace(PRELOAD_CALL, (_call, list: string) => {
-    const kept = list.split(",").filter((index) => !removed.has(index));
-    return `__vite__mapDeps([${kept.join(",").padEnd(list.length)}])`;
+  // Vite preloads a dynamic import as `preload(() => import("./page.js"),
+  // __vite__mapDeps([...]))`.
+  const lists: ESTree.ArrayExpression[] = [];
+  walkExpression(program, (node) => {
+    if (node.type !== "CallExpression") return;
+    const [loader, deps] = node.arguments;
+    if (
+      loader?.type !== "ArrowFunctionExpression" ||
+      loader.body.type !== "ImportExpression" ||
+      deps?.type !== "CallExpression" ||
+      deps.callee.type !== "Identifier" ||
+      deps.callee.name !== "__vite__mapDeps" ||
+      deps.arguments[0]?.type !== "ArrayExpression"
+    ) {
+      return;
+    }
+    const specifier = stringValue(loader.body.source);
+    if (specifier === undefined) return;
+    const imported = path.posix.join(path.posix.dirname(chunk.fileName), specifier);
+    if (options.routeChunks.has(imported)) lists.push(deps.arguments[0]);
   });
+
+  let code = chunk.code;
+  for (const list of lists.sort((a, b) => b.start - a.start)) {
+    const indexes = list.elements.map((element) =>
+      element?.type === "Literal" && typeof element.value === "number" ? element.value : undefined,
+    );
+    if (indexes.includes(undefined)) continue;
+    const kept = indexes.filter((index) => !removed.has(index!)).join(",");
+    code = `${code.slice(0, list.start)}[${kept.padEnd(list.end - list.start - 2)}]${code.slice(list.end)}`;
+  }
+  return code;
+}
+
+/** The value of a string literal, or of a template literal without expressions. */
+function stringValue(node: ESTree.Expression): string | undefined {
+  if (node.type === "Literal") return typeof node.value === "string" ? node.value : undefined;
+  if (node.type === "TemplateLiteral" && node.expressions.length === 0) {
+    return node.quasis[0]?.value.cooked ?? undefined;
+  }
+  return undefined;
+}
+
+function parseOrUndefined(code: string): ESTree.Program | undefined {
+  try {
+    return parseProgram(code);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -184,13 +231,10 @@ export function withoutPreloadedStylesheets(
  * parsed code: their source, and their value when they are strings. Vite adds
  * the runtime expressions that `renderBuiltUrl` returns as they are.
  */
-function preloadTable(code: string): { source: string; value: unknown }[] | undefined {
-  let program: ESTree.Program;
-  try {
-    program = parseProgram(code);
-  } catch {
-    return undefined;
-  }
+function preloadTable(
+  program: ESTree.Program,
+  code: string,
+): { source: string; value: unknown }[] | undefined {
   for (const statement of program.body) {
     if (statement.type !== "VariableDeclaration") continue;
     const declaration = statement.declarations[0];
