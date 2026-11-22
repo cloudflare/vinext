@@ -1645,6 +1645,65 @@ describe("parallel route supplemental refreshes", () => {
         expect(fanOut.takes("/members/7/sidebar", sibling)).toBe(true);
         expect(fanOut.merge(sibling, fanOut.track("/members/7", sibling))).toBe(sibling);
       });
+
+      // The source page is fetched beside the payload. A payload that doesn't
+      // take it, as a sibling intercept's, cancels that request rather than
+      // leaving it running past the navigation.
+      it("cancels the source page's request for a payload that doesn't take it", async () => {
+        const sibling: AppElements = {
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: "/members/7",
+            layoutIds: ["layout:/"],
+            rootLayoutTreePath: "/",
+            routeId: "route:/photos/1",
+            sourcePage: "/members/(..)photos/[id]/page",
+          }),
+        };
+        const fanOut = createInterceptionSourceRefreshMerge({
+          previousNextUrl: "/members/7",
+          refreshUrl,
+        });
+        const start = (primary: Promise<AppElements>, response: Promise<AppElements>) => {
+          const signals: AbortSignal[] = [];
+          const navigation = new AbortController();
+          const loaded = fanOut.load("/members/7", primary, (signal) => {
+            signals.push(signal);
+            return response;
+          })(navigation.signal);
+          return { loaded, navigation, signals };
+        };
+
+        // Fetched at once, before the payload arrives.
+        let resolvePrimary!: (elements: AppElements) => void;
+        const hanging = new Promise<AppElements>(() => {});
+        const skipped = start(
+          new Promise((resolve) => {
+            resolvePrimary = resolve;
+          }),
+          hanging,
+        );
+        expect(skipped.signals).toHaveLength(1);
+        resolvePrimary(sibling);
+        const skippedRender = await skipped.loaded;
+        expect(skipped.signals[0].aborted).toBe(true);
+        expect(fanOut.merge(sibling, skippedRender)).toBe(sibling);
+
+        // A payload with the intercept waits for it, and a later navigation
+        // still cancels it.
+        const intercepted = start(Promise.resolve(createIntercepted()), Promise.resolve(source));
+        expect(fanOut.merge(createIntercepted(), await intercepted.loaded)["page:/members/7"]).toBe(
+          "member page",
+        );
+        expect(intercepted.signals[0].aborted).toBe(false);
+        const pending = start(Promise.resolve(createIntercepted()), hanging);
+        pending.navigation.abort();
+        expect(pending.signals[0].aborted).toBe(true);
+
+        // A payload that fails cancels it too.
+        const failed = start(Promise.reject(new Error("payload failed")), hanging);
+        await expect(failed.loaded).rejects.toThrow("payload failed");
+        expect(failed.signals[0].aborted).toBe(true);
+      });
     });
   });
 

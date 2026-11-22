@@ -291,24 +291,60 @@ export function createInterceptionSourceRefreshMerge(options: {
    */
   takes: (pathAndSearch: string, primary: AppElements) => boolean;
   track: (pathAndSearch: string, elements: AppElements) => AppElements;
+  /**
+   * The fan-out's load of the branch fetched from this path, started beside
+   * the payload. A payload that doesn't take it cancels that request and
+   * merges nothing from it.
+   */
+  load: (
+    pathAndSearch: string,
+    primary: Promise<AppElements>,
+    fetch: (signal: AbortSignal) => Promise<AppElements>,
+  ) => (signal: AbortSignal) => Promise<AppElements>;
 } {
   const sourceUrl =
     options.previousNextUrl === null ? null : new URL(options.previousNextUrl, options.refreshUrl);
   const sourcePathAndSearch =
     sourceUrl === null ? null : `${sourceUrl.pathname}${sourceUrl.search}`;
   const sourceRenders = new WeakSet<AppElements>();
+  const takes = (pathAndSearch: string, primary: AppElements): boolean =>
+    pathAndSearch !== sourcePathAndSearch ||
+    AppElementsWire.readMetadata(primary).interception !== null;
+  const track = (pathAndSearch: string, elements: AppElements): AppElements => {
+    if (pathAndSearch === sourcePathAndSearch) sourceRenders.add(elements);
+    return elements;
+  };
   return {
+    load: (pathAndSearch, primary, fetch) => async (signal) => {
+      const controller = new AbortController();
+      const abort = () => controller.abort(signal.reason);
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+      const request = fetch(controller.signal);
+      void request.catch(() => {});
+      try {
+        let payload: AppElements;
+        try {
+          payload = await primary;
+        } catch (error) {
+          controller.abort();
+          throw error;
+        }
+        if (!takes(pathAndSearch, payload)) {
+          controller.abort();
+          return track(pathAndSearch, payload);
+        }
+        return track(pathAndSearch, await request);
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
+    },
     merge: (current, refreshed) =>
       sourceRenders.has(refreshed)
         ? mergeInterceptionSourceRefresh(current, refreshed)
         : mergeRefreshedParallelSlot(current, refreshed),
-    takes: (pathAndSearch, primary) =>
-      pathAndSearch !== sourcePathAndSearch ||
-      AppElementsWire.readMetadata(primary).interception !== null,
-    track: (pathAndSearch, elements) => {
-      if (pathAndSearch === sourcePathAndSearch) sourceRenders.add(elements);
-      return elements;
-    },
+    takes,
+    track,
   };
 }
 
