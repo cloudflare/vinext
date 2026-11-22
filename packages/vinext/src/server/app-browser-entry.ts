@@ -1954,6 +1954,16 @@ function ReplayInitialDevServerErrors({ report }: { report: () => void }): null 
 
 async function main(): Promise<void> {
   if (!claimInitialAppRouterBootstrap()) return;
+
+  let handleRscHmrUpdate: ((updateId: number) => Promise<void>) | void;
+  if (import.meta.env.DEV && import.meta.hot) {
+    // Listen before bootstrap awaits modules or the initial RSC response.
+    // Until hydration is scheduled, the latest ID represents the queued update.
+    import.meta.hot.on("rsc:update", () => {
+      const updateId = ++latestRscHmrUpdateId;
+      void handleRscHmrUpdate?.(updateId);
+    });
+  }
   // Fetch the RouteManifest chunk alongside bootstrap and hydration rather than
   // in the entry chunk. Navigations and prefetches wait for it before reading it.
   void loadNavigationRuntimeRouteManifest();
@@ -1984,14 +1994,17 @@ async function main(): Promise<void> {
   // The recovery path reloads the document, which resets the "starting" claim;
   // this module instance is intentionally not eligible to retry bootstrap.
   if (rscStream === null) return;
-  bootstrapHydration(rscStream, devErrorOverlay, initialRscBootstrap);
+  handleRscHmrUpdate = bootstrapHydration(rscStream, devErrorOverlay, initialRscBootstrap);
+  if (import.meta.env.DEV && latestRscHmrUpdateId > 0) {
+    void handleRscHmrUpdate?.(latestRscHmrUpdateId);
+  }
 }
 
 function bootstrapHydration(
   rscStream: ReadableStream<Uint8Array>,
   devErrorOverlay: DevErrorOverlayModule | null,
   initialRscBootstrap: NavigationRuntimeRscBootstrap | undefined,
-): void {
+): ((updateId: number) => Promise<void>) | void {
   const hydrationCachePublication = createHydrationCachePublication();
   const cacheGeneration = clientNavigationCacheGeneration;
   const [reactBranch, cacheBranch] = rscStream.tee();
@@ -3382,7 +3395,7 @@ function bootstrapHydration(
       );
     };
 
-    const handleRscUpdate = async (updateId: number): Promise<void> => {
+    return async (updateId) => {
       try {
         await waitForRscHmrSettle();
         await applyRscHmrUpdate(updateId);
@@ -3390,11 +3403,6 @@ function bootstrapHydration(
         console.error("[vinext] RSC HMR error:", error);
       }
     };
-
-    import.meta.hot.on("rsc:update", () => {
-      const updateId = ++latestRscHmrUpdateId;
-      void handleRscUpdate(updateId);
-    });
   }
 }
 
