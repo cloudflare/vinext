@@ -8016,6 +8016,108 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  describe.each([
+    ["one that fails canonical decoding", "/feed/%"],
+    ["a malformed one", "feed"],
+    ["a canonical one that names no source", "/feed"],
+  ])("an unverified interception context, %s", (_label, interceptionContext) => {
+    const dispatchWithContext = async (
+      pathname: string,
+      overrides: Partial<HandlerOptions>,
+    ): Promise<Parameters<DispatchAppWorkerResponseStage>> => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () =>
+          new Response("stage", { headers: { "Cache-Control": "public, s-maxage=3600" } }),
+      );
+      const handler = createHandler({ configHeaders: [], ...overrides });
+      const headers = createRscRequestHeaders({ interceptionContext });
+      const rscUrl = await createRscRequestUrl(pathname, headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(dispatchResponseStage).toHaveBeenCalledOnce();
+      return dispatchResponseStage.mock.calls[0]!;
+    };
+
+    it("keeps an App page out of the shared response stage", async () => {
+      const route = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const matchRoute = (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route } : null;
+      const [, props, dispatchOptions] = await dispatchWithContext("/docs/photos/1", {
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      expect(props).toMatchObject({ kind: "app-page", bypassInterceptionContextCache: true });
+      expect(dispatchOptions).toEqual({ cache: "bypass" });
+    });
+
+    it("keeps a Route Handler out of the shared response stage", async () => {
+      const route = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        page: null,
+        pattern: "/route",
+        routeHandler: { GET: () => new Response("get") },
+        routeSegments: ["route"],
+      });
+      const matchRoute = (pathname: string) =>
+        pathname === "/route" ? { params: {}, route } : null;
+      const [, props, dispatchOptions] = await dispatchWithContext("/docs/route", {
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      expect(props).toMatchObject({
+        kind: "app-route-handler",
+        bypassInterceptionContextCache: true,
+      });
+      expect(dispatchOptions).toEqual({ cache: "bypass" });
+    });
+
+    it("keeps a metadata route out of the shared response stage", async () => {
+      const [, props, dispatchOptions] = await dispatchWithContext("/docs/robots.txt", {
+        isMetadataRoute: (pathname) => pathname === "/robots.txt",
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+      });
+
+      expect(props).toMatchObject({ kind: "app-metadata" });
+      expect(dispatchOptions).toEqual({ cache: "bypass" });
+    });
+
+    it("keeps an unmatched route's not-found page out of the shared response stage", async () => {
+      const [, props, dispatchOptions] = await dispatchWithContext("/docs/missing", {
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+      });
+
+      expect(props).toMatchObject({ kind: "app-not-found" });
+      expect(dispatchOptions).toEqual({ cache: "bypass" });
+    });
+
+    it("keeps a hybrid Pages page out of the shared response stage", async () => {
+      const [, props, dispatchOptions] = await dispatchWithContext("/docs/pages", {
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+        renderPagesFallback: async (options) =>
+          options.dispatchPagesResponseStage?.(options.request, "page", "static") ?? null,
+      });
+
+      expect(props).toMatchObject({
+        kind: "hybrid-pages",
+        isRscRequest: true,
+      });
+      expect(dispatchOptions).toEqual({ cache: "bypass" });
+    });
+  });
+
   it("passes the raw interception source to the one-decode route matcher", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const matchInterceptRoute = vi.fn(() => null);

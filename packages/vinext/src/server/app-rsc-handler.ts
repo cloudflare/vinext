@@ -1602,7 +1602,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               (props.bypassInterceptionContextCache ||
                 // Next.js lets an explicit next.config public policy cache a
                 // force-dynamic route, so only bypass when no such policy matched.
-                (props.forceDynamic === true && responseStagePolicy === null)))
+                (props.forceDynamic === true && responseStagePolicy === null))) ||
+            // An interception context never selects a metadata or not-found
+            // render, but its raw value stays in the stage's request headers
+            // and RSC URL hash, so it would only split their shared entries.
+            ((props.kind === "app-metadata" || props.kind === "app-not-found") &&
+              hasRawInterceptionContext)
               ? "bypass"
               : canUseSharedWorkerResponseStage
                 ? "shared"
@@ -2727,6 +2732,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           const cache =
             responseStageProbeMode ||
             pagesOnDemandRevalidate ||
+            // As for a metadata route, a raw interception context selects no
+            // Pages render and would only split the shared entries.
+            hasRawInterceptionContext ||
             hasPagesPreviewCookie(stageRequest.headers.get("cookie")) ||
             (resourceKind === "page" && dataKind === "static" && hasRequestAwareDocument)
               ? "bypass"
