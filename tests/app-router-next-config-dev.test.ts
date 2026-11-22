@@ -1,6 +1,7 @@
 import { type ViteDevServer } from "vite";
 import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
+import { rewriteDestinationCases } from "./rewrite-destination-parity.js";
 
 describe("App Router next.config.js features (dev server integration)", () => {
   let server: ViteDevServer;
@@ -65,6 +66,15 @@ describe("App Router next.config.js features (dev server integration)", () => {
     const html = await res.text();
     expect(html).toContain("About");
   });
+
+  it.each(rewriteDestinationCases)(
+    "retains the correct filesystem route for a rewrite from $source",
+    async ({ source, marker }) => {
+      const response = await fetch(`${baseUrl}${source}`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain(marker);
+    },
+  );
 
   // In App Router execution order, beforeFiles rewrites run after middleware.
   // has/missing conditions on beforeFiles rules should therefore evaluate against
