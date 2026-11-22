@@ -1604,6 +1604,47 @@ describe("parallel route supplemental refreshes", () => {
           mergeRefreshedParallelSlot(photoPage, branch),
         );
       });
+
+      // A sibling intercept renders the intercepting route's own page, with no
+      // interception proof, so its entry's source page is never fetched for a
+      // refresh, and a traversal back to it neither waits for nor fails with
+      // one it started.
+      it("takes no source page for a sibling intercept's payload", () => {
+        const sibling: AppElements = {
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: "/members/7",
+            layoutIds: ["layout:/"],
+            rootLayoutTreePath: "/",
+            routeId: "route:/photos/1",
+            sourcePage: "/members/(..)photos/[id]/page",
+          }),
+          "page:/photos/1": "photo modal page",
+        };
+        const state = { previousNextUrl: "/members/7", slotBindings: [] };
+        expect(
+          resolvePersistedSourcePageRefreshes({
+            basePath: "",
+            refreshUrl,
+            state: { ...state, elements: sibling },
+          }),
+        ).toEqual([]);
+        expect(
+          resolvePersistedSourcePageRefreshes({
+            basePath: "",
+            refreshUrl,
+            state: { ...state, elements: createIntercepted() },
+          }),
+        ).toEqual(["/members/7"]);
+
+        const fanOut = createInterceptionSourceRefreshMerge({
+          previousNextUrl: "/members/7",
+          refreshUrl,
+        });
+        expect(fanOut.takes("/members/7", sibling)).toBe(false);
+        expect(fanOut.takes("/members/7", createIntercepted())).toBe(true);
+        expect(fanOut.takes("/members/7/sidebar", sibling)).toBe(true);
+        expect(fanOut.merge(sibling, fanOut.track("/members/7", sibling))).toBe(sibling);
+      });
     });
   });
 

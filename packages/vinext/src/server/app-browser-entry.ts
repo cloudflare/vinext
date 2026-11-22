@@ -3039,9 +3039,10 @@ function bootstrapHydration(
                 targetPathname: interception.targetPathname,
               }),
           );
+          const primaryPayload = Promise.resolve(rscPayload);
           for (const persistedSourcePageRefresh of persistedSourcePageRefreshes) {
             supplemental.push(async (signal) => {
-              const elements = await fetchPersistedSourcePageRefresh({
+              const request = fetchPersistedSourcePageRefresh({
                 // A traversal starts from another entry's state, whose mounted
                 // slots aren't the ones the intercepted payload leaves to it.
                 mountedSlotsHeader:
@@ -3051,13 +3052,21 @@ function bootstrapHydration(
                 signal,
                 targetPathname: persistedSourcePageRefresh,
               });
-              return sourcePageRefreshMerge.track(persistedSourcePageRefresh, elements);
+              // A traversal learns from its payload whether it takes the
+              // source page; one that doesn't neither waits for nor fails with
+              // it, and merges nothing from it.
+              void request.catch(() => {});
+              const primary = await primaryPayload;
+              if (!sourcePageRefreshMerge.takes(persistedSourcePageRefresh, primary)) {
+                return sourcePageRefreshMerge.track(persistedSourcePageRefresh, primary);
+              }
+              return sourcePageRefreshMerge.track(persistedSourcePageRefresh, await request);
             });
           }
           rscPayload = resolveSupplementalRefreshes({
             merge: sourcePageRefreshMerge.merge,
             mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
-            primary: Promise.resolve(rscPayload),
+            primary: primaryPayload,
             signal: navigationAbortHandle.signal,
             supplemental,
           })

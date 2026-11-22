@@ -11,7 +11,7 @@ import {
   type AppElements,
   type AppElementsSlotBinding,
 } from "./app-elements.js";
-import type { AppRouterState } from "./app-browser-state.js";
+import { rendersSiblingIntercept, type AppRouterState } from "./app-browser-state.js";
 import { resolveActiveRoutePaths } from "./app-history-state.js";
 import { isRouteMissInterceptionSource } from "./app-interception-context-header.js";
 import { isNestedBfcacheSlotSegmentIdFor } from "./bfcache-identity.js";
@@ -284,6 +284,12 @@ export function createInterceptionSourceRefreshMerge(options: {
   refreshUrl: URL;
 }): {
   merge: (current: AppElements, refreshed: AppElements) => AppElements;
+  /**
+   * Whether a payload takes the render fetched from this path. The source
+   * page's goes beneath an intercept the server proved only, so a payload
+   * without one, as a sibling intercept's, never waits for it.
+   */
+  takes: (pathAndSearch: string, primary: AppElements) => boolean;
   track: (pathAndSearch: string, elements: AppElements) => AppElements;
 } {
   const sourceUrl =
@@ -296,6 +302,9 @@ export function createInterceptionSourceRefreshMerge(options: {
       sourceRenders.has(refreshed)
         ? mergeInterceptionSourceRefresh(current, refreshed)
         : mergeRefreshedParallelSlot(current, refreshed),
+    takes: (pathAndSearch, primary) =>
+      pathAndSearch !== sourcePathAndSearch ||
+      AppElementsWire.readMetadata(primary).interception !== null,
     track: (pathAndSearch, elements) => {
       if (pathAndSearch === sourcePathAndSearch) sourceRenders.add(elements);
       return elements;
@@ -452,11 +461,14 @@ export function resolvePersistedSourcePageRefreshes(options: {
   );
   // A state showing the whole intercepting route holds nothing of its source,
   // nor does one opened from an unmatched URL's not-found page, which renders
-  // that route whole.
+  // that route whole, nor a sibling intercept's, the intercepting route's own
+  // page.
   if (
     options.state.previousNextUrl !== null &&
     !isRouteMissInterceptionSource(options.state.previousNextUrl, options.basePath) &&
-    (options.state.elements === undefined || !rendersWholeInterceptingRoute(options.state.elements))
+    (options.state.elements === undefined ||
+      (!rendersWholeInterceptingRoute(options.state.elements) &&
+        !rendersSiblingIntercept(AppElementsWire.readMetadata(options.state.elements))))
   ) {
     const sourceUrl = new URL(options.state.previousNextUrl, options.refreshUrl);
     sourceUrlsByPathname.set(sourceUrl.pathname, sourceUrl);

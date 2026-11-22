@@ -735,7 +735,8 @@ function isInterceptionMarkerSegment(segment: string): boolean {
   return INTERCEPTION_MARKERS.some((marker) => segment.startsWith(marker));
 }
 
-function rendersSiblingIntercept(metadata: {
+/** Whether a payload renders a sibling intercept, the intercepting route's own page. */
+export function rendersSiblingIntercept(metadata: {
   interceptionContext: string | null;
   sourcePage: string | null;
 }): boolean {
