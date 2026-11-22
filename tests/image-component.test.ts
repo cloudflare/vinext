@@ -21,6 +21,14 @@ function optUrl(src: string, w: number, q = 75): string {
 function deployedOptUrl(src: string, w: number, q: number, deploymentId: string): string {
   return `${optUrl(src, w, q)}&dpl=${deploymentId}`;
 }
+/** Next.js 16 default images.deviceSizes. */
+const DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+
+/** The `w`-descriptor srcSet Next.js gives a fill image (plus any extra imageSizes). */
+function fillSrcSet(src: string, extraWidths: number[] = []): string {
+  return [...extraWidths, ...DEVICE_SIZES].map((w) => `${optUrl(src, w)} ${w}w`).join(", ");
+}
+
 /** Same as optUrl but with HTML entity encoding (for SSR output assertions). */
 function optUrlHtml(src: string, w: number, q = 75): string {
   return optUrl(src, w, q).replace(/&/g, "&amp;");
@@ -396,7 +404,10 @@ describe("Image srcSet generation", () => {
     expect(html).not.toContain(optUrlHtml("/icon.png", 16));
   });
 
-  it("does not generate srcSet for fill mode", () => {
+  // Next.js getWidths() returns deviceSizes as `w` descriptors for images
+  // with no width (`fill`), and `src` is the largest. Expected values match
+  // next 16's getImgProps() with the default image config (issue #4826).
+  it("generates a w-descriptor srcSet of every device size for fill mode", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "fill",
@@ -404,8 +415,48 @@ describe("Image srcSet generation", () => {
         fill: true,
       }),
     );
-    // Fill mode: no srcSet (srcSet is only for local non-fill images with width)
-    expect(html).not.toContain("srcSet");
+    expect(html).toContain(`srcSet="${fillSrcSet("/bg.png").replace(/&/g, "&amp;")}"`);
+    expect(html).toContain(`src="${optUrlHtml("/bg.png", 3840)}"`);
+    expect(html).toContain('sizes="100vw"');
+  });
+
+  it("limits the fill srcSet to the widths sizes can call for", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "fill",
+        src: "/bg.png",
+        fill: true,
+        sizes: "(max-width: 768px) 100vw, 50vw",
+      }),
+    );
+    expect(html).toContain(`srcSet="${fillSrcSet("/bg.png", [384]).replace(/&/g, "&amp;")}"`);
+    expect(html).toContain(`src="${optUrlHtml("/bg.png", 3840)}"`);
+  });
+
+  it("ignores a static import's width for fill mode", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "fill",
+        src: { src: "/static/bg.png", width: 400, height: 300 },
+        fill: true,
+      }),
+    );
+    expect(html).toContain(`srcSet="${fillSrcSet("/static/bg.png").replace(/&/g, "&amp;")}"`);
+    expect(html).toContain(`src="${optUrlHtml("/static/bg.png", 3840)}"`);
+  });
+
+  it("preloads the fill srcSet for priority fill images", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "fill",
+        src: "/hero-fill.png",
+        fill: true,
+        priority: true,
+      }),
+    );
+    expect(html).toContain('<link rel="preload"');
+    expect(html).toContain(`imageSrcSet="${fillSrcSet("/hero-fill.png").replace(/&/g, "&amp;")}"`);
+    expect(html).toContain('imageSizes="100vw"');
   });
 });
 
@@ -456,6 +507,21 @@ describe("getImageProps", () => {
     expect((props.style as any)?.position).toBe("absolute");
     expect((props.style as any)?.width).toBe("100%");
     expect((props.style as any)?.height).toBe("100%");
+  });
+
+  it("returns a w-descriptor srcSet for fill mode", () => {
+    const { props } = getImageProps({ alt: "fill", src: "/bg.png", fill: true });
+    expect(props.srcSet).toBe(fillSrcSet("/bg.png"));
+    expect(props.src).toBe(optUrl("/bg.png", 3840));
+
+    const { props: sizedProps } = getImageProps({
+      alt: "fill",
+      src: "/bg.png",
+      fill: true,
+      sizes: "(max-width: 768px) 100vw, 50vw",
+    });
+    expect(sizedProps.srcSet).toBe(fillSrcSet("/bg.png", [384]));
+    expect(sizedProps.src).toBe(optUrl("/bg.png", 3840));
   });
 
   it("returns custom loader URL", () => {

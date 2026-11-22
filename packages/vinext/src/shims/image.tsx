@@ -456,8 +456,8 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // Build srcSet for responsive local images (common breakpoints).
   // Each entry points to /_next/image with the appropriate width.
   const optimizedAttributes =
-    imgWidth && !fill && !skipOptimization
-      ? generateImageAttributes(src, imgWidth, imgQuality, sizes)
+    (fill || imgWidth) && !skipOptimization
+      ? generateImageAttributes(src, fill ? undefined : imgWidth, imgQuality, sizes)
       : undefined;
   const srcSet = optimizedAttributes
     ? optimizedAttributes.srcSet

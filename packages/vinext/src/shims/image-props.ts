@@ -318,7 +318,7 @@ function getImageWidths(width: number): number[] {
 
 export function generateImageAttributes(
   src: string,
-  width: number,
+  width: number | undefined,
   quality: number = 75,
   sizes?: string,
 ): { src: string; srcSet: string } {
@@ -340,6 +340,18 @@ export function generateImageAttributes(
             `${imageOptimizationUrl(src, candidateWidth, quality)} ${candidateWidth}w`,
         )
         .join(", "),
+    };
+  }
+
+  // Next.js getWidths(): an image with no width (`fill`) offers every
+  // images.deviceSizes entry as a `w` descriptor, and `src` is the largest.
+  if (width === undefined) {
+    return {
+      src: imageOptimizationUrl(src, RESPONSIVE_WIDTHS[RESPONSIVE_WIDTHS.length - 1], quality),
+      srcSet: RESPONSIVE_WIDTHS.map(
+        (candidateWidth) =>
+          `${imageOptimizationUrl(src, candidateWidth, quality)} ${candidateWidth}w`,
+      ).join(", "),
     };
   }
 
@@ -453,8 +465,8 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
   const skipOpt =
     (isSvg && !__dangerouslyAllowSVG) || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
   const optimizedAttributes =
-    imgWidth && !fill && !skipOpt
-      ? generateImageAttributes(resolvedSrc, imgWidth, imgQuality, sizes)
+    (fill || imgWidth) && !skipOpt
+      ? generateImageAttributes(resolvedSrc, fill ? undefined : imgWidth, imgQuality, sizes)
       : null;
   const optimizedSrc = skipOpt
     ? resolvedSrc
