@@ -200,13 +200,16 @@ export function registerServerInsertedHTMLCallback(callback: () => unknown): voi
   getInsertedHTMLCallbacks().push(callback);
 }
 
-function renderInsertedHTMLCallbacks(clear: boolean): unknown[] {
+function renderInsertedHTMLCallbacks<T>(
+  clear: boolean,
+  mapResult: (result: unknown, callback: () => unknown) => T,
+): T[] {
   const callbacks = getInsertedHTMLCallbacks();
-  const results: unknown[] = [];
+  const results: T[] = [];
   for (const callback of callbacks) {
     try {
       const result = callback();
-      if (result != null) results.push(result);
+      if (result != null) results.push(mapResult(result, callback));
     } catch {
       // One style registry must not suppress output from the others.
     }
@@ -216,11 +219,17 @@ function renderInsertedHTMLCallbacks(clear: boolean): unknown[] {
 }
 
 export function flushServerInsertedHTML(): unknown[] {
-  return renderInsertedHTMLCallbacks(true);
+  return renderInsertedHTMLCallbacks(true, (result) => result);
 }
 
-export function renderServerInsertedHTML(): unknown[] {
-  return renderInsertedHTMLCallbacks(false);
+export function renderServerInsertedHTML(): unknown[];
+export function renderServerInsertedHTML<T>(
+  mapResult: (result: unknown, callback: () => unknown) => T,
+): T[];
+export function renderServerInsertedHTML(
+  mapResult: (result: unknown, callback: () => unknown) => unknown = (result) => result,
+): unknown[] {
+  return renderInsertedHTMLCallbacks(false, mapResult);
 }
 
 export function clearServerInsertedHTML(): void {

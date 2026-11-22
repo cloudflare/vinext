@@ -262,20 +262,13 @@ function getErrorMessage(error: unknown): string {
   return Object.prototype.toString.call(error);
 }
 
-function renderInsertedHtml(insertedElements: readonly unknown[]): string {
-  let insertedHTML = "";
-
-  for (const element of insertedElements) {
-    try {
-      insertedHTML += renderToStaticMarkup(
-        createReactElement(Fragment, null, element as ReactNode),
-      );
-    } catch {
-      // Ignore individual callback failures so the rest of the page can render.
-    }
+function renderInsertedHtml(element: unknown): string {
+  try {
+    return renderToStaticMarkup(createReactElement(Fragment, null, element as ReactNode));
+  } catch {
+    // Ignore an individual registry's output if React cannot render it.
+    return "";
   }
-
-  return insertedHTML;
 }
 
 function renderFontHtml(
@@ -983,8 +976,27 @@ export async function handleSsr(
             options?.scriptNonce,
           );
         };
+        // Prerendered HTML can flush several times after a registry has emitted
+        // its styles. Keep polling registries for new output, without replaying
+        // unchanged HTML from the same callback into the stored document.
+        const prerenderedInsertions =
+          options?.isStaticGeneration === true ? new WeakMap<() => unknown, string>() : undefined;
+        const getServerInsertedMarkup = (): string => {
+          if (!prerenderedInsertions)
+            return renderServerInsertedHTML().map(renderInsertedHtml).join("");
+
+          const results = renderServerInsertedHTML((element, callback) => ({ element, callback }));
+          let insertedHTML = "";
+          for (const { element, callback } of results) {
+            const html = renderInsertedHtml(element);
+            if (!html || prerenderedInsertions.get(callback) === html) continue;
+            prerenderedInsertions.set(callback, html);
+            insertedHTML += html;
+          }
+          return insertedHTML;
+        };
         const getInsertedHTML = (): string => {
-          const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
+          const insertedHTML = getServerInsertedMarkup();
           const errorMetaHTML = errorMetaRenderer.flush();
           const initialDevServerErrorHTML = createInitialDevServerErrorScript(
             options?.initialDevServerError ?? ssrOnlyShellError,
