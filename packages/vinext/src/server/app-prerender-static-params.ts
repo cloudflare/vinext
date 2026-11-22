@@ -1,3 +1,4 @@
+import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-storage";
 import { pickRootParams, runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isUnknownRecord } from "../utils/record.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
@@ -199,11 +200,10 @@ export async function callAppPrerenderStaticParams(
   options: CallAppPrerenderStaticParamsOptions,
 ): Promise<unknown> {
   const picked = pickRootParams(options.params, options.rootParamNamesByPattern[options.pattern]);
+  const input = options.rejectEmptyResults
+    ? { params: options.params, rejectEmptyResults: true }
+    : { params: options.params };
   return runWithRootParamsScope(picked, () =>
-    options.fn(
-      options.rejectEmptyResults
-        ? { params: options.params, rejectEmptyResults: true }
-        : { params: options.params },
-    ),
+    workUnitAsyncStorage.run({ type: "generate-static-params" }, () => options.fn(input)),
   );
 }
