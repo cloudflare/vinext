@@ -160,6 +160,7 @@ type TestRoute = {
   page?: { default?: unknown; dynamic?: unknown } | null;
   params: readonly string[];
   pattern: string;
+  rootParamNames?: readonly string[];
   routeSegments: readonly string[];
   slots?: Readonly<
     Record<
@@ -4063,6 +4064,72 @@ describe("app page dispatch", () => {
     await productionResponse.text();
   });
 
+  // Next.js's interception rewrite renders the intercepting route under the
+  // values it captures from the source, root params included.
+  it("gives a whole intercepting route its source's root params", async () => {
+    let rendered: unknown = null;
+    const ownerRoute = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [3],
+      page: { default: () => null },
+      params: ["lang", "slug"],
+      pattern: "/[lang]/club/[slug]",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "club", "[slug]"],
+      slots: {
+        "modal@app/[lang]/club/[slug]/@modal": {
+          default: { default: () => null },
+          layoutIndex: 0,
+          ownerTreePosition: 3,
+        },
+      },
+    });
+    const { options } = createDispatchOptions({
+      async buildPageElement(route, params) {
+        rendered = { lang: await getRootParam("lang"), params, pattern: route.pattern };
+        return route.pattern;
+      },
+      cleanPathname: "/fr/club/static/pics/1",
+      findIntercept: () => ({
+        interceptBranchSegments: ["(.)pics", "[id]"],
+        matchedParams: { id: "1", lang: "en", slug: "static" },
+        page: { default: "pic-modal" },
+        rendersWholeInterceptingRoute: true,
+        slotKey: "modal@app/[lang]/club/[slug]/@modal",
+        sourceMatchedParams: { lang: "en", slug: "static" },
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? ownerRoute : undefined;
+      },
+      interceptionContext: "/en/club/static",
+      isRscRequest: true,
+      params: { id: "1", lang: "fr", slug: "static" },
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      route: createRoute({
+        isDynamic: true,
+        params: ["lang", "slug", "id"],
+        pattern: "/[lang]/club/[slug]/pics/[id]",
+        rootParamNames: ["lang"],
+        routeSegments: ["[lang]", "club", "[slug]", "pics", "[id]"],
+      }),
+      rootParams: { lang: "fr" },
+    });
+    const response = await runWithRequestContext(
+      createRequestContext({ rootParams: { lang: "fr" } }),
+      () => dispatchAppPage(options),
+    );
+    await expect(response.text()).resolves.toBe("/[lang]/club/[slug]");
+    expect(rendered).toEqual({
+      lang: "en",
+      params: { lang: "en", slug: "static" },
+      pattern: "/[lang]/club/[slug]",
+    });
+  });
+
   // Next.js visits children before the other slots, and the last value wins,
   // so where only the parallel branches set a value, another slot's default
   // overrides the owner's.
@@ -6123,6 +6190,97 @@ describe("app page dispatch", () => {
       }
     },
   );
+
+  it("regenerates a stale whole intercepting route under its source's root params", async () => {
+    const ownerRoute = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [3],
+      page: { default: () => null },
+      params: ["lang", "slug"],
+      pattern: "/[lang]/club/[slug]",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "club", "[slug]"],
+      slots: {
+        "modal@app/[lang]/club/[slug]/@modal": {
+          default: { default: () => null },
+          layoutIndex: 0,
+          ownerTreePosition: 3,
+        },
+      },
+    });
+    let scheduledRender: unknown = null;
+    const renderedLangs: unknown[] = [];
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        renderedLangs.push(await getRootParam("lang"));
+        return route.pattern;
+      },
+      cleanPathname: "/fr/club/static/pics/1",
+      findIntercept: () => ({
+        interceptBranchSegments: ["(.)pics", "[id]"],
+        matchedParams: { id: "1", lang: "en", slug: "static" },
+        page: {
+          default: "pic-modal",
+          generateStaticParams: async () => [{ id: "1", lang: "en", slug: "static" }],
+        },
+        rendersWholeInterceptingRoute: true,
+        slotKey: "modal@app/[lang]/club/[slug]/@modal",
+        sourceMatchedParams: { lang: "en", slug: "static" },
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? ownerRoute : undefined;
+      },
+      hasGenerateStaticParams: true,
+      interceptionContext: "/en/club/static",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          return createStream(["<html>modal</html>"]);
+        },
+      }),
+      params: { id: "1", lang: "fr", slug: "static" },
+      revalidateSeconds: 60,
+      rootParams: { lang: "fr" },
+      route: createRoute({
+        isDynamic: true,
+        params: ["lang", "slug", "id"],
+        pattern: "/[lang]/club/[slug]/pics/[id]",
+        rootParamNames: ["lang"],
+        routeSegments: ["[lang]", "club", "[slug]", "pics", "[id]"],
+      }),
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(renderedLangs).toEqual(["en"]);
+  });
 
   it("stores an intercepted RSC regeneration whose shell ended in a 404", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });

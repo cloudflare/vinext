@@ -75,6 +75,7 @@ import {
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   resolveAppPageInterceptState,
+  resolveAppPageWholeInterceptRootParams,
   validateAppPageRouteDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
@@ -257,6 +258,7 @@ export type AppPageDispatchRoute = {
   notFounds?: readonly (AppPageModule | null | undefined)[];
   params: readonly string[];
   pattern: string;
+  rootParamNames?: readonly string[];
   routeSegments: readonly string[];
   segmentForbiddens?: readonly (AppPageModule | null | undefined)[];
   segmentForbiddenTreePositions?: readonly number[];
@@ -1057,6 +1059,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   options.resolveRouteStaticEligible(revalidationTarget.route)))
                 ? Infinity
                 : null));
+        const revalidationRootParams =
+          resolveAppPageWholeInterceptRootParams(
+            revalidationTarget.route,
+            revalidationTarget.params,
+            revalidationTarget.interceptOpts,
+          ) ?? options.rootParams;
         const revalidationRouteHead: RouteHeadRef = {
           observeSearchParams: revalidationDynamicConfig !== "force-static",
           searchParams: new URLSearchParams(),
@@ -1075,7 +1083,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: revalidationDynamicConfig,
             params: revalidationTarget.navigationParams,
-            rootParams: options.rootParams,
+            rootParams: revalidationRootParams,
             routePattern: revalidationTarget.route.pattern,
             routeSegments: revalidationTarget.route.routeSegments,
             setNavigationContext: options.setNavigationContext,
@@ -1210,7 +1218,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 };
               },
               renderToReadableStream: options.renderToReadableStream,
-              rootParams: options.rootParams,
+              rootParams: revalidationRootParams,
               route: revalidationTarget.route,
               waitForAllReady: true,
               isForceStatic: revalidationDynamicConfig === "force-static",
@@ -1388,6 +1396,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       setCurrentFetchCacheMode(interceptConfig.fetchCacheMode);
       setCurrentFetchRevalidate(interceptConfig.revalidateSeconds);
       setCurrentForceDynamicFetchDefault(interceptDynamicConfig === "force-dynamic");
+      const wholeInterceptRootParams = resolveAppPageWholeInterceptRootParams(
+        interceptRoute,
+        interceptParams,
+        interceptOpts,
+      );
+      if (wholeInterceptRootParams) setRootParams(wholeInterceptRootParams);
       return options.buildPageElement(
         interceptRoute,
         interceptParams,

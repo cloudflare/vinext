@@ -18,7 +18,11 @@ import {
 import type { ReactFormState } from "react-dom/client";
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/shims/root-params";
+import {
+  createRootParamsUsageController,
+  runWithRootParamsUsage,
+  setRootParams,
+} from "vinext/shims/root-params";
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -43,7 +47,10 @@ import {
   stripRscCacheBustingSearchParam,
 } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
-import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
+import {
+  resolveAppPageActionRerenderTarget,
+  resolveAppPageWholeInterceptRootParams,
+} from "./app-page-request.js";
 import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
 import {
   resolveAppPageInterceptSegmentConfig,
@@ -2000,6 +2007,12 @@ export async function handleServerActionRscRequest<
         searchParams: actionRerenderSearchParams,
         params: resolvedActionNavigationParams,
       });
+      const wholeInterceptRootParams = resolveAppPageWholeInterceptRootParams(
+        actionRerenderTarget.route,
+        actionRerenderTarget.params,
+        actionRerenderTarget.interceptOpts,
+      );
+      if (wholeInterceptRootParams) setRootParams(wholeInterceptRootParams);
       const renderedSearch = options.searchParams.toString();
       renderedPathAndSearch = renderedSearch
         ? `${options.cleanPathname}?${renderedSearch}`

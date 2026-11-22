@@ -13,6 +13,8 @@ import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { removeTrailingSlash } from "../utils/base-path.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
+import { pickRootParams, type RootParams } from "vinext/shims/root-params";
+import { isUnknownRecord } from "../utils/record.js";
 import {
   loadAppInterceptLayouts,
   loadAppInterceptNotFound,
@@ -905,6 +907,25 @@ function markInterceptionSourceRender<TInterceptOpts, TPage>(
         rendersWholeInterceptingRoute: true,
       }
     : { ...opts, rendersInterceptionSource: true };
+}
+
+/**
+ * The root params of a render of the whole intercepting route, or null for
+ * any other render, which keeps the request's. Next.js's interception rewrite
+ * renders the intercepting route under the values it captures from the
+ * source, so its root params come from the source's params, as its layouts'
+ * params do.
+ */
+export function resolveAppPageWholeInterceptRootParams(
+  route: { rootParamNames?: readonly string[] | null },
+  params: AppPageParams,
+  interceptOpts: unknown,
+): RootParams | null {
+  return isUnknownRecord(interceptOpts) &&
+    interceptOpts.rendersInterceptionSource === true &&
+    interceptOpts.rendersWholeInterceptingRoute === true
+    ? pickRootParams(params, route.rootParamNames)
+    : null;
 }
 
 export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TInterceptOpts>(
