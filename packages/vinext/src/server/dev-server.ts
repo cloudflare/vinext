@@ -23,7 +23,13 @@ import {
 // These modules must be imported before any rendering occurs.
 import "vinext/shims/router-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
-import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
+import {
+  createInlineScriptTag,
+  createNonceAttribute,
+  createPagesFontPreloadTag,
+  safeJsonStringify,
+} from "./html.js";
+import type { FontPreload } from "vinext/shims/font-utils";
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
@@ -1611,7 +1617,7 @@ export function createSSRHandler(
           nonceAttr,
         );
         const allFontStyles: string[] = [];
-        const allFontPreloads: Array<{ href: string; type: string }> = [];
+        const allFontPreloads: FontPreload[] = [];
         try {
           const fontGoogle = await importModule(runner, "next/font/google");
           if (typeof fontGoogle.getSSRFontLinks === "function") {
@@ -1644,12 +1650,8 @@ export function createSSRHandler(
           // next/font/local not used — skip
         }
         // Emit <link rel="preload"> for all collected font files (Google + local)
-        for (const { href, type } of allFontPreloads) {
-          // Escape href/type to prevent HTML attribute injection (defense-in-depth;
-          // Vite-resolved asset paths should never contain special chars).
-          const safeHref = href.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-          const safeType = type.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-          fontHeadHTML += `<link rel="preload"${nonceAttr} href="${safeHref}" as="font" type="${safeType}" crossorigin="anonymous" />\n  `;
+        for (const preload of allFontPreloads) {
+          fontHeadHTML += createPagesFontPreloadTag(preload, nonceAttr);
         }
         if (allFontStyles.length > 0) {
           fontHeadHTML += `<style data-vinext-fonts${nonceAttr}>${allFontStyles.join("\n")}</style>\n  `;

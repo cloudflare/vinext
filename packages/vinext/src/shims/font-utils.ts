@@ -4,6 +4,12 @@ export type FontStyle = {
   fontStyle?: string;
 };
 
+export type FontPreload = {
+  href: string;
+  type: string;
+  sizeAdjusted?: boolean;
+};
+
 export type FontFaceStyleInput = {
   fontFamily: string;
   weight?: string | string[];

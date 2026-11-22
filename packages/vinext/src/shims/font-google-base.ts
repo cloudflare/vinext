@@ -6,6 +6,7 @@ import {
   resolveSingleFaceStyle,
   sanitizeCSSVarName,
   sanitizeFallback,
+  type FontPreload,
   type FontStyle,
 } from "./font-utils.js";
 
@@ -42,8 +43,7 @@ const _INJECTED_VARIABLE_RULES_KEY = Symbol.for("vinext.font.injectedVariableRul
 const _INJECTED_SELF_HOSTED_KEY = Symbol.for("vinext.font.injectedSelfHosted");
 const _SSR_FONT_STYLES_KEY = Symbol.for("vinext.font.ssrFontStyles");
 const _SSR_FONT_URLS_KEY = Symbol.for("vinext.font.ssrFontUrls");
-const _SSR_FONT_PRELOADS_KEY = Symbol.for("vinext.font.ssrFontPreloads");
-const _SSR_FONT_PRELOAD_HREFS_KEY = Symbol.for("vinext.font.ssrFontPreloadHrefs");
+const _SSR_FONT_PRELOADS_KEY = Symbol.for("vinext.font.ssrFontPreloadsByHref");
 
 type _FontGlobal = typeof globalThis & {
   [_INJECTED_FONTS_KEY]?: Set<string>;
@@ -52,8 +52,7 @@ type _FontGlobal = typeof globalThis & {
   [_INJECTED_SELF_HOSTED_KEY]?: Set<string>;
   [_SSR_FONT_STYLES_KEY]?: string[];
   [_SSR_FONT_URLS_KEY]?: string[];
-  [_SSR_FONT_PRELOADS_KEY]?: Array<{ href: string; type: string }>;
-  [_SSR_FONT_PRELOAD_HREFS_KEY]?: Set<string>;
+  [_SSR_FONT_PRELOADS_KEY]?: Map<string, FontPreload>;
 };
 const _g = globalThis as _FontGlobal;
 
@@ -352,29 +351,27 @@ export function getSSRFontLinks(): string[] {
 }
 
 // SSR: collect font file URLs for <link rel="preload"> injection (self-hosted Google fonts)
-const ssrFontPreloads = (_g[_SSR_FONT_PRELOADS_KEY] ??= []);
-const ssrFontPreloadHrefs = (_g[_SSR_FONT_PRELOAD_HREFS_KEY] ??= new Set<string>());
+const ssrFontPreloads = (_g[_SSR_FONT_PRELOADS_KEY] ??= new Map<string, FontPreload>());
 
 /**
  * Get collected SSR font preload data (used by the renderer).
- * Returns an array of { href, type } objects for emitting
- * <link rel="preload" as="font" ...> tags.
+ * A single font URL can be shared by declarations with different fallbacks.
+ * Keep one preload per URL and mark it adjusted if any declaration uses metrics.
  */
-export function getSSRFontPreloads(): Array<{ href: string; type: string }> {
-  return [...ssrFontPreloads];
+export function getSSRFontPreloads(): FontPreload[] {
+  return [...ssrFontPreloads.values()];
 }
 
 /**
  * Collect build-selected font file URLs for preload link generation.
- * Only collects on the server (SSR). Deduplicates by href using a Set for O(1) lookups.
+ * Only collects on the server (SSR).
  */
-function collectFontPreloads(urls: string[]): void {
+function collectFontPreloads(urls: string[], sizeAdjusted: boolean): void {
   if (typeof document !== "undefined") return; // client-side, skip
 
   for (const href of urls) {
-    if (href.startsWith("/") && !ssrFontPreloadHrefs.has(href)) {
-      ssrFontPreloadHrefs.add(href);
-      ssrFontPreloads.push({ href, type: getFontMimeType(href) });
+    if (href.startsWith("/") && (!ssrFontPreloads.has(href) || sizeAdjusted)) {
+      ssrFontPreloads.set(href, { href, type: getFontMimeType(href), sizeAdjusted });
     }
   }
 }
@@ -386,8 +383,7 @@ const injectedSelfHosted = (_g[_INJECTED_SELF_HOSTED_KEY] ??= new Set<string>())
  * Inject self-hosted @font-face CSS (from the build plugin).
  * This replaces the CDN <link> tag with inline CSS.
  */
-function injectSelfHostedCSS(css: string, preloadUrls: string[] = []): void {
-  collectFontPreloads(preloadUrls);
+function injectSelfHostedCSS(css: string): void {
   if (injectedSelfHosted.has(css)) return;
   injectedSelfHosted.add(css);
 
@@ -417,13 +413,12 @@ export function createFontLoader(family: string): FontLoader {
   ): T extends undefined ? NextFont : NextFontWithVariable {
     const internal = options._vinext?.font;
     const fallback = options.fallback ?? [];
+    const adjustedFallbackCSS =
+      options.adjustFontFallback === false ? undefined : internal?.adjustedFallbackCSS;
     // The adjusted fallback family name must match the font-family emitted by
     // buildFallbackFontFace() in build/google-fonts/fallback-metrics.ts ('{family} Fallback').
     // Keep these two sites in sync to prevent silent fallback mismatches.
-    const adjustedFallback =
-      options.adjustFontFallback === false || !internal?.adjustedFallbackCSS
-        ? []
-        : [`'${escapeCSSString(family)} Fallback'`];
+    const adjustedFallback = adjustedFallbackCSS ? [`'${escapeCSSString(family)} Fallback'`] : [];
     // Sanitize each fallback name to prevent CSS injection via crafted values
     const fontFamily = [
       `'${escapeCSSString(family)}'`,
@@ -453,7 +448,8 @@ export function createFontLoader(family: string): FontLoader {
 
     if (internal?.selfHostedCSS) {
       // Self-hosted mode: inject local @font-face CSS instead of CDN link
-      injectSelfHostedCSS(internal.selfHostedCSS, internal.preloadUrls);
+      collectFontPreloads(internal.preloadUrls ?? [], Boolean(adjustedFallbackCSS));
+      injectSelfHostedCSS(internal.selfHostedCSS);
     } else {
       // CDN mode: inject <link> to Google Fonts
       const url = buildGoogleFontsUrl(family, options);
@@ -467,8 +463,8 @@ export function createFontLoader(family: string): FontLoader {
       }
     }
 
-    if (options.adjustFontFallback !== false && internal?.adjustedFallbackCSS) {
-      injectSelfHostedCSS(internal.adjustedFallbackCSS);
+    if (adjustedFallbackCSS) {
+      injectSelfHostedCSS(adjustedFallbackCSS);
     }
 
     // Inject a CSS rule that maps className to font-family.

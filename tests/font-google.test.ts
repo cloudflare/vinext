@@ -244,6 +244,29 @@ describe("next/font/google shim", () => {
     expect(result.style.fontFamily).toContain("Helvetica");
   });
 
+  it("marks a shared Google font preload once when any declaration uses metrics", async () => {
+    const { createFontLoader, getSSRFontPreloads } =
+      await import("../packages/vinext/src/shims/font-google.js");
+    const font = createFontLoader("Shared Test");
+    const href = "/fonts/shared-test.woff2";
+    const internal = {
+      font: {
+        selfHostedCSS: `@font-face { font-family: 'Shared Test'; src: url(${href}); }`,
+        adjustedFallbackCSS:
+          "@font-face { font-family: 'Shared Test Fallback'; size-adjust: 90%; }",
+        preloadUrls: [href],
+      },
+    };
+    const matchingPreloads = () => getSSRFontPreloads().filter((preload) => preload.href === href);
+
+    font({ adjustFontFallback: false, _vinext: internal });
+    expect(matchingPreloads()).toEqual([{ href, type: "font/woff2", sizeAdjusted: false }]);
+
+    font({ _vinext: internal });
+    font({ adjustFontFallback: false, _vinext: internal });
+    expect(matchingPreloads()).toEqual([{ href, type: "font/woff2", sizeAdjusted: true }]);
+  });
+
   it("generates unique classNames for each call", async () => {
     const { createFontLoader } = await import("../packages/vinext/src/shims/font-google.js");
     const Inter = createFontLoader("Inter");

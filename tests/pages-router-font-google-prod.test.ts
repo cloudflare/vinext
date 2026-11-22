@@ -1,11 +1,38 @@
-import path from "node:path";
 import fsp from "node:fs/promises";
-import type http from "node:http";
-import { build } from "vite-plus";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import vinext from "../packages/vinext/src/index.js";
-import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
-import { createIsolatedFixture } from "./helpers.js";
+import {
+  createPagesFontFixture,
+  startPagesFontDevelopment,
+  startPagesFontProduction,
+} from "./pages-font-google-fixture.js";
+
+function expectGoogleFontFallbacks(html: string, assetsDir: string): void {
+  // Ported from Next.js: test/e2e/next-font/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/next-font/index.test.ts
+  const css = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/)?.[1];
+  expect(css).toBeDefined();
+  expect(css).toMatch(
+    /\.__font_geist_\w+ \{ font-family: 'Geist', 'Geist Fallback', system-ui, 'Arial';/,
+  );
+  expect(css).toMatch(/\.__font_open_sans_\w+ \{ font-family: 'Open Sans';/);
+  expect(css).toMatch(/\.__font_roboto_\w+ \{ font-family: 'Roboto', system-ui, 'Arial';/);
+  expect(css).toMatch(/@font-face\s*\{[^}]*font-family: 'Geist Fallback';[^}]*size-adjust:/);
+  expect(css).not.toContain("'Open Sans Fallback'");
+  expect(css).not.toContain("'Roboto Fallback'");
+
+  const allPreloads = [...html.matchAll(/<link rel="preload"[^>]*as="font"[^>]*>/g)].map(
+    ([link]) => link,
+  );
+  const preloads = allPreloads.filter((link) =>
+    link.includes(`href="/${assetsDir}/_vinext_fonts/`),
+  );
+  expect(preloads, allPreloads.join("\n")).toHaveLength(3);
+  expect(preloads.find((link) => link.includes("/geist-"))).toContain(
+    'data-next-font="size-adjust"',
+  );
+  expect(preloads.find((link) => link.includes("/open-sans-"))).toContain('data-next-font=""');
+  expect(preloads.find((link) => link.includes("/roboto-"))).toContain('data-next-font=""');
+}
 
 describe("Pages Router Production server self-hosted next/font/google", () => {
   // Pages Router twin of `app-router-font-google-prod.test.ts`. The Pages
@@ -20,108 +47,18 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
   // `@font-face src: url(...)` was emitted bare. A preload only matches a
   // later font request when the URLs are byte-identical, so every preload
   // was a wasted download and each font re-fetched once the CSS parsed.
-  const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/font-google-pages");
   let tmpDir: string;
-  let server: http.Server | undefined;
+  let server: Awaited<ReturnType<typeof startPagesFontProduction>> | undefined;
   let baseUrl: string;
 
   beforeAll(async () => {
-    tmpDir = await createIsolatedFixture(FIXTURE_DIR, "vinext-pages-font-prod-");
-    const outDir = path.join(tmpDir, "dist");
-
-    // Mock the Google Fonts CDN so the build is hermetic and
-    // `fetchAndCacheFont` exercises its real URL-rewrite code path. The
-    // mocked CSS MUST contain `https://fonts.gstatic.com/...` URLs so the
-    // plugin's regex extracts them and rewrites them to served URLs.
-    const originalFetch = globalThis.fetch;
-    const resolveFetchUrl = (input: unknown): string => {
-      if (typeof input === "string") return input;
-      if (input instanceof URL) return input.toString();
-      if (typeof Request !== "undefined" && input instanceof Request) return input.url;
-      return String(input);
-    };
-    globalThis.fetch = async (input: unknown, init?: RequestInit) => {
-      const url = resolveFetchUrl(input);
-      if (url.includes("fonts.googleapis.com")) {
-        const css = [
-          "/* latin */",
-          "@font-face {",
-          "  font-family: 'Geist';",
-          "  font-style: normal;",
-          "  font-weight: 400;",
-          "  font-display: swap;",
-          "  src: url(https://fonts.gstatic.com/s/geist/v1/geist-latin.woff2) format('woff2');",
-          "  unicode-range: U+0000-00FF;",
-          "}",
-        ].join("\n");
-        return new Response(css, {
-          status: 200,
-          headers: { "content-type": "text/css" },
-        });
-      }
-      if (url.includes("fonts.gstatic.com")) {
-        return new Response(
-          new Uint8Array([0x77, 0x4f, 0x46, 0x32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-          { status: 200, headers: { "content-type": "font/woff2" } },
-        );
-      }
-      return originalFetch(input as RequestInfo, init);
-    };
-
-    // Pin a deploymentId to prove immutable, content-hashed font assets stay
-    // query-free across CSS, HTML preloads, and HTTP Link preloads. Next.js
-    // clears its client asset token when supportsImmutableAssets applies; its
-    // deployment parity fixture exercises this with NEXT_DEPLOYMENT_ID_IMMUTABLE.
-    // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
-    const plugins = () => [vinext({ nextConfig: () => ({ deploymentId: "dpl-pages-font-prod" }) })];
-    try {
-      // Pages Router only — no RSC pipeline, so separate build() calls work.
-      await build({
-        root: tmpDir,
-        configFile: false,
-        plugins: plugins(),
-        logLevel: "silent",
-        build: {
-          assetsInlineLimit: 0,
-          outDir: path.join(outDir, "server"),
-          ssr: "virtual:vinext-server-entry",
-          rolldownOptions: { output: { entryFileNames: "entry.js" } },
-        },
-      });
-      await build({
-        root: tmpDir,
-        configFile: false,
-        plugins: plugins(),
-        logLevel: "silent",
-        build: {
-          assetsInlineLimit: 0,
-          outDir: path.join(outDir, "client"),
-          manifest: true,
-          ssrManifest: true,
-          rolldownOptions: { input: "virtual:vinext-client-entry" },
-        },
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-
-    ({ server } = await startProdServer({
-      port: 0,
-      host: "127.0.0.1",
-      outDir,
-      noCompression: true,
-    }));
-    const addr = server!.address();
-    if (!addr || typeof addr === "string") {
-      throw new Error("Failed to start production server for the pages font fixture");
-    }
-    baseUrl = `http://127.0.0.1:${addr.port}`;
+    tmpDir = await createPagesFontFixture();
+    server = await startPagesFontProduction(tmpDir);
+    baseUrl = server.url;
   }, 60000);
 
   afterAll(async () => {
-    if (server) {
-      await new Promise<void>((resolve) => server!.close(() => resolve()));
-    }
+    await server?.close();
     if (tmpDir) {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
@@ -186,4 +123,21 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
       expect(preloadHrefs).toContain(href);
     }
   });
+
+  it("keeps Google fallback styles and preload metadata in production", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    expectGoogleFontFallbacks(await res.text(), "_next/static");
+  });
+
+  it("keeps Google fallback styles and preload metadata in development", async () => {
+    const devServer = await startPagesFontDevelopment(tmpDir);
+    try {
+      const res = await fetch(devServer.url);
+      expect(res.status).toBe(200);
+      expectGoogleFontFallbacks(await res.text(), "font-dev/_next/static");
+    } finally {
+      await devServer.close();
+    }
+  }, 60000);
 });
