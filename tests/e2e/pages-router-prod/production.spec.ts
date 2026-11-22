@@ -259,6 +259,25 @@ test.describe("Pages Router Production Build", () => {
     expect(content).toContain("hello-world");
   });
 
+  for (const status of [204, 205, 304]) {
+    test(`prefetch loads the middleware rewrite target after a ${status} response`, async ({
+      page,
+    }) => {
+      await page.route("**/_next/data/**/gssp-dedup-slow.json", (route) =>
+        route.fulfill({ status, headers: { "x-nextjs-rewrite": "/module-evaluation" } }),
+      );
+      await page.goto(`${BASE}/gssp-dedup-test`);
+      await waitForHydration(page);
+      const evaluations = () =>
+        page.evaluate(() => (window as any).__VINEXT_PAGE_EVALUATIONS__ as number | undefined);
+      expect(await evaluations()).toBeUndefined();
+
+      await page.evaluate(() => (window as any).next.router.prefetch("/gssp-dedup-slow"));
+
+      await expect.poll(evaluations).toBe(1);
+    });
+  }
+
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts
   test("window.next.router.sdc retains prefetched SSG data", async ({ page }) => {

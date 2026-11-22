@@ -123,7 +123,13 @@ export function fetchStaticPagesData(dataHref: string, init?: RequestInit): Prom
 
 export function fetchUncachedPagesData(dataHref: string, init?: RequestInit): Promise<Response> {
   return fetch(dataHref, init).then(async (response) => {
-    const body = await response.arrayBuffer();
+    // Chromium exposes an empty stream for these statuses on network responses.
+    const hasNoBody =
+      response.body === null ||
+      response.status === 204 ||
+      response.status === 205 ||
+      response.status === 304;
+    const body = hasNoBody ? null : await response.arrayBuffer();
     return new Response(body, {
       headers: response.headers,
       status: response.status,

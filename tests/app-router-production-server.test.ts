@@ -3402,6 +3402,16 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html2).not.toContain('"filter">alpha<');
   });
 
+  // Adapted from https://github.com/vercel/next.js/blob/3478b30/test/e2e/app-dir/use-cache-route-handler-only/use-cache-route-handler-only.test.ts
+  it("serves a bodyless 204 on a route handler ISR miss and hit", async () => {
+    for (const state of ["MISS", "HIT"]) {
+      const response = await fetch(`${baseUrl}/api/no-content`);
+      expect(response.headers.get("x-vinext-cache")).toBe(state);
+      expect(response.status).toBe(204);
+      expect(response.body).toBeNull();
+    }
+  });
+
   // Route handler ISR caching tests
   // These tests are ORDER-DEPENDENT: they share a single production server and
   // /api/static-data cache state persists across tests. HIT depends on MISS

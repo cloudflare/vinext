@@ -1281,6 +1281,32 @@ describe("fetch cache shim", () => {
     expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleEntry);
   });
 
+  // Ported from https://github.com/vercel/next.js/blob/3478b30/packages/next/src/server/lib/patch-fetch.test.ts
+  it("shares a bodyless 204 during concurrent foreground revalidation", async () => {
+    const url = "https://api.example.com/foreground-no-content";
+    vi.spyOn(getCacheHandler(), "get").mockResolvedValue({
+      cacheState: "stale",
+      lastModified: 0,
+      value: { kind: "FETCH", data: { headers: {}, body: "", url }, revalidate: 1 },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    const [first, second] = await runWithFetchCache(async () => {
+      setRefreshStaleFetchesInForeground(true);
+      return Promise.all([
+        fetch(url, { cache: "force-cache" }),
+        fetch(url, { cache: "force-cache" }),
+      ]);
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(first).not.toBe(second);
+    for (const response of [first, second]) {
+      expect(response.status).toBe(204);
+      expect(response.body).toBeNull();
+    }
+  });
+
   it("a failed foreground fetch refresh still passes the stale entry to the fallback write", async () => {
     await fetch("https://api.example.com/foreground-stale-retry", {
       next: { revalidate: 1 },
