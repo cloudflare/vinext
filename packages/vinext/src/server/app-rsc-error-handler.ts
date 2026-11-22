@@ -1,3 +1,4 @@
+import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-storage";
 import { createRscOnErrorHandler } from "./app-rsc-errors.js";
 import { RSC_HEADER } from "./app-rsc-vary.js";
 import {
@@ -73,7 +74,8 @@ export function createAppRscOnErrorHandler(
     errorContext,
     loggedErrors,
     reportRequestError(error, info, context) {
-      void reportRequestError(error, info, context);
+      // Reporting and its async continuations are outside the render work unit.
+      void workUnitAsyncStorage.exit(reportRequestError, error, info, context);
     },
     requestInfo,
   });

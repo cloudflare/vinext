@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { createAppRscOnErrorHandler } from "../packages/vinext/src/server/app-rsc-error-handler.js";
 import { errorDigest } from "../packages/vinext/src/server/app-rsc-errors.js";
 import { getRevalidateSecret } from "../packages/vinext/src/server/revalidation-request.js";
+import { workUnitAsyncStorage } from "../packages/vinext/src/shims/internal/work-unit-async-storage.js";
 
 function makeReq(
   url = "https://example.com/feed",
@@ -88,6 +89,51 @@ describe("createAppRscOnErrorHandler", () => {
       revalidateReason: undefined,
     });
   });
+
+  it.each(["react-server-components", "server-rendering"] as const)(
+    "reports %s errors outside a prerender work unit",
+    async (renderSource) => {
+      // Ported from Next.js: test/e2e/app-dir/on-request-error-render-scope/
+      // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/on-request-error-render-scope
+      const observe = vi.fn();
+      const reportRequestError = vi.fn(async () => {
+        const before = workUnitAsyncStorage.getStore();
+        const startedAt = Date.now();
+        await Promise.resolve();
+        observe({
+          before,
+          after: workUnitAsyncStorage.getStore(),
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          sample: Math.random(),
+        });
+      });
+      const onError = createAppRscOnErrorHandler(reportRequestError, makeReq(), "/feed", "/feed", {
+        renderSource,
+      });
+      const error = new Error("render failed");
+      const workUnit = { type: "prerender", renderSignal: new AbortController().signal } as const;
+
+      workUnitAsyncStorage.run(workUnit, () => {
+        onError(error);
+        expect(workUnitAsyncStorage.getStore()).toBe(workUnit);
+      });
+
+      expect(reportRequestError).toHaveBeenCalledExactlyOnceWith(
+        error,
+        expect.objectContaining({ path: "/feed" }),
+        expect.objectContaining({ routePath: "/feed", renderSource }),
+      );
+      await reportRequestError.mock.results[0].value;
+      expect(observe).toHaveBeenCalledExactlyOnceWith({
+        before: undefined,
+        after: undefined,
+        startedAt: expect.any(Number),
+        finishedAt: expect.any(String),
+        sample: expect.any(Number),
+      });
+    },
+  );
 
   it("reports RSC payload and on-demand revalidation context", () => {
     const reportRequestError = vi.fn();
