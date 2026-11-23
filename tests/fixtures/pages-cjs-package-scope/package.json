@@ -1,0 +1,5 @@
+{
+  "name": "pages-cjs-package-scope-fixture",
+  "private": true,
+  "type": "commonjs"
+}

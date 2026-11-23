@@ -79,6 +79,8 @@ const nextConfig: NextConfig = {
       ],
       afterFiles: [
         { source: "/rewrite-about", destination: "/about" },
+        // A rewritten Route Handler response is sent with a never-cache policy.
+        { source: "/api/websocket-upgrade-rewrite", destination: "/api/websocket-upgrade-proxy" },
         externalCredentialsRewrite("after-files"),
       ],
       fallback: [externalCredentialsRewrite("fallback")],

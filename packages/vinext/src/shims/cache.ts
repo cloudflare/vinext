@@ -671,6 +671,7 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   tags: string[],
   revalidateSeconds: number | false | undefined,
   staleEntry: CacheHandlerValue | undefined,
+  cacheRead: object,
   deferWrite: boolean,
 ): Promise<Result> {
   // As in Next.js, the callback gets the caller's arguments, which are keyed
@@ -706,7 +707,9 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
         fetchCache: true,
         tags,
         revalidate: revalidateSeconds,
-        // The stale entry this write refreshes, so a handler can tell a refresh from a write.
+        // The token its read was passed, and the stale entry it found, so a handler can
+        // tell a fill of what that read missed, or a refresh, from a write.
+        cacheRead,
         ...(staleEntry ? { staleEntry } : {}),
       }),
     );
@@ -774,6 +777,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
 
     const isDraftMode = isDraftModeEnabled();
     let staleEntry: CacheHandlerValue | undefined;
+    const cacheRead = {};
     // Like Next.js, an unstable_cache nested in another's callback skips the
     // read and reruns, so regenerating the outer entry also refreshes what it
     // calls, and so does an on-demand revalidation (`res.revalidate()`). The
@@ -789,6 +793,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
             kind: "FETCH",
             tags,
             softTags,
+            cacheRead,
           });
       if (existing?.value && existing.value.kind === "FETCH") {
         const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
@@ -805,6 +810,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
                   tags,
                   revalidateSeconds,
                   staleEntry,
+                  cacheRead,
                   false,
                 ),
               );
@@ -836,6 +842,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       tags,
       revalidateSeconds,
       staleEntry,
+      cacheRead,
       !staleEntry && isInsideWorkStoreScope(),
     );
   };
