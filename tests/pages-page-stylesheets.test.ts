@@ -104,6 +104,18 @@ describe("collectPagesPageStylesheets", () => {
       routeChunks: { "/alpha": "alpha.js", "/beta": "beta.js" },
     });
   });
+
+  it("leaves out the dynamic imports of a hybrid build's App Router chunks", () => {
+    expect(
+      collect([
+        chunk("entry.js", { module: "entry", dynamicImports: ["alpha.js"] }),
+        chunk("alpha.js", { module: "/pages/alpha.tsx", imports: ["card.js"] }),
+        chunk("card.js", { css: ["card.css"] }),
+        chunk("app-browser.js", { module: "app-browser-entry", dynamicImports: ["dialog.js"] }),
+        chunk("dialog.js", { module: "/app/dialog.tsx", imports: ["card.js"] }),
+      ]).shared,
+    ).toEqual([]);
+  });
 });
 
 describe("withoutPreloadedStylesheets", () => {

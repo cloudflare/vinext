@@ -85,12 +85,26 @@ export function collectPagesPageStylesheets(
       return stylesheetsOf(fileName);
     });
 
+  // The chunks that the Pages Router loads. A hybrid build's App Router
+  // chunks share its output, but Next.js builds them apart.
+  const pagesChunks = new Set<string>();
+  const loadsWithPages = (fileName: string) => {
+    if (pagesChunks.has(fileName)) return;
+    pagesChunks.add(fileName);
+    const chunk = chunks.get(fileName);
+    for (const imported of [...(chunk?.imports ?? []), ...(chunk?.dynamicImports ?? [])]) {
+      loadsWithPages(imported);
+    }
+  };
+  loadsWithPages(options.loaderChunk);
+
   const alwaysLoaded = new Set<string>();
   const dynamic = new Set<string>();
   for (const chunk of chunks.values()) {
     if (isAlwaysLoaded(chunk)) {
       for (const file of stylesheetsOf(chunk.fileName)) alwaysLoaded.add(file);
     }
+    if (!pagesChunks.has(chunk.fileName)) continue;
     for (const file of otherDynamicStylesheets(chunk)) dynamic.add(file);
   }
 
