@@ -133,6 +133,45 @@ test.describe("going back into an intercepted entry", () => {
   });
 });
 
+// Going forward from the source page into its intercepted entry, after
+// router.refresh() has dropped the tree the client committed there, renders
+// the source page again from its own URL, query included, beneath the modal.
+test.describe("going forward into an intercepted entry from its source", () => {
+  test("keeps the source page's own query beneath the modal", async ({ page }) => {
+    await page.goto(`${ROOT}/feed?tab=new`);
+    await waitForAppRouterHydration(page);
+    const tab = page.locator("#interception-traverse-reload-feed-tab");
+    await expect(tab).toHaveText("new");
+
+    await page.click("#interception-traverse-reload-photo-link");
+    await expect(page.locator("#interception-traverse-reload-photo-modal")).toContainText(
+      "Photo modal 1",
+    );
+    await page.goBack();
+    await expect(page).toHaveURL(`${ROOT}/feed?tab=new`);
+    await expect(page.locator("#interception-traverse-reload-photo-modal")).toHaveCount(0);
+
+    const refreshed = page.waitForResponse((response) =>
+      isAppRouterRscRequestForPath(response.request(), "/interception-traverse-reload/feed"),
+    );
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router || !("refresh" in router)) {
+        throw new Error("window.next App Router is not installed");
+      }
+      router.refresh();
+    });
+    await refreshed;
+    await expect(tab).toHaveText("new");
+    await markWindow(page);
+
+    await page.goForward();
+
+    await expectModalOverFeed(page);
+    await expect(tab).toHaveText("new");
+  });
+});
+
 // The feed's @modal belongs to the feed layout, which /gallery doesn't render.
 // Next.js still returns softly to the modal over the feed from there, until a
 // reload drops the tree it committed.
