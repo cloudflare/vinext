@@ -13,6 +13,10 @@ import {
   deferUntilStreamConsumed,
   observeStreamConsumption,
 } from "../packages/vinext/src/server/defer-until-stream-consumed.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import { hasFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 
@@ -215,6 +219,47 @@ describe("app page stream helpers", () => {
 
     // Now that the stream is fully consumed, context must have been cleared.
     expect(contextCleared).toHaveLength(1);
+  });
+
+  it("keeps the request context of a document cancelled inside a unified request scope", async () => {
+    // Issue #4789: the RSC render isn't stopped when the client cancels the
+    // document, so Server Components that resume afterwards still need
+    // cookies() and headers(). The scope's context belongs to this request
+    // alone; outside a scope the state is module-level and is still cleared.
+    const render = (clearRequestContext: () => void) =>
+      renderAppPageHtmlResponse({
+        clearRequestContext,
+        fontData: { links: [], preloads: [], styles: [] },
+        navigationContext: null,
+        rscStream: createStream(["flight"]),
+        ssrHandler: {
+          async handleSsr() {
+            return createStream(["<html>shell</html>", "<p>late</p>"]);
+          },
+        },
+        status: 200,
+      });
+    const readShellThenCancel = async (response: Response) => {
+      const reader = response.body!.getReader();
+      await reader.read();
+      await reader.cancel(new Error("client went away"));
+    };
+
+    const scopedClear = vi.fn();
+    await runWithRequestContext(createRequestContext(), async () => {
+      await readShellThenCancel(await render(scopedClear));
+    });
+    expect(scopedClear).not.toHaveBeenCalled();
+
+    const scopedReadClear = vi.fn();
+    await runWithRequestContext(createRequestContext(), async () => {
+      await (await render(scopedReadClear)).text();
+    });
+    expect(scopedReadClear).toHaveBeenCalledTimes(1);
+
+    const unscopedClear = vi.fn();
+    await readShellThenCancel(await render(unscopedClear));
+    expect(unscopedClear).toHaveBeenCalledTimes(1);
   });
 
   it("calls onFlush when the upstream stream errors mid-consumption", async () => {

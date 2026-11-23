@@ -4,7 +4,13 @@ const personalizedPaths = ["/prewarm-target", "/pages-prewarm", "/api/browser-ca
 const personalizedVisitors = ["config-a", "config-b"] as const;
 
 export default {
-  rewrites: async () => [{ source: "/rewritten/:slug", destination: "/cached/:slug" }],
+  // Issue #4705: a config redirect and an external rewrite answer in the
+  // request stage, so warming should skip them.
+  redirects: async () => [{ source: "/config-redirect", destination: "/", permanent: false }],
+  rewrites: async () => [
+    { source: "/rewritten/:slug", destination: "/cached/:slug" },
+    { source: "/config-external", destination: "https://upstream.test/docs" },
+  ],
   headers: async () => [
     { source: "/storage-policy/short-browser", headers: [{ key: "Cache-Control", value: "public, max-age=1" }] },
     { source: "/storage-policy/long-browser", headers: [{ key: "Cache-Control", value: "private, max-age=300" }] },

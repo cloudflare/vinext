@@ -183,26 +183,36 @@ describe("app client reference preloader", () => {
 });
 
 describe("resolveRouteClientReferences", () => {
+  // File 0 is a boundary of "/" (a not-found.tsx, say), file 1 its page,
+  // which imports "link", "chart" and "nav" statically, in that order, and
+  // "lazy" through a dynamic import.
   const plan = {
-    references: ["link", "nav", "chart", "search"],
+    references: ["link", "nav", "chart", "search", "lazy"],
     always: [0],
-    files: [[1], [2, 1], [3]],
+    files: [[1], [0, 2, 1, 4], [3]],
     routes: { "/": [0, 1] },
+    rendered: { "/": [1] },
+    staticFiles: [[], [0, 2, 1], []],
     routeless: [0, 2],
     async: [2],
   };
 
   it("resolves a route's files and the references every render uses", () => {
     expect(resolveRouteClientReferences(plan, "/")).toEqual({
-      references: ["link", "nav", "chart"],
+      references: ["link", "nav", "chart", "lazy"],
       streamed: ["chart"],
+      // In the page's import order, though the boundary preloads "nav"
+      // first. Not "lazy" (dynamically imported) or "search" (only a
+      // boundary imports it); "link" is every render's, and the page's too.
+      linked: ["link", "chart", "nav"],
     });
   });
 
-  it("resolves the routeless files for a render without a route", () => {
+  it("links no reference of a render without a route", () => {
     expect(resolveRouteClientReferences(plan, null)).toEqual({
       references: ["link", "nav", "search"],
       streamed: [],
+      linked: [],
     });
   });
 

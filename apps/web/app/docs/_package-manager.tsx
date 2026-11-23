@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 
-const packageManagers = ["pnpm", "npm", "yarn", "bun", "vp"] as const;
+const packageManagers = ["vp", "pnpm", "npm", "yarn", "bun"] as const;
 type PackageManager = (typeof packageManagers)[number];
 
 const storageKey = "vinext:package-manager";

@@ -2,6 +2,7 @@ import type { Metadata } from "vinext/shims/metadata";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { fillRoutePatternSegments, routePattern } from "../routing/route-pattern.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
+import { routeSegmentsApplyWithParallelSlots } from "./metadata-route-segments.js";
 import {
   getMetadataImageRouteKind,
   getMetadataRouteKind,
@@ -85,42 +86,6 @@ function routeApplies(routePath: string, routePrefix: string): boolean {
 
 function routeScore(routePrefix: string): number {
   return routePrefix.split("/").filter(Boolean).length;
-}
-
-function routeSegmentsApply(
-  routeSegments: readonly string[],
-  routePrefixSegments: readonly string[],
-): boolean {
-  if (routePrefixSegments.length > routeSegments.length) {
-    return false;
-  }
-
-  for (let index = 0; index < routePrefixSegments.length; index++) {
-    if (routeSegments[index] !== routePrefixSegments[index]) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function removeParallelRouteSegments(routeSegments: readonly string[]): string[] {
-  return routeSegments.filter((segment) => !segment.startsWith("@"));
-}
-
-function routeSegmentsApplyWithParallelSlots(
-  routeSegments: readonly string[],
-  routePrefixSegments: readonly string[],
-): boolean {
-  if (routeSegmentsApply(routeSegments, routePrefixSegments)) {
-    return true;
-  }
-
-  const visiblePrefixSegments = removeParallelRouteSegments(routePrefixSegments);
-  return (
-    visiblePrefixSegments.length !== routePrefixSegments.length &&
-    routeSegmentsApply(routeSegments, visiblePrefixSegments)
-  );
 }
 
 function routeSpecificity(route: MetadataFileRoute): number {
