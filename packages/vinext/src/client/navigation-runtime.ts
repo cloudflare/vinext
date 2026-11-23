@@ -55,6 +55,11 @@ type NavigationRuntimePrefetchRouterState = {
    * opened from, which its navigations send whatever their target.
    */
   sourceInterceptionContext: string | null;
+  /**
+   * The path that decides whether its navigations intercept, when that is not
+   * the current URL: an intercepting route's own tree path.
+   */
+  sourcePathname: string | null;
 };
 
 type NavigationRuntimeTraversalIntent = {

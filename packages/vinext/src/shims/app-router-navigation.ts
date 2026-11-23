@@ -277,20 +277,24 @@ export function getCurrentInterceptionContext(): string | null {
 
 type PrefetchInterceptionSource = {
   pathname: string;
+  resolvesFromTreePath: boolean;
   routeMiss: boolean;
   sourceInterceptionContext: string | null;
 };
 
 /**
  * The page a prefetch originates from, as its navigations see it: the path
- * they resolve a context from, whether the committed render is an unmatched
- * URL's not-found page, and the context its entry keeps from the source an
- * intercept was opened from.
+ * that decides whether they intercept, whether that is an intercepting route's
+ * tree path, whether the committed render is an unmatched URL's not-found
+ * page, and the context its entry keeps from the source an intercept was
+ * opened from.
  */
 export function getPrefetchInterceptionSource(): PrefetchInterceptionSource {
   const routerState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
+  const treePath = routerState?.sourcePathname ?? null;
   return {
-    pathname: window.location.pathname,
+    pathname: treePath ?? window.location.pathname,
+    resolvesFromTreePath: treePath !== null,
     routeMiss: routerState?.routeMiss === true,
     sourceInterceptionContext: routerState?.sourceInterceptionContext ?? null,
   };
@@ -312,10 +316,11 @@ export function getPrefetchInterceptionContext(
   }
 
   const currentSource = source ?? getPrefetchInterceptionSource();
-  // An entry that keeps its source sends it on every navigation, so its
+  // An entry that keeps its source sends it on its navigations, so its
   // prefetches do too, as Next.js prefetches with the `Next-Url` it navigates
-  // with.
-  if (currentSource.sourceInterceptionContext !== null) {
+  // with. One that renders an intercepting route's own tree sends it only to
+  // the targets its tree path intercepts.
+  if (currentSource.sourceInterceptionContext !== null && !currentSource.resolvesFromTreePath) {
     return currentSource.sourceInterceptionContext;
   }
   const interceptionContext = resolveManifestNavigationInterceptionContext({
@@ -327,7 +332,10 @@ export function getPrefetchInterceptionContext(
   });
   // A navigation to that target loads its document, so it never uses this
   // prefetch, which stays a plain one without a context.
-  return interceptionContext === ROUTE_MISS_DOCUMENT_NAVIGATION ? null : interceptionContext;
+  if (interceptionContext === null || interceptionContext === ROUTE_MISS_DOCUMENT_NAVIGATION) {
+    return null;
+  }
+  return currentSource.sourceInterceptionContext ?? interceptionContext;
 }
 
 export function getCurrentNextUrl(): string {
