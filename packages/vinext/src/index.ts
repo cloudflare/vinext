@@ -1551,6 +1551,8 @@ const VIRTUAL_PAGES_RESPONSE_ENTRY = "virtual:vinext-pages-response-entry";
 const RESOLVED_PAGES_RESPONSE_ENTRY = VIRTUAL_PREFIX + VIRTUAL_PAGES_RESPONSE_ENTRY;
 const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
 const RESOLVED_CLIENT_ENTRY = VIRTUAL_PREFIX + VIRTUAL_CLIENT_ENTRY;
+const VIRTUAL_PAGES_APP_ENTRY = "virtual:vinext-pages-app-entry";
+const RESOLVED_PAGES_APP_ENTRY = VIRTUAL_PREFIX + VIRTUAL_PAGES_APP_ENTRY;
 const VIRTUAL_PAGES_CLIENT_ASSETS = "virtual:vinext-pages-client-assets";
 const RESOLVED_PAGES_CLIENT_ASSETS = VIRTUAL_PREFIX + VIRTUAL_PAGES_CLIENT_ASSETS;
 
@@ -9741,7 +9743,9 @@ export const loadServerActionClient = ${
         // orders a chunk's modules (and so its CSS) by visiting the entries
         // before the `import()` targets, which it visits by path: as one of
         // those, the pages sorting before `_app` would order what they share
-        // with it ahead of `_app`'s own imports.
+        // with it ahead of `_app`'s own imports. The entry resolves to `_app`
+        // on each build, as watch builds keep the input while `_app` may be
+        // added or removed.
         const input = inputOptions.input ?? [];
         const inputIds =
           typeof input === "string" ? [input] : Array.isArray(input) ? input : Object.values(input);
@@ -9754,17 +9758,24 @@ export const loadServerActionClient = ${
         ) {
           return;
         }
-        const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
-        if (!appFilePath) return;
-
-        return {
-          ...inputOptions,
-          input:
-            typeof input === "string" || Array.isArray(input)
-              ? [...inputIds, appFilePath]
-              : { ...input, _app: appFilePath },
-        };
+        if (typeof input === "string" || Array.isArray(input)) {
+          return { ...inputOptions, input: [...inputIds, VIRTUAL_PAGES_APP_ENTRY] };
+        }
+        let name = "_app";
+        while (name in input) name = `_${name}`;
+        return { ...inputOptions, input: { ...input, [name]: VIRTUAL_PAGES_APP_ENTRY } };
       },
+    },
+    async resolveId(id) {
+      if (id !== VIRTUAL_PAGES_APP_ENTRY) return;
+      const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+      // As the client entry's import of `_app` resolves.
+      const resolved =
+        appFilePath && (await this.resolve(appFilePath, undefined, { skipSelf: true }));
+      return resolved || RESOLVED_PAGES_APP_ENTRY;
+    },
+    load(id) {
+      if (id === RESOLVED_PAGES_APP_ENTRY) return "export {};";
     },
     buildStart() {
       if (this.environment?.name !== "client") return;
@@ -9869,12 +9880,18 @@ export const loadServerActionClient = ${
         return inlined;
       },
     },
-    generateBundle() {
+    generateBundle(_options, bundle) {
       // The client chunks exist now. A plain Pages Router SSR build inherits
       // the top-level client output, so it must not group `_app`'s imports.
       if (this.environment?.name === "client") {
         pagesAppChunkRoots.clear();
         pagesLargeSharedModules.clear();
+      }
+      // Without `_app`, its entry is empty and nothing loads it.
+      for (const [fileName, item] of Object.entries(bundle)) {
+        if (item.type === "chunk" && item.facadeModuleId === RESOLVED_PAGES_APP_ENTRY) {
+          delete bundle[fileName];
+        }
       }
     },
   });

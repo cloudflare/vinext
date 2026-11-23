@@ -134,6 +134,18 @@ describe("Pages Router client chunks", () => {
     expect(facadesOf(chunksWith(chunks, "/lib/shared-table.tsx"))).toEqual(
       inlines ? ["pages/alpha.tsx", "pages/beta.tsx"] : [""],
     );
+    // The large modules that pages reach through a side-effect-free barrel
+    // load only with the pages that use them.
+    if (inlines) {
+      const alphaRowsChunks = chunksWith(chunks, "/lib/rows/alpha-rows.ts");
+      const betaRowsChunks = chunksWith(chunks, "/lib/rows/beta-rows.ts");
+      expect(facadesOf(alphaRowsChunks)).toEqual([""]);
+      expect(facadesOf(betaRowsChunks)).toEqual([""]);
+      expect(alphaRowsChunks).not.toEqual(betaRowsChunks);
+      const pageChunk = (page: string) => chunks.find((chunk) => facadeOf(chunk) === page)!;
+      expect(pageChunk("pages/alpha.tsx").imports).not.toContain(betaRowsChunks[0]!.fileName);
+      expect(pageChunk("pages/beta.tsx").imports).not.toContain(alphaRowsChunks[0]!.fileName);
+    }
 
     // Each copy's CSS joins its page's stylesheet.
     const stylesheetsWith = (className: string) =>
@@ -154,6 +166,23 @@ describe("Pages Router client chunks", () => {
     expect(chunksWith(chunks, "/lib/shared-gallery-grid.module.css")).toEqual(galleryChunks);
     expect(stylesheetsWith("gallery-item-0")).toEqual([...importedCss(galleryChunks[0]!)]);
     expect(stylesheetsWith("grid-item-0")).toEqual(stylesheetsWith("gallery-item-0"));
+  });
+
+  it("keeps an `_app` entry that another plugin adds to the client build", async () => {
+    const libraryEntry = path.join(FIXTURE, "lib/library-entry.ts");
+    const appInput: Plugin = {
+      name: "test:app-input",
+      options(inputOptions) {
+        if (this.environment?.name !== "client") return;
+        inputOptions.input = { ...(inputOptions.input as object), _app: libraryEntry };
+      },
+    };
+
+    const [chunks] = await buildChunks({}, ["client"], [appInput]);
+
+    const entries = chunks!.filter((chunk) => chunk.isEntry).map(facadeOf);
+    expect(entries).toContain("lib/library-entry.ts");
+    expect(entries).toContain("pages/_app.tsx");
   });
 
   it("leaves the SSR build that follows the client build alone", async () => {

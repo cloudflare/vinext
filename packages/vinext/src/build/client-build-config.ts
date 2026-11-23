@@ -600,6 +600,9 @@ export function createPagesClientCodeSplittingConfig(
     // What a large module imports may load with other entries too. Inlining
     // sets the options that Rolldown asks for to leave dependencies out.
     includeDependenciesRecursively: false,
+    // The pages that load a module are counted before tree shaking, so the
+    // chunk is split by the entries that use each part of it after.
+    entriesAware: true,
   };
 
   return {
