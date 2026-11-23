@@ -26,6 +26,11 @@ export type FontOwnerManifest = {
    * out. A route that is missing has none.
    */
   navigation: Record<string, FontNavigationOwners>;
+  /**
+   * Owner keys of the standalone `app/global-not-found` render of a route-miss
+   * 404, which skips the root layouts (Next.js' `/_global-not-found` entry).
+   */
+  globalNotFound: string[];
 };
 
 type FontNavigationOwners = { route?: string[]; intercepts?: string[] };
@@ -37,13 +42,20 @@ export function fontOwnerKey(root: string, id: string): string {
 
 /**
  * The files of a route's own document render: its page, layouts, templates,
- * boundaries and parallel slots. Intercepting routes are left out. They render
- * only on a soft navigation, as entries of their own in Next.js.
+ * boundaries and parallel slots. A slot renders its page in its layout, or,
+ * when it has no page, its default without that layout. Intercepting routes are left out. They render only on
+ * a soft navigation, as entries of their own in Next.js.
  */
 export function fontRouteFiles(route: FontOwnerRoute): string[] {
   return actionOwnerRouteEntryIds({
     ...route,
-    parallelSlots: route.parallelSlots.map((slot) => ({ ...slot, interceptingRoutes: [] })),
+    parallelSlots: route.parallelSlots.map((slot) => ({
+      ...slot,
+      defaultPath: slot.pagePath ? null : slot.defaultPath,
+      // The renderer wraps only a slot's page in its layout, not its default.
+      layoutPath: slot.pagePath ? slot.layoutPath : null,
+      interceptingRoutes: [],
+    })),
     siblingIntercepts: [],
   });
 }
@@ -122,6 +134,7 @@ export function buildFontOwnerManifest(options: {
    */
   routes: ReadonlyMap<string, { files: readonly string[]; interceptFiles: readonly string[] }>;
   routelessFiles: readonly string[];
+  globalNotFoundFiles: readonly string[];
 }): FontOwnerManifest {
   // The owner keys each RSC module brings in: its own (a server owner), or,
   // for a client reference, those its SSR graph reaches.
@@ -164,6 +177,7 @@ export function buildFontOwnerManifest(options: {
       ...interceptFiles,
     ]),
     ...options.routelessFiles,
+    ...options.globalNotFoundFiles,
   ]);
   const rscImporters = importersOf(options.rsc);
   const isClientReference = (id: string) => options.clientReferences.has(id);
@@ -194,6 +208,7 @@ export function buildFontOwnerManifest(options: {
   const manifest: FontOwnerManifest = {
     routes: {},
     routeless: ownersOf(options.routelessFiles),
+    globalNotFound: ownersOf(options.globalNotFoundFiles),
     navigation: {},
   };
   // Most routes load no font of their own; leave them out.

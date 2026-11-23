@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import { buildFontOwnerManifest } from "../packages/vinext/src/build/font-owner-manifest.js";
+import {
+  buildFontOwnerManifest,
+  fontRouteFiles,
+} from "../packages/vinext/src/build/font-owner-manifest.js";
 
 // Issue #4810: the route font manifest lists, for each App Router route, the
 // modules whose fonts its render carries, like Next.js' next-font-manifest.
@@ -41,6 +44,7 @@ describe("buildFontOwnerManifest", () => {
         ["/empty", files("/app/layout.tsx")],
       ]),
       routelessFiles: ["/app/layout.tsx"],
+      globalNotFoundFiles: [],
       ...overrides,
     });
 
@@ -53,6 +57,7 @@ describe("buildFontOwnerManifest", () => {
         "/c": ["app/c/lazy.ts"],
       },
       routeless: [],
+      globalNotFound: [],
       // The browser loads a client component's fonts itself, so the payload
       // carries only server modules' fonts.
       navigation: {
@@ -78,6 +83,7 @@ describe("buildFontOwnerManifest", () => {
     });
     expect(manifest.routes).toEqual({ "/a": ["app/fonts.ts"], "/": ["app/fonts.ts"] });
     expect(manifest.routeless).toEqual(["app/fonts.ts"]);
+    expect(manifest.globalNotFound).toEqual([]);
   });
 
   it("reads a client reference that is itself a route file from the SSR graph", () => {
@@ -114,5 +120,73 @@ describe("buildFontOwnerManifest", () => {
     expect(manifest.navigation).toEqual({
       "/": { intercepts: ["app/@modal/(.)photo/page.tsx"] },
     });
+  });
+
+  it("gives the standalone global-not-found render only its own fonts", () => {
+    const manifest = build({
+      rsc: new Map([
+        ["/app/layout.tsx", ["/app/fonts.ts"]],
+        ["/app/global-not-found.tsx", ["/app/a/fonts.ts"]],
+        ["/app/fonts.ts", []],
+        ["/app/a/fonts.ts", []],
+      ]),
+      ssr: new Map(),
+      clientReferences: new Map(),
+      routes: new Map(),
+      globalNotFoundFiles: ["/app/global-not-found.tsx"],
+    });
+    expect(manifest.routeless).toEqual(["app/fonts.ts"]);
+    expect(manifest.globalNotFound).toEqual(["app/a/fonts.ts"]);
+  });
+});
+
+describe("fontRouteFiles", () => {
+  const slot = (name: string, pagePath: string | null) => ({
+    defaultPath: `/app/@${name}/default.tsx`,
+    errorPath: null,
+    hasPage: pagePath !== null,
+    interceptingRoutes: [
+      {
+        convention: ".",
+        layoutPaths: [],
+        notFoundPath: null,
+        pagePath: `/app/@${name}/(.)item/page.tsx`,
+        params: [],
+        sourceMatchPattern: "/",
+        targetPattern: "/item",
+      },
+    ],
+    key: `${name}:/app/@${name}`,
+    layoutIndex: 0,
+    layoutPath: `/app/@${name}/layout.tsx`,
+    loadingPath: null,
+    name,
+    notFoundPath: null,
+    ownerDir: "/app",
+    ownerTreePath: "/app",
+    pagePath,
+    routeSegments: [],
+  });
+
+  // A slot renders its page when it has one, and its default only otherwise.
+  it("takes a slot's default, without its layout, only when the slot has no page", () => {
+    const files = fontRouteFiles({
+      errorPath: null,
+      layouts: ["/app/layout.tsx"],
+      loadingPath: null,
+      notFoundPath: null,
+      pagePath: "/app/page.tsx",
+      parallelSlots: [slot("modal", "/app/@modal/page.tsx"), slot("side", null)],
+      pattern: "/",
+      siblingIntercepts: [],
+      templates: [],
+    } as unknown as Parameters<typeof fontRouteFiles>[0]);
+    expect(files).toContain("/app/@modal/page.tsx");
+    expect(files).not.toContain("/app/@modal/default.tsx");
+    expect(files).toContain("/app/@side/default.tsx");
+    // The slot's layout wraps its page, never its default.
+    expect(files).toContain("/app/@modal/layout.tsx");
+    expect(files).not.toContain("/app/@side/layout.tsx");
+    expect(files.some((file) => file.includes("(.)item"))).toBe(false);
   });
 });

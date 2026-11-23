@@ -14,7 +14,7 @@ import { fetchRsc, startFixtureServer } from "./helpers.js";
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-font-route-isolation");
 const outDir = path.resolve(FIXTURE_DIR, "dist");
 const nodeModulesLink = path.join(FIXTURE_DIR, "node_modules");
-const FONTS = ["font-a", "font-b", "font-c", "font-d"];
+const FONTS = ["font-root", "font-gnf", "font-a", "font-b", "font-c", "font-d"];
 
 beforeAll(() => {
   fs.rmSync(nodeModulesLink, { recursive: true, force: true });
@@ -65,19 +65,21 @@ async function payloadFontsInOrder(baseUrl: string) {
   return observed;
 }
 
+// Every page renders in the root layout, which loads a font of its own.
 const EXPECTED_PAYLOADS = [
-  { pathname: "/", fonts: ["font-a"] },
-  { pathname: "/b", fonts: ["font-b"] },
-  { pathname: "/c", fonts: ["font-c"] },
-  { pathname: "/d", fonts: [] },
-  { pathname: "/", fonts: ["font-a"] },
+  { pathname: "/", fonts: ["font-root", "font-a"] },
+  { pathname: "/b", fonts: ["font-root", "font-b"] },
+  { pathname: "/c", fonts: ["font-root", "font-c"] },
+  // /d's font is a client component's, so its payload carries only the root's.
+  { pathname: "/d", fonts: ["font-root"] },
+  { pathname: "/", fonts: ["font-root", "font-a"] },
 ];
 
 const own = (pathname: string, font: string) => ({
   pathname,
-  style: [font],
-  preloads: [font],
-  link: [font],
+  style: ["font-root", font],
+  preloads: ["font-root", font],
+  link: ["font-root", font],
 });
 
 const EXPECTED = [
@@ -87,8 +89,9 @@ const EXPECTED = [
   // A client component's font loads in the SSR graph.
   own("/d", "font-d"),
   own("/", "font-a"),
-  // A route-miss 404 renders only the root layout, which loads no font.
-  { pathname: "/missing", style: [], preloads: [], link: [] },
+  // A route-miss 404 renders global-not-found on its own, without the root
+  // layout, so it carries only global-not-found's font.
+  { pathname: "/missing", style: ["font-gnf"], preloads: ["font-gnf"], link: ["font-gnf"] },
 ];
 
 describe("App Router next/font is scoped to the requested route (production)", () => {
