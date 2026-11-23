@@ -2,9 +2,24 @@ import { defineConfig } from "vite-plus";
 import vinext from "vinext";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
+import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
 import mdx from "@mdx-js/rollup";
 import { remarkCodeHike, recmaCodeHike, type CodeHikeConfig } from "codehike/mdx";
 import path from "node:path";
+
+// The deployed fallback shell e2e builds the playground with a cache backend.
+const cacheBackend = process.env.VINEXT_CACHE_BACKEND;
+const cacheConfig =
+  cacheBackend === "kv"
+    ? {
+        data: kvDataAdapter({
+          appPrefix: process.env.VINEXT_KV_APP_PREFIX ?? "app-router-playground",
+        }),
+      }
+    : cacheBackend === "response-store"
+      ? responseStoreAdapter({ mode: "service-binding", shards: 4 })
+      : undefined;
 
 const codeHikeConfig: CodeHikeConfig = {
   components: { code: "MyCode", inlineCode: "MyInlineCode" },
@@ -74,11 +89,12 @@ export default defineConfig({
 
     // vinext plugin (provides all next/* shims, routing, SSR, RSC).
     // @vitejs/plugin-rsc is auto-registered when app/ is detected.
-    vinext({ images: { optimizer: imagesOptimizer() } }),
+    vinext({ images: { optimizer: imagesOptimizer() }, cache: cacheConfig }),
 
     // Cloudflare Workers plugin — builds for workerd runtime.
     // The worker entry runs in the RSC environment, with SSR as a child.
     cloudflare({
+      configPath: cacheBackend ? `./wrangler.${cacheBackend}.jsonc` : "./wrangler.jsonc",
       viteEnvironment: {
         name: "rsc",
         childEnvironments: ["ssr"],
