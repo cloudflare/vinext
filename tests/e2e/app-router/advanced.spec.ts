@@ -292,6 +292,27 @@ test.describe("Intercepting Routes", () => {
     );
   });
 
+  // Like Next.js, a slot owner with a layout but no page of its own renders
+  // whole too, with its default in the children position.
+  test("opens the whole intercepting route of a slot owner without a page", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group-layout-owner/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Pic 1", exact: true }).click();
+
+    await expect(page).toHaveURL(/\/intercept-source-group-layout-owner\/club\/static\/pics\/1$/);
+    await expect(page.locator("#intercept-layout-owner-modal")).toHaveText("Pic modal: static 1");
+    await expect(page.locator("#intercept-layout-owner-layout")).toContainText(
+      "Club layout: static",
+    );
+    await expect(page.locator("#intercept-layout-owner-default")).toHaveText("Club default");
+    await expect(page.locator("#intercept-layout-owner-static")).toHaveCount(0);
+    await expect(page.locator("#intercept-layout-owner-pic")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
+  });
+
   // A link in the whole intercepting route sends its source again, as Next.js
   // does, so an interception from that source into a slot of a layout both
   // trees share opens softly over it.
