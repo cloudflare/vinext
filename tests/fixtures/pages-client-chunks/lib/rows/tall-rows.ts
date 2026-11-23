@@ -1,4 +1,4 @@
-import { rowFormat } from "./row-format";
+import { rowFormat } from "./format";
 import { rowLabel } from "./row-label";
 
 // Large enough (over 20 kB) to keep a chunk of its own.

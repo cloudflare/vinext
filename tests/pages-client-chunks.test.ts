@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   collectDoublyCopiedModules,
+  collectSharedGroupDependencies,
   collectSharedGroupModules,
   collectPagesClientGraph,
   collectUncopiedStylesheets,
@@ -147,9 +148,9 @@ describe("Pages Router client chunks", () => {
       expect(pageChunk("pages/alpha.tsx").imports).not.toContain(tallChunks[0]!.fileName);
       expect(pageChunk("pages/gamma.tsx").imports).not.toContain(wideChunks[0]!.fileName);
       expect(chunksWith(chunks, "/lib/rows/row-label.ts")).toHaveLength(1);
-      // Nor is the small module that only the two large ones import, whose
-      // part of the group is under 20 kB.
-      expect(chunksWith(chunks, "/lib/rows/row-format.ts")).toHaveLength(1);
+      // Nor is the small module that only the two large ones import, through a
+      // barrel, whose part of the group is under 20 kB.
+      expect(chunksWith(chunks, "/lib/rows/format/row-format.ts")).toHaveLength(1);
 
       // What tree shaking leaves of a group under 20 kB is copied into the
       // pages that use it.
@@ -622,6 +623,56 @@ describe("collectSharedGroupModules", () => {
       table: "pages-shared-2",
       "table-data": "pages-shared-2",
     });
+  });
+});
+
+describe("collectSharedGroupDependencies", () => {
+  it("finds the small group modules that two large ones import, directly or through a barrel", () => {
+    const graph: Record<string, { imports?: string[]; loadedBy?: string; size?: number }> = {
+      entry: {},
+      alpha: { loadedBy: "entry", imports: ["rows"] },
+      beta: { loadedBy: "entry", imports: ["rows"] },
+      gamma: { loadedBy: "entry", imports: ["rows"] },
+      // The pages share the barrel, so its modules share a group.
+      rows: { imports: ["wide", "tall"] },
+      wide: { imports: ["label", "format", "wide-cells"], size: 25_000 },
+      tall: { imports: ["label", "format"], size: 25_000 },
+      label: { size: 300 },
+      format: { imports: ["row-format"] },
+      "row-format": { size: 300 },
+      "wide-cells": { imports: ["cell"] },
+      cell: { size: 300 },
+      // Two groups that no page loads together.
+      delta: { loadedBy: "entry", imports: ["left"] },
+      epsilon: { loadedBy: "entry", imports: ["left"] },
+      zeta: { loadedBy: "entry", imports: ["right"] },
+      eta: { loadedBy: "entry", imports: ["right"] },
+      left: { imports: ["side-label"], size: 25_000 },
+      right: { imports: ["side-label"], size: 25_000 },
+      "side-label": { size: 300 },
+    };
+    const ids = Object.keys(graph);
+    const clientGraph = collectPagesClientGraph(ids, (id) => ({
+      isEntry: id === "entry",
+      importedIds: graph[id]!.imports ?? [],
+      importers: ids.filter((other) => graph[other]!.imports?.includes(id)),
+      dynamicImporters: graph[id]!.loadedBy ? [graph[id]!.loadedBy!] : [],
+    }));
+    const sizeOf = (id: string) => graph[id]!.size ?? 0;
+    const groupModules = collectSharedGroupModules(clientGraph, {
+      groupOf: () => undefined,
+      sizeOf,
+    });
+
+    // What only one large module imports is copied with its part (cell), and
+    // what two groups that no page loads together import is no group's
+    // module (side-label): it is copied into both.
+    expect(groupModules.has("side-label")).toBe(false);
+    expect([...collectSharedGroupDependencies(clientGraph, groupModules, sizeOf)].sort()).toEqual([
+      "format",
+      "label",
+      "row-format",
+    ]);
   });
 });
 

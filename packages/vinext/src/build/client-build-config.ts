@@ -850,21 +850,42 @@ export function collectSharedGroupModules(
 
 /**
  * Collect the small modules of the shared groups that two of the groups'
- * modules import. Tree shaking can split a group by the pages that use each of
- * its modules and leave such a module a part under the group's `minSize`,
- * which Rolldown would copy into each importer's part: a page that loads both
- * would download it twice. These keep a file instead.
+ * modules import, directly or through the groups' small modules (a barrel that
+ * tree shaking removes). Tree shaking can split a group by the pages that use
+ * each of its modules and leave such a module a part under the group's
+ * `minSize`, which Rolldown would copy into each importer's part: a page that
+ * loads both would download it twice. These keep a file instead.
  */
 export function collectSharedGroupDependencies(
   { infos }: PagesClientGraph,
   groupModules: ReadonlyMap<string, string>,
   sizeOf: (id: string) => number,
 ): Set<string> {
+  const isSmall = (id: string) => sizeOf(id) < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE;
+  const groupImporters = (id: string) =>
+    infos.get(id)!.importers.filter((importer) => groupModules.has(importer));
+
   const dependencies = new Set<string>();
   for (const id of groupModules.keys()) {
-    if (sizeOf(id) >= PAGES_INLINE_COMMON_CHUNK_MAX_SIZE) continue;
-    const importers = infos.get(id)!.importers.filter((importer) => groupModules.has(importer));
-    if (importers.length >= 2) dependencies.add(id);
+    if (!isSmall(id)) continue;
+    if (groupImporters(id).length >= 2) {
+      dependencies.add(id);
+      continue;
+    }
+
+    // The large modules that import it through small ones.
+    const largeImporters = new Set<string>();
+    const visited = new Set([id]);
+    const pending = [id];
+    while (pending.length > 0) {
+      for (const importer of groupImporters(pending.pop()!)) {
+        if (visited.has(importer)) continue;
+        visited.add(importer);
+        if (isSmall(importer)) pending.push(importer);
+        else largeImporters.add(importer);
+      }
+    }
+    if (largeImporters.size >= 2) dependencies.add(id);
   }
   return dependencies;
 }
