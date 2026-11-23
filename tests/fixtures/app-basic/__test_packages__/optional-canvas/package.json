@@ -1,0 +1,13 @@
+{
+  "name": "optional-canvas",
+  "private": true,
+  "main": "./index.cjs",
+  "peerDependencies": {
+    "canvas": "*"
+  },
+  "peerDependenciesMeta": {
+    "canvas": {
+      "optional": true
+    }
+  }
+}
