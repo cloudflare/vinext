@@ -8322,7 +8322,7 @@ describe("app page dispatch", () => {
                 ),
                 postponed: formatAppPprShellState({
                   prelude: true,
-                  postponed: {},
+                  postponed: { resumableState: {} },
                   resumeDataCache: null,
                   generated: null,
                 }),
