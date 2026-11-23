@@ -699,6 +699,14 @@ describe("App Router generated manifest construction", () => {
       write("vault/[vid]/@modal/default.tsx");
       write("vault/[vid]/@modal/(.)coins/page.tsx");
       write("vault/[vid]/coins/page.tsx", gsp);
+      // A slot default whose `dynamic` the walk visits after the owner's.
+      write("dock/page.tsx");
+      write("dock/default.tsx", `export const dynamic = "force-static";\n${page}`);
+      write("dock/@aside/page.tsx");
+      write("dock/@aside/default.tsx", `export const dynamic = "auto";\n${page}`);
+      write("dock/@modal/default.tsx");
+      write("dock/@modal/(..)boats/[id]/page.tsx");
+      write("boats/[id]/page.tsx", gsp);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const classifier = {
@@ -754,6 +762,9 @@ describe("App Router generated manifest construction", () => {
         undefined,
         [["vault/:vid", "vault/:vid/coins", undefined]],
       ]);
+      // Next.js visits children before the other slots, and the last value
+      // wins, so the other slot's default overrides the owner's.
+      expect(summarize("boats/:id")).toEqual([undefined, [["dock", "boats/:id", true]]]);
       expect(summarize("feed")).toEqual([undefined, undefined]);
       expect(toLinkPrefetchRoutes(graph.routes).some((route) => route.intercepts)).toBe(false);
     } finally {

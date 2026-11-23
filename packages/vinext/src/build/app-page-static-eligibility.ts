@@ -172,15 +172,18 @@ export function isAppInterceptRenderedDynamically(
     const page = read(intercept.pagePath);
     // A slot intercept's route renders the owner's default in its children,
     // and every other slot's default, each a `__DEFAULT__` segment beside the
-    // slot at its owner's position. Children sorts first.
+    // slot at its owner's position. Next.js visits children before the other
+    // slots, and the last segment's value wins, while the reducer keeps the
+    // first parallel value, so the owner's default goes last. The
+    // `generateStaticParams` walk orders the branches by name itself.
     const defaults: [name: string, ownerDir: string, defaultPath: string][] = [];
-    if (intercept.ownerDefaultPath) {
-      defaults.push(["", path.dirname(intercept.ownerDefaultPath), intercept.ownerDefaultPath]);
-    }
     for (const defaultPath of slotDefaultPaths) {
       if (!defaultPath) continue;
       const slotDir = path.dirname(defaultPath);
       defaults.push([path.basename(slotDir).slice(1), path.dirname(slotDir), defaultPath]);
+    }
+    if (intercept.ownerDefaultPath) {
+      defaults.push(["", path.dirname(intercept.ownerDefaultPath), intercept.ownerDefaultPath]);
     }
     const parallelBranches = defaults.flatMap(([name, ownerDir, defaultPath]) => {
       const ownerTreePosition = treePositionOf(ownerDir);

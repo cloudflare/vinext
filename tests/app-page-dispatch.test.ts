@@ -4,6 +4,7 @@ import React from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
+import { resolveAppPageInterceptSegmentConfig } from "../packages/vinext/src/server/app-page-intercept-segment-config.js";
 import {
   tagAppPageLayoutError,
   tagAppPageSlotError,
@@ -4060,6 +4061,40 @@ describe("app page dispatch", () => {
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
     await productionResponse.text();
+  });
+
+  // Next.js visits children before the other slots, and the last value wins,
+  // so where only the parallel branches set a value, another slot's default
+  // overrides the owner's.
+  it("reads the other slots' defaults after a whole intercepting route's owner default", () => {
+    const config = resolveAppPageInterceptSegmentConfig(
+      {
+        layouts: [{ default: () => null }],
+        layoutTreePositions: [2],
+        routeSegments: ["club", "[slug]"],
+        slots: {
+          "modal@app/club/[slug]/@modal": { layoutIndex: 0, ownerTreePosition: 2 },
+          "sidebar@app/club/[slug]/@sidebar": {
+            default: { default: () => null, dynamic: "error", fetchCache: "auto" },
+            layoutIndex: 0,
+            ownerTreePosition: 2,
+          },
+        },
+      },
+      {
+        interceptBranchSegments: ["(.)pics", "[id]"],
+        interceptOwnerDefault: {
+          default: () => null,
+          dynamic: "force-static",
+          fetchCache: "default-cache",
+        },
+        interceptPage: { default: () => null },
+        interceptSlotKey: "modal@app/club/[slug]/@modal",
+        rendersWholeInterceptingRoute: true,
+      },
+    );
+    expect(config.dynamicConfig).toBe("error");
+    expect(config.fetchCacheMode).toBe("auto");
   });
 
   it("keeps a source's layouts below the slot's owner out of a slot interception", async () => {

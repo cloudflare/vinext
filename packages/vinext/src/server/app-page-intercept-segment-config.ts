@@ -132,6 +132,9 @@ export function resolveAppPageInterceptSegmentConfig(
       },
     ];
   });
+  // Next.js visits children before the other slots, and the last segment's
+  // value wins, while this reducer keeps the first parallel value, so the
+  // owner's default goes after the other slots' defaults.
   if (rendersWholeInterceptingRoute) {
     retainedBranches.push({
       configLayouts: null,
