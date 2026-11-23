@@ -91,8 +91,11 @@ function resolveActionRedirectTarget(
     return null;
   }
 
+  const type = response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push";
+  const statusHeader = response.headers.get(ACTION_REDIRECT_STATUS_HEADER);
+  const status = statusHeader ? parseInt(statusHeader, 10) : 307;
+  let redirectUrl: URL;
   try {
-    let redirectUrl: URL;
     if (actionRedirect.startsWith("/") || /^[a-z]+:/i.test(actionRedirect)) {
       redirectUrl = new URL(actionRedirect, window.location.href);
     } else {
@@ -101,42 +104,60 @@ function resolveActionRedirectTarget(
       if (!baseDir.endsWith("/")) baseDir += "/";
       redirectUrl = new URL(actionRedirect, `${baseParsed.origin}${baseDir}${baseParsed.search}`);
     }
-
-    if (
-      redirectUrl.origin !== window.location.origin ||
-      (basePath !== "" && !hasBasePath(redirectUrl.pathname, basePath))
-    ) {
-      performHardNavigation(actionRedirect);
-      return null;
-    }
-    const statusHeader = response.headers.get(ACTION_REDIRECT_STATUS_HEADER);
-    return {
-      href: redirectUrl.href,
-      type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push",
-      status: statusHeader ? parseInt(statusHeader, 10) : 307,
-      // The target's own render, which a rewrite may give another query.
-      renderedPathAndSearch: parseRenderedPathAndSearchHeader(
-        response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
-      ),
-    };
   } catch {
     performHardNavigation(actionRedirect);
-    return null;
+    throw new ServerActionRedirectError({ href: actionRedirect, type, status });
   }
+
+  if (
+    redirectUrl.origin !== window.location.origin ||
+    (basePath !== "" && !hasBasePath(redirectUrl.pathname, basePath))
+  ) {
+    // As in Next.js, the caller's promise rejects with the redirect error
+    // while the document navigates.
+    performHardNavigation(actionRedirect);
+    throw new ServerActionRedirectError({ href: redirectUrl.href, type, status });
+  }
+  return {
+    href: redirectUrl.href,
+    type,
+    status,
+    // The target's own render, which a rewrite may give another query.
+    renderedPathAndSearch: parseRenderedPathAndSearchHeader(
+      response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+    ),
+  };
 }
 
 class ServerActionRedirectError extends Error {
   readonly digest: string;
   readonly handled = true;
 
-  constructor(target: ActionRedirectTarget) {
+  constructor(target: Pick<ActionRedirectTarget, "href" | "type" | "status">) {
     super("NEXT_REDIRECT");
-    const redirectUrl = new URL(target.href, window.location.href);
-    const redirectHref =
-      toPathAbsolutePathname(redirectUrl.pathname) + redirectUrl.search + redirectUrl.hash;
+    let redirectHref = target.href;
+    try {
+      const redirectUrl = new URL(target.href, window.location.href);
+      // Like Next.js, an external target keeps its full URL.
+      redirectHref =
+        redirectUrl.origin === window.location.origin
+          ? toPathAbsolutePathname(redirectUrl.pathname) + redirectUrl.search + redirectUrl.hash
+          : redirectUrl.href;
+    } catch {}
     const redirectType = target.type === "push" ? "push" : "replace";
     this.digest = `NEXT_REDIRECT;${redirectType};${redirectHref};${target.status};`;
   }
+}
+
+async function readServerActionReturnValue(
+  result: ServerActionResult | AppWireElements,
+  responseStatus: number,
+): Promise<unknown> {
+  if (!isServerActionResult(result) || !result.returnValue) return undefined;
+  if (!result.returnValue.ok) {
+    throw await normalizeServerActionThrownValue(result.returnValue.data, responseStatus);
+  }
+  return result.returnValue.data;
 }
 
 export async function invokeClientServerAction(
@@ -176,6 +197,7 @@ export async function invokeClientServerAction(
     deps.basePath,
     (url, historyMode) => deps.performHardNavigation(url, historyMode),
   );
+  // A redirect to a blocked scheme is dropped.
   if (hasActionRedirect && !actionRedirectTarget) return undefined;
 
   const actionResultFacts = createServerActionResultFacts({
@@ -190,14 +212,30 @@ export async function invokeClientServerAction(
   });
   const fetchResponseIsRsc = actionResultFacts.isRscContentType;
   const actionResultDecision = deps.navigationPlanner.classifyServerActionResult(actionResultFacts);
-  if (
+  const applyHardNavigationDecision = () =>
     applyServerActionResultDecision(
       actionResultDecision,
       () => deps.clearClientNavigationCaches(),
       (url, historyMode) => deps.performHardNavigation(url, historyMode),
-    )
-  ) {
-    return undefined;
+    );
+  if (actionResultDecision.kind === "hardNavigate") {
+    // A response from another build loads the page as a document. The action
+    // still ran, so, as in Next.js, its caller gets its outcome: the redirect
+    // error, or its result with the newer build's tree discarded.
+    if (actionRedirectTarget) {
+      applyHardNavigationDecision();
+      throw new ServerActionRedirectError(actionRedirectTarget);
+    }
+    let skewedResult: ServerActionResult | AppWireElements;
+    try {
+      skewedResult = await createFromFetch<ServerActionResult | AppWireElements>(
+        Promise.resolve(fetchResponse),
+        { temporaryReferences },
+      );
+    } finally {
+      applyHardNavigationDecision();
+    }
+    return readServerActionReturnValue(skewedResult, fetchResponse.status);
   }
 
   const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
@@ -211,7 +249,7 @@ export async function invokeClientServerAction(
   if (invalidResponseError) throw invalidResponseError;
   if (actionRedirectTarget && !fetchResponseIsRsc) {
     deps.performHardNavigation(actionRedirectTarget.href);
-    return undefined;
+    throw new ServerActionRedirectError(actionRedirectTarget);
   }
 
   const flightResponse =
@@ -245,7 +283,7 @@ export async function invokeClientServerAction(
       throw new ServerActionRedirectError(actionRedirectTarget);
     }
     deps.performHardNavigation(actionRedirectTarget.href);
-    return undefined;
+    throw new ServerActionRedirectError(actionRedirectTarget);
   }
 
   deps.syncServerActionHttpFallbackHead(
@@ -275,13 +313,7 @@ export async function invokeClientServerAction(
         renderedPathAndSearch,
       );
     }
-    if (result.returnValue) {
-      if (!result.returnValue.ok) {
-        throw await normalizeServerActionThrownValue(result.returnValue.data, fetchResponse.status);
-      }
-      return result.returnValue.data;
-    }
-    return undefined;
+    return readServerActionReturnValue(result, fetchResponse.status);
   }
 
   return deps.commitSameUrlNavigatePayload(

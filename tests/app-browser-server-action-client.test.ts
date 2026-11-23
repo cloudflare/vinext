@@ -8,6 +8,7 @@ import {
   AppElementsWire,
   normalizeAppElements,
 } from "../packages/vinext/src/server/app-elements.js";
+import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   ACTION_REDIRECT_HEADER,
   ACTION_REVALIDATED_HEADER,
@@ -170,18 +171,20 @@ describe("app browser server action client", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await invokeClientServerAction("action-id", [], actionInitiation, {
-      basePath: "",
-      clearClientNavigationCaches: vi.fn(),
-      clearDynamicClientNavigationCaches: vi.fn(),
-      clientRscCompatibilityId: null,
-      commitSameUrlNavigatePayload: vi.fn(),
-      navigationPlanner,
-      performHardNavigation: vi.fn(),
-      renderRedirectPayload: vi.fn(),
-      syncCurrentHistoryState: vi.fn(),
-      syncServerActionHttpFallbackHead: vi.fn(),
-    });
+    await expect(
+      invokeClientServerAction("action-id", [], actionInitiation, {
+        basePath: "",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: null,
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      }),
+    ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;push;/target;307;" });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/original?tab=1",
@@ -246,17 +249,22 @@ describe("app browser server action client", () => {
     const performHardNavigation = vi.fn();
     const renderRedirectPayload = vi.fn();
 
-    await invokeClientServerAction("action-id", [], actionInitiation, {
-      basePath: "/base",
-      clearClientNavigationCaches: vi.fn(),
-      clearDynamicClientNavigationCaches: vi.fn(),
-      clientRscCompatibilityId: null,
-      commitSameUrlNavigatePayload: vi.fn(),
-      navigationPlanner,
-      performHardNavigation,
-      renderRedirectPayload,
-      syncCurrentHistoryState: vi.fn(),
-      syncServerActionHttpFallbackHead: vi.fn(),
+    await expect(
+      invokeClientServerAction("action-id", [], actionInitiation, {
+        basePath: "/base",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: null,
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        performHardNavigation,
+        renderRedirectPayload,
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      }),
+    ).rejects.toMatchObject({
+      digest: "NEXT_REDIRECT;push;/outsideBasePath;307;",
+      handled: true,
     });
 
     expect(performHardNavigation).toHaveBeenCalledWith(
@@ -604,6 +612,168 @@ describe("app browser server action client", () => {
     await expect(elementsArg).resolves.toEqual(normalizeAppElements(wireElements));
     expect(returnValueArg).toBeUndefined();
     expect(revalidationArg).toBe("none");
+  });
+
+  // Issue #4836. When a response hands the page to a hard navigation, the
+  // caller still gets the action's outcome, as in Next.js 16.2.7's
+  // server-action-reducer.ts: a build ID mismatch only discards the flight
+  // data and resolves with the action result; a redirect rejects with the
+  // redirect error, external ones keeping their full URL.
+  describe("when the response hard-navigates", () => {
+    function invokeWithResponse(
+      response: Response,
+      options: { basePath?: string; clientRscCompatibilityId?: string | null } = {},
+    ) {
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source?tab=1", origin: "https://example.com" },
+      });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+      const deps = {
+        basePath: options.basePath ?? "",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: options.clientRscCompatibilityId ?? null,
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      };
+      const result = invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/source?tab=1",
+          navigationId: 1,
+          routerState: createActionTestRouterState(),
+        }),
+        deps,
+      );
+      return { deps, result };
+    }
+
+    function skewedResponse(headers: Record<string, string> = {}, status = 200) {
+      return new Response("flight", {
+        status,
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "newer-build",
+          ...headers,
+        },
+      });
+    }
+
+    it("resolves with the action value on a compatibility-id mismatch", async () => {
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        root: AppElementsWire.createMetadataEntries({
+          interception: null,
+          interceptionContext: null,
+          layoutIds: [AppElementsWire.encodeLayoutId("/")],
+          rootLayoutTreePath: "/",
+          routeId: "route:/source",
+          slotBindings: [],
+        }),
+        returnValue: { ok: true, data: { ok: true } },
+      });
+      const { deps, result } = invokeWithResponse(
+        skewedResponse({ [ACTION_REVALIDATED_HEADER]: "1" }),
+        { clientRscCompatibilityId: "older-build" },
+      );
+
+      await expect(result).resolves.toEqual({ ok: true });
+      expect(deps.performHardNavigation).toHaveBeenCalledWith(
+        "https://example.com/source?tab=1",
+        undefined,
+      );
+      // The newer build's tree is discarded, not committed.
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+    });
+
+    it("rejects with the action's error on a compatibility-id mismatch", async () => {
+      const thrown = new Error("save failed");
+      const rejection = Promise.reject(thrown);
+      rejection.catch(() => {});
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok: false, data: rejection },
+      });
+      const { deps, result } = invokeWithResponse(skewedResponse({}, 500), {
+        clientRscCompatibilityId: "older-build",
+      });
+
+      await expect(result).rejects.toBe(thrown);
+      expect(deps.performHardNavigation).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects with the redirect error on a mismatched action redirect", async () => {
+      const { deps, result } = invokeWithResponse(
+        skewedResponse({ [ACTION_REDIRECT_HEADER]: "/target" }, 303),
+        { clientRscCompatibilityId: "older-build" },
+      );
+
+      await expect(result).rejects.toMatchObject({
+        digest: "NEXT_REDIRECT;push;/target;307;",
+        handled: true,
+      });
+      expect(deps.performHardNavigation).toHaveBeenCalledWith(
+        "https://example.com/target",
+        "assign",
+      );
+      expect(createFromFetch).not.toHaveBeenCalled();
+    });
+
+    it("rejects with the full-URL redirect error on a cross-origin action redirect", async () => {
+      const { deps, result } = invokeWithResponse(
+        new Response(null, {
+          status: 303,
+          headers: {
+            [ACTION_REDIRECT_HEADER]: "https://other.example/landing",
+            "content-type": "text/plain",
+          },
+        }),
+      );
+
+      await expect(result).rejects.toMatchObject({
+        digest: "NEXT_REDIRECT;push;https://other.example/landing;307;",
+        handled: true,
+      });
+      expect(deps.performHardNavigation).toHaveBeenCalledWith(
+        "https://other.example/landing",
+        undefined,
+      );
+    });
+
+    it("rejects with the redirect error on a non-RSC same-origin action redirect", async () => {
+      const { deps, result } = invokeWithResponse(
+        new Response(null, {
+          status: 303,
+          headers: { [ACTION_REDIRECT_HEADER]: "/target", "content-type": "text/plain" },
+        }),
+      );
+
+      await expect(result).rejects.toMatchObject({
+        digest: "NEXT_REDIRECT;push;/target;307;",
+      });
+      expect(deps.performHardNavigation).toHaveBeenCalledWith("https://example.com/target");
+    });
+
+    it("rejects with the redirect error on an RSC action redirect without a tree", async () => {
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok: true, data: undefined },
+      });
+      const { deps, result } = invokeWithResponse(
+        new Response("flight", {
+          status: 303,
+          headers: { [ACTION_REDIRECT_HEADER]: "/target", "content-type": "text/x-component" },
+        }),
+      );
+
+      await expect(result).rejects.toMatchObject({
+        digest: "NEXT_REDIRECT;push;/target;307;",
+      });
+      expect(deps.performHardNavigation).toHaveBeenCalledWith("https://example.com/target");
+      expect(deps.renderRedirectPayload).not.toHaveBeenCalled();
+    });
   });
 });
 
