@@ -369,7 +369,12 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         createRscOnErrorHandler(pathname, routePath, overrides) {
           return buildRscOnErrorHandler(request, pathname, routePath, overrides);
         },
-        ...(await routeFontProviders(useStandaloneNotFound ? null : route)),
+        // The default global-not-found (no app/global-not-found file) also
+        // renders without the root layouts, so not with their fonts.
+        ...(await routeFontProviders(
+          useStandaloneNotFound ? null : route,
+          useGlobalNotFound ? "global-not-found" : undefined,
+        )),
         getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,

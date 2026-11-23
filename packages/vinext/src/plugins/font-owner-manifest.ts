@@ -54,8 +54,8 @@ export function createFontOwnerManifestPlugin(options: {
   /** Files a render without a matched route shows. */
   getRoutelessFiles: () => readonly string[];
   /**
-   * Files the standalone global-not-found render shows (global-not-found and
-   * global-error), or none without `app/global-not-found`.
+   * Files the standalone global-not-found render shows: global-not-found, when
+   * the app has one, and global-error.
    */
   getGlobalNotFoundFiles: () => readonly string[];
   /** Keys of the modules the `vinext:font-owner` transform marked. */
@@ -82,7 +82,7 @@ export function createFontOwnerManifestPlugin(options: {
       files.set(route.pattern, [...fontRouteFiles(route), ...always]);
     }
     files.set(ROUTELESS, [
-      ...options.getRoutelessFiles().filter((file) => file !== globalNotFound[0]),
+      ...options.getRoutelessFiles().filter((file) => !globalNotFound.includes(file)),
       ...always,
     ]);
     files.set(GLOBAL_NOT_FOUND, [...globalNotFound]);

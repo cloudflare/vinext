@@ -5662,9 +5662,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ].filter((path): path is string => path !== null);
               clientReferenceRoutes = this.environment.config.command === "build" ? routes : null;
               fontOwnerRoutes = routes;
-              fontOwnerGlobalNotFoundFiles = globalNotFoundPath
-                ? [globalNotFoundPath, ...(globalErrorPath ? [globalErrorPath] : [])]
-                : [];
+              // With or without app/global-not-found: a route-miss 404 with
+              // `globalNotFound` enabled renders it, or the default, alone.
+              fontOwnerGlobalNotFoundFiles = [
+                ...(globalNotFoundPath ? [globalNotFoundPath] : []),
+                ...(globalErrorPath ? [globalErrorPath] : []),
+              ];
               clientReferenceAlwaysRenderedFiles = [
                 ...(globalErrorPath ? [globalErrorPath] : []),
                 ...rootBoundaryFiles(routes),

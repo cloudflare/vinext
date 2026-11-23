@@ -773,6 +773,29 @@ describe("vinext:font-owner plugin", () => {
     expect(result.code).not.toContain("vinext.font.owner");
   });
 
+  // A Google loader takes no options; `vinext:google-fonts` matches only
+  // calls whose first argument starts with `{`, so the owner-bearing object
+  // is parenthesized to keep that call out of self-hosting, as before.
+  it("passes the key to a Google loader called without options", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = [
+      `import { Geist } from "next/font/google";`,
+      `import * as google from "next/font/google";`,
+      `const a = Geist();`,
+      `const b = google.Roboto_Mono( );`,
+    ].join("\n");
+    const result = transform(code, "/project/app/layout.tsx");
+    const owner = `({ _vinextOwner: "app/layout.tsx" })`;
+    expect(result.code).toContain(`const a = Geist(${owner});`);
+    expect(result.code).toContain(`const b = google.Roboto_Mono( ${owner});`);
+  });
+
+  it("leaves a local loader called without options alone", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = `import localFont from "next/font/local";\nconst a = localFont();`;
+    expect(transform(code, "/project/app/layout.tsx")).toBeNull();
+  });
+
   it("leaves a module that only re-exports a font loader alone", () => {
     const transform = getFontOwnerTransform("/project");
     expect(transform(`export { Inter } from "next/font/google";`, "/project/fonts.ts")).toBeNull();

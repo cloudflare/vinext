@@ -893,6 +893,11 @@ describe("app fallback renderer with globalNotFoundModule", () => {
     expect(html).not.toContain('lang="en"');
     expect((html?.match(/<html/gi) ?? []).length).toBe(1);
     expect((html?.match(/<body/gi) ?? []).length).toBe(1);
+    // It renders without the root layout, so without its fonts either: it
+    // reads the global-not-found render's owners, not the routeless ones.
+    expect(response?.headers.get("link")).toBe(
+      "</font.woff2?owners=global-not-found>; rel=preload",
+    );
   });
 
   it("keeps root not-found for explicit notFound when global-not-found is absent", async () => {
