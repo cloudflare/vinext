@@ -632,13 +632,16 @@ export function createMultiStageChunkFileNames(
  */
 export function assertClientOutDirIsSeparate(
   root: string,
-  dirs: { clientOutDir?: string; rscOutDir?: string; ssrOutDir?: string },
+  dirs: { clientOutDir?: string; outDir?: string; rscOutDir?: string; ssrOutDir?: string },
 ): void {
   if (!dirs.clientOutDir) return;
   const clientOutDir = path.resolve(root, dirs.clientOutDir);
+  const outDir = dirs.outDir ?? "dist";
   const serverOutDirs = [
-    ["rscOutDir", dirs.rscOutDir ?? "dist/server"],
-    ["ssrOutDir", dirs.ssrOutDir ?? "dist/server/ssr"],
+    ["rscOutDir", dirs.rscOutDir ?? path.join(outDir, "server")],
+    ["ssrOutDir", dirs.ssrOutDir ?? path.join(outDir, "server", "ssr")],
+    // BUILD_ID, vinext-server.json and the prerender output live here.
+    ["the server metadata directory", path.join(outDir, "server")],
   ] as const;
   for (const [name, dir] of serverOutDirs) {
     const relative = path.relative(clientOutDir, path.resolve(root, dir));
