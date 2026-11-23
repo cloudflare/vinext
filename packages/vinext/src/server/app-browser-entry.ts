@@ -1963,7 +1963,7 @@ function registerServerActionCallback(): void {
             if (target.type === "push") saveScrollPosition();
             // The redirect's render intercepts from the context the action
             // sent, like a navigation's, and fetches the source page beneath
-            // it when the state the action began in doesn't show that page.
+            // it when the current state doesn't show that page.
             let payload = Promise.resolve(elements);
             const sourcePageRefreshes = resolveUnheldSourcePageRefreshes(
               elements,
@@ -2005,7 +2005,11 @@ function registerServerActionCallback(): void {
               scrollIntent: actionScrollIntent,
               targetHref: target.href,
             }).catch(() => {
-              browserNavigationController.performHardNavigation(target.href);
+              // A newer navigation aborts the source page's fetch, and owns
+              // the document now.
+              if (browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)) {
+                browserNavigationController.performHardNavigation(target.href);
+              }
             });
           },
           syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>

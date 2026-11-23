@@ -417,6 +417,57 @@ test.describe("Intercepting Routes", () => {
     expect(await markerKept(page)).toBe(true);
   });
 
+  // A navigation that starts while that redirect still fetches its source page
+  // supersedes it, so the redirect doesn't load its own target afterwards.
+  test("drops an action redirect from the whole intercepting route that a navigation supersedes", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Pic 1", exact: true }).click();
+    await expectWholeInterceptingRoute(page, /\/intercept-source-group\/club\/static\/pics\/1$/);
+
+    // Hold the redirect's fetch of its source page until the navigation starts.
+    let sourceFetchStarted!: () => void;
+    const sourceFetch = new Promise<void>((resolve) => {
+      sourceFetchStarted = resolve;
+    });
+    let releaseSourceFetch!: () => void;
+    const sourceFetchReleased = new Promise<void>((resolve) => {
+      releaseSourceFetch = resolve;
+    });
+    let heldSourceFetch = false;
+    await page.route(
+      (url) => url.pathname === "/nextjs-compat/intercept-source-group/club/static",
+      async (route) => {
+        if (heldSourceFetch || route.request().headers()["rsc"] !== "1") {
+          await route.continue();
+          return;
+        }
+        heldSourceFetch = true;
+        sourceFetchStarted();
+        await sourceFetchReleased;
+        await route.continue().catch(() => {});
+      },
+    );
+
+    await page.locator("#intercept-source-group-modal-peek").click();
+    await sourceFetch;
+    await page.goBack();
+    await expect(page).toHaveURL(/\/intercept-source-group\/club\/static$/);
+    await expect(page.locator("#intercept-source-group-static")).toBeVisible();
+    releaseSourceFetch();
+
+    await page.waitForTimeout(1000);
+    await expect(page).toHaveURL(/\/intercept-source-group\/club\/static$/);
+    await expect(page.locator("#intercept-source-group-static")).toBeVisible();
+    await expect(page.locator("#intercept-source-group-peek")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
+  });
+
   // The interception rewrite takes every param of the intercepting route from
   // the source, those of the slot's folders above the marker too.
   test("takes the params of the slot's folders from the source of the whole intercepting route", async ({
