@@ -77,6 +77,18 @@ function createBailoutSearchParamsGate(): SearchParamsGate {
 }
 
 /**
+ * The gate a Cache Components client page's SSR `searchParams` wait on. A
+ * static render, such as a regeneration, has no query to give them, so they
+ * bail out at once, like its `useSearchParams()`.
+ */
+export function resolveClientPageSearchParamsGate(
+  gate: SearchParamsGate | undefined,
+  isStaticGeneration: boolean,
+): SearchParamsGate | undefined {
+  return gate ?? (isStaticGeneration ? createBailoutSearchParamsGate() : undefined);
+}
+
+/**
  * The query and gate SSR's `useSearchParams()` reads. A resumed shell's holes
  * read the browser's query (`resumedSearch`), or bail out to the browser when a
  * Workers Cache dispatch dropped it (null); other renders read the request's.

@@ -286,19 +286,50 @@ test("resumes one shell for every query string, with the query in its holes", as
   expect(consoleErrors).toEqual([]);
 });
 
-test("hands a resumed client page the browser's query", async ({
+test("stores a client page that reads its searchParams as static", async ({
   baseURL,
   page,
   consoleErrors,
 }) => {
-  const url = new URL("/en/client-search", baseURL);
+  // Like Next.js's prerender, the page's searchParams never resolve on the
+  // server. Nothing else on the route is dynamic, so its document is stored
+  // with the page's Suspense boundary rendering in the browser, and every
+  // query string shares it.
+  const url = new URL("/en/client-search?q=cats", baseURL);
   await readStreamedDocument(url, []);
   await expect
-    .poll(async () => (await fetch(url)).headers.get("x-nextjs-postponed"), { timeout: 15_000 })
-    .toBe("1");
+    .poll(async () => (await fetch(url)).headers.get("x-nextjs-cache"), { timeout: 15_000 })
+    .toBe("HIT");
+  const other = await readStreamedDocument(new URL("/en/client-search?q=dogs", baseURL), []);
+  expect(other.headers.get("x-nextjs-cache")).toBe("HIT");
+  expect(other.headers.get("x-nextjs-postponed")).toBeNull();
+  expect(other.html).toContain('id="page-loading"');
+  expect(other.html).not.toContain("client page query");
 
-  // Like Next.js, the page reads the browser's query, so a rewrite's stays
-  // internal.
+  // Its regeneration is a static render too, so it's stored the same way. As
+  // in Next.js, the page's whole boundary, its layout included, renders in the
+  // browser, so the regenerated stamp shows there.
+  const readRouteStamp = async () => {
+    await page.goto("/en/client-search?q=cats");
+    await expect(page.locator("#client-page-query")).toHaveText("client page query cats");
+    return page.locator("#route-stamp:visible").textContent();
+  };
+  const before = await readRouteStamp();
+  expect(before).toMatch(/^\d{4}-/);
+  await fetch(new URL("/api/revalidate", baseURL), { method: "POST" });
+  await expect
+    .poll(
+      async () => {
+        const document = await readStreamedDocument(url, []);
+        expect(document.headers.get("x-nextjs-postponed")).toBeNull();
+        expect(document.html).not.toContain("client page query");
+        return readRouteStamp();
+      },
+      { timeout: 15_000 },
+    )
+    .not.toBe(before);
+
+  // The page reads the browser's query, so a rewrite's stays internal.
   await page.goto("/en/client-search?q=cats");
   await expect(page.locator("#client-page-query")).toHaveText("client page query cats");
   await page.goto("/en/client-find/fish");

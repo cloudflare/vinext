@@ -5,7 +5,10 @@ import {
   createClientPageSsrSearchParamsSource,
   makeClientPageSsrSearchParamsThenable,
 } from "../packages/vinext/src/server/app-page-search-params-observation.js";
-import { startCandidateSearchParamsGate } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
+import {
+  resolveClientPageSearchParamsGate,
+  startCandidateSearchParamsGate,
+} from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
 import {
   ClientPageRoot,
   createClientPageSearchParams,
@@ -17,6 +20,7 @@ import {
   isRenderDynamicLatched,
   runWithHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
+import { markDynamicUsage } from "../packages/vinext/src/shims/internal/headers-state.js";
 import { setNavigationContext, useSearchParams } from "../packages/vinext/src/shims/navigation.js";
 
 type SearchParamsProps = { searchParams: Promise<Record<string, string | string[]>> };
@@ -52,8 +56,14 @@ function inRequest<T>(fn: () => Promise<T>): Promise<T> {
   );
 }
 
-/** Set up SSR navigation state as handleSsr does for a candidate render. */
-function startCandidateSsr(options?: { isPprFallbackShell?: boolean }) {
+/**
+ * Set up SSR navigation state as handleSsr does for a candidate render, with
+ * Cache Components when `isCacheComponents` is set.
+ */
+function startCandidateSsr(options?: {
+  isPprFallbackShell?: boolean;
+  isCacheComponents?: boolean;
+}) {
   const searchParams = new URLSearchParams("q=secret");
   const gate = startCandidateSearchParamsGate();
   setNavigationContext({
@@ -63,9 +73,16 @@ function startCandidateSsr(options?: { isPprFallbackShell?: boolean }) {
     searchParamsGate: gate.gate,
     getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {
       isPprFallbackShell: options?.isPprFallbackShell,
+      searchParamsGate: options?.isCacheComponents ? gate.gate : undefined,
     }),
   });
   return gate;
+}
+
+/** Settle a candidate gate as handleSsr does once SSR has read the whole payload. */
+async function settleCandidateGate(gate: ReturnType<typeof startCandidateSearchParamsGate>) {
+  const ended = new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
+  await new Response(gate.settleWhenConsumed(ended)).text();
 }
 
 async function renderPage(
@@ -218,6 +235,89 @@ describe("ClientPageRoot in SSR", () => {
       expect(received).toHaveLength(3);
       expect(received[0]).toBe(received[1]);
       expect(received[2]).not.toBe(received[0]);
+    });
+  });
+});
+
+describe("ClientPageRoot in SSR with Cache Components", () => {
+  const inSuspense = (child: React.ReactNode) =>
+    React.createElement(
+      React.Suspense,
+      { fallback: React.createElement("p", null, "fallback") },
+      child,
+    );
+
+  it("renders a static render's page in the browser, as Next.js's prerender does", async () => {
+    await inRequest(async () => {
+      const gate = startCandidateSsr({ isCacheComponents: true });
+      const rendering = renderMarkup(
+        inSuspense(
+          React.createElement(ClientPageRoot, {
+            Component: ReadingPage as React.ComponentType<Record<string, unknown>>,
+            pageProps: { params: Promise.resolve({}) },
+          }),
+        ),
+      );
+      await settleCandidateGate(gate);
+      const html = await rendering;
+
+      // The page's boundary renders in the browser, so the render stays
+      // static and its HTML never carries the query.
+      expect(html).toContain("fallback");
+      expect(html).not.toContain("secret");
+      expect(gate.gate.decision).toBe("bailout");
+      expect(isRenderDynamicLatched()).toBe(false);
+      expect(consumeDynamicUsage()).toBe(false);
+      expect(consumeRenderRequestApiUsage()).not.toContain("searchParams");
+    });
+  });
+
+  it("renders a static generation's page in the browser at once, like its useSearchParams()", async () => {
+    // A regeneration renders with no gate and no query to give the page.
+    await inRequest(async () => {
+      const searchParams = new URLSearchParams("q=secret");
+      setNavigationContext({
+        pathname: "/client",
+        searchParams,
+        params: {},
+        isStaticGeneration: true,
+        getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {
+          searchParamsGate: resolveClientPageSearchParamsGate(undefined, true),
+        }),
+      });
+      const html = await renderMarkup(
+        inSuspense(
+          React.createElement(ClientPageRoot, {
+            Component: ReadingPage as React.ComponentType<Record<string, unknown>>,
+            pageProps: { params: Promise.resolve({}) },
+          }),
+        ),
+      );
+
+      expect(html).toContain("fallback");
+      expect(html).not.toContain("secret");
+      expect(isRenderDynamicLatched()).toBe(false);
+      expect(consumeRenderRequestApiUsage()).not.toContain("searchParams");
+    });
+  });
+
+  it("hands the page the query once the render is dynamic", async () => {
+    await inRequest(async () => {
+      const gate = startCandidateSsr({ isCacheComponents: true });
+      const rendering = renderMarkup(
+        inSuspense(
+          React.createElement(ClientPageRoot, {
+            Component: ReadingPage as React.ComponentType<Record<string, unknown>>,
+            pageProps: { params: Promise.resolve({}) },
+          }),
+        ),
+      );
+      markDynamicUsage();
+      const html = await rendering;
+
+      expect(html).toContain("page:secret");
+      expect(gate.gate.decision).toBe("real");
+      expect(consumeRenderRequestApiUsage()).toContain("searchParams");
     });
   });
 });
