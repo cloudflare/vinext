@@ -5,8 +5,17 @@ import {
   setCacheHandler,
 } from "../packages/vinext/src/shims/cache.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
-import { _peekRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
+import {
+  _peekRequestScopedCacheLife,
+  _runWithCacheState,
+  _setResumeDataCacheCollector,
+  _setResumeDataCacheSeed,
+} from "../packages/vinext/src/shims/cache-request-state.js";
 import { withUseCacheLayoutMarker } from "../packages/vinext/src/shims/internal/app-page-props-cache-key.js";
+import {
+  createResumeDataCache,
+  stringifyResumeDataCache,
+} from "../packages/vinext/src/shims/resume-data-cache.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import {
   createRequestContext,
@@ -566,10 +575,15 @@ describe("ppr fallback shell render lifecycle", () => {
   });
 });
 
-// Like Next.js's final prerender (use-cache-wrapper.ts, `DYNAMIC_EXPIRE`), a
-// shell leaves out a cache that's short-lived, though the entry is stored.
+// Like Next.js's final prerender (use-cache-wrapper.ts, `MIN_PRERENDERABLE_EXPIRE`
+// and `MIN_PREFETCHABLE_STALE`), a shell leaves out a cache that's short-lived
+// or about to go stale, though the entry is stored.
 describe("ppr fallback shell short-lived caches", () => {
-  async function renderCached(phase: "warmup" | "final", profile: string, id: string) {
+  async function renderCached(
+    phase: "warmup" | "final",
+    profile: string | { stale: number; revalidate: number; expire: number },
+    id: string,
+  ) {
     const handler = new MemoryCacheHandler();
     const set = vi.spyOn(handler, "set");
     setCacheHandler(handler);
@@ -594,6 +608,66 @@ describe("ppr fallback shell short-lived caches", () => {
     expect(settled).toBe("pending");
     expect(hasDynamicBoundary).toBe(true);
     expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a soon-stale cache out of the final render", async () => {
+    const { hasDynamicBoundary, set, settled } = await renderCached(
+      "final",
+      { stale: 29, revalidate: 900, expire: 3600 },
+      "shell-soon-stale-final",
+    );
+    expect(settled).toBe("pending");
+    expect(hasDynamicBoundary).toBe(true);
+    expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a cache that's prefetchable in the final render", async () => {
+    const { hasDynamicBoundary, settled } = await renderCached(
+      "final",
+      { stale: 30, revalidate: 900, expire: 3600 },
+      "shell-prefetchable-final",
+    );
+    expect(settled).toBe("value");
+    expect(hasDynamicBoundary).toBe(false);
+  });
+
+  it("keeps a soon-stale cache in the warmup render", async () => {
+    const { hasDynamicBoundary, settled } = await renderCached(
+      "warmup",
+      { stale: 29, revalidate: 900, expire: 3600 },
+      "shell-soon-stale-warmup",
+    );
+    expect(settled).toBe("value");
+    expect(hasDynamicBoundary).toBe(false);
+  });
+
+  // Like Next.js, the final prerender reads the warmup's in-memory resume data
+  // cache, and only its serialized copy leaves soon-stale entries out.
+  it("reads a soon-stale cache the warmup collected in the final render", async () => {
+    setCacheHandler(new MemoryCacheHandler());
+    let calls = 0;
+    const cached = registerCachedFunction(async () => {
+      cacheLife({ stale: 29, revalidate: 900, expire: 3600 });
+      calls++;
+      return "value";
+    }, "shell-soon-stale-seeded");
+    const resumeDataCache = createResumeDataCache();
+    const settled = await _runWithCacheState(async () => {
+      _setResumeDataCacheCollector(resumeDataCache);
+      const state = createPprFallbackShellState({ fallbackParamNames: [], routePattern: "/page" });
+      await expect(runWithPprFallbackShellState(state, () => cached())).resolves.toBe("value");
+      // The warmup's write isn't visible to the final render yet.
+      setCacheHandler(new MemoryCacheHandler());
+      _setResumeDataCacheSeed(resumeDataCache);
+      preparePprFallbackShellFinalRender(state);
+      const result = runWithPprFallbackShellState(state, () => cached());
+      const outcome = await Promise.race([result, delay(20).then(() => "pending")]);
+      state.abortController.abort();
+      return outcome;
+    });
+    expect(calls).toBe(1);
+    expect(settled).toBe("pending");
+    expect(stringifyResumeDataCache(resumeDataCache)).toBeNull();
   });
 
   it("leaves a short-lived cache given unread fallback params out of the final render", async () => {
@@ -678,7 +752,7 @@ describe("ppr fallback shell short-lived caches", () => {
 });
 
 // Like Next.js's runtime prerender (use-cache-wrapper.ts,
-// `RUNTIME_PREFETCH_DYNAMIC_STALE`), a runtime prefetch renders private and
+// `MIN_PREFETCHABLE_STALE`), a runtime prefetch renders private and
 // short-lived caches, and leaves out only those about to go stale.
 describe("ppr fallback shell runtime prefetch caches", () => {
   async function renderRuntimeCached(

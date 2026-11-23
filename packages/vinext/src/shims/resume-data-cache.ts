@@ -67,13 +67,36 @@ export function createResumeDataCache(): ResumeDataCache {
   return { cache: new Map(), fetch: new Map() };
 }
 
-export function isResumeDataCacheEmpty(cache: ResumeDataCache): boolean {
-  return cache.cache.size === 0 && cache.fetch.size === 0;
+// Like Next.js's MIN_PRERENDERABLE_EXPIRE and MIN_PREFETCHABLE_STALE
+// (server/use-cache/constants.ts), in seconds. A shell leaves out a cache that
+// expires sooner (short-lived) or goes stale sooner (not worth prefetching).
+export const DYNAMIC_EXPIRE = 300;
+export const MIN_PREFETCHABLE_STALE = 30;
+
+/**
+ * Like Next.js's serializeUseCacheCacheStore(), short-lived and soon-stale
+ * entries stay out of a stored shell's resume data cache: a resumed request
+ * runs them again instead of replaying build-time values. The prerender's own
+ * renders still read them, so its final render doesn't run them again.
+ */
+function isOmittedFromStoredResumeDataCache(entry: UseCacheResumeDataCacheEntry): boolean {
+  const cacheControl = entry.cacheControl;
+  return (
+    cacheControl !== undefined &&
+    (cacheControl.revalidate === 0 ||
+      (cacheControl.expire !== undefined && cacheControl.expire < DYNAMIC_EXPIRE) ||
+      (cacheControl.stale !== undefined && cacheControl.stale < MIN_PREFETCHABLE_STALE))
+  );
 }
 
-export function stringifyResumeDataCache(cache: ResumeDataCache): string {
+/** Returns null when the cache holds nothing a resumed request would read. */
+export function stringifyResumeDataCache(cache: ResumeDataCache): string | null {
+  const useCacheEntries = [...cache.cache].filter(
+    ([, entry]) => !isOmittedFromStoredResumeDataCache(entry),
+  );
+  if (useCacheEntries.length === 0 && cache.fetch.size === 0) return null;
   const serialized: SerializedResumeDataCache = {
-    cache: Object.fromEntries(cache.cache),
+    cache: Object.fromEntries(useCacheEntries),
     fetch: Object.fromEntries(cache.fetch),
   };
   return JSON.stringify(serialized);
@@ -100,24 +123,10 @@ export function readUseCacheResumeDataCacheEntry(
   return getResumeDataCacheSeed()?.cache.get(key);
 }
 
-// Like Next.js's DYNAMIC_EXPIRE (server/use-cache/constants.ts), in seconds.
-const DYNAMIC_EXPIRE = 300;
-
 export function collectUseCacheResumeDataCacheEntry(
   key: string,
   entry: UseCacheResumeDataCacheEntry,
 ): void {
-  // Like Next.js, short-lived entries stay out of a shell's resume data
-  // cache: a resumed request runs them again instead of replaying build-time
-  // values.
-  const cacheControl = entry.cacheControl;
-  if (
-    cacheControl &&
-    (cacheControl.revalidate === 0 ||
-      (cacheControl.expire !== undefined && cacheControl.expire < DYNAMIC_EXPIRE))
-  ) {
-    return;
-  }
   getResumeDataCacheCollector()?.cache.set(key, entry);
 }
 
