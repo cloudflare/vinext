@@ -768,6 +768,20 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       );
     }
   },
+  async rerunGeneratedStaticParams(options, currentRevalidateSeconds, isDraftMode, isForceDynamic) {
+    const decision = classifyPprFallbackShellEligibility(
+      options,
+      currentRevalidateSeconds,
+      isDraftMode,
+      isForceDynamic,
+    );
+    if (decision.kind !== "probe-shells" || decision.fallbackShells.length === 0) return;
+    try {
+      await resolveGeneratedStaticParams(options, new Map());
+    } catch (paramsError) {
+      console.error("[vinext] ISR fallback shell params error:", paramsError);
+    }
+  },
   async produceMissingShells(options, currentRevalidateSeconds) {
     const fallbackShells = options.pprFallbackCacheShells;
     if (!fallbackShells || fallbackShells.length === 0) return;

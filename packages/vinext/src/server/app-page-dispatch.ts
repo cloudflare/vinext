@@ -365,6 +365,16 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isForceDynamic: boolean,
     ownShellRead: AppPagePprOwnShellRead,
   ): void;
+  /**
+   * Ask generateStaticParams as `tryServe` would, without a shell, when the
+   * request recomputes a data entry the generator may have read.
+   */
+  rerunGeneratedStaticParams(
+    options: DispatchAppPageOptions<TRoute>,
+    currentRevalidateSeconds: number | null,
+    isDraftMode: boolean,
+    isForceDynamic: boolean,
+  ): Promise<void>;
   /** Produce the missing shells of a generated path rendered for the cache. */
   produceMissingShells(
     options: DispatchAppPageOptions<TRoute>,
@@ -1786,6 +1796,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
+  // A request recomputing a data entry renders whole, so a cached function or
+  // fetch the shell holds runs. It still asks generateStaticParams as
+  // `tryServe` would, so a cached fetch the generator reads runs too.
+  if (options.pprRuntime && options.regeneratesDataEntry === true) {
+    await options.pprRuntime.rerunGeneratedStaticParams(
+      options,
+      currentRevalidateSeconds,
+      isDraftMode,
+      isForceDynamic,
+    );
+  }
   const fallbackShellResult =
     options.pprRuntime && options.regeneratesDataEntry !== true
       ? await options.pprRuntime.tryServe(
