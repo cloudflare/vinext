@@ -103,7 +103,9 @@ describe("Pages Router client chunks", () => {
 
     // The client entry, which loads instrumentation-client before `_app`,
     // doesn't load that chunk with it.
-    const entryChunk = chunks.find((chunk) => chunk.isEntry)!;
+    const entryChunk = chunks.find((chunk) =>
+      chunk.facadeModuleId?.endsWith("virtual:vinext-client-entry"),
+    )!;
     expect(chunksWith([entryChunk], "/lib/telemetry.ts")).toHaveLength(1);
     expect(entryChunk.imports).not.toContain(brandChunks[0]!.fileName);
 

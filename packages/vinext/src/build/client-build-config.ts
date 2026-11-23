@@ -512,7 +512,8 @@ export function collectPagesAppChunkRoots(
 
   for (const id of moduleIds) {
     const info = getModuleInfo(id);
-    if (info?.isEntry) entries.push(id);
+    // `_app` is an entry chunk too, which loads with every page.
+    if (info?.isEntry && id !== appId) entries.push(id);
 
     if (!joinsGroup(id)) firstGroupModules.push(id);
     else if (info?.dynamicImporters.length) dynamicTargets.push(id);
@@ -783,7 +784,9 @@ export function collectDoublyCopiedModules(
   // The modules that a configured entry (the client entry) still loads once
   // tree-shaking drops its unused imports.
   const loadedFirst = new Set<string>();
-  const pendingFirst = entries.filter((id) => infos.get(id)!.isEntry);
+  const pendingFirst = entries.filter(
+    (id) => infos.get(id)!.isEntry && !options.isAlwaysLoaded(id),
+  );
   while (pendingFirst.length > 0) {
     const id = pendingFirst.pop()!;
     if (loadedFirst.has(id)) continue;

@@ -9720,7 +9720,8 @@ export const loadServerActionClient = ${
       // Vite sets `preserveEntrySignatures` for library builds itself.
       order: "post",
       handler(inputOptions) {
-        if (this.environment?.name !== "client") return;
+        const environment = this.environment;
+        if (environment?.name !== "client") return;
 
         pagesClientInputOptions = {
           preserveEntrySignatures: inputOptions.preserveEntrySignatures,
@@ -9728,6 +9729,29 @@ export const loadServerActionClient = ${
             inputOptions.experimental as { onDemandWrapping?: unknown } | undefined
           )?.onDemandWrapping,
         };
+
+        // `_app` is an entry of the client build, as in Next.js. Rolldown
+        // orders a chunk's modules (and so its CSS) by visiting the entries
+        // before the `import()` targets, which it visits by path: as one of
+        // those, the pages sorting before `_app` would order what they share
+        // with it ahead of `_app`'s own imports.
+        const input = inputOptions.input;
+        if (
+          environment.config.build.lib ||
+          !hasPagesDir ||
+          hasAppDir ||
+          options.disableNextLikeChunking ||
+          !input ||
+          typeof input !== "object" ||
+          Array.isArray(input) ||
+          !Object.values(input).includes(VIRTUAL_CLIENT_ENTRY)
+        ) {
+          return;
+        }
+        const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+        if (!appFilePath) return;
+
+        return { ...inputOptions, input: { ...input, _app: appFilePath } };
       },
     },
     buildStart() {
