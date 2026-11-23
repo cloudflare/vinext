@@ -217,7 +217,7 @@ async function invokeResponseStage(
   ctx: WorkerExecutionContext,
   stageOptions: Pick<
     VinextResponseStageDispatchOptions,
-    "cache" | "regeneratesStoredEntry" | "renderWholeDocument"
+    "cache" | "regeneratesDataEntry" | "regeneratesStoredEntry" | "renderWholeDocument"
   >,
   capture?: ResponseStoreInvocationCapture,
   invocation?: SerializedInvocation,
@@ -349,7 +349,10 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
               invocation.props,
               env,
               ctx,
-              { cache: "bypass" },
+              // A shell regenerates as a render that misses it stores it. Any
+              // other entry may be read in the part of the page a stored shell
+              // holds, which only a whole render runs.
+              replay?.shell ? { cache: "bypass" } : { cache: "bypass", regeneratesDataEntry: true },
               pageParts ? { pageParts } : undefined,
             );
             await response.body?.pipeTo(new WritableStream());
@@ -394,15 +397,21 @@ function storeKeyRequest(url: string): Request {
 }
 
 /**
- * What a data revalidator replays beside the render: its page's keys, and
- * whether its entry is a part of a path's own shell.
+ * What a data revalidator replays beside the render: its page's keys, whether
+ * its entry is a shell, and whether it is a part of a path's own shell.
  */
 function parsePageReplay(value: unknown): {
   ownShell: boolean;
   pageParts: ResponseStoreInvocationCapture["pageParts"];
+  shell: boolean;
 } {
-  if (typeof value !== "string") return { ownShell: false, pageParts: undefined };
-  const replay = JSON.parse(value) as { document?: unknown; ownShell?: unknown; rsc?: unknown };
+  if (typeof value !== "string") return { ownShell: false, pageParts: undefined, shell: false };
+  const replay = JSON.parse(value) as {
+    document?: unknown;
+    ownShell?: unknown;
+    rsc?: unknown;
+    shell?: unknown;
+  };
   const pageParts = {
     ...(typeof replay.document === "string" ? { document: storeKeyRequest(replay.document) } : {}),
     ...(typeof replay.rsc === "string" ? { rsc: storeKeyRequest(replay.rsc) } : {}),
@@ -410,6 +419,7 @@ function parsePageReplay(value: unknown): {
   return {
     ownShell: replay.ownShell === true,
     pageParts: Object.keys(pageParts).length ? pageParts : undefined,
+    shell: replay.shell === true,
   };
 }
 

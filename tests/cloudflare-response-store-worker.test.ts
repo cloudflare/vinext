@@ -794,6 +794,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
           document: pageKey,
           ownShell: true,
           rsc: stored.find(([url]) => url !== pageKey)![0],
+          shell: true,
         });
       }
 
@@ -1271,6 +1272,97 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       // The replay reads the shell under its page's key, still fresh.
       expect(store.fetch.mock.calls[fetches]![0].url).toBe(pageKey);
       expect(documentStates).toEqual([null, "fresh"]);
+    });
+
+    it("replays a data entry's render whole, and a shell's as a miss renders it", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      stages.response.mockImplementation(async () => {
+        if (!(await dataCache.get("html:/[slug]"))) {
+          await dataCache.set("html:/[slug]", shell("<!--fallback-->"), {
+            revalidate: 60,
+            tags: [],
+          });
+        }
+        if (!(await dataCache.get("data:/page"))) {
+          await dataCache.set(
+            "data:/page",
+            { kind: "FETCH", data: { body: "", headers: {}, url: "" }, revalidate: 60 } as never,
+            { revalidate: 60, tags: [] },
+          );
+        }
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const regenerate = async (isShell: boolean) => {
+        const [url, entry] = [...entries.entries()].find(
+          ([, entry]) => (entry.body?.includes("APP_PAGE") ?? false) === isShell,
+        )!;
+        stages.response.mockClear();
+        await createVinextResponseStoreOptions().regenerate(
+          {
+            args: entry.options!.revalidator!.args as string[],
+            id: "vinext:data",
+            reason: "stale",
+            request: new Request(url),
+          } as never,
+          { ctx: context(), env: {} } as never,
+        );
+        return stages.response.mock.calls[0]![5];
+      };
+
+      // A cached fetch or function may be read in the part of the page a
+      // stored shell holds, which resuming the shell would skip.
+      expect(await regenerate(false)).toEqual({ cache: "bypass", regeneratesDataEntry: true });
+      expect(await regenerate(true)).toEqual({ cache: "bypass" });
+    });
+
+    it("recomputes a data entry once when its replay reads it in two scopes", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      let computed = 0;
+      const reads: unknown[] = [];
+      stages.response.mockImplementation(async () => {
+        // As generateStaticParams and the page read one cached fetch.
+        for (let scope = 0; scope < 2; scope++) {
+          const read = await dataCache.get("data:/page");
+          reads.push(read?.value);
+          if (!read) {
+            computed++;
+            await dataCache.set(
+              "data:/page",
+              { kind: "FETCH", data: { body: String(computed), headers: {}, url: "" } } as never,
+              { revalidate: 60, tags: [] },
+            );
+          }
+        }
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const dataKey = [...entries.keys()][0]!;
+      computed = 0;
+      reads.length = 0;
+
+      const regenerated = await createVinextResponseStoreOptions().regenerate(
+        {
+          args: entries.get(dataKey)!.options!.revalidator!.args as string[],
+          id: "vinext:data",
+          reason: "stale",
+          request: new Request(dataKey),
+        } as never,
+        { ctx: context(), env: {} } as never,
+      );
+
+      expect(computed).toBe(1);
+      expect(reads).toEqual([
+        undefined,
+        expect.objectContaining({ data: expect.objectContaining({ body: "1" }) }),
+      ]);
+      expect(await regenerated.text()).toContain('"body":"1"');
     });
 
     it.each([

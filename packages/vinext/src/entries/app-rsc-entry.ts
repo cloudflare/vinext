@@ -1571,6 +1571,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     route,
     scriptNonce,
     searchParams,
+    regeneratesDataEntry,
     renderMode,
     renderWholeDocument,
     } = __dispatchArgs;
@@ -1752,6 +1753,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       scriptNonce,
       searchParams,
       setNavigationContext,
+      regeneratesDataEntry,
       renderMode,
       renderWholeDocument,
       withRequest(requestArgs) {

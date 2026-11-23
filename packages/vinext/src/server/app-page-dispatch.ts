@@ -365,6 +365,16 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isForceDynamic: boolean,
     ownShellRead: AppPagePprOwnShellRead,
   ): void;
+  /**
+   * Ask generateStaticParams as `tryServe` would, without a shell, when the
+   * request recomputes a data entry the generator may have read.
+   */
+  rerunGeneratedStaticParams(
+    options: DispatchAppPageOptions<TRoute>,
+    currentRevalidateSeconds: number | null,
+    isDraftMode: boolean,
+    isForceDynamic: boolean,
+  ): Promise<void>;
   /** Produce the missing shells of a generated path rendered for the cache. */
   produceMissingShells(
     options: DispatchAppPageOptions<TRoute>,
@@ -597,6 +607,13 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     pathname: string;
     searchParams: URLSearchParams;
   }) => void;
+  /**
+   * The render recomputes a data cache entry the request stored. A cached
+   * function or fetch in the part a stored shell holds runs only when that
+   * part renders, so a page renders whole, without resuming a shell or
+   * producing one, and a static-shell prefetch renders its shell.
+   */
+  regeneratesDataEntry?: boolean;
   renderMode?: AppRscRenderMode;
   /**
    * Render the document whole before its first byte, with streamed metadata in
@@ -633,6 +650,7 @@ export type AppPageDispatchRequest = {
   pprFallbackShell?: NonNullable<DispatchAppPageOptions<AppPageDispatchRoute>["pprFallbackShell"]>;
   renderedConcreteUrlPaths?: ReadonlySet<string>;
   renderedPathAndSearch: string | null;
+  regeneratesDataEntry?: boolean;
   renderMode: AppRscRenderMode;
   renderWholeDocument: boolean;
   request: Request;
@@ -1713,7 +1731,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   // Next.js renders an unlisted param on demand in draft mode.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
-  if (options.skipStaticParamsValidation !== true && !isDraftMode) {
+  const validatesStaticParams = options.skipStaticParamsValidation !== true && !isDraftMode;
+  if (validatesStaticParams) {
     const dynamicParamsResponse = await runStaticParamsCheckDetached(() =>
       validateAppPageRouteDynamicParams({
         dynamicConfig,
@@ -1785,16 +1804,33 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  const fallbackShellResult = options.pprRuntime
-    ? await options.pprRuntime.tryServe(
-        options,
-        currentRevalidateSeconds,
-        isDraftMode,
-        isForceStatic,
-        isForceDynamic,
-        pprOwnShellRead,
-      )
-    : null;
+  // A request recomputing a data entry renders whole, so a cached function or
+  // fetch the shell holds runs. It still asks generateStaticParams as
+  // `tryServe` would, so a cached fetch the generator reads runs too, unless
+  // the `dynamicParams = false` check above already asked it.
+  if (
+    options.pprRuntime &&
+    options.regeneratesDataEntry === true &&
+    !(validatesStaticParams && options.dynamicParamsConfig === false)
+  ) {
+    await options.pprRuntime.rerunGeneratedStaticParams(
+      options,
+      currentRevalidateSeconds,
+      isDraftMode,
+      isForceDynamic,
+    );
+  }
+  const fallbackShellResult =
+    options.pprRuntime && options.regeneratesDataEntry !== true
+      ? await options.pprRuntime.tryServe(
+          options,
+          currentRevalidateSeconds,
+          isDraftMode,
+          isForceStatic,
+          isForceDynamic,
+          pprOwnShellRead,
+        )
+      : null;
   if (fallbackShellResult instanceof Response) {
     return fallbackShellResult;
   }
@@ -2048,7 +2084,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // dynamically gets one for later requests to resume. A response middleware
   // gave another status isn't the page's.
   const produceConcreteShell =
-    options.pprRuntime && !pprShellResume && (options.middlewareContext.status ?? 200) === 200
+    options.pprRuntime &&
+    !pprShellResume &&
+    options.regeneratesDataEntry !== true &&
+    (options.middlewareContext.status ?? 200) === 200
       ? () =>
           options.pprRuntime!.produceConcreteShell(
             options,

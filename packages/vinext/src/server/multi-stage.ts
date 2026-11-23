@@ -71,6 +71,15 @@ export type VinextResponseStageDispatchOptions = {
    */
   regeneratesStoredEntry?: boolean;
   /**
+   * Recompute a data cache entry, such as an `unstable_cache` call or a cached
+   * `fetch`, by rendering the request that stored it. An App page then renders
+   * the part a stored shell holds, which resuming the shell skips: a page
+   * renders whole and produces no shell, and a static-shell prefetch renders
+   * its shell instead of serving the stored one. Set only from a
+   * platform-invoked regeneration callback. It is not a cache selector.
+   */
+  regeneratesDataEntry?: boolean;
+  /**
    * Shared cache identity of an App Router GET/HEAD dispatch, or of a Pages
    * page the build found static (getStaticProps or none), supplied only to
    * adapters that declare a `responseStageCacheIdentity` and require

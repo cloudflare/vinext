@@ -1611,6 +1611,27 @@ describe("app page dispatch", () => {
       await expect(cached.text()).resolves.toBe("flight");
     });
 
+    it("renders the shell past a stored one, without storing it, when it recomputes a data entry", async () => {
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "page"),
+      );
+      const { options, isrSetFallbackShell } = createStaticShellOptions({ buildPageElement });
+      await (
+        await runWithRequestContext(createRequestContext(), () => dispatchAppPage(options))
+      ).text();
+      vi.mocked(options.isrGetFallbackShell!).mockClear();
+
+      // A cached function or fetch the shell reads runs only when it renders.
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, regeneratesDataEntry: true }),
+      );
+      await expect(response.text()).resolves.toBe("flight");
+      expect(options.isrGetFallbackShell).not.toHaveBeenCalled();
+      expect(buildPageElement).toHaveBeenCalledTimes(2);
+      // The stored shell refreshes when it goes stale itself.
+      expect(isrSetFallbackShell).toHaveBeenCalledTimes(1);
+    });
+
     it("stores the shell's lifetime and tags without replaying their headers", async () => {
       const { options, isrSetFallbackShell, stored } = createStaticShellOptions({
         async buildPageElement() {
@@ -8802,6 +8823,75 @@ describe("app page dispatch", () => {
     },
   );
 
+  it("renders a page whole, past its own shell, when it recomputes a data entry", async () => {
+    const resumes: unknown[] = [];
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      isrGet: vi.fn(async (key: string) =>
+        key === "html:/en/blog/new-post" ? buildOwnShellEntry("Own shell", false) : null,
+      ),
+      loadSsrHandler: createResumeRecordingSsrHandler(resumes),
+    });
+
+    await (
+      await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, regeneratesDataEntry: true }),
+      )
+    ).text();
+
+    // A cached function or fetch in the part the shell holds runs only when
+    // that part renders.
+    expect(resumes).toEqual([undefined]);
+  });
+
+  it("asks generateStaticParams, without a shell, when it recomputes a data entry", async () => {
+    const resumes: unknown[] = [];
+    const scheduledKeys: string[] = [];
+    const generateStaticParams = vi.fn(async () => [{ locale: "en", slug: "hello" }]);
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      generateStaticParams,
+      isrGet: vi.fn(async () => null),
+      loadSsrHandler: createResumeRecordingSsrHandler(resumes),
+    });
+
+    await (
+      await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          regeneratesDataEntry: true,
+          scheduleFallbackShellRegeneration(key) {
+            scheduledKeys.push(key);
+          },
+        }),
+      )
+    ).text();
+
+    // A cached fetch the generator reads regenerates as the request without
+    // stored shells would.
+    expect(generateStaticParams).toHaveBeenCalledOnce();
+    expect(resumes).toEqual([undefined]);
+    expect(scheduledKeys).toEqual([]);
+  });
+
+  it("asks generateStaticParams once, recomputing a data entry, when its dynamicParams check did", async () => {
+    const generateStaticParams = vi.fn(async () => [{ locale: "en", slug: "new-post" }]);
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      generateStaticParams,
+      isrGet: vi.fn(async () => null),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({ ...options, dynamicParamsConfig: false, regeneratesDataEntry: true }),
+    );
+
+    expect(response.status).toBe(200);
+    await response.text();
+    // A cached fetch the generator reads is recomputed once, by the check.
+    expect(generateStaticParams).toHaveBeenCalledOnce();
+  });
+
   it("stores a path's empty own shell with the route's lifetime, not its dynamic render's", async () => {
     const jobs = new Map<string, () => Promise<void>>();
     const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
@@ -8844,48 +8934,58 @@ describe("app page dispatch", () => {
     expect(write?.[2].cacheControl).toEqual({ revalidate: false });
   });
 
-  it("produces a path's own shell after a render that reads dynamic data in a boundary", async () => {
-    const jobs = new Map<string, () => Promise<void>>();
-    const { options } = createPprBlogDispatchOptions({
-      buildPageElement: createParamTextPageElement("fresh"),
-      cleanPathname: "/en/blog/hello",
-      isProduction: true,
-      isrGet: vi.fn(async () => null),
-      loadSsrHandler: async () => ({
-        async handleSsr() {
-          const encoder = new TextEncoder();
-          let sent = false;
-          // The page streams its shell first, and reads cookies in a boundary
-          // that resolves after it.
-          return new ReadableStream<Uint8Array>({
-            pull(controller) {
-              if (!sent) {
-                sent = true;
-                controller.enqueue(encoder.encode("<html><head></head><body>shell"));
-                return;
-              }
-              markDynamicUsage();
-              controller.enqueue(encoder.encode("hole</body></html>"));
-              controller.close();
-            },
-          });
-        },
-      }),
-      params: { locale: "en", slug: "hello" },
-      request: new Request("https://example.test/en/blog/hello"),
-    });
+  it.each([{ regeneratesDataEntry: false }, { regeneratesDataEntry: true }])(
+    "produces a path's own shell after a render that reads dynamic data in a boundary (regeneratesDataEntry: $regeneratesDataEntry)",
+    async ({ regeneratesDataEntry }) => {
+      const jobs = new Map<string, () => Promise<void>>();
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement("fresh"),
+        cleanPathname: "/en/blog/hello",
+        isProduction: true,
+        isrGet: vi.fn(async () => null),
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            const encoder = new TextEncoder();
+            let sent = false;
+            // The page streams its shell first, and reads cookies in a boundary
+            // that resolves after it.
+            return new ReadableStream<Uint8Array>({
+              pull(controller) {
+                if (!sent) {
+                  sent = true;
+                  controller.enqueue(encoder.encode("<html><head></head><body>shell"));
+                  return;
+                }
+                markDynamicUsage();
+                controller.enqueue(encoder.encode("hole</body></html>"));
+                controller.close();
+              },
+            });
+          },
+        }),
+        params: { locale: "en", slug: "hello" },
+        request: new Request("https://example.test/en/blog/hello"),
+      });
 
-    const response = await runWithRequestContext(createRequestContext(), () =>
-      dispatchAppPage({
-        ...options,
-        scheduleFallbackShellRegeneration(key, job) {
-          if (!jobs.has(key)) jobs.set(key, job);
-        },
-      }),
-    );
-    await response.text();
-    await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
-  });
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          regeneratesDataEntry,
+          scheduleFallbackShellRegeneration(key, job) {
+            if (!jobs.has(key)) jobs.set(key, job);
+          },
+        }),
+      );
+      await response.text();
+      if (regeneratesDataEntry) {
+        // A shell it produced would hold the data entry as stored.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect([...jobs.keys()]).toEqual([]);
+      } else {
+        await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+      }
+    },
+  );
 
   it.each([{ late: false }, { late: true }])(
     "produces a path's own shell after an RSC request renders it dynamically (late: $late)",
