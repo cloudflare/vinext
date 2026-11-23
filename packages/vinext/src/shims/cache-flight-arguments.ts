@@ -60,8 +60,9 @@ export function restoreFlightReply(args: CacheFlightArguments): string | FormDat
 
 /**
  * Like Next.js (use-cache-wrapper.ts, `encodeFormData`), a binary entry is keyed
- * by its bytes alone. Its name, type, and timestamp are replayed but not keyed:
- * native FormData gives each Blob wrapper a wall-clock timestamp.
+ * by its bytes, File name and MIME type, which the cached function observes.
+ * Its timestamp is replayed but not keyed: native FormData gives each Blob
+ * wrapper a wall-clock timestamp.
  *
  * Hashed synchronously, as Next.js derives its key without leaving the task: a
  * cache hit must resolve before React flushes the shell, and an async digest
@@ -71,7 +72,11 @@ export function flightArgumentsKey(args: CacheFlightArguments): string {
   const reply =
     typeof args.reply === "string"
       ? args.reply
-      : args.reply.map((entry) => (entry.length === 2 ? entry : [entry[0], { bytes: entry[1] }]));
+      : args.reply.map((entry) =>
+          entry.length === 2
+            ? entry
+            : [entry[0], { bytes: entry[1], name: entry[2], type: entry[4] }],
+        );
   return createHash("sha256")
     .update(JSON.stringify({ ...args, reply }))
     .digest("base64url");

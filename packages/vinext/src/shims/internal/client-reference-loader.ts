@@ -41,11 +41,33 @@ export const clientReferences: Record<string, () => Promise<ClientReferenceExpor
   },
 );
 
+// A link with each resolved href in the document, and a stylesheet with each.
+// Reading every link's href for each chunk would make loading N chunks cost
+// N * N reads, as the server-rendered head modulepreloads each chunk. A cached
+// link only answers while it is still in this document's tree (not another
+// document or a shadow root) with that href (and rel), and any other check
+// rescans, so links React or the app adds, removes
+// or changes are seen as an exact scan sees them.
+let linksByHref = new Map<string, HTMLLinkElement>();
+let stylesheetsByHref = new Map<string, HTMLLinkElement>();
+
 function isLinked(href: string, stylesheet: boolean): boolean {
-  for (const link of document.getElementsByTagName("link")) {
-    if (link.href === href && (!stylesheet || link.rel === "stylesheet")) return true;
+  const cached = (stylesheet ? stylesheetsByHref : linksByHref).get(href);
+  if (
+    cached?.getRootNode() === document &&
+    cached.href === href &&
+    (!stylesheet || cached.rel === "stylesheet")
+  ) {
+    return true;
   }
-  return false;
+  linksByHref = new Map();
+  stylesheetsByHref = new Map();
+  for (const link of document.getElementsByTagName("link")) {
+    const linkHref = link.href;
+    linksByHref.set(linkHref, link);
+    if (link.rel === "stylesheet") stylesheetsByHref.set(linkHref, link);
+  }
+  return (stylesheet ? stylesheetsByHref : linksByHref).has(href);
 }
 
 function appendLink(url: string, stylesheet: boolean): HTMLLinkElement | null {
@@ -60,6 +82,8 @@ function appendLink(url: string, stylesheet: boolean): HTMLLinkElement | null {
   const nonce = nonceMeta?.nonce || nonceMeta?.getAttribute("nonce");
   if (nonce) link.setAttribute("nonce", nonce);
   document.head.appendChild(link);
+  linksByHref.set(href, link);
+  if (stylesheet) stylesheetsByHref.set(href, link);
   return link;
 }
 

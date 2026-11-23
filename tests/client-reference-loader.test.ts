@@ -12,6 +12,10 @@ type FakeLink = {
   as?: string;
   crossOrigin?: string;
   href: string;
+  /** A connected shadow root the link was moved into. */
+  shadowRoot?: object;
+  readonly isConnected: boolean;
+  getRootNode(): object;
   attributes: Record<string, string>;
   listeners: Record<string, () => void>;
   setAttribute(name: string, value: string): void;
@@ -28,6 +32,12 @@ function createLink(): FakeLink {
   return {
     rel: "",
     href: "",
+    get isConnected() {
+      return links.includes(this) || this.shadowRoot !== undefined;
+    },
+    getRootNode() {
+      return links.includes(this) ? document : (this.shadowRoot ?? this);
+    },
     attributes: {},
     listeners: {},
     setAttribute(name, value) {
@@ -112,6 +122,112 @@ describe("App Router client reference loader", () => {
       crossOrigin: "",
       href: "https://app.example/_next/static/chunks/dep.js",
       attributes: { nonce: "abc" },
+    });
+  });
+
+  // The server-rendered head modulepreloads each chunk, and the browser
+  // resolves a link's href on every read. Hydration loads every chunk, so
+  // reading each link's href per chunk would cost N * N reads.
+  it("reads each link's href a bounded number of times while loading the chunks the head already preloads", async () => {
+    const { loadChunk } = await loadLoader();
+    let reads = 0;
+    const chunks = Array.from({ length: 300 }, (_, i) => `/_next/static/chunks/c${i}.js`);
+    for (const chunk of chunks) {
+      const href = new URL(chunk, BASE).href;
+      const link = createLink();
+      link.rel = "modulepreload";
+      Object.defineProperty(link, "href", {
+        get() {
+          reads++;
+          return href;
+        },
+      });
+      links.push(link);
+    }
+    await Promise.all(chunks.map((chunk) => loadChunk(`p${chunk}`)));
+    expect(links).toHaveLength(chunks.length);
+    // One scan of the head, then one read to check each cached link.
+    expect(reads).toBeLessThanOrEqual(chunks.length * 2);
+  });
+
+  it("skips a link added to the document after the loader first checked it", async () => {
+    const { loadChunk } = await loadLoader();
+    await loadChunk("p/_next/static/chunks/a.js");
+    expect(links).toHaveLength(1);
+    // React inserts a server component's stylesheet and the app a preload.
+    const stylesheet = createLink();
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = "https://app.example/_next/static/css/a.css";
+    const preload = createLink();
+    preload.rel = "modulepreload";
+    preload.href = "https://app.example/_next/static/chunks/b.js";
+    links.push(stylesheet, preload);
+    const file = path.join(dir, "late-linked.mjs");
+    fs.writeFileSync(file, "export {};\n");
+    await loadChunk(`m${pathToFileURL(file).href}\n/_next/static/css/a.css`);
+    await loadChunk("p/_next/static/chunks/b.js");
+    expect(links).toHaveLength(3);
+    // A removed link is linked again.
+    links.splice(links.indexOf(preload), 1);
+    await loadChunk("p/_next/static/chunks/b.js");
+    expect(links).toHaveLength(3);
+    expect(links[2]).toMatchObject({
+      rel: "modulepreload",
+      href: "https://app.example/_next/static/chunks/b.js",
+    });
+  });
+
+  it("rechecks a cached link replaced or changed in place", async () => {
+    const { loadChunk } = await loadLoader();
+    const stylesheet = createLink();
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = "https://app.example/_next/static/css/b.css";
+    links.push(stylesheet);
+    await loadChunk("p/_next/static/chunks/a.js");
+    expect(links).toHaveLength(2);
+    // The link to a.js is replaced by one to b.js, keeping the link count.
+    const replacement = createLink();
+    replacement.rel = "modulepreload";
+    replacement.href = "https://app.example/_next/static/chunks/b.js";
+    links.splice(1, 1, replacement);
+    await loadChunk("p/_next/static/chunks/b.js");
+    expect(links).toHaveLength(2);
+    await loadChunk("p/_next/static/chunks/a.js");
+    expect(links).toHaveLength(3);
+    expect(links[2]).toMatchObject({ href: "https://app.example/_next/static/chunks/a.js" });
+    // A link whose href changes in place no longer links its old URL.
+    replacement.href = "https://app.example/_next/static/chunks/c.js";
+    await loadChunk("p/_next/static/chunks/b.js");
+    expect(links).toHaveLength(4);
+    expect(links[3]).toMatchObject({ href: "https://app.example/_next/static/chunks/b.js" });
+    // A link that stops being a stylesheet no longer links the stylesheet.
+    stylesheet.rel = "preload";
+    const file = path.join(dir, "relinked.mjs");
+    fs.writeFileSync(file, "export {};\n");
+    const load = loadChunk(`m${pathToFileURL(file).href}\n/_next/static/css/b.css`);
+    expect(links).toHaveLength(5);
+    expect(links[4]).toMatchObject({
+      rel: "stylesheet",
+      href: "https://app.example/_next/static/css/b.css",
+    });
+    links[4]!.listeners.load!();
+    await load;
+  });
+
+  // A link moved into a connected shadow root is still connected, but no
+  // longer in the document's links.
+  it("links a chunk again once its cached link moves into a shadow root", async () => {
+    const { loadChunk } = await loadLoader();
+    await loadChunk("p/_next/static/chunks/a.js");
+    expect(links).toHaveLength(1);
+    const moved = links.pop()!;
+    moved.shadowRoot = {};
+    await loadChunk("p/_next/static/chunks/a.js");
+    expect(links).toHaveLength(1);
+    expect(links[0]).not.toBe(moved);
+    expect(links[0]).toMatchObject({
+      rel: "modulepreload",
+      href: "https://app.example/_next/static/chunks/a.js",
     });
   });
 
