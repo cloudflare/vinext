@@ -48,8 +48,8 @@ Fixture and test gotchas:
 
 ## 4. Size the Fix
 
-- **Write down the minimal change set before coding, and stick to it.** Fix exactly the reported behavior. Adjacent findings and triage notes like "audit similar options" are not scope: list them separately.
-- Fix the shared root cause at the narrowest chokepoint that corrects every affected path. Check the dev and prod request paths listed under "Fixing Bugs" in `AGENTS.md`, and fix the same bug in each of them in the same PR.
+- **Write down the minimal change set before coding, and stick to it.** The scope is the reported bug, not only the reporter's setup. Before coding, search for every other place that mishandles the same thing in the same way, such as another adapter, an opt-in gateway, the other router, or a branch the reported setup never takes. Those sites are part of the change set. A similar problem with a different field, option or header is a different bug. Different bugs, and triage notes like "audit similar options", are not scope: list them separately.
+- Fix the shared root cause at the narrowest chokepoint that corrects every affected path. Check the dev and prod request paths listed under "Fixing Bugs" in `AGENTS.md`. When no single chokepoint covers every site, fix each one in the same PR. Don't leave a site of the same bug out to keep the diff small, or list it as a known limitation.
 - **Keep it simple.** Prefer delegating to the platform primitive over re-implementing native behavior. Don't parse or evaluate what can't be read reliably: fall back to Vinext's defaults and list the gap as a known limitation. When user files can't be classified reliably, keep the existing behavior and print a warning. For a heuristic check, write the minimal match once and list its gaps up front.
 - If exact Next.js parity needs more than the planned change, recommend full parity split into stacked PRs, not a known limitation.
 - A Linux-, WSL- or container-only gap in dev tooling gets documented as a known limitation, not platform-specific code.
@@ -104,7 +104,7 @@ Performance:
 These rules apply to every reviewer: sub-agents, Big Bonk, clanky and maintainers.
 
 - **Address every finding about the PR's own diff,** including ones labelled non-blocking or follow-up. Don't defer them to another PR. Rerun the targeted validation from section 5 after each fix.
-- **Stay in scope.** If the PR's diff didn't cause a finding, don't fix it in the PR. Raise it with the maintainers as a separate task.
+- **Stay in scope.** If the PR's diff didn't cause a finding and it isn't the same bug at another site (section 4), don't fix it in the PR. Raise it with the maintainers as a separate task.
 - **Decline explicitly.** A finding may be declined when it is disproven, would diverge from Next.js, or conflicts with these rules (for example a stricter-than-Next guard, a legacy-copy rollout scenario, or the app's own Cache-Control). Give the reason in the reply to that finding, and name every decline in the final report.
 - **Keep it simple.** When rounds keep surfacing static-analysis or platform-emulation edge cases in the same area, stop adding analysis: decline them as known limitations from the first one, and list them in the PR body. Runtime-correctness findings on the PR's own behavior still get fixed. If the churn comes from a Vinext-only extra Next.js doesn't have, recommend dropping the extra.
 - **Flag scope creep early.** If a PR keeps drawing three or more new findings per round outside the plan, or its diff grows past the minimal change set, raise it with the maintainers right away and propose cutting, moving or parking the work.

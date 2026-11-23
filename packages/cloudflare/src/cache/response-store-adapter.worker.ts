@@ -24,6 +24,7 @@ import { isPageNotModified } from "vinext/internal/server/http-conditional";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
+import { isWebSocketUpgradeResponse } from "vinext/internal/server/websocket-upgrade-response";
 import { isCanonicalAppPage } from "./app-page-parts.js";
 import {
   finalizeGatewayResponse,
@@ -249,10 +250,15 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
   if (shards !== undefined && typeof shards !== "number") {
     throw new TypeError("Workers Response Store shards must be a number");
   }
+  const purgeBatchWindow = configuration?.purgeBatchWindow;
+  if (purgeBatchWindow !== undefined && typeof purgeBatchWindow !== "number") {
+    throw new TypeError("Workers Response Store purgeBatchWindow must be a number");
+  }
   return {
     ...(locationHint === undefined
       ? {}
       : { locationHint: locationHint as ResponseStoreLocationHint }),
+    ...(purgeBatchWindow === undefined ? {} : { purgeBatchWindow }),
     ...(shards === undefined ? {} : { shards }),
     async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
       if (input.id === ROUTE_REVALIDATOR_ID) {
@@ -667,6 +673,9 @@ function publicResponse(
   responseStageProps: unknown,
   pendingAdmission = false,
 ): Response {
+  // Rebuilding an upgrade drops its `webSocket`, and workerd then rejects the
+  // status 101. The stage bypasses the store for it, so return it as is.
+  if (isWebSocketUpgradeResponse(response)) return response;
   const headers = new Headers(response.headers);
   const publicCacheStatus =
     cacheStatus === "HIT" && headers.get("CF-Cache-Status") === "UPDATING"

@@ -143,6 +143,73 @@ test.describe("Parallel Routes", () => {
 });
 
 test.describe("Intercepting Routes", () => {
+  // A static page in a sibling route group sits outside the slot owner's
+  // layout, so it has no slot to show the modal in: the link opens the target
+  // page itself, without leaving the page's own tree beneath it.
+  test("opens the target from a page in a sibling route group without the slot", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    const navigation = page.waitForResponse(
+      (response) =>
+        response.url().includes("/intercept-source-group/club/static/pics/1") &&
+        response.request().headers()["rsc"] === "1",
+    );
+    await page.getByRole("link", { name: "Pic 1" }).click();
+    expect((await navigation).status()).toBe(200);
+
+    await expect(page).toHaveURL(/\/intercept-source-group\/club\/static\/pics\/1$/);
+    await expect(page.locator("#intercept-source-group-pic")).toHaveText("Pic page: 1");
+    await expect(page.locator("#intercept-source-group-club-layout")).toContainText(
+      "Club layout: static",
+    );
+    await expect(page.locator("#intercept-source-group-static")).toHaveCount(0);
+    await expect(page.locator("#intercept-source-group-modal")).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("opens the modal from a page whose middleware rewrite reaches the slot", async ({
+    page,
+  }) => {
+    // `/club/moved` names a static page without the slot, but middleware
+    // rewrites it to `/club/acme`, which has it.
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/moved`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#intercept-source-group-club-layout")).toContainText(
+      "Club layout: acme",
+    );
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    const navigation = page.waitForResponse(
+      (response) =>
+        response.url().includes("/intercept-source-group/club/acme/pics/1") &&
+        response.request().headers()["rsc"] === "1",
+    );
+    await page.getByRole("link", { name: "Club pic 1" }).click();
+    expect((await navigation).status()).toBe(200);
+
+    await expect(page).toHaveURL(/\/intercept-source-group\/club\/acme\/pics\/1$/);
+    await expect(page.locator("#intercept-source-group-modal")).toHaveText("Pic modal: 1");
+    await expect(page.locator("#intercept-source-group-club-page")).toBeVisible();
+    await expect(page.locator("#intercept-source-group-pic")).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
   // Ported and strengthened from Next.js intercepted route coverage:
   // - test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
   //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts

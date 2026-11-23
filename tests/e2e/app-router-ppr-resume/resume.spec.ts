@@ -373,3 +373,38 @@ for (const path of ["/en/about", "/en/blog/known", "/fr/about", "/fr/blog/new"])
     expect(consoleErrors).toEqual([]);
   });
 }
+
+test("links a hole's client component stylesheet in a resumed fallback shell's head", async ({
+  baseURL,
+}) => {
+  // The route's page renders under loading.tsx, so the stored shell holds its
+  // fallback. Like Next.js's prerendered shell, its head links the CSS of the
+  // client component the page imports, which the hole reveals styled.
+  await readStreamedDocument(new URL("/en/loading-css/first", baseURL), []);
+  const document = await readStreamedDocument(new URL("/en/loading-css/resumed", baseURL), [
+    'id="loading-css-fallback"',
+    'id="loading-css-viewer"',
+  ]);
+  expect(document.headers.get("x-nextjs-postponed")).toBe("1");
+  expect(document.html).toContain("viewer for <!-- -->ada");
+
+  const headEnd = document.html.indexOf("</head>");
+  expect(headEnd).toBeGreaterThan(-1);
+  const stylesheetHrefs = (html: string) =>
+    [...html.matchAll(/<link\b[^>]*\brel="stylesheet"[^>]*>/g)].map(
+      (tag) => /\bhref="([^"]+)"/.exec(tag[0])![1],
+    );
+  let viewerHref: string | undefined;
+  for (const href of stylesheetHrefs(document.html.slice(0, headEnd))) {
+    const css = await (await fetch(new URL(href, baseURL))).text();
+    if (css.includes("--ppr-loading-css-viewer")) viewerHref = href;
+  }
+  // Not only a late preload, which reveals the hole unstyled.
+  expect(viewerHref).toBeDefined();
+  // The hole doesn't link it a second time.
+  expect(stylesheetHrefs(document.html).filter((href) => href === viewerHref)).toHaveLength(1);
+  expect(document.markers['id="loading-css-fallback"']).toBeLessThanOrEqual(
+    document.markers['id="loading-css-viewer"'],
+  );
+  expect(document.html.indexOf('id="loading-css-viewer"')).toBeGreaterThan(headEnd);
+});

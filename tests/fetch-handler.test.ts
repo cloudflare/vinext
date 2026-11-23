@@ -37,6 +37,13 @@ async function loadVirtualModule(
   }
 }
 
+// App Router dev servers regenerate route types in the background, so
+// `.next/types` and `next-env.d.ts` can still be landing in the root after
+// `server.close()`. Retry the removal instead of failing with ENOTEMPTY.
+function removeTempRoot(root: string): void {
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+}
+
 function loadUnifiedFetchHandler(
   root: string,
   options: Parameters<typeof loadVirtualModule>[2] = {},
@@ -58,7 +65,7 @@ describe("unified Worker fetch handler", () => {
         'export { default } from "vinext/server/app-router-entry";',
       );
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTempRoot(root);
     }
   });
 
@@ -75,7 +82,7 @@ describe("unified Worker fetch handler", () => {
         'export { default } from "vinext/server/pages-router-entry";',
       );
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTempRoot(root);
     }
   });
 
@@ -107,7 +114,7 @@ describe("unified Worker fetch handler", () => {
         'export { default } from "vinext/server/app-router-entry";',
       );
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTempRoot(root);
     }
   });
 
@@ -168,7 +175,7 @@ describe("unified Worker fetch handler", () => {
       );
     } finally {
       await server?.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTempRoot(root);
     }
   });
 
@@ -205,7 +212,7 @@ describe("unified Worker fetch handler", () => {
         ).resolves.not.toMatchObject({ id: "\0virtual:vinext-worker-entry" });
       } finally {
         await server?.close();
-        fs.rmSync(root, { recursive: true, force: true });
+        removeTempRoot(root);
       }
     },
   );
@@ -242,7 +249,7 @@ describe("unified Worker fetch handler", () => {
           `export * from ${JSON.stringify(resolveRuntimeEntryModule(responseEntry))};\n`,
         );
       } finally {
-        fs.rmSync(root, { recursive: true, force: true });
+        removeTempRoot(root);
       }
     },
   );
