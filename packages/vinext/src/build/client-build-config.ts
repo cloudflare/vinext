@@ -706,7 +706,9 @@ export function collectUncopiedStylesheets(
  * leaves out the copies that load after one the client entry loads, as every
  * other chunk does. That only counts where the client entry's imports
  * survive: the output drops an unused import of a module `declaresSideEffects`
- * reports (see createSideEffectsDeclarationCheck).
+ * reports (see createSideEffectsDeclarationCheck). The graph here is the one
+ * before tree-shaking, which can drop others too, so a stylesheet, whose
+ * second copy would change the cascade, keeps a file even then.
  */
 export function collectDoublyCopiedModules(
   moduleIds: Iterable<string>,
@@ -793,7 +795,8 @@ export function collectDoublyCopiedModules(
 
   const copiedTwice = new Set<string>();
   for (const [chunk, ids] of commonChunks) {
-    if (ids.some((id) => loadedFirst.has(id))) continue;
+    const copied = ids.filter((id) => isStylesheetModule(id) || !loadedFirst.has(id));
+    if (copied.length === 0) continue;
 
     // The entries that load each chunk that imports this one.
     const importerChunks = new Map<string, Set<number>>();
@@ -822,7 +825,7 @@ export function collectDoublyCopiedModules(
     }
 
     if (loadTogether || (loadsWithEveryPage && importerLoads.length > 1)) {
-      for (const id of ids) copiedTwice.add(id);
+      for (const id of copied) copiedTwice.add(id);
     }
   }
 

@@ -464,6 +464,18 @@ describe("collectDoublyCopiedModules", () => {
     ).toEqual([]);
   });
 
+  it("keeps a stylesheet that follows one the client entry loads", () => {
+    expect(
+      collect({
+        entry: { entry: true, imports: ["instrumentation"] },
+        instrumentation: { imports: ["telemetry", "banner.css"] },
+        _app: { loadedBy: "entry", imports: ["telemetry", "banner.css"] },
+        telemetry: {},
+        "banner.css": {},
+      }),
+    ).toEqual(["banner.css"]);
+  });
+
   // An unused import of a side-effect-free package's module is dropped, so
   // the client entry may not load the chunk, and both pages could copy it.
   it("counts the client entry's imports into a package that declares its side effects as dropped", () => {
