@@ -1385,6 +1385,9 @@ export function createFontOwnerPlugin(options: {
                   : String(specifier.imported.value);
               if (google && !GOOGLE_FONT_UTILITY_EXPORTS.has(imported)) {
                 loaderLocals.set(local, true);
+              } else if (!google && imported === "default") {
+                // `import { default as localFont }`, the default import spelled out.
+                loaderLocals.set(local, false);
               }
             } else if (specifier.type === "ImportNamespaceSpecifier") {
               if (google) loaderObjectLocals.add(local);

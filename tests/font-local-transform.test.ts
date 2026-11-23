@@ -805,12 +805,15 @@ describe("vinext:font-owner plugin", () => {
       `const a = Inter({ subsets: ["latin"] });`,
       `const b = localFont({ src: "./b.woff2" });`,
       `const c = local.default({ src: "./c.woff2" });`,
+      `import { default as namedLocal } from "next/font/local";`,
+      `const d = namedLocal({ src: "./d.woff2" });`,
     ].join("\n");
     const result = transform(code, "/project/app/layout.tsx");
     const owner = `_vinextOwner: "app/layout.tsx", `;
     expect(result.code).toContain(`const a = Inter({${owner} subsets: ["latin"] });`);
     expect(result.code).toContain(`const b = localFont({${owner} src: "./b.woff2" });`);
     expect(result.code).toContain(`const c = local.default({${owner} src: "./c.woff2" });`);
+    expect(result.code).toContain(`const d = namedLocal({${owner} src: "./d.woff2" });`);
   });
 
   it("leaves the shims' utility exports alone", () => {
