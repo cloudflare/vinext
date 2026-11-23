@@ -823,9 +823,10 @@ const handler = {
         isWarmup || options.cacheIdentity?.queryFree
           ? otherPagePart(identityRequest, identityProps)
           : undefined;
-      const otherKey = otherPart ? await cacheRequest(otherPart.invocation) : undefined;
       // A warm-up renders the page again when its RSC payload is missing.
-      const rscKey = isWarmup && otherPart?.kind === "rsc" ? otherKey : undefined;
+      const warmupOtherKey =
+        isWarmup && otherPart ? await cacheRequest(otherPart.invocation) : undefined;
+      const rscKey = otherPart?.kind === "rsc" ? warmupOtherKey : undefined;
       // The part a shell under the dispatch's key is stored as: a path's own
       // shell under its page's keys, or the page's static shell under its
       // static-shell prefetch's, which the prefetch serves with the request's
@@ -848,7 +849,8 @@ const handler = {
       let ownPartRead: Response | null | undefined = stored === null ? null : undefined;
       if (stored && foundShell) {
         try {
-          ownPartRead = new Response(await stored.text(), stored);
+          // Buffered as bytes, which the render's read decodes once.
+          ownPartRead = new Response(await stored.arrayBuffer(), stored);
         } catch (error) {
           console.error(
             JSON.stringify({
@@ -877,6 +879,9 @@ const handler = {
         void stored.body?.cancel().catch(() => {});
       }
 
+      // Only a render needs the other part's key, so a hit doesn't hash it.
+      const otherKey =
+        warmupOtherKey ?? (otherPart ? await cacheRequest(otherPart.invocation) : undefined);
       const capture: ResponseStoreInvocationCapture = {
         ...(isWarmup ? {} : { streamResponse: true }),
         ...otherPagePartCapture(otherPart),
