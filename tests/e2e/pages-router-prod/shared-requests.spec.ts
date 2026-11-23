@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Page } from "@playwright/test";
+import type { Page, Response } from "@playwright/test";
 import { test, expect } from "../fixtures";
 import { waitForHydration } from "../helpers";
 
@@ -78,13 +78,18 @@ test.afterAll(async () => {
 /** The JavaScript files that a full load of `route` downloads, by file name. */
 async function loadScripts(page: Page, route: string): Promise<Map<string, string>> {
   const responses: Promise<[string, string]>[] = [];
-  page.on("response", (response) => {
+  const onResponse = (response: Response) => {
     const { pathname } = new URL(response.url());
     if (!pathname.endsWith(".js")) return;
     responses.push(response.text().then((code) => [path.posix.basename(pathname), code]));
-  });
-  await page.goto(`${baseUrl}${route}`, { waitUntil: "networkidle" });
-  await waitForHydration(page);
+  };
+  page.on("response", onResponse);
+  try {
+    await page.goto(`${baseUrl}${route}`, { waitUntil: "networkidle" });
+    await waitForHydration(page);
+  } finally {
+    page.off("response", onResponse);
+  }
   return new Map(await Promise.all(responses));
 }
 
