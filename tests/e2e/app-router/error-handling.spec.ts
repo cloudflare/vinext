@@ -359,6 +359,125 @@ test.describe("Not Found", () => {
     ).toBe(true);
   });
 
+  test("a page's own not-found stays beneath a modal opened from it", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-not-found/notes/missing`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#intercept-source-not-found-nf")).toBeVisible();
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    // Like Next.js, the note's segment keeps its own not-found under the modal.
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page).toHaveURL(/\/intercept-source-not-found\/photos\/1$/);
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#intercept-source-not-found-nf")).toBeVisible();
+    await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+    await expect(page.locator("#intercept-source-not-found-photo")).toHaveCount(0);
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("a page's not-found file that renders nothing stays beneath a modal opened from it", async ({
+    page,
+  }) => {
+    const response = await page.goto(
+      `${BASE}/nextjs-compat/intercept-source-not-found/notes/empty`,
+    );
+    expect(response?.status()).toBe(404);
+    await waitForAppRouterHydration(page);
+    // The segment's own not-found catches the signal, so the root's never shows.
+    await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+    await expect(page.getByText("404 - Page Not Found")).toHaveCount(0);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page).toHaveURL(/\/intercept-source-not-found\/photos\/1$/);
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+    await expect(page.getByText("404 - Page Not Found")).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  for (const { kind, path, status, selector } of [
+    {
+      kind: "not-found",
+      path: "gone",
+      status: 404,
+      selector: "#intercept-source-not-found-gone-nf",
+    },
+    {
+      kind: "forbidden",
+      path: "denied",
+      status: 403,
+      selector: "#intercept-source-not-found-denied",
+    },
+  ]) {
+    test(`a page's own ${kind} document stays beneath a modal opened from it`, async ({ page }) => {
+      // Without a loading UI the page's signal sets the document's status.
+      const response = await page.goto(
+        `${BASE}/nextjs-compat/intercept-source-not-found/notes/${path}`,
+      );
+      expect(response?.status()).toBe(status);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator(selector)).toBeVisible();
+      await page.evaluate(() => {
+        (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+      });
+
+      // Like Next.js, the note's segment keeps its own fallback under the modal.
+      await page.getByRole("link", { name: "Photo 1" }).click();
+      await expect(page).toHaveURL(/\/intercept-source-not-found\/photos\/1$/);
+      await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+      await expect(page.locator(selector)).toBeVisible();
+      await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+      await expect(page.locator("#intercept-source-not-found-photo")).toHaveCount(0);
+
+      expect(
+        await page.evaluate(
+          () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+        ),
+      ).toBe(true);
+    });
+  }
+
+  test("a page's loading UI stays beneath a modal opened while it streams", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-not-found/notes/1`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Slow note" }).click();
+    await expect(page.locator("#intercept-source-not-found-loading")).toBeVisible();
+    await expect(page).toHaveURL(/\/intercept-source-not-found\/notes\/slow$/);
+
+    // Like Next.js, the still-streaming note keeps its loading UI under the
+    // modal until it arrives.
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#intercept-source-not-found-loading")).toBeVisible();
+    await expect(page.locator("#intercept-source-not-found-note")).toHaveText(/Note: slow/, {
+      timeout: 10_000,
+    });
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
   test("a sibling intercepting page's notFound() renders the not-found beside it", async ({
     page,
   }) => {

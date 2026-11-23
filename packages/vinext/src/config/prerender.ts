@@ -51,6 +51,8 @@ export type VinextRouteRootConfig = {
   appDir?: string;
   clientOutDir?: string;
   disableAppRouter?: boolean;
+  /** Root of the build output (Vite's `build.outDir`). Defaults to "dist". */
+  outDir?: string;
   rscOutDir?: string;
   ssrOutDir?: string;
 };

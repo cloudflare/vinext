@@ -245,7 +245,7 @@ describe("createVinextApp", () => {
       vite: "8.3.0",
       "@vitejs/plugin-react": "latest",
       "@vitejs/plugin-rsc": "latest",
-      "@cloudflare/vite-plugin": "beta",
+      "@cloudflare/vite-plugin": "^2.0.0-rc.0",
       cf: "latest",
     });
   });
@@ -291,7 +291,7 @@ describe("createVinextApp", () => {
       'pnpm add "vinext" "react-server-dom-webpack" "@vinext/cloudflare" "@cloudflare/workers-response-store"',
     );
     expect(calls).toContain(
-      'pnpm add -D "vite@8.3.0" "@vitejs/plugin-react" "@vitejs/plugin-rsc" "@cloudflare/vite-plugin@beta" "cf@latest"',
+      'pnpm add -D "vite@8.3.0" "@vitejs/plugin-react" "@vitejs/plugin-rsc" "@cloudflare/vite-plugin@^2.0.0-rc.0" "cf@latest"',
     );
     expect(calls.some((command) => command.split(/\s+/).includes('"next"'))).toBe(false);
     expect(calls.some((command) => command.includes("typegen"))).toBe(false);
@@ -547,7 +547,7 @@ describe("create-vinext-app CLI", () => {
           "cf deploy --prebuilt --mode production --worker cf-app-response-store",
       });
       expect(pkg.devDependencies).toMatchObject({
-        "@cloudflare/vite-plugin": "beta",
+        "@cloudflare/vite-plugin": "^2.0.0-rc.0",
         cf: "latest",
         vite: "8.3.0",
       });
