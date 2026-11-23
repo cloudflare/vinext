@@ -129,11 +129,11 @@ export function isrGetReadsFallbackShells(): boolean {
 }
 
 /**
- * Which of its page's parts a path's own shell is stored under: the document,
- * or the RSC payload, beside which it holds the values the shell was built
- * with.
+ * Which response a shell is stored under: a path's own shell under its page's
+ * document, or RSC payload, beside which it holds the values the shell was
+ * built with, and a page's static shell under its static-shell prefetch.
  */
-export type AppPageShellPart = "document" | "rsc";
+export type AppPageShellPart = "document" | "rsc" | "static-shell";
 
 /**
  * Whether a page read finds the path's own shell under its page keys: that of
@@ -248,13 +248,13 @@ export type AppPageCacheSetter = (
   policy: IsrWritePolicy,
 ) => Promise<void>;
 
-/** Read a shell, naming the page part a path's own shell is stored under. */
+/** Read a shell, naming the response it is stored under. */
 export type AppPageShellGetter = (
   key: string,
   part?: AppPageShellPart,
 ) => Promise<ISRCacheEntry | null>;
 
-/** Store a shell, naming the page part a path's own shell is stored under. */
+/** Store a shell, naming the response it is stored under. */
 export type AppPageShellSetter = (
   key: string,
   data: CachedAppPageValue,

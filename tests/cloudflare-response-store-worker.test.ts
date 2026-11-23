@@ -737,7 +737,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       postponed: "state",
       status: undefined,
     });
-    const shellContext = (part: "document" | "rsc") => ({
+    const shellContext = (part: "document" | "rsc" | "static-shell") => ({
       appPageShellPart: part,
       cacheControl: { revalidate: 60 },
       revalidate: 60,
@@ -881,6 +881,98 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       expect(regenerated.headers.get("X-Vinext-Response-Store-Page-Shell")).toBe("1");
       expect(await regenerated.text()).toContain("<!--fresh-->");
       expect(entries.get(rscKey)?.body).toContain("fresh");
+    });
+
+    it("stores a page's static shell under its prefetch's key, read through the gateway's read", async () => {
+      dispatchWithIdentity(true, { isRscRequest: true, renderMode: "prefetch-static-shell" });
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      const reads: unknown[] = [];
+      stages.response.mockImplementation(async () => {
+        const read = await dataCache.get("app-static-shell:/page", {
+          appPageShellPart: "static-shell",
+        });
+        reads.push(read?.value);
+        if (!read) {
+          await dataCache.set(
+            "app-static-shell:/page",
+            shell("static"),
+            shellContext("static-shell"),
+          );
+        }
+        return dynamicResponse();
+      });
+
+      const first = await fetchPage(handler);
+      // The shell's read was the gateway's.
+      expect(store.fetch).toHaveBeenCalledTimes(1);
+      const prefetchKey = store.fetch.mock.calls[0]![0].url;
+      expect([...entries.keys()]).toEqual([prefetchKey]);
+      const entry = entries.get(prefetchKey)!;
+      expect(entry.headers.get("X-Vinext-Response-Store-Page-Shell")).toBe("1");
+      expect(JSON.parse(String(entry.options?.revalidator?.args[1]))).toEqual({
+        shell: true,
+        staticShell: prefetchKey,
+      });
+
+      // Every query shares the shell, which the prefetch serves with its own
+      // headers instead of the Store.
+      const second = await fetchPage(handler, "https://example.com/page?q=a");
+      expect(store.fetch).toHaveBeenCalledTimes(2);
+      expect(reads).toEqual([undefined, shell("static")]);
+      expect([first.body, second.body]).toEqual(["dynamic", "dynamic"]);
+
+      // A replay of the shell stores it there too.
+      const regenerated = await createVinextResponseStoreOptions().regenerate(
+        {
+          args: entry.options!.revalidator!.args as string[],
+          id: "vinext:data",
+          reason: "stale",
+          request: new Request(prefetchKey),
+        } as never,
+        { ctx: context(), env: {} } as never,
+      );
+      expect(regenerated.headers.get("X-Vinext-Response-Store-Page-Shell")).toBe("1");
+      expect(reads).toEqual([undefined, shell("static"), undefined]);
+    });
+
+    it("reads a static-shell prefetch's stored response as no static shell, and replaces it", async () => {
+      dispatchWithIdentity(true, { isRscRequest: true, renderMode: "prefetch-static-shell" });
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      // A page without a static shell answers its prefetch with its loading
+      // shell, which is stored.
+      stages.response.mockImplementation(
+        async () => new Response("loading", { headers: { "Cache-Control": "public, max-age=60" } }),
+      );
+      await fetchPage(handler);
+      const prefetchKey = store.fetch.mock.calls[0]![0].url;
+      expect((await fetchPage(handler)).body).toBe("loading");
+
+      const reads: unknown[] = [];
+      stages.response.mockImplementation(async () => {
+        const read = await dataCache.get("app-static-shell:/page", {
+          appPageShellPart: "static-shell",
+        });
+        reads.push(read);
+        if (!read) {
+          await dataCache.set(
+            "app-static-shell:/page",
+            shell("static"),
+            shellContext("static-shell"),
+          );
+        }
+        return dynamicResponse();
+      });
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      // The gateway's read fails, so the render reads the key itself.
+      store.fetch.mockRejectedValueOnce(new Error("unavailable"));
+      await fetchPage(handler);
+
+      expect(reads).toEqual([null]);
+      expect(entries.get(prefetchKey)?.headers.get("X-Vinext-Response-Store-Page-Shell")).toBe("1");
     });
 
     it("regenerates both parts when the Store regenerates one", async () => {

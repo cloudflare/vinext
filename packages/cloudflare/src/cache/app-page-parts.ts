@@ -19,3 +19,23 @@ export function isCanonicalAppPage(responseStageProps: unknown, isRscRequest: bo
     Reflect.get(responseStageProps, "mountedSlotsHeader") === null
   );
 }
+
+/**
+ * Whether the response-stage props select a page's static-shell prefetch,
+ * whose shell the page shares with every request for it.
+ */
+export function isStaticShellPrefetch(responseStageProps: unknown): boolean {
+  return (
+    responseStageProps !== null &&
+    typeof responseStageProps === "object" &&
+    Reflect.get(responseStageProps, "kind") === "app-page" &&
+    Reflect.get(responseStageProps, "isRscRequest") === true &&
+    (Reflect.get(responseStageProps, "matchKind") === "request" ||
+      Reflect.get(responseStageProps, "matchKind") === "resolved") &&
+    Reflect.get(responseStageProps, "renderMode") === "prefetch-static-shell" &&
+    Reflect.get(responseStageProps, "interceptionContext") === null &&
+    Reflect.get(responseStageProps, "interceptionId") === null &&
+    // A mounted-slot variant renders for the request alone.
+    Reflect.get(responseStageProps, "mountedSlotsHeader") === null
+  );
+}

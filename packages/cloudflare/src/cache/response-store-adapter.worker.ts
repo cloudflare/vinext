@@ -25,7 +25,7 @@ import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
 import { isWebSocketUpgradeResponse } from "vinext/internal/server/websocket-upgrade-response";
-import { isCanonicalAppPage } from "./app-page-parts.js";
+import { isCanonicalAppPage, isStaticShellPrefetch } from "./app-page-parts.js";
 import {
   finalizeGatewayResponse,
   SHARED_RESPONSE_STAGE_HEADER,
@@ -338,7 +338,7 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
       }
       if (input.id === DATA_REVALIDATOR_ID && typeof input.args[0] === "string") {
         const invocation = parseInvocation(input.args.at(-1));
-        // A path's own shell under its page's keys regenerates under them.
+        // A shell under its page's or its prefetch's keys regenerates under them.
         const replay = input.args.length > 2 ? parsePageReplay(input.args[1]) : undefined;
         const pageParts = replay?.pageParts;
         return captureResponseStoreDataRegeneration(
@@ -411,10 +411,14 @@ function parsePageReplay(value: unknown): {
     ownShell?: unknown;
     rsc?: unknown;
     shell?: unknown;
+    staticShell?: unknown;
   };
   const pageParts = {
     ...(typeof replay.document === "string" ? { document: storeKeyRequest(replay.document) } : {}),
     ...(typeof replay.rsc === "string" ? { rsc: storeKeyRequest(replay.rsc) } : {}),
+    ...(typeof replay.staticShell === "string"
+      ? { "static-shell": storeKeyRequest(replay.staticShell) }
+      : {}),
   };
   return {
     ownShell: replay.ownShell === true,
@@ -438,7 +442,7 @@ function withoutRequestScopedHeaders(response: Response, responseStageProps: unk
     typeof responseStageProps === "object" &&
     Reflect.get(responseStageProps, "kind") === "app-page" &&
     Reflect.get(responseStageProps, "isRscRequest") === true;
-  // Only the data cache marks a path's own shell, which is never served.
+  // Only the data cache marks a shell, which is never served.
   if (!isAppPageRsc && !response.headers.has(PAGE_SHELL_HEADER)) return response;
   const headers = new Headers(response.headers);
   headers.delete(PAGE_SHELL_HEADER);
@@ -537,6 +541,7 @@ function documentPartResponse(rscResponse: Response, document: CdnAppPageDocumen
 }
 
 type PagePart = { invocation: StoredInvocation; kind: "document" | "rsc" };
+type AppPageShellPart = keyof NonNullable<ResponseStoreInvocationCapture["pageParts"]>;
 
 /**
  * The other part of the page a canonical App page render stores. Next.js
@@ -822,18 +827,29 @@ const handler = {
       const warmupOtherKey =
         isWarmup && otherPart ? await cacheRequest(otherPart.invocation) : undefined;
       const rscKey = otherPart?.kind === "rsc" ? warmupOtherKey : undefined;
+      // The part a shell under the dispatch's key is stored as: a path's own
+      // shell under its page's keys, or the page's static shell under its
+      // static-shell prefetch's, which the prefetch serves with the request's
+      // own headers.
+      const ownPart: AppPageShellPart | undefined = otherPart
+        ? otherPart.kind === "rsc"
+          ? "document"
+          : "rsc"
+        : options.cacheIdentity?.queryFree && isStaticShellPrefetch(identityProps)
+          ? "static-shell"
+          : undefined;
       const invocation = prepareInvocation(identityRequest, identityProps);
       const key = await cacheRequest(invocation);
       let stored = await readStoredResponse(key);
-      // A path's own shell, stored under its page's keys, isn't the page: the
-      // render reads it instead of the Store. A dispatch storing its own part
-      // only, whose key a warm-up's shell may have reached, renders too.
+      // A shell isn't a response: the render reads it instead of the Store. A
+      // dispatch storing no shell part, whose key a warm-up's shell may have
+      // reached, renders too.
       const foundShell = !!stored && isResponseStorePageShell(stored);
       // What the read found for the render: the Store's miss, or a shell. A
       // failed lookup, or a shell that can't be read, is left to the
       // render's own read.
       let ownPartRead: Response | null | undefined = stored === null ? null : undefined;
-      if (stored && foundShell && !otherPart) {
+      if (stored && foundShell && !ownPart) {
         void stored.body?.cancel().catch(() => {});
         stored = null;
       } else if (stored && foundShell) {
@@ -843,7 +859,7 @@ const handler = {
         } catch (error) {
           console.error(
             JSON.stringify({
-              message: "Vinext response-store failed to read a path's own shell",
+              message: "Vinext response-store failed to read a shell",
               error: error instanceof Error ? error.message : String(error),
             }),
           );
@@ -871,13 +887,15 @@ const handler = {
       // Only a render needs the other part's key, so a hit doesn't hash it.
       const otherKey =
         warmupOtherKey ?? (otherPart ? await cacheRequest(otherPart.invocation) : undefined);
-      const ownPart = otherPart && (otherPart.kind === "rsc" ? "document" : "rsc");
       const capture: ResponseStoreInvocationCapture = {
         ...(isWarmup ? {} : { streamResponse: true }),
         ...otherPagePartCapture(otherPart),
-        ...(ownPart && otherKey
+        ...(ownPart
           ? {
-              pageParts: { [ownPart]: key, [otherPart.kind]: otherKey },
+              pageParts: {
+                [ownPart]: key,
+                ...(otherPart && otherKey ? { [otherPart.kind]: otherKey } : {}),
+              },
               ...(ownPartRead === undefined
                 ? {}
                 : { pageShell: { part: ownPart, response: ownPartRead } }),
