@@ -898,9 +898,10 @@ describe("App Router integration", () => {
     // The RSC payload should contain the intercepted modal content
     expect(rscPayload).toContain("Photo Modal");
     expect(rscPayload).toContain("photo-modal");
-    // It should also contain the feed page content (the source route)
-    expect(rscPayload).toContain("Photo Feed");
-    expect(rscPayload).toContain("feed-page");
+    // Like Next.js, the client keeps the feed page beneath the modal instead
+    // of the server rendering it again.
+    expect(rscPayload).not.toContain("Photo Feed");
+    expect(rscPayload).toContain('"__retainedElementIds":["page:/feed"');
     expect(rscPayload).toContain("__interceptionContext");
     expect(rscPayload).toContain("/feed");
     const nul = String.fromCharCode(0);
@@ -959,9 +960,11 @@ describe("App Router integration", () => {
     // The RSC payload should contain the intercepted settings modal with the actual team ID
     expect(rscPayload).toContain("Settings Modal");
     expect(rscPayload).toContain("settings-modal");
-    // The source route (members page) should render with the actual teamId value.
-    // The source page component receives params from pickRouteParams.
-    expect(rscPayload).toContain("members-page");
+    // The client keeps the members page it shows, bound to the actual teamId
+    // value by the identity the payload gives it.
+    expect(rscPayload).not.toContain("members-page");
+    expect(rscPayload).toContain('"__retainedElementIds":["page:/team/42/members"');
+    expect(rscPayload).toContain('\\"teamId|42|d\\"');
     // The literal pattern string ":teamId" must NOT appear as a param value anywhere
     expect(rscPayload).not.toContain('":teamId"');
   });

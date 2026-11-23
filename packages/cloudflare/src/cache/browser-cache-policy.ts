@@ -34,7 +34,10 @@ export function finalizeGatewayResponse(
   ) {
     return response;
   }
-  const headers = new Headers(response.headers);
+  // Workerd copies cf, webSocket and encodeBody from a Response init, so a
+  // WebSocket upgrade (status 101) survives the rebuild.
+  const finalized = new Response(response.body, response as ResponseInit);
+  const headers = finalized.headers;
   headers.delete(SHARED_RESPONSE_STAGE_HEADER);
   headers.delete(CLOUDFLARE_EDGE_POLICY_HEADER);
   if (usedSharedResponseStage || sharedResponseStageCollision) {
@@ -50,9 +53,5 @@ export function finalizeGatewayResponse(
     headers.set(VINEXT_CACHE_HEADER, cacheStatus);
     headers.set(NEXTJS_CACHE_HEADER, cacheStatus);
   }
-  return new Response(response.body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
+  return finalized;
 }
