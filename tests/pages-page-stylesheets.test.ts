@@ -109,7 +109,7 @@ describe("collectPagesPageStylesheets", () => {
 describe("withoutPreloadedStylesheets", () => {
   const code =
     'const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["/_next/static/chunks/alpha.js","/_next/static/css/alpha.css?dpl=1","/_next/static/css/app.css?dpl=1"])))=>i.map(i=>d[i]);\n' +
-    'const p={"/alpha":()=>a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2])),"/beta":()=>b(()=>import(`./beta.js`),__vite__mapDeps([1]))};';
+    'const p=window.__VINEXT_PAGE_LOADERS__={"/alpha":()=>a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2])),"/beta":()=>b(()=>import(`./beta.js`),__vite__mapDeps([1]))};';
   const strip = (
     source: string,
     stylesheets: string[],
@@ -151,6 +151,10 @@ describe("withoutPreloadedStylesheets", () => {
     expect(strip(other, ["_next/static/css/alpha.css"])).toContain(
       'c(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]))',
     );
+    const map = `${code}const m={"/alpha":()=>c(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]))};`;
+    expect(strip(map, ["_next/static/css/alpha.css"])).toContain(
+      'const m={"/alpha":()=>c(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]))}',
+    );
   });
 
   it("leaves strings and comments alone", () => {
@@ -177,7 +181,7 @@ describe("withoutPreloadedStylesheets", () => {
       .join(",");
     const runtimeCode =
       `const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[${table}])))=>i.map(i=>d[i]);\n` +
-      'const p={"/alpha":()=>a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]))};';
+      'window.__VINEXT_PAGE_LOADERS__={"/alpha":()=>a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]))};';
     expect(
       strip(runtimeCode, ["_next/static/css/alpha.css"], (file) => ({ runtime: runtime(file) })),
     ).toContain("__vite__mapDeps([0,2  ])");

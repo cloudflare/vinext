@@ -175,37 +175,30 @@ export function withoutPreloadedStylesheets(
   });
   if (removed.size === 0) return chunk.code;
 
-  // The client entry's page loaders are `"/route": () => import("./page.js")`,
+  // The client entry assigns its page loaders to window in place:
+  // `window.__VINEXT_PAGE_LOADERS__ = { "/route": () => import("./page.js") }`,
   // which Vite turns into `"/route": () => preload(() => import("./page.js"),
   // __vite__mapDeps([...]))`. Other imports of a page, such as one from
   // instrumentation-client, aren't followed by the router's stylesheet load.
   const lists: ESTree.ArrayExpression[] = [];
   walkExpression(program, (node) => {
     if (
-      node.type !== "Property" ||
-      node.key.type !== "Literal" ||
-      typeof node.key.value !== "string" ||
-      !Object.hasOwn(options.routeChunks, node.key.value) ||
-      node.value.type !== "ArrowFunctionExpression" ||
-      node.value.body.type !== "CallExpression"
+      node.type !== "AssignmentExpression" ||
+      node.left.type !== "MemberExpression" ||
+      node.left.object.type !== "Identifier" ||
+      node.left.object.name !== "window" ||
+      node.left.property.type !== "Identifier" ||
+      node.left.property.name !== "__VINEXT_PAGE_LOADERS__" ||
+      node.right.type !== "ObjectExpression"
     ) {
       return;
     }
-    const [loader, deps] = node.value.body.arguments;
-    if (
-      loader?.type !== "ArrowFunctionExpression" ||
-      loader.body.type !== "ImportExpression" ||
-      deps?.type !== "CallExpression" ||
-      deps.callee.type !== "Identifier" ||
-      deps.callee.name !== "__vite__mapDeps" ||
-      deps.arguments[0]?.type !== "ArrayExpression"
-    ) {
-      return;
+    for (const property of node.right.properties) {
+      const list =
+        property.type === "Property" &&
+        pageLoaderPreloads(property, chunk.fileName, options.routeChunks);
+      if (list) lists.push(list);
     }
-    const specifier = stringValue(loader.body.source);
-    if (specifier === undefined) return;
-    const imported = path.posix.join(path.posix.dirname(chunk.fileName), specifier);
-    if (imported === options.routeChunks[node.key.value]) lists.push(deps.arguments[0]);
   });
 
   let code = chunk.code;
@@ -218,6 +211,38 @@ export function withoutPreloadedStylesheets(
     code = `${code.slice(0, list.start)}[${kept.padEnd(list.end - list.start - 2)}]${code.slice(list.end)}`;
   }
   return code;
+}
+
+/** The preload list of a page loader, `"/route": () => preload(() => import(...), ...)`. */
+function pageLoaderPreloads(
+  property: ESTree.ObjectProperty,
+  chunkFileName: string,
+  routeChunks: Readonly<Record<string, string>>,
+): ESTree.ArrayExpression | undefined {
+  if (
+    property.key.type !== "Literal" ||
+    typeof property.key.value !== "string" ||
+    !Object.hasOwn(routeChunks, property.key.value) ||
+    property.value.type !== "ArrowFunctionExpression" ||
+    property.value.body.type !== "CallExpression"
+  ) {
+    return undefined;
+  }
+  const [loader, deps] = property.value.body.arguments;
+  if (
+    loader?.type !== "ArrowFunctionExpression" ||
+    loader.body.type !== "ImportExpression" ||
+    deps?.type !== "CallExpression" ||
+    deps.callee.type !== "Identifier" ||
+    deps.callee.name !== "__vite__mapDeps" ||
+    deps.arguments[0]?.type !== "ArrayExpression"
+  ) {
+    return undefined;
+  }
+  const specifier = stringValue(loader.body.source);
+  if (specifier === undefined) return undefined;
+  const imported = path.posix.join(path.posix.dirname(chunkFileName), specifier);
+  return imported === routeChunks[property.key.value] ? deps.arguments[0] : undefined;
 }
 
 /** The value of a string literal, or of a template literal without expressions. */
