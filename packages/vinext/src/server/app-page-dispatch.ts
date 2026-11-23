@@ -1724,7 +1724,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   // Next.js renders an unlisted param on demand in draft mode.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
-  if (options.skipStaticParamsValidation !== true && !isDraftMode) {
+  const validatesStaticParams = options.skipStaticParamsValidation !== true && !isDraftMode;
+  if (validatesStaticParams) {
     const dynamicParamsResponse = await runStaticParamsCheckDetached(() =>
       validateAppPageRouteDynamicParams({
         dynamicConfig,
@@ -1798,8 +1799,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   // A request recomputing a data entry renders whole, so a cached function or
   // fetch the shell holds runs. It still asks generateStaticParams as
-  // `tryServe` would, so a cached fetch the generator reads runs too.
-  if (options.pprRuntime && options.regeneratesDataEntry === true) {
+  // `tryServe` would, so a cached fetch the generator reads runs too, unless
+  // the `dynamicParams = false` check above already asked it.
+  if (
+    options.pprRuntime &&
+    options.regeneratesDataEntry === true &&
+    !(validatesStaticParams && options.dynamicParamsConfig === false)
+  ) {
     await options.pprRuntime.rerunGeneratedStaticParams(
       options,
       currentRevalidateSeconds,
