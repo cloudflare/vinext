@@ -8474,6 +8474,36 @@ describe("app page dispatch", () => {
     expect(resumes).toEqual([undefined]);
   });
 
+  it("asks generateStaticParams, without a shell, when it recomputes a data entry", async () => {
+    const resumes: unknown[] = [];
+    const scheduledKeys: string[] = [];
+    const generateStaticParams = vi.fn(async () => [{ locale: "en", slug: "hello" }]);
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      generateStaticParams,
+      isrGet: vi.fn(async () => null),
+      loadSsrHandler: createResumeRecordingSsrHandler(resumes),
+    });
+
+    await (
+      await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          regeneratesDataEntry: true,
+          scheduleFallbackShellRegeneration(key) {
+            scheduledKeys.push(key);
+          },
+        }),
+      )
+    ).text();
+
+    // A cached fetch the generator reads regenerates as the request without
+    // stored shells would.
+    expect(generateStaticParams).toHaveBeenCalledOnce();
+    expect(resumes).toEqual([undefined]);
+    expect(scheduledKeys).toEqual([]);
+  });
+
   it.each([{ regeneratesDataEntry: false }, { regeneratesDataEntry: true }])(
     "produces a path's own shell after a render that reads dynamic data in a boundary (regeneratesDataEntry: $regeneratesDataEntry)",
     async ({ regeneratesDataEntry }) => {
