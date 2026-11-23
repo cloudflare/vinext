@@ -1756,8 +1756,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (fallbackShellResult instanceof Response) {
     return fallbackShellResult;
   }
-  // The stored shell whose prelude this request sends before its holes.
-  const pprShellResume = fallbackShellResult ?? undefined;
+  // The stored shell whose prelude this request sends before its holes. Like
+  // Next.js, an html-limited bot renders the whole document instead, with the
+  // shell's cached data, as its metadata blocks in the <head> a prelude closed.
+  const pprShellResume = serveStreamingMetadata ? (fallbackShellResult ?? undefined) : undefined;
 
   let interceptConfig: AppPageInterceptSegmentConfig | null = null;
   // Whether the intercepted response's render is force-dynamic or
