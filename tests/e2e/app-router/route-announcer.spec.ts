@@ -13,7 +13,9 @@ async function readAnnouncer(page: Page) {
   return page.evaluate(() => {
     const host = document.getElementsByTagName("next-route-announcer")[0];
     const node = host?.shadowRoot?.querySelector('[aria-live="assertive"]');
-    return node ? { role: node.getAttribute("role"), text: node.textContent } : null;
+    return node
+      ? { role: node.getAttribute("role"), text: node.textContent, html: node.innerHTML }
+      : null;
   });
 }
 
@@ -28,7 +30,8 @@ test.describe("App Router route announcer", () => {
     await waitForAppRouterHydration(page);
 
     // Screen readers already read a fresh document: nothing is announced.
-    await expect.poll(() => readAnnouncer(page)).toEqual({ role: "alert", text: "" });
+    // The region holds no markup at all, as Next.js's app-a11y test checks.
+    await expect.poll(() => readAnnouncer(page)).toEqual({ role: "alert", text: "", html: "" });
 
     await page.evaluate(() => {
       (window as any).__ANNOUNCER_NAV_MARKER__ = true;
@@ -40,7 +43,7 @@ test.describe("App Router route announcer", () => {
 
     await expect
       .poll(() => readAnnouncer(page))
-      .toEqual({ role: "alert", text: "Route Announcer Destination" });
+      .toMatchObject({ role: "alert", text: "Route Announcer Destination" });
 
     // Browser translation (Chrome Translate) swaps the announcement's text
     // node for <font> elements, as in vercel/next.js#99353. The next
@@ -61,7 +64,7 @@ test.describe("App Router route announcer", () => {
     expect(await page.evaluate(() => (window as any).__ANNOUNCER_NAV_MARKER__)).toBe(true);
     await expect
       .poll(() => readAnnouncer(page))
-      .toEqual({ role: "alert", text: "Route Announcer Start" });
+      .toMatchObject({ role: "alert", text: "Route Announcer Start" });
 
     // A single announcer host, however many navigations commit.
     expect(

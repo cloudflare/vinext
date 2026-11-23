@@ -72,8 +72,14 @@ export function AppRouterAnnouncer({ tree }: { tree: unknown }) {
   // A keyed element, not bare text (vercel/next.js#98314, for #99353): browser
   // translation replaces the text node, and React would then update or remove
   // a detached node, leaving the region stale or throwing on removeChild.
-  // Changing the key replaces the whole span on every announcement.
+  // Changing the key replaces the whole span on every announcement. With
+  // nothing to announce the region stays empty, as in Next.js.
   return portalNode
-    ? createPortal(createElement("span", { key: routeAnnouncement }, routeAnnouncement), portalNode)
+    ? createPortal(
+        routeAnnouncement
+          ? createElement("span", { key: routeAnnouncement }, routeAnnouncement)
+          : null,
+        portalNode,
+      )
     : null;
 }
