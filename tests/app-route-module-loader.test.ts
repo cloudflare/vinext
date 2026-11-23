@@ -297,23 +297,36 @@ describe("ensureAppRouteModulesLoaded", () => {
         throw new Error(`${name} module throws`);
       });
     const file = (name: string) => ({ default: () => name });
-    const [rootLayout, clubLayout, clubTemplate, clubLoading, rootNotFound, asideDefault] = [
+    const [
+      rootLayout,
+      clubLayout,
+      clubTemplate,
+      clubLoading,
+      rootNotFound,
+      clubForbidden,
+      clubUnauthorized,
+      asideDefault,
+    ] = [
       file("root layout"),
       file("club layout"),
       file("club template"),
       file("club loading"),
       file("root not found"),
+      file("club forbidden"),
+      file("club unauthorized"),
       file("aside default"),
     ];
     const groupLoaders = {
       default: throwing("group slot default"),
       error: throwing("group error"),
+      forbidden: throwing("group forbidden"),
       layout: throwing("group layout"),
       leafError: throwing("group leaf error"),
       leafLoading: throwing("group leaf loading"),
       loading: throwing("group loading"),
       notFound: throwing("group not found"),
       template: throwing("group template"),
+      unauthorized: throwing("group unauthorized"),
     };
     const route: LazyLoadableRoute = {
       routeSegments: ["club", "(children)"],
@@ -337,6 +350,22 @@ describe("ensureAppRouteModulesLoaded", () => {
       segmentNotFounds: [null, null],
       segmentNotFoundTreePositions: [0, 2],
       __loadSegmentNotFounds: [async () => rootNotFound, groupLoaders.notFound],
+      forbiddens: [null, null, null],
+      __loadForbiddens: [null, async () => clubForbidden, groupLoaders.forbidden],
+      unauthorizeds: [null, null, null],
+      __loadUnauthorizeds: [null, async () => clubUnauthorized, groupLoaders.unauthorized],
+      forbidden: null,
+      forbiddenTreePosition: 2,
+      __loadForbidden: groupLoaders.forbidden,
+      unauthorized: null,
+      unauthorizedTreePosition: 2,
+      __loadUnauthorized: groupLoaders.unauthorized,
+      segmentForbiddens: [null, null],
+      segmentForbiddenTreePositions: [1, 2],
+      __loadSegmentForbiddens: [async () => clubForbidden, groupLoaders.forbidden],
+      segmentUnauthorizeds: [null, null],
+      segmentUnauthorizedTreePositions: [1, 2],
+      __loadSegmentUnauthorizeds: [async () => clubUnauthorized, groupLoaders.unauthorized],
       loading: null,
       __loadLoading: groupLoaders.leafLoading,
       error: null,
@@ -368,6 +397,12 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(route.templates).toEqual([clubTemplate, null]);
     expect(route.loadings).toEqual([clubLoading, null]);
     expect(route.segmentNotFounds).toEqual([rootNotFound, null]);
+    expect(route.forbiddens).toEqual([null, clubForbidden, null]);
+    expect(route.unauthorizeds).toEqual([null, clubUnauthorized, null]);
+    expect(route.segmentForbiddens).toEqual([clubForbidden, null]);
+    expect(route.segmentUnauthorizeds).toEqual([clubUnauthorized, null]);
+    expect(route.forbidden).toBeNull();
+    expect(route.unauthorized).toBeNull();
     expect(route.slots?.aside.default).toBe(asideDefault);
     for (const loader of Object.values(groupLoaders)) {
       expect(loader).not.toHaveBeenCalled();

@@ -135,6 +135,7 @@ import { traceResponseStart } from "./response-start-tracing.js";
 import { getFrameworkLinkHeader } from "./app-response-header-provenance.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import { isUnknownRecord } from "../utils/record.js";
+import { trimRouteToInterceptSlotOwner } from "./app-page-whole-intercepting-route.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -277,6 +278,24 @@ export type AppPageDispatchRoute = {
   unauthorizedTreePosition?: number | null;
   unauthorizeds?: readonly (AppPageModule | null | undefined)[];
 };
+
+/**
+ * The route as a render shows it, which its fallbacks resolve their layouts
+ * and boundaries from. A whole intercepting route shows it only down to the
+ * slot owner's folder (see app-page-whole-intercepting-route.ts), so none of
+ * the files below that folder catches its errors or wraps its fallbacks,
+ * whichever of them an earlier render loaded.
+ */
+function resolveRenderedRoute<TRoute extends AppPageDispatchRoute>(
+  route: TRoute,
+  interceptOpts: unknown,
+): TRoute {
+  return isUnknownRecord(interceptOpts) &&
+    interceptOpts.rendersInterceptionSource === true &&
+    interceptOpts.rendersWholeInterceptingRoute === true
+    ? trimRouteToInterceptSlotOwner(route, interceptOpts.interceptSlotKey)
+    : route;
+}
 
 function getActiveLoadingTreePositions(route: AppPageDispatchRoute): number[] {
   const positions: number[] = [];
@@ -472,6 +491,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     errorOrigin?: "rsc" | "ssr",
     /** The params the route rendered under, when not the request's. */
     params?: AppPageParams,
+    /** The route as the render showed it, which a whole intercepting route trims. */
+    route?: TRoute,
   ) => Promise<Response | null>;
   renderHttpAccessFallbackPage: (
     statusCode: number,
@@ -489,6 +510,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
       matchedParams: AppPageParams;
       /** The route's render threw the signal, so the document keeps the route's head. */
       routeHead?: AppPageFallbackRouteHead;
+      /** The route as the render showed it, which a whole intercepting route trims. */
+      route?: TRoute;
       /** Render the root not-found as if no route matched, as Next.js routing does. */
       routeMiss?: boolean;
     },
@@ -1235,7 +1258,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 // The fallback boundaries are resolved for the matched route.
                 if (revalidationTarget.route !== route) return null;
                 const document = await renderPageSpecialError(
-                  { ...options, params: revalidationTarget.params },
+                  {
+                    ...options,
+                    params: revalidationTarget.params,
+                    route: resolveRenderedRoute(route, revalidationTarget.interceptOpts),
+                  },
                   specialError,
                   false,
                   revalidationTarget.interceptOpts,
@@ -1557,8 +1584,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   );
   if (sourceRootParams) setRootParams(sourceRootParams);
   const renderRootParams = sourceRootParams ?? options.rootParams;
+  const renderedRoute = resolveRenderedRoute(route, interceptResult.interceptOpts);
   const specialErrorOptions =
-    renderParams === options.params ? options : { ...options, params: renderParams };
+    renderParams === options.params && renderedRoute === route
+      ? options
+      : { ...options, params: renderParams, route: renderedRoute };
   const buildCurrentPageElement = () =>
     buildAppPageElement({
       buildPageElement() {
@@ -1589,7 +1619,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         );
       },
       renderErrorBoundaryPage(buildError) {
-        return options.renderErrorBoundaryPage(buildError, undefined, renderParams);
+        return options.renderErrorBoundaryPage(buildError, undefined, renderParams, renderedRoute);
       },
       renderSpecialError(specialError) {
         return renderPageSpecialError(
@@ -1726,7 +1756,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
     renderErrorBoundaryResponse(renderError, errorOrigin) {
-      return options.renderErrorBoundaryPage(renderError, errorOrigin, renderParams);
+      return options.renderErrorBoundaryPage(renderError, errorOrigin, renderParams, renderedRoute);
     },
     renderPageSpecialError(specialError, renderOptions) {
       return renderPageSpecialError(
@@ -1928,6 +1958,7 @@ function renderLayoutBoundaryFallback<TRoute extends AppPageDispatchRoute>(
           index < renderedLayoutCount && (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
       ),
       matchedParams: options.params,
+      route,
       ...(fallbackOptions.routeHead ? { routeHead: fallbackOptions.routeHead } : {}),
     },
     null,
@@ -1996,6 +2027,7 @@ function renderPageSegmentBoundaryFallback<TRoute extends AppPageDispatchRoute>(
         (_, index) => (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
       ),
       matchedParams: options.params,
+      route,
       ...(routeHead ? { routeHead } : {}),
     },
     null,
@@ -2121,6 +2153,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
         intercept,
         ...(isCacheCandidate ? { isCacheCandidate } : {}),
         matchedParams: options.params,
+        route: options.route,
         ...(routeHead ? { routeHead } : {}),
       };
       if (useLayoutAlignedBoundary && boundaryLayoutIndex !== null) {

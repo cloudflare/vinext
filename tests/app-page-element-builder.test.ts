@@ -4343,6 +4343,84 @@ describe("buildPageElements", () => {
     expect(trimRouteToInterceptSlotOwner(ownFolderRoute, "modal")).toBe(ownFolderRoute);
   });
 
+  it("trims a whole intercepting route below nested groups and below a root slot owner", () => {
+    const file = (name: string) => ({ default: () => name }) as AppPageModule;
+    // app/club/@modal with app/club/(a)/(b)/page.tsx.
+    const [clubNotFound, aNotFound, bNotFound] = [
+      file("club not found"),
+      file("(a) not found"),
+      file("(b) not found"),
+    ];
+    const nested = createSyntheticRoute({
+      layouts: [file("root layout"), file("club layout"), file("(a) layout"), file("(b) layout")],
+      layoutTreePositions: [0, 1, 2, 3],
+      notFound: bNotFound,
+      notFoundTreePosition: 3,
+      notFounds: [null, clubNotFound, aNotFound, bNotFound],
+      routeSegments: ["club", "(a)", "(b)"],
+      segmentNotFounds: [clubNotFound, aNotFound, bNotFound],
+      segmentNotFoundTreePositions: [1, 2, 3],
+      slots: {
+        modal: { name: "modal", layoutIndex: 1, ownerTreePosition: 1 },
+        aside: { name: "aside", layoutIndex: 2, ownerTreePosition: 2 },
+      },
+      templates: [file("(a) template"), file("(b) template")],
+      templateTreePositions: [2, 3],
+    });
+    const trimmedNested = trimRouteToInterceptSlotOwner(nested, "modal");
+    expect(Object.keys(trimmedNested.slots ?? {})).toEqual(["modal"]);
+    expect(trimmedNested).toMatchObject({
+      layouts: nested.layouts.slice(0, 2),
+      layoutTreePositions: [0, 1],
+      notFound: clubNotFound,
+      notFoundTreePosition: 1,
+      notFounds: [null, clubNotFound],
+      routeSegments: ["club"],
+      segmentNotFounds: [clubNotFound],
+      segmentNotFoundTreePositions: [1],
+      slots: { modal: nested.slots!.modal },
+      templates: [],
+      templateTreePositions: [],
+    });
+
+    // app/@modal with app/(group)/page.tsx.
+    const [rootNotFound, groupNotFound, groupLoading] = [
+      file("root not found"),
+      file("group not found"),
+      file("group loading"),
+    ];
+    const rootOwned = createSyntheticRoute({
+      layouts: [file("root layout"), file("group layout")],
+      layoutTreePositions: [0, 1],
+      loading: groupLoading,
+      loadings: [groupLoading],
+      loadingTreePositions: [1],
+      notFound: groupNotFound,
+      notFoundTreePosition: 1,
+      notFounds: [rootNotFound, groupNotFound],
+      routeSegments: ["(group)"],
+      segmentNotFounds: [rootNotFound, groupNotFound],
+      segmentNotFoundTreePositions: [0, 1],
+      slots: { modal: { name: "modal", layoutIndex: 0, ownerTreePosition: 0 } },
+    });
+    const trimmedRootOwned = trimRouteToInterceptSlotOwner(rootOwned, "modal");
+    expect(Object.keys(trimmedRootOwned.slots ?? {})).toEqual(["modal"]);
+    expect(trimmedRootOwned).toMatchObject({
+      layouts: rootOwned.layouts.slice(0, 1),
+      layoutTreePositions: [0],
+      loading: null,
+      loadings: [],
+      loadingTreePositions: [],
+      notFound: rootNotFound,
+      notFoundTreePosition: 0,
+      notFounds: [rootNotFound],
+      routeSegments: [],
+      segmentNotFounds: [rootNotFound],
+      segmentNotFoundTreePositions: [0],
+      slots: { modal: rootOwned.slots!.modal },
+    });
+  });
+
   // Next.js rejects a `default` file whose default export isn't a component,
   // as it does a page's, so the owner's children never render as empty.
   it("surfaces a no-default-export error for a whole intercepting route's owner default", async () => {

@@ -8,12 +8,6 @@
  * that tree, so the whole intercepting route neither renders nor loads them.
  */
 
-import type {
-  AppPageErrorModule,
-  AppPageModule,
-  AppPageRouteWiringRoute,
-} from "./app-page-route-wiring.js";
-
 type WholeInterceptingRouteSlot = {
   layoutIndex?: number;
   ownerTreePosition?: number | null;
@@ -23,6 +17,40 @@ type WholeInterceptingRouteShape = {
   layoutTreePositions?: readonly number[] | null;
   routeSegments?: readonly string[] | null;
   slots?: Readonly<Record<string, WholeInterceptingRouteSlot>> | null;
+};
+
+type RouteFiles = readonly unknown[] | null | undefined;
+type TreePositions = readonly number[] | null | undefined;
+
+/** The parts of a route a whole intercepting route trims. */
+type TrimmableRoute = WholeInterceptingRouteShape & {
+  childrenRouteSegments?: readonly string[] | null;
+  childrenSlot?: { ownerTreePath: string } | null;
+  error?: unknown;
+  errorPaths?: RouteFiles;
+  errorTreePositions?: TreePositions;
+  errors?: RouteFiles;
+  forbidden?: unknown;
+  forbiddenTreePosition?: number | null;
+  forbiddens?: RouteFiles;
+  layouts?: RouteFiles;
+  loading?: unknown;
+  loadingTreePositions?: TreePositions;
+  loadings?: RouteFiles;
+  notFound?: unknown;
+  notFoundTreePosition?: number | null;
+  notFounds?: RouteFiles;
+  segmentForbiddenTreePositions?: TreePositions;
+  segmentForbiddens?: RouteFiles;
+  segmentNotFoundTreePositions?: TreePositions;
+  segmentNotFounds?: RouteFiles;
+  segmentUnauthorizedTreePositions?: TreePositions;
+  segmentUnauthorizeds?: RouteFiles;
+  templateTreePositions?: TreePositions;
+  templates?: RouteFiles;
+  unauthorized?: unknown;
+  unauthorizedTreePosition?: number | null;
+  unauthorizeds?: RouteFiles;
 };
 
 /** The main-tree position of the folder that holds the intercepted slot. */
@@ -108,11 +136,10 @@ export function resolveOwnerLevelAccessFile<TModule>(
  * below the owner's folder, and the owner's folder as its last segment, whose
  * children the owner's `default` takes.
  */
-export function trimRouteToInterceptSlotOwner<
-  TModule extends AppPageModule,
-  TErrorModule extends AppPageErrorModule,
-  TRoute extends AppPageRouteWiringRoute<TModule, TErrorModule>,
->(route: TRoute, interceptSlotKey: string | null | undefined): TRoute {
+export function trimRouteToInterceptSlotOwner<TRoute extends TrimmableRoute>(
+  route: TRoute,
+  interceptSlotKey: unknown,
+): TRoute {
   const ownerTreePosition = resolveWholeInterceptingRouteEnd(route, interceptSlotKey);
   if (ownerTreePosition === undefined) return route;
   const routeSegments = route.routeSegments ?? [];

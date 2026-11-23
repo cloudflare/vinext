@@ -342,11 +342,18 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator("#intercept-grouped-children-pic")).toHaveCount(0);
     expect(await markerKept(page)).toBe(true);
 
-    // The club page itself renders inside the group's layout.
-    await page.goto(`${BASE}/nextjs-compat/intercept-source-group-grouped-children/club/members`);
+    // A soft navigation from it to a club page renders that page inside the
+    // group's layout.
+    await page.getByRole("link", { name: "Club members", exact: true }).click();
+    await expect(page).toHaveURL(/\/intercept-source-group-grouped-children\/club\/members$/);
     await expect(page.locator("#intercept-grouped-children-group-layout")).toContainText(
       "Club page: members",
     );
+    await expect(page.locator("#intercept-grouped-children-layout")).toContainText(
+      "Club layout: members",
+    );
+    await expect(page.locator("#intercept-grouped-children-modal")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
   });
 
   // A children slot of a layout above the slot owner, whose own slot has a URL

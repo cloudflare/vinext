@@ -156,6 +156,8 @@ type TestRoute = {
   loading?: { default?: unknown } | null;
   loadings?: readonly ({ default?: unknown } | null | undefined)[];
   loadingTreePositions?: readonly number[];
+  notFound?: { default?: unknown } | null;
+  notFoundTreePosition?: number | null;
   notFounds?: readonly ({ default?: unknown } | null | undefined)[];
   page?: { default?: unknown; dynamic?: unknown } | null;
   params: readonly string[];
@@ -3328,7 +3330,7 @@ describe("app page dispatch", () => {
     expect(buildPageElement).not.toHaveBeenCalled();
     expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
       404,
-      { matchedParams: { slug: "hello" } },
+      { matchedParams: { slug: "hello" }, route: options.route },
       null,
     );
   });
@@ -4196,6 +4198,127 @@ describe("app page dispatch", () => {
     const production = await dispatchWithOwnerDefault({ default: () => null, revalidate: 0 }, true);
     expect(production.cacheControl).toBe("private, no-cache, no-store, max-age=0, must-revalidate");
     expect(production.isrSet).not.toHaveBeenCalled();
+  });
+
+  // A whole intercepting route shows the route only down to the slot owner's
+  // folder, so none of a route group's files below the owner catches its
+  // errors or wraps its fallbacks, even once an earlier render of the group's
+  // own page loaded them.
+  const dispatchWholeRouteOverGroup = async (hasOwnerNotFound: boolean, buildError: Error) => {
+    const clubLayout = { default: () => null };
+    const groupLayout = { default: () => null };
+    const ownerNotFound = { default: () => null };
+    const groupNotFound = { default: () => null };
+    const route = createRoute({
+      errors: [null, { default: () => null }],
+      isDynamic: true,
+      layouts: [clubLayout, groupLayout],
+      layoutTreePositions: [1, 2],
+      notFound: groupNotFound,
+      notFoundTreePosition: 2,
+      notFounds: [hasOwnerNotFound ? ownerNotFound : null, groupNotFound],
+      page: { default: () => null },
+      params: ["path"],
+      pattern: "/club/[...path]",
+      routeSegments: ["club", "(group)", "[...path]"],
+      segmentNotFounds: hasOwnerNotFound ? [ownerNotFound, groupNotFound] : [groupNotFound],
+      segmentNotFoundTreePositions: hasOwnerNotFound ? [1, 2] : [2],
+      slots: {
+        "modal@app/club/@modal": {
+          default: { default: () => null },
+          layoutIndex: 0,
+          ownerTreePosition: 1,
+        },
+      },
+    });
+    const renderErrorBoundaryPage = vi.fn<DispatchOptions["renderErrorBoundaryPage"]>(
+      async () => new Response("<html>error</html>", { status: 500 }),
+    );
+    const renderHttpAccessFallbackPage = vi.fn<DispatchOptions["renderHttpAccessFallbackPage"]>(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw buildError;
+      },
+      cleanPathname: "/club/pics/1",
+      findIntercept: () => ({
+        interceptBranchSegments: ["(.)pics", "[id]"],
+        matchedParams: { id: "1" },
+        ownerDefault: { default: () => null },
+        page: { default: () => null },
+        rendersWholeInterceptingRoute: true,
+        slotKey: "modal@app/club/@modal",
+        sourceMatchedParams: {},
+        sourceRouteIndex: 0,
+      }),
+      getSourceRoute: () => route,
+      interceptionContext: "/club",
+      isRscRequest: true,
+      params: { path: ["pics", "1"] },
+      route,
+    });
+    options.renderErrorBoundaryPage = renderErrorBoundaryPage;
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+    const response = await dispatchAppPage(options);
+    return {
+      clubLayout,
+      ownerNotFound,
+      renderErrorBoundaryPage,
+      renderHttpAccessFallbackPage,
+      status: response.status,
+    };
+  };
+
+  it.each([
+    { name: "the owner's not-found", hasOwnerNotFound: true },
+    { name: "the built-in not-found", hasOwnerNotFound: false },
+  ])(
+    "renders a whole intercepting route's notFound() in $name, not a deeper group's",
+    async ({ hasOwnerNotFound }) => {
+      const { clubLayout, ownerNotFound, renderHttpAccessFallbackPage, status } =
+        await dispatchWholeRouteOverGroup(
+          hasOwnerNotFound,
+          Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+            digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+          }),
+        );
+
+      expect(status).toBe(404);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        404,
+        expect.objectContaining({
+          boundaryModule: hasOwnerNotFound ? ownerNotFound : DEFAULT_NOT_FOUND_MODULE,
+          headLayouts: [clubLayout],
+          layouts: [clubLayout],
+          route: expect.objectContaining({
+            layouts: [clubLayout],
+            notFound: hasOwnerNotFound ? ownerNotFound : null,
+          }),
+        }),
+        null,
+      );
+    },
+  );
+
+  it("renders a whole intercepting route's error page without a deeper group's files", async () => {
+    const buildError = new Error("intercepting page failed");
+    const { clubLayout, renderErrorBoundaryPage, status } = await dispatchWholeRouteOverGroup(
+      false,
+      buildError,
+    );
+
+    expect(status).toBe(500);
+    expect(renderErrorBoundaryPage).toHaveBeenCalledWith(
+      buildError,
+      undefined,
+      {},
+      expect.objectContaining({
+        errors: [null],
+        layouts: [clubLayout],
+        routeSegments: ["club"],
+      }),
+    );
   });
 
   // A matched page without a default export answers 500 before it renders,

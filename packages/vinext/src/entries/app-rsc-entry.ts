@@ -1736,13 +1736,13 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           route,
         });
       },
-      renderErrorBoundaryPage(renderErr, errorOrigin, renderParams = params) {
+      renderErrorBoundaryPage(renderErr, errorOrigin, renderParams = params, renderRoute = route) {
         const __activeIntercept = findIntercept(
           interceptionPathname,
           interceptionContext,
           interceptionId,
         );
-        return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, renderParams, scriptNonce, middlewareContext, {
+        return __fallbackRenderer.renderErrorBoundary(renderRoute, renderErr, isRscRequest, request, renderParams, scriptNonce, middlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
@@ -1755,7 +1755,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           interceptionContext,
           interceptionId,
         );
-        return __fallbackRenderer.renderHttpAccessFallback(opts.routeMiss ? null : route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
+        return __fallbackRenderer.renderHttpAccessFallback(opts.routeMiss ? null : (opts.route ?? route), statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
           isEdgeRuntime: !opts.routeMiss && __isEdgeRuntime(__segmentConfig.runtime),
           routePathname: cleanPathname,
           sourcePageSegments: !opts.routeMiss && __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
