@@ -1231,8 +1231,9 @@ export async function buildPageElements<
 /**
  * The route with every slot but the intercepted one showing its default, as
  * the slots of a whole intercepting route's tree do. Its `children` shows the
- * owner `default` too, so a children slot the owner's page holds is bound as
- * a default (or unmatched, with no owner default), like a slot sub-route's.
+ * owner `default` too, so a children slot of the owner's layout is bound as a
+ * default (or unmatched, with no owner default), like a slot sub-route's. One
+ * of an ancestor layout still holds the owner's tree, and stays as it is.
  */
 function withDefaultSlotsBesideIntercept<
   TModule extends AppPageModule,
@@ -1242,14 +1243,23 @@ function withDefaultSlotsBesideIntercept<
   interceptSlotKey: string | null | undefined,
   hasOwnerDefault: boolean,
 ): AppPageBuildRoute<TModule, TErrorModule> {
+  const interceptedSlot = interceptSlotKey ? route.slots?.[interceptSlotKey] : undefined;
+  const ownerTreePosition =
+    interceptedSlot?.ownerTreePosition ??
+    route.layoutTreePositions?.[interceptedSlot?.layoutIndex ?? -1];
+  const childrenSlot = route.childrenSlot;
+  const ownsChildrenSlot =
+    !!childrenSlot &&
+    childrenSlot.ownerTreePath.split("/").filter(Boolean).length === ownerTreePosition;
   return {
     ...route,
-    ...(route.childrenSlot && {
-      childrenSlot: {
-        ...route.childrenSlot,
-        state: hasOwnerDefault ? "default" : "unmatched",
-      },
-    }),
+    ...(childrenSlot &&
+      ownsChildrenSlot && {
+        childrenSlot: {
+          ...childrenSlot,
+          state: hasOwnerDefault ? "default" : "unmatched",
+        },
+      }),
     ...(route.slots && {
       slots: Object.fromEntries(
         Object.entries(route.slots).map(([slotKey, slot]) => [

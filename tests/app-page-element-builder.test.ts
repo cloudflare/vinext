@@ -4091,6 +4091,59 @@ describe("buildPageElements", () => {
     });
   });
 
+  // A children slot of an ancestor layout, whose own slot has URL subroutes,
+  // holds the owner's tree, which the whole intercepting route renders anew.
+  it("keeps an ancestor's children slot of the whole intercepting route active", async () => {
+    const route = createSyntheticRoute({
+      childrenSlot: { id: "children:/", ownerTreePath: "/", state: "active" },
+      layouts: [
+        createSyntheticPageModule(({ children }: { children?: React.ReactNode }) => children),
+        createSyntheticPageModule(({ children }: { children?: React.ReactNode }) => children),
+      ],
+      layoutTreePositions: [0, 2],
+      page: createSyntheticPageModule(() => React.createElement("div", null, "club page")),
+      pattern: "/club/:slug",
+      params: ["slug"],
+      routeSegments: ["club", "[slug]"],
+      slots: {
+        modal: {
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 1,
+          ownerTreePosition: 2,
+          routeSegments: [],
+        },
+      },
+    });
+    const elements = await buildPageElements(
+      createBaseOptions({
+        route,
+        params: { slug: "static" },
+        routePath: "/club/static/pics/1",
+        opts: {
+          interceptionContext: "/club/static",
+          interceptOwnerDefault: createSyntheticPageModule(() =>
+            React.createElement("div", null, "club default"),
+          ),
+          interceptPage: createSyntheticPageModule(() =>
+            React.createElement("div", null, "pic modal"),
+          ),
+          interceptParams: { id: "1", slug: "static" },
+          interceptSlotId: "slot:modal:/club/[slug]",
+          interceptSlotKey: "modal",
+          interceptSourceMatchedUrl: "/club/static",
+          interceptSourcePageSegments: ["club", "[slug]", "@modal", "(.)pics", "[id]"],
+          rendersInterceptionSource: true,
+          rendersWholeInterceptingRoute: true,
+        },
+      }),
+    );
+
+    expect((elements as Record<string, unknown>)[APP_SLOT_BINDINGS_KEY]).toContainEqual(
+      expect.objectContaining({ slotId: "slot:children:/", state: "active" }),
+    );
+  });
+
   // Next.js rejects a `default` file whose default export isn't a component,
   // as it does a page's, so the owner's children never render as empty.
   it("surfaces a no-default-export error for a whole intercepting route's owner default", async () => {

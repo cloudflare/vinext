@@ -341,6 +341,32 @@ test.describe("Intercepting Routes", () => {
     expect(await markerKept(page)).toBe(true);
   });
 
+  // A children slot of a layout above the slot owner, whose own slot has a URL
+  // subroute, takes the whole intercepting route's tree rather than keeping
+  // the source page.
+  test("opens the whole intercepting route beneath a layout whose slot has a subroute", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-ancestor-children/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Pic 1", exact: true }).click();
+
+    await expect(page).toHaveURL(/\/intercept-source-ancestor-children\/club\/static\/pics\/1$/);
+    await expect(page.locator("#intercept-ancestor-children-modal")).toHaveText("Pic modal: 1");
+    await expect(page.locator("#intercept-ancestor-children-club-layout")).toContainText(
+      "Club layout: static",
+    );
+    await expect(page.locator("#intercept-ancestor-children-club-default")).toHaveText(
+      "Club default",
+    );
+    await expect(page.locator("#intercept-ancestor-children-static")).toHaveCount(0);
+    await expect(page.locator("#intercept-ancestor-children-pic")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
+  });
+
   // A link in the whole intercepting route sends its source again, as Next.js
   // does, so an interception from that source into a slot of a layout both
   // trees share opens softly over it.
