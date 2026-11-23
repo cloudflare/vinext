@@ -127,55 +127,50 @@ async function stylesheetLinks(page: Page, routes: string[]): Promise<Record<str
   return links;
 }
 
-// Vite limitation: Vite gives every JavaScript chunk a stylesheet of its own,
-// so the CSS of each list's chunk can't stay in the page's stylesheet.
-test.fail(
-  "a page links one stylesheet for the small CSS modules of two shared lists",
-  async ({ page }) => {
-    // pages/panels: `/panels/both` renders two lists that `/panels/alpha` and
-    // `/panels/beta` render one each. Their CSS modules are under 1 kB in all,
-    // so Next.js leaves them in each page's own stylesheet.
-    const links = await stylesheetLinks(page, ["/panels/both", "/panels/alpha", "/panels/beta"]);
+test("a page links one stylesheet for the small CSS modules of two shared lists", async ({
+  page,
+}) => {
+  // pages/panels: `/panels/both` renders two lists that `/panels/alpha` and
+  // `/panels/beta` render one each. Their CSS modules are under 1 kB in all,
+  // so Next.js leaves them in each page's own stylesheet.
+  const links = await stylesheetLinks(page, ["/panels/both", "/panels/alpha", "/panels/beta"]);
 
-    expect(links).toEqual({ "/panels/both": 1, "/panels/alpha": 1, "/panels/beta": 1 });
-  },
-);
+  // Vite limitation: Vite gives every JavaScript chunk a stylesheet of its
+  // own, so the CSS of each list's chunk can't stay in the page's stylesheet.
+  test.fail();
+  expect(links).toEqual({ "/panels/both": 1, "/panels/alpha": 1, "/panels/beta": 1 });
+});
 
-// Rolldown limitation: `experimentalInlineCommonChunks` copies a small chunk
-// into the chunks that import it, not into the pages, so a copy in both lists'
-// chunks would download twice on `/lists/both`. The label keeps a chunk.
-test.fail(
-  "a small component with a CSS module that two shared lists use costs no request of its own",
-  async ({ page }) => {
-    // pages/lists: every section of both lists renders a label of about 300
-    // bytes that has a CSS module. In Next.js each page loads one file per list
-    // beyond what `/` loads, and links one stylesheet.
-    const routes = ["/lists/both", "/lists/catalog", "/lists/orders"];
+test("a small component with a CSS module that two shared lists use costs no request of its own", async ({
+  page,
+}) => {
+  // pages/lists: every section of both lists renders a label of about 300
+  // bytes that has a CSS module. In Next.js each page loads one file per list
+  // beyond what `/` loads, and links one stylesheet.
+  const routes = ["/lists/both", "/lists/catalog", "/lists/orders"];
+  const extra = await extraScripts(page, routes);
+  const links = await stylesheetLinks(page, routes);
 
-    expect
-      .soft(await extraScripts(page, routes))
-      .toEqual({ "/lists/both": 2, "/lists/catalog": 1, "/lists/orders": 1 });
-    expect(await stylesheetLinks(page, routes)).toEqual({
-      "/lists/both": 1,
-      "/lists/catalog": 1,
-      "/lists/orders": 1,
-    });
-  },
-);
+  // Rolldown limitation: `experimentalInlineCommonChunks` copies a small chunk
+  // into the chunks that import it, not into the pages, so a copy in both
+  // lists' chunks would download twice on `/lists/both`. The label keeps a
+  // chunk.
+  test.fail();
+  expect.soft(extra).toEqual({ "/lists/both": 2, "/lists/catalog": 1, "/lists/orders": 1 });
+  expect(links).toEqual({ "/lists/both": 1, "/lists/catalog": 1, "/lists/orders": 1 });
+});
 
-// Rolldown limitation: as above, a copy in both lists' chunks would download
-// twice on `/tables/both`.
-test.fail(
-  "a small helper that two shared lists use costs no request of its own",
-  async ({ page }) => {
-    // pages/tables: every section of both lists calls `formatCell`, a few
-    // lines without CSS. In Next.js each page loads one file per list beyond
-    // what `/` loads.
-    const extra = await extraScripts(page, ["/tables/both", "/tables/stock", "/tables/prices"]);
+test("a small helper that two shared lists use costs no request of its own", async ({ page }) => {
+  // pages/tables: every section of both lists calls `formatCell`, a few
+  // lines without CSS. In Next.js each page loads one file per list beyond
+  // what `/` loads.
+  const extra = await extraScripts(page, ["/tables/both", "/tables/stock", "/tables/prices"]);
 
-    expect(extra).toEqual({ "/tables/both": 2, "/tables/stock": 1, "/tables/prices": 1 });
-  },
-);
+  // Rolldown limitation: as above, a copy in both lists' chunks would
+  // download twice on `/tables/both`.
+  test.fail();
+  expect(extra).toEqual({ "/tables/both": 2, "/tables/stock": 1, "/tables/prices": 1 });
+});
 
 test("a small helper that a page and a shared list it renders both use costs no request of its own", async ({
   page,
@@ -189,23 +184,23 @@ test("a small helper that a page and a shared list it renders both use costs no 
   expect(extra).toEqual({ "/cards/full": 1, "/cards/grid": 1, "/cards/title": 0 });
 });
 
-// Rolldown limitation: Rolldown builds one chunk per `import()` target, where
-// webpack builds the drawer once per page and leaves out what the page has.
-// A copy of the frame in the drawer's chunk would link its CSS twice on
-// `/drawer/framed`.
-test.fail(
-  "a small component with a CSS module that pages and a next/dynamic component use costs no request of its own",
-  async ({ page }) => {
-    // pages/drawer: `/drawer/framed` and `/drawer/frame` render a small frame
-    // that has a CSS module, and the drawer that `/drawer/framed` and
-    // `/drawer/plain` load with next/dynamic renders it too. In Next.js the
-    // drawer is the one extra file, and `/drawer/frame` loads no more files
-    // than `/`.
-    const extra = await extraScripts(page, ["/drawer/framed", "/drawer/plain", "/drawer/frame"]);
+test("a small component with a CSS module that pages and a next/dynamic component use costs no request of its own", async ({
+  page,
+}) => {
+  // pages/drawer: `/drawer/framed` and `/drawer/frame` render a small frame
+  // that has a CSS module, and the drawer that `/drawer/framed` and
+  // `/drawer/plain` load with next/dynamic renders it too. In Next.js the
+  // drawer is the one extra file, and `/drawer/frame` loads no more files
+  // than `/`.
+  const extra = await extraScripts(page, ["/drawer/framed", "/drawer/plain", "/drawer/frame"]);
 
-    expect(extra).toEqual({ "/drawer/framed": 1, "/drawer/plain": 1, "/drawer/frame": 0 });
-  },
-);
+  // Rolldown limitation: Rolldown builds one chunk per `import()` target,
+  // where webpack builds the drawer once per page and leaves out what the
+  // page has. A copy of the frame in the drawer's chunk would link its CSS
+  // twice on `/drawer/framed`.
+  test.fail();
+  expect(extra).toEqual({ "/drawer/framed": 1, "/drawer/plain": 1, "/drawer/frame": 0 });
+});
 
 test("a page downloads once the modules of a side-effect-free barrel that _app imports from without using them", async ({
   page,
