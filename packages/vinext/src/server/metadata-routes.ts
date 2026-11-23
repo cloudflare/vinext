@@ -533,6 +533,20 @@ export function getMetadataImageRouteKind(
   return null;
 }
 
+/**
+ * The query a page links a metadata route with (file-based-metadata): image
+ * and icon links carry the source file's content hash
+ * (`/opengraph-image?<hash>`), sitemaps, robots and manifests none.
+ */
+export function metadataRouteLinkSearch(
+  route: Pick<MetadataFileRoute, "contentHash" | "type">,
+): string | undefined {
+  return route.contentHash &&
+    ["apple-icon", "favicon", "icon", "opengraph-image", "twitter-image"].includes(route.type)
+    ? `?${route.contentHash}`
+    : undefined;
+}
+
 const metadataImageIdPattern = /^[a-zA-Z0-9-_.]+$/;
 
 export function isValidMetadataImageId(id: string): boolean {

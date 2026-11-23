@@ -25,6 +25,12 @@ export type ResponseStoreAdapterOptions = {
    */
   locationHint?: ResponseStoreLocationHint;
   mode?: "self-contained" | "service-binding";
+  /**
+   * Seconds to collect edge purges and invalidations for, so each window's are sent together
+   * and spend fewer of the account's purge requests. Edge copies update up to this much later.
+   * Without it, each mutation sends its own.
+   */
+  purgeBatchWindow?: number;
   /** Split version-scoped metadata across this many Durable Objects. */
   shards?: number;
 };
@@ -53,8 +59,20 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
   ) {
     throw new TypeError("Workers Response Store shards must be an integer greater than 1");
   }
-  const configuredOptions: Pick<ResponseStoreAdapterOptions, "locationHint" | "shards"> = {
+  if (
+    options.purgeBatchWindow !== undefined &&
+    (!Number.isSafeInteger(options.purgeBatchWindow) || options.purgeBatchWindow <= 0)
+  ) {
+    throw new TypeError("Workers Response Store purgeBatchWindow must be a positive integer");
+  }
+  const configuredOptions: Pick<
+    ResponseStoreAdapterOptions,
+    "locationHint" | "purgeBatchWindow" | "shards"
+  > = {
     ...(locationHint === undefined ? {} : { locationHint }),
+    ...(options.purgeBatchWindow === undefined
+      ? {}
+      : { purgeBatchWindow: options.purgeBatchWindow }),
     ...(options.shards === undefined ? {} : { shards: options.shards }),
   };
   const runtimeOptions =

@@ -256,6 +256,24 @@ describe("emitStandaloneOutput", () => {
     ).toThrow("Run vite build first.");
   });
 
+  it("refuses a standalone directory that is or contains the project root", () => {
+    // build.outDir ".." in a project named "standalone" (or nested below one)
+    // puts <outDir>/standalone at or above the project root.
+    for (const appRoot of [
+      path.join(tmpDir, "standalone"),
+      path.join(tmpDir, "standalone", "apps", "web"),
+    ]) {
+      writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
+      fs.mkdirSync(path.join(tmpDir, "client"), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, "server"), { recursive: true });
+
+      expect(() => emitStandaloneOutput({ root: appRoot, outDir: tmpDir })).toThrow(
+        "contains the project root",
+      );
+      expect(fs.existsSync(path.join(appRoot, "package.json"))).toBe(true);
+    }
+  });
+
   it("falls back when package.json is hidden by exports map", () => {
     const appRoot = path.join(tmpDir, "app");
     fs.mkdirSync(appRoot, { recursive: true });

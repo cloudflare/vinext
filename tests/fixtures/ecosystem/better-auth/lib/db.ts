@@ -1,6 +1,6 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 
-const sqlite = new Database(":memory:");
+const sqlite = new DatabaseSync(":memory:");
 
 // Create core tables required by better-auth.
 // Using :memory: is fine here since the Vite dev server runs in a single
