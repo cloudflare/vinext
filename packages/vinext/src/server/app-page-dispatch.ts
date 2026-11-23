@@ -19,6 +19,7 @@ import {
   getAndClearPendingCookies,
   getDraftModeCookieHeader,
   getHeadersContext,
+  type HeadersContext,
   isDraftModeRequest,
   peekDynamicUsage,
   peekRenderRequestApiUsage,
@@ -31,6 +32,10 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   closeAfterResponse,
   createRequestContext,
+  getRequestContext,
+  isInsideUnifiedScope,
+  queueAfterCallback,
+  requiresResponseCloseTracking,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import {
@@ -466,6 +471,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   pprFallbackCacheShells?: readonly AppPagePprFallbackCacheShell[] | null;
   pprFallbackShell?: {
     fallbackParamNames: readonly string[];
+    isRuntimePrefetch?: boolean;
     routePattern: string;
   };
   pprRuntime?: AppPagePprRuntime<TRoute>;
@@ -639,6 +645,13 @@ async function runAppPageRevalidationContext<TResult>(
     currentFetchRevalidate?: number | null;
     draftModeSecret: string;
     dynamicConfig?: string;
+    /** The render's request data; a static generation has none. */
+    headersContext?: HeadersContext;
+    /**
+     * Start the render's `after()` work when the request's response closes,
+     * as the request's own work starts, instead of before returning.
+     */
+    closesAfterWithRequest?: boolean;
     params: AppPageParams;
     /** Refresh stale fetches before rendering, as a prerender does. */
     refreshStaleFetchesInForeground?: boolean;
@@ -650,13 +663,17 @@ async function runAppPageRevalidationContext<TResult>(
   renderFn: () => Promise<TResult>,
 ): Promise<TResult> {
   const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
-  const headersContext = createStaticGenerationHeadersContext({
-    draftModeEnabled: false,
-    draftModeSecret: options.draftModeSecret,
-    dynamicConfig: options.dynamicConfig,
-    routeKind: "page",
-    routePattern: options.routePattern,
-  });
+  const headersContext =
+    options.headersContext ??
+    createStaticGenerationHeadersContext({
+      draftModeEnabled: false,
+      draftModeSecret: options.draftModeSecret,
+      dynamicConfig: options.dynamicConfig,
+      routeKind: "page",
+      routePattern: options.routePattern,
+    });
+  const outerContext =
+    options.closesAfterWithRequest === true && isInsideUnifiedScope() ? getRequestContext() : null;
   const requestContext = createRequestContext({
     headersContext,
     currentFetchCacheMode: options.currentFetchCacheMode ?? null,
@@ -685,7 +702,13 @@ async function runAppPageRevalidationContext<TResult>(
   try {
     return await revalidation;
   } finally {
-    await closeAfterResponse(requestContext);
+    // Only work the render registered waits for the response, so a buffered
+    // body without any keeps its Content-Length.
+    if (outerContext && requiresResponseCloseTracking(requestContext)) {
+      queueAfterCallback(outerContext, () => closeAfterResponse(requestContext));
+    } else {
+      await closeAfterResponse(requestContext);
+    }
   }
 }
 
@@ -788,19 +811,25 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   if (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL) {
-    const { markRuntimePrefetchResponse, prefetchesAtRuntime, serveAppPageStaticShellPrefetch } =
-      await import("./app-page-static-shell-prefetch.js");
+    const {
+      markRuntimePrefetchResponse,
+      prefetchesAtRuntime,
+      serveAppPageRuntimePrefetch,
+      serveAppPageStaticShellPrefetch,
+    } = await import("./app-page-static-shell-prefetch.js");
+    // Middleware can enable or disable draft mode for this request.
+    const isDraftMode =
+      getActiveDraftModeState() ?? isDraftModeRequest(options.request, options.draftModeSecret);
     if (prefetchesAtRuntime(options.route)) {
-      // vinext's runtime prefetch is the page's navigation payload.
+      const runtimePrefetchResponse = await serveAppPageRuntimePrefetch(options, isDraftMode);
+      if (runtimePrefetchResponse) return runtimePrefetchResponse;
+      // A prefetch that can't be prerendered, such as a draft mode one, gets
+      // the page's navigation payload.
       return markRuntimePrefetchResponse(
         await dispatchAppPage(withRenderMode(options, APP_RSC_RENDER_MODE_NAVIGATION)),
       );
     }
-    const staticShellResponse = await serveAppPageStaticShellPrefetch(
-      options,
-      // Middleware can enable or disable draft mode for this request.
-      getActiveDraftModeState() ?? isDraftModeRequest(options.request, options.draftModeSecret),
-    );
+    const staticShellResponse = await serveAppPageStaticShellPrefetch(options, isDraftMode);
     if (staticShellResponse) return staticShellResponse;
     // A prefetch that can't have a static shell gets the route's loading
     // shell, without the static-shell header.
@@ -914,16 +943,25 @@ export async function renderAppPageFallbackShell<TRoute extends AppPageDispatchR
  * page's navigation payload prerendered, with its dynamic parts left at their
  * Suspense fallbacks. `isPartial` tells whether it left any. The response is
  * buffered.
+ *
+ * With `isRuntimePrefetch`, it's the page's runtime prefetch instead, as
+ * Next.js's `prerender-runtime`: the request's cookies, headers and private
+ * caches render too.
  */
 export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
+  isRuntimePrefetch = false,
 ): Promise<{ isPartial: boolean; response: Response }> {
   const pprRuntime = options.pprRuntime;
   if (!pprRuntime) throw new Error("[vinext] A static shell needs cacheComponents.");
   if (!options.withRequest) throw new Error("[vinext] A static shell needs its own request.");
   const route = options.route;
   const pathname = options.cleanPathname;
-  const pprFallbackShell = { fallbackParamNames: [], routePattern: route.pattern };
+  const pprFallbackShell = {
+    fallbackParamNames: [],
+    ...(isRuntimePrefetch ? { isRuntimePrefetch: true } : {}),
+    routePattern: route.pattern,
+  };
   const requestOptions = options.withRequest({
     actionError: undefined,
     actionFailed: false,
@@ -950,7 +988,7 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
     request: options.request,
     rootParams: options.rootParams,
     scriptNonce: undefined,
-    searchParams: new URLSearchParams(),
+    searchParams: isRuntimePrefetch ? options.searchParams : new URLSearchParams(),
     skipStaticParamsValidation: options.skipStaticParamsValidation,
     staticParamsValidationParams: options.staticParamsValidationParams,
   });
@@ -968,6 +1006,10 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
       draftModeSecret: options.draftModeSecret,
       dynamicConfig: options.dynamicConfig,
       displayPathname: options.displayPathname,
+      // A runtime prefetch renders with the request's cookies and headers, and
+      // its `after()` work runs once the request's response closes.
+      closesAfterWithRequest: isRuntimePrefetch,
+      headersContext: isRuntimePrefetch ? (getHeadersContext() ?? undefined) : undefined,
       params: options.params,
       refreshStaleFetchesInForeground: true,
       rootParams: options.rootParams,
@@ -990,7 +1032,12 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
               statusText: response.statusText,
             });
           }),
-        { cacheComponents: true, prerender: true, route: route.pattern },
+        {
+          cacheComponents: true,
+          prerender: true,
+          route: route.pattern,
+          runtime: isRuntimePrefetch,
+        },
       ),
   );
   return { isPartial, response };
