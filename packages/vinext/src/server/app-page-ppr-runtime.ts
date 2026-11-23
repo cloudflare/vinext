@@ -446,7 +446,13 @@ async function serveStoredFallbackShell<TRoute extends AppPageDispatchRoute>(
     if (read.cached!.isExpired === true) return UNDECIDED;
     const generated = parseAppPprShellState(value.postponed)?.generated ?? null;
     if (generated === null) return UNDECIDED;
-    if (isAppPageParamsGenerated(params, generated, routeParamNamesOf(options.route))) {
+    // A more specific shell's fresh record that its kept params weren't
+    // generated rules out the request's path too, over a stale record.
+    const isRuledOut = read.cached!.isStale && ruledOut.size > 0;
+    if (
+      !isRuledOut &&
+      isAppPageParamsGenerated(params, generated, routeParamNamesOf(options.route))
+    ) {
       try {
         // The request doesn't serve the shell, so a stale one regenerates here.
         await produceMissingFallbackShells(
