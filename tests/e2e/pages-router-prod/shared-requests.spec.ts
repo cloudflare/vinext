@@ -214,3 +214,26 @@ test("a page downloads once the modules of a side-effect-free barrel that _app i
   expect.soft(filesWith(scripts, "marker-unit-name")).toHaveLength(1);
   expect(filesWith(scripts, "marker-chip")).toHaveLength(1);
 });
+
+test("the modules of a side-effect-free barrel that _app imports from without using them cost no request of their own", async ({
+  page,
+}) => {
+  // pages/indexes again, counting files. In Next.js each index is the one
+  // extra file, and `unitName` and the chip are in the pages' chunks: no page
+  // makes a request for what `_app` leaves of the barrel.
+  const extra = await extraScripts(page, ["/indexes/both", "/indexes/north", "/indexes/south"]);
+
+  expect(extra).toEqual({ "/indexes/both": 2, "/indexes/north": 1, "/indexes/south": 1 });
+});
+
+test("what one set of pages shares loads as one file, with and without CSS modules", async ({
+  page,
+}) => {
+  // pages/atlas: `/atlas/first` and `/atlas/second` render the same board:
+  // three files of rows without CSS (over 20 kB together) and a list of six
+  // sections that each have a CSS module (over 20 kB together). The same two
+  // pages share all of it, so Next.js loads it as one file.
+  const extra = await extraScripts(page, ["/atlas/first", "/atlas/second"]);
+
+  expect(extra).toEqual({ "/atlas/first": 1, "/atlas/second": 1 });
+});
