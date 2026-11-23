@@ -805,6 +805,48 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       expect(first.body).toBe("dynamic");
     });
 
+    it("hands an RSC navigation its page's RSC part through the gateway's read", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      stages.response.mockImplementationOnce(async () => {
+        await dataCache.set("html:/page", shell("<!--shell-->"), shellContext("document"));
+        await dataCache.set("rsc:/page", shell("rsc-shell"), shellContext("rsc"));
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const pageKey = store.fetch.mock.calls[0]![0].url;
+      const rscKey = [...entries.keys()].find((url) => url !== pageKey)!;
+      stages.request.mockImplementation(
+        (request: Request, _env, _context, dispatchResponseStage) => {
+          const props = { ...pageProps("/page"), isRscRequest: true };
+          return dispatchResponseStage(request, props, {
+            cache: "shared",
+            cacheIdentity: {
+              props,
+              queryFree: true,
+              request: new Request("https://example.com/page?_rsc", {
+                headers: createCanonicalRscRequestHeaders(),
+              }),
+            },
+          });
+        },
+      );
+      const reads: unknown[] = [];
+      stages.response.mockImplementationOnce(async () => {
+        reads.push((await dataCache.get("rsc:/page", { appPageShellPart: "rsc" }))?.value);
+        return dynamicResponse();
+      });
+
+      const navigation = await fetchPage(handler, "https://example.com/page?_rsc");
+
+      expect(navigation.body).toBe("dynamic");
+      expect(reads).toEqual([shell("rsc-shell")]);
+      // The RSC part's read was the gateway's.
+      expect(store.fetch.mock.calls.slice(1).map(([request]) => request.url)).toEqual([rscKey]);
+    });
+
     it("regenerates under its page's keys", async () => {
       dispatchWithIdentity();
       const { entries, store } = createMemoryStore();
