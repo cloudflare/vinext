@@ -8700,7 +8700,8 @@ describe("app page dispatch", () => {
           },
         }),
       );
-      await response.text();
+      // The request rendered dynamically, rather than serving the empty shell.
+      await expect(response.text()).resolves.toContain(isRscRequest ? "payload" : "page");
 
       expect(scheduledKeys).not.toContain("shell:/en/blog/hello");
       expect(isrGet.mock.calls.filter(([key]) => key === "shell:/en/blog/hello")).toHaveLength(1);
