@@ -228,13 +228,13 @@ export function resolveAutoAppRoutePrefetch(
   // gets the page's shell: like Next.js's static prefetch, it never renders
   // search params, so every query string of the page shares it.
   //
-  // A route that prefetches at runtime renders the prefetch with the request's
-  // search params and root params, so those hrefs get one too
-  // (`PrefetchHint.HasRuntimePrefetch`).
+  // A page under root params gets its own shell, rendered with its root
+  // params, as Next.js prerenders a shell per root param value. A route that
+  // prefetches at runtime renders the prefetch with the request's search
+  // params, so those hrefs get one too (`PrefetchHint.HasRuntimePrefetch`).
   const staticShell =
     (canPrefetchPageShell ||
       (route.instant === "runtime" && !hasCacheComponentsLearningOnlyDynamicPath)) &&
-    (!requiresRouteTreePrefetch || route.instant === "runtime") &&
     interceptionContext === null &&
     process.env.NODE_ENV === "production" &&
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true";
