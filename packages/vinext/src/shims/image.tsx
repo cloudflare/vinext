@@ -345,6 +345,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         decoding="async"
         sizes={sizes}
         className={className}
+        data-nimg={fill ? "fill" : "1"}
         onLoad={handleLoad}
         onError={handleError}
         style={fill ? getFillStyle(style, undefined, legacyFill) : style}
@@ -435,6 +436,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
           fetchPriority={priorityFetchPriority}
           sizes={sizes}
           className={className}
+          data-nimg="1"
           {...unpicRuntimeStyleProps}
           background={bg}
           onLoad={handleLoad}
