@@ -275,7 +275,7 @@ describe("collectPagesAppChunkRoots", () => {
     ).toEqual([]);
   });
 
-  it("leaves out imports that lead back to _app or to a module the client entry loads", () => {
+  it("leaves out imports that lead back to _app or to a module the client entry loads before it", () => {
     expect(
       collect({
         "/entry.js": {
@@ -300,7 +300,9 @@ describe("collectPagesAppChunkRoots", () => {
         // The first group takes base-path with next/link, so it never joins `_app`.
         "/vinext/shims/link.js": { imports: ["/vinext/utils/base-path.js"] },
         "/vinext/utils/base-path.js": {},
+        // The client build's input lists `_app` too.
         "/app/pages/_app.tsx": {
+          entry: true,
           imports: [
             "/app/lib/layout.tsx",
             "/app/lib/nav.tsx",
@@ -314,6 +316,7 @@ describe("collectPagesAppChunkRoots", () => {
         },
         "/app/lib/layout.tsx": { imports: ["/app/lib/context.ts"] },
         "/app/lib/context.ts": { imports: ["/app/pages/_app.tsx"] },
+        // A page joins `_app`'s imports, which every page loads.
         "/app/lib/nav.tsx": { imports: ["/app/pages/index.tsx"] },
         // A page's `import()` target loads after `_app`, which imports it anyway.
         "/app/pages/index.tsx": { dynamicImports: ["/app/lib/widget.tsx"] },
@@ -323,7 +326,7 @@ describe("collectPagesAppChunkRoots", () => {
         "/app/lib/banner.tsx": { imports: ["/app/lib/consent.tsx"] },
         "/app/lib/linked.tsx": { imports: ["/vinext/shims/link.js", "/vinext/utils/base-path.js"] },
       }),
-    ).toEqual(["/app/lib/widget.tsx", "/app/lib/linked.tsx"]);
+    ).toEqual(["/app/lib/nav.tsx", "/app/lib/widget.tsx", "/app/lib/linked.tsx"]);
   });
 });
 

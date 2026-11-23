@@ -461,11 +461,12 @@ export function createClientCodeSplittingConfig(
  * re-exports of a side-effect-free barrel that are used), while `_app` itself
  * keeps its own chunk: the client entry imports it, and the Pages manifests
  * look it up by its source path. An import that statically leads back to
- * `_app` or to an app module the client entry loads (a page, which it loads
- * with `import()`, or instrumentation-client and what that loads) stays out:
- * Rolldown would pull that module into the group too, and the entry would then
- * load the whole group before `_app`. Modules the first group takes with its
- * own (vinext's runtime helpers) don't count.
+ * `_app` or to an app module the client entry loads before it
+ * (instrumentation-client and what that loads) stays out: Rolldown would pull
+ * that module into the group too, and the entry would then load the whole
+ * group before `_app`. Modules the first group takes with its own (vinext's
+ * runtime helpers) don't count. A page that one of `_app`'s imports imports
+ * joins the group, as it joins `pages/_app` in Next.js.
  */
 export function collectPagesAppChunkRoots(
   appId: string,
@@ -520,17 +521,22 @@ export function collectPagesAppChunkRoots(
   }
 
   const firstGroupTakes = closure(firstGroupModules);
-  const entryModules = closure(entries);
+  const entryModules = closure([...entries]);
   for (const id of entryModules) {
     if (joinsGroup(id) && !firstGroupTakes.has(id)) leadsToEntry.add(id);
   }
-  // Other `import()` targets load after `_app`, like a `next/dynamic`
-  // component of a page. One that `_app`'s imports reach statically loads with
-  // them anyway, and this graph is from before tree-shaking, which may drop an
-  // `import()` of a package's unused export.
+  // So do the `import()` targets of what it loads, like a component that
+  // instrumentation-client loads lazily, though not the pages it loads itself:
+  // every page loads `_app`'s imports with `_app`. One that `_app`'s imports
+  // reach statically loads with them anyway, and this graph is from before
+  // tree-shaking, which may drop an `import()` of a package's unused export.
   for (const id of dynamicTargets) {
     const info = getModuleInfo(id);
-    if (info?.dynamicImporters.some((importer) => entryModules.has(importer))) {
+    if (
+      info?.dynamicImporters.some(
+        (importer) => entryModules.has(importer) && !entries.includes(importer),
+      )
+    ) {
       leadsToEntry.add(id);
     }
   }
