@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import { buildFontOwnerManifest } from "../packages/vinext/src/build/font-owner-manifest.js";
+import {
+  buildFontOwnerManifest,
+  fontRouteFiles,
+} from "../packages/vinext/src/build/font-owner-manifest.js";
 
 // Issue #4810: the route font manifest lists, for each App Router route, the
 // modules whose fonts its render carries, like Next.js' next-font-manifest.
@@ -102,5 +105,53 @@ describe("buildFontOwnerManifest", () => {
     });
     expect(manifest.routeless).toEqual(["app/fonts.ts"]);
     expect(manifest.globalNotFound).toEqual(["app/a/fonts.ts"]);
+  });
+});
+
+describe("fontRouteFiles", () => {
+  const slot = (name: string, pagePath: string | null) => ({
+    defaultPath: `/app/@${name}/default.tsx`,
+    errorPath: null,
+    hasPage: pagePath !== null,
+    interceptingRoutes: [
+      {
+        convention: ".",
+        layoutPaths: [],
+        notFoundPath: null,
+        pagePath: `/app/@${name}/(.)item/page.tsx`,
+        params: [],
+        sourceMatchPattern: "/",
+        targetPattern: "/item",
+      },
+    ],
+    key: `${name}:/app/@${name}`,
+    layoutIndex: 0,
+    layoutPath: null,
+    loadingPath: null,
+    name,
+    notFoundPath: null,
+    ownerDir: "/app",
+    ownerTreePath: "/app",
+    pagePath,
+    routeSegments: [],
+  });
+
+  // A slot renders its page when it has one, and its default only otherwise.
+  it("takes a slot's default only when the slot has no page", () => {
+    const files = fontRouteFiles({
+      errorPath: null,
+      layouts: ["/app/layout.tsx"],
+      loadingPath: null,
+      notFoundPath: null,
+      pagePath: "/app/page.tsx",
+      parallelSlots: [slot("modal", "/app/@modal/page.tsx"), slot("side", null)],
+      pattern: "/",
+      siblingIntercepts: [],
+      templates: [],
+    } as unknown as Parameters<typeof fontRouteFiles>[0]);
+    expect(files).toContain("/app/@modal/page.tsx");
+    expect(files).not.toContain("/app/@modal/default.tsx");
+    expect(files).toContain("/app/@side/default.tsx");
+    expect(files.some((file) => file.includes("(.)item"))).toBe(false);
   });
 });

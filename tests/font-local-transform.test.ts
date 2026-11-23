@@ -796,6 +796,59 @@ describe("vinext:font-owner plugin", () => {
     expect(transform(code, "/project/app/layout.tsx")).toBeNull();
   });
 
+  it("passes the key through the `.js` forms of the loader specifiers", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = [
+      `import { Inter } from "next/font/google.js";`,
+      `import localFont from "next/font/local.js";`,
+      `import * as local from "next/font/local";`,
+      `const a = Inter({ subsets: ["latin"] });`,
+      `const b = localFont({ src: "./b.woff2" });`,
+      `const c = local.default({ src: "./c.woff2" });`,
+    ].join("\n");
+    const result = transform(code, "/project/app/layout.tsx");
+    const owner = `_vinextOwner: "app/layout.tsx", `;
+    expect(result.code).toContain(`const a = Inter({${owner} subsets: ["latin"] });`);
+    expect(result.code).toContain(`const b = localFont({${owner} src: "./b.woff2" });`);
+    expect(result.code).toContain(`const c = local.default({${owner} src: "./c.woff2" });`);
+  });
+
+  it("leaves the shims' utility exports alone", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = [
+      `import { getSSRFontStyles, Inter } from "next/font/google";`,
+      `import * as google from "next/font/google";`,
+      `import { getSSRFontPreloads } from "next/font/local";`,
+      `const inter = Inter();`,
+      `export const styles = [getSSRFontStyles(), google.getSSRFontLinks()];`,
+      `export const preloads = getSSRFontPreloads();`,
+    ].join("\n");
+    const result = transform(code, "/project/app/layout.tsx");
+    expect(result.code).toContain(`Inter(({ _vinextOwner: "app/layout.tsx" }))`);
+    expect(result.code).toContain(`[getSSRFontStyles(), google.getSSRFontLinks()]`);
+    expect(result.code).toContain(`preloads = getSSRFontPreloads();`);
+  });
+
+  it("rewrites only calls that resolve to the imported loader", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = [
+      `import { Inter } from "next/font/google";`,
+      `import * as google from "next/font/google";`,
+      `import localFont from "next/font/local";`,
+      `function render(Inter) { return Inter(); }`,
+      `function f(Inter) { return Inter({ value: 1 }); }`,
+      `function g() { const google = { Roboto: (o) => o }; return google.Roboto({ value: 2 }); }`,
+      `const h = (localFont) => localFont({ value: 3 });`,
+      `const inter = Inter({ subsets: ["latin"] });`,
+    ].join("\n");
+    const result = transform(code, "/project/app/layout.tsx");
+    expect(result.code).toContain(`return Inter(); }`);
+    expect(result.code).toContain(`return Inter({ value: 1 });`);
+    expect(result.code).toContain(`return google.Roboto({ value: 2 });`);
+    expect(result.code).toContain(`localFont({ value: 3 })`);
+    expect(result.code).toContain(`Inter({_vinextOwner: "app/layout.tsx",  subsets: ["latin"] })`);
+  });
+
   it("leaves a module that only re-exports a font loader alone", () => {
     const transform = getFontOwnerTransform("/project");
     expect(transform(`export { Inter } from "next/font/google";`, "/project/fonts.ts")).toBeNull();

@@ -32,13 +32,18 @@ export function fontOwnerKey(root: string, id: string): string {
 
 /**
  * The files of a route's own document render: its page, layouts, templates,
- * boundaries and parallel slots. Intercepting routes are left out. They render
- * only on a soft navigation, as entries of their own in Next.js.
+ * boundaries and parallel slots. A slot renders its page, or its default only
+ * when it has no page. Intercepting routes are left out. They render only on
+ * a soft navigation, as entries of their own in Next.js.
  */
 export function fontRouteFiles(route: FontOwnerRoute): string[] {
   return actionOwnerRouteEntryIds({
     ...route,
-    parallelSlots: route.parallelSlots.map((slot) => ({ ...slot, interceptingRoutes: [] })),
+    parallelSlots: route.parallelSlots.map((slot) => ({
+      ...slot,
+      defaultPath: slot.pagePath ? null : slot.defaultPath,
+      interceptingRoutes: [],
+    })),
     siblingIntercepts: [],
   });
 }
