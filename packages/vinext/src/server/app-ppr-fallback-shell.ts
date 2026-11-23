@@ -149,6 +149,12 @@ export function formatAppPprShellState(state: AppPprShellState): string {
   );
 }
 
+function isReactPostponedState(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const { resumableState } = value as { resumableState?: unknown };
+  return typeof resumableState === "object" && resumableState !== null;
+}
+
 export function parseAppPprShellState(value: string | undefined): AppPprShellState | null {
   const match = value === undefined ? null : /^(\d+):/.exec(value);
   if (!value || !match) return null;
@@ -162,9 +168,14 @@ export function parseAppPprShellState(value: string | undefined): AppPprShellSta
   }
   // A malformed entry is a miss, as one that doesn't parse.
   if (header === null || typeof header !== "object") return null;
+  const postponed = header.postponed ?? null;
+  // So is a prelude whose postponed state React can't resume from.
+  if (header.prelude === true && postponed !== null && !isReactPostponedState(postponed)) {
+    return null;
+  }
   return {
     prelude: header.prelude === true,
-    postponed: header.postponed ?? null,
+    postponed,
     resumeDataCache: value.length > headerEnd ? value.slice(headerEnd) : null,
     generated: Array.isArray(header.generated)
       ? (header.generated as Record<string, unknown>[])
