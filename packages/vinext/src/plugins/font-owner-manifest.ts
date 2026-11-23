@@ -442,7 +442,10 @@ export function createPagesFontOwnerManifestPlugin(options: {
           routes: new Map(
             pages.map(({ pattern, filePath }) => [
               pattern,
-              { files: [...app, options.canonicalizeModuleId(filePath)], interceptFiles: [] },
+              {
+                files: [...app, options.canonicalizeModuleId(filePath)],
+                interceptFiles: new Map(),
+              },
             ]),
           ),
           routelessFiles: [],
