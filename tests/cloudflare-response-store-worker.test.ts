@@ -1061,6 +1061,37 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       ]);
     });
 
+    it("purges a shell's edge copies when its admitted page is stored over it", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      stages.response.mockImplementationOnce(async () => {
+        await dataCache.set("html:/page", shell("<!--shell-->"), shellContext("document"));
+        await dataCache.set("rsc:/page", shell(""), shellContext("rsc"));
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const pageKey = store.fetch.mock.calls[0]![0].url;
+      const rscKey = [...entries.keys()].find((url) => url !== pageKey)!;
+      stages.response.mockImplementationOnce(async () => {
+        captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
+        const response = new Response("page", {
+          headers: { "Cache-Control": "public, max-age=60" },
+        });
+        return deferResponseStoreAdmission(response, async (admitted) => admitted) ?? response;
+      });
+
+      await fetchPage(handler);
+
+      expect(entries.get(pageKey)?.body).toBe("page");
+      expect(entries.get(rscKey)?.body).toBe("rsc");
+      expect([pageKey, rscKey].map((url) => entries.get(url)?.options?.purgeExisting)).toEqual([
+        true,
+        true,
+      ]);
+    });
+
     it("purges a shell's other part the render found when its page is stored over it", async () => {
       dispatchWithIdentity();
       const { entries, store } = createMemoryStore();
@@ -1378,6 +1409,52 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       // stored shell holds, which resuming the shell would skip.
       expect(await regenerate(false)).toEqual({ cache: "bypass", regeneratesDataEntry: true });
       expect(await regenerate(true)).toEqual({ cache: "bypass" });
+    });
+
+    it("recomputes a data entry once when its replay reads it in two scopes", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      let computed = 0;
+      const reads: unknown[] = [];
+      stages.response.mockImplementation(async () => {
+        // As generateStaticParams and the page read one cached fetch.
+        for (let scope = 0; scope < 2; scope++) {
+          const read = await dataCache.get("data:/page");
+          reads.push(read?.value);
+          if (!read) {
+            computed++;
+            await dataCache.set(
+              "data:/page",
+              { kind: "FETCH", data: { body: String(computed), headers: {}, url: "" } } as never,
+              { revalidate: 60, tags: [] },
+            );
+          }
+        }
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const dataKey = [...entries.keys()][0]!;
+      computed = 0;
+      reads.length = 0;
+
+      const regenerated = await createVinextResponseStoreOptions().regenerate(
+        {
+          args: entries.get(dataKey)!.options!.revalidator!.args as string[],
+          id: "vinext:data",
+          reason: "stale",
+          request: new Request(dataKey),
+        } as never,
+        { ctx: context(), env: {} } as never,
+      );
+
+      expect(computed).toBe(1);
+      expect(reads).toEqual([
+        undefined,
+        expect.objectContaining({ data: expect.objectContaining({ body: "1" }) }),
+      ]);
+      expect(await regenerated.text()).toContain('"body":"1"');
     });
 
     it.each([
