@@ -11,6 +11,7 @@ import {
 import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   ACTION_REDIRECT_HEADER,
+  ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REVALIDATED_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -721,6 +722,50 @@ describe("app browser server action client", () => {
       );
       expect(createFromFetch).not.toHaveBeenCalled();
     });
+
+    // Next.js removes basePath from internal action redirect errors.
+    it("rejects with a basePath-less redirect error on a mismatched redirect under basePath", async () => {
+      const { deps, result } = invokeWithResponse(
+        skewedResponse({ [ACTION_REDIRECT_HEADER]: "/base/target?step=2" }, 303),
+        { basePath: "/base", clientRscCompatibilityId: "older-build" },
+      );
+
+      await expect(result).rejects.toMatchObject({
+        digest: "NEXT_REDIRECT;push;/target?step=2;307;",
+      });
+      // The document still loads the browser URL, with its basePath.
+      expect(deps.performHardNavigation).toHaveBeenCalledWith(
+        "https://example.com/base/target?step=2",
+        "assign",
+      );
+    });
+
+    // Next.js' createRedirectErrorForAction uses getRedirectError's default
+    // 307: only the HTTP response carries permanentRedirect()'s 308.
+    it.each([
+      ["a mismatched", "text/x-component", "older-build"],
+      ["a non-RSC", "text/plain", null],
+    ])(
+      "rejects with a 307 redirect error for %s permanent redirect",
+      async (_label, contentType, clientRscCompatibilityId) => {
+        const { deps, result } = invokeWithResponse(
+          skewedResponse(
+            {
+              [ACTION_REDIRECT_HEADER]: "/target",
+              [ACTION_REDIRECT_STATUS_HEADER]: "308",
+              "content-type": contentType,
+            },
+            303,
+          ),
+          { clientRscCompatibilityId },
+        );
+
+        await expect(result).rejects.toMatchObject({
+          digest: "NEXT_REDIRECT;push;/target;307;",
+        });
+        expect(deps.performHardNavigation).toHaveBeenCalledTimes(1);
+      },
+    );
 
     it("rejects with the full-URL redirect error on a cross-origin action redirect", async () => {
       const { deps, result } = invokeWithResponse(

@@ -27,11 +27,10 @@ import {
 import { throwOnServerActionNotFound } from "./server-action-not-found.js";
 import {
   ACTION_REDIRECT_HEADER,
-  ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "./headers.js";
-import { hasBasePath } from "../utils/base-path.js";
+import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 
 type ServerActionResult = AppBrowserServerActionResult<AppWireElements>;
 
@@ -45,7 +44,6 @@ export type ClientServerActionInitiation = {
 type ActionRedirectTarget = {
   href: string;
   type: string;
-  status: number;
   /** The path and query the server rendered the target with, when known. */
   renderedPathAndSearch: string | null;
 };
@@ -92,8 +90,6 @@ function resolveActionRedirectTarget(
   }
 
   const type = response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push";
-  const statusHeader = response.headers.get(ACTION_REDIRECT_STATUS_HEADER);
-  const status = statusHeader ? parseInt(statusHeader, 10) : 307;
   let redirectUrl: URL;
   try {
     if (actionRedirect.startsWith("/") || /^[a-z]+:/i.test(actionRedirect)) {
@@ -106,7 +102,7 @@ function resolveActionRedirectTarget(
     }
   } catch {
     performHardNavigation(actionRedirect);
-    throw new ServerActionRedirectError({ href: actionRedirect, type, status });
+    throw new ServerActionRedirectError({ href: actionRedirect, type }, basePath);
   }
 
   if (
@@ -116,12 +112,11 @@ function resolveActionRedirectTarget(
     // As in Next.js, the caller's promise rejects with the redirect error
     // while the document navigates.
     performHardNavigation(actionRedirect);
-    throw new ServerActionRedirectError({ href: redirectUrl.href, type, status });
+    throw new ServerActionRedirectError({ href: redirectUrl.href, type }, basePath);
   }
   return {
     href: redirectUrl.href,
     type,
-    status,
     // The target's own render, which a rewrite may give another query.
     renderedPathAndSearch: parseRenderedPathAndSearchHeader(
       response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
@@ -133,19 +128,24 @@ class ServerActionRedirectError extends Error {
   readonly digest: string;
   readonly handled = true;
 
-  constructor(target: Pick<ActionRedirectTarget, "href" | "type" | "status">) {
+  // Like Next.js' createRedirectErrorForAction: an internal target loses its
+  // basePath, an external one keeps its full URL, and the status is always
+  // the default 307, even for permanentRedirect(); only the HTTP response
+  // carries the permanent status.
+  constructor(target: Pick<ActionRedirectTarget, "href" | "type">, basePath: string) {
     super("NEXT_REDIRECT");
     let redirectHref = target.href;
     try {
       const redirectUrl = new URL(target.href, window.location.href);
-      // Like Next.js, an external target keeps its full URL.
       redirectHref =
         redirectUrl.origin === window.location.origin
-          ? toPathAbsolutePathname(redirectUrl.pathname) + redirectUrl.search + redirectUrl.hash
+          ? toPathAbsolutePathname(stripBasePath(redirectUrl.pathname, basePath)) +
+            redirectUrl.search +
+            redirectUrl.hash
           : redirectUrl.href;
     } catch {}
     const redirectType = target.type === "push" ? "push" : "replace";
-    this.digest = `NEXT_REDIRECT;${redirectType};${redirectHref};${target.status};`;
+    this.digest = `NEXT_REDIRECT;${redirectType};${redirectHref};307;`;
   }
 }
 
@@ -224,7 +224,7 @@ export async function invokeClientServerAction(
     // error, or its result with the newer build's tree discarded.
     if (actionRedirectTarget) {
       applyHardNavigationDecision();
-      throw new ServerActionRedirectError(actionRedirectTarget);
+      throw new ServerActionRedirectError(actionRedirectTarget, deps.basePath);
     }
     let skewedResult: ServerActionResult | AppWireElements;
     try {
@@ -249,7 +249,7 @@ export async function invokeClientServerAction(
   if (invalidResponseError) throw invalidResponseError;
   if (actionRedirectTarget && !fetchResponseIsRsc) {
     deps.performHardNavigation(actionRedirectTarget.href);
-    throw new ServerActionRedirectError(actionRedirectTarget);
+    throw new ServerActionRedirectError(actionRedirectTarget, deps.basePath);
   }
 
   const flightResponse =
@@ -280,10 +280,10 @@ export async function invokeClientServerAction(
         actionInitiation,
         revalidation,
       );
-      throw new ServerActionRedirectError(actionRedirectTarget);
+      throw new ServerActionRedirectError(actionRedirectTarget, deps.basePath);
     }
     deps.performHardNavigation(actionRedirectTarget.href);
-    throw new ServerActionRedirectError(actionRedirectTarget);
+    throw new ServerActionRedirectError(actionRedirectTarget, deps.basePath);
   }
 
   deps.syncServerActionHttpFallbackHead(
