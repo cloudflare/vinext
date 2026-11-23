@@ -10,8 +10,7 @@ import { waitForHydration } from "../helpers";
 // tests/fixtures/pages-app-css-order. Next.js links the global CSS that `_app`
 // imports ahead of the CSS modules `_app` imports after it, whichever pages
 // also import them. Real Next.js 16.2.7 (webpack) meets the expectations below
-// on this fixture, and so does vinext's dev server. Without `pages/404.tsx`,
-// vinext's production build does too.
+// on this fixture.
 
 const fixtureSource = path.resolve(process.cwd(), "tests/fixtures/pages-app-css-order");
 
