@@ -208,6 +208,14 @@ export type CdnCacheAdapter = {
   captureAppPageDocument?(): ((document: CdnAppPageDocument | null) => void) | undefined;
 
   /**
+   * Whether the edge's page read also finds a path's own PPR shell and hands
+   * it to the render's read of the shell instead of serving it. The data cache
+   * stores the shell under the page's document and RSC keys when its reads
+   * and writes name that part (`appPageShellPart`).
+   */
+  readonly pageReadsOwnShells?: boolean;
+
+  /**
    * Whether this adapter sends the 304 for a Pages render whose If-None-Match
    * matches. When it does, the render returns the page, so an adapter that
    * stores completed responses stores the page rather than the 304.

@@ -19,6 +19,7 @@ import {
   isrGet,
   isrGetFallbackShell,
   isrGetReadsFallbackShells,
+  isrPageReadsFindOwnShells,
   isrSet,
   buildPagesCacheValue,
   buildAppPageCacheValue,
@@ -1260,5 +1261,21 @@ describe("isrGetFallbackShell", () => {
     expect(isrGetReadsFallbackShells()).toBe(false);
     await expect(isrGetFallbackShell(appIsrHtmlKey("/posts/hello"))).resolves.toBeNull();
     expect(edgeGet).toHaveBeenCalledTimes(1);
+  });
+
+  it("knows which page reads find a path's own shell", () => {
+    // The default adapter's page read reads the data cache.
+    expect(isrPageReadsFindOwnShells()).toBe(true);
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter("build-42"));
+    expect(isrPageReadsFindOwnShells()).toBe(true);
+
+    // An edge's page read finds the shell only when it hands it to the render.
+    setCdnCacheAdapter({ get: vi.fn(async () => null) } as unknown as CdnCacheAdapter);
+    expect(isrPageReadsFindOwnShells()).toBe(false);
+    setCdnCacheAdapter({
+      get: vi.fn(async () => null),
+      pageReadsOwnShells: true,
+    } as unknown as CdnCacheAdapter);
+    expect(isrPageReadsFindOwnShells()).toBe(true);
   });
 });

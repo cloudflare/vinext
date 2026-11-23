@@ -101,9 +101,15 @@ export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
  * cache on every backend. An adapter that packages the build's shells, such
  * as Static Assets, is read when the data cache has none.
  */
-export async function isrGetFallbackShell(key: string): Promise<ISRCacheEntry | null> {
+export async function isrGetFallbackShell(
+  key: string,
+  part?: AppPageShellPart,
+): Promise<ISRCacheEntry | null> {
   const { getDataCacheHandler } = await import("vinext/shims/cache-handler");
-  const stored = await getDataCacheHandler().get(key);
+  const stored = await getDataCacheHandler().get(
+    key,
+    part === undefined ? undefined : { appPageShellPart: part },
+  );
   // An adapter that reads the data cache has no packaged shell to add.
   if (stored || isrGetReadsFallbackShells()) return toIsrCacheEntry(stored);
   const packaged = await getExplicitCdnCacheAdapter()?.get(key);
@@ -120,6 +126,22 @@ export function isrGetReadsFallbackShells(): boolean {
   // adapter explicitly.
   const adapter = getExplicitCdnCacheAdapter();
   return adapter === null || cdnCacheAdapterReadsDataCache(adapter);
+}
+
+/**
+ * Which of its page's parts a path's own shell is stored under: the document,
+ * or the RSC payload, beside which it holds the values the shell was built
+ * with.
+ */
+export type AppPageShellPart = "document" | "rsc";
+
+/**
+ * Whether a page read finds the path's own shell under its page keys: that of
+ * {@link isrGet} when it reads the data cache, or an edge's that hands the
+ * render the shell it found.
+ */
+export function isrPageReadsFindOwnShells(): boolean {
+  return isrGetReadsFallbackShells() || getExplicitCdnCacheAdapter()?.pageReadsOwnShells === true;
 }
 
 /**
@@ -140,9 +162,11 @@ export async function isrSetFallbackShell(
   key: string,
   data: CachedAppPageValue,
   policy: IsrWritePolicy,
+  part?: AppPageShellPart,
 ): Promise<void> {
   const { getDataCacheHandler } = await import("vinext/shims/cache-handler");
   await getDataCacheHandler().set(key, data, {
+    ...(part === undefined ? {} : { appPageShellPart: part }),
     cacheControl: policy.cacheControl,
     revalidate: policy.cacheControl.revalidate,
     tags: policy.tags ?? [],
@@ -222,6 +246,20 @@ export type AppPageCacheSetter = (
   key: string,
   data: CachedAppPageValue,
   policy: IsrWritePolicy,
+) => Promise<void>;
+
+/** Read a shell, naming the page part a path's own shell is stored under. */
+export type AppPageShellGetter = (
+  key: string,
+  part?: AppPageShellPart,
+) => Promise<ISRCacheEntry | null>;
+
+/** Store a shell, naming the page part a path's own shell is stored under. */
+export type AppPageShellSetter = (
+  key: string,
+  data: CachedAppPageValue,
+  policy: IsrWritePolicy,
+  part?: AppPageShellPart,
 ) => Promise<void>;
 
 type PrerenderedAppPageMetadata = {

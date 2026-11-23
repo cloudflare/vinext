@@ -16,6 +16,8 @@ import {
 /** Response Store owns page serving and SWR; vinext only emits admitted response policy. */
 class ResponseStoreCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = false;
+  /** The gateway's page read hands a path's own shell to the render. */
+  readonly pageReadsOwnShells = true;
   readonly requiresCompletedResponseAdmission = true;
   readonly responseStageCacheIdentity = "query-free";
   readonly responsePolicy: CdnCacheAdapter["responsePolicy"];

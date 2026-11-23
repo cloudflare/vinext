@@ -134,6 +134,8 @@ import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
 import {
   coalesceOnDemandResponse,
   type AppPageCacheSetter,
+  type AppPageShellGetter,
+  type AppPageShellSetter,
   type ISRCacheEntry,
 } from "./isr-cache.js";
 import {
@@ -478,15 +480,23 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
   isrFallbackShellHtmlKey: (pathname: string) => string;
-  /** Read a fallback shell from the data cache. Defaults to `isrGet`. */
-  isrGetFallbackShell?: AppPageCacheGetter;
+  /**
+   * Read a fallback shell from the data cache, naming the page part a path's
+   * own shell is stored under. Defaults to `isrGet`.
+   */
+  isrGetFallbackShell?: AppPageShellGetter;
   /**
    * Whether `isrGet` reads where `isrGetFallbackShell` does, so a page read is
    * its read of the path's own shell, stored under the page's keys.
    */
   isrGetReadsFallbackShells?: boolean;
+  /**
+   * Whether a page read finds the path's own shell under the page's keys,
+   * that of `isrGet` or an edge's, so the shell is stored under both.
+   */
+  isrPageReadsFindOwnShells?: boolean;
   /** Store a fallback shell a request rendered. Without it, shells are only read. */
-  isrSetFallbackShell?: AppPageCacheSetter;
+  isrSetFallbackShell?: AppPageShellSetter;
   isrHtmlKey: (pathname: string) => string;
   isrRscKey: (
     pathname: string,
