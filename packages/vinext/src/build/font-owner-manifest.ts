@@ -28,7 +28,7 @@ export type FontOwnerManifest = {
   navigation: Record<string, FontNavigationOwners>;
 };
 
-export type FontNavigationOwners = { route?: string[]; intercepts?: string[] };
+type FontNavigationOwners = { route?: string[]; intercepts?: string[] };
 
 /** The key a font owner module is recorded under: its path relative to the root. */
 export function fontOwnerKey(root: string, id: string): string {

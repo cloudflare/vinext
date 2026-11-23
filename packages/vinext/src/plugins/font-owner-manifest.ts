@@ -46,7 +46,7 @@ type RscBuildGraph = {
 };
 
 /** A dev render's owner keys: its documents', and its RSC payload's as in `navigation`. */
-export type DevFontOwners = { document: string[]; route: string[]; intercepts: string[] };
+type DevFontOwners = { document: string[]; route: string[]; intercepts: string[] };
 
 const EMPTY_MANIFEST: FontOwnerManifest = { routes: {}, routeless: [], navigation: {} };
 
