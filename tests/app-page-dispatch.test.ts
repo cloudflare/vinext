@@ -7409,6 +7409,48 @@ describe("app page dispatch", () => {
     },
   );
 
+  it("stores a path's empty own shell with the route's lifetime, not its dynamic render's", async () => {
+    const jobs = new Map<string, () => Promise<void>>();
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      async () => {},
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      isProduction: true,
+      isrGet: vi.fn(async () => null),
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          // It reads a finite cache, then dynamic data.
+          cacheLife({ revalidate: 60 });
+          markDynamicUsage();
+          return createStream(["<html><head></head><body>page</body></html>"]);
+        },
+      }),
+      params: { locale: "en", slug: "hello" },
+      request: new Request("https://example.test/en/blog/hello"),
+      revalidateSeconds: null,
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({
+        ...options,
+        // An edge route without its own revalidate.
+        isEdgeRuntime: true,
+        isrSetFallbackShell,
+        scheduleFallbackShellRegeneration(key, job) {
+          jobs.set(key, job);
+        },
+      }),
+    );
+    await response.text();
+    await runWithRequestContext(createRequestContext(), () => jobs.get("shell:/en/blog/hello")!());
+
+    const write = isrSetFallbackShell.mock.calls.find(([key]) => key === "shell:/en/blog/hello");
+    expect(write?.[1].html).toBe(markAppPprDynamicFallbackShellHtml(""));
+    expect(write?.[2].cacheControl).toEqual({ revalidate: false });
+  });
+
   it("produces a path's own shell after a render that reads dynamic data in a boundary", async () => {
     const jobs = new Map<string, () => Promise<void>>();
     const { options } = createPprBlogDispatchOptions({
