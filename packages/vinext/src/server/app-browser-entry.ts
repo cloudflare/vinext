@@ -1547,12 +1547,12 @@ function BrowserRoot({
       createAppRouteTree({
         elements: treeState.elements,
         historyCommit: createElement(NavigationHistoryCommit, { renderId: treeState.renderId }),
+        // Keyed on the committed route payload, like Next.js keys its
+        // announcer on the committed router tree.
+        routeAnnouncer: createElement(AppRouterAnnouncer, { tree: treeState.elements }),
         routeId: treeState.routeId,
       }),
     ),
-    // Next.js mounts its announcer next to the route tree, inside the
-    // RedirectBoundary, keyed on the committed router tree.
-    createElement(AppRouterAnnouncer, { tree: treeState.elements }),
   );
   const bfcacheSegmentIdentities = useMemo(
     () => createBfcacheSegmentIdentityMap({ elements: treeState.elements }),

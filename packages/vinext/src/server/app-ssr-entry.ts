@@ -637,6 +637,7 @@ export async function handleSsr(
           const routeTree = createAppRouteTree({
             elements,
             historyCommit: null,
+            routeAnnouncer: null,
             routeId: metadata.routeId,
           });
           const identityMapTree = createReactElement(
