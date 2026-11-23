@@ -251,10 +251,13 @@ export async function serveAppPageStaticShellPrefetch<TRoute extends AppPageDisp
   isDraftMode: boolean,
 ): Promise<Response | null> {
   if (!canServeStaticShell(options, isDraftMode)) return null;
-  if (options.mountedSlotsHeader) {
+  if (options.mountedSlotsHeader || options.regeneratesDataEntry === true) {
     // The client keeps the default-only slots it has mounted, so the shell
     // leaves them out. Like the page's other mounted-slot payloads, that
-    // variant is rendered for the request, not stored.
+    // variant is rendered for the request, not stored. A render recomputing a
+    // data entry renders the shell the entry may be read in, without storing
+    // it, as the page's own render produces no shell: the stored shell
+    // refreshes when it goes stale itself.
     let value: CachedAppPageValue | null;
     try {
       value = await produceStaticShell(options, null);

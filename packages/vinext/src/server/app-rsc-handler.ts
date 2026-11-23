@@ -613,6 +613,8 @@ type DispatchMatchedPageOptions<TRoute> = {
   route: TRoute;
   scriptNonce?: string;
   searchParams: URLSearchParams;
+  /** Recompute a data cache entry: resume no stored shell and produce none. */
+  regeneratesDataEntry?: boolean;
   renderMode: AppRscRenderMode;
   /** Render the document whole before its first byte (a regeneration or warm-up). */
   renderWholeDocument?: boolean;

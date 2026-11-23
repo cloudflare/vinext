@@ -597,6 +597,13 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     pathname: string;
     searchParams: URLSearchParams;
   }) => void;
+  /**
+   * The render recomputes a data cache entry the request stored. A cached
+   * function or fetch in the part a stored shell holds runs only when that
+   * part renders, so a page renders whole, without resuming a shell or
+   * producing one, and a static-shell prefetch renders its shell.
+   */
+  regeneratesDataEntry?: boolean;
   renderMode?: AppRscRenderMode;
   /**
    * Render the document whole before its first byte, with streamed metadata in
@@ -633,6 +640,7 @@ export type AppPageDispatchRequest = {
   pprFallbackShell?: NonNullable<DispatchAppPageOptions<AppPageDispatchRoute>["pprFallbackShell"]>;
   renderedConcreteUrlPaths?: ReadonlySet<string>;
   renderedPathAndSearch: string | null;
+  regeneratesDataEntry?: boolean;
   renderMode: AppRscRenderMode;
   renderWholeDocument: boolean;
   request: Request;
@@ -1778,16 +1786,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  const fallbackShellResult = options.pprRuntime
-    ? await options.pprRuntime.tryServe(
-        options,
-        currentRevalidateSeconds,
-        isDraftMode,
-        isForceStatic,
-        isForceDynamic,
-        pprOwnShellRead,
-      )
-    : null;
+  const fallbackShellResult =
+    options.pprRuntime && options.regeneratesDataEntry !== true
+      ? await options.pprRuntime.tryServe(
+          options,
+          currentRevalidateSeconds,
+          isDraftMode,
+          isForceStatic,
+          isForceDynamic,
+          pprOwnShellRead,
+        )
+      : null;
   if (fallbackShellResult instanceof Response) {
     return fallbackShellResult;
   }
@@ -2039,7 +2048,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // dynamically gets one for later requests to resume. A response middleware
   // gave another status isn't the page's.
   const produceConcreteShell =
-    options.pprRuntime && !pprShellResume && (options.middlewareContext.status ?? 200) === 200
+    options.pprRuntime &&
+    !pprShellResume &&
+    options.regeneratesDataEntry !== true &&
+    (options.middlewareContext.status ?? 200) === 200
       ? () =>
           options.pprRuntime!.produceConcreteShell(
             options,

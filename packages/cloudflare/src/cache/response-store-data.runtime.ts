@@ -321,16 +321,18 @@ async function cacheRequest(key: string, path = DATA_ENTRY_PATH): Promise<Reques
 }
 
 /**
- * What a data revalidator replays beside the render: its page's keys, and
- * whether its entry is a part of a path's own shell.
+ * What a data revalidator replays beside the render: its page's keys, whether
+ * its entry is a shell, and whether it is a part of a path's own shell.
  */
 function serializePageParts(
   parts: ResponseStoreInvocationCapture["pageParts"],
+  shell: boolean,
   ownShell: boolean,
 ): string {
   return JSON.stringify({
     document: parts?.document?.url,
     rsc: parts?.rsc?.url,
+    ...(shell ? { shell } : {}),
     ...(ownShell ? { ownShell } : {}),
   });
 }
@@ -688,6 +690,8 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     const invocation = invocationStorage.getStore();
     const pageRequest = pagePartRequest(context);
     const shellPart = readShellPart(context);
+    // The data cache holds App pages only as shells.
+    const isShell = value?.kind === "APP_PAGE";
     const pageParts = invocation?.capture?.pageParts;
     const cacheFunctionInvocation = context?.cacheFunctionInvocation;
     const revalidator =
@@ -703,12 +707,13 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
           ? {
               id: DATA_REVALIDATOR_ID,
               // A replay of a render that stored a path's own shell under its
-              // page's keys stores it there too.
+              // page's keys stores it there too, and a replay of a shell
+              // renders as one.
               args:
-                pageParts || shellPart
+                pageParts || shellPart || isShell
                   ? [
                       key,
-                      serializePageParts(pageParts, shellPart !== undefined),
+                      serializePageParts(pageParts, isShell, shellPart !== undefined),
                       invocation.serialized,
                     ]
                   : [key, invocation.serialized],

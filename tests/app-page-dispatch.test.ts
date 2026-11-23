@@ -1611,6 +1611,27 @@ describe("app page dispatch", () => {
       await expect(cached.text()).resolves.toBe("flight");
     });
 
+    it("renders the shell past a stored one, without storing it, when it recomputes a data entry", async () => {
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "page"),
+      );
+      const { options, isrSetFallbackShell } = createStaticShellOptions({ buildPageElement });
+      await (
+        await runWithRequestContext(createRequestContext(), () => dispatchAppPage(options))
+      ).text();
+      vi.mocked(options.isrGetFallbackShell!).mockClear();
+
+      // A cached function or fetch the shell reads runs only when it renders.
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, regeneratesDataEntry: true }),
+      );
+      await expect(response.text()).resolves.toBe("flight");
+      expect(options.isrGetFallbackShell).not.toHaveBeenCalled();
+      expect(buildPageElement).toHaveBeenCalledTimes(2);
+      // The stored shell refreshes when it goes stale itself.
+      expect(isrSetFallbackShell).toHaveBeenCalledTimes(1);
+    });
+
     it("stores the shell's lifetime and tags without replaying their headers", async () => {
       const { options, isrSetFallbackShell, stored } = createStaticShellOptions({
         async buildPageElement() {
@@ -8428,48 +8449,79 @@ describe("app page dispatch", () => {
     },
   );
 
-  it("produces a path's own shell after a render that reads dynamic data in a boundary", async () => {
-    const jobs = new Map<string, () => Promise<void>>();
+  it("renders a page whole, past its own shell, when it recomputes a data entry", async () => {
+    const resumes: unknown[] = [];
     const { options } = createPprBlogDispatchOptions({
-      buildPageElement: createParamTextPageElement("fresh"),
-      cleanPathname: "/en/blog/hello",
-      isProduction: true,
-      isrGet: vi.fn(async () => null),
-      loadSsrHandler: async () => ({
-        async handleSsr() {
-          const encoder = new TextEncoder();
-          let sent = false;
-          // The page streams its shell first, and reads cookies in a boundary
-          // that resolves after it.
-          return new ReadableStream<Uint8Array>({
-            pull(controller) {
-              if (!sent) {
-                sent = true;
-                controller.enqueue(encoder.encode("<html><head></head><body>shell"));
-                return;
-              }
-              markDynamicUsage();
-              controller.enqueue(encoder.encode("hole</body></html>"));
-              controller.close();
-            },
-          });
-        },
-      }),
-      params: { locale: "en", slug: "hello" },
-      request: new Request("https://example.test/en/blog/hello"),
+      buildPageElement: createParamTextPageElement(),
+      isrGet: vi.fn(async (key: string) =>
+        key === "html:/en/blog/new-post" ? buildOwnShellEntry("Own shell", false) : null,
+      ),
+      loadSsrHandler: createResumeRecordingSsrHandler(resumes),
     });
 
-    const response = await runWithRequestContext(createRequestContext(), () =>
-      dispatchAppPage({
-        ...options,
-        scheduleFallbackShellRegeneration(key, job) {
-          if (!jobs.has(key)) jobs.set(key, job);
-        },
-      }),
-    );
-    await response.text();
-    await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+    await (
+      await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, regeneratesDataEntry: true }),
+      )
+    ).text();
+
+    // A cached function or fetch in the part the shell holds runs only when
+    // that part renders.
+    expect(resumes).toEqual([undefined]);
   });
+
+  it.each([{ regeneratesDataEntry: false }, { regeneratesDataEntry: true }])(
+    "produces a path's own shell after a render that reads dynamic data in a boundary (regeneratesDataEntry: $regeneratesDataEntry)",
+    async ({ regeneratesDataEntry }) => {
+      const jobs = new Map<string, () => Promise<void>>();
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement("fresh"),
+        cleanPathname: "/en/blog/hello",
+        isProduction: true,
+        isrGet: vi.fn(async () => null),
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            const encoder = new TextEncoder();
+            let sent = false;
+            // The page streams its shell first, and reads cookies in a boundary
+            // that resolves after it.
+            return new ReadableStream<Uint8Array>({
+              pull(controller) {
+                if (!sent) {
+                  sent = true;
+                  controller.enqueue(encoder.encode("<html><head></head><body>shell"));
+                  return;
+                }
+                markDynamicUsage();
+                controller.enqueue(encoder.encode("hole</body></html>"));
+                controller.close();
+              },
+            });
+          },
+        }),
+        params: { locale: "en", slug: "hello" },
+        request: new Request("https://example.test/en/blog/hello"),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          regeneratesDataEntry,
+          scheduleFallbackShellRegeneration(key, job) {
+            if (!jobs.has(key)) jobs.set(key, job);
+          },
+        }),
+      );
+      await response.text();
+      if (regeneratesDataEntry) {
+        // A shell it produced would hold the data entry as stored.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect([...jobs.keys()]).toEqual([]);
+      } else {
+        await vi.waitFor(() => expect([...jobs.keys()]).toContain("html:/en/blog/hello"));
+      }
+    },
+  );
 
   it.each([{ late: false }, { late: true }])(
     "produces a path's own shell after an RSC request renders it dynamically (late: $late)",

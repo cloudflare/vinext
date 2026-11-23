@@ -440,6 +440,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           searchParams,
           scriptNonce: props.scriptNonce ?? undefined,
           renderMode: normalized.renderMode,
+          regeneratesDataEntry: stageOptions?.regeneratesDataEntry === true,
           renderWholeDocument: stageOptions?.renderWholeDocument === true,
         });
       },
