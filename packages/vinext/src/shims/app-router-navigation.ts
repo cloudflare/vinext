@@ -758,6 +758,61 @@ export function seedStaticShellPrefetchFromVaryingShell(
   return false;
 }
 
+/**
+ * A pending static-shell prefetch of the URL with another query string. Like
+ * Next.js's segment cache, a static shell never varies on search params, so
+ * once it settles it serves this URL too, and this prefetch needs no request
+ * of its own.
+ */
+export function findPendingStaticShellPrefetchForSearch(
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+): PrefetchCacheEntry | null {
+  if (interceptionContext !== null) return null;
+  const targetPathname = normalizeRscCacheLookupPathname(rscUrl);
+  if (targetPathname === null) return null;
+  const target = normalizeRscCacheLookupUrl(rscUrl);
+  for (const [cacheKey, entry] of getPrefetchCache()) {
+    if (entry.prefetchKind !== "static-shell" || entry.pending === undefined) continue;
+    const source = AppElementsWire.decodeCacheKey(cacheKey);
+    if (source.interceptionContext !== null) continue;
+    if (normalizeRscCacheLookupPathname(source.rscUrl) !== targetPathname) continue;
+    if (normalizeRscCacheLookupUrl(source.rscUrl) === target) continue;
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+    return entry;
+  }
+  return null;
+}
+
+/**
+ * Wait for a pending shell from `findPendingStaticShellPrefetchForSearch` as a
+ * prefetch setup for `href`. False when a navigation to it cancelled the wait,
+ * or an invalidation dropped the shell, which notifies `onInvalidate` as it
+ * would the URL's own pending prefetch.
+ */
+export async function waitForPendingStaticShellPrefetch(
+  source: PrefetchCacheEntry,
+  href: string,
+  onInvalidate?: () => void,
+): Promise<boolean> {
+  const setup = beginPrefetchSetup(toAppPrefetchDestination(href) ?? href);
+  let isWaiting = true;
+  let isSourceInvalidated = false;
+  addPrefetchInvalidationCallback(source, () => {
+    if (!isWaiting) return;
+    isSourceInvalidated = true;
+    onInvalidate?.();
+  });
+  try {
+    await source.pending;
+    return !setup.cancelled && !isSourceInvalidated;
+  } finally {
+    isWaiting = false;
+    pendingPrefetchSetups.delete(setup);
+  }
+}
+
 export function hasSearchAgnosticPrefetchShellForRoute(
   rscUrl: string,
   interceptionContext: string | null = null,
@@ -2874,21 +2929,36 @@ const _appRouter: AppRouterInstance = {
       }
       // Another URL's shell serves this one when they agree on the params it
       // read. A client rewrite's target isn't the URL the shell keys on.
-      if (
+      const canReuseOtherShell =
         !reusable &&
         kind === "auto" &&
         policy.staticShell === true &&
-        rewrittenPrefetchHref === null &&
-        process.env.__VINEXT_VARY_PARAMS !== "false" &&
+        rewrittenPrefetchHref === null;
+      const seedFromOtherShell = () =>
         seedStaticShellPrefetchFromVaryingShell(
           rscUrl,
           interceptionContext,
           mountedSlotsHeader,
-          createVaryingStaticShellResolver(fullHref),
+          createVaryingStaticShellResolver(fullHref, process.env.__VINEXT_VARY_PARAMS !== "false"),
           options?.onInvalidate,
-        )
-      ) {
-        return;
+        );
+      if (canReuseOtherShell && seedFromOtherShell()) return;
+      const pendingSearchShell =
+        canReuseOtherShell && policy.runtimePrefetch !== true
+          ? findPendingStaticShellPrefetchForSearch(rscUrl, interceptionContext, mountedSlotsHeader)
+          : null;
+      if (pendingSearchShell !== null) {
+        const isUncancelled = await waitForPendingStaticShellPrefetch(
+          pendingSearchShell,
+          fullHref,
+          options?.onInvalidate,
+        );
+        if (!isUncancelled || setup.cancelled || seedFromOtherShell()) return;
+        // Another prefetch of the URL started while this one waited.
+        if (getPrefetchCache().has(cacheKey)) {
+          attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
+          return;
+        }
       }
       prefetched.add(cacheKey);
       const fetchFullRscPayload = () =>

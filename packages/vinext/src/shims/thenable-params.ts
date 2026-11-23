@@ -195,13 +195,12 @@ function createThenableParams<T extends Record<string, unknown>>(
     Object.keys(plain).some((key) => fallbackShellState.fallbackParamNames.has(key))
       ? fallbackShellState.fallbackParamNames
       : null;
-  // Like Next.js's prerender, a document shell leaves its search params to
-  // holes, so every query string shares it. A static shell prefetch records
-  // their reads as vary params instead, and a runtime prefetch renders them.
+  // Like Next.js's prerender, a document shell or a static shell prefetch
+  // leaves its search params to holes, so every query string shares it. A
+  // runtime prefetch renders them.
   const isShellSearchParams =
     options?.isSearchParams === true &&
     fallbackShellState !== null &&
-    fallbackShellState.varyParams === null &&
     !fallbackShellState.isRuntimePrefetch;
   // Its reads are holes, not dynamic reads of the shell.
   if (isShellSearchParams) observer = undefined;
@@ -324,6 +323,10 @@ function createThenableParams<T extends Record<string, unknown>>(
         recordVaryRead(prop);
       }
 
+      if (isShellSearchParams && isFallbackParam(prop)) {
+        const p = getFallbackShellPromise();
+        if (p) throw p;
+      }
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
         if (isFallbackParam(prop)) {
           return {
@@ -352,6 +355,12 @@ function createThenableParams<T extends Record<string, unknown>>(
         recordVaryRead(prop);
       }
 
+      // `'q' in searchParams` suspends like `searchParams.q`, so the shell
+      // never commits the answer for an empty query to every query string.
+      if (isShellSearchParams && isFallbackParam(prop)) {
+        const p = getFallbackShellPromise();
+        if (p) throw p;
+      }
       return (
         Reflect.has(target, prop) || (!isWellKnownProperty(prop) && hasParamProperty(plain, prop))
       );
@@ -359,6 +368,9 @@ function createThenableParams<T extends Record<string, unknown>>(
     ownKeys() {
       observeReadableParamKeys(observer, plain);
       recordVaryEnumeration();
+      // Enumerating shell search params leaves a hole rather than suspending
+      // (`console.log` enumerates too), so the shell isn't complete.
+      if (isShellSearchParams) void getFallbackShellPromise();
       return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
     },
     set(target, prop, value) {

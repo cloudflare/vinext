@@ -62,6 +62,11 @@ export type AppRoutePrefetchPolicy = {
   rendersDynamically?: true;
   /** Fetch the route tree before the concrete page segment. */
   requiresRouteTreePrefetch?: true;
+  /**
+   * The static shell is a runtime prefetch (`unstable_instant`), which renders
+   * the request's search params, so other query strings can't share it.
+   */
+  runtimePrefetch?: true;
   shouldPrefetch: boolean;
   /**
    * Fetch the Cache Components page's static shell. It's reused by a
@@ -206,24 +211,28 @@ export function resolveAutoAppRoutePrefetch(
     interceptionContext,
     routeUrl.pathname,
   );
-  const canPrefetchPage =
-    !hasSearchParams &&
+  // The page's shell never renders search params, so an href with a query
+  // string can prefetch it too, but not the page itself.
+  const canPrefetchPageShell =
     !hasCacheComponentsLearningOnlyDynamicPath &&
     (requiresRouteTreePrefetch ||
       (route.requiresDynamicNavigationRequest !== true && !rendersDynamically));
+  const canPrefetchPage = !hasSearchParams && canPrefetchPageShell;
   const isReusablePage =
     canPrefetchPage && (requiresRouteTreePrefetch || !route.canPrefetchLoadingShell);
   // Like Next.js, a Cache Components build prefetches a page's static shell,
   // so the prefetch never renders the page's dynamic holes. An intercepted
   // page has none: it's never prerendered. A page under a loading boundary
   // gets one too: Next.js prefetches its prerender, which stops at the
-  // boundary only where the page itself suspends.
+  // boundary only where the page itself suspends. An href with a query string
+  // gets the page's shell: like Next.js's static prefetch, it never renders
+  // search params, so every query string of the page shares it.
   //
   // A route that prefetches at runtime renders the prefetch with the request's
   // search params and root params, so those hrefs get one too
   // (`PrefetchHint.HasRuntimePrefetch`).
   const staticShell =
-    (canPrefetchPage ||
+    (canPrefetchPageShell ||
       (route.instant === "runtime" && !hasCacheComponentsLearningOnlyDynamicPath)) &&
     (!requiresRouteTreePrefetch || route.instant === "runtime") &&
     interceptionContext === null &&
@@ -251,6 +260,7 @@ export function resolveAutoAppRoutePrefetch(
     prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
     ...(rendersDynamically ? { rendersDynamically: true } : {}),
     ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
+    ...(staticShell && route.instant === "runtime" ? { runtimePrefetch: true } : {}),
     shouldPrefetch: true,
     ...(staticShell ? { staticShell: true } : {}),
   };

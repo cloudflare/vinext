@@ -526,12 +526,33 @@ describe("vary params", () => {
 
   it("records search params as `0`, which no param name can be", async () => {
     await expect(
-      recordVaryParams("/search", async () => {
-        const searchParams = await makeThenableParams({ q: "1" }, undefined, {
-          isSearchParams: true,
-        });
-        return Reflect.get(searchParams, "missing");
+      recordVaryParams("/search", () => {
+        const searchParams = makeThenableParams({ q: "1" }, undefined, { isSearchParams: true });
+        // Like Next.js's prerender, the shell leaves the read to a hole.
+        expect(() => Reflect.get(searchParams, "missing")).toThrow();
       }),
     ).resolves.toEqual([0]);
+  });
+
+  // Otherwise a complete shell would commit the empty query's answer to
+  // every query string that reuses it.
+  it("leaves a shell's `in`, own-property and enumeration reads of search params to holes", () => {
+    const state = createPprFallbackShellState({ fallbackParamNames: [], routePattern: "/search" });
+    runWithPprFallbackShellState(state, () => {
+      const searchParams = makeThenableParams({}, undefined, { isSearchParams: true });
+      expect(() => "q" in searchParams).toThrow();
+      expect(() => Object.hasOwn(searchParams, "q")).toThrow();
+      expect(state.hasDynamicBoundary).toBe(true);
+    });
+
+    const enumerated = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/search",
+    });
+    runWithPprFallbackShellState(enumerated, () => {
+      const searchParams = makeThenableParams({}, undefined, { isSearchParams: true });
+      expect(Object.keys(searchParams)).toEqual([]);
+      expect(enumerated.hasDynamicBoundary).toBe(true);
+    });
   });
 });
