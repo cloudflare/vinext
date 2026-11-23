@@ -55,6 +55,13 @@ const nextConfig: NextConfig = {
       { pathname: "/**", search: "" },
       { pathname: "/heart.png", search: "?v=listed" },
       { pathname: "/logo/logo.svg", search: "?.png" },
+      // Used by E2E: image-sizing-warning — query strings identify cases in the
+      // warning text. Omitting `search` allows any query, matching Next.js's
+      // dedicated fixture config for these files.
+      { pathname: "/sample.png" },
+      { pathname: "/fractional.svg" },
+      { pathname: "/fractional-wide.svg" },
+      { pathname: "/fractional-tall.svg" },
     ],
   },
 
