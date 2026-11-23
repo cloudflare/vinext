@@ -778,7 +778,9 @@ export function collectPagesClientGraph(
  * twice, or make a request for it where it keeps a file instead
  * ({@link collectDoublyCopiedModules}). So a small module that imports one
  * that no group takes, or a stylesheet, stays out of its set's group, and is
- * copied into the pages along with what it imports.
+ * copied into the pages along with what it imports, unless what stays out of
+ * the group reaches the size too. A stylesheet that only one group's modules
+ * import joins the group.
  */
 export function collectSharedGroupModules(
   { infos, entries, loadedBy }: PagesClientGraph,
@@ -833,6 +835,20 @@ export function collectSharedGroupModules(
     }
   }
 
+  // Where what stays out of a group reaches the size too, Rolldown gives it a
+  // chunk of its own for the same pages instead of copying it: it joins the
+  // group.
+  const leftSizes = new Map<string, number>();
+  for (const [id, set] of sets) {
+    if (!members.has(id)) leftSizes.set(set, (leftSizes.get(set) ?? 0) + options.sizeOf(id));
+  }
+  const groupSets = new Set([...members].map((id) => sets.get(id)!));
+  for (const [id, set] of sets) {
+    if (groupSets.has(set) && (leftSizes.get(set) ?? 0) >= PAGES_INLINE_COMMON_CHUNK_MAX_SIZE) {
+      members.add(id);
+    }
+  }
+
   const chunkNames = new Map<string, string>();
   const groupModules = new Map<string, string>();
   for (const id of members) {
@@ -843,6 +859,19 @@ export function collectSharedGroupModules(
       chunkNames.set(set, chunkName);
     }
     groupModules.set(id, chunkName);
+  }
+  // A stylesheet that only one group's modules import goes with them.
+  for (const [id, { importers }] of infos) {
+    if (!isStylesheetModule(id) || importers.length === 0 || options.groupOf(id) !== undefined) {
+      continue;
+    }
+    const chunkName = groupModules.get(importers[0]!);
+    if (
+      chunkName !== undefined &&
+      importers.every((importer) => groupModules.get(importer) === chunkName)
+    ) {
+      groupModules.set(id, chunkName);
+    }
   }
 
   return groupModules;

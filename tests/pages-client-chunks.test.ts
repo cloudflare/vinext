@@ -671,6 +671,52 @@ describe("collectSharedGroupModules", () => {
       "table-data": "pages-shared-2",
     });
   });
+
+  it("keeps what stays out of a group in it once that reaches the size too", () => {
+    const graph: Record<string, { imports?: string[]; loadedBy?: string; size?: number }> = {
+      entry: {},
+      first: { loadedBy: "entry", imports: ["rows", "sections", "panel"] },
+      second: { loadedBy: "entry", imports: ["rows", "sections", "panel"] },
+      other: { loadedBy: "entry", imports: ["shared.css"] },
+      rows: { size: 25_000 },
+      // Small sections that import stylesheets, over 20 kB together.
+      sections: { imports: ["section-1", "section-2", "section-3"] },
+      "section-1": { imports: ["section-1.css"], size: 8_000 },
+      "section-2": { imports: ["section-2.css"], size: 8_000 },
+      "section-3": { imports: ["section-3.css", "shared.css"], size: 8_000 },
+      "section-1.css": {},
+      "section-2.css": {},
+      "section-3.css": {},
+      "shared.css": {},
+      // Loaded by the pages and "third", so a set of its own.
+      panel: { imports: ["panel.css"], size: 300 },
+      "panel.css": {},
+      third: { loadedBy: "entry", imports: ["panel"] },
+    };
+    const ids = Object.keys(graph);
+    const groupModules = collectSharedGroupModules(
+      collectPagesClientGraph(ids, (id) => ({
+        isEntry: id === "entry",
+        importedIds: graph[id]!.imports ?? [],
+        importers: ids.filter((other) => graph[other]!.imports?.includes(id)),
+        dynamicImporters: graph[id]!.loadedBy ? [graph[id]!.loadedBy!] : [],
+      })),
+      { groupOf: () => undefined, sizeOf: (id) => graph[id]!.size ?? 0 },
+    );
+
+    // The stylesheets that only the group imports join it; one that another
+    // page imports too stays out.
+    expect(Object.fromEntries(groupModules)).toEqual({
+      rows: "pages-shared-1",
+      sections: "pages-shared-1",
+      "section-1": "pages-shared-1",
+      "section-2": "pages-shared-1",
+      "section-3": "pages-shared-1",
+      "section-1.css": "pages-shared-1",
+      "section-2.css": "pages-shared-1",
+      "section-3.css": "pages-shared-1",
+    });
+  });
 });
 
 describe("collectSharedGroupDependencies", () => {
