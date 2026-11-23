@@ -223,6 +223,10 @@ test("the modules of a side-effect-free barrel that _app imports from without us
   // makes a request for what `_app` leaves of the barrel.
   const extra = await extraScripts(page, ["/indexes/both", "/indexes/north", "/indexes/south"]);
 
+  // Rolldown limitation: the two indexes are chunks over 20 kB that both
+  // import `unitName`, so as with the lists above, a copy in each would
+  // download twice on `/indexes/both`.
+  test.fail();
   expect(extra).toEqual({ "/indexes/both": 2, "/indexes/north": 1, "/indexes/south": 1 });
 });
 
