@@ -9,6 +9,7 @@
 type ParsedArgs = {
   port?: number;
   hostname?: string;
+  outDir?: string;
   help?: boolean;
   positionals?: string[];
 };
@@ -104,6 +105,12 @@ export function parseArgs(args: string[]): ParsedArgs {
         break;
       }
 
+      case "--outDir": {
+        result.outDir = takeValue(arg, args, i);
+        i++;
+        break;
+      }
+
       default: {
         // Handle --flag=value forms (e.g. --port=3000, --hostname=0.0.0.0).
         const eqRaw = tryEqualsForm(arg, "port");
@@ -117,6 +124,14 @@ export function parseArgs(args: string[]): ParsedArgs {
             throw new Error(`--hostname requires a value, but none was provided.`);
           }
           result.hostname = hostRaw;
+          break;
+        }
+        const outDirRaw = tryEqualsForm(arg, "outDir");
+        if (outDirRaw !== null) {
+          if (outDirRaw === "") {
+            throw new Error(`--outDir requires a value, but none was provided.`);
+          }
+          result.outDir = outDirRaw;
           break;
         }
         if (!FLAG_PATTERN.test(arg)) {

@@ -133,6 +133,20 @@ describe("--hostname / -H", () => {
     expect(parseArgs(["--hostname=0.0.0.0"])).toMatchObject({ hostname: "0.0.0.0" });
   });
 
+  it("parses --outDir in both forms", () => {
+    expect(parseArgs(["--outDir", "out"])).toMatchObject({ outDir: "out" });
+    expect(parseArgs(["--outDir=build/web"])).toMatchObject({ outDir: "build/web" });
+  });
+
+  it("throws when --outDir has no value", () => {
+    expect(() => parseArgs(["--outDir"])).toThrow(
+      "--outDir requires a value, but none was provided.",
+    );
+    expect(() => parseArgs(["--outDir="])).toThrow(
+      "--outDir requires a value, but none was provided.",
+    );
+  });
+
   // ─── Error: missing value ─────────────────────────────────────────────────
 
   it("throws when --hostname has no value (end of args)", () => {

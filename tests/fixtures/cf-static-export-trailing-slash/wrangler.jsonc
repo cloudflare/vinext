@@ -1,0 +1,12 @@
+{
+  "name": "cf-static-export-trailing-slash",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  // Every request reaches the Worker, exported paths included.
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "run_worker_first": true,
+  },
+}

@@ -54,7 +54,7 @@ describe("prerender server pool sizing", () => {
 
   it("starts and closes stub render workers", async () => {
     const { dir, entry } = writeWorkerEntry(`
-      process.send({ type: "ready", port: 30000 + (process.pid % 10000) });
+      process.send({ type: "vinext:prerender-server-ready", port: 30000 + (process.pid % 10000) });
       setInterval(() => {}, 1000);
     `);
 
@@ -72,6 +72,26 @@ describe("prerender server pool sizing", () => {
     }
   });
 
+  it("ignores IPC messages that application code sends before startup", async () => {
+    const { dir, entry } = writeWorkerEntry(`
+      process.send({ type: "ready", port: 1 });
+      process.send({ type: "error", error: "not vinext" });
+      process.send({ type: "vinext:prerender-server-ready", port: 4126 });
+      setInterval(() => {}, 1000);
+    `);
+
+    try {
+      const pool = await startPrerenderServerPool(dir, 1, { entry });
+      try {
+        expect(pool.ports).toEqual([4126]);
+      } finally {
+        await pool.close();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("starts render workers in the Next production-build phase", async () => {
     const { dir, entry } = writeWorkerEntry(`
       if (
@@ -80,14 +100,14 @@ describe("prerender server pool sizing", () => {
         process.env.VINEXT_PRERENDER_RSC_ENTRY_PATH !== "application-entry.js" ||
         process.env.VINEXT_PRERENDER_SERVER_DIR !== "server-artifacts"
       ) {
-        process.send({ type: "error", error: JSON.stringify({
+        process.send({ type: "vinext:prerender-server-error", error: JSON.stringify({
           VINEXT_PRERENDER: process.env.VINEXT_PRERENDER,
           NEXT_PHASE: process.env.NEXT_PHASE,
           VINEXT_PRERENDER_RSC_ENTRY_PATH: process.env.VINEXT_PRERENDER_RSC_ENTRY_PATH,
           VINEXT_PRERENDER_SERVER_DIR: process.env.VINEXT_PRERENDER_SERVER_DIR,
         }) });
       } else {
-        process.send({ type: "ready", port: 4125 });
+        process.send({ type: "vinext:prerender-server-ready", port: 4125 });
       }
       setInterval(() => {}, 1000);
     `);
@@ -106,7 +126,7 @@ describe("prerender server pool sizing", () => {
 
   it("fails assertHealthy immediately after a worker transport error", async () => {
     const { dir, entry } = writeWorkerEntry(`
-      process.send({ type: "ready", port: 4124 });
+      process.send({ type: "vinext:prerender-server-ready", port: 4124 });
       setInterval(() => {}, 1000);
     `);
 
@@ -131,7 +151,7 @@ describe("prerender server pool sizing", () => {
 
   it("fails assertHealthy when a ready worker exits unexpectedly", async () => {
     const { dir, entry } = writeWorkerEntry(`
-      process.send({ type: "ready", port: 4123 });
+      process.send({ type: "vinext:prerender-server-ready", port: 4123 });
       setTimeout(() => process.exit(42), 25);
     `);
 

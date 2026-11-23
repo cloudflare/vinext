@@ -130,6 +130,13 @@ export const VINEXT_PRERENDER_REWRITTEN_HEADER = "x-vinext-prerender-rewritten";
 export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
 
 /**
+ * Set by the prerender step on its request for the 404 page, which is a route
+ * miss even where a top-level dynamic route would match its path. Honored only
+ * while prerendering.
+ */
+export const VINEXT_PRERENDER_NOT_FOUND_HEADER = "x-vinext-prerender-not-found";
+
+/**
  * Prerender-only marker: the response's 401, 403, 404 or redirect is its page's
  * notFound(), forbidden(), unauthorized() or redirect(), which escaped the shell.
  * Its value is the JSON of the headers to store: a redirect's own location, or

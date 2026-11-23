@@ -121,6 +121,40 @@ describe("staticAssetsAdapter", () => {
     },
   );
 
+  it("packages prerender output written under build.outDir", async () => {
+    const root = createRoot();
+    write(
+      root,
+      "out/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [{ route: "/", status: "rendered", revalidate: false, router: "app" }],
+      }),
+    );
+    write(root, "out/server/prerendered-routes/index.html", "<h1>static</h1>");
+    write(root, "out/server/prerendered-routes/index.rsc", "rsc payload");
+
+    await finalizeCacheAdapterPrerenderOutput({ cdn: staticAssetsAdapter() }, root, {
+      outDir: "out",
+    });
+
+    const adapter = createStaticAssetsCacheAdapter({
+      env: {
+        ASSETS: {
+          async fetch(input: string) {
+            const file = path.join(root, "out/client", new URL(input).pathname);
+            return fs.existsSync(file)
+              ? new Response(fs.readFileSync(file))
+              : new Response(null, { status: 404 });
+          },
+        },
+      },
+    });
+    const html = await adapter.get(appIsrCacheKey("/", "html", "build-a"));
+    expect(html?.value).toMatchObject({ kind: "APP_PAGE", html: "<h1>static</h1>" });
+    expect(fs.existsSync(path.join(root, "dist"))).toBe(false);
+  });
+
   // As in Next.js, a page's special error that escaped the shell is packaged
   // with its status on both entries, and a redirect with its location.
   it.each([

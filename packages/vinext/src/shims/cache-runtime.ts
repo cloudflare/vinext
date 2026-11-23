@@ -995,9 +995,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // (`res.revalidate()`) ignores the existing entry but still executes and
       // stores the fresh result below.
       let existing: CacheHandlerValue | null = null;
+      // Passed to these reads and the writes below, so a handler can tell a write
+      // filling what a read missed.
+      const cacheRead = {};
       if (!_hasPendingRevalidatedTag(softTags) && !_isOnDemandRevalidate()) {
         try {
-          existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
+          existing = await handler.get(cacheKey, { kind: "FETCH", softTags, cacheRead });
         } catch (error) {
           console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
         }
@@ -1017,7 +1020,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         cacheKey = coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, combinedNames);
         if (existing?.cacheState) staleRedirect = existing;
         try {
-          existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
+          existing = await handler.get(cacheKey, { kind: "FETCH", softTags, cacheRead });
         } catch (error) {
           console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
           existing = null;
@@ -1104,6 +1107,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
               fetchCache: true,
               tags: ctx.tags,
               timestamp,
+              cacheRead,
               ...(cacheFunctionInvocation ? { cacheFunctionInvocation } : {}),
               cacheControl: {
                 revalidate: revalidateSeconds,
