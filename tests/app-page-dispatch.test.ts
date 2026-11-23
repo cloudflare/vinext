@@ -4130,6 +4130,74 @@ describe("app page dispatch", () => {
     });
   });
 
+  // A catch-all owner (`app/club/[...path]` beside `@modal/(.)pics/[id]`)
+  // also matches the target, so the whole intercepting route renders through
+  // the matched route's own render, under the config of what it renders.
+  it("classifies a whole intercepting route of the matched route by the segments it renders", async () => {
+    const dispatchWithOwnerDefault = async (
+      ownerDefault: TestRoute["layouts"][number],
+      isProduction: boolean,
+    ) => {
+      const isrSet = vi.fn(async () => {});
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => ({
+        "page:/club/[...path]": "page",
+      }));
+      const route = createRoute({
+        isDynamic: true,
+        layouts: [{ default: () => null }],
+        layoutTreePositions: [1],
+        page: { default: () => null },
+        params: ["path"],
+        pattern: "/club/[...path]",
+        routeSegments: ["club", "[...path]"],
+        slots: {
+          "modal@app/club/@modal": {
+            default: { default: () => null },
+            layoutIndex: 0,
+            ownerTreePosition: 1,
+          },
+        },
+      });
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/club/pics/1",
+        findIntercept: () => ({
+          interceptBranchSegments: ["(.)pics", "[id]"],
+          matchedParams: { id: "1" },
+          ownerDefault,
+          page: { default: "pic-modal", generateStaticParams: async () => [{ id: "1" }] },
+          rendersWholeInterceptingRoute: true,
+          slotKey: "modal@app/club/@modal",
+          sourceMatchedParams: {},
+          sourceRouteIndex: 0,
+        }),
+        getSourceRoute: () => route,
+        interceptionContext: "/club",
+        isProduction,
+        isRscRequest: true,
+        isrSet,
+        params: { path: ["pics", "1"] },
+        route,
+      });
+      const response = await dispatchAppPage(options);
+      await response.text();
+      expect(buildPageElement.mock.calls[0]?.[2]).toMatchObject({
+        rendersWholeInterceptingRoute: true,
+      });
+      return { cacheControl: response.headers.get("cache-control"), isrSet };
+    };
+
+    await expect(dispatchWithOwnerDefault({ default: () => null }, false)).resolves.toMatchObject({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+    });
+    await expect(
+      dispatchWithOwnerDefault({ default: () => null, dynamic: "force-dynamic" }, false),
+    ).resolves.toMatchObject({ cacheControl: "no-store, must-revalidate" });
+    const production = await dispatchWithOwnerDefault({ default: () => null, revalidate: 0 }, true);
+    expect(production.cacheControl).toBe("private, no-cache, no-store, max-age=0, must-revalidate");
+    expect(production.isrSet).not.toHaveBeenCalled();
+  });
+
   // Next.js's interception rewrite takes the source's captures for every
   // interception, so a source render's root params are the source's.
   it("gives a slot interception's source render the source's root params", async () => {

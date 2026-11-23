@@ -181,7 +181,9 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   interceptErrorTreePositions?: readonly number[] | null;
   matchedParams: AppPageParams;
   sourceMatchedParams?: AppPageParams;
+  ownerDefault?: unknown;
   page: TPage;
+  rendersWholeInterceptingRoute?: boolean;
   slotId?: string | null;
   slotKey: string;
   sourceRouteIndex: number;
@@ -210,6 +212,7 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptErrorTreePositions?: readonly number[] | null;
   interceptNotFounds?: readonly unknown[] | null;
   interceptNotFoundTreePositions?: readonly number[] | null;
+  interceptOwnerDefault?: unknown;
   interceptPage: TPage;
   interceptParams: AppPageParams;
   interceptSlotId?: string | null;
@@ -218,6 +221,7 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptSourcePageSegments?: readonly string[] | null;
   interceptTargetPatternParts?: readonly string[] | null;
   interceptTargetRouteGraphId?: string | null;
+  rendersWholeInterceptingRoute?: boolean;
 };
 
 type AppPageModule = {
@@ -659,6 +663,12 @@ function toInterceptOptions(
     interceptSourcePageSegments: intercept.sourcePageSegments ?? null,
     interceptTargetPatternParts: intercept.targetPatternParts ?? null,
     interceptTargetRouteGraphId: intercept.targetRouteGraphId ?? null,
+    // The segment config of an interception of the matched route reads these
+    // before its render marks them, so it sees the tree that renders.
+    ...(intercept.rendersWholeInterceptingRoute === true && {
+      interceptOwnerDefault: intercept.ownerDefault ?? null,
+      rendersWholeInterceptingRoute: true,
+    }),
   };
 }
 
