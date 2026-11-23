@@ -39,6 +39,7 @@ describe("buildFontOwnerManifest", () => {
         ["/empty", ["/app/layout.tsx"]],
       ]),
       routelessFiles: ["/app/layout.tsx"],
+      globalNotFoundFiles: [],
       ...overrides,
     });
 
@@ -51,6 +52,7 @@ describe("buildFontOwnerManifest", () => {
         "/c": ["app/c/lazy.ts"],
       },
       routeless: [],
+      globalNotFound: [],
     });
   });
 
@@ -71,6 +73,7 @@ describe("buildFontOwnerManifest", () => {
     expect(manifest).toEqual({
       routes: { "/a": ["app/fonts.ts"], "/": ["app/fonts.ts"] },
       routeless: ["app/fonts.ts"],
+      globalNotFound: [],
     });
   });
 
@@ -82,5 +85,22 @@ describe("buildFontOwnerManifest", () => {
       routelessFiles: [],
     });
     expect(manifest.routes).toEqual({ "/b": ["app/b/client.tsx"] });
+  });
+
+  it("gives the standalone global-not-found render only its own fonts", () => {
+    const manifest = build({
+      rsc: new Map([
+        ["/app/layout.tsx", ["/app/fonts.ts"]],
+        ["/app/global-not-found.tsx", ["/app/a/fonts.ts"]],
+        ["/app/fonts.ts", []],
+        ["/app/a/fonts.ts", []],
+      ]),
+      ssr: new Map(),
+      clientReferences: new Map(),
+      routes: new Map(),
+      globalNotFoundFiles: ["/app/global-not-found.tsx"],
+    });
+    expect(manifest.routeless).toEqual(["app/fonts.ts"]);
+    expect(manifest.globalNotFound).toEqual(["app/a/fonts.ts"]);
   });
 });

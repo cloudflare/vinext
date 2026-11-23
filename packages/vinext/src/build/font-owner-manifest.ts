@@ -18,6 +18,11 @@ export type FontOwnerManifest = {
   routes: Record<string, string[]>;
   /** Owner keys of a render without a matched route, such as a route-miss 404. */
   routeless: string[];
+  /**
+   * Owner keys of the standalone `app/global-not-found` render of a route-miss
+   * 404, which skips the root layouts (Next.js' `/_global-not-found` entry).
+   */
+  globalNotFound: string[];
 };
 
 /** The key a font owner module is recorded under: its path relative to the root. */
@@ -103,6 +108,7 @@ export function buildFontOwnerManifest(options: {
   /** The canonical root files of each render, by route pattern. */
   routes: ReadonlyMap<string, readonly string[]>;
   routelessFiles: readonly string[];
+  globalNotFoundFiles: readonly string[];
 }): FontOwnerManifest {
   // The owner keys each RSC module brings in: its own, or, for a client
   // reference, those its SSR graph reaches.
@@ -135,7 +141,9 @@ export function buildFontOwnerManifest(options: {
   }
 
   const ownersByFile = new Map<string, Set<string>>();
-  const rootFiles = new Set([...options.routes.values(), options.routelessFiles].flat());
+  const rootFiles = new Set(
+    [...options.routes.values(), options.routelessFiles, options.globalNotFoundFiles].flat(),
+  );
   const rscImporters = importersOf(options.rsc);
   const isClientReference = (id: string) => options.clientReferences.has(id);
   for (const [id, keys] of ownersByRscModule) {
@@ -149,7 +157,11 @@ export function buildFontOwnerManifest(options: {
 
   const ownersOf = (files: readonly string[]) =>
     [...new Set(files.flatMap((file) => [...(ownersByFile.get(file) ?? [])]))].sort();
-  const manifest: FontOwnerManifest = { routes: {}, routeless: ownersOf(options.routelessFiles) };
+  const manifest: FontOwnerManifest = {
+    routes: {},
+    routeless: ownersOf(options.routelessFiles),
+    globalNotFound: ownersOf(options.globalNotFoundFiles),
+  };
   for (const [pattern, files] of options.routes) {
     const owners = ownersOf(files);
     // Most routes load no font of their own; leave them out.

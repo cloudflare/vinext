@@ -20,7 +20,8 @@ import {
  */
 export const FONT_OWNER_MANIFEST_ID = "virtual:vinext-font-owner-manifest";
 /**
- * Dev: `virtual:vinext-font-owners?route=<pattern>` (or `?routeless`) exports
+ * Dev: `virtual:vinext-font-owners?route=<pattern>` (or `?routeless`, or
+ * `?global-not-found`) exports
  * the owner keys of one render, read from the dev module graphs.
  */
 export const DEV_FONT_OWNERS_ID = "virtual:vinext-font-owners";
@@ -32,6 +33,8 @@ const FONT_OWNER_MANIFEST_EXTERNALS: ReadonlyMap<string, string> = new Map([
   [FONT_OWNER_MANIFEST_ID, FONT_OWNER_MANIFEST_FILE],
 ]);
 const ROUTELESS = "\0routeless";
+const GLOBAL_NOT_FOUND = "\0global-not-found";
+const EMPTY_MANIFEST: FontOwnerManifest = { routes: {}, routeless: [], globalNotFound: [] };
 
 type RscBuildGraph = {
   graph: ModuleGraphSnapshot;
@@ -39,6 +42,7 @@ type RscBuildGraph = {
   clientReferenceImportIds: Map<string, string>;
   routes: Map<string, string[]>;
   routelessFiles: string[];
+  globalNotFoundFiles: string[];
 };
 
 export function createFontOwnerManifestPlugin(options: {
@@ -49,6 +53,11 @@ export function createFontOwnerManifestPlugin(options: {
   getAlwaysRenderedFiles: () => readonly string[];
   /** Files a render without a matched route shows. */
   getRoutelessFiles: () => readonly string[];
+  /**
+   * Files the standalone global-not-found render shows (global-not-found and
+   * global-error), or none without `app/global-not-found`.
+   */
+  getGlobalNotFoundFiles: () => readonly string[];
   /** Keys of the modules the `vinext:font-owner` transform marked. */
   ownerKeys: ReadonlySet<string>;
 }): Plugin {
@@ -63,23 +72,29 @@ export function createFontOwnerManifestPlugin(options: {
   const isOwner = (id: string) => options.ownerKeys.has(fontOwnerKey(config.root, id));
 
   // Each render's files: a route's own files, or a route-miss render's, plus
-  // the files that can show in either.
+  // the files that can show in either. The standalone global-not-found render
+  // shows no root layout or root boundary, so it is a render of its own.
   const renderFiles = (): Map<string, string[]> => {
     const always = options.getAlwaysRenderedFiles();
+    const globalNotFound = options.getGlobalNotFoundFiles();
     const files = new Map<string, string[]>();
     for (const route of options.getRoutes() ?? []) {
       files.set(route.pattern, [...fontRouteFiles(route), ...always]);
     }
-    files.set(ROUTELESS, [...options.getRoutelessFiles(), ...always]);
+    files.set(ROUTELESS, [
+      ...options.getRoutelessFiles().filter((file) => file !== globalNotFound[0]),
+      ...always,
+    ]);
+    files.set(GLOBAL_NOT_FOUND, [...globalNotFound]);
     return files;
   };
 
   const resolveManifest = (): FontOwnerManifest | null => {
-    if (rscBuild === null) return { routes: {}, routeless: [] };
+    if (rscBuild === null) return EMPTY_MANIFEST;
     if (rscBuild === "no-owners") {
       // A font owner first seen after the RSC build has no graph to place it
       // in, so that build carries every font, as before fonts were scoped.
-      return options.ownerKeys.size === 0 ? { routes: {}, routeless: [] } : null;
+      return options.ownerKeys.size === 0 ? EMPTY_MANIFEST : null;
     }
     return buildFontOwnerManifest({
       rsc: rscBuild.graph,
@@ -89,6 +104,7 @@ export function createFontOwnerManifestPlugin(options: {
       ownerKey: (id) => fontOwnerKey(config.root, id),
       routes: rscBuild.routes,
       routelessFiles: rscBuild.routelessFiles,
+      globalNotFoundFiles: rscBuild.globalNotFoundFiles,
     });
   };
 
@@ -124,7 +140,11 @@ export function createFontOwnerManifestPlugin(options: {
       if (id === RESOLVED_FONT_OWNER_MANIFEST_ID) return "export default null";
       if (!id.startsWith(RESOLVED_DEV_FONT_OWNERS_PREFIX) || !server) return;
       const query = new URLSearchParams(id.slice(RESOLVED_DEV_FONT_OWNERS_PREFIX.length));
-      const pattern = query.has("routeless") ? ROUTELESS : query.get("route");
+      const pattern = query.has("routeless")
+        ? ROUTELESS
+        : query.has("global-not-found")
+          ? GLOBAL_NOT_FOUND
+          : query.get("route");
       const files = pattern === null ? undefined : renderFiles().get(pattern);
       const manager = await options.getManager(config);
       const rsc = server.environments.rsc as DevEnvironment | undefined;
@@ -181,8 +201,10 @@ export function createFontOwnerManifestPlugin(options: {
           ]),
         );
         const routelessFiles = routes.get(ROUTELESS) ?? [];
+        const globalNotFoundFiles = routes.get(GLOBAL_NOT_FOUND) ?? [];
         routes.delete(ROUTELESS);
-        rscBuild = { graph, clientReferenceImportIds, routes, routelessFiles };
+        routes.delete(GLOBAL_NOT_FOUND);
+        rscBuild = { graph, clientReferenceImportIds, routes, routelessFiles, globalNotFoundFiles };
       } else if (this.environment.name === "ssr" && rscBuild && rscBuild !== "no-owners") {
         // Client references render in the SSR graph, where their fonts load.
         const clientReferences = new Map<string, string>();

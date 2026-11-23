@@ -1075,17 +1075,20 @@ import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getS
 ${devFontOwners ? "" : `import __vinextFontOwners from ${JSON.stringify(FONT_OWNER_MANIFEST_ID)};`}
 function _getSSRFontStyles(owners) { return [..._getSSRFontStylesGoogle(owners), ..._getSSRFontStylesLocal(owners)]; }
 function _getSSRFontPreloads(owners) { return [..._getSSRFontPreloadsGoogle(owners), ..._getSSRFontPreloadsLocal(owners)]; }
-// The modules whose fonts the render of \`route\` (or of no matched route)
-// carries; null carries every font.
+// The modules whose fonts the render of \`route\` (or of no matched route, or
+// the standalone global-not-found render) carries; null carries every font.
 ${
   devFontOwners
-    ? `function __getFontOwners(route) {
-  const query = route?.pattern != null ? "route=" + encodeURIComponent(route.pattern) : "routeless";
+    ? `function __getFontOwners(route, render) {
+  const query = render === "global-not-found"
+    ? "global-not-found"
+    : route?.pattern != null ? "route=" + encodeURIComponent(route.pattern) : "routeless";
   // The resolved virtual id's URL form: import analysis rewrites only literals.
   return import(/* @vite-ignore */ ${JSON.stringify(`/@id/__x00__${DEV_FONT_OWNERS_ID}?`)} + query).then((m) => m.default);
 }`
-    : `function __getFontOwners(route) {
+    : `function __getFontOwners(route, render) {
   if (!__vinextFontOwners) return null;
+  if (render === "global-not-found") return __vinextFontOwners.globalNotFound;
   return route?.pattern != null ? (__vinextFontOwners.routes[route.pattern] ?? []) : __vinextFontOwners.routeless;
 }`
 }
