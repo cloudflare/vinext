@@ -7230,7 +7230,7 @@ describe("app page dispatch", () => {
                 ),
                 postponed: formatAppPprShellState({
                   prelude: true,
-                  postponed: {},
+                  postponed: { resumableState: {} },
                   resumeDataCache: null,
                 }),
               },
@@ -7281,7 +7281,7 @@ describe("app page dispatch", () => {
                 ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<!DOCTYPE html>")),
                 postponed: formatAppPprShellState({
                   prelude: true,
-                  postponed: {},
+                  postponed: { resumableState: {} },
                   resumeDataCache: null,
                 }),
               },
@@ -7323,7 +7323,7 @@ describe("app page dispatch", () => {
                 ...buildCachedAppPageValue(markAppPprDynamicFallbackShellHtml("<!DOCTYPE html>")),
                 postponed: formatAppPprShellState({
                   prelude: true,
-                  postponed: {},
+                  postponed: { resumableState: {} },
                   resumeDataCache: JSON.stringify({
                     cache: { "use-cache-key": { body: "c2hlbGw=", tags: [] } },
                     fetch: {},
