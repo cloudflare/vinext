@@ -4198,6 +4198,85 @@ describe("app page dispatch", () => {
     expect(production.isrSet).not.toHaveBeenCalled();
   });
 
+  // A matched page without a default export answers 500 before it renders,
+  // and so does the owner `default` a whole intercepting route renders in its
+  // place, from another route or from the matched route itself.
+  it("answers a whole intercepting route's owner default without a default export as a page without one", async () => {
+    const ownerRoute = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [1],
+      page: { default: () => null },
+      params: ["path"],
+      pattern: "/club/[...path]",
+      routeSegments: ["club", "[...path]"],
+      slots: {
+        "modal@app/club/@modal": {
+          default: { default: () => null },
+          layoutIndex: 0,
+          ownerTreePosition: 1,
+        },
+      },
+    });
+    const dispatchWithOwnerDefault = async (
+      fromMatchedRoute: boolean,
+      ownerDefault: Record<string, unknown> | null = { revalidate: 60 },
+    ) => {
+      const isrSet = vi.fn(async () => {});
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => ({
+        "page:/club/[...path]": "page",
+      }));
+      const route = fromMatchedRoute
+        ? ownerRoute
+        : createRoute({
+            isDynamic: true,
+            params: ["id"],
+            pattern: "/club/pics/[id]",
+            routeSegments: ["club", "pics", "[id]"],
+          });
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/club/pics/1",
+        findIntercept: () => ({
+          interceptBranchSegments: ["(.)pics", "[id]"],
+          matchedParams: { id: "1" },
+          ownerDefault,
+          page: { default: "pic-modal", generateStaticParams: async () => [{ id: "1" }] },
+          rendersWholeInterceptingRoute: true,
+          slotKey: "modal@app/club/@modal",
+          sourceMatchedParams: { path: ["a"] },
+          sourceRouteIndex: 1,
+        }),
+        getSourceRoute: (sourceRouteIndex) => (sourceRouteIndex === 1 ? ownerRoute : undefined),
+        interceptionContext: "/club/a",
+        isProduction: true,
+        isRscRequest: true,
+        isrSet,
+        params: fromMatchedRoute ? { path: ["pics", "1"] } : { id: "1" },
+        route,
+      });
+      const response = await dispatchAppPage(options);
+      // An owner without a `default` file renders nothing in its children.
+      if (ownerDefault === null) {
+        expect(response.status).toBe(200);
+        expect(buildPageElement).toHaveBeenCalledOnce();
+        return;
+      }
+      expect(response.status).toBe(500);
+      await expect(response.text()).resolves.toBe("Page has no default export");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(buildPageElement).not.toHaveBeenCalled();
+      expect(isrSet).not.toHaveBeenCalled();
+    };
+
+    await dispatchWithOwnerDefault(false);
+    await dispatchWithOwnerDefault(true);
+    await dispatchWithOwnerDefault(false, null);
+    await dispatchWithOwnerDefault(true, null);
+  });
+
   // Next.js's interception rewrite takes the source's captures for every
   // interception, so a source render's root params are the source's.
   it("gives a slot interception's source render the source's root params", async () => {
@@ -4631,6 +4710,54 @@ describe("app page dispatch", () => {
     await expect(
       dispatchSibling({ default: "modal-page", generateStaticParams: async () => [] }),
     ).resolves.toBeNull();
+  });
+
+  // A sibling interception's page renders in the matched page's place, so
+  // without a default export it answers as a matched page without one.
+  it("answers a sibling interception's page without a default export as a page without one", async () => {
+    const isrSet = vi.fn(async () => {});
+    const buildPageElement = vi.fn(async (route: TestRoute) => route.pattern);
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/shots/123",
+      findIntercept: () => ({
+        interceptBranchSegments: ["[id]"],
+        matchedParams: { id: "123" },
+        page: { generateStaticParams: async () => [{ id: "123" }] },
+        slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+        sourcePageSegments: ["shots", "(.)[id]"],
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1
+          ? createRoute({
+              layouts: [{ default: () => null }],
+              layoutTreePositions: [0],
+              params: [],
+              pattern: "/shots",
+              routeSegments: ["shots"],
+            })
+          : undefined;
+      },
+      isProduction: true,
+      isRscRequest: true,
+      isrSet,
+      route: createRoute({
+        isDynamic: true,
+        params: ["id"],
+        pattern: "/shots/[id]",
+        routeSegments: ["shots", "[id]"],
+      }),
+    });
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(500);
+    await expect(response.text()).resolves.toBe("Page has no default export");
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(buildPageElement).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("renders an interception from its own matched route under the interception's config", async () => {

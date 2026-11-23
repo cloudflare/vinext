@@ -133,6 +133,8 @@ import {
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { traceResponseStart } from "./response-start-tracing.js";
 import { getFrameworkLinkHeader } from "./app-response-header-provenance.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
+import { isUnknownRecord } from "../utils/record.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -673,6 +675,25 @@ function toInterceptOptions(
 }
 
 /**
+ * Whether an interception renders, in the matched page's place, a module
+ * without a default export: a sibling interception's own page, or the slot
+ * owner's `default` that a whole intercepting route renders as its children
+ * (see app-page-element-builder.ts). It answers as a matched page without one.
+ */
+function rendersInterceptPageWithoutDefaultExport(interceptOpts: unknown): boolean {
+  if (!isUnknownRecord(interceptOpts)) return false;
+  const page =
+    interceptOpts.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
+    interceptOpts.interceptPage
+      ? interceptOpts.interceptPage
+      : interceptOpts.rendersInterceptionSource === true &&
+          interceptOpts.rendersWholeInterceptingRoute === true
+        ? interceptOpts.interceptOwnerDefault
+        : null;
+  return isUnknownRecord(page) && !page.default;
+}
+
+/**
  * Workers Cache never admits a path its deploy manifest gives no state: a
  * listed path that used a dynamic API, or an unlisted path of a route without
  * on-demand ISR. Next.js serves those per request, so they render normally,
@@ -837,7 +858,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   setCurrentFetchRevalidate(currentRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(isForceDynamic);
 
-  if (options.hasPageModule && !options.hasPageDefaultExport) {
+  const respondWithoutPageDefaultExport = () => {
     options.clearRequestContext();
     return applyIneligibleRouteCachePolicy(
       new Response("Page has no default export", { status: 500 }),
@@ -857,6 +878,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         scriptNonce: options.scriptNonce,
       },
     );
+  };
+  if (options.hasPageModule && !options.hasPageDefaultExport) {
+    return respondWithoutPageDefaultExport();
   }
 
   // The cacheComponents exemption only covers caching. Methods follow the
@@ -1372,6 +1396,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const onHeadPrepared = (head: AppPagePreparedRouteHead) => {
     renderedRouteHead.value = head;
   };
+  let interceptPageHasNoDefaultExport = false;
   const interceptResult = await resolveAppPageIntercept<
     TRoute,
     unknown,
@@ -1379,6 +1404,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     AppPageElement
   >({
     async buildPageElement(interceptRoute, interceptParams, interceptOpts, interceptSearchParams) {
+      if (rendersInterceptPageWithoutDefaultExport(interceptOpts)) {
+        interceptPageHasNoDefaultExport = true;
+        return null;
+      }
       // Deliberately no save/restore around buildPageElement: when this
       // callback runs, resolveAppPageIntercept returns the intercept response
       // directly and the dispatch never falls through to the original route.
@@ -1448,6 +1477,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return resolveAppPageNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts);
     },
     renderInterceptResponse(sourceRoute, interceptElement, navigationParams) {
+      if (interceptPageHasNoDefaultExport) return respondWithoutPageDefaultExport();
       const interceptOnError = options.createRscOnErrorHandler(
         options.cleanPathname,
         sourceRoute.pattern,
@@ -1510,6 +1540,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   });
   if (interceptResult.response) {
     return interceptResult.response;
+  }
+  if (rendersInterceptPageWithoutDefaultExport(interceptResult.interceptOpts)) {
+    return respondWithoutPageDefaultExport();
   }
 
   // A route that renders as an interception's source renders under the
