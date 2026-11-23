@@ -651,10 +651,8 @@ export function resolveInterceptHeadFileMetadata(options: {
   return {
     fileMetadataParams: {
       ...(options.interceptParams ?? options.params),
-      ...resolveAppPageSegmentParams(sourceSegments, sourceSegments.length, {
-        ...options.params,
-        ...sourceCaptures,
-      }),
+      ...resolveAppPageSegmentParams(sourceSegments, sourceSegments.length, options.params),
+      ...sourceCaptures,
     },
     fileMetadataRouteSegments: segments,
     metadataRoutes: filterMetadataRoutesForSegments(options.metadataRoutes, segments),
