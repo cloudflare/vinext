@@ -35,7 +35,8 @@ const FONT_OWNER_MANIFEST_EXTERNALS: ReadonlyMap<string, string> = new Map([
 ]);
 const ROUTELESS = "\0routeless";
 const GLOBAL_NOT_FOUND = "\0global-not-found";
-type RenderFiles = { files: string[]; interceptFiles: string[] };
+/** A render's files, and each intercepting route's it renders, by interception ID. */
+type RenderFiles = { files: string[]; interceptFiles: Map<string, string[]> };
 
 type RscBuildGraph = {
   graph: ModuleGraphSnapshot;
@@ -47,7 +48,11 @@ type RscBuildGraph = {
 };
 
 /** A dev render's owner keys: its documents', and its RSC payload's as in `navigation`. */
-type DevFontOwners = { document: string[]; route: string[]; intercepts: string[] };
+type DevFontOwners = {
+  document: string[];
+  route: string[];
+  intercepts: Record<string, string[]>;
+};
 
 const EMPTY_MANIFEST: FontOwnerManifest = {
   routes: {},
@@ -101,9 +106,9 @@ export function createFontOwnerManifestPlugin(options: {
         ...options.getRoutelessFiles().filter((file) => !globalNotFound.includes(file)),
         ...always,
       ],
-      interceptFiles: [],
+      interceptFiles: new Map(),
     });
-    files.set(GLOBAL_NOT_FOUND, { files: [...globalNotFound], interceptFiles: [] });
+    files.set(GLOBAL_NOT_FOUND, { files: [...globalNotFound], interceptFiles: new Map() });
     return files;
   };
 
@@ -195,11 +200,14 @@ export function createFontOwnerManifestPlugin(options: {
         return { server: [...serverOwners].sort(), client: [...clientOwners] };
       };
       const own = await ownersOf(files.files);
-      const intercepts = await ownersOf(files.interceptFiles);
+      const intercepts: Record<string, string[]> = {};
+      for (const [interceptionId, interceptFiles] of files.interceptFiles) {
+        intercepts[interceptionId] = (await ownersOf(interceptFiles)).server;
+      }
       const owners: DevFontOwners = {
         document: [...new Set([...own.server, ...own.client])].sort(),
         route: own.server,
-        intercepts: intercepts.server,
+        intercepts,
       };
       return `export default ${JSON.stringify(owners)};`;
     },
@@ -231,7 +239,12 @@ export function createFontOwnerManifestPlugin(options: {
             render,
             {
               files: files.map(options.canonicalizeModuleId),
-              interceptFiles: interceptFiles.map(options.canonicalizeModuleId),
+              interceptFiles: new Map(
+                [...interceptFiles].map(([interceptionId, files]) => [
+                  interceptionId,
+                  files.map(options.canonicalizeModuleId),
+                ]),
+              ),
             },
           ]),
         );
