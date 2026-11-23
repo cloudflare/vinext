@@ -183,3 +183,45 @@ test("a CSS module that two of a page's shared chunks use is linked once, ahead 
   expect.soft(tagRules).toBe(1);
   expect(await probeBorderColors(page)).toEqual({ "chart-tag": RED, "table-tag": BLUE });
 });
+
+/** How many JavaScript files a full load of `route` downloads. */
+async function countScripts(page: Page, route: string): Promise<number> {
+  await page.goto(`${baseUrl}${route}`, { waitUntil: "networkidle" });
+  await waitForHydration(page);
+  return page.evaluate(
+    () =>
+      new Set(
+        performance
+          .getEntriesByType("resource")
+          .map((entry) => new URL(entry.name).pathname)
+          .filter((pathname) => pathname.endsWith(".js")),
+      ).size,
+  );
+}
+
+test("a small module that two shared chunks use costs no request of its own", async ({ page }) => {
+  // What each page downloads beyond what `/` does: its panels' chunks.
+  // `formatCount` belongs in one of those or in the page's own chunk, as in
+  // Next.js, where `/reports` loads two more files than `/` and the other two
+  // pages one more.
+  const home = await countScripts(page, "/");
+  const extra: Record<string, number> = {};
+  for (const route of ["/reports", "/summary", "/invoices"]) {
+    extra[route] = (await countScripts(page, route)) - home;
+  }
+
+  expect(extra).toEqual({ "/reports": 2, "/summary": 1, "/invoices": 1 });
+});
+
+test("a page links one stylesheet for the CSS modules of its shared chunks", async ({ page }) => {
+  // The tag's CSS module and each panel's are a few hundred bytes. Next.js
+  // links one stylesheet on each of these pages, with the tag's rule first.
+  const links: Record<string, number> = {};
+  for (const route of ["/reports", "/summary", "/invoices"]) {
+    await page.goto(`${baseUrl}${route}`);
+    await waitForHydration(page);
+    links[route] = await page.locator('link[rel="stylesheet"]').count();
+  }
+
+  expect(links).toEqual({ "/reports": 1, "/summary": 1, "/invoices": 1 });
+});
