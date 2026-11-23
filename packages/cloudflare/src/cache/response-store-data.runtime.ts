@@ -626,13 +626,16 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       }
       return value;
     } catch (error) {
+      // A page may be stored under a page's key, which a shell mustn't replace,
+      // so that read fails rather than missing.
       console.error(
         JSON.stringify({
-          message: "Vinext response-store data lookup failed; treating as a cache miss",
+          message: pageRequest
+            ? "Vinext response-store data lookup failed"
+            : "Vinext response-store data lookup failed; treating as a cache miss",
           error: error instanceof Error ? error.message : String(error),
         }),
       );
-      // A page may be stored under a page's key, which a shell mustn't replace.
       if (pageRequest) throw error;
       return null;
     }
