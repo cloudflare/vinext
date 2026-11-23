@@ -17,11 +17,7 @@ import {
   type AppPagePprFallbackCacheShell,
 } from "./app-ppr-fallback-shell.js";
 import type { GeneratedStaticParamsMemo } from "./app-page-request.js";
-import {
-  coalesceFallbackShellProduction,
-  isrCacheControl,
-  type ISRCacheEntry,
-} from "./isr-cache.js";
+import { isrCacheControl, type ISRCacheEntry } from "./isr-cache.js";
 import { normalizePregeneratedPathname } from "./pregenerated-concrete-paths.js";
 import { encodePrerenderRouteParams } from "./prerender-route-params.js";
 import {
@@ -171,10 +167,14 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     typeof routeRevalidate === "number"
       ? Math.min(routeRevalidate, renderedCacheControl.revalidate ?? routeRevalidate)
       : (renderedCacheControl.revalidate ?? false);
-  const cacheControl = isrCacheControl(revalidate, {
-    expireSeconds: typeof revalidate === "number" ? renderedCacheControl.expire : undefined,
-    staleSeconds: resolveClientStaleTimeSeconds(requestCacheLife),
-  });
+  // An empty shell keeps the route's lifetime, as its render's is a dynamic
+  // one's, which isn't stored.
+  const cacheControl = isDynamic
+    ? isrCacheControl(routeRevalidate)
+    : isrCacheControl(revalidate, {
+        expireSeconds: typeof revalidate === "number" ? renderedCacheControl.expire : undefined,
+        staleSeconds: resolveClientStaleTimeSeconds(requestCacheLife),
+      });
   const tags = buildAppPageCacheTags(
     fallbackPathname,
     readPrerenderCacheTagsHeader(response.headers),
@@ -237,15 +237,12 @@ export async function storeAppPprUngeneratedFallbackShell<TRoute extends AppPage
     routeRevalidateSeconds === null || routeRevalidateSeconds === Infinity
       ? false
       : routeRevalidateSeconds;
-  const isrSetFallbackShell = options.isrSetFallbackShell;
-  await coalesceFallbackShellProduction(key, async () => {
-    // A shell another request stored meanwhile stays.
-    const cached = await (options.isrGetFallbackShell ?? options.isrGet)(key);
-    if (cached !== null && cached.isExpired !== true && !cached.isStale) return;
-    await isrSetFallbackShell(key, value, {
-      cacheControl: isrCacheControl(revalidate),
-      tags: buildAppPageCacheTags(fallbackPathname, []),
-    });
-    options.isrDebug?.("STORE (ungenerated fallback shell)", fallbackPathname);
+  // A shell another request stored meanwhile stays.
+  const cached = await (options.isrGetFallbackShell ?? options.isrGet)(key);
+  if (cached !== null && cached.isExpired !== true && !cached.isStale) return;
+  await options.isrSetFallbackShell(key, value, {
+    cacheControl: isrCacheControl(revalidate),
+    tags: buildAppPageCacheTags(fallbackPathname, []),
   });
+  options.isrDebug?.("STORE (ungenerated fallback shell)", fallbackPathname);
 }
