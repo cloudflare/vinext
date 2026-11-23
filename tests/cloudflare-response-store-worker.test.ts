@@ -1005,6 +1005,38 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       ]);
     });
 
+    it("renders a page whose key holds a warm-up's shell for a dispatch storing only its own part", async () => {
+      dispatchWithIdentity(false);
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      // A warm-up stores both parts, so the path's shell lands under the key.
+      stages.response.mockImplementationOnce(async () => {
+        await dataCache.set("html:/page", shell("<!--shell-->"), shellContext("document"));
+        return dynamicResponse();
+      });
+      const warmup = context();
+      await (
+        await handler.fetch(
+          new Request("https://example.com/page", {
+            headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+          }),
+          {} as never,
+          warmup,
+        )
+      ).text();
+      await Promise.all(warmup.waitUntil.mock.calls.map(([promise]) => promise));
+      expect([...entries.values()].some((entry) => entry.body.includes("<!--shell-->"))).toBe(true);
+      stages.response.mockImplementationOnce(
+        async () => new Response("page", { headers: { "Cache-Control": "public, max-age=60" } }),
+      );
+
+      const { body, response } = await fetchPage(handler);
+
+      expect(body).toBe("page");
+      expect(response.headers.get("x-vinext-cache")).not.toBe("HIT");
+    });
+
     it("leaves a shell it can't read to the render's read", async () => {
       dispatchWithIdentity();
       const { store } = createMemoryStore();
