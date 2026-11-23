@@ -100,7 +100,8 @@ export default async function Page({ params }: { params: Promise<{ param: string
     `import { NextResponse, type NextRequest } from "next/server";
 
 export function middleware(request: NextRequest) {
-  if (request.headers.get("x-vinext-rsc-render-mode") === "prefetch-loading-shell") {
+  // Like the Next.js fixture's matcher, only a navigation is rewritten.
+  if (request.headers.get("next-router-prefetch")) {
     return NextResponse.next();
   }
   const destination = request.nextUrl.searchParams.get("mismatch-rewrite");
@@ -173,12 +174,11 @@ test("recovers when navigation middleware rewrites away from the prefetched rout
     const prefetchResponse = page.waitForResponse((response) => {
       const request = response.request();
       return (
-        request.headers()["x-vinext-rsc-render-mode"] === "prefetch-loading-shell" &&
+        request.headers()["next-router-prefetch"] === "1" &&
         response.url().includes("/mismatching-prefetch/dynamic-page/a?")
       );
     });
     await page.click("#reveal-link");
-    await page.hover("#mismatch-link");
     expect((await prefetchResponse).ok()).toBe(true);
 
     await page.evaluate(() => {
