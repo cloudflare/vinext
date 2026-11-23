@@ -79,6 +79,8 @@ Like Next.js, a client navigation renders only below the layouts the client alre
 
 ## Routing config
 
+In a hybrid app with Pages Router `i18n`, App Router routes keep explicit locale segments after a `next.config.js` rewrite. A rewrite can use the inferred default locale for matching and carry it to the Pages Router. The App Router resolves that destination without the inferred prefix.
+
 Like Next.js, vinext doesn't check the regexes in `redirects`, `rewrites`, and `headers` sources, in `has` and `missing` values, or in middleware matchers for catastrophic backtracking. They run as written against request paths, headers, cookies, query values, and hosts, so avoid nested or overlapping repeats such as `(a+)+` in these patterns.
 
 Under `trailingSlash` or `skipTrailingSlashRedirect`, a middleware matcher source that keeps a slash after its last segment, such as `"/admin/"` or `"/admin/(.*)"`, runs middleware for `/admin/`. Next.js tests that request a second time without the slash, and when that test fails it answers with an empty `200` without running middleware or rendering the page. In both, a source that rejects slashed paths, such as `"/admin/((?!.*\\/$).*)"`, doesn't run middleware for a path like `/admin/users/`.
