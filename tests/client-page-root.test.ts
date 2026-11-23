@@ -82,7 +82,7 @@ function startCandidateSsr(options?: {
   const gate = startCandidateSearchParamsGate();
   const hang =
     options?.isCacheComponents && !options.isPprFallbackShell
-      ? createClientPageSearchParamsHang(undefined)
+      ? createClientPageSearchParamsHang(undefined, "/page")
       : null;
   setNavigationContext({
     pathname: "/client",
@@ -297,7 +297,7 @@ describe("ClientPageRoot in SSR with Cache Components", () => {
     // A regeneration renders with no gate and no query to give the page.
     await inRequest(async () => {
       const searchParams = new URLSearchParams("q=secret");
-      const hang = createClientPageSearchParamsHang(undefined);
+      const hang = createClientPageSearchParamsHang(undefined, "/page");
       setNavigationContext({
         pathname: "/client",
         searchParams,
@@ -329,18 +329,40 @@ describe("ClientPageRoot in SSR with Cache Components", () => {
     });
   });
 
+  it("reports a hung searchParams rejection after the abort as the abort", async () => {
+    const hang = createClientPageSearchParamsHang(undefined, "/page");
+    const rejection = hang.onHang().catch((error: unknown) => error);
+    // SSR reads the whole payload, so the hung render aborts.
+    const ended = new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
+    await new Response(hang.trackFlightConsumed(ended)).text();
+    const error = await rejection;
+
+    expect(error).toMatchObject({ name: "HangingPromiseRejectionError" });
+    expect(hang.reportedError(error)).toBe(hang.signal.reason);
+    expect(hang.signal.reason).toMatchObject({ reason: "searchParams" });
+    const other = new Error("render failed");
+    expect(hang.reportedError(other)).toBe(other);
+    hang.dispose();
+  });
+
   it("never lets a static render's page catch the bail-out", async () => {
     // Like Next.js's prerender (`makeHangingPromise`), the page's searchParams
-    // never settle, so its catch branch never reaches the stored HTML.
+    // reject only once React aborts the render, so its catch branch runs but
+    // never reaches the stored HTML.
     await inRequest(async () => {
       const gate = startCandidateSsr({ isCacheComponents: true });
+      let caught: Promise<unknown> | undefined;
+      function RecordingCatchPage(props: SearchParamsProps): React.ReactNode {
+        caught ??= props.searchParams.catch(() => "caught");
+        return CatchingPage(props);
+      }
       const rendering = renderMarkup(
         React.createElement(
           React.Fragment,
           null,
           inSuspense(
             React.createElement(ClientPageRoot, {
-              Component: CatchingPage as React.ComponentType<Record<string, unknown>>,
+              Component: RecordingCatchPage as React.ComponentType<Record<string, unknown>>,
               pageProps: { params: Promise.resolve({}) },
             }),
           ),
@@ -351,6 +373,7 @@ describe("ClientPageRoot in SSR with Cache Components", () => {
       await settleCandidateGate(gate);
       const html = await rendering;
 
+      await expect(caught).resolves.toBe("caught");
       expect(html).toContain("fallback");
       expect(html).toContain("static sibling");
       expect(html).not.toContain("caught");

@@ -95,7 +95,8 @@ export function replaceAppPprShellFallbackParamKeys(
   const replace = (value: unknown): unknown => {
     if (typeof value === "string") {
       let replaced = value;
-      for (const { from, to } of tokens) replaced = replaced.replaceAll(from, to);
+      // A function replacement keeps `$` in a param name literal.
+      for (const { from, to } of tokens) replaced = replaced.replaceAll(from, () => to);
       return replaced;
     }
     if (Array.isArray(value)) return value.map(replace);
@@ -165,12 +166,15 @@ export function parseAppPprShellState(value: string | undefined): AppPprShellSta
   const match = value === undefined ? null : /^(\d+):/.exec(value);
   if (!value || !match) return null;
   const headerEnd = match[0].length + Number(match[1]);
+  if (headerEnd > value.length) return null;
   let header: { prelude?: unknown; postponed?: unknown; generated?: unknown };
   try {
     header = JSON.parse(value.slice(match[0].length, headerEnd)) as typeof header;
   } catch {
     return null;
   }
+  // A malformed entry is a miss, as one that doesn't parse.
+  if (header === null || typeof header !== "object") return null;
   return {
     prelude: header.prelude === true,
     postponed: header.postponed ?? null,
