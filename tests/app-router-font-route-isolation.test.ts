@@ -14,7 +14,7 @@ import { fetchRsc, startFixtureServer } from "./helpers.js";
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-font-route-isolation");
 const outDir = path.resolve(FIXTURE_DIR, "dist");
 const nodeModulesLink = path.join(FIXTURE_DIR, "node_modules");
-const FONTS = ["font-root", "font-gnf", "font-a", "font-b", "font-c", "font-d"];
+const FONTS = ["font-root", "font-gnf", "font-a", "font-b", "font-c", "font-d", "font-x", "font-y"];
 
 beforeAll(() => {
   fs.rmSync(nodeModulesLink, { recursive: true, force: true });
@@ -64,6 +64,28 @@ async function payloadFontsInOrder(baseUrl: string) {
   }
   return observed;
 }
+
+// `/b`'s `@modal` slot intercepts `/b/x` and `/b/y`, each with a font of its
+// own. A soft navigation from `/b` renders one of them, and its payload
+// carries that intercept's fonts only, like the layer Next.js renders.
+async function interceptPayloadFonts(baseUrl: string) {
+  const observed = [];
+  for (const pathname of ["/b/x", "/b/y"]) {
+    const res = await fetchRsc(baseUrl, pathname, {
+      headers: { "X-Vinext-Interception-Context": "/b" },
+    });
+    expect(res.status).toBe(200);
+    const payload = await res.text();
+    expect(payload).toContain(`Modal ${pathname.slice(-1).toUpperCase()}`);
+    observed.push({ pathname, fonts: FONTS.filter((font) => payload.includes(`${font}.`)) });
+  }
+  return observed;
+}
+
+const EXPECTED_INTERCEPT_PAYLOADS = [
+  { pathname: "/b/x", fonts: ["font-root", "font-b", "font-x"] },
+  { pathname: "/b/y", fonts: ["font-root", "font-b", "font-y"] },
+];
 
 // Every page renders in the root layout, which loads a font of its own.
 const EXPECTED_PAYLOADS = [
@@ -131,6 +153,10 @@ describe("App Router next/font is scoped to the requested route (production)", (
   it("sends each route's server font rules with its client navigation payload", async () => {
     expect(await payloadFontsInOrder(baseUrl)).toEqual(EXPECTED_PAYLOADS);
   });
+
+  it("sends only the rendered intercepting route's fonts with its payload", async () => {
+    expect(await interceptPayloadFonts(baseUrl)).toEqual(EXPECTED_INTERCEPT_PAYLOADS);
+  });
 });
 
 describe("App Router next/font is scoped to the requested route (dev)", () => {
@@ -151,5 +177,9 @@ describe("App Router next/font is scoped to the requested route (dev)", () => {
 
   it("sends each route's server font rules with its client navigation payload", async () => {
     expect(await payloadFontsInOrder(baseUrl)).toEqual(EXPECTED_PAYLOADS);
+  });
+
+  it("sends only the rendered intercepting route's fonts with its payload", async () => {
+    expect(await interceptPayloadFonts(baseUrl)).toEqual(EXPECTED_INTERCEPT_PAYLOADS);
   });
 });

@@ -1,6 +1,7 @@
 import path from "pathslash";
 import type { Rollup } from "vite";
 import { stripViteModuleQuery } from "../utils/path.js";
+import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
 import { actionOwnerRouteEntryIds } from "./action-owner-manifest.js";
 
 type FontOwnerRoute = Parameters<typeof actionOwnerRouteEntryIds>[0];
@@ -21,7 +22,8 @@ export type FontOwnerManifest = {
   /**
    * The server-module owners whose font rules each route's RSC payload carries
    * for a client navigation, by route pattern: the route's own, and those of
-   * the intercepting routes it renders for a soft navigation. Client
+   * intercepting route it renders for a soft navigation, by interception ID
+   * (the `interceptionId` the request matched). Client
    * components load their fonts in the browser themselves, so they are left
    * out. A route that is missing has none.
    */
@@ -33,7 +35,7 @@ export type FontOwnerManifest = {
   globalNotFound: string[];
 };
 
-type FontNavigationOwners = { route?: string[]; intercepts?: string[] };
+type FontNavigationOwners = { route?: string[]; intercepts?: Record<string, string[]> };
 
 /** The key a font owner module is recorded under: its path relative to the root. */
 export function fontOwnerKey(root: string, id: string): string {
@@ -60,10 +62,39 @@ export function fontRouteFiles(route: FontOwnerRoute): string[] {
   });
 }
 
-/** The files of the intercepting routes a route renders for a soft navigation. */
-export function fontInterceptFiles(route: FontOwnerRoute): string[] {
+/**
+ * The files of each intercepting route a route renders for a soft navigation,
+ * by the interception ID the request matcher gives it
+ * (`server/app-rsc-route-matching.ts`).
+ */
+export function fontInterceptFiles(route: FontOwnerRoute): Map<string, string[]> {
   const own = new Set(fontRouteFiles(route));
-  return actionOwnerRouteEntryIds(route).filter((file) => !own.has(file));
+  // The entries of the route with only this intercept left in it.
+  const filesOf = (only: unknown) =>
+    actionOwnerRouteEntryIds({
+      ...route,
+      parallelSlots: route.parallelSlots.map((slot) => ({
+        ...slot,
+        interceptingRoutes: slot.interceptingRoutes.filter((intercept) => intercept === only),
+      })),
+      siblingIntercepts: route.siblingIntercepts.filter((intercept) => intercept === only),
+    }).filter((file) => !own.has(file));
+  const files = new Map<string, string[]>();
+  for (const slot of route.parallelSlots) {
+    if (typeof slot.id !== "string") continue;
+    for (const intercept of slot.interceptingRoutes) {
+      const id = createAppRouteGraphInterceptionId(
+        slot.id,
+        intercept.sourceMatchPattern,
+        intercept.targetPattern,
+      );
+      files.set(id, filesOf(intercept));
+    }
+  }
+  for (const intercept of route.siblingIntercepts) {
+    if (typeof intercept.id === "string") files.set(intercept.id, filesOf(intercept));
+  }
+  return files;
 }
 
 /** Each module of a build's graph with the modules it imports, statically or dynamically. */
@@ -129,10 +160,13 @@ export function buildFontOwnerManifest(options: {
   isOwner: (id: string) => boolean;
   ownerKey: (id: string) => string;
   /**
-   * The canonical root files of each route's documents, and of the
-   * intercepting routes it renders, by route pattern.
+   * The canonical root files of each route's documents, and of each
+   * intercepting route it renders (by interception ID), by route pattern.
    */
-  routes: ReadonlyMap<string, { files: readonly string[]; interceptFiles: readonly string[] }>;
+  routes: ReadonlyMap<
+    string,
+    { files: readonly string[]; interceptFiles: ReadonlyMap<string, readonly string[]> }
+  >;
   routelessFiles: readonly string[];
   globalNotFoundFiles: readonly string[];
 }): FontOwnerManifest {
@@ -174,7 +208,7 @@ export function buildFontOwnerManifest(options: {
   const rootFiles = new Set([
     ...[...options.routes.values()].flatMap(({ files, interceptFiles }) => [
       ...files,
-      ...interceptFiles,
+      ...[...interceptFiles.values()].flat(),
     ]),
     ...options.routelessFiles,
     ...options.globalNotFoundFiles,
@@ -217,9 +251,11 @@ export function buildFontOwnerManifest(options: {
     if (owners.length > 0) manifest.routes[pattern] = owners;
     const navigation: FontNavigationOwners = {};
     const routeOwners = serverOwnersOf(files);
-    const interceptOwners = serverOwnersOf(interceptFiles);
     if (routeOwners.length > 0) navigation.route = routeOwners;
-    if (interceptOwners.length > 0) navigation.intercepts = interceptOwners;
+    for (const [id, filesOfIntercept] of interceptFiles) {
+      const interceptOwners = serverOwnersOf(filesOfIntercept);
+      if (interceptOwners.length > 0) (navigation.intercepts ??= {})[id] = interceptOwners;
+    }
     if (navigation.route || navigation.intercepts) manifest.navigation[pattern] = navigation;
   }
   return manifest;
