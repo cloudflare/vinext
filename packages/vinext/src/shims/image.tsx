@@ -315,11 +315,11 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         fetchPriority={priorityFetchPriority}
         decoding="async"
         className={className}
-        data-nimg={fill ? "fill" : "1"}
         onLoad={handleLoad}
         onError={handleError}
         style={fill ? getFillStyle(style, blurStyle, legacyFill) : { ...blurStyle, ...style }}
         {...rest}
+        data-nimg={fill ? "fill" : "1"}
       />
     );
   }
@@ -345,11 +345,11 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         decoding="async"
         sizes={sizes}
         className={className}
-        data-nimg={fill ? "fill" : "1"}
         onLoad={handleLoad}
         onError={handleError}
         style={fill ? getFillStyle(style, undefined, legacyFill) : style}
         {...rest}
+        data-nimg={fill ? "fill" : "1"}
       />
     );
   }
@@ -404,11 +404,11 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
           decoding="async"
           sizes={imageSizes}
           className={className}
-          data-nimg="fill"
           onLoad={handleLoad}
           onError={handleError}
           style={getFillStyle(style, blurStyle, legacyFill)}
           {...rest}
+          data-nimg="fill"
         />
       );
     }
@@ -518,11 +518,11 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
       srcSet={srcSet}
       sizes={imageSizes}
       className={className}
-      data-nimg={fill ? "fill" : "1"}
       onLoad={handleLoad}
       onError={handleError}
       style={fill ? getFillStyle(style, blurStyle, legacyFill) : { ...blurStyle, ...style }}
       {...rest}
+      data-nimg={fill ? "fill" : "1"}
     />
   );
 });
