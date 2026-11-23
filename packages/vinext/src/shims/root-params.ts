@@ -4,6 +4,10 @@ import {
   getRegisteredCacheContext,
 } from "./internal/cache-context-accessor.js";
 import {
+  getPprFallbackShellState,
+  recordPprFallbackShellVaryParams,
+} from "./ppr-fallback-shell.js";
+import {
   getRequestContext,
   isInsideUnifiedScope,
   runWithUnifiedStateMutation,
@@ -104,6 +108,7 @@ export function getRootParam(name: string): Promise<string | string[] | undefine
     );
   }
   _recordUseCacheRootParamRead(name);
+  recordPprFallbackShellVaryParams(getPprFallbackShellState(), [name]);
   return Promise.resolve(getState().rootParams?.[name]);
 }
 

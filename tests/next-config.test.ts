@@ -2436,6 +2436,16 @@ describe("resolveNextConfig gestureTransition", () => {
   });
 });
 
+describe("resolveNextConfig varyParams", () => {
+  it("reuses shells for other params unless experimental.varyParams is false", async () => {
+    expect((await resolveNextConfig({ cacheComponents: true })).varyParams).toBe(true);
+    expect(
+      (await resolveNextConfig({ cacheComponents: true, experimental: { varyParams: false } }))
+        .varyParams,
+    ).toBe(false);
+  });
+});
+
 describe("resolveNextConfig cachedNavigations", () => {
   it("defaults experimental.cachedNavigations to false", async () => {
     const resolved = await resolveNextConfig({ cacheComponents: true });
@@ -2844,6 +2854,7 @@ describe("detectNextIntlConfig", () => {
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
+      varyParams: true,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],

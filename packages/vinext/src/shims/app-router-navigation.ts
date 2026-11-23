@@ -86,8 +86,11 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
+  SEARCH_PARAMS_VARY_PARAM,
   VINEXT_STATIC_SHELL_HEADER,
+  VINEXT_VARY_PARAMS_HEADER,
   type AppRscRenderMode,
+  type VaryParam,
 } from "../server/app-rsc-render-mode.js";
 import type { AppRouterInstance } from "./internal/app-router-context.js";
 import {
@@ -237,6 +240,12 @@ export type CachedRscResponse = {
    */
   staticShell?: "partial" | "complete" | "runtime";
   url: string;
+  /**
+   * The route params a static shell's render read, `SEARCH_PARAMS_VARY_PARAM`
+   * for search params, so another URL of the route with the same values for
+   * them can reuse it.
+   */
+  varyParams?: readonly VaryParam[];
 };
 
 export type PrefetchOptions = {
@@ -677,6 +686,70 @@ export function peekStaticShellPrefetchForNavigation(
     return entry.snapshot;
   }
   return null;
+}
+
+/**
+ * Seed a static-shell prefetch of `rscUrl` from a settled, fresh partial shell
+ * prefetched for another URL, when `resolveSnapshot` returns that shell for
+ * this URL. Like Next.js's segment cache, a shell is reused for any params its
+ * render didn't read (`varyParams`), so the prefetch needs no request.
+ */
+export function seedStaticShellPrefetchFromVaryingShell(
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+  resolveSnapshot: (source: CachedRscResponse, sourceHref: string) => CachedRscResponse | null,
+  onInvalidate?: () => void,
+): boolean {
+  if (interceptionContext !== null) return false;
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const cache = getPrefetchCache();
+  const now = Date.now();
+  for (const [sourceCacheKey, source] of cache) {
+    if (
+      source.prefetchKind !== "static-shell" ||
+      source.snapshot?.staticShell !== "partial" ||
+      source.snapshot.varyParams === undefined ||
+      source.pending !== undefined
+    ) {
+      continue;
+    }
+    const expiresAt = resolvePrefetchCacheEntryExpiresAt(source);
+    if (expiresAt <= now) continue;
+    const sourceKey = AppElementsWire.decodeCacheKey(sourceCacheKey);
+    if (sourceKey.interceptionContext !== null || sourceCacheKey === cacheKey) continue;
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(source, mountedSlotsHeader)) continue;
+    const sourceHref = normalizeRscCacheLookupUrl(sourceKey.rscUrl);
+    if (sourceHref === null) continue;
+    const snapshot = resolveSnapshot(source.snapshot, sourceHref);
+    if (snapshot === null) continue;
+
+    const existing = cache.get(cacheKey);
+    if (existing) {
+      deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, existing, false);
+    }
+    const size = snapshot.buffer.byteLength;
+    const entry: PrefetchCacheEntry = {
+      cacheForNavigation: false,
+      cacheKeys: new Set([cacheKey]),
+      expiresAt,
+      mountedSlotsHeader: resolvePrefetchCacheEntryMountedSlotsHeader(source),
+      optimisticRouteShell: source.optimisticRouteShell,
+      outcome: "cache-seeded",
+      prefetchKind: "static-shell",
+      size,
+      snapshot: { ...snapshot, url: rscUrl },
+      timestamp: source.timestamp,
+    };
+    addPrefetchInvalidationCallback(entry, onInvalidate);
+    cache.set(cacheKey, entry);
+    adjustPrefetchCacheByteSize(cache, size);
+    getPrefetchedUrls().add(cacheKey);
+    schedulePrefetchInvalidation(cacheKey, entry);
+    evictPrefetchCacheIfNeeded();
+    return true;
+  }
+  return false;
 }
 
 export function hasSearchAgnosticPrefetchShellForRoute(
@@ -1314,6 +1387,7 @@ export function createCachedRscResponseSnapshot(
   const redirectHeader = response.headers.get(VINEXT_RSC_REDIRECT_HEADER);
   const redirectTypeHeader = response.headers.get(VINEXT_RSC_REDIRECT_TYPE_HEADER);
   const staticShell = response.headers.get(VINEXT_STATIC_SHELL_HEADER);
+  const varyParams = parseVaryParamsHeader(response.headers.get(VINEXT_VARY_PARAMS_HEADER));
   return {
     compatibilityIdHeader: response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
     buffer: extracted.buffer,
@@ -1333,7 +1407,21 @@ export function createCachedRscResponseSnapshot(
       ? { staticShell }
       : {}),
     url: responseUrl ?? response.url,
+    ...(varyParams === undefined ? {} : { varyParams }),
   };
+}
+
+function parseVaryParamsHeader(value: string | null): readonly VaryParam[] | undefined {
+  if (value === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(decodeURIComponent(value));
+    return Array.isArray(parsed) &&
+      parsed.every((name) => typeof name === "string" || name === SEARCH_PARAMS_VARY_PARAM)
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -2648,9 +2736,11 @@ const _appRouter: AppRouterInstance = {
       const [
         { hasAppRouteInstantConfig, resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch },
         { resolveAppPrefetchRscRequest },
+        { createVaryingStaticShellResolver },
       ] = await Promise.all([
         import("./internal/app-route-prefetch-policy.js"),
         import("./internal/app-prefetch-rsc-request.js"),
+        import("./internal/app-static-shell-vary-params.js"),
       ]);
       if (setup.cancelled) return;
       // Like Next.js, a route with an `unstable_instant` config ignores a full
@@ -2767,6 +2857,24 @@ const _appRouter: AppRouterInstance = {
           interceptionContext,
           mountedSlotsHeader,
           additionalRscUrls,
+          options?.onInvalidate,
+        )
+      ) {
+        return;
+      }
+      // Another URL's shell serves this one when they agree on the params it
+      // read. A client rewrite's target isn't the URL the shell keys on.
+      if (
+        !reusable &&
+        kind === "auto" &&
+        policy.staticShell === true &&
+        rewrittenPrefetchHref === null &&
+        process.env.__VINEXT_VARY_PARAMS !== "false" &&
+        seedStaticShellPrefetchFromVaryingShell(
+          rscUrl,
+          interceptionContext,
+          mountedSlotsHeader,
+          createVaryingStaticShellResolver(fullHref),
           options?.onInvalidate,
         )
       ) {

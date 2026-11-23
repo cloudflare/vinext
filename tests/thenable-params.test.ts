@@ -5,6 +5,7 @@ import {
   runWithPprFallbackShellState,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import type { VaryParam } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -437,5 +438,53 @@ describe("makeThenableParams", () => {
     });
 
     state.abortController.abort();
+  });
+});
+
+describe("vary params", () => {
+  function recordVaryParams(routePattern: string, read: () => unknown): Promise<VaryParam[]> {
+    const varyParams = new Set<VaryParam>();
+    const state = createPprFallbackShellState({ fallbackParamNames: [], routePattern, varyParams });
+    return Promise.resolve(runWithPprFallbackShellState(state, read)).then(() => [...varyParams]);
+  }
+
+  // Like Next.js's `createVaryingParams`, a render varies on the params it reads.
+  it("records the params a render reads, synchronously or awaited", async () => {
+    await expect(
+      recordVaryParams("/shop/:category/:item", () => {
+        const params = makeThenableParams({ category: "a", item: "b" });
+        return params.category;
+      }),
+    ).resolves.toEqual(["category"]);
+    await expect(
+      recordVaryParams("/shop/:category/:item", async () => {
+        const params = await makeThenableParams({ category: "a", item: "b" });
+        return "item" in params;
+      }),
+    ).resolves.toEqual(["item"]);
+    await expect(
+      recordVaryParams("/shop/:category/:item", async () => {
+        await makeThenableParams({ category: "a", item: "b" });
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it("records every param, and an absent optional catch-all, when a render enumerates them", async () => {
+    await expect(
+      recordVaryParams("/docs/:section/:slug*", async () => {
+        Object.keys(await makeThenableParams({ section: "a" }));
+      }),
+    ).resolves.toEqual(["section", "slug"]);
+  });
+
+  it("records search params as `0`, which no param name can be", async () => {
+    await expect(
+      recordVaryParams("/search", async () => {
+        const searchParams = await makeThenableParams({ q: "1" }, undefined, {
+          isSearchParams: true,
+        });
+        return Reflect.get(searchParams, "missing");
+      }),
+    ).resolves.toEqual([0]);
   });
 });

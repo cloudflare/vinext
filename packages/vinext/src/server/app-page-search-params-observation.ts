@@ -48,7 +48,9 @@ export function createAppPageMetadataSearchParamsObserver(
 export function makeObservedAppPageSearchParamsThenable(
   pageSearchParams: AppPageSearchParams,
 ): ThenableParams<AppPageSearchParams> {
-  return makeThenableParams(pageSearchParams, createAppPageSearchParamsObserver());
+  return makeThenableParams(pageSearchParams, createAppPageSearchParamsObserver(), {
+    isSearchParams: true,
+  });
 }
 
 /**
@@ -100,5 +102,5 @@ function makeClientPageSsrSearchParamsThenableFromRecord(
 ): ThenableParams<AppPageSearchParams> {
   return options.isForceStatic !== true && options.isPprFallbackShell !== true
     ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
-    : makeThenableParams(pageSearchParams);
+    : makeThenableParams(pageSearchParams, undefined, { isSearchParams: true });
 }

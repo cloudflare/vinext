@@ -438,6 +438,11 @@ declare global {
       __VINEXT_PREFETCH_INLINING?: string;
 
       /**
+       * `"false"` when `next.config.js` sets `experimental.varyParams: false`.
+       */
+      __VINEXT_VARY_PARAMS?: string;
+
+      /**
        * JSON-encoded `cacheLife` profiles: the built-ins merged with
        * `next.config.js` → `cacheLife` (or legacy `experimental.cacheLife`).
        */
