@@ -9864,7 +9864,7 @@ export const loadServerActionClient = ${
       // import too, and what it imports, may be copied.
       const leavingAppGroup = new Set<string>();
       const leaving = [...appGroupModules].filter((id) =>
-        this.getModuleInfo(id)!.importers.some(
+        (this.getModuleInfo(id)?.importers ?? []).some(
           (importer) => importer !== appId && !appGroupModules.has(importer),
         ),
       );
@@ -9872,7 +9872,7 @@ export const loadServerActionClient = ${
         const id = leaving.pop()!;
         if (leavingAppGroup.has(id)) continue;
         leavingAppGroup.add(id);
-        for (const imported of this.getModuleInfo(id)!.importedIds) {
+        for (const imported of this.getModuleInfo(id)?.importedIds ?? []) {
           if (appGroupModules.has(imported)) leaving.push(imported);
         }
       }
