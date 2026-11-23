@@ -9,9 +9,9 @@
  * only the Image component is a client reference, so `getImageProps` can run
  * during the RSC render.
  *
- * Upstream also asserts no `fetchpriority` attribute and `style="color:transparent"`
- * on the <img>. Those are left out: vinext's getImageProps output still differs
- * there (priority maps to fetchPriority="high"; no color:transparent default).
+ * Upstream also asserts no `fetchpriority` attribute on the <img>. That is left
+ * out: vinext's getImageProps output still differs there (priority maps to
+ * fetchPriority="high").
  */
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
@@ -49,5 +49,6 @@ describe("Next.js compat: next/image getImageProps", () => {
     expect(img).toContain('height="400"');
     expect(img).not.toMatch(/\ssrcSet=/i);
     expect(img).not.toMatch(/\ssizes=/i);
+    expect(img).toContain('style="color:transparent"');
   });
 });

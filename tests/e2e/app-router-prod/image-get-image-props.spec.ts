@@ -8,9 +8,9 @@ import { expect, test } from "@playwright/test";
 // entry is server-safe, so this must render in a production build instead of
 // throwing "Unexpectedly client reference export 'getImageProps' is called on server".
 //
-// Upstream also asserts no `fetchpriority` attribute and `style="color:transparent"`
-// on the <img>. Those are left out: vinext's getImageProps output still differs
-// there (priority maps to fetchPriority="high"; no color:transparent default).
+// Upstream also asserts no `fetchpriority` attribute on the <img>. That is left
+// out: vinext's getImageProps output still differs there (priority maps to
+// fetchPriority="high").
 test("renders a <picture> from getImageProps in a Server Component", async ({ page }) => {
   const response = await page.goto("/nextjs-compat/image-get-image-props");
   expect(response?.status()).toBe(200);
@@ -28,6 +28,7 @@ test("renders a <picture> from getImageProps in a Server Component", async ({ pa
   );
   await expect(img).not.toHaveAttribute("srcset");
   await expect(img).not.toHaveAttribute("sizes");
+  await expect(img).toHaveAttribute("style", "color:transparent");
 
   await expect(page.locator("source").first()).toHaveAttribute(
     "srcset",

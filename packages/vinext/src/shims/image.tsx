@@ -31,7 +31,7 @@ import {
   __isDev,
   RESPONSIVE_WIDTHS,
   generateImageAttributes,
-  getFillStyle,
+  getImageStyle,
   imageOptimizationUrl,
   isDataOrBlobUrl,
   isRemoteUrl,
@@ -202,6 +202,10 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   const [completedBlurSrc, setCompletedBlurSrc] = useState<string | undefined>(undefined);
   const blurComplete = completedBlurSrc === src;
 
+  // Next.js keeps the alt text transparent until the image fails to load
+  // (image-component.tsx: `showAltText`, set by the img's error handler).
+  const [showAltText, setShowAltText] = useState(false);
+
   const markBlurComplete = () => {
     if (placeholder !== "blur") return;
     setCompletedBlurSrc((current) => (current === src ? current : src));
@@ -269,20 +273,14 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
           }
         : undefined;
 
-  const handleError = onError
-    ? (e: React.SyntheticEvent<HTMLImageElement>) => {
-        if (lastErrorSrcRef.current === src) return;
-        lastErrorSrcRef.current = src;
-        markBlurComplete();
-        onError(e);
-      }
-    : placeholder === "blur"
-      ? () => {
-          if (lastErrorSrcRef.current === src) return;
-          lastErrorSrcRef.current = src;
-          markBlurComplete();
-        }
-      : undefined;
+  const handleError = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    // If the real image fails to load, this will ensure "alt" is visible.
+    setShowAltText(true);
+    if (lastErrorSrcRef.current === src) return;
+    lastErrorSrcRef.current = src;
+    markBlurComplete();
+    onError?.(e);
+  };
 
   if (_unoptimized === true || __globallyUnoptimized || isInlineSrc) {
     // Unoptimized images are fetched directly by the browser, so intentionally
@@ -318,7 +316,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         data-nimg={fill ? "fill" : "1"}
         onLoad={handleLoad}
         onError={handleError}
-        style={fill ? getFillStyle(style, blurStyle, legacyFill) : { ...blurStyle, ...style }}
+        style={getImageStyle(fill, style, blurStyle, legacyFill, showAltText)}
         {...rest}
       />
     );
@@ -347,7 +345,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         className={className}
         onLoad={handleLoad}
         onError={handleError}
-        style={fill ? getFillStyle(style, undefined, legacyFill) : style}
+        style={getImageStyle(fill, style, undefined, legacyFill, showAltText)}
         {...rest}
       />
     );
@@ -406,7 +404,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
           data-nimg="fill"
           onLoad={handleLoad}
           onError={handleError}
-          style={getFillStyle(style, blurStyle, legacyFill)}
+          style={getImageStyle(true, style, blurStyle, legacyFill, showAltText)}
           {...rest}
         />
       );
@@ -416,7 +414,9 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
       // @unpic/react forwards additional image props through transformProps and
       // merges `style` with generated layout styles at runtime, but its public
       // React type omits `style`.
-      const unpicRuntimeStyleProps: { style?: React.CSSProperties } = { style };
+      const unpicRuntimeStyleProps: { style?: React.CSSProperties } = {
+        style: getImageStyle(false, style, undefined, undefined, showAltText),
+      };
       preloadImageResource({
         shouldPreload,
         src,
@@ -519,7 +519,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
       data-nimg={fill ? "fill" : "1"}
       onLoad={handleLoad}
       onError={handleError}
-      style={fill ? getFillStyle(style, blurStyle, legacyFill) : { ...blurStyle, ...style }}
+      style={getImageStyle(fill, style, blurStyle, legacyFill, showAltText)}
       {...rest}
     />
   );
