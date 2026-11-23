@@ -3026,7 +3026,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
       await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
     const state = formatAppPprShellState({
       prelude: true,
-      postponed: { replayNodes: [] },
+      postponed: { replayNodes: [], resumableState: {} },
       resumeDataCache: JSON.stringify({ cache: { key: { body: "e30=" } }, fetch: {} }),
     });
     const { fallbackHtml, fallbackPostponed } = await prerenderDynamicRootParamRoute(true, state);
