@@ -595,6 +595,17 @@ describe("Next.js compat: not-found", () => {
     },
   );
 
+  // A failure only the server's render of the caught document hits reaches
+  // the dev overlay, as one in the first render does, even though the browser
+  // then renders that not-found file.
+  it("a caught notFound() whose document fails only on the server reports it in dev", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/notfound-replay-fallback/slot-client-throw");
+    expect(res.status).toBe(404);
+    expect(html).toContain('<html id="__next_error__"');
+    expect(html).toContain("__VINEXT_INITIAL_DEV_ERRORS__");
+    expect(html).toContain("Replay fallback team not-found failed on the server");
+  });
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before
