@@ -75,7 +75,7 @@ import {
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   resolveAppPageInterceptState,
-  resolveAppPageWholeInterceptRootParams,
+  resolveAppPageInterceptionSourceRootParams,
   validateAppPageRouteDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
@@ -464,6 +464,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   renderErrorBoundaryPage: (
     error: unknown,
     errorOrigin?: "rsc" | "ssr",
+    /** The params the route rendered under, when not the request's. */
+    params?: AppPageParams,
   ) => Promise<Response | null>;
   renderHttpAccessFallbackPage: (
     statusCode: number,
@@ -1060,7 +1062,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 ? Infinity
                 : null));
         const revalidationRootParams =
-          resolveAppPageWholeInterceptRootParams(
+          resolveAppPageInterceptionSourceRootParams(
             revalidationTarget.route,
             revalidationTarget.params,
             revalidationTarget.interceptOpts,
@@ -1396,12 +1398,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       setCurrentFetchCacheMode(interceptConfig.fetchCacheMode);
       setCurrentFetchRevalidate(interceptConfig.revalidateSeconds);
       setCurrentForceDynamicFetchDefault(interceptDynamicConfig === "force-dynamic");
-      const wholeInterceptRootParams = resolveAppPageWholeInterceptRootParams(
+      const interceptRootParams = resolveAppPageInterceptionSourceRootParams(
         interceptRoute,
         interceptParams,
         interceptOpts,
       );
-      if (wholeInterceptRootParams) setRootParams(wholeInterceptRootParams);
+      if (interceptRootParams) setRootParams(interceptRootParams);
       return options.buildPageElement(
         interceptRoute,
         interceptParams,
@@ -1501,8 +1503,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   }
 
   // A route that renders as an interception's source renders under the
-  // source's params, and so do the fallbacks of its special errors.
+  // source's params and root params, and so do its error page and the
+  // fallbacks of its special errors.
   const renderParams = interceptResult.params ?? options.params;
+  const sourceRootParams = resolveAppPageInterceptionSourceRootParams(
+    route,
+    renderParams,
+    interceptResult.interceptOpts,
+  );
+  if (sourceRootParams) setRootParams(sourceRootParams);
+  const renderRootParams = sourceRootParams ?? options.rootParams;
   const specialErrorOptions =
     renderParams === options.params ? options : { ...options, params: renderParams };
   const buildCurrentPageElement = () =>
@@ -1535,7 +1545,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         );
       },
       renderErrorBoundaryPage(buildError) {
-        return options.renderErrorBoundaryPage(buildError);
+        return options.renderErrorBoundaryPage(buildError, undefined, renderParams);
       },
       renderSpecialError(specialError) {
         return renderPageSpecialError(
@@ -1660,7 +1670,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           options.pprRuntime!.beginFinalRender(activeFallbackShellState);
         }
       : undefined,
-    rootParams: options.rootParams,
+    rootParams: renderRootParams,
     peekRenderObservationState() {
       return {
         dynamicFetches: peekDynamicFetchObservations(),
@@ -1672,7 +1682,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
     renderErrorBoundaryResponse(renderError, errorOrigin) {
-      return options.renderErrorBoundaryPage(renderError, errorOrigin);
+      return options.renderErrorBoundaryPage(renderError, errorOrigin, renderParams);
     },
     renderPageSpecialError(specialError, renderOptions) {
       return renderPageSpecialError(

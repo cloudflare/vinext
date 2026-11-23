@@ -49,7 +49,7 @@ import {
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import {
   resolveAppPageActionRerenderTarget,
-  resolveAppPageWholeInterceptRootParams,
+  resolveAppPageInterceptionSourceRootParams,
 } from "./app-page-request.js";
 import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
 import {
@@ -2007,12 +2007,12 @@ export async function handleServerActionRscRequest<
         searchParams: actionRerenderSearchParams,
         params: resolvedActionNavigationParams,
       });
-      const wholeInterceptRootParams = resolveAppPageWholeInterceptRootParams(
+      const sourceRootParams = resolveAppPageInterceptionSourceRootParams(
         actionRerenderTarget.route,
         actionRerenderTarget.params,
         actionRerenderTarget.interceptOpts,
       );
-      if (wholeInterceptRootParams) setRootParams(wholeInterceptRootParams);
+      if (sourceRootParams) setRootParams(sourceRootParams);
       const renderedSearch = options.searchParams.toString();
       renderedPathAndSearch = renderedSearch
         ? `${options.cleanPathname}?${renderedSearch}`

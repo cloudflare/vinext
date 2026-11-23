@@ -4130,6 +4130,142 @@ describe("app page dispatch", () => {
     });
   });
 
+  // Next.js's interception rewrite takes the source's captures for every
+  // interception, so a source render's root params are the source's.
+  it("gives a slot interception's source render the source's root params", async () => {
+    let rendered: unknown = null;
+    const sourceRoute = createRoute({
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [1],
+      params: ["lang"],
+      pattern: "/[lang]/feed",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "feed"],
+      slots: {
+        "modal@app/[lang]/feed/@modal": { layoutIndex: 0, ownerTreePosition: 2 },
+      },
+    });
+    const { options } = createDispatchOptions({
+      async buildPageElement(route, params) {
+        rendered = { lang: await getRootParam("lang"), params, pattern: route.pattern };
+        return route.pattern;
+      },
+      cleanPathname: "/fr/photos/1",
+      findIntercept: () => ({
+        matchedParams: { id: "1", lang: "fr" },
+        page: { default: "photo-modal" },
+        slotKey: "modal@app/[lang]/feed/@modal",
+        sourceMatchedParams: { lang: "en" },
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute: (sourceRouteIndex) => (sourceRouteIndex === 1 ? sourceRoute : undefined),
+      interceptionContext: "/en/feed",
+      isRscRequest: true,
+      params: { id: "1", lang: "fr" },
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      rootParams: { lang: "fr" },
+      route: createRoute({
+        isDynamic: true,
+        params: ["lang", "id"],
+        pattern: "/[lang]/photos/[id]",
+        rootParamNames: ["lang"],
+        routeSegments: ["[lang]", "photos", "[id]"],
+      }),
+    });
+    const response = await runWithRequestContext(
+      createRequestContext({ rootParams: { lang: "fr" } }),
+      () => dispatchAppPage(options),
+    );
+    await expect(response.text()).resolves.toBe("/[lang]/feed");
+    expect(rendered).toEqual({ lang: "en", params: { lang: "en" }, pattern: "/[lang]/feed" });
+  });
+
+  it("gives a same-route interception's source render the source's root params", async () => {
+    // app/[lang]/shots/[id]/@modal/(.)photos/[pid] intercepts from the route
+    // itself, under another root param.
+    const renders: unknown[] = [];
+    const route = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [1],
+      params: ["lang", "id"],
+      pattern: "/[lang]/shots/[id]",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "shots", "[id]"],
+    });
+    const { options } = createDispatchOptions({
+      async buildPageElement(_route, params) {
+        renders.push({ lang: await getRootParam("lang"), params });
+        return React.createElement("main", null, "page");
+      },
+      cleanPathname: "/fr/shots/2",
+      findIntercept: () => ({
+        matchedParams: { id: "2", lang: "fr" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/[lang]/shots/[id]/@modal",
+        sourceMatchedParams: { id: "1", lang: "en" },
+        sourceRouteIndex: 0,
+      }),
+      getSourceRoute: (sourceRouteIndex) => (sourceRouteIndex === 0 ? route : undefined),
+      interceptionContext: "/en/shots/1",
+      isRscRequest: true,
+      params: { id: "2", lang: "fr" },
+      rootParams: { lang: "fr" },
+      route,
+    });
+    const response = await runWithRequestContext(
+      createRequestContext({ rootParams: { lang: "fr" } }),
+      () => dispatchAppPage(options),
+    );
+    await response.text();
+    expect(renders).toEqual([{ lang: "en", params: { id: "1", lang: "en" } }]);
+  });
+
+  it("renders a same-route interception source's error page under the source's params", async () => {
+    const route = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [1],
+      params: ["lang", "id"],
+      pattern: "/[lang]/shots/[id]",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "shots", "[id]"],
+    });
+    const errorPages: unknown[] = [];
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("page failed");
+      },
+      cleanPathname: "/fr/shots/2",
+      findIntercept: () => ({
+        matchedParams: { id: "2", lang: "fr" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/[lang]/shots/[id]/@modal",
+        sourceMatchedParams: { id: "1", lang: "en" },
+        sourceRouteIndex: 0,
+      }),
+      getSourceRoute: (sourceRouteIndex) => (sourceRouteIndex === 0 ? route : undefined),
+      interceptionContext: "/en/shots/1",
+      isRscRequest: true,
+      params: { id: "2", lang: "fr" },
+      rootParams: { lang: "fr" },
+      route,
+    });
+    options.renderErrorBoundaryPage = async (_error, _origin, params) => {
+      errorPages.push({ lang: await getRootParam("lang"), params });
+      return new Response("error page");
+    };
+    const response = await runWithRequestContext(
+      createRequestContext({ rootParams: { lang: "fr" } }),
+      () => dispatchAppPage(options),
+    );
+    await expect(response.text()).resolves.toBe("error page");
+    // Its layouts and `next/root-params` agree on the source's values.
+    expect(errorPages).toEqual([{ lang: "en", params: { id: "1", lang: "en" } }]);
+  });
+
   // Next.js visits children before the other slots, and the last value wins,
   // so where only the parallel branches set a value, another slot's default
   // overrides the owner's.

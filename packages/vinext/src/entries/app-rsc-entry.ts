@@ -1736,13 +1736,13 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           route,
         });
       },
-      renderErrorBoundaryPage(renderErr, errorOrigin) {
+      renderErrorBoundaryPage(renderErr, errorOrigin, renderParams = params) {
         const __activeIntercept = findIntercept(
           interceptionPathname,
           interceptionContext,
           interceptionId,
         );
-        return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, {
+        return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, renderParams, scriptNonce, middlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments

@@ -910,20 +910,18 @@ function markInterceptionSourceRender<TInterceptOpts, TPage>(
 }
 
 /**
- * The root params of a render of the whole intercepting route, or null for
- * any other render, which keeps the request's. Next.js's interception rewrite
+ * The root params of a render of an interception's source, or null for any
+ * other render, which keeps the request's. Next.js's interception rewrite
  * renders the intercepting route under the values it captures from the
- * source, so its root params come from the source's params, as its layouts'
- * params do.
+ * source, so the source render's root params come from the source's params,
+ * as its layouts' params do.
  */
-export function resolveAppPageWholeInterceptRootParams(
+export function resolveAppPageInterceptionSourceRootParams(
   route: { rootParamNames?: readonly string[] | null },
   params: AppPageParams,
   interceptOpts: unknown,
 ): RootParams | null {
-  return isUnknownRecord(interceptOpts) &&
-    interceptOpts.rendersInterceptionSource === true &&
-    interceptOpts.rendersWholeInterceptingRoute === true
+  return isUnknownRecord(interceptOpts) && interceptOpts.rendersInterceptionSource === true
     ? pickRootParams(params, route.rootParamNames)
     : null;
 }
