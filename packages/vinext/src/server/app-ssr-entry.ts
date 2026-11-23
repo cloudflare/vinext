@@ -467,6 +467,13 @@ export async function handleSsr(
     isCacheCandidate?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
     /**
+     * Whether a caught document that can't render answers with its error
+     * shell. Defaults to fallbackToErrorDocumentOnShellError; a regeneration,
+     * which takes no error document for its own shell's failure, stores this
+     * one as a request render does.
+     */
+    fallbackToErrorDocumentOnCaughtShellError?: boolean;
+    /**
      * Whether the RSC render threw the given shell error. As in Next.js, in
      * dev the error document carries only an error that the HTML render alone
      * threw, for the overlay: the browser reports the others itself.
@@ -881,7 +888,8 @@ export async function handleSsr(
           }
           const digest = getNextErrorDigest(caughtRenderError);
           if (
-            options?.fallbackToErrorDocumentOnShellError !== true ||
+            (options?.fallbackToErrorDocumentOnCaughtShellError ??
+              options?.fallbackToErrorDocumentOnShellError) !== true ||
             (digest !== null && parseNextHttpErrorDigest(digest) !== null)
           ) {
             throw error;
@@ -893,8 +901,11 @@ export async function handleSsr(
             streamedReferences.streamed.has(id),
           );
           // A failure only this render hits reaches the dev overlay, as the
-          // shell's own does.
-          if (options?.isServerComponentError?.(caughtRenderError) !== true) {
+          // shell's own does. A redirect the browser follows is none.
+          if (
+            !isNavigationSignalError(caughtRenderError) &&
+            options?.isServerComponentError?.(caughtRenderError) !== true
+          ) {
             ssrOnlyShellError = caughtRenderError;
           }
           return renderSsrErrorDocumentShell(

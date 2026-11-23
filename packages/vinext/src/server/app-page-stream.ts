@@ -179,6 +179,9 @@ export type AppPageSsrHandler = {
        *  error-document shell (with the original flight payload and
        *  bootstrap) instead of rejecting. See handleSsr. */
       fallbackToErrorDocumentOnShellError?: boolean;
+      /** Whether a caught document that can't render answers with its error
+       *  shell. See handleSsr. */
+      fallbackToErrorDocumentOnCaughtShellError?: boolean;
       /** Whether the RSC render threw the given shell error. See handleSsr. */
       isServerComponentError?: (error: unknown) => boolean;
       /** The slot or route boundaries that catch a shell error. See handleSsr. */

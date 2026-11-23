@@ -264,6 +264,9 @@ describe("renderAppPageCacheArtifacts", () => {
           if (options?.sideStream && options.capturedRscDataRef) {
             options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
           }
+          // The regeneration takes the caught document's error shell, as a
+          // request render does.
+          expect(options?.fallbackToErrorDocumentOnCaughtShellError).toBe(true);
           return {
             htmlStream: createStream(["<html>caught</html>"]),
             metadataReady: Promise.resolve(),

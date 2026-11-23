@@ -152,6 +152,7 @@ async function renderAppPageCacheArtifactsImpl(
         mirrorNextFlight: options.mirrorNextFlight,
         isStaticGeneration: true,
         isForceStatic: options.isForceStatic,
+        fallbackToErrorDocumentOnCaughtShellError: true,
         preloadRoutePattern: options.route.pattern,
         resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
         onSsrError:
