@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync, type ExecFileSyncOptions } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import {
   buildNodeCliInvocation,
@@ -9,6 +8,8 @@ import {
   validateWranglerEnvName,
   type DeployOptions,
 } from "./deploy.js";
+import { resolveBuildOutputDefaultWorkerConfigPath } from "./build-output.js";
+import { buildVersionAnnotationArgs } from "./version-annotations.js";
 import { parseCdnWarmupDeploymentUrl } from "./worker-deployment-url.js";
 import { parseWorkersDevUrl } from "./workers-dev-url.js";
 
@@ -54,15 +55,7 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 export function readBuildOutputWorkerName(root: string): string {
-  const configPath = path.join(
-    root,
-    ".cloudflare",
-    "output",
-    "v0",
-    "workers",
-    "default",
-    "worker.config.json",
-  );
+  const configPath = resolveBuildOutputDefaultWorkerConfigPath(root);
   let config: unknown;
   try {
     config = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -149,7 +142,10 @@ export function parseWranglerVersionUploadOutput(output: string): WranglerVersio
 }
 
 export function buildWranglerVersionUploadArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+  options: Pick<
+    DeployOptions,
+    "preview" | "env" | "name" | "config" | "verbose" | "message" | "tag"
+  > & {
     previewAlias?: string;
   },
 ): WranglerVersionArgs {
@@ -167,16 +163,18 @@ export function buildWranglerVersionUploadArgs(
   if (options.previewAlias) {
     args.push("--preview-alias", options.previewAlias);
   }
+  args.push(...buildVersionAnnotationArgs(options));
   return { args, env };
 }
 
 export function buildCfVersionUploadArgs(
-  options: Pick<DeployOptions, "preview" | "env"> & { previewAlias?: string },
+  options: Pick<DeployOptions, "preview" | "env" | "message" | "tag"> & { previewAlias?: string },
 ): CfVersionArgs {
   const mode = options.env || (options.preview ? "preview" : undefined);
   const args = ["workers", "versions", "create", "--prebuilt"];
   if (mode) args.push("--mode", validateWranglerEnvName(mode));
   if (options.previewAlias) args.push("--preview-alias", options.previewAlias);
+  args.push(...buildVersionAnnotationArgs(options));
   return { args, mode };
 }
 
@@ -452,7 +450,10 @@ export function runCfTriggersDeploy(
 
 export function runWranglerVersionUpload(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+  options: Pick<
+    DeployOptions,
+    "preview" | "env" | "name" | "config" | "verbose" | "message" | "tag"
+  > & {
     previewAlias?: string;
   },
   execute: typeof execFileSync = execFileSync,
@@ -479,7 +480,10 @@ export function runWranglerVersionUpload(
 
 export function runCfVersionUpload(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+  options: Pick<
+    DeployOptions,
+    "preview" | "env" | "name" | "config" | "verbose" | "message" | "tag"
+  > & {
     previewAlias?: string;
   },
   execute: typeof spawnSync = spawnSync,

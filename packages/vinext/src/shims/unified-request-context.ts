@@ -60,6 +60,10 @@ export type UnifiedRequestContext = {
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   requestCache: WeakMap<(...args: any[]) => any, unknown>;
 
+  // ── server/app-page-route-head-ref.ts ─────────────────────────────
+  /** The page heads this request's route trees render, by the id in their props. */
+  appPageRouteHeads: Map<string, () => unknown>;
+
   // ── next/server after() ───────────────────────────────────────────
   /** Shared lifecycle state for work deferred until the response closes. */
   afterContext: AfterRequestContext;
@@ -163,6 +167,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
     requestSignal: null,
     requestCache: new WeakMap(),
+    appPageRouteHeads: new Map(),
     draftModeAtHeadersClear: false,
     afterContext: {
       callbacks: [],
@@ -407,7 +412,7 @@ export function runWithUnifiedStateMutation<T>(
   // pendingCdnTagInvalidations), Set
   // fields (renderRequestApiUsage, pendingRevalidatedTags, pendingRevalidations,
   // dynamicFetchUrls),
-  // Map fields (_privateCache),
+  // Map fields (_privateCache, appPageRouteHeads),
   // requestCache WeakMap, and object fields (headersContext,
   // i18nContext, serverContext, ssrContext, executionContext,
   // requestScopedCacheLife, renderDynamicLatch) still share references with

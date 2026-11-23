@@ -93,6 +93,14 @@ describe("Cloudflare CDN warmup", () => {
     expect(buildWarmupUrl("https://app.example.com", "/posts/a%2fb").pathname).toBe("/posts/a%2fb");
   });
 
+  it("keeps warmup URLs on the target origin for protocol-relative paths", () => {
+    for (const pathname of ["//attacker.example/leak", "/\\attacker.example/leak"]) {
+      const url = buildWarmupUrl("https://app.example.com/", pathname);
+      expect(url.origin).toBe("https://app.example.com");
+      expect(url.pathname).toBe("//attacker.example/leak");
+    }
+  });
+
   it("accepts persisted response-store entries and skips after-render bypasses", async () => {
     const attempts = new Map<string, number>();
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
@@ -224,6 +232,81 @@ describe("Cloudflare CDN warmup", () => {
       rscPaths: ["/docs/dashboard/", "/docs/dynamic/"],
       routeHandlerPaths: ["/docs/api/data/"],
     });
+  });
+
+  it("reads the warm plan from a custom build.outDir's server directory", () => {
+    writeFile("out/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "out/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/dashboard"] }),
+    );
+
+    expect(readPrerenderWarmPlan(tmpDir, { serverDir: path.join(tmpDir, "out/server") })).toEqual({
+      buildId: "build-a",
+      loadingShellPaths: [],
+      paths: ["/dashboard"],
+      rscPaths: [],
+    });
+  });
+
+  it("warms metadata routes at their served path, without a trailing slash", () => {
+    // Metadata routes bypass the trailingSlash redirect, and their <head>
+    // links use the path as served.
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    const metadataRoute = (pattern: string) => ({
+      cacheabilityProbe: { canPrunePattern: true },
+      kind: "app-route",
+      metadataRoute: true,
+      pattern,
+    });
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "/docs",
+        buildId: "build-a",
+        paths: [],
+        routeHandlerPaths: ["/api/data", "/opengraph-image", "/products/sitemap/0.xml"],
+        routePatterns: {
+          "/api/data": {
+            cacheabilityProbe: { canPrunePattern: true },
+            kind: "app-route",
+            pattern: "/api/data",
+          },
+          "/opengraph-image": { ...metadataRoute("/opengraph-image"), metadataSearch: "?og-hash" },
+          "/products/sitemap/0.xml": metadataRoute("/products/sitemap.xml"),
+        },
+        trailingSlash: true,
+      }),
+    );
+
+    const plan = readPrerenderWarmPlan(tmpDir, { strict: true });
+    expect(plan.routeHandlerPaths).toEqual([
+      "/docs/api/data/",
+      "/docs/opengraph-image",
+      "/docs/products/sitemap/0.xml",
+    ]);
+    expect(Object.keys(plan.routePatterns ?? {})).toEqual(plan.routeHandlerPaths);
+    expect(plan.routePatterns?.["/docs/opengraph-image"]).toMatchObject({
+      metadataRoute: true,
+      metadataSearch: "?og-hash",
+    });
+  });
+
+  it.each([
+    { kind: "app-page", metadataRoute: true, pattern: "/" },
+    { kind: "app-route", metadataSearch: "?hash", pattern: "/" },
+    { kind: "app-route", metadataRoute: true, metadataSearch: "hash", pattern: "/" },
+  ])("rejects a metadata route marker on a non-metadata Route Handler: %o", (route) => {
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/"], routePatterns: { "/": route } }),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(() => readPrerenderWarmPlan(tmpDir, { strict: true })).toThrow(
+      "prerender path manifest not found",
+    );
   });
 
   it("disables RSC variants for adapters without strict response Vary", () => {
@@ -478,6 +561,114 @@ describe("Cloudflare CDN warmup", () => {
     expect(log).toHaveBeenCalledWith("    Route pattern    Kind      Warmed  Skipped  Failed");
     expect(log).toHaveBeenCalledWith("    /products/:slug  App page     1/3        1       1");
     expect(log).toHaveBeenCalledWith("  CDN warmup: 1 warmed, 1 skipped, 1 failed.");
+  });
+
+  it("labels metadata routes in the route report", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const metadataRoute = (pattern: string) => ({
+      cacheabilityProbe: { canPrunePattern: true },
+      kind: "app-route" as const,
+      metadataRoute: true as const,
+      pattern,
+    });
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (new URL(requestHref(input)!).pathname === "/sitemap.xml") {
+        return new Response("<urlset />", {
+          headers: {
+            "cache-control": "no-store",
+            "cf-cache-status": "BYPASS",
+            "content-type": "application/xml",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          },
+        });
+      }
+      return cacheablePagesData();
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: [],
+        routeHandlerPaths: ["/blog/a/opengraph-image", "/blog/b/opengraph-image", "/sitemap.xml"],
+        routePatterns: {
+          "/blog/a/opengraph-image": {
+            ...metadataRoute("/blog/:slug/opengraph-image"),
+            metadataSearch: "?a-hash",
+          },
+          "/blog/b/opengraph-image": metadataRoute("/blog/:slug/opengraph-image"),
+          "/sitemap.xml": metadataRoute("/sitemap.xml"),
+        },
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ skipped: 1, warmed: 2 });
+    // A metadata image is warmed at the URL pages link it with.
+    expect(fetchImpl.mock.calls.map(([input]) => requestHref(input))).toContain(
+      "https://app.example.com/blog/a/opengraph-image?a-hash",
+    );
+
+    expect(log).toHaveBeenCalledWith(
+      "    Route pattern                Kind            Warmed  Skipped  Failed",
+    );
+    expect(log).toHaveBeenCalledWith(
+      "    /blog/:slug/opengraph-image  Metadata route     2/2        0       0",
+    );
+    expect(log).toHaveBeenCalledWith(
+      "    /sitemap.xml                 Metadata route     0/1        1       0",
+    );
+    expect(log).toHaveBeenCalledWith(
+      expect.stringMatching(/^ {2}CDN warmup skipped \/sitemap\.xml \(Metadata route\): /),
+    );
+  });
+
+  it("keeps metadata link searches in the warmed and retry plans", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const route = (search: string) => ({
+      cacheabilityProbe: { canPrunePattern: true },
+      kind: "app-route" as const,
+      metadataRoute: true as const,
+      metadataSearch: search,
+      pattern: "/blog/:slug/opengraph-image",
+    });
+    const routePatterns = {
+      "/blog/a/opengraph-image": route("?a-hash"),
+      "/blog/b/opengraph-image": route("?b-hash"),
+    };
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) =>
+      new URL(requestHref(input)!).pathname === "/blog/b/opengraph-image"
+        ? new Response("failed", { status: 500 })
+        : cacheablePagesData(),
+    );
+
+    const result = await warmCdnCache({
+      expectedBuildId: "build-a",
+      fetchImpl: fetchImpl as typeof fetch,
+      paths: [],
+      retries: 0,
+      routeHandlerPaths: ["/blog/a/opengraph-image", "/blog/b/opengraph-image"],
+      routePatterns,
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result.warmedPlan.routePatterns).toEqual({
+      "/blog/a/opengraph-image": routePatterns["/blog/a/opengraph-image"],
+    });
+    expect(result.retryPlan.routePatterns).toEqual({
+      "/blog/b/opengraph-image": routePatterns["/blog/b/opengraph-image"],
+    });
+
+    fetchImpl.mockClear();
+    await warmCdnCache({
+      ...result.retryPlan,
+      expectedBuildId: "build-a",
+      fetchImpl: fetchImpl as typeof fetch,
+      retries: 0,
+      targetUrl: "https://app.example.com",
+    });
+    expect(fetchImpl.mock.calls.map(([input]) => requestHref(input))).toEqual([
+      "https://app.example.com/blog/b/opengraph-image?b-hash",
+    ]);
   });
 
   it("caps route reports without listing concrete paths for large apps", async () => {
@@ -1295,6 +1486,164 @@ describe("Cloudflare CDN warmup", () => {
     }
   });
 
+  // Issue #4702: middleware or proxy that answers an RSC request in the
+  // uncached request stage sends no RSC payload, so no RSC build identity.
+  describe("an RSC target that middleware answers in the request stage", () => {
+    const middlewareRedirect = (headers: Record<string, string>) =>
+      new Response(null, {
+        status: 307,
+        headers: {
+          location: "/login",
+          [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          ...headers,
+        },
+      });
+    const warmRsc = (response: () => Response, statusSource: "cloudflare" | "vinext") =>
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: vi.fn(async () => response()) as typeof fetch,
+        paths: [],
+        retries: 0,
+        rscPaths: ["/dashboard"],
+        statusSource,
+        targetUrl: "https://app.example.com",
+      });
+
+    // The Workers Cache gateway answers without a response-stage subrequest,
+    // so the response carries no CF-Cache-Status at all.
+    it.each([
+      ["Workers Cache", "cloudflare", {}],
+      ["Workers Cache and a cookie", "cloudflare", { "set-cookie": "seen=1" }],
+      ["the Response Store", "vinext", {}],
+    ] as const)("is skipped with %s", async (_name, statusSource, headers) => {
+      const result = await warmRsc(
+        () => middlewareRedirect({ ...headers, "x-vinext-cache": "BYPASS" }),
+        statusSource,
+      );
+      expect(result).toMatchObject({ failed: 0, skipped: 1, warmed: 0 });
+    });
+
+    // Middleware's own 200 response or an external rewrite is no RSC payload.
+    it.each(["cloudflare", "vinext"] as const)(
+      "is skipped when middleware answers with its own 200 response (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(
+          () =>
+            new Response("<p>Sign in</p>", {
+              headers: {
+                "content-type": "text/html",
+                "x-vinext-cache": "BYPASS",
+                [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              },
+            }),
+          statusSource,
+        );
+        expect(result).toMatchObject({ failed: 0, skipped: 1, warmed: 0 });
+      },
+    );
+
+    // An external rewrite to another App Router answers with its Flight
+    // payload, and the request stage drops the upstream's RSC build identity.
+    it.each(["cloudflare", "vinext"] as const)(
+      "is skipped when middleware rewrites to an upstream Flight payload (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(
+          () =>
+            new Response("0:null\n", {
+              headers: {
+                "content-type": "text/x-component",
+                "x-vinext-cache": "BYPASS",
+                [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              },
+            }),
+          statusSource,
+        );
+        expect(result).toMatchObject({ failed: 0, skipped: 1, warmed: 0 });
+      },
+    );
+
+    // A render's payload carries its RSC build identity, so it must match.
+    it("still fails when an RSC payload labelled BYPASS is another RSC build's", async () => {
+      const result = await warmRsc(
+        () =>
+          new Response("0:null\n", {
+            headers: {
+              "content-type": "text/x-component",
+              "x-vinext-cache": "BYPASS",
+              [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-old",
+            },
+          }),
+        "vinext",
+      );
+      expect(result.failures).toEqual([
+        {
+          path: "/dashboard (RSC full)",
+          error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build rsc-build-a`,
+        },
+      ]);
+    });
+
+    // The Response Store also labels an uncacheable render BYPASS, so a server
+    // error must still fail, whichever stage sent it.
+    it.each(["cloudflare", "vinext"] as const)(
+      "still fails on a server error labelled BYPASS (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(
+          () =>
+            new Response("Internal Server Error", {
+              status: 500,
+              headers: {
+                "cache-control": "no-store",
+                "content-type": "text/plain",
+                "x-vinext-cache": "BYPASS",
+                [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+              },
+            }),
+          statusSource,
+        );
+        expect(result.skipped).toBe(0);
+        expect(result.failures).toEqual([{ path: "/dashboard (RSC full)", error: "HTTP 500" }]);
+      },
+    );
+
+    it.each(["cloudflare", "vinext"] as const)(
+      "still fails without the request-stage BYPASS label (%s)",
+      async (statusSource) => {
+        const result = await warmRsc(() => middlewareRedirect({}), statusSource);
+        expect(result.failures).toEqual([
+          {
+            path: "/dashboard (RSC full)",
+            error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build rsc-build-a`,
+          },
+        ]);
+      },
+    );
+
+    it("still fails with Workers Cache when another stage reports the BYPASS label", async () => {
+      const result = await warmRsc(
+        () => middlewareRedirect({ "cf-cache-status": "DYNAMIC", "x-vinext-cache": "BYPASS" }),
+        "cloudflare",
+      );
+      expect(result.failures).toEqual([
+        { path: "/dashboard (RSC full)", error: "CF-Cache-Status is DYNAMIC" },
+      ]);
+    });
+
+    it("still fails when the build identity is another build's", async () => {
+      const result = await warmRsc(
+        () =>
+          middlewareRedirect({
+            "x-vinext-cache": "BYPASS",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "old-build",
+          }),
+        "vinext",
+      );
+      expect(result.failed).toBe(1);
+    });
+  });
+
   it("does not skip a non-success response from a different build", async () => {
     const fetchImpl = vi.fn(
       async () =>
@@ -1813,6 +2162,73 @@ describe("Cloudflare CDN warmup", () => {
         targetUrl: "https://app.example.com",
       }),
     ).resolves.toMatchObject({ total: 1, warmed: 1, skipped: 0, failed: 0 });
+  });
+
+  it("warms metadata routes from the discovery manifest at their linked URL", async () => {
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: [],
+        routeHandlerPaths: ["/opengraph-image"],
+        routePatterns: {
+          "/opengraph-image": {
+            kind: "app-route",
+            metadataRoute: true,
+            metadataSearch: "?og-hash",
+            pattern: "/opengraph-image",
+          },
+        },
+      }),
+    );
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => cacheablePagesData());
+
+    await expect(
+      warmCdnCacheFromPrerender({
+        fetchImpl: fetchImpl as typeof fetch,
+        root: tmpDir,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 1, warmed: 1 });
+    expect(requestHref(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://app.example.com/opengraph-image?og-hash",
+    );
+  });
+
+  it("applies basePath to a metadata route under a _next/data folder", async () => {
+    // No Next.js test port applies: the folder only looks like a Pages data
+    // path; app/foo/_next/data/icon.png is an ordinary metadata file.
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "/docs",
+        buildId: "build-a",
+        paths: [],
+        routeHandlerPaths: ["/foo/_next/data/icon.png"],
+        routePatterns: {
+          "/foo/_next/data/icon.png": {
+            kind: "app-route",
+            metadataRoute: true,
+            metadataSearch: "?icon-hash",
+            pattern: "/foo/_next/data/icon.png",
+          },
+        },
+      }),
+    );
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => cacheablePagesData());
+
+    await expect(
+      warmCdnCacheFromPrerender({
+        fetchImpl: fetchImpl as typeof fetch,
+        root: tmpDir,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 1, warmed: 1 });
+    expect(requestHref(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://app.example.com/docs/foo/_next/data/icon.png?icon-hash",
+    );
   });
 
   it("requires an explicit opt-out for adapters without a build identity header", async () => {
