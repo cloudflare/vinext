@@ -870,6 +870,28 @@ describe("createTickBufferedTransform pre-head splice", () => {
     );
   });
 
+  it("sends a resume's Flight data while its holes are still pending", async () => {
+    // Like Next.js, the shell its prelude sent hydrates before any hole renders.
+    const output = new ReadableStream<Uint8Array>().pipeThrough(
+      createTickBufferedTransform(
+        createRscEmbedTransform(createTextStream(["shell-row"])),
+        "",
+        "",
+        undefined,
+        "",
+        "",
+        undefined,
+        "resume",
+      ),
+    );
+    const reader = output.getReader();
+
+    const { value } = await reader.read();
+
+    expect(text(value!)).toContain('.rsc.push("shell-row")');
+    await reader.cancel();
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
   // (regression for #1532)
