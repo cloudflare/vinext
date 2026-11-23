@@ -480,6 +480,11 @@ export async function handleSsr(
      */
     isServerComponentError?: (error: unknown) => boolean;
     /**
+     * Whether the RSC render threw the given error as a `dynamic = "error"`
+     * route's request API access, which fails static generation.
+     */
+    isStaticGenerationError?: (error: unknown) => boolean;
+    /**
      * The boundaries that catch the error that rejected the shell, a parallel
      * slot's not-found or the route's own, or null when none catches it. The
      * document then renders again from the same payload with them caught.
@@ -872,8 +877,9 @@ export async function handleSsr(
         // notFound(), forbidden() or unauthorized() outside the caught
         // boundaries leaves the shell's own error to its fallback document,
         // which a boundary above catches, as does any failure of a render
-        // that takes no error document. A client-rendering bailout or dynamic
-        // usage goes on as the shell's own would. Any other failure, a
+        // that takes no error document. A client-rendering bailout, dynamic
+        // usage or a `dynamic = "error"` request API access goes on as the
+        // shell's own would. Any other failure, a
         // boundary's file or a slot beside it that redirects or throws,
         // answers as Next.js does there: its error shell with the shell
         // error's status, and the payload, which the browser renders. Its
@@ -883,7 +889,11 @@ export async function handleSsr(
           error: unknown,
           caughtRenderError: unknown,
         ): ReadableStream<Uint8Array> => {
-          if (isBailoutToCSRError(caughtRenderError) || isDynamicServerError(caughtRenderError)) {
+          if (
+            isBailoutToCSRError(caughtRenderError) ||
+            isDynamicServerError(caughtRenderError) ||
+            options?.isStaticGenerationError?.(caughtRenderError) === true
+          ) {
             throw caughtRenderError;
           }
           const digest = getNextErrorDigest(caughtRenderError);

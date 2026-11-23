@@ -53,6 +53,8 @@ export type RenderAppPageCacheArtifactsOptions = {
   mirrorNextFlight?: () => boolean;
   navigationParams: Record<string, unknown>;
   isCapturedRscError?: (error: unknown) => boolean;
+  /** Whether the RSC render threw the error as a `dynamic = "error"` access. */
+  isStaticGenerationRscError?: (error: unknown) => boolean;
   onError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
   onSsrError?: (error: unknown) => unknown;
   reactMaxHeadersLength?: number;
@@ -153,6 +155,7 @@ async function renderAppPageCacheArtifactsImpl(
         isStaticGeneration: true,
         isForceStatic: options.isForceStatic,
         fallbackToErrorDocumentOnCaughtShellError: true,
+        isStaticGenerationError: options.isStaticGenerationRscError,
         preloadRoutePattern: options.route.pattern,
         resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
         onSsrError:

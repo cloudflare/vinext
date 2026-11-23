@@ -17,6 +17,7 @@ import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { runWithHeadersContext } from "../packages/vinext/src/shims/headers.js";
 import { hasFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 
@@ -1247,6 +1248,35 @@ describe("app page stream helpers", () => {
     });
     expect(tracker.getCapturedSpecialErrors(decoded)).toEqual([metadataNotFound, pageNotFound]);
     expect(tracker.getCapturedSpecialErrors(new Error("no digest"))).toEqual([]);
+  });
+
+  it('classifies a `dynamic = "error"` access error by identity and by its decoded digest', async () => {
+    const accessError = new Error("dynamic = error");
+    const tracker = createAppPageRscErrorTracker((error) =>
+      error === accessError ? "access-digest" : "other-digest",
+    );
+    const otherError = new Error("other");
+    await runWithHeadersContext(
+      { headers: new Headers(), cookies: new Map(), accessError },
+      async () => {
+        tracker.onRenderError(accessError, null, null);
+        tracker.onRenderError(otherError, null, null);
+      },
+    );
+
+    expect(tracker.isStaticGenerationError(accessError)).toBe(true);
+    // SSR decodes the rejected chunk into a new error carrying the digest.
+    expect(
+      tracker.isStaticGenerationError(
+        Object.assign(new Error("decoded"), { digest: "access-digest" }),
+      ),
+    ).toBe(true);
+    expect(tracker.isStaticGenerationError(otherError)).toBe(false);
+    expect(
+      tracker.isStaticGenerationError(
+        Object.assign(new Error("decoded"), { digest: "other-digest" }),
+      ),
+    ).toBe(false);
   });
 
   it("correlates re-created RSC errors by digest and keeps custom-digest SSR errors reportable", () => {

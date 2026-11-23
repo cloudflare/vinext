@@ -378,6 +378,28 @@ describe("useSearchParams() in production cache-candidate renders", () => {
       }
     });
 
+    // The same caught document, with a not-found file that reads headers() on
+    // a `dynamic = "error"` route: the access error fails the route, never
+    // answering a stored 404.
+    it('fails a `dynamic = "error"` route whose caught slot\'s not-found file reads headers()', async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const urls = [crypto.randomUUID(), crypto.randomUUID()].map(
+          (query) => `/missing/caught-slot-headers?q=${query}`,
+        );
+        for (const url of urls) {
+          const response = await get(url);
+          expect(response.status).toBe(500);
+          expect(response.cache).not.toBe("HIT");
+          expect(response.cacheControl).toContain("no-store");
+          expect(response.body).not.toContain('data-testid="team-not-found"');
+        }
+        await expectStillUnstored(urls);
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+
     it("renders the real query on a dynamic-segment route without generateStaticParams", async () => {
       await expectRealValuesNeverStored("/missing/dynamic-segment/a");
     });

@@ -1215,6 +1215,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
               navigationParams: revalidationTarget.navigationParams,
               isCapturedRscError: rscErrorTracker.isCapturedError,
+              isStaticGenerationRscError: rscErrorTracker.isStaticGenerationError,
               onError: rscErrorTracker.onRenderError,
               onSsrError(error) {
                 reportedSsrRevalidationErrors.add(error);
