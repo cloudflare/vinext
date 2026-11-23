@@ -9745,16 +9745,19 @@ export const loadServerActionClient = ${
         // those, the pages sorting before `_app` would order what they share
         // with it ahead of `_app`'s own imports. The entry resolves to `_app`
         // on each build, as watch builds keep the input while `_app` may be
-        // added or removed.
+        // added or removed. Rolldown takes a single input when code splitting
+        // is off.
         const input = inputOptions.input ?? [];
         const inputIds =
           typeof input === "string" ? [input] : Array.isArray(input) ? input : Object.values(input);
+        const outputs = [environment.config.build.rolldownOptions?.output ?? []].flat();
         if (
           environment.config.build.lib ||
           !hasPagesDir ||
           hasAppDir ||
           options.disableNextLikeChunking ||
-          !inputIds.includes(VIRTUAL_CLIENT_ENTRY)
+          !inputIds.includes(VIRTUAL_CLIENT_ENTRY) ||
+          outputs.some((output) => output.codeSplitting === false || output.inlineDynamicImports)
         ) {
           return;
         }
