@@ -1,0 +1,5 @@
+{
+  "name": "app-public-rewrite-fixture",
+  "private": true,
+  "type": "module"
+}
