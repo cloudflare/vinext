@@ -156,7 +156,6 @@ import {
   readHistoryStatePreviousNextUrl,
   resolveActiveRoutePaths,
   resolveInterceptionContextFromPreviousNextUrl,
-  resolveNavigationInterceptionSource,
   type AppNavigationPayloadOrigin,
   type AppRouterState,
   type HistoryTraversalIntent,
@@ -477,7 +476,6 @@ let initialPrefetchRouterState: {
   routeId: string;
   routeMiss: boolean;
   sourceInterceptionContext: null;
-  sourcePathname: null;
 } | null = null;
 const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
@@ -1301,9 +1299,8 @@ function getRequestState(
   switch (navigationKind) {
     case "navigate": {
       const currentRouterState = getBrowserRouterState();
-      const navigationSource = resolveNavigationInterceptionSource(currentRouterState, __basePath);
-      const currentPreviousNextUrl = navigationSource.previousNextUrl;
-      const currentPathname = navigationSource.pathname ?? window.location.pathname;
+      const currentPreviousNextUrl = currentRouterState.previousNextUrl;
+      const currentPathname = window.location.pathname;
       if (currentPreviousNextUrl !== null) {
         return {
           interceptionContext: resolveInterceptionContextFromPreviousNextUrl(
@@ -1319,7 +1316,7 @@ function getRequestState(
       // Next.js keeps that tree path as its `Next-Url`.
       const currentSourceHref = currentRenderIsRouteMiss
         ? getRouteMissInterceptionSourceHref(__basePath)
-        : (navigationSource.pathname ?? window.location.pathname + window.location.search);
+        : window.location.pathname + window.location.search;
       const manifestInterceptionContext = resolveManifestNavigationInterceptionContext({
         basePath: __basePath,
         currentPathname,
@@ -1351,9 +1348,7 @@ function getRequestState(
       const middlewareRewriteInterceptionContext =
         resolveMiddlewareRewriteNavigationInterceptionContext({
           basePath: __basePath,
-          // The intercepting route's tree path is the only one it navigates from.
-          currentMatchedPathname:
-            navigationSource.pathname === null ? getCurrentMatchedRoutePathname() : null,
+          currentMatchedPathname: getCurrentMatchedRoutePathname(),
           currentPathname,
           currentRenderIsRouteMiss,
           routeManifest: getBrowserRouteManifest(),
@@ -2155,7 +2150,6 @@ function bootstrapHydration(
       routeId: AppElementsWire.readMetadata(elements).routeId,
       routeMiss: isRouteMissRender(elements),
       sourceInterceptionContext: null,
-      sourcePathname: null,
     };
     return elements;
   });
@@ -3335,16 +3329,14 @@ function bootstrapHydration(
         return initialPrefetchRouterState;
       }
       const state = browserNavigationController.getBrowserRouterState();
-      const navigationSource = resolveNavigationInterceptionSource(state, __basePath);
       return {
         pathAndSearch: createSnapshotPathAndSearch(state.navigationSnapshot),
         routeId: state.routeId,
         routeMiss: isRouteMissRender(state.elements),
         sourceInterceptionContext: resolveInterceptionContextFromPreviousNextUrl(
-          navigationSource.previousNextUrl,
+          state.previousNextUrl,
           __basePath,
         ),
-        sourcePathname: navigationSource.pathname,
       };
     },
     navigate: navigateRsc,

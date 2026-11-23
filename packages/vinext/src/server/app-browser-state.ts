@@ -1,4 +1,4 @@
-import { restoreBasePath, stripBasePath } from "../utils/base-path.js";
+import { stripBasePath } from "../utils/base-path.js";
 import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import {
   AppElementsWire,
@@ -745,51 +745,6 @@ export function rendersSiblingIntercept(metadata: {
     metadata.sourcePage !== null &&
     metadata.sourcePage.split("/").some(isInterceptionMarkerSegment)
   );
-}
-
-export type NavigationInterceptionSource = {
-  /** The source the entry keeps, which its navigations send whatever their target. */
-  previousNextUrl: string | null;
-  /** The path its navigations resolve a context from, or null for the current URL. */
-  pathname: string | null;
-};
-
-/**
- * Where navigations and prefetches from an entry take their interception
- * context. An intercepted entry sends the source it keeps. One that renders an
- * intercepting route's own tree, a sibling intercept or a whole intercepting
- * route, navigates from the path of that tree instead, which stops at the
- * interception marker, as Next.js's `nextUrl` does: the path of the folders
- * above the marker, with the source's values for their params. Its refreshes
- * and traversals still send the
- * source it keeps.
- */
-export function resolveNavigationInterceptionSource(
-  state: Pick<AppRouterState, "elements" | "previousNextUrl">,
-  basePath: string,
-): NavigationInterceptionSource {
-  const source = resolveInterceptionContextFromPreviousNextUrl(state.previousNextUrl, basePath);
-  const metadata = AppElementsWire.readMetadata(state.elements);
-  const segments = metadata.sourcePage?.slice(1).split("/") ?? [];
-  const markerIndex = segments.findIndex(isInterceptionMarkerSegment);
-  // A whole intercepting route's source page runs through the slot's folders
-  // to the marker; one without a marker stops at the owner.
-  const ownerSegments =
-    source === null
-      ? null
-      : metadata.wholeInterceptionSource !== null
-        ? segments.slice(0, markerIndex === -1 ? -1 : markerIndex)
-        : rendersSiblingIntercept(metadata)
-          ? segments.slice(0, markerIndex)
-          : null;
-  if (source === null || ownerSegments === null) {
-    return { previousNextUrl: state.previousNextUrl, pathname: null };
-  }
-  const pathSegments = ownerSegments.filter((segment) => !/^\(.*\)$/.test(segment));
-  const ownerPath = pathSegments.some((segment) => /^\[{1,2}\.\.\./.test(segment))
-    ? source
-    : `/${source.split("/").filter(Boolean).slice(0, pathSegments.length).join("/")}`;
-  return { previousNextUrl: null, pathname: restoreBasePath(ownerPath, basePath) };
 }
 
 export function createPendingNavigationCommitFromElements(

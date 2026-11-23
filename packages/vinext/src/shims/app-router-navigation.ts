@@ -290,7 +290,7 @@ type PrefetchInterceptionSource = {
 export function getPrefetchInterceptionSource(): PrefetchInterceptionSource {
   const routerState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
   return {
-    pathname: routerState?.sourcePathname ?? window.location.pathname,
+    pathname: window.location.pathname,
     routeMiss: routerState?.routeMiss === true,
     sourceInterceptionContext: routerState?.sourceInterceptionContext ?? null,
   };
