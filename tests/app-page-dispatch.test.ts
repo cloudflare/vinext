@@ -9365,7 +9365,7 @@ describe("query-free App page ISR entries", () => {
       pprShellResume: { postponed: null, prelude: "<!DOCTYPE html><html><head></head><body>" },
       sideStream,
     });
-    await new Response(html).text();
+    await new Response(html.htmlStream).text();
 
     expect(cancelled).toBe(true);
   });
