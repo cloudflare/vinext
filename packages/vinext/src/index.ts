@@ -355,7 +355,9 @@ import {
   createClientCodeSplittingConfig,
   collectUncopiedStylesheets,
   collectDoublyCopiedModules,
+  collectLargeSharedModules,
   collectPagesAppChunkRoots,
+  collectPagesClientGraph,
   createPagesClientCodeSplittingConfig,
   isStylesheetModule,
   STYLESHEET_MODULE_RE,
@@ -2026,6 +2028,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   // Filled in from the client module graph; see vinext:pages-client-chunks.
   const pagesAppChunkRoots = new Set<string>();
+  const pagesLargeSharedModules = new Map<string, string>();
   // Each client stylesheet's compiled size, and those that keep a chunk.
   const pagesStylesheetSizes = new Map<string, number>();
   const pagesUncopiedModules = new Set<string>();
@@ -2036,6 +2039,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     !hasAppDir &&
     !options.disableNextLikeChunking &&
     supportsInlineCommonChunks(rolldownVersion);
+  // Whether the client output copies small common chunks; Rolldown runs the
+  // `outputOptions` hook that decides it before the build.
+  let pagesClientInlinesChunks = false;
   // The client's input options once every plugin's `options` hook has run.
   let pagesClientInputOptions: { preserveEntrySignatures?: unknown; onDemandWrapping?: unknown } =
     {};
@@ -2043,6 +2049,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const pagesClientChunks = createPagesClientCodeSplittingConfig(
     clientCodeSplittingConfig,
     pagesAppChunkRoots,
+    pagesLargeSharedModules,
   );
   const pagesClientCodeSplitting = options.disableNextLikeChunking
     ? clientCodeSplittingConfig
@@ -9763,6 +9770,7 @@ export const loadServerActionClient = ${
       if (this.environment?.name !== "client") return;
 
       pagesAppChunkRoots.clear();
+      pagesLargeSharedModules.clear();
       // Sizes stay across watch builds, which skip the transforms of
       // stylesheets that haven't changed.
       pagesUncopiedModules.clear();
@@ -9808,10 +9816,27 @@ export const loadServerActionClient = ${
         pending.push(...(this.getModuleInfo(id)?.importedIds ?? []));
       }
 
-      for (const id of collectDoublyCopiedModules(this.getModuleIds(), getModuleInfo, {
-        groupOf: (id) =>
-          clientManualChunks(id) ?? (appGroupModules.has(id) ? "pages-app" : undefined),
+      const groupOf = (id: string) =>
+        clientManualChunks(id) ?? (appGroupModules.has(id) ? "pages-app" : undefined);
+      // Bytes of transformed code, as Rolldown sizes what it may copy.
+      const sizeOf = (id: string) => {
+        const code = this.getModuleInfo(id)?.code;
+        return code ? Buffer.byteLength(code) : 0;
+      };
+
+      const graph = collectPagesClientGraph(this.getModuleIds(), getModuleInfo);
+      // Large shared modules only leave their neighbours for the pages to copy.
+      if (pagesClientInlinesChunks) {
+        for (const [id, chunkName] of collectLargeSharedModules(graph, { groupOf, sizeOf })) {
+          pagesLargeSharedModules.set(id, chunkName);
+        }
+      }
+
+      for (const id of collectDoublyCopiedModules(graph, {
+        groupOf: (id) => groupOf(id) ?? pagesLargeSharedModules.get(id),
         isAlwaysLoaded: (id) => id === appId,
+        sizeOf,
+        uncopied: pagesUncopiedModules,
         declaresSideEffects: createSideEffectsDeclarationCheck(),
       })) {
         pagesUncopiedModules.add(id);
@@ -9824,6 +9849,7 @@ export const loadServerActionClient = ${
         const environment = this.environment;
         if (environment?.name !== "client") return;
 
+        pagesClientInlinesChunks = false;
         // Only outputs that still use vinext's Pages Router groups.
         const codeSplitting = output.codeSplitting;
         if (
@@ -9834,17 +9860,22 @@ export const loadServerActionClient = ${
           return;
         }
 
-        return withInlineCommonChunks(output, {
+        const inlined = withInlineCommonChunks(output, {
           ...pagesClientInputOptions,
           rolldownVersion: this.meta.rolldownVersion,
           uncopiedModules: pagesUncopiedModules,
         });
+        pagesClientInlinesChunks = inlined !== undefined;
+        return inlined;
       },
     },
     generateBundle() {
       // The client chunks exist now. A plain Pages Router SSR build inherits
       // the top-level client output, so it must not group `_app`'s imports.
-      if (this.environment?.name === "client") pagesAppChunkRoots.clear();
+      if (this.environment?.name === "client") {
+        pagesAppChunkRoots.clear();
+        pagesLargeSharedModules.clear();
+      }
     },
   });
   plugins.push({

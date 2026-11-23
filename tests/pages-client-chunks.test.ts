@@ -4,6 +4,8 @@ import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   collectDoublyCopiedModules,
+  collectLargeSharedModules,
+  collectPagesClientGraph,
   collectUncopiedStylesheets,
   collectPagesAppChunkRoots,
   PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
@@ -126,6 +128,13 @@ describe("Pages Router client chunks", () => {
       inlines ? ["pages/alpha.tsx", "pages/beta.tsx"] : [""],
     );
 
+    // A large module that pages share keeps a chunk of its own, which leaves
+    // the small module beside it to be copied into each of them.
+    expect(facadesOf(chunksWith(chunks, "/lib/shared-rows.ts"))).toEqual([""]);
+    expect(facadesOf(chunksWith(chunks, "/lib/shared-table.tsx"))).toEqual(
+      inlines ? ["pages/alpha.tsx", "pages/beta.tsx"] : [""],
+    );
+
     // Each copy's CSS joins its page's stylesheet.
     const stylesheetsWith = (className: string) =>
       [...stylesheets]
@@ -183,6 +192,10 @@ describe("Pages Router client chunks", () => {
     const [chunks] = await buildChunks({}, ["client"], [onDemandWrapping]);
 
     expect(chunksWith(chunks!, "/lib/shared-label.ts").map(facadeOf)).toEqual([undefined]);
+    // Nor does a large shared module leave its neighbours.
+    expect(chunksWith(chunks!, "/lib/shared-table.tsx")).toEqual(
+      chunksWith(chunks!, "/lib/shared-rows.ts"),
+    );
   });
 
   it("leaves Pages Router chunking to the bundler with disableNextLikeChunking", async () => {
@@ -398,9 +411,13 @@ describe("collectUncopiedStylesheets", () => {
 describe("collectDoublyCopiedModules", () => {
   // `entry` is the client entry, which loads `_app` and the pages with `import()`.
   const collect = (
-    graph: Record<string, { imports?: string[]; entry?: boolean; loadedBy?: string }>,
+    graph: Record<
+      string,
+      { imports?: string[]; entry?: boolean; loadedBy?: string; size?: number }
+    >,
     groupOf: (id: string) => string | undefined = () => undefined,
     declaresSideEffects?: (id: string) => boolean,
+    uncopied: ReadonlySet<string> = new Set(),
   ) => {
     const ids = Object.keys(graph);
     const info = (id: string) => {
@@ -415,9 +432,11 @@ describe("collectDoublyCopiedModules", () => {
         : null;
     };
     return [
-      ...collectDoublyCopiedModules(ids, info, {
+      ...collectDoublyCopiedModules(collectPagesClientGraph(ids, info), {
         groupOf,
         isAlwaysLoaded: (id) => id === "_app",
+        sizeOf: (id) => graph[id]?.size ?? 0,
+        uncopied,
         declaresSideEffects,
       }),
     ].sort();
@@ -429,14 +448,29 @@ describe("collectDoublyCopiedModules", () => {
     summary: { loadedBy: "entry", imports: ["chart"] },
     invoices: { loadedBy: "entry", imports: ["table"] },
     reports: { loadedBy: "entry", imports: ["chart", "table"] },
-    chart: { imports: ["format", "tag.css"] },
-    table: { imports: ["format", "tag.css"] },
+    // Each panel is too large to copy, so it keeps a chunk.
+    chart: { imports: ["format", "tag.css"], size: 30_000 },
+    table: { imports: ["format", "tag.css"], size: 30_000 },
     format: {},
     "tag.css": {},
   };
 
   it("finds the modules that two chunks one page loads would both copy", () => {
     expect(collect(pages)).toEqual(["format", "tag.css"]);
+  });
+
+  // Rolldown copies a copied chunk's imports where it copies that chunk.
+  it("follows the copies of chunks that are copied themselves", () => {
+    const graph = {
+      ...pages,
+      chart: { imports: ["format", "tag.css"] },
+      table: { imports: ["format", "tag.css"] },
+    };
+    expect(collect(graph)).toEqual([]);
+    expect(collect(graph, undefined, undefined, new Set(["chart", "table"]))).toEqual([
+      "format",
+      "tag.css",
+    ]);
   });
 
   it("leaves the copies that no page loads together", () => {
@@ -502,6 +536,45 @@ describe("collectDoublyCopiedModules", () => {
 
   it("leaves the modules that a chunk group takes", () => {
     expect(collect(pages, (id) => (id === "format" ? "vinext" : undefined))).toEqual(["tag.css"]);
+  });
+});
+
+describe("collectLargeSharedModules", () => {
+  it("names a chunk for the large modules that each set of pages shares", () => {
+    const graph: Record<string, { imports?: string[]; loadedBy?: string; size?: number }> = {
+      entry: {},
+      summary: { loadedBy: "entry", imports: ["chart", "chart-data", "summary-data"] },
+      invoices: { loadedBy: "entry", imports: ["table"] },
+      reports: { loadedBy: "entry", imports: ["chart", "table"] },
+      chart: { imports: ["chart-data", "chart-rows", "chart.css"] },
+      table: { imports: ["table-data", "vendor"] },
+      "chart-data": { size: 30_000 },
+      "chart-rows": { size: 25_000 },
+      "chart.css": { size: 25_000 },
+      "summary-data": { size: 30_000 },
+      "table-data": { size: 20_000 },
+      vendor: { size: 40_000 },
+    };
+    const ids = Object.keys(graph);
+    const largeModules = collectLargeSharedModules(
+      collectPagesClientGraph(ids, (id) => ({
+        isEntry: id === "entry",
+        importedIds: graph[id]!.imports ?? [],
+        importers: ids.filter((other) => graph[other]!.imports?.includes(id)),
+        dynamicImporters: graph[id]!.loadedBy ? [graph[id]!.loadedBy!] : [],
+      })),
+      {
+        groupOf: (id) => (id === "vendor" ? "framework" : undefined),
+        sizeOf: (id) => graph[id]!.size ?? 0,
+      },
+    );
+
+    // A page's own module, a stylesheet and a chunk group's module stay put.
+    expect(Object.fromEntries(largeModules)).toEqual({
+      "chart-data": "pages-shared-1",
+      "chart-rows": "pages-shared-1",
+      "table-data": "pages-shared-2",
+    });
   });
 });
 
