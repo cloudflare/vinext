@@ -12,6 +12,7 @@ import {
 import {
   formatAppPprShellState,
   hasAppPprFallbackShellPrelude,
+  isAppPprStoredPage,
   markAppPprDynamicFallbackShellHtml,
   parseAppPprShellState,
   splitAppPprFallbackShellState,
@@ -181,6 +182,12 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     readPrerenderCacheTagsHeader(response.headers),
   );
 
+  // A path's own shell shares its page's key, so a page another request
+  // stored while the shell rendered is kept.
+  if (isConcrete && (await hasStoredPage(options, key))) {
+    options.isrDebug?.("SKIP (page stored under the shell's key)", fallbackPathname);
+    return null;
+  }
   if (options.isrSetFallbackShell) {
     const write = options.isrSetFallbackShell(key, value, { cacheControl, tags }).catch((error) => {
       console.error("[vinext] ISR fallback shell cache write error:", error);
@@ -202,6 +209,20 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     value: { lastModified: Date.now(), value, cacheControl },
     isStale: false,
   };
+}
+
+async function hasStoredPage<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  key: string,
+): Promise<boolean> {
+  try {
+    return isAppPprStoredPage(await (options.isrGetFallbackShell ?? options.isrGet)(key));
+  } catch (isrReadError) {
+    // A page may be stored there, so the shell isn't written. A later dynamic
+    // render produces it again.
+    console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
+    return true;
+  }
 }
 
 /**

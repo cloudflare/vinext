@@ -63,6 +63,7 @@ export type AppPageCacheOutcomeMetric = Readonly<{
     | "expired"
     | "no-entry"
     | "non-app-page-entry"
+    | "own-shell-entry"
     | "query-variant-unproven"
     | "read-error"
     | "served"
@@ -125,6 +126,11 @@ type ReadAppPageCacheResponseOptions = {
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
+  /**
+   * Receives what a document request's read found under the page's key, where
+   * a path's own shell is stored too. Not called when the read fails.
+   */
+  onDocumentEntryRead?: (cached: ISRCacheEntry | null) => void;
   /**
    * Resolves the current request's route params for a cached RSC response.
    * Called only once an entry can answer the request, since resolving them
@@ -547,6 +553,7 @@ export async function readAppPageCacheResponse(
   try {
     const cached = await options.isrGet(isrKey);
     const cachedValue = getCachedAppPageValue(cached);
+    if (!options.isRscRequest) options.onDocumentEntryRead?.(cached);
 
     if (cached?.isExpired) {
       recordAppPageCacheOutcome(options.recordCacheOutcome, {
@@ -567,6 +574,24 @@ export async function readAppPageCacheResponse(
         reason: "non-app-page-entry",
       });
       options.isrDebug?.("MISS (non app-page cache entry)", options.cleanPathname);
+      return null;
+    }
+
+    // Like Next.js, a path's own shell is stored as its page, and its
+    // requests resume it instead of serving it. Its regeneration is the
+    // shell's, so it never regenerates as a page.
+    if (
+      !options.isRscRequest &&
+      cachedValue &&
+      isAppPprDynamicFallbackShellHtml(cachedValue.html)
+    ) {
+      recordAppPageCacheOutcome(options.recordCacheOutcome, {
+        artifact,
+        cacheKey: isrKey,
+        outcome: "miss",
+        reason: "own-shell-entry",
+      });
+      options.isrDebug?.("MISS (own shell)", options.cleanPathname);
       return null;
     }
 
