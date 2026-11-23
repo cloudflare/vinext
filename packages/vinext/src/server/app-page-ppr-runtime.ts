@@ -166,9 +166,9 @@ function scheduleShellProduction<TRoute extends AppPageDispatchRoute>(
   isConcrete: boolean,
   // generateStaticParams results the request already has.
   memo?: GeneratedStaticParamsMemo,
-  // The request's read of the shell, which isn't read again. Like a served
-  // shell's regeneration, and like Next.js rendering a missing entry, the
-  // production trusts it.
+  // The request's read of the shell. A successful read isn't repeated: like a
+  // served shell's regeneration, and like Next.js rendering a missing entry,
+  // the production trusts it. A failed read is retried.
   read?: ShellRead,
 ): void {
   const known = read?.ok ? read : undefined;
