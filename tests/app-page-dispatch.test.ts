@@ -9473,6 +9473,58 @@ describe("app page dispatch", () => {
     expect(response.headers.get("x-nextjs-postponed")).toBe("1");
   });
 
+  // As in Next.js, an html-limited bot's metadata blocks in <head>, which a
+  // stored prelude has already closed, so it renders the whole document.
+  it.each([
+    { resumes: true, userAgent: "Mozilla/5.0" },
+    { resumes: false, userAgent: "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+  ])(
+    "resumes a fallback shell's prelude for $userAgent: $resumes",
+    async ({ resumes, userAgent }) => {
+      const { formatAppPprShellState } =
+        await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+      const resumed: unknown[] = [];
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement(),
+        isrGet: vi.fn(async (key: string) =>
+          key === "shell:/en/blog/[slug]"
+            ? buildISRCacheEntry({
+                ...buildCachedAppPageValue(
+                  markAppPprDynamicFallbackShellHtml(
+                    "<!DOCTYPE html><html><head></head><body>shell",
+                  ),
+                ),
+                postponed: formatAppPprShellState({
+                  prelude: true,
+                  postponed: { resumableState: {} },
+                  resumeDataCache: null,
+                }),
+              })
+            : null,
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            resumed.push(captureOptions?.pprShellResume);
+            return createStream(["<html><head></head><body>page</body></html>"]);
+          },
+        }),
+        request: new Request("https://example.test/en/blog/new-post", {
+          headers: { "user-agent": userAgent },
+        }),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      await response.text();
+
+      expect(resumed).toEqual([
+        resumes ? expect.objectContaining({ prelude: expect.any(String) }) : undefined,
+      ]);
+      expect(options.isrSet).not.toHaveBeenCalled();
+    },
+  );
+
   it("renders normally when generateStaticParams throws while choosing a fallback shell", async () => {
     const isrGetFallbackShell = vi.fn(async (_key: string) => null);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
