@@ -1288,6 +1288,52 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       expect(await regenerate(true)).toEqual({ cache: "bypass" });
     });
 
+    it("recomputes a data entry once when its replay reads it in two scopes", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      let computed = 0;
+      const reads: unknown[] = [];
+      stages.response.mockImplementation(async () => {
+        // As generateStaticParams and the page read one cached fetch.
+        for (let scope = 0; scope < 2; scope++) {
+          const read = await dataCache.get("data:/page");
+          reads.push(read?.value);
+          if (!read) {
+            computed++;
+            await dataCache.set(
+              "data:/page",
+              { kind: "FETCH", data: { body: String(computed), headers: {}, url: "" } } as never,
+              { revalidate: 60, tags: [] },
+            );
+          }
+        }
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const dataKey = [...entries.keys()][0]!;
+      computed = 0;
+      reads.length = 0;
+
+      const regenerated = await createVinextResponseStoreOptions().regenerate(
+        {
+          args: entries.get(dataKey)!.options!.revalidator!.args as string[],
+          id: "vinext:data",
+          reason: "stale",
+          request: new Request(dataKey),
+        } as never,
+        { ctx: context(), env: {} } as never,
+      );
+
+      expect(computed).toBe(1);
+      expect(reads).toEqual([
+        undefined,
+        expect.objectContaining({ data: expect.objectContaining({ body: "1" }) }),
+      ]);
+      expect(await regenerated.text()).toContain('"body":"1"');
+    });
+
     it.each([
       ["a Route Handler", false, { isRscRequest: false, kind: "app-route-handler" }],
       ["an App page", true, {}],

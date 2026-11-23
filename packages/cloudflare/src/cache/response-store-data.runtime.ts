@@ -27,6 +27,8 @@ type StoredCacheEntry = {
 
 type RegenerationScope = {
   captured?: Response;
+  /** The entry it recomputed, which later reads of its target return. */
+  capturedEntry?: CacheHandlerValue;
   /**
    * Writes the regeneration makes, its own entry's included, and the work it hands
    * to waitUntil: callers like cached fetch, "use cache" and unstable_cache return
@@ -477,7 +479,9 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
 
   async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const regeneration = regenerationStorage.getStore();
-    if (regeneration?.targetKey === key) return null;
+    // A regeneration recomputes its target once: a read in another scope of
+    // its render, e.g. its generateStaticParams', gets what it recomputed.
+    if (regeneration?.targetKey === key) return regeneration.capturedEntry ?? null;
 
     const pageRequest = pagePartRequest(context);
     const request = pageRequest ?? (await cacheRequest(key));
@@ -753,6 +757,11 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     const regeneration = regenerationStorage.getStore();
     if (regeneration?.targetKey === key) {
       regeneration.captured = response;
+      regeneration.capturedEntry = {
+        lastModified,
+        value,
+        ...(cacheControl ? { cacheControl } : {}),
+      };
       return;
     }
     if (regeneration && !revalidator) return;
