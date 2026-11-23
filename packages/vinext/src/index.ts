@@ -9766,16 +9766,22 @@ export const loadServerActionClient = ${
         return { ...inputOptions, input: { ...input, [name]: VIRTUAL_PAGES_APP_ENTRY } };
       },
     },
-    async resolveId(id) {
-      if (id !== VIRTUAL_PAGES_APP_ENTRY) return;
-      const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
-      // As the client entry's import of `_app` resolves.
-      const resolved =
-        appFilePath && (await this.resolve(appFilePath, undefined, { skipSelf: true }));
-      return resolved || RESOLVED_PAGES_APP_ENTRY;
+    resolveId: {
+      filter: { id: /^virtual:vinext-pages-app-entry$/ },
+      async handler() {
+        const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+        // As the client entry's import of `_app` resolves.
+        const resolved =
+          appFilePath && (await this.resolve(appFilePath, undefined, { skipSelf: true }));
+        return resolved || RESOLVED_PAGES_APP_ENTRY;
+      },
     },
-    load(id) {
-      if (id === RESOLVED_PAGES_APP_ENTRY) return "export {};";
+    load: {
+      // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
+      filter: { id: /^\u0000virtual:vinext-pages-app-entry$/ },
+      handler() {
+        return "export {};";
+      },
     },
     buildStart() {
       if (this.environment?.name !== "client") return;
