@@ -4,6 +4,9 @@ import {
   getPprFallbackShellState,
   runWithPprFallbackShellState,
 } from "vinext/shims/ppr-fallback-shell";
+import { _isOnDemandRevalidate, _setResumeDataCacheSeed } from "vinext/shims/cache-request-state";
+import { markDynamicUsage } from "vinext/shims/internal/headers-state";
+import { parseResumeDataCache } from "vinext/shims/resume-data-cache";
 import {
   hasSearchParams,
   shouldReadAppPageCache,
@@ -11,6 +14,7 @@ import {
   type AppPagePprRuntime,
   type DispatchAppPageOptions,
 } from "./app-page-dispatch.js";
+import { normalizePregeneratedPathname } from "./pregenerated-concrete-paths.js";
 
 type PprFallbackShellEligibility =
   | {
@@ -26,7 +30,8 @@ type PprFallbackShellEligibility =
         | "skip-rsc-request"
         | "skip-non-get"
         | "skip-search-params"
-        | "skip-cache-disabled";
+        | "skip-cache-disabled"
+        | "skip-on-demand-revalidate";
     };
 
 function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute>(
@@ -45,6 +50,9 @@ function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute
     return { kind: "skip-no-fallback-shells" };
   }
   if (options.isRscRequest) return { kind: "skip-rsc-request" };
+  // Like Next.js, an on-demand revalidation renders the page blocking and
+  // stores it instead of resuming a shell with the values it was built with.
+  if (_isOnDemandRevalidate()) return { kind: "skip-on-demand-revalidate" };
   if (options.request.method !== "GET") return { kind: "skip-non-get" };
   if (!isForceStatic && hasSearchParams(options.searchParams)) {
     return { kind: "skip-search-params" };
@@ -74,11 +82,14 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
 ): Promise<Response | null> {
   const { readAppPageFallbackShellCacheResponse } = await import("./app-page-cache.js");
   const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
+  // Shells run from the most specific, so the first dynamic one is resumed.
+  let isDynamicShellFound = false;
   for (const fallbackShell of fallbackShells) {
     const fallbackShellResponse = await readAppPageFallbackShellCacheResponse({
       clearRequestContext: options.clearRequestContext,
       expireSeconds: options.expireSeconds,
-      fallbackPathname: fallbackShell.pathname,
+      // The build keys a shell by its decoded pathname, like a concrete page.
+      fallbackPathname: normalizePregeneratedPathname(fallbackShell.pathname),
       isEdgeRuntime: options.isEdgeRuntime,
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,
@@ -86,6 +97,19 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       revalidateSeconds: currentRevalidateSeconds ?? 0,
+      resumeDynamicShell(postponed, hasPrelude) {
+        isDynamicShellFound = true;
+        // Like Next.js, a route served from a shell resumes on every request
+        // instead of storing the concrete page, while an empty shell's route
+        // renders blocking and is stored.
+        if (hasPrelude) markDynamicUsage();
+        // vinext resumes the shell as a full render whose cached parts come
+        // from the values the shell was built with. React's postponed state
+        // isn't spliced into the shell's document.
+        const resumeDataCache = parseResumeDataCache(postponed);
+        _setResumeDataCacheSeed(resumeDataCache);
+        return resumeDataCache !== null;
+      },
       rewriteHtml(html) {
         return rewriteAppPprFallbackShellHtmlNavigation({
           html,
@@ -97,6 +121,7 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
       },
     });
     if (fallbackShellResponse) return fallbackShellResponse;
+    if (isDynamicShellFound) return null;
   }
   return null;
 }
@@ -130,4 +155,4 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
   },
 };
 
-export { createAppPprFallbackShells } from "./app-ppr-fallback-shell.js";
+export { createAppPprRequestFallbackShells } from "./app-ppr-fallback-shell.js";

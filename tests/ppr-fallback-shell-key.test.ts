@@ -4,6 +4,7 @@ import path from "node:path";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
 import { createIsolatedFixture } from "./helpers.js";
 
 // `app/[slug]/ppr/[id]` sits under the `[slug]` root layout, so with
@@ -21,8 +22,9 @@ describe("PPR fallback shell cache key", () => {
       "vinext-ppr-fallback-shell-key-",
       (src) => !src.includes(`${path.sep}dist`),
     );
-    // Build for the Node production server and its memory cache, without the
-    // fixture's HTTP stage cache adapter.
+    const nodeEnv = process.env.NODE_ENV;
+    // Build and prerender for the Node production server and its memory cache,
+    // without the fixture's HTTP stage cache adapter.
     const builder = await createBuilder({
       root: fixtureDir,
       configFile: false,
@@ -30,6 +32,13 @@ describe("PPR fallback shell cache key", () => {
       logLevel: "silent",
     });
     await builder.buildApp();
+    // The build switches NODE_ENV to production, but this process already
+    // loaded React's development build. Restore it so the `react-dom/static`
+    // that fallback shells load later is the matching development build.
+    Reflect.set(process.env, "NODE_ENV", nodeEnv);
+    // Programmatic builds skip the CLI build lifecycle, so prerender here like
+    // the fixture's `prerender: true` does.
+    await runPrerender({ root: fixtureDir, concurrency: 1 });
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
     ({ server } = await startProdServer({
@@ -63,6 +72,24 @@ describe("PPR fallback shell cache key", () => {
       expect(response.status, body).toBe(200);
       expect(body).toContain(`fresh pregenerated route:en:${id}`);
       expect(body).not.toContain("%5Bid%5D");
+    }
+  });
+
+  it("resumes an unknown route's fallback shell from the values it was built with", async () => {
+    // Like Next.js, the route resumes on every request instead of storing the
+    // concrete page.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(`${baseUrl}/en/resume/other`);
+      const body = await response.text();
+
+      expect(response.status, body).toBe(200);
+      expect(body).toContain("resumed route:en:other");
+      // The layout's cache entry comes from the shell's resume data cache, so
+      // it keeps the build-time value instead of running again at request time.
+      expect(body).toContain("stamp:phase-production-build");
+      expect(body).not.toContain("stamp:runtime");
+      expect(response.headers.get("x-vinext-cache")).toBeNull();
+      expect(response.headers.get("cache-control")).toContain("no-store");
     }
   });
 });
