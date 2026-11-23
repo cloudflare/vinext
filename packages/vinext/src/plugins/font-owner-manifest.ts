@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import type { DevEnvironment, Plugin, ResolvedConfig, ViteDevServer } from "vite";
 import type { AppRoute } from "../routing/app-route-graph.js";
 import { safeJsonStringify } from "../server/html.js";
@@ -47,6 +47,19 @@ type RscBuildGraph = {
   globalNotFoundFiles: string[];
 };
 
+/**
+ * The module id the graph knows a file by. With `resolve.preserveSymlinks`,
+ * Vite keeps a file's symlinked path in its id, so the file's path is its id;
+ * otherwise ids are real paths.
+ */
+function canonicalizeFontModuleId(
+  config: Pick<ResolvedConfig, "resolve">,
+  canonicalize: (id: string) => string,
+  id: string,
+): string {
+  return config.resolve.preserveSymlinks ? toSlash(id) : canonicalize(id);
+}
+
 /** A dev render's owner keys: its documents', and its RSC payload's as in `navigation`. */
 type DevFontOwners = {
   document: string[];
@@ -86,6 +99,8 @@ export function createFontOwnerManifestPlugin(options: {
   const rscOutputDirs = new Set<string>();
 
   const isOwner = (id: string) => options.ownerKeys.has(fontOwnerKey(config.root, id));
+  const canonicalizeModuleId = (id: string) =>
+    canonicalizeFontModuleId(config, options.canonicalizeModuleId, id);
 
   // Each render's files: a route's own files, or a route-miss render's, plus
   // the files that can show in either, and the intercepting routes' files. The
@@ -183,7 +198,7 @@ export function createFontOwnerManifestPlugin(options: {
         const serverOwners = new Set<string>();
         const clientOwners = new Set<string>();
         const clientReferences: string[] = [];
-        await walkDevModuleGraph(rsc, roots.map(options.canonicalizeModuleId), (id, file) => {
+        await walkDevModuleGraph(rsc, roots.map(canonicalizeModuleId), (id, file) => {
           watch(file);
           if (manager.clientReferenceMetaMap[id]) {
             clientReferences.push(id);
@@ -238,11 +253,11 @@ export function createFontOwnerManifestPlugin(options: {
           [...renderFiles()].map(([render, { files, interceptFiles }]) => [
             render,
             {
-              files: files.map(options.canonicalizeModuleId),
+              files: files.map(canonicalizeModuleId),
               interceptFiles: new Map(
                 [...interceptFiles].map(([interceptionId, files]) => [
                   interceptionId,
-                  files.map(options.canonicalizeModuleId),
+                  files.map(canonicalizeModuleId),
                 ]),
               ),
             },
@@ -260,7 +275,7 @@ export function createFontOwnerManifestPlugin(options: {
         for (const [id, importId] of rscBuild.clientReferenceImportIds) {
           let resolved = resolvedImportIds.get(importId);
           if (resolved === undefined) {
-            resolved = options.canonicalizeModuleId((await this.resolve(importId))?.id ?? importId);
+            resolved = canonicalizeModuleId((await this.resolve(importId))?.id ?? importId);
             resolvedImportIds.set(importId, resolved);
           }
           clientReferences.set(id, resolved);
