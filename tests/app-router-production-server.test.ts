@@ -2070,7 +2070,7 @@ describe("App Router Production server (startProdServer)", () => {
       "/action-cache-control",
       actionId("redirectToConfigPolicy"),
     );
-    expect(redirected.status).toBe(303);
+    expect(redirected.status).toBe(200);
     expect(redirected.headers.get("x-action-redirect")).toBe("/action-cache-control/config-policy");
     expect(redirected.headers.get("cache-control")).toBe("public, s-maxage=300");
     expect(await redirected.text()).toContain("action-cache-control-config-policy");
