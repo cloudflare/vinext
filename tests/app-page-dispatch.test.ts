@@ -8872,6 +8872,24 @@ describe("app page dispatch", () => {
     expect(scheduledKeys).toEqual([]);
   });
 
+  it("asks generateStaticParams once, recomputing a data entry, when its dynamicParams check did", async () => {
+    const generateStaticParams = vi.fn(async () => [{ locale: "en", slug: "new-post" }]);
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      generateStaticParams,
+      isrGet: vi.fn(async () => null),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({ ...options, dynamicParamsConfig: false, regeneratesDataEntry: true }),
+    );
+
+    expect(response.status).toBe(200);
+    await response.text();
+    // A cached fetch the generator reads is recomputed once, by the check.
+    expect(generateStaticParams).toHaveBeenCalledOnce();
+  });
+
   it("stores a path's empty own shell with the route's lifetime, not its dynamic render's", async () => {
     const jobs = new Map<string, () => Promise<void>>();
     const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
