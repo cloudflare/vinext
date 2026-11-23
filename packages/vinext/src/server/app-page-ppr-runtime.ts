@@ -402,6 +402,9 @@ async function serveStoredFallbackShell<TRoute extends AppPageDispatchRoute>(
   const { parseAppPprShellState } = await import("./app-ppr-fallback-shell.js");
   const params = options.staticParamsValidationParams ?? options.params;
   let isUndecided = false;
+  // Shells whose own fresh record rules the request out, which a less specific
+  // shell's record doesn't overrule.
+  const ruledOut = new Set<AppPagePprFallbackCacheShell>();
   for (const [index, fallbackShell] of fallbackShells.entries()) {
     const read = await readShell(options, fallbackShell);
     if (!read.ok) return null;
@@ -439,9 +442,12 @@ async function serveStoredFallbackShell<TRoute extends AppPageDispatchRoute>(
       // more specific shell's, so the request is left to a less specific one.
       // Once stale, it's asked again.
       isUndecided = read.cached!.isStale;
+      if (!read.cached!.isStale) ruledOut.add(fallbackShell);
       continue;
     }
-    const moreSpecificShell = fallbackShells.slice(0, index).find(isEligible);
+    const moreSpecificShell = fallbackShells
+      .slice(0, index)
+      .find((shell) => !ruledOut.has(shell) && isEligible(shell));
     const served = moreSpecificShell
       ? await serveFallbackShell(
           options,
@@ -590,12 +596,17 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       generated,
     );
     if (!fallbackShell) {
-      storeUngeneratedFallbackShells(
-        options,
-        decision.fallbackShells,
-        currentRevalidateSeconds,
-        memo,
-      );
+      // Recording the shells is background work, like filling them.
+      try {
+        storeUngeneratedFallbackShells(
+          options,
+          decision.fallbackShells,
+          currentRevalidateSeconds,
+          memo,
+        );
+      } catch (shellError) {
+        console.error("[vinext] ISR fallback shell discovery error:", shellError);
+      }
       return null;
     }
     // A shell that wasn't servable is read again, as another request may have
