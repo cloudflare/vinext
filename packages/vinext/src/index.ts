@@ -9831,7 +9831,7 @@ export const loadServerActionClient = ${
         // router, which turns them on as each page renders.
         entry.code = withoutPreloadedStylesheets(entry, {
           stylesheets: new Set(Object.values(stylesheets.routes).flat()),
-          routeChunks: new Set(stylesheets.routeChunks),
+          routeChunks: stylesheets.routeChunks,
           renderBuiltUrl: environment.config.experimental.renderBuiltUrl,
         });
         // Appended, so the entry's source map still lines up.

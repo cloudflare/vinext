@@ -78,7 +78,7 @@ describe("collectPagesPageStylesheets", () => {
     ).toEqual({
       routes: { "/alpha": ["alpha.css"] },
       shared: [],
-      routeChunks: ["alpha.js", "bare.js"],
+      routeChunks: { "/alpha": "alpha.js", "/bare": "bare.js" },
     });
   });
 
@@ -101,7 +101,7 @@ describe("collectPagesPageStylesheets", () => {
     ).toEqual({
       routes: { "/alpha": ["card.css", "alpha.css"], "/beta": ["beta.css"] },
       shared: ["card.css", "beta.css"],
-      routeChunks: ["alpha.js", "beta.js"],
+      routeChunks: { "/alpha": "alpha.js", "/beta": "beta.js" },
     });
   });
 });
@@ -109,7 +109,7 @@ describe("collectPagesPageStylesheets", () => {
 describe("withoutPreloadedStylesheets", () => {
   const code =
     'const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["/_next/static/chunks/alpha.js","/_next/static/css/alpha.css?dpl=1","/_next/static/css/app.css?dpl=1"])))=>i.map(i=>d[i]);\n' +
-    'a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]));b(()=>import(`./beta.js`),__vite__mapDeps([1]));';
+    'const p={"/alpha":()=>a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2])),"/beta":()=>b(()=>import(`./beta.js`),__vite__mapDeps([1]))};';
   const strip = (
     source: string,
     stylesheets: string[],
@@ -119,7 +119,10 @@ describe("withoutPreloadedStylesheets", () => {
       { code: source, fileName: "_next/static/chunks/entry.js" },
       {
         stylesheets: new Set(stylesheets),
-        routeChunks: new Set(["_next/static/chunks/alpha.js", "_next/static/chunks/beta.js"]),
+        routeChunks: {
+          "/alpha": "_next/static/chunks/alpha.js",
+          "/beta": "_next/static/chunks/beta.js",
+        },
         renderBuiltUrl,
       },
     );
@@ -136,9 +139,17 @@ describe("withoutPreloadedStylesheets", () => {
 
   // Such as a `next/dynamic` component that `instrumentation-client` imports.
   it("lets the chunk's other dynamic imports preload them", () => {
-    const widget = code.replace("b(()=>import(`./beta.js`)", 'b(()=>import("./widget.js")');
+    const widget = `${code}c(()=>import("./widget.js"),__vite__mapDeps([1]));`;
     expect(strip(widget, ["_next/static/css/alpha.css"])).toContain(
-      'b(()=>import("./widget.js"),__vite__mapDeps([1]))',
+      'c(()=>import("./widget.js"),__vite__mapDeps([1]))',
+    );
+  });
+
+  // No router stylesheet load follows them.
+  it("lets other imports of a page preload its stylesheets", () => {
+    const other = `${code}c(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]));`;
+    expect(strip(other, ["_next/static/css/alpha.css"])).toContain(
+      'c(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]))',
     );
   });
 
@@ -166,7 +177,7 @@ describe("withoutPreloadedStylesheets", () => {
       .join(",");
     const runtimeCode =
       `const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[${table}])))=>i.map(i=>d[i]);\n` +
-      'a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]));';
+      'const p={"/alpha":()=>a(()=>import("./alpha.js"),__vite__mapDeps([0,1,2]))};';
     expect(
       strip(runtimeCode, ["_next/static/css/alpha.css"], (file) => ({ runtime: runtime(file) })),
     ).toContain("__vite__mapDeps([0,2  ])");

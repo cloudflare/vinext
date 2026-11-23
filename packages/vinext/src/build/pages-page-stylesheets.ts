@@ -31,8 +31,8 @@ export type PagesPageStylesheets = {
    * its dynamic CSS manifest.
    */
   shared: string[];
-  /** The chunks of the pages, whose loaders leave their stylesheets to the router. */
-  routeChunks: string[];
+  /** Each route's page chunk, whose loader leaves its stylesheets to the router. */
+  routeChunks: Record<string, string>;
 };
 
 /**
@@ -96,11 +96,11 @@ export function collectPagesPageStylesheets(
 
   const routes: Record<string, string[]> = {};
   const routed = new Set<string>();
-  const routeChunks: string[] = [];
+  const routeChunks: Record<string, string> = {};
   for (const chunk of chunks.values()) {
     const route = routeOf(chunk);
     if (route === undefined) continue;
-    routeChunks.push(chunk.fileName);
+    routeChunks[route] = chunk.fileName;
     const files = stylesheetsOf(chunk.fileName).filter((file) => !alwaysLoaded.has(file));
     if (files.length === 0) continue;
     routes[route] = files;
@@ -115,7 +115,7 @@ export function collectPagesPageStylesheets(
 const PRELOAD_FILES_START = "const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=";
 
 /**
- * Removes `stylesheets` from what the chunk's dynamic imports of `routeChunks`
+ * Removes `stylesheets` from what the client entry's page loaders
  * preload. Vite adds a dynamic import's stylesheets as `<link>`s when it
  * loads, so a page prefetch would apply that page's stylesheets to the
  * current one. Next.js only turns a page's stylesheets on when it renders.
@@ -127,7 +127,7 @@ export function withoutPreloadedStylesheets(
   chunk: { code: string; fileName: string },
   options: {
     stylesheets: ReadonlySet<string>;
-    routeChunks: ReadonlySet<string>;
+    routeChunks: Readonly<Record<string, string>>;
     renderBuiltUrl?: RenderBuiltAssetUrl;
   },
 ): string {
@@ -175,12 +175,23 @@ export function withoutPreloadedStylesheets(
   });
   if (removed.size === 0) return chunk.code;
 
-  // Vite preloads a dynamic import as `preload(() => import("./page.js"),
-  // __vite__mapDeps([...]))`.
+  // The client entry's page loaders are `"/route": () => import("./page.js")`,
+  // which Vite turns into `"/route": () => preload(() => import("./page.js"),
+  // __vite__mapDeps([...]))`. Other imports of a page, such as one from
+  // instrumentation-client, aren't followed by the router's stylesheet load.
   const lists: ESTree.ArrayExpression[] = [];
   walkExpression(program, (node) => {
-    if (node.type !== "CallExpression") return;
-    const [loader, deps] = node.arguments;
+    if (
+      node.type !== "Property" ||
+      node.key.type !== "Literal" ||
+      typeof node.key.value !== "string" ||
+      !Object.hasOwn(options.routeChunks, node.key.value) ||
+      node.value.type !== "ArrowFunctionExpression" ||
+      node.value.body.type !== "CallExpression"
+    ) {
+      return;
+    }
+    const [loader, deps] = node.value.body.arguments;
     if (
       loader?.type !== "ArrowFunctionExpression" ||
       loader.body.type !== "ImportExpression" ||
@@ -194,7 +205,7 @@ export function withoutPreloadedStylesheets(
     const specifier = stringValue(loader.body.source);
     if (specifier === undefined) return;
     const imported = path.posix.join(path.posix.dirname(chunk.fileName), specifier);
-    if (options.routeChunks.has(imported)) lists.push(deps.arguments[0]);
+    if (imported === options.routeChunks[node.key.value]) lists.push(deps.arguments[0]);
   });
 
   let code = chunk.code;
