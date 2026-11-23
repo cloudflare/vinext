@@ -661,6 +661,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
     );
   }
+  if (pathname.startsWith("/font-navigation/") && request.nextUrl.searchParams.has("csp-nonce")) {
+    r.headers.set(
+      "content-security-policy",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic'; style-src 'nonce-vinext-test-nonce';",
+    );
+  }
   if (pathname.startsWith("/metadata-icons-stream")) {
     r.headers.set(
       "content-security-policy",
@@ -753,6 +759,7 @@ export const config = {
     "/nextjs-compat/action-node-mw",
     "/action-cache-control/:path*",
     "/metadata-icons-stream/:path*",
+    "/font-navigation/:path*",
     "/config-link-preload",
     "/use-client-page-pathname/:path*",
     "/rsc-fetch-redirect-src",

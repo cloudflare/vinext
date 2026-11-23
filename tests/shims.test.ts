@@ -17977,20 +17977,26 @@ describe("next/font/local shim", () => {
     const localFont = fontLocal.default;
     const ownerSlot = Symbol.for("vinext.font.owner");
     const g = globalThis as Record<symbol, unknown>;
-    const load = (owner: string | undefined, src: string, variable: `--${string}`) => {
-      g[ownerSlot] = owner;
-      try {
-        return localFont({ src, variable, _vinext: { font: { family: "scoped" } } });
-      } finally {
-        delete g[ownerSlot];
-      }
-    };
+    // The vinext:font-owner transform passes each call its module's key.
+    const load = (owner: string | undefined, src: string, variable: `--${string}`) =>
+      localFont({
+        src,
+        variable,
+        _vinext: { font: { family: "scoped" } },
+        ...(owner ? { _vinextOwner: owner } : {}),
+      });
+    // Another module evaluating meanwhile (a top-level await, a concurrent
+    // request) must not take the fonts of the module that loads them.
+    g[ownerSlot] = "app/other.tsx";
     const fontA = load("app/a.tsx", "/assets/scoped-a.woff2", "--font-scoped");
     const fontB = load("app/b.tsx", "/assets/scoped-b.woff2", "--font-scoped");
     // The same font from a second module belongs to both.
     load("app/b.tsx", "/assets/scoped-a.woff2", "--font-scoped");
     // A font loaded outside any marked module belongs to every render.
     load(undefined, "/assets/scoped-unowned.woff2", "--font-scoped-unowned");
+    // Each call restores the slot it found.
+    expect(g[ownerSlot]).toBe("app/other.tsx");
+    delete g[ownerSlot];
 
     const preloadsOf = (owners?: string[]) =>
       fontLocal
@@ -18007,6 +18013,7 @@ describe("next/font/local shim", () => {
       "/assets/scoped-unowned.woff2",
     ]);
     expect(preloadsOf([])).toEqual(["/assets/scoped-unowned.woff2"]);
+    expect(preloadsOf(["app/other.tsx"])).toEqual(["/assets/scoped-unowned.woff2"]);
     expect(preloadsOf()).toEqual([
       "/assets/scoped-a.woff2",
       "/assets/scoped-b.woff2",

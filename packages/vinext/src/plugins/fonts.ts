@@ -25,7 +25,8 @@
  */
 
 import type { ESTree, Plugin } from "vite";
-import { parseProgram, scriptParserLanguage } from "./ast-utils.js";
+import { parseProgram, SCRIPT_MODULE_ID_RE, scriptParserLanguage } from "./ast-utils.js";
+import { findAstBindingScope, walkAstScopes } from "./ast-scope.js";
 import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { escapeRegExp } from "../utils/regex.js";
@@ -1310,22 +1311,28 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
 }
 
 const FONT_LOADER_SOURCES = new Set(["next/font/google", "next/font/local"]);
-const FONT_OWNER_SLOT = 'globalThis[Symbol.for("vinext.font.owner")]';
 
 /**
  * vinext:font-owner — mark each server module that imports `next/font/google`
- * or `next/font/local` as the owner of the fonts its top-level code loads.
+ * or `next/font/local` as the owner of the fonts its loader calls load.
  *
- * The module sets the `vinext.font.owner` slot (see `FONT_OWNER_KEY` in
- * `shims/font-utils.ts`) to its key as its body starts and clears it at the
- * end, so the shims record each font under the module that called its loader.
- * The route font manifest (`plugins/font-owner-manifest.ts`) then lists the
- * owners each route reaches, and a render carries only their fonts, as
- * Next.js' `next-font-manifest` scopes fonts per entry.
+ * Each call of an imported loader (resolved by scope, so a shadowing local is
+ * left alone, and not the shims' utility exports) whose options are an object
+ * literal gets the module's key as `_vinextOwner`; a Google loader called
+ * without options gets an object holding only the key. The loader sets the `vinext.font.owner` slot (see
+ * `runWithFontOwner` in `shims/font-utils.ts`) for its own synchronous run, so
+ * the shims record each font under the module that called it, even when other
+ * modules evaluate in between (top-level `await`, concurrent requests). The
+ * route font manifest (`plugins/font-owner-manifest.ts`) then lists the owners
+ * each route reaches, and a render carries only their fonts, as Next.js'
+ * `next-font-manifest` scopes fonts per entry.
  *
- * Next.js requires font loaders to be called at module scope, which a module
- * body runs in one go. A loader called later, or after a top-level `await`
- * in its module, is recorded without an owner and so carries to every render.
+ * The key goes inside the options, not in a second argument or a wrapper, so
+ * the font plugins that follow still match the call (`_findCallEnd` expects
+ * `)` after the options, and `vinext:local-fonts` matches
+ * `const x = localFont(`). A call without literal options (which Next.js
+ * rejects) or through a re-exported loader stays unowned and carries to every
+ * render.
  */
 export function createFontOwnerPlugin(options: {
   shimsDir: string;
@@ -1344,7 +1351,7 @@ export function createFontOwnerPlugin(options: {
     },
     transform: {
       filter: {
-        id: { include: /\.(tsx?|jsx?|mjs)$/ },
+        id: { include: SCRIPT_MODULE_ID_RE },
         code: /next\/font\/(?:google|local)/,
       },
       handler(code, id) {
@@ -1358,33 +1365,79 @@ export function createFontOwnerPlugin(options: {
           return null;
         }
 
-        let bodyStart = 0;
-        let directivesEnded = false;
-        let importsFontLoader = false;
+        // Locals called as loaders, and locals whose members are loaders;
+        // `true` for a Google loader, which may be called without options.
+        // The shims' utility exports (`getSSRFontStyles`, …) are not loaders.
+        const loaderLocals = new Map<string, boolean>();
+        const loaderObjectLocals = new Set<string>();
         for (const node of program.body) {
-          if (!directivesEnded && node.type === "ExpressionStatement" && node.directive) {
-            bodyStart = node.end;
-            continue;
-          }
-          directivesEnded = true;
-          if (
-            (node.type === "ImportDeclaration" ||
-              node.type === "ExportNamedDeclaration" ||
-              node.type === "ExportAllDeclaration") &&
-            node.source &&
-            FONT_LOADER_SOURCES.has(String(node.source.value))
-          ) {
-            importsFontLoader = true;
+          if (node.type !== "ImportDeclaration") continue;
+          // vinext aliases every `next/*` shim with its `.js` form too.
+          const source = String(node.source.value).replace(/\.js$/, "");
+          if (!FONT_LOADER_SOURCES.has(source)) continue;
+          const google = source === "next/font/google";
+          for (const specifier of node.specifiers) {
+            const local = specifier.local.name;
+            if (specifier.type === "ImportSpecifier") {
+              const imported =
+                specifier.imported.type === "Identifier"
+                  ? specifier.imported.name
+                  : String(specifier.imported.value);
+              // `import { default as x }` is the default import spelled out.
+              if (imported === "default") {
+                if (google) loaderObjectLocals.add(local);
+                else loaderLocals.set(local, false);
+              } else if (google && !GOOGLE_FONT_UTILITY_EXPORTS.has(imported)) {
+                loaderLocals.set(local, true);
+              }
+            } else if (specifier.type === "ImportNamespaceSpecifier") {
+              if (google) loaderObjectLocals.add(local);
+              else loaderLocals.set(`${local}.default`, false);
+            } else if (google) loaderObjectLocals.add(local);
+            else loaderLocals.set(local, false);
           }
         }
-        if (!importsFontLoader) return null;
+        if (loaderLocals.size === 0 && loaderObjectLocals.size === 0) return null;
 
         const key = fontOwnerKey(root, id);
-        options.onOwner(key);
         const quotedKey = JSON.stringify(key);
         const s = new MagicString(code);
-        s.appendRight(bodyStart, `\n${FONT_OWNER_SLOT} = ${quotedKey};\n`);
-        s.append(`\n;if (${FONT_OWNER_SLOT} === ${quotedKey}) ${FONT_OWNER_SLOT} = undefined;\n`);
+        walkAstScopes(program, (node, scope) => {
+          if (node.type !== "CallExpression") return;
+          const callee = node.callee;
+          let local: string | null = null;
+          let google: boolean | undefined;
+          if (callee.type === "Identifier") {
+            local = callee.name;
+            google = loaderLocals.get(local);
+          } else if (
+            callee.type === "MemberExpression" &&
+            !callee.computed &&
+            callee.object.type === "Identifier" &&
+            callee.property.type === "Identifier"
+          ) {
+            local = callee.object.name;
+            google = loaderObjectLocals.has(local)
+              ? GOOGLE_FONT_UTILITY_EXPORTS.has(callee.property.name)
+                ? undefined
+                : true
+              : loaderLocals.get(`${local}.${callee.property.name}`);
+          }
+          // Only a name that resolves to the module scope is the import: a
+          // parameter or local of the same name shadows it.
+          if (google === undefined || findAstBindingScope(scope, local!)?.parent !== null) return;
+          const firstArgument = node.arguments[0];
+          if (firstArgument?.type === "ObjectExpression") {
+            s.appendLeft(firstArgument.start + 1, `_vinextOwner: ${quotedKey}, `);
+          } else if (google && node.arguments.length === 0) {
+            // Parenthesized, so `vinext:google-fonts` (which matches only a
+            // first argument starting with `{`) leaves the call to the runtime
+            // as it did without options. The call ends at its `)`.
+            s.appendLeft(node.end - 1, `({ _vinextOwner: ${quotedKey} })`);
+          }
+        });
+        if (!s.hasChanged()) return null;
+        options.onOwner(key);
         return magicStringTransformResult(s);
       },
     },

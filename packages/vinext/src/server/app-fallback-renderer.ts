@@ -45,8 +45,14 @@ type AppFallbackRendererRootBoundaries<TModule extends AppPageModule = AppPageMo
 
 type AppFallbackRendererFontProviders = {
   buildFontLinkHeader: (preloads: readonly AppPageFontPreload[] | null | undefined) => string;
-  /** The font owners of the render of `route`, or of a render without one. */
-  getFontOwners: (route: { pattern?: string } | null) => FontOwners | Promise<FontOwners>;
+  /**
+   * The font owners of the render of `route`, of a render without one, or of
+   * the standalone global-not-found render.
+   */
+  getFontOwners: (
+    route: { pattern?: string } | null,
+    render?: "global-not-found",
+  ) => FontOwners | Promise<FontOwners>;
   getFontLinks: (owners?: FontOwners) => string[];
   getFontPreloads: (owners?: FontOwners) => AppPageFontPreload[];
   getFontStyles: (owners?: FontOwners) => string[];
@@ -249,10 +255,13 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
     return globalNotFoundModulePromise;
   }
 
-  // The fonts of the render of `route`: its own files' fonts, or those of a
-  // render without a matched route.
-  async function routeFontProviders(route: { pattern?: string } | null) {
-    const owners = await fontProviders.getFontOwners(route);
+  // The fonts of the render of `route`: its own files' fonts, those of a
+  // render without a matched route, or those of global-not-found alone.
+  async function routeFontProviders(
+    route: { pattern?: string } | null,
+    render?: "global-not-found",
+  ) {
+    const owners = await fontProviders.getFontOwners(route, render);
     return {
       getFontLinks: () => fontProviders.getFontLinks(owners),
       getFontPreloads: () => fontProviders.getFontPreloads(owners),
@@ -314,7 +323,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             createRscOnErrorHandler(pathname, routePath, overrides) {
               return buildRscOnErrorHandler(request, pathname, routePath, overrides);
             },
-            ...(await routeFontProviders(null)),
+            // It renders without the root layouts, so not with their fonts.
+            ...(await routeFontProviders(null, "global-not-found")),
             getAndClearPendingCookies,
             getNavigationContext,
             globalErrorModule: effectiveGlobalErrorModule,
@@ -359,7 +369,12 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         createRscOnErrorHandler(pathname, routePath, overrides) {
           return buildRscOnErrorHandler(request, pathname, routePath, overrides);
         },
-        ...(await routeFontProviders(useStandaloneNotFound ? null : route)),
+        // The default global-not-found (no app/global-not-found file) also
+        // renders without the root layouts, so not with their fonts.
+        ...(await routeFontProviders(
+          useStandaloneNotFound ? null : route,
+          useGlobalNotFound ? "global-not-found" : undefined,
+        )),
         getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,

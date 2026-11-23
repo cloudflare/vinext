@@ -748,32 +748,129 @@ describe("vinext:font-owner plugin", () => {
     return (code: string, id: string) => transform.call(plugin, code, id);
   }
 
-  const SLOT = 'globalThis[Symbol.for("vinext.font.owner")]';
-
-  it("marks the module body, after its directives, with its root-relative path", () => {
+  // The key travels with each call, so a module that awaits before loading a
+  // font cannot hand it to another module that evaluates meanwhile.
+  it("passes the module's root-relative key to each loader call", () => {
     const transform = getFontOwnerTransform("/project");
     const code = [
       `"use client";`,
       `import localFont from "next/font/local";`,
-      `import { Inter } from "next/font/google";`,
+      `import { Inter as Sans } from "next/font/google";`,
+      `import * as google from "next/font/google";`,
+      `await Promise.resolve();`,
       `const a = localFont({ src: "./a.woff2" });`,
-      `const b = Inter({ subsets: ["latin"] });`,
+      `const b = Sans({ subsets: ["latin"] });`,
+      `const c = google.Roboto_Mono({});`,
+      `const d = localFont(options);`,
     ].join("\n");
     const result = transform(code, "/project/app/(a)/client-font.tsx");
-    expect(result.code.startsWith(`"use client";\n${SLOT} = "app/(a)/client-font.tsx";\n`)).toBe(
-      true,
-    );
-    expect(
-      result.code
-        .trimEnd()
-        .endsWith(`if (${SLOT} === "app/(a)/client-font.tsx") ${SLOT} = undefined;`),
-    ).toBe(true);
+    const owner = `_vinextOwner: "app/(a)/client-font.tsx", `;
+    expect(result.code).toContain(`const a = localFont({${owner} src: "./a.woff2" });`);
+    expect(result.code).toContain(`const b = Sans({${owner} subsets: ["latin"] });`);
+    expect(result.code).toContain(`const c = google.Roboto_Mono({${owner}});`);
+    // Options Next.js would reject as non-literal stay as they are.
+    expect(result.code).toContain(`const d = localFont(options);`);
+    expect(result.code).not.toContain("vinext.font.owner");
   });
 
-  it("marks modules that re-export a font loader", () => {
+  // A Google loader takes no options; `vinext:google-fonts` matches only
+  // calls whose first argument starts with `{`, so the owner-bearing object
+  // is parenthesized to keep that call out of self-hosting, as before.
+  it("passes the key to a Google loader called without options", () => {
     const transform = getFontOwnerTransform("/project");
-    const result = transform(`export { Inter } from "next/font/google";`, "/project/fonts.ts");
-    expect(result.code).toContain(`${SLOT} = "fonts.ts";`);
+    const code = [
+      `import { Geist } from "next/font/google";`,
+      `import * as google from "next/font/google";`,
+      `const a = Geist();`,
+      `const b = google.Roboto_Mono( );`,
+    ].join("\n");
+    const result = transform(code, "/project/app/layout.tsx");
+    const owner = `({ _vinextOwner: "app/layout.tsx" })`;
+    expect(result.code).toContain(`const a = Geist(${owner});`);
+    expect(result.code).toContain(`const b = google.Roboto_Mono( ${owner});`);
+  });
+
+  it("leaves a local loader called without options alone", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = `import localFont from "next/font/local";\nconst a = localFont();`;
+    expect(transform(code, "/project/app/layout.tsx")).toBeNull();
+  });
+
+  it("passes the key through the `.js` forms of the loader specifiers", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = [
+      `import { Inter } from "next/font/google.js";`,
+      `import localFont from "next/font/local.js";`,
+      `import * as local from "next/font/local";`,
+      `const a = Inter({ subsets: ["latin"] });`,
+      `const b = localFont({ src: "./b.woff2" });`,
+      `const c = local.default({ src: "./c.woff2" });`,
+      `import { default as namedLocal } from "next/font/local";`,
+      `const d = namedLocal({ src: "./d.woff2" });`,
+      `import { default as googleFonts } from "next/font/google.js";`,
+      `const e = googleFonts.Roboto({ subsets: ["latin"] });`,
+    ].join("\n");
+    const result = transform(code, "/project/app/layout.tsx");
+    const owner = `_vinextOwner: "app/layout.tsx", `;
+    expect(result.code).toContain(`const a = Inter({${owner} subsets: ["latin"] });`);
+    expect(result.code).toContain(`const b = localFont({${owner} src: "./b.woff2" });`);
+    expect(result.code).toContain(`const c = local.default({${owner} src: "./c.woff2" });`);
+    expect(result.code).toContain(`const d = namedLocal({${owner} src: "./d.woff2" });`);
+    expect(result.code).toContain(`const e = googleFonts.Roboto({${owner} subsets: ["latin"] });`);
+  });
+
+  it("leaves the shims' utility exports alone", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = [
+      `import { getSSRFontStyles, Inter } from "next/font/google";`,
+      `import * as google from "next/font/google";`,
+      `import { getSSRFontPreloads } from "next/font/local";`,
+      `const inter = Inter();`,
+      `export const styles = [getSSRFontStyles(), google.getSSRFontLinks()];`,
+      `export const preloads = getSSRFontPreloads();`,
+    ].join("\n");
+    const result = transform(code, "/project/app/layout.tsx");
+    expect(result.code).toContain(`Inter(({ _vinextOwner: "app/layout.tsx" }))`);
+    expect(result.code).toContain(`[getSSRFontStyles(), google.getSSRFontLinks()]`);
+    expect(result.code).toContain(`preloads = getSSRFontPreloads();`);
+  });
+
+  it("rewrites only calls that resolve to the imported loader", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = [
+      `import { Inter } from "next/font/google";`,
+      `import * as google from "next/font/google";`,
+      `import localFont from "next/font/local";`,
+      `function render(Inter) { return Inter(); }`,
+      `function f(Inter) { return Inter({ value: 1 }); }`,
+      `function g() { const google = { Roboto: (o) => o }; return google.Roboto({ value: 2 }); }`,
+      `const h = (localFont) => localFont({ value: 3 });`,
+      `const inter = Inter({ subsets: ["latin"] });`,
+    ].join("\n");
+    const result = transform(code, "/project/app/layout.tsx");
+    expect(result.code).toContain(`return Inter(); }`);
+    expect(result.code).toContain(`return Inter({ value: 1 });`);
+    expect(result.code).toContain(`return google.Roboto({ value: 2 });`);
+    expect(result.code).toContain(`localFont({ value: 3 })`);
+    expect(result.code).toContain(`Inter({_vinextOwner: "app/layout.tsx",  subsets: ["latin"] })`);
+  });
+
+  it("passes the key to loader calls in every script module extension", () => {
+    const plugin = (vinext() as Plugin[]).find((p) => p.name === "vinext:font-owner")!;
+    const filter = (plugin.transform as { filter: { id: { include: RegExp } } }).filter.id.include;
+    for (const ext of [".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs", ".cts"]) {
+      expect(filter.test(`/project/app/fonts${ext}`), ext).toBe(true);
+    }
+    const transform = getFontOwnerTransform("/project");
+    const code = `import { Inter } from "next/font/google";\nexport const inter = Inter({ subsets: ["latin"] });`;
+    expect(transform(code, "/project/app/fonts.mts").code).toContain(
+      `_vinextOwner: "app/fonts.mts"`,
+    );
+  });
+
+  it("leaves a module that only re-exports a font loader alone", () => {
+    const transform = getFontOwnerTransform("/project");
+    expect(transform(`export { Inter } from "next/font/google";`, "/project/fonts.ts")).toBeNull();
   });
 
   it("leaves modules that only mention a font loader alone", () => {

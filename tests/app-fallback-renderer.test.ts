@@ -70,7 +70,8 @@ function createRenderer(overrides?: {
           if (!preloads || preloads.length === 0) return "";
           return preloads.map((p) => `<${p.href}>; rel=preload`).join(", ");
         },
-        getFontOwners(route: { pattern?: string } | null) {
+        getFontOwners(route: { pattern?: string } | null, render?: "global-not-found") {
+          if (render) return [render];
           return route?.pattern === undefined ? ["routeless"] : [`route:${route.pattern}`];
         },
         getFontLinks() {
@@ -758,6 +759,10 @@ describe("app fallback renderer with globalNotFoundModule", () => {
     expect(html).toContain("global-not-found");
     // Root layout was NOT applied — it would have rendered <html lang="en">.
     expect(html).not.toContain('lang="en"');
+    // Nor its fonts: the render reads global-not-found's own (issue #4810).
+    expect(response?.headers.get("link")).toBe(
+      "</font.woff2?owners=global-not-found>; rel=preload",
+    );
   });
 
   it("keeps the request that starts the global-not-found import alive until it settles", async () => {
@@ -888,6 +893,11 @@ describe("app fallback renderer with globalNotFoundModule", () => {
     expect(html).not.toContain('lang="en"');
     expect((html?.match(/<html/gi) ?? []).length).toBe(1);
     expect((html?.match(/<body/gi) ?? []).length).toBe(1);
+    // It renders without the root layout, so without its fonts either: it
+    // reads the global-not-found render's owners, not the routeless ones.
+    expect(response?.headers.get("link")).toBe(
+      "</font.woff2?owners=global-not-found>; rel=preload",
+    );
   });
 
   it("keeps root not-found for explicit notFound when global-not-found is absent", async () => {

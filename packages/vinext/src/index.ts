@@ -2154,6 +2154,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // App routes whose fonts the route font manifest scopes, in dev and build,
   // and the keys of the modules that load fonts.
   let fontOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  let fontOwnerGlobalNotFoundFiles: string[] = [];
   const fontOwnerKeys = new Set<string>();
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
@@ -5671,6 +5672,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ].filter((path): path is string => path !== null);
               clientReferenceRoutes = this.environment.config.command === "build" ? routes : null;
               fontOwnerRoutes = routes;
+              // With or without app/global-not-found: a route-miss 404 with
+              // `globalNotFound` enabled renders it, or the default, alone.
+              fontOwnerGlobalNotFoundFiles = [
+                ...(globalNotFoundPath ? [globalNotFoundPath] : []),
+                ...(globalErrorPath ? [globalErrorPath] : []),
+              ];
               clientReferenceAlwaysRenderedFiles = [
                 ...(globalErrorPath ? [globalErrorPath] : []),
                 ...rootBoundaryFiles(routes),
@@ -9641,6 +9648,7 @@ export const loadServerActionClient = ${
         getRoutes: () => fontOwnerRoutes,
         getAlwaysRenderedFiles: () => clientReferenceAlwaysRenderedFiles,
         getRoutelessFiles: () => clientReferenceRoutelessFiles,
+        getGlobalNotFoundFiles: () => fontOwnerGlobalNotFoundFiles,
         ownerKeys: fontOwnerKeys,
       }),
     );
