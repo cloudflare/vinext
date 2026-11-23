@@ -5672,20 +5672,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               if (stylesheetAssets.length > 0) {
                 ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets;
               }
-              // Vite's client adopts a server-rendered link with the id its CSS
-              // transform passes to updateStyle(), rather than injecting the
-              // stylesheet again in module execution order. That id is the
-              // client environment's, as in the Node dev server's head links.
-              const clientModuleGraph = pagesDevServer?.environments.client?.moduleGraph;
-              for (const asset of stylesheetAssets) {
-                const devId =
-                  clientModuleGraph &&
-                  (await resolvePagesDevStylesheetId(
-                    clientModuleGraph,
-                    createPagesDevAssetUrl(asset),
-                  ));
+            }
+            // Vite's client adopts a server-rendered link with the id its CSS
+            // transform passes to updateStyle(), rather than injecting the
+            // stylesheet again in module execution order. That id is the
+            // client environment's. The Node dev server resolves the ids of a
+            // page's links as it renders them; the Worker can't.
+            const clientModuleGraph = hasCloudflarePlugin
+              ? pagesDevServer?.environments.client?.moduleGraph
+              : undefined;
+            if (clientModuleGraph) {
+              const assets = [...new Set(Object.values(ssrManifest).flat())];
+              const devIds = await Promise.all(
+                assets.map((asset) =>
+                  resolvePagesDevStylesheetId(clientModuleGraph, createPagesDevAssetUrl(asset)),
+                ),
+              );
+              assets.forEach((asset, index) => {
+                const devId = devIds[index];
                 if (devId) stylesheetDevIds[asset] = devId;
-              }
+              });
             }
             if (Object.keys(ssrManifest).length > 0) metadata.ssrManifest = ssrManifest;
             if (Object.keys(stylesheetDevIds).length > 0) {
