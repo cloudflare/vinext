@@ -266,7 +266,10 @@ describe("fallback shell state transport", () => {
 
   it("round-trips a prelude's postponed state and resume data cache out of the shell HTML", async () => {
     const resumeDataCache = JSON.stringify({ cache: { key: { body: "--></script>" } }, fetch: {} });
-    const postponed = { replayNodes: [["Activity", '["slug|%5Bslug%5D|d"]', [], null]] };
+    const postponed = {
+      replayNodes: [["Activity", '["slug|%5Bslug%5D|d"]', [], null]],
+      resumableState: { idPrefix: "" },
+    };
     const html = "<!DOCTYPE html><html><head></head><body>shell";
     const transported = await readAppended(html, {
       prelude: true,
@@ -328,6 +331,8 @@ describe("fallback shell state transport", () => {
     // A malformed or truncated header is a miss too.
     expect(parseAppPprShellState("4:null")).toBeNull();
     expect(parseAppPprShellState("9:{}")).toBeNull();
+    // As is a prelude whose postponed state React can't resume from.
+    expect(parseAppPprShellState('31:{"prelude":true,"postponed":{}}')).toBeNull();
   });
 
   it("round-trips the generated params a shell records", () => {
