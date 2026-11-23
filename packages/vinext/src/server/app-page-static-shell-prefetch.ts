@@ -229,9 +229,11 @@ async function produceStaticShell<TRoute extends AppPageDispatchRoute>(
   );
 
   if (options.isrSetFallbackShell) {
-    const write = options.isrSetFallbackShell(key, value, { cacheControl, tags }).catch((error) => {
-      console.error("[vinext] ISR static shell cache write error:", error);
-    });
+    const write = options
+      .isrSetFallbackShell(key, value, { cacheControl, tags }, "static-shell")
+      .catch((error) => {
+        console.error("[vinext] ISR static shell cache write error:", error);
+      });
     getRequestExecutionContext()?.waitUntil(write);
     // Requests sharing this production find the shell stored once it settles.
     await write;
@@ -272,7 +274,9 @@ export async function serveAppPageStaticShellPrefetch<TRoute extends AppPageDisp
 
   let cached: ISRCacheEntry | null;
   try {
-    cached = await (options.isrGetFallbackShell ?? options.isrGet)(key);
+    cached = options.isrGetFallbackShell
+      ? await options.isrGetFallbackShell(key, "static-shell")
+      : await options.isrGet(key);
   } catch (isrReadError) {
     options.isrDebug?.("MISS (static shell read error)", options.cleanPathname);
     console.error("[vinext] ISR static shell cache read error:", isrReadError);

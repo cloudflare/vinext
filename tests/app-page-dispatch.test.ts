@@ -1598,6 +1598,10 @@ describe("app page dispatch", () => {
       await expect(response.text()).resolves.toBe("flight");
       expect(isrSetFallbackShell).toHaveBeenCalledTimes(1);
       expect(isrSetFallbackShell.mock.calls[0]?.[0]).toContain("app-static-shell");
+      // An edge that stores the shell under the prefetch's own key reads it
+      // there, with the request's other responses.
+      expect(isrSetFallbackShell.mock.calls[0]?.[3]).toBe("static-shell");
+      expect(vi.mocked(options.isrGetFallbackShell!).mock.calls[0]?.[1]).toBe("static-shell");
       // One render, without a warmup.
       expect(buildPageElement).toHaveBeenCalledTimes(1);
 

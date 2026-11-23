@@ -55,25 +55,27 @@ export type ResponseStoreInvocationCapture = {
   notModified?: boolean;
   /**
    * The keys of the page's document and RSC parts, under which a path's own
-   * shell is stored when the data cache's read or write names its part.
+   * shell is stored, and of a static-shell prefetch, under which the page's
+   * static shell is, when the data cache's read or write names its part.
    */
   pageParts?: Partial<Record<AppPageShellPart, Request>>;
   /**
-   * What the gateway's read of the dispatch's own part found: a path's own
-   * shell, or nothing. The render's first read of that part takes it.
+   * What the gateway's read of the dispatch's own part found: a shell, or
+   * nothing. The render's first read of that part takes it.
    */
   pageShell?: { part: AppPageShellPart; response: Response | null };
-  /** The page's parts under which the render found a path's own shell. */
+  /** The parts under which the render found a shell. */
   pageShellParts?: Set<AppPageShellPart>;
   rscData?: Promise<ArrayBuffer>;
   streamResponse?: boolean;
 };
 
 /**
- * The page part a path's own shell is stored under. Core's `isr-cache.ts`
+ * The response a shell is stored under: a page part for a path's own shell,
+ * or a static-shell prefetch for a page's static shell. Core's `isr-cache.ts`
  * passes it as `appPageShellPart`; keep the two in sync.
  */
-type AppPageShellPart = "document" | "rsc";
+type AppPageShellPart = "document" | "rsc" | "static-shell";
 
 const ARRAY_BUFFER_MARKER = "$vinextArrayBuffer";
 const CACHE_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60;
@@ -86,7 +88,8 @@ const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const STALE_FRESH_HIT_GRACE_MS = 5_000;
 const DATA_REVALIDATOR_ID = "vinext:data";
 /**
- * Marks a path's own shell stored under its page's key, which is never served.
+ * Marks a shell stored under a page's or a static-shell prefetch's key, which
+ * is never served.
  * Only the data cache writes it: the gateway removes it from every response it
  * stores.
  */
@@ -332,29 +335,30 @@ function serializePageParts(
   return JSON.stringify({
     document: parts?.document?.url,
     rsc: parts?.rsc?.url,
+    staticShell: parts?.["static-shell"]?.url,
     ...(shell ? { shell } : {}),
     ...(ownShell ? { ownShell } : {}),
   });
 }
 
-/** Whether a response stored under a page's key is the path's own shell. */
+/** Whether a response stored under a page's or a prefetch's key is a shell. */
 export function isResponseStorePageShell(response: Response): boolean {
   return response.headers.get(PAGE_SHELL_HEADER) === "1";
 }
 
 function readShellPart(context: Record<string, unknown> | undefined): AppPageShellPart | undefined {
   const part = context?.appPageShellPart;
-  return part === "document" || part === "rsc" ? part : undefined;
+  return part === "document" || part === "rsc" || part === "static-shell" ? part : undefined;
 }
 
-/** The key of the page part a read or write of a path's own shell names. */
+/** The key of the part a read or write of a shell names. */
 function pagePartRequest(context: Record<string, unknown> | undefined): Request | undefined {
   const part = readShellPart(context);
   return part && invocationStorage.getStore()?.capture?.pageParts?.[part];
 }
 
 /**
- * What the gateway's read of a page part found, for the render's first read
+ * What the gateway's read of a part found, for the render's first read
  * of that part. Later reads read the Store again, as a write's check of what
  * is stored there must.
  */
@@ -498,7 +502,12 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
             (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE"))
         ) {
           void response.body?.cancel().catch(() => {});
-          return storedPage();
+          // A static-shell prefetch stores its response there when the page
+          // has no static shell. The gateway serves it before the render
+          // reads, so the render reads it only when that read failed or the
+          // response was stored since, and then stores the page's static
+          // shell over it.
+          return readShellPart(context) === "static-shell" ? null : storedPage();
         }
       }
       if (!response.ok) {
@@ -713,7 +722,11 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
                 pageParts || shellPart || isShell
                   ? [
                       key,
-                      serializePageParts(pageParts, isShell, shellPart !== undefined),
+                      serializePageParts(
+                        pageParts,
+                        isShell,
+                        shellPart === "document" || shellPart === "rsc",
+                      ),
                       invocation.serialized,
                     ]
                   : [key, invocation.serialized],
