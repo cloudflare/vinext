@@ -3141,6 +3141,64 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     }
   });
 
+  // The endpoint warns and skips a lookup it rejects (a stale or missing
+  // secret), so the route may still generate paths the shell can't list.
+  it.each([
+    { status: 404, generated: null },
+    { status: 204, generated: [] },
+  ])(
+    "records generated params $generated when the static params endpoint answers $status",
+    async ({ status, generated }) => {
+      const { parseAppPprShellState } =
+        await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+      const root = tmpDir("vinext-prerender-ppr-static-params-status-");
+      const appDir = path.join(root, "app");
+      const outDir = path.join(root, "out");
+      fs.mkdirSync(path.join(appDir, "blog", "[slug]"), { recursive: true });
+      fs.writeFileSync(
+        path.join(appDir, "blog", "[slug]", "page.tsx"),
+        "export default function Page() { return null; }\n",
+      );
+      const server = createServer((req, res) => {
+        const url = new URL(req.url ?? "/", "http://127.0.0.1");
+        if (url.pathname === "/__vinext/prerender/static-params") {
+          res.statusCode = status;
+          res.end();
+          return;
+        }
+        res.setHeader("content-type", "text/html");
+        res.end(
+          "<!DOCTYPE html><html><body>" +
+            runtimeRscChunkScript(`0:["$","div",null,{}]\n`) +
+            runtimeRscDoneScript() +
+            "</body></html>",
+        );
+      });
+      const port = await listen(server);
+      try {
+        const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+        const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+        await prerenderApp({
+          mode: "default",
+          rscBundlePath: path.join(root, "dist", "server", "index.js"),
+          routes: await appRouter(appDir),
+          outDir,
+          config: await resolveNextConfig({ cacheComponents: true }),
+          _prodServer: { port },
+        });
+
+        const postponed = path.join(outDir, "blog", "[slug].postponed");
+        expect(parseAppPprShellState(fs.readFileSync(postponed, "utf8"))?.generated).toEqual(
+          generated,
+        );
+      } finally {
+        await closeServer(server);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("records no generated params for a route with parallel slots, whose generators the build doesn't enumerate", async () => {
     const { parseAppPprShellState } =
       await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");

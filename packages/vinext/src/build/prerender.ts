@@ -1459,6 +1459,9 @@ export async function prerenderApp({
 
   let rscHandler: (request: Request) => Promise<Response>;
   let staticParamsMap: StaticParamsMap = {};
+  // Whether the route being collected asked the static-params endpoint a
+  // lookup it couldn't answer.
+  let routeStaticParamsUnanswered = false;
   // ownedProdServer: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
   let ownedProdServerHandle = null as PrerenderProdServer | null;
@@ -1554,12 +1557,20 @@ export async function prerenderApp({
       string,
       Promise<Record<string, string | string[]>[] | null>
     >();
+    // Lookups the endpoint couldn't answer, whose null isn't a route without
+    // generateStaticParams. The route being collected records that it asked
+    // one, so its shells don't claim to know what it generates.
+    const unansweredStaticParams = new Set<string>();
+    const settled = async (cacheKey: string) => {
+      const result = await staticParamsCache.get(cacheKey);
+      if (unansweredStaticParams.has(cacheKey)) routeStaticParamsUnanswered = true;
+      return result ?? null;
+    };
     staticParamsMap = new Proxy({} as typeof staticParamsMap, {
       get(_target, pattern: string) {
         return async ({ params }: { params: Record<string, string | string[]> }) => {
           const cacheKey = `${pattern}\0${JSON.stringify(params)}`;
-          const cached = staticParamsCache.get(cacheKey);
-          if (cached !== undefined) return cached;
+          if (staticParamsCache.has(cacheKey)) return settled(cacheKey);
           const request = (async () => {
             const search = new URLSearchParams({ pattern });
             if (Object.keys(params).length > 0) {
@@ -1587,6 +1598,7 @@ export async function prerenderApp({
                 `[vinext] Warning: /__vinext/prerender/static-params returned ${res.status} for ${pattern}. ` +
                   `Static params will be skipped. This may indicate a stale or missing prerender secret.`,
               );
+              unansweredStaticParams.add(cacheKey);
               return null;
             }
             if (res.status === 204 || text === "null") return null;
@@ -1596,7 +1608,7 @@ export async function prerenderApp({
           // subsequent lookups for the same route/params combo.
           void request.catch(() => staticParamsCache.delete(cacheKey));
           staticParamsCache.set(cacheKey, request);
-          return request;
+          return settled(cacheKey);
         };
       },
       has(_target, _pattern) {
@@ -1686,7 +1698,7 @@ export async function prerenderApp({
           // generateStaticParams. The build doesn't enumerate a parallel
           // route's generators, so its requests ask instead.
           generatedParams:
-            route.parallelSlots.length > 0
+            route.parallelSlots.length > 0 || routeStaticParamsUnanswered
               ? null
               : generatedParamsKeeping(routeParamSets, keptParamNames, fallbackShell.params),
         });
@@ -1708,6 +1720,7 @@ export async function prerenderApp({
     };
 
     for (const route of routes) {
+      routeStaticParamsUnanswered = false;
       const renderEntryPath = getAppRouteRenderEntryPath(route);
 
       if (!renderEntryPath && route.routePath) {
