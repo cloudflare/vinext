@@ -158,6 +158,11 @@ function readStaticMetadataImageDimensions(
   return route.contentType.startsWith("image/") ? readMetadataImageDimensions(buffer, route) : {};
 }
 
+/** The content hash a build gives a metadata route file for its links. */
+export function createMetadataRouteContentHash(route: MetadataFileRoute): string {
+  return createMetadataContentHash(readMetadataRouteFile(route));
+}
+
 export function createMetadataRouteEntryData(route: MetadataFileRoute): MetadataRouteEntryData {
   const buffer = readMetadataRouteFile(route);
   const contentHash = createMetadataContentHash(buffer);
