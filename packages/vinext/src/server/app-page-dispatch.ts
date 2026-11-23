@@ -857,8 +857,15 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
     runWithFetchDedupe(async () => {
       const response = await dispatchAppPageInner(await withResolvedIntercept(options));
       // Like Next.js, a document resumed from a fallback shell is marked as
-      // having postponed.
-      if (!options.isRscRequest && _getResumeDataCacheSeed() !== null) {
+      // having postponed. An html-limited bot's whole document didn't postpone.
+      if (
+        !options.isRscRequest &&
+        _getResumeDataCacheSeed() !== null &&
+        shouldServeStreamingMetadata(
+          options.request.headers.get("user-agent") ?? "",
+          options.htmlLimitedBots,
+        )
+      ) {
         response.headers.set("x-nextjs-postponed", "1");
       }
       return response;
