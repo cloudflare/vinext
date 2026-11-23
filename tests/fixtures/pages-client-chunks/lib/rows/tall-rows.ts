@@ -1,7 +1,9 @@
+import { rowFormat } from "./row-format";
 import { rowLabel } from "./row-label";
 
 // Large enough (over 20 kB) to keep a chunk of its own.
 export const TALL_ROWS = [
+  rowFormat("tall"),
   rowLabel("tall", 0),
   rowLabel("tall", 1),
   rowLabel("tall", 2),

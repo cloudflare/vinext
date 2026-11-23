@@ -147,6 +147,9 @@ describe("Pages Router client chunks", () => {
       expect(pageChunk("pages/alpha.tsx").imports).not.toContain(tallChunks[0]!.fileName);
       expect(pageChunk("pages/gamma.tsx").imports).not.toContain(wideChunks[0]!.fileName);
       expect(chunksWith(chunks, "/lib/rows/row-label.ts")).toHaveLength(1);
+      // Nor is the small module that only the two large ones import, whose
+      // part of the group is under 20 kB.
+      expect(chunksWith(chunks, "/lib/rows/row-format.ts")).toHaveLength(1);
 
       // What tree shaking leaves of a group under 20 kB is copied into the
       // pages that use it.

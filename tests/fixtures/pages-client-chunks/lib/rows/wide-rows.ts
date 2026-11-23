@@ -1,7 +1,9 @@
+import { rowFormat } from "./row-format";
 import { rowLabel } from "./row-label";
 
 // Large enough (over 20 kB) to keep a chunk of its own.
 export const WIDE_ROWS = [
+  rowFormat("wide"),
   rowLabel("wide", 0),
   rowLabel("wide", 1),
   rowLabel("wide", 2),

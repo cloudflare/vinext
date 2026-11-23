@@ -355,6 +355,7 @@ import {
   createClientCodeSplittingConfig,
   collectUncopiedStylesheets,
   collectDoublyCopiedModules,
+  collectSharedGroupDependencies,
   collectSharedGroupModules,
   collectPagesAppChunkRoots,
   collectPagesClientGraph,
@@ -9852,6 +9853,9 @@ export const loadServerActionClient = ${
       if (pagesClientInlinesChunks) {
         for (const [id, chunkName] of collectSharedGroupModules(graph, { groupOf, sizeOf })) {
           pagesSharedGroupModules.set(id, chunkName);
+        }
+        for (const id of collectSharedGroupDependencies(graph, pagesSharedGroupModules, sizeOf)) {
+          pagesUncopiedModules.add(id);
         }
       }
 

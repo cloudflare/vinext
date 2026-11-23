@@ -849,6 +849,27 @@ export function collectSharedGroupModules(
 }
 
 /**
+ * Collect the small modules of the shared groups that two of the groups'
+ * modules import. Tree shaking can split a group by the pages that use each of
+ * its modules and leave such a module a part under the group's `minSize`,
+ * which Rolldown would copy into each importer's part: a page that loads both
+ * would download it twice. These keep a file instead.
+ */
+export function collectSharedGroupDependencies(
+  { infos }: PagesClientGraph,
+  groupModules: ReadonlyMap<string, string>,
+  sizeOf: (id: string) => number,
+): Set<string> {
+  const dependencies = new Set<string>();
+  for (const id of groupModules.keys()) {
+    if (sizeOf(id) >= PAGES_INLINE_COMMON_CHUNK_MAX_SIZE) continue;
+    const importers = infos.get(id)!.importers.filter((importer) => groupModules.has(importer));
+    if (importers.length >= 2) dependencies.add(id);
+  }
+  return dependencies;
+}
+
+/**
  * Collect the modules of the common chunks that Rolldown would copy into two
  * chunks that load together. Inlining copies a small common chunk into each
  * chunk that imports it (into the chunks that a copied importer goes into), so
