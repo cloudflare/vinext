@@ -3,6 +3,7 @@ import { createBuilder, rolldownVersion, type Plugin, type Rolldown } from "vite
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
+  collectDoublyCopiedModules,
   collectUncopiedStylesheets,
   collectPagesAppChunkRoots,
   PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
@@ -272,7 +273,7 @@ describe("collectPagesAppChunkRoots", () => {
     ).toEqual([]);
   });
 
-  it("leaves out imports that lead back to _app, to a module loaded with import() or to a module the client entry loads", () => {
+  it("leaves out imports that lead back to _app or to a module the client entry loads", () => {
     expect(
       collect({
         "/entry.js": {
@@ -284,7 +285,11 @@ describe("collectPagesAppChunkRoots", () => {
           ],
           dynamicImports: ["/app/pages/_app.tsx", "/app/pages/index.tsx"],
         },
-        "/app/instrumentation-client.ts": { imports: ["/app/lib/telemetry.ts", "\0virtual:flags"] },
+        "/app/instrumentation-client.ts": {
+          imports: ["/app/lib/telemetry.ts", "\0virtual:flags"],
+          dynamicImports: ["/app/lib/consent.tsx"],
+        },
+        "/app/lib/consent.tsx": {},
         "/app/lib/telemetry.ts": {},
         "\0virtual:flags": {},
         "/vinext/client/bootstrap.js": { imports: ["/vinext/client/instance.js"] },
@@ -300,6 +305,7 @@ describe("collectPagesAppChunkRoots", () => {
             "/app/lib/widget.tsx",
             "/app/lib/tracked.tsx",
             "/app/lib/flagged.tsx",
+            "/app/lib/banner.tsx",
             "/vinext/client/index.js",
             "/app/lib/linked.tsx",
           ],
@@ -307,13 +313,15 @@ describe("collectPagesAppChunkRoots", () => {
         "/app/lib/layout.tsx": { imports: ["/app/lib/context.ts"] },
         "/app/lib/context.ts": { imports: ["/app/pages/_app.tsx"] },
         "/app/lib/nav.tsx": { imports: ["/app/pages/index.tsx"] },
+        // A page's `import()` target loads after `_app`, which imports it anyway.
         "/app/pages/index.tsx": { dynamicImports: ["/app/lib/widget.tsx"] },
         "/app/lib/widget.tsx": {},
         "/app/lib/tracked.tsx": { imports: ["/app/lib/telemetry.ts"] },
         "/app/lib/flagged.tsx": { imports: ["\0virtual:flags"] },
+        "/app/lib/banner.tsx": { imports: ["/app/lib/consent.tsx"] },
         "/app/lib/linked.tsx": { imports: ["/vinext/shims/link.js", "/vinext/utils/base-path.js"] },
       }),
-    ).toEqual(["/app/lib/linked.tsx"]);
+    ).toEqual(["/app/lib/widget.tsx", "/app/lib/linked.tsx"]);
   });
 });
 
@@ -382,6 +390,80 @@ describe("collectUncopiedStylesheets", () => {
   });
 });
 
+describe("collectDoublyCopiedModules", () => {
+  // `entry` is the client entry, which loads `_app` and the pages with `import()`.
+  const collect = (
+    graph: Record<string, { imports?: string[]; entry?: boolean; loadedBy?: string }>,
+    groupOf: (id: string) => string | undefined = () => undefined,
+  ) => {
+    const ids = Object.keys(graph);
+    const info = (id: string) => {
+      const node = graph[id];
+      return node
+        ? {
+            isEntry: node.entry === true,
+            importedIds: node.imports ?? [],
+            importers: ids.filter((other) => graph[other]!.imports?.includes(id)),
+            dynamicImporters: node.loadedBy ? [node.loadedBy] : [],
+          }
+        : null;
+    };
+    return [
+      ...collectDoublyCopiedModules(ids, info, { groupOf, isAlwaysLoaded: (id) => id === "_app" }),
+    ].sort();
+  };
+
+  const pages = {
+    entry: { entry: true },
+    _app: { loadedBy: "entry" },
+    summary: { loadedBy: "entry", imports: ["chart"] },
+    invoices: { loadedBy: "entry", imports: ["table"] },
+    reports: { loadedBy: "entry", imports: ["chart", "table"] },
+    chart: { imports: ["format", "tag.css"] },
+    table: { imports: ["format", "tag.css"] },
+    format: {},
+    "tag.css": {},
+  };
+
+  it("finds the modules that two chunks one page loads would both copy", () => {
+    expect(collect(pages)).toEqual(["format", "tag.css"]);
+  });
+
+  it("leaves the copies that no page loads together", () => {
+    const { reports: _, ...graph } = pages;
+    expect(collect(graph)).toEqual([]);
+  });
+
+  it("counts a chunk that `_app` loads as loading with every page", () => {
+    expect(
+      collect({
+        entry: { entry: true },
+        _app: { loadedBy: "entry", imports: ["layout"] },
+        alpha: { loadedBy: "entry", imports: ["format"] },
+        beta: { loadedBy: "entry", imports: ["format"] },
+        layout: { imports: ["format"] },
+        format: {},
+      }),
+    ).toEqual(["format"]);
+  });
+
+  // Rolldown leaves out the copies that load after the client entry's.
+  it("leaves the copies that follow one the client entry loads", () => {
+    expect(
+      collect({
+        entry: { entry: true, imports: ["instrumentation"] },
+        instrumentation: { imports: ["telemetry"] },
+        _app: { loadedBy: "entry", imports: ["telemetry"] },
+        telemetry: {},
+      }),
+    ).toEqual([]);
+  });
+
+  it("leaves the modules that a chunk group takes", () => {
+    expect(collect(pages, (id) => (id === "format" ? "vinext" : undefined))).toEqual(["tag.css"]);
+  });
+});
+
 describe("supportsInlineCommonChunks", () => {
   it.each([
     ["1.2.18", true],
@@ -400,7 +482,7 @@ describe("withInlineCommonChunks", () => {
   const output = { codeSplitting: { groups: [] } };
   const options = {
     rolldownVersion: "1.2.18",
-    uncopiedStylesheets: new Set(["/app/lib/gallery.module.css"]),
+    uncopiedModules: new Set(["/app/lib/gallery.module.css"]),
   };
 
   it("turns on inlining small common chunks, except those with large shared stylesheets", () => {

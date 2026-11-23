@@ -354,6 +354,7 @@ import {
   createClientManualChunks,
   createClientCodeSplittingConfig,
   collectUncopiedStylesheets,
+  collectDoublyCopiedModules,
   collectPagesAppChunkRoots,
   createPagesClientCodeSplittingConfig,
   isStylesheetModule,
@@ -979,8 +980,8 @@ function resolvedStylesheetToDevManifestAsset(root: string, resolvedId: string):
 async function collectDevPagesAppStylesheetAssets(
   appFilePath: string,
   getModuleDependencies: (modulePath: string) => Promise<DevPagesModuleDependency[]>,
-): Promise<string[]> {
-  const stylesheetAssets: string[] = [];
+): Promise<{ asset: string; id: string }[]> {
+  const stylesheetAssets: { asset: string; id: string }[] = [];
   const seenAssets = new Set<string>();
   const seenModules = new Set<string>();
 
@@ -992,7 +993,7 @@ async function collectDevPagesAppStylesheetAssets(
       if (dependency.type === "stylesheet") {
         if (seenAssets.has(dependency.asset)) continue;
         seenAssets.add(dependency.asset);
-        stylesheetAssets.push(dependency.asset);
+        stylesheetAssets.push({ asset: dependency.asset, id: dependency.id });
       } else {
         await visitModule(dependency.id);
       }
@@ -1004,7 +1005,7 @@ async function collectDevPagesAppStylesheetAssets(
 }
 
 type DevPagesModuleDependency =
-  | { type: "stylesheet"; asset: string }
+  | { type: "stylesheet"; asset: string; id: string }
   | { type: "script"; id: string };
 
 function createDevPagesModuleDependencyReader(
@@ -1051,7 +1052,7 @@ function createDevPagesModuleDependencyReader(
 
       if (isStylesheetSpecifier(specifier) || isStylesheetSpecifier(resolved.id)) {
         const asset = resolvedStylesheetToDevManifestAsset(root, resolved.id);
-        if (asset) dependencies.push({ type: "stylesheet", asset });
+        if (asset) dependencies.push({ type: "stylesheet", asset, id: resolved.id });
       } else if (
         !specifier.includes("?") &&
         !specifier.includes("#") &&
@@ -2026,7 +2027,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const pagesAppChunkRoots = new Set<string>();
   // Each client stylesheet's compiled size, and those that keep a chunk.
   const pagesStylesheetSizes = new Map<string, number>();
-  const pagesUncopiedStylesheets = new Set<string>();
+  const pagesUncopiedModules = new Set<string>();
   // Whether the Pages Router client output may copy small common chunks
   // (vinext:pages-client-chunks). Hybrid builds use the App Router's groups.
   const pagesInlinesCommonChunks = (rolldownVersion: string) =>
@@ -5629,12 +5630,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const metadata: {
               clientEntry: string;
               ssrManifest?: Record<string, string[]>;
+              stylesheetDevIds?: Record<string, string>;
               crossOrigin: "" | "anonymous" | "use-credentials";
             } = {
               clientEntry: DEV_PAGES_CLIENT_ENTRY,
               crossOrigin: nextConfig?.crossOrigin ?? "",
             };
             const ssrManifest: Record<string, string[]> = {};
+            const stylesheetDevIds: Record<string, string> = {};
             const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
             const pagesRoutes = await pagesRouter(
               pagesDir,
@@ -5661,10 +5664,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 getModuleDependencies,
               );
               if (stylesheetAssets.length > 0) {
-                ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets;
+                ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets.map(({ asset }) => asset);
+              }
+              // Vite's client adopts a server-rendered link with the id its CSS
+              // transform passes to updateStyle(), rather than injecting the
+              // stylesheet again in module execution order. A null byte can't
+              // survive HTML parsing, so virtual ids are left out.
+              for (const { asset, id } of stylesheetAssets) {
+                if (!id.includes("\0")) stylesheetDevIds[asset] = id;
               }
             }
             if (Object.keys(ssrManifest).length > 0) metadata.ssrManifest = ssrManifest;
+            if (Object.keys(stylesheetDevIds).length > 0) {
+              metadata.stylesheetDevIds = stylesheetDevIds;
+            }
             return `export default ${JSON.stringify(metadata)};`;
           }
           // App Router virtual modules
@@ -9722,36 +9735,55 @@ export const loadServerActionClient = ${
       pagesAppChunkRoots.clear();
       // Sizes stay across watch builds, which skip the transforms of
       // stylesheets that haven't changed.
-      pagesUncopiedStylesheets.clear();
+      pagesUncopiedModules.clear();
     },
     buildEnd() {
       const environment = this.environment;
       if (environment?.name !== "client" || environment.config.build.lib || !hasPagesDir) return;
 
-      if (pagesInlinesCommonChunks(this.meta.rolldownVersion)) {
-        for (const id of collectUncopiedStylesheets(
-          pagesStylesheetSizes,
-          (moduleId) => this.getModuleInfo(moduleId),
-          RESOLVED_CLIENT_ENTRY,
+      const getModuleInfo = (moduleId: string) => this.getModuleInfo(moduleId);
+      const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+      const appIds = appFilePath && new Set([toSlash(appFilePath), canonicalize(appFilePath)]);
+      const appId = appIds && [...this.getModuleIds()].find((id) => appIds.has(toSlash(id)));
+
+      if (appId) {
+        for (const id of collectPagesAppChunkRoots(
+          appId,
+          this.getModuleIds(),
+          getModuleInfo,
+          clientManualChunks,
         )) {
-          pagesUncopiedStylesheets.add(id);
+          pagesAppChunkRoots.add(id);
         }
       }
 
-      const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
-      if (!appFilePath) return;
+      if (!pagesInlinesCommonChunks(this.meta.rolldownVersion)) return;
 
-      const appIds = new Set([toSlash(appFilePath), canonicalize(appFilePath)]);
-      const appId = [...this.getModuleIds()].find((id) => appIds.has(toSlash(id)));
-      if (!appId) return;
-
-      for (const id of collectPagesAppChunkRoots(
-        appId,
-        this.getModuleIds(),
-        (moduleId) => this.getModuleInfo(moduleId),
-        clientManualChunks,
+      for (const id of collectUncopiedStylesheets(
+        pagesStylesheetSizes,
+        getModuleInfo,
+        RESOLVED_CLIENT_ENTRY,
       )) {
-        pagesAppChunkRoots.add(id);
+        pagesUncopiedModules.add(id);
+      }
+
+      // The "pages-app" group takes its roots and what they import.
+      const appGroupModules = new Set<string>();
+      const pending = [...pagesAppChunkRoots];
+      while (pending.length > 0) {
+        const id = pending.pop()!;
+        if (appGroupModules.has(id) || clientManualChunks(id) !== undefined) continue;
+
+        appGroupModules.add(id);
+        pending.push(...(this.getModuleInfo(id)?.importedIds ?? []));
+      }
+
+      for (const id of collectDoublyCopiedModules(this.getModuleIds(), getModuleInfo, {
+        groupOf: (id) =>
+          clientManualChunks(id) ?? (appGroupModules.has(id) ? "pages-app" : undefined),
+        isAlwaysLoaded: (id) => id === appId,
+      })) {
+        pagesUncopiedModules.add(id);
       }
     },
     outputOptions: {
@@ -9774,7 +9806,7 @@ export const loadServerActionClient = ${
         return withInlineCommonChunks(output, {
           ...pagesClientInputOptions,
           rolldownVersion: this.meta.rolldownVersion,
-          uncopiedStylesheets: pagesUncopiedStylesheets,
+          uncopiedModules: pagesUncopiedModules,
         });
       },
     },

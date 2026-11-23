@@ -367,7 +367,11 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
       if (tf.endsWith(".css")) {
         const stylesheetHref = href(tf);
         options.initialStylesheetHrefs?.add(stylesheetHref);
-        tags.push('<link rel="stylesheet"' + nonceAttr + ' href="' + stylesheetHref + '" />');
+        const devId = runtimeAssets.stylesheetDevIds?.[tf];
+        const devIdAttr = devId ? ' data-vite-dev-id="' + escapeHtmlAttr(devId) + '"' : "";
+        tags.push(
+          '<link rel="stylesheet"' + nonceAttr + devIdAttr + ' href="' + stylesheetHref + '" />',
+        );
       } else if (tf.endsWith(".js")) {
         // Skip lazy chunks — they are behind dynamic import() boundaries
         // (React.lazy, next/dynamic) and should only be fetched on demand.
