@@ -663,7 +663,7 @@ function buildOwnShellEntry(body: string, isStale: boolean): ISRCacheEntry {
       ),
       postponed: formatAppPprShellState({
         prelude: true,
-        postponed: {},
+        postponed: { resumableState: {} },
         resumeDataCache: null,
         generated: null,
       }),
