@@ -4027,6 +4027,56 @@ describe("buildPageElements", () => {
     expect(calls).not.toContain("aside page");
   });
 
+  // Next.js rejects a `default` file whose default export isn't a component,
+  // as it does a page's, so the owner's children never render as empty.
+  it("surfaces a no-default-export error for a whole intercepting route's owner default", async () => {
+    const route = createSyntheticRoute({
+      layouts: [],
+      page: createSyntheticPageModule(() => React.createElement("div", null, "club page")),
+      pattern: "/club/:slug",
+      params: ["slug"],
+      routeSegments: ["club", "[slug]"],
+      slots: {
+        modal: {
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: -1,
+          routeSegments: [],
+        },
+      },
+    });
+    const elements = await buildPageElements(
+      createBaseOptions({
+        route,
+        params: { slug: "static" },
+        routePath: "/club/static/pics/1",
+        opts: {
+          interceptionContext: "/club/static",
+          interceptOwnerDefault: createSyntheticPageModuleWithoutDefault(),
+          interceptPage: createSyntheticPageModule(() =>
+            React.createElement("div", null, "pic modal"),
+          ),
+          interceptParams: { id: "1", slug: "static" },
+          interceptSlotId: "slot:modal:/club/[slug]",
+          interceptSlotKey: "modal",
+          interceptSourceMatchedUrl: "/club/static",
+          interceptSourcePageSegments: ["club", "[slug]", "@modal", "(.)pics", "[id]"],
+          rendersInterceptionSource: true,
+          rendersWholeInterceptingRoute: true,
+        },
+      }),
+    );
+
+    const record = elements as Record<string, unknown>;
+    const metadata = AppElementsWire.readMetadata(elements);
+    expect(metadata.interception).toBeNull();
+    expect(metadata.wholeInterceptionSource).toBe("/club/static");
+    const html = await renderNode(record[record[APP_ROUTE_KEY] as string] as React.ReactNode);
+    expect(html).toContain("Page has no default export");
+    expect(html).not.toContain("club page");
+    expect(html).not.toContain("pic modal");
+  });
+
   describe("the source route beneath a slot intercept", () => {
     // Next.js renders the intercepting route's tree for an intercepted
     // navigation: the layouts down to the slot's owner and the intercepting

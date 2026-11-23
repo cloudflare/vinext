@@ -467,10 +467,13 @@ export async function buildPageElements<
   });
 
   // Surface a clear "no default export" error for whichever page will render:
-  // the source route page on a normal request, or the intercepting page for a
-  // sibling intercept. Without the `isSiblingIntercept` arm, an intercepting
-  // page missing its default export would silently render the source page.
-  if ((hasPageModule || isSiblingIntercept) && !EffectivePageComponent) {
+  // the source route page on a normal request, the intercepting page for a
+  // sibling intercept, or the owner's `default` for the whole intercepting
+  // route. Without the `isSiblingIntercept` arm, an intercepting page missing
+  // its default export would silently render the source page. An owner
+  // without a `default` file renders nothing in its children.
+  const rendersOwnerDefault = rendersWholeInterceptingRoute && !!effectivePageModule;
+  if ((hasPageModule || isSiblingIntercept || rendersOwnerDefault) && !EffectivePageComponent) {
     let noExportRootLayout: string | null = null;
     const noExportLayoutIds = route.layouts.map((_, index) =>
       AppElementsWire.encodeLayoutId(
@@ -503,6 +506,9 @@ export async function buildPageElements<
           rootLayoutTreePath: noExportRootLayout,
           routeId: renderIdentity.routeId,
           sourcePage: createAppPageSourcePage(sourcePageSegments),
+          wholeInterceptionSource: rendersWholeInterceptingRoute
+            ? renderIdentity.interceptionContext
+            : null,
         }),
         [renderIdentity.routeId]: createElement("div", null, "Page has no default export"),
       };
