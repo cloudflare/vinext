@@ -14,6 +14,7 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
+import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
 vi.mock("@vitejs/plugin-rsc/browser", () => ({
   createFromFetch: vi.fn(),
@@ -100,6 +101,8 @@ describe("app browser server action client", () => {
             clientRscCompatibilityId: null,
             commitSameUrlNavigatePayload: vi.fn(),
             navigationPlanner,
+            notifyDiscardedServerActionRevalidation: vi.fn(),
+            ownsRouterForServerAction: () => true,
             performHardNavigation,
             renderRedirectPayload,
             syncCurrentHistoryState: vi.fn(),
@@ -121,6 +124,90 @@ describe("app browser server action client", () => {
       expect(performHardNavigation).not.toHaveBeenCalled();
     },
   );
+
+  // A queued action runs on a navigation's destination before its URL commits,
+  // so a relative redirect resolves against the destination, as Next.js
+  // resolves it against the action queue state's canonicalUrl.
+  it("resolves a relative action redirect against the URL the action was posted from", async () => {
+    const wireElements = AppElementsWire.createMetadataEntries({
+      interception: null,
+      interceptionContext: null,
+      layoutIds: [AppElementsWire.encodeLayoutId("/")],
+      rootLayoutTreePath: "/",
+      routeId: AppElementsWire.encodeRouteId("/destination/subpage", null),
+      slotBindings: [],
+    });
+    const elements = normalizeAppElements(wireElements);
+    const routerState: AppRouterState = {
+      activeOperation: null,
+      bfcacheIds: {},
+      elements,
+      interception: null,
+      interceptionContext: null,
+      layoutIds: [AppElementsWire.encodeLayoutId("/")],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/destination",
+        {},
+      ),
+      previousNextUrl: null,
+      renderId: 0,
+      rootLayoutTreePath: "/",
+      routeId: AppElementsWire.encodeRouteId("/destination", null),
+      slotBindings: [],
+      visibleCommitVersion: 0,
+    };
+    // The navigation to /destination has not committed its URL yet.
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("flight", {
+          status: 303,
+          headers: {
+            [ACTION_REDIRECT_HEADER]: "./subpage",
+            "content-type": "text/x-component",
+          },
+        }),
+      ),
+    );
+    vi.mocked(createFromFetch).mockResolvedValueOnce(wireElements);
+    const renderRedirectPayload = vi.fn();
+
+    await expect(
+      invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/destination",
+          navigationId: 1,
+          routerState,
+        }),
+        {
+          basePath: "",
+          clearClientNavigationCaches: vi.fn(),
+          clearDynamicClientNavigationCaches: vi.fn(),
+          clientRscCompatibilityId: null,
+          commitSameUrlNavigatePayload: vi.fn(),
+          navigationPlanner,
+          notifyDiscardedServerActionRevalidation: vi.fn(),
+          ownsRouterForServerAction: () => true,
+          performHardNavigation: vi.fn(),
+          renderRedirectPayload,
+          syncCurrentHistoryState: vi.fn(),
+          syncServerActionHttpFallbackHead: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;push;/destination/subpage;307;" });
+
+    expect(renderRedirectPayload).toHaveBeenCalledWith(
+      elements,
+      expect.objectContaining({ href: "https://example.com/destination/subpage" }),
+      expect.any(Object),
+      "none",
+    );
+  });
 
   it("uses action state captured before the lazy client loads", async () => {
     const elements = normalizeAppElements(
@@ -177,6 +264,8 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
+      ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
       syncCurrentHistoryState: vi.fn(),
@@ -253,16 +342,15 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
+      ownsRouterForServerAction: () => true,
       performHardNavigation,
       renderRedirectPayload,
       syncCurrentHistoryState: vi.fn(),
       syncServerActionHttpFallbackHead: vi.fn(),
     });
 
-    expect(performHardNavigation).toHaveBeenCalledWith(
-      "https://example.com/outsideBasePath",
-      undefined,
-    );
+    expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/outsideBasePath");
     expect(renderRedirectPayload).not.toHaveBeenCalled();
   });
 
@@ -307,6 +395,8 @@ describe("app browser server action client", () => {
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
+        ownsRouterForServerAction: () => true,
         performHardNavigation: vi.fn(),
         renderRedirectPayload: vi.fn(),
         syncCurrentHistoryState: vi.fn(),
@@ -316,6 +406,385 @@ describe("app browser server action client", () => {
 
     expect(commitSameUrlNavigatePayload).not.toHaveBeenCalled();
     expect(clearClientNavigationCaches).not.toHaveBeenCalled();
+  });
+
+  describe("compatible revalidating action responses without a tree", () => {
+    function setUpForwardedResponse(ownsRouter: boolean) {
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source?tab=billing", origin: "https://example.com" },
+      });
+      // A forwarded action revalidates but skips page rendering: the response
+      // carries only its value, with the client's own compatibility id.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response("flight", {
+              status: 200,
+              headers: {
+                "content-type": "text/x-component",
+                [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "current-deployment",
+                [ACTION_REVALIDATED_HEADER]: "2",
+              },
+            }),
+        ),
+      );
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok: true, data: "saved" },
+      });
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: "https://example.com/source?tab=profile",
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+      });
+      const deps = {
+        basePath: "",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: "current-deployment",
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
+        ownsRouterForServerAction: vi.fn(() => ownsRouter),
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      };
+      return { actionInitiation, deps };
+    }
+
+    it("refreshes what the action revalidated when a navigation superseded it", async () => {
+      const { actionInitiation, deps } = setUpForwardedResponse(false);
+
+      await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
+        "saved",
+      );
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(deps.clearDynamicClientNavigationCaches).toHaveBeenCalledTimes(1);
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
+    });
+
+    it("refreshes what the action revalidated while the action owns the router", async () => {
+      // Next.js navigates to the current URL for a revalidating response that
+      // carries no Flight data.
+      const { actionInitiation, deps } = setUpForwardedResponse(true);
+
+      await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
+        "saved",
+      );
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
+    });
+  });
+
+  // Next.js marks a revalidating action before handling its redirect, and
+  // refreshes once the queue discards it.
+  it("discards a superseded compatible redirect and refreshes what the action revalidated", async () => {
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("flight", {
+            status: 303,
+            headers: {
+              "content-type": "text/x-component",
+              [ACTION_REDIRECT_HEADER]: "/target",
+              [ACTION_REVALIDATED_HEADER]: "1",
+              [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "current-deployment",
+            },
+          }),
+      ),
+    );
+    const deps = {
+      basePath: "",
+      clearClientNavigationCaches: vi.fn(),
+      clearDynamicClientNavigationCaches: vi.fn(),
+      clientRscCompatibilityId: "current-deployment",
+      commitSameUrlNavigatePayload: vi.fn(),
+      navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
+      ownsRouterForServerAction: vi.fn(() => false),
+      performHardNavigation: vi.fn(),
+      renderRedirectPayload: vi.fn(),
+      syncCurrentHistoryState: vi.fn(),
+      syncServerActionHttpFallbackHead: vi.fn(),
+    };
+
+    await expect(
+      invokeClientServerAction(
+        "action-id",
+        [],
+        createServerActionInitiationSnapshot({
+          href: "https://example.com/source",
+          navigationId: 1,
+          routerState: createActionTestRouterState(),
+        }),
+        deps,
+      ),
+    ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;push;/target;307;", handled: true });
+    // The redirect's tree is never read, let alone rendered.
+    expect(createFromFetch).not.toHaveBeenCalled();
+    expect(deps.renderRedirectPayload).not.toHaveBeenCalled();
+    expect(deps.performHardNavigation).not.toHaveBeenCalled();
+    expect(deps.clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+    expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("staticAndDynamic");
+  });
+
+  describe("redirects of an action a navigation superseded", () => {
+    function setUpRedirect(
+      redirectHeaders: Record<string, string>,
+      options: { basePath?: string; ownsRouter?: () => boolean } = {},
+    ) {
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response("flight", {
+              status: 303,
+              headers: {
+                "content-type": "text/x-component",
+                [ACTION_REVALIDATED_HEADER]: "2",
+                [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "current-deployment",
+                ...redirectHeaders,
+              },
+            }),
+        ),
+      );
+      const deps = {
+        basePath: options.basePath ?? "",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: "current-deployment",
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
+        ownsRouterForServerAction: vi.fn(options.ownsRouter ?? (() => false)),
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      };
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: "https://example.com/source",
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+      });
+      return { actionInitiation, deps };
+    }
+
+    it.each([
+      ["another origin", "https://other.example/landing", ""],
+      ["outside the base path", "/elsewhere", "/app"],
+    ])("does not load a redirect target on %s", async (_name, target, basePath) => {
+      const { actionInitiation, deps } = setUpRedirect(
+        { [ACTION_REDIRECT_HEADER]: target },
+        { basePath },
+      );
+
+      await expect(
+        invokeClientServerAction("action-id", [], actionInitiation, deps),
+      ).resolves.toBeUndefined();
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.clearDynamicClientNavigationCaches).toHaveBeenCalledTimes(1);
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
+    });
+
+    it.each([
+      ["with", true],
+      ["without", false],
+    ])(
+      "discards a redirect %s a tree when a navigation starts while its Flight body decodes",
+      async (_name, withTree) => {
+        let ownsRouter = true;
+        const { actionInitiation, deps } = setUpRedirect(
+          { [ACTION_REDIRECT_HEADER]: "/target" },
+          { ownsRouter: () => ownsRouter },
+        );
+        vi.mocked(createFromFetch).mockImplementationOnce(async () => {
+          ownsRouter = false;
+          return withTree
+            ? AppElementsWire.createMetadataEntries({
+                interception: null,
+                interceptionContext: null,
+                layoutIds: [AppElementsWire.encodeLayoutId("/")],
+                rootLayoutTreePath: "/",
+                routeId: AppElementsWire.encodeRouteId("/target", null),
+                slotBindings: [],
+              })
+            : { returnValue: { ok: true, data: null } };
+        });
+
+        await expect(
+          invokeClientServerAction("action-id", [], actionInitiation, deps),
+        ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;push;/target;307;", handled: true });
+        expect(deps.renderRedirectPayload).not.toHaveBeenCalled();
+        expect(deps.performHardNavigation).not.toHaveBeenCalled();
+        expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
+      },
+    );
+  });
+
+  describe("incompatible action responses", () => {
+    const sourceHref = "https://example.com/source?tab=profile";
+
+    function setUpIncompatibleResponse(headers: Record<string, string> = {}) {
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source?tab=billing", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response("flight", {
+              status: 200,
+              headers: {
+                "content-type": "text/x-component",
+                [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "next-deployment",
+                ...headers,
+              },
+            }),
+        ),
+      );
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: sourceHref,
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+      });
+      const deps = {
+        basePath: "",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: "current-deployment",
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
+        // A navigation superseded the action: it owns what loads next, so the
+        // action must not reload the page it came from.
+        ownsRouterForServerAction: vi.fn(() => false),
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      };
+      return { actionInitiation, deps };
+    }
+
+    it("resolves a discarded action's value and hands its tree to the commit's ownership check", async () => {
+      const { actionInitiation, deps } = setUpIncompatibleResponse({
+        [ACTION_REVALIDATED_HEADER]: "1",
+      });
+      const wireElements = AppElementsWire.createMetadataEntries({
+        interception: null,
+        interceptionContext: null,
+        layoutIds: [AppElementsWire.encodeLayoutId("/")],
+        rootLayoutTreePath: "/",
+        routeId: AppElementsWire.encodeRouteId("/source", null),
+        slotBindings: [],
+      });
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        root: wireElements,
+        returnValue: { ok: true, data: "saved" },
+      });
+      // The commit discards a tree the action does not own and resolves its value.
+      deps.commitSameUrlNavigatePayload.mockImplementation(
+        async (_elements: unknown, _initiation: unknown, returnValue?: { data: unknown }) =>
+          returnValue?.data,
+      );
+
+      await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
+        "saved",
+      );
+      expect(deps.ownsRouterForServerAction).toHaveBeenCalledWith(actionInitiation);
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+      expect(deps.commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
+      const [elementsArg, initiationArg, returnValueArg, revalidationArg] =
+        deps.commitSameUrlNavigatePayload.mock.calls[0];
+      await expect(elementsArg).resolves.toEqual(normalizeAppElements(wireElements));
+      expect(initiationArg).toBe(actionInitiation);
+      expect(returnValueArg).toEqual({ ok: true, data: "saved" });
+      expect(revalidationArg).toBe("staticAndDynamic");
+    });
+
+    it("rejects with a discarded action's error", async () => {
+      const { actionInitiation, deps } = setUpIncompatibleResponse({
+        [ACTION_REVALIDATED_HEADER]: "2",
+      });
+      const thrown = new Error("action failed");
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok: false, data: thrown },
+      });
+
+      await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).rejects.toBe(
+        thrown,
+      );
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("dynamicOnly");
+    });
+
+    it("refreshes what a discarded forwarded action revalidated without a tree", async () => {
+      // A forwarded action revalidates but skips page rendering: the response
+      // carries only its value.
+      const { actionInitiation, deps } = setUpIncompatibleResponse({
+        [ACTION_REVALIDATED_HEADER]: "1",
+      });
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok: true, data: "saved" },
+      });
+
+      await expect(invokeClientServerAction("action-id", [], actionInitiation, deps)).resolves.toBe(
+        "saved",
+      );
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(deps.clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("staticAndDynamic");
+    });
+
+    it("discards an incompatible redirect and refreshes what the action revalidated", async () => {
+      const { actionInitiation, deps } = setUpIncompatibleResponse({
+        [ACTION_REDIRECT_HEADER]: "/target",
+        [ACTION_REVALIDATED_HEADER]: "1",
+      });
+
+      // As in Next.js, the caller still gets the handled redirect error.
+      await expect(
+        invokeClientServerAction("action-id", [], actionInitiation, deps),
+      ).rejects.toMatchObject({
+        digest: "NEXT_REDIRECT;push;/target;307;",
+        handled: true,
+      });
+      expect(deps.performHardNavigation).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(createFromFetch).not.toHaveBeenCalled();
+      expect(deps.clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+      expect(deps.notifyDiscardedServerActionRevalidation).toHaveBeenCalledWith("staticAndDynamic");
+    });
+
+    it("reloads the page the action was posted from while the action owns the router", async () => {
+      const { actionInitiation, deps } = setUpIncompatibleResponse({
+        [ACTION_REVALIDATED_HEADER]: "1",
+      });
+      deps.ownsRouterForServerAction.mockReturnValue(true);
+
+      await expect(
+        invokeClientServerAction("action-id", [], actionInitiation, deps),
+      ).resolves.toBeUndefined();
+      expect(deps.performHardNavigation).toHaveBeenCalledWith(sourceHref, undefined);
+      expect(createFromFetch).not.toHaveBeenCalled();
+      expect(deps.commitSameUrlNavigatePayload).not.toHaveBeenCalled();
+      expect(deps.notifyDiscardedServerActionRevalidation).not.toHaveBeenCalled();
+    });
   });
 
   it("throws the action error without committing when the action failed", async () => {
@@ -350,6 +819,8 @@ describe("app browser server action client", () => {
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
+        ownsRouterForServerAction: () => true,
         performHardNavigation: vi.fn(),
         renderRedirectPayload: vi.fn(),
         syncCurrentHistoryState: vi.fn(),
@@ -409,6 +880,8 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
+      ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
       syncCurrentHistoryState: vi.fn(),
@@ -470,6 +943,8 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
+      ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
       syncCurrentHistoryState: vi.fn(),
@@ -537,6 +1012,8 @@ describe("app browser server action client", () => {
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
+        notifyDiscardedServerActionRevalidation: vi.fn(),
+        ownsRouterForServerAction: () => true,
         performHardNavigation: vi.fn(),
         renderRedirectPayload: vi.fn(),
         syncCurrentHistoryState: vi.fn(),
@@ -591,6 +1068,8 @@ describe("app browser server action client", () => {
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
+      notifyDiscardedServerActionRevalidation: vi.fn(),
+      ownsRouterForServerAction: () => true,
       performHardNavigation: vi.fn(),
       renderRedirectPayload: vi.fn(),
       syncCurrentHistoryState: vi.fn(),

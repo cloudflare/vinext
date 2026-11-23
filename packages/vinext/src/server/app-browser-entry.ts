@@ -110,6 +110,7 @@ import {
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
+  shouldScheduleRefreshForDiscardedServerAction,
   resolveServerActionOperationLane,
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
@@ -389,6 +390,9 @@ const browserNavigationController = createAppBrowserNavigationController({
   getRouteManifest: getBrowserRouteManifest,
   loadRouteManifest: loadNavigationRuntimeRouteManifest,
   navigateDocument: (href, mode) => {
+    // Every hard navigation the controller starts (a navigation's fallback, a
+    // server action's redirect or reload) loads its document here.
+    void holdRefreshesForDocumentLoad();
     if (mpaNavigationTree) {
       mpaNavigationTree.enter(href, mode === "replace" ? "replace" : "push");
       return;
@@ -400,8 +404,9 @@ const browserNavigationController = createAppBrowserNavigationController({
 });
 const discardedServerActionRefreshScheduler = hasServerActions
   ? createDiscardedServerActionRefreshScheduler({
-      runRefresh() {
-        clearClientNavigationCaches();
+      runRefresh(revalidation) {
+        if (revalidation === "staticAndDynamic") clearClientNavigationCaches();
+        else clearDynamicClientNavigationCaches();
         void getNavigationRuntime()?.functions.navigate?.(
           window.location.href,
           0,
@@ -417,6 +422,45 @@ const discardedServerActionRefreshScheduler = hasServerActions
       markNavigationStart() {},
       schedule() {},
     };
+// Scheduler settlements of document loads that are still pending.
+const heldMpaNavigationRefreshSettlements = new Set<() => void>();
+function holdMpaNavigationRefreshSettlement(): () => void {
+  const release = () => {
+    if (!heldMpaNavigationRefreshSettlements.delete(release)) return;
+    discardedServerActionRefreshScheduler.markNavigationSettled();
+  };
+  heldMpaNavigationRefreshSettlements.add(release);
+  return release;
+}
+function releaseHeldMpaNavigationRefreshSettlements(): void {
+  for (const release of heldMpaNavigationRefreshSettlements) release();
+}
+// Scheduler settlements of action redirect renders that are still pending.
+const heldRedirectRenderRefreshSettlements = new Set<() => void>();
+function holdRefreshesForRedirectRender(): () => void {
+  discardedServerActionRefreshScheduler.markNavigationStart();
+  const release = () => {
+    if (!heldRedirectRenderRefreshSettlements.delete(release)) return;
+    discardedServerActionRefreshScheduler.markNavigationSettled();
+  };
+  heldRedirectRenderRefreshSettlements.add(release);
+  return release;
+}
+// A discarded or tree-less revalidation's refresh would reload this URL over a
+// pending document load, so it waits until bfcache restores this document, or
+// until a later navigation or document load shows this one was abandoned (a
+// cancelled unload, a 204 response leave the page alive without any event).
+function holdRefreshesForDocumentLoad(): Promise<void> {
+  releaseHeldMpaNavigationRefreshSettlements();
+  discardedServerActionRefreshScheduler.markNavigationStart();
+  // The load's MPA state replaces every action redirect render dispatched
+  // before it, which can then never commit: the load holds refreshes instead.
+  for (const releaseRender of heldRedirectRenderRefreshSettlements) releaseRender();
+  const release = holdMpaNavigationRefreshSettlement();
+  const restored = waitForMpaNavigationRestore();
+  void restored.then(release);
+  return restored;
+}
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 const NavigationHistoryCommit = browserNavigationController.NavigationHistoryCommit;
@@ -784,11 +828,17 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
 }
 
 function createActionInitiationSnapshot() {
-  const routerState = getBrowserRouterState();
+  // Like Next.js, which runs a queued action on the state its navigate reducer
+  // returned, an action dispatched once a navigation's state is handed to
+  // React (but before it commits) runs on that state, from its destination.
+  const uncommittedNavigation = browserNavigationController.getUncommittedUserNavigationState();
   return createServerActionInitiationSnapshot({
-    href: window.location.href,
+    href:
+      uncommittedNavigation === null
+        ? window.location.href
+        : new URL(uncommittedNavigation.href, window.location.href).href,
     navigationId: browserNavigationController.getActiveNavigationId(),
-    routerState,
+    routerState: uncommittedNavigation?.state ?? getBrowserRouterState(),
   });
 }
 
@@ -1018,7 +1068,9 @@ async function commitSameUrlNavigatePayload(
       actionInitiation.routerState,
       {
         onDiscardedRevalidation() {
-          discardedServerActionRefreshScheduler.schedule();
+          if (shouldScheduleRefreshForDiscardedServerAction(revalidation)) {
+            discardedServerActionRefreshScheduler.schedule(revalidation);
+          }
         },
         revalidation,
         startedNavigationId: actionInitiation.navigationId,
@@ -1300,12 +1352,13 @@ function getRequestState(
 // URL update for the in-flight navigation would otherwise be lost. Force-drain
 // the queued pre-paint effect for this renderId so the URL still moves to the
 // navigation target, the dev overlay shows which URL is broken, and HMR's
-// rsc:update fetches the right payload after the bug is fixed.
+// rsc:update fetches the right payload after the bug is fixed. Server actions
+// queued behind that navigation run too.
 function handleDevRecoveryBoundaryCatch(resetKey: number): void {
   // React's onCaughtError option already routes the error to the dev overlay.
   // Our job here is purely to drive the URL update for the in-flight
   // navigation that this failed render belonged to.
-  browserNavigationController.drainPrePaintEffects(resetKey);
+  browserNavigationController.recoverNavigationRender(resetKey);
 }
 
 function isMpaNavigationState(
@@ -1464,8 +1517,9 @@ function BrowserRoot({
     mpaNavigationTree = currentMpaNavigationTree;
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
+        const restored = holdRefreshesForDocumentLoad();
         setMpaNavigationState(href, historyUpdateMode);
-        return waitForMpaNavigationRestore();
+        return restored;
       },
     });
     browserRouterStateHasEverCommitted = true;
@@ -1890,7 +1944,31 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
 
 function registerServerActionCallback(): void {
   setServerCallback((id, args) => {
+    // Next.js refreshes for a discarded or tree-less revalidation only once its
+    // action queue is empty, queued actions included. Every action holds that
+    // refresh from its dispatch until it settles: the refresh would otherwise
+    // supersede the action and discard its result, or queue it again.
+    discardedServerActionRefreshScheduler.markNavigationStart();
+    let result: Promise<unknown>;
+    try {
+      result = callServer(id, args);
+    } catch (error) {
+      result = Promise.reject(error);
+    }
+    return result.finally(() => discardedServerActionRefreshScheduler.markNavigationSettled());
+  });
+
+  function callServer(id: string, args: unknown[]): Promise<unknown> {
+    // Like Next.js's action queue, an action dispatched while a navigation is
+    // pending is sent once that navigation's state is known, from its
+    // destination.
+    const pendingNavigationDispatch = browserNavigationController.waitForUserNavigationDispatch();
+    if (pendingNavigationDispatch !== null) {
+      return pendingNavigationDispatch.then(() => callServer(id, args));
+    }
     const releaseCacheInvalidationGuard = historyController.beginCacheInvalidationGuard();
+    const startsOnUncommittedNavigation =
+      browserNavigationController.getUncommittedUserNavigationState() !== null;
     const actionInitiation = createActionInitiationSnapshot();
     return loadServerActionClient!()
       .then(({ invokeClientServerAction }) =>
@@ -1901,6 +1979,13 @@ function registerServerActionCallback(): void {
           clientRscCompatibilityId,
           commitSameUrlNavigatePayload,
           navigationPlanner,
+          notifyDiscardedServerActionRevalidation(revalidation) {
+            if (shouldScheduleRefreshForDiscardedServerAction(revalidation)) {
+              discardedServerActionRefreshScheduler.schedule(revalidation);
+            }
+          },
+          ownsRouterForServerAction: (initiation) =>
+            browserNavigationController.isCurrentNavigation(initiation.navigationId),
           performHardNavigation: (url, historyMode) =>
             browserNavigationController.performHardNavigation(url, historyMode),
           renderRedirectPayload(elements, target, actionInitiation, revalidation) {
@@ -1914,6 +1999,10 @@ function registerServerActionCallback(): void {
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
             if (target.type === "push") saveScrollPosition();
+            // The action settles before this render does, so the render holds
+            // revalidation refreshes, which would supersede it, until it settles
+            // or a document load replaces it.
+            const releaseRefreshHold = holdRefreshesForRedirectRender();
             void renderNavigationPayload({
               actionType: target.type === "push" ? "navigate" : "replace",
               historyUpdateMode: target.type === "push" ? "push" : "replace",
@@ -1932,17 +2021,23 @@ function registerServerActionCallback(): void {
               previousNextUrl: null,
               scrollIntent: actionScrollIntent,
               targetHref: target.href,
-            }).catch(() => {
-              browserNavigationController.performHardNavigation(target.href);
-            });
+            })
+              .catch(() => {
+                browserNavigationController.performHardNavigation(target.href);
+              })
+              .finally(releaseRefreshHold);
           },
-          syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>
-            historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
+          syncCurrentHistoryState: (previousNextUrl, bfcacheIds) => {
+            // The current entry is still the source page's until the
+            // navigation the action started on commits and writes its own.
+            if (startsOnUncommittedNavigation) return;
+            historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds);
+          },
           syncServerActionHttpFallbackHead,
         }),
       )
       .finally(releaseCacheInvalidationGuard);
-  });
+  }
 }
 
 // Reports the errors that only the HTML render threw, as Next.js's
@@ -2176,6 +2271,9 @@ function bootstrapHydration(
     // Hoist navId above try so the catch and finally blocks can reference it.
     const navId = browserNavigationController.beginNavigation();
     const navigationCacheGeneration = clientNavigationCacheGeneration;
+    // A document load that left this document alive (a cancelled unload, a
+    // 204 response) has no event, so a new navigation ends its hold.
+    releaseHeldMpaNavigationRefreshSettlements();
     discardedServerActionRefreshScheduler.markNavigationStart();
 
     // Loop variables for inline redirect following. On a redirect, these are
@@ -3161,6 +3259,7 @@ function bootstrapHydration(
       // checks, and error paths. The finally runs even when the catch returns.
       // settlePendingBrowserRouterState is idempotent via the settled flag.
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
+      // A document load it started holds refreshes on its own (navigateDocument).
       discardedServerActionRefreshScheduler.markNavigationSettled();
       releaseNavigationInFlight();
       if (startedHardNavigation) {
@@ -3173,8 +3272,12 @@ function bootstrapHydration(
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
     clearNavigationCaches: clearClientNavigationCaches,
-    commitHashNavigation: (href, historyUpdateMode, scroll) =>
-      historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+    commitHashNavigation: (href, historyUpdateMode, scroll) => {
+      // Like a new navigation, a same-document history change shows that a
+      // document load which left this page alive was abandoned.
+      releaseHeldMpaNavigationRefreshSettlements();
+      return historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll);
+    },
     getPrefetchRouterState: () => {
       if (!browserNavigationController.hasBrowserRouterState()) {
         return initialPrefetchRouterState;
@@ -3201,9 +3304,16 @@ function bootstrapHydration(
     },
     claimCurrentHistoryTreeSnapshot: (historyUpdateMode, previousHistoryState) =>
       historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState),
-    commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) =>
-      historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState),
+    commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) => {
+      // A raw history write that reuses the router's own entry state skips
+      // discardPendingNavigation, as Next.js skips ACTION_RESTORE for `__NA`,
+      // but still ends an abandoned document load's hold.
+      releaseHeldMpaNavigationRefreshSettlements();
+      historyController.commitAppOwnedHistoryStateWrite(historyUpdateMode, previousHistoryState);
+    },
     discardPendingNavigation: () => {
+      // A raw history write likewise ends an abandoned document load's hold.
+      releaseHeldMpaNavigationRefreshSettlements();
       if (
         browserNavigationController.discardPendingNavigation(
           historyController.readCurrentTreeSnapshot(),
@@ -3250,6 +3360,10 @@ function bootstrapHydration(
     // payload. This covers both /page#target -> /page and /page -> /page#target.
     // Notify the transition start so observers still see the URL change, then
     // restore scroll directly and skip the RSC dispatch.
+    // A traversal shows that a document load which left this page alive was
+    // abandoned, like a new navigation does. A hash-only or snapshot traversal
+    // never reaches navigateRsc, so end that load's refresh hold here.
+    releaseHeldMpaNavigationRefreshSettlements();
     const href = window.location.href;
     const isExternalHistoryEntry = isExternalHistoryState(event.state);
     if (

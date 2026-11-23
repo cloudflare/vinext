@@ -64,6 +64,10 @@ export type ClientServerActionDeps = {
     renderedPathAndSearch: string | null,
   ): Promise<unknown>;
   navigationPlanner: typeof import("./navigation-planner.js").navigationPlanner;
+  /** Whether the action may still change what is visible (see the controller). */
+  ownsRouterForServerAction(actionInitiation: ClientServerActionInitiation): boolean;
+  /** Refreshes the current URL once navigations settle, for a revalidation no tree applied. */
+  notifyDiscardedServerActionRevalidation(revalidation: ServerActionRevalidationKind): void;
   performHardNavigation(url: string, historyMode?: "assign" | "replace"): void;
   renderRedirectPayload(
     elements: AppElements,
@@ -78,25 +82,35 @@ export type ClientServerActionDeps = {
   syncServerActionHttpFallbackHead(status: number | null): void;
 };
 
-function resolveActionRedirectTarget(
+// An action's redirect: rendered by the App Router, loaded as a document, or
+// blocked. Resolving it has no side effects; the caller applies it.
+type ActionRedirect =
+  | { kind: "app"; target: ActionRedirectTarget }
+  | { kind: "document"; href: string }
+  | { kind: "blocked" };
+
+// Relative targets resolve against the URL the action was posted from, as
+// Next.js resolves them against its action queue state's canonicalUrl: a queued
+// action can run on a navigation's destination before that URL commits.
+function resolveActionRedirect(
   response: Response,
   basePath: string,
-  performHardNavigation: ClientServerActionDeps["performHardNavigation"],
-): ActionRedirectTarget | null {
+  actionHref: string,
+): ActionRedirect | null {
   const actionRedirect = response.headers.get(ACTION_REDIRECT_HEADER);
   if (!actionRedirect) return null;
 
   if (isDangerousScheme(actionRedirect)) {
     console.error(DANGEROUS_URL_BLOCK_MESSAGE);
-    return null;
+    return { kind: "blocked" };
   }
 
   try {
     let redirectUrl: URL;
     if (actionRedirect.startsWith("/") || /^[a-z]+:/i.test(actionRedirect)) {
-      redirectUrl = new URL(actionRedirect, window.location.href);
+      redirectUrl = new URL(actionRedirect, actionHref);
     } else {
-      const baseParsed = new URL(window.location.href);
+      const baseParsed = new URL(actionHref);
       let baseDir = baseParsed.pathname;
       if (!baseDir.endsWith("/")) baseDir += "/";
       redirectUrl = new URL(actionRedirect, `${baseParsed.origin}${baseDir}${baseParsed.search}`);
@@ -106,22 +120,23 @@ function resolveActionRedirectTarget(
       redirectUrl.origin !== window.location.origin ||
       (basePath !== "" && !hasBasePath(redirectUrl.pathname, basePath))
     ) {
-      performHardNavigation(actionRedirect);
-      return null;
+      return { kind: "document", href: actionRedirect };
     }
     const statusHeader = response.headers.get(ACTION_REDIRECT_STATUS_HEADER);
     return {
-      href: redirectUrl.href,
-      type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push",
-      status: statusHeader ? parseInt(statusHeader, 10) : 307,
-      // The target's own render, which a rewrite may give another query.
-      renderedPathAndSearch: parseRenderedPathAndSearchHeader(
-        response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
-      ),
+      kind: "app",
+      target: {
+        href: redirectUrl.href,
+        type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push",
+        status: statusHeader ? parseInt(statusHeader, 10) : 307,
+        // The target's own render, which a rewrite may give another query.
+        renderedPathAndSearch: parseRenderedPathAndSearchHeader(
+          response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+        ),
+      },
     };
   } catch {
-    performHardNavigation(actionRedirect);
-    return null;
+    return { kind: "document", href: actionRedirect };
   }
 }
 
@@ -137,6 +152,15 @@ class ServerActionRedirectError extends Error {
     const redirectType = target.type === "push" ? "push" : "replace";
     this.digest = `NEXT_REDIRECT;${redirectType};${redirectHref};${target.status};`;
   }
+}
+
+function evictClientNavigationCachesForRevalidation(
+  revalidation: ServerActionRevalidationKind,
+  deps: ClientServerActionDeps,
+): void {
+  // Like Next.js, `refresh()` alone keeps the static prefetches.
+  if (revalidation === "staticAndDynamic") deps.clearClientNavigationCaches();
+  else if (revalidation === "dynamicOnly") deps.clearDynamicClientNavigationCaches();
 }
 
 export async function invokeClientServerAction(
@@ -170,13 +194,32 @@ export async function invokeClientServerAction(
 
   throwOnServerActionNotFound(fetchResponse, id);
 
-  const hasActionRedirect = fetchResponse.headers.has(ACTION_REDIRECT_HEADER);
-  const actionRedirectTarget = resolveActionRedirectTarget(
-    fetchResponse,
-    deps.basePath,
-    (url, historyMode) => deps.performHardNavigation(url, historyMode),
-  );
-  if (hasActionRedirect && !actionRedirectTarget) return undefined;
+  const actionRedirect = resolveActionRedirect(fetchResponse, deps.basePath, actionInitiation.href);
+  if (actionRedirect?.kind === "blocked") return undefined;
+  const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
+  // A navigation that superseded the action owns what loads next: as in
+  // Next.js, it discards all of the action's router state, its redirect
+  // included. The action still ran, so data it revalidated is refreshed once
+  // navigations settle. Ownership is checked again before each redirect side
+  // effect, since a navigation can start while the response is read.
+  const isSupersededByNavigation = (): boolean => {
+    if (deps.ownsRouterForServerAction(actionInitiation)) return false;
+    deps.notifyDiscardedServerActionRevalidation(revalidation);
+    return true;
+  };
+  if (actionRedirect !== null && isSupersededByNavigation()) {
+    evictClientNavigationCachesForRevalidation(revalidation, deps);
+    // As in Next.js, the caller still gets the handled redirect error, which
+    // resets its boundary without navigating. Like a document redirect that is
+    // followed, a discarded one resolves.
+    if (actionRedirect.kind === "app") throw new ServerActionRedirectError(actionRedirect.target);
+    return undefined;
+  }
+  if (actionRedirect?.kind === "document") {
+    deps.performHardNavigation(actionRedirect.href);
+    return undefined;
+  }
+  const actionRedirectTarget = actionRedirect?.target ?? null;
 
   const actionResultFacts = createServerActionResultFacts({
     actionRedirectHref: actionRedirectTarget?.href ?? null,
@@ -190,7 +233,18 @@ export async function invokeClientServerAction(
   });
   const fetchResponseIsRsc = actionResultFacts.isRscContentType;
   const actionResultDecision = deps.navigationPlanner.classifyServerActionResult(actionResultFacts);
-  if (
+  // A superseded incompatible response does not reload the page the action
+  // was posted from either: the navigation's own request runs into the same
+  // mismatch.
+  const discardedIncompatibleResponse =
+    actionResultDecision.kind === "hardNavigate" &&
+    !deps.ownsRouterForServerAction(actionInitiation);
+  if (discardedIncompatibleResponse) {
+    // Without a redirect, the caller still gets the action's value or error,
+    // as in Next.js. Its tree goes to the commit below, whose ownership check
+    // discards it and refreshes what it revalidated; a result without a tree
+    // is refreshed where it returns.
+  } else if (
     applyServerActionResultDecision(
       actionResultDecision,
       () => deps.clearClientNavigationCaches(),
@@ -200,16 +254,14 @@ export async function invokeClientServerAction(
     return undefined;
   }
 
-  const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-  // Like Next.js, `refresh()` alone keeps the static prefetches.
-  if (revalidation === "staticAndDynamic") deps.clearClientNavigationCaches();
-  else if (revalidation === "dynamicOnly") deps.clearDynamicClientNavigationCaches();
+  evictClientNavigationCachesForRevalidation(revalidation, deps);
   const invalidResponseError = await readInvalidServerActionResponseError(
     fetchResponse.clone(),
     actionRedirectTarget !== null,
   );
   if (invalidResponseError) throw invalidResponseError;
   if (actionRedirectTarget && !fetchResponseIsRsc) {
+    if (isSupersededByNavigation()) throw new ServerActionRedirectError(actionRedirectTarget);
     deps.performHardNavigation(actionRedirectTarget.href);
     return undefined;
   }
@@ -234,6 +286,7 @@ export async function invokeClientServerAction(
   }
 
   if (actionRedirectTarget) {
+    if (isSupersededByNavigation()) throw new ServerActionRedirectError(actionRedirectTarget);
     const redirectRoot = isServerActionResult(result) ? result.root : result;
     if (redirectRoot !== undefined) {
       deps.renderRedirectPayload(
@@ -275,6 +328,10 @@ export async function invokeClientServerAction(
         renderedPathAndSearch,
       );
     }
+    // A forwarded action revalidates without rendering the page. As in
+    // Next.js, which navigates to the current URL when a revalidating
+    // response has no Flight data, refresh it once navigations settle.
+    deps.notifyDiscardedServerActionRevalidation(revalidation);
     if (result.returnValue) {
       if (!result.returnValue.ok) {
         throw await normalizeServerActionThrownValue(result.returnValue.data, fetchResponse.status);
