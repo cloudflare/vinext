@@ -676,21 +676,22 @@ function toInterceptOptions(
 
 /**
  * Whether an interception renders, in the matched page's place, a module
- * without a default export: a sibling interception's own page, or the slot
- * owner's `default` that a whole intercepting route renders as its children
- * (see app-page-element-builder.ts). It answers as a matched page without one.
+ * without a default export: a sibling interception's own page, or, for a
+ * whole intercepting route, the slot owner's `default` it renders as its
+ * children or its intercepting page (see app-page-element-builder.ts). It
+ * answers as a matched page without one.
  */
 function rendersInterceptPageWithoutDefaultExport(interceptOpts: unknown): boolean {
   if (!isUnknownRecord(interceptOpts)) return false;
-  const page =
+  const pages =
     interceptOpts.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
     interceptOpts.interceptPage
-      ? interceptOpts.interceptPage
+      ? [interceptOpts.interceptPage]
       : interceptOpts.rendersInterceptionSource === true &&
           interceptOpts.rendersWholeInterceptingRoute === true
-        ? interceptOpts.interceptOwnerDefault
-        : null;
-  return isUnknownRecord(page) && !page.default;
+        ? [interceptOpts.interceptOwnerDefault, interceptOpts.interceptPage]
+        : [];
+  return pages.some((page) => isUnknownRecord(page) && !page.default);
 }
 
 /**

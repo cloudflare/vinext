@@ -471,9 +471,17 @@ export async function buildPageElements<
   // sibling intercept, or the owner's `default` for the whole intercepting
   // route. Without the `isSiblingIntercept` arm, an intercepting page missing
   // its default export would silently render the source page. An owner
-  // without a `default` file renders nothing in its children.
+  // without a `default` file renders nothing in its children. The whole
+  // intercepting route's own page is its intercepting page, which would
+  // otherwise leave its slot to the slot's default.
   const rendersOwnerDefault = rendersWholeInterceptingRoute && !!effectivePageModule;
-  if ((hasPageModule || isSiblingIntercept || rendersOwnerDefault) && !EffectivePageComponent) {
+  const wholeRouteInterceptPage = rendersWholeInterceptingRoute
+    ? (opts?.interceptPage as AppPageModule | null | undefined)
+    : null;
+  if (
+    ((hasPageModule || isSiblingIntercept || rendersOwnerDefault) && !EffectivePageComponent) ||
+    (wholeRouteInterceptPage && !wholeRouteInterceptPage.default)
+  ) {
     let noExportRootLayout: string | null = null;
     const noExportLayoutIds = route.layouts.map((_, index) =>
       AppElementsWire.encodeLayoutId(

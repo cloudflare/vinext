@@ -4199,9 +4199,10 @@ describe("app page dispatch", () => {
   });
 
   // A matched page without a default export answers 500 before it renders,
-  // and so does the owner `default` a whole intercepting route renders in its
-  // place, from another route or from the matched route itself.
-  it("answers a whole intercepting route's owner default without a default export as a page without one", async () => {
+  // and so do the owner `default` a whole intercepting route renders in its
+  // place and its intercepting page, from another route or from the matched
+  // route itself.
+  it("answers a whole intercepting route's owner default or page without a default export as a page without one", async () => {
     const ownerRoute = createRoute({
       isDynamic: true,
       layouts: [{ default: () => null }],
@@ -4221,6 +4222,10 @@ describe("app page dispatch", () => {
     const dispatchWithOwnerDefault = async (
       fromMatchedRoute: boolean,
       ownerDefault: Record<string, unknown> | null = { revalidate: 60 },
+      page: Record<string, unknown> = {
+        default: "pic-modal",
+        generateStaticParams: async () => [{ id: "1" }],
+      },
     ) => {
       const isrSet = vi.fn(async () => {});
       const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => ({
@@ -4241,7 +4246,7 @@ describe("app page dispatch", () => {
           interceptBranchSegments: ["(.)pics", "[id]"],
           matchedParams: { id: "1" },
           ownerDefault,
-          page: { default: "pic-modal", generateStaticParams: async () => [{ id: "1" }] },
+          page,
           rendersWholeInterceptingRoute: true,
           slotKey: "modal@app/club/@modal",
           sourceMatchedParams: { path: ["a"] },
@@ -4257,7 +4262,7 @@ describe("app page dispatch", () => {
       });
       const response = await dispatchAppPage(options);
       // An owner without a `default` file renders nothing in its children.
-      if (ownerDefault === null) {
+      if (ownerDefault === null && page.default) {
         expect(response.status).toBe(200);
         expect(buildPageElement).toHaveBeenCalledOnce();
         return;
@@ -4275,6 +4280,10 @@ describe("app page dispatch", () => {
     await dispatchWithOwnerDefault(true);
     await dispatchWithOwnerDefault(false, null);
     await dispatchWithOwnerDefault(true, null);
+    const pageWithoutDefault = { generateStaticParams: async () => [{ id: "1" }] };
+    await dispatchWithOwnerDefault(false, { default: () => null }, pageWithoutDefault);
+    await dispatchWithOwnerDefault(true, { default: () => null }, pageWithoutDefault);
+    await dispatchWithOwnerDefault(false, null, pageWithoutDefault);
   });
 
   // Next.js's interception rewrite takes the source's captures for every
