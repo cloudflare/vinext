@@ -2,6 +2,7 @@ import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { buildAppPageCacheTags } from "./app-page-cache.js";
+import { buildAppPageTags } from "./implicit-tags.js";
 import {
   renderAppPageFallbackShell,
   runAppPageStaticGenerationWork,
@@ -263,7 +264,11 @@ export async function storeAppPprUngeneratedFallbackShell<TRoute extends AppPage
   if (cached !== null && cached.isExpired !== true && !cached.isStale) return;
   await options.isrSetFallbackShell(key, value, {
     cacheControl: isrCacheControl(revalidate),
-    tags: buildAppPageCacheTags(fallbackPathname, []),
+    // A rendered shell's tags, its route's included.
+    tags: buildAppPageCacheTags(
+      fallbackPathname,
+      buildAppPageTags(fallbackPathname, [], options.route.routeSegments),
+    ),
   });
   options.isrDebug?.("STORE (ungenerated fallback shell)", fallbackPathname);
 }
