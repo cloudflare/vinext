@@ -1,4 +1,17 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  cacheLife,
+  MemoryCacheHandler,
+  setCacheHandler,
+} from "../packages/vinext/src/shims/cache.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
+import { _peekRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
+import { withUseCacheLayoutMarker } from "../packages/vinext/src/shims/internal/app-page-props-cache-key.js";
+import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   beginPprFallbackShellFinalRender,
   createPprFallbackShellState,
@@ -482,5 +495,116 @@ describe("ppr fallback shell render lifecycle", () => {
     expect(state.pendingCacheTasks).toBe(0);
 
     state.abortController.abort();
+  });
+});
+
+// Like Next.js's final prerender (use-cache-wrapper.ts, `DYNAMIC_EXPIRE`), a
+// shell leaves out a cache that's short-lived, though the entry is stored.
+describe("ppr fallback shell short-lived caches", () => {
+  async function renderCached(phase: "warmup" | "final", profile: string, id: string) {
+    const handler = new MemoryCacheHandler();
+    const set = vi.spyOn(handler, "set");
+    setCacheHandler(handler);
+    const cached = registerCachedFunction(async () => {
+      cacheLife(profile);
+      return "value";
+    }, id);
+    const state = createPprFallbackShellState({ fallbackParamNames: [], routePattern: "/page" });
+    if (phase === "final") preparePprFallbackShellFinalRender(state);
+    const result = runWithPprFallbackShellState(state, () => cached());
+    const settled = await Promise.race([result, delay(20).then(() => "pending")]);
+    state.abortController.abort();
+    return { hasDynamicBoundary: state.hasDynamicBoundary, set, settled };
+  }
+
+  it("leaves a short-lived cache out of the final render", async () => {
+    const { hasDynamicBoundary, set, settled } = await renderCached(
+      "final",
+      "seconds",
+      "shell-short-lived-final",
+    );
+    expect(settled).toBe("pending");
+    expect(hasDynamicBoundary).toBe(true);
+    expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a short-lived cache given unread fallback params out of the final render", async () => {
+    setCacheHandler(new MemoryCacheHandler());
+    const cached = registerCachedFunction(async (_props: { params: Promise<unknown> }) => {
+      cacheLife("seconds");
+      return "value";
+    }, "shell-short-lived-fallback-params");
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/blog/:slug",
+    });
+    preparePprFallbackShellFinalRender(state);
+
+    const settled = await runWithRequestContext(createRequestContext(), () =>
+      runWithPprFallbackShellState(state, async () => {
+        // A cached layout's props, as the route wiring passes them.
+        const result = cached(
+          withUseCacheLayoutMarker(cached, { params: makeThenableParams({ slug: "[slug]" }) }),
+        );
+        const settled = await Promise.race([result, delay(20).then(() => "pending")]);
+        return { life: _peekRequestScopedCacheLife(), settled };
+      }),
+    );
+    state.abortController.abort();
+    expect(settled.settled).toBe("pending");
+    expect(state.hasDynamicBoundary).toBe(true);
+    // Its life doesn't count toward the shell's.
+    expect(settled.life).toBeNull();
+  });
+
+  it("keeps a short-lived cache in the warmup render", async () => {
+    const { hasDynamicBoundary, settled } = await renderCached(
+      "warmup",
+      "seconds",
+      "shell-short-lived-warmup",
+    );
+    expect(settled).toBe("value");
+    expect(hasDynamicBoundary).toBe(false);
+  });
+
+  it("leaves a left-out cache's life out of the shell's, a nested cache's included", async () => {
+    setCacheHandler(new MemoryCacheHandler());
+    const shortLived = registerCachedFunction(async () => {
+      cacheLife("seconds");
+      return "short";
+    }, "shell-life-short");
+    const nestedShortLived = registerCachedFunction(
+      async () => `outer ${await shortLived()}`,
+      "shell-life-nested-short",
+    );
+    const longLived = registerCachedFunction(async () => {
+      cacheLife("minutes");
+      return "long";
+    }, "shell-life-long");
+    const state = createPprFallbackShellState({ fallbackParamNames: [], routePattern: "/page" });
+    preparePprFallbackShellFinalRender(state);
+
+    const life = await runWithRequestContext(createRequestContext(), () =>
+      runWithPprFallbackShellState(state, async () => {
+        void shortLived();
+        void nestedShortLived();
+        await longLived();
+        await delay(20);
+        return _peekRequestScopedCacheLife();
+      }),
+    );
+    state.abortController.abort();
+    // Like Next.js, only the caches the shell keeps count toward its life.
+    expect(life).toEqual({ stale: 300, revalidate: 60, expire: 3600 });
+  });
+
+  it("keeps a long-lived cache in the final render", async () => {
+    const { hasDynamicBoundary, settled } = await renderCached(
+      "final",
+      "minutes",
+      "shell-long-lived-final",
+    );
+    expect(settled).toBe("value");
+    expect(hasDynamicBoundary).toBe(false);
   });
 });
