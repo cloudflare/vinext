@@ -14,7 +14,7 @@ import { startFixtureServer } from "./helpers.js";
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-font-route-isolation");
 const outDir = path.resolve(FIXTURE_DIR, "dist");
 const nodeModulesLink = path.join(FIXTURE_DIR, "node_modules");
-const FONTS = ["font-app", "font-a", "font-b"];
+const FONTS = ["font-app", "font-a", "font-b", "font-error"];
 
 beforeAll(() => {
   fs.rmSync(nodeModulesLink, { recursive: true, force: true });
@@ -26,9 +26,9 @@ afterAll(() => {
   fs.rmSync(nodeModulesLink, { recursive: true, force: true });
 });
 
-async function fontsOf(baseUrl: string, pathname: string) {
+async function fontsOf(baseUrl: string, pathname: string, status = 200) {
   const res = await fetch(`${baseUrl}${pathname}`);
-  expect(res.status).toBe(200);
+  expect(res.status).toBe(status);
   const html = await res.text();
   const style = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "";
   const preloads = [...html.matchAll(/<link rel="preload"[^>]*as="font"[^>]*>/g)].join("\n");
@@ -112,6 +112,14 @@ describe("Pages Router next/font is scoped to the requested page (production)", 
 
   it("answers each page with _app's and its own fonts in any request order", async () => {
     expect(await fontsInOrder(baseUrl)).toEqual(EXPECTED);
+  });
+
+  // No pages/404: a route miss renders the custom `_error` page, whose
+  // document carries `_app`'s fonts and its own, like Next.js' `/_error` entry.
+  it("answers a route miss with _app's and the custom _error page's fonts", async () => {
+    expect(await fontsOf(baseUrl, "/missing", 404)).toEqual(
+      fonts("/missing", ["font-app", "font-error"]),
+    );
   });
 });
 

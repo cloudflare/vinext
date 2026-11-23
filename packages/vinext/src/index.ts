@@ -8803,7 +8803,12 @@ export const loadServerActionClient = ${
         const pages = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
         return {
           appFile: findFileWithExts(pagesDir, "_app", fileMatcher),
-          pages: pages.map((route) => ({ pattern: route.pattern, filePath: route.filePath })),
+          pages: [
+            ...pages.map((route) => ({ pattern: route.pattern, filePath: route.filePath })),
+            // The error page renders as a page of its own, like Next.js' `/_error`
+            // entry, with only `_app`'s fonts when the app has no custom one.
+            { pattern: "/_error", filePath: findFileWithExts(pagesDir, "_error", fileMatcher) },
+          ],
         };
       },
       ownerKeys: fontOwnerKeys,

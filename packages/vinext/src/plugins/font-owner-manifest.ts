@@ -353,7 +353,11 @@ const PAGES_FONT_OWNER_MANIFEST_EXTERNALS: ReadonlyMap<string, string> = new Map
 ]);
 
 /** The files whose fonts a page's document carries: `_app`'s and the page's. */
-type PagesFontRoutes = { appFile: string | null; pages: { pattern: string; filePath: string }[] };
+type PagesFontRoutes = {
+  appFile: string | null;
+  /** Each page, and `/_error`, whose file is null when the app has no custom one. */
+  pages: { pattern: string; filePath: string | null }[];
+};
 
 /**
  * The owner keys of a dev Pages render: the font owners the server graph of
@@ -453,7 +457,7 @@ export function createPagesFontOwnerManifestPlugin(options: {
             pages.map(({ pattern, filePath }) => [
               pattern,
               {
-                files: [...app, options.canonicalizeModuleId(filePath)],
+                files: [...app, ...(filePath ? [options.canonicalizeModuleId(filePath)] : [])],
                 interceptFiles: new Map(),
               },
             ]),
