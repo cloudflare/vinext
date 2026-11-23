@@ -546,6 +546,17 @@ describe("responseStoreAdapter builder", () => {
     );
   });
 
+  it("opts into batching edge purges explicitly", () => {
+    const descriptor = responseStoreAdapter({ purgeBatchWindow: 60 });
+    expect(descriptor.cdn.options).toEqual({ purgeBatchWindow: 60 });
+    expect(descriptor.data.options).toEqual({ purgeBatchWindow: 60 });
+    for (const purgeBatchWindow of [0, 1.5, -1]) {
+      expect(() => responseStoreAdapter({ purgeBatchWindow })).toThrow(
+        "Workers Response Store purgeBatchWindow must be a positive integer",
+      );
+    }
+  });
+
   it.each(["service-binding", "self-contained"] as const)(
     "passes a metadata location hint into %s mode",
     (mode) => {

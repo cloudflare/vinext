@@ -86,6 +86,11 @@ makes one final fill request per admitted identity. Add `--warm-cache-certify`
 only when you want an opt-in second, header-only request that must prove every
 planned entry reusable before promotion.
 
+For a site behind Cloudflare Access or another auth proxy, set
+`VINEXT_WARM_CACHE_HEADERS` to the headers it accepts, one `Name: value` per
+line (or pass `--warm-cache-header "Name: value"`). See
+[Sites behind an auth proxy](https://vinext.dev/docs/guides/caching#sites-behind-an-auth-proxy).
+
 The response entrypoint hashes the complete transport identity into its
 Workers Cache URL, independently of zone Cache Rules, so distinct
 representation, rewrite and interception variants cannot collide. For App
@@ -188,6 +193,17 @@ The hint works in both deployment modes, is best-effort, and only affects each
 Durable Object's first creation. Changing it does not relocate existing
 objects; treat the change as a cache-cold deployment and align it with the R2
 bucket's location.
+
+Edge purges and invalidations share the account's Free-tier
+[purge rate limits](https://developers.cloudflare.com/workers/cache/purge/#rate-limits).
+An app that revalidates often can queue them and send each window's updates together:
+
+```ts
+vinext({ cache: responseStoreAdapter({ purgeBatchWindow: 60 }) });
+```
+
+Edge responses then update up to the window (plus retries of a refused batch)
+after the revalidation.
 
 To deploy storage and cache entrypoints with the application instead, select
 self-contained mode:

@@ -103,9 +103,9 @@ function writeCacheAsset(
 /** Package prerender output from both routers as immutable Workers Static Assets. */
 export function finalizeStaticAssetsPrerenderOutput(
   root: string,
-  options: { clientOutDir?: string } = {},
+  options: { clientOutDir?: string; serverDir?: string } = {},
 ): number {
-  const serverDir = path.join(root, "dist", "server");
+  const serverDir = options.serverDir ?? path.join(root, "dist", "server");
   const prerenderDir = path.join(serverDir, "prerendered-routes");
   const outputDir = path.join(
     options.clientOutDir ?? path.join(root, "dist", "client"),

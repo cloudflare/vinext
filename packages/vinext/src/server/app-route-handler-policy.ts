@@ -117,11 +117,16 @@ export function hasNonStaticAppRouteHandlerMethods(handler: RouteHandlerModule):
  * as it lists one param, Next.js serves every param too.
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/index.ts
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-route.ts
+ *
+ * Under `output: "export"` Next.js writes only the generated params as files,
+ * so the host answers 404 for every other URL.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
  */
 export function resolveAppRouteHandlerStaticParamsEnforcement(
   handler: AppRouteHandlerModule,
   isProduction: boolean,
 ): "enforce" | "skip" {
+  if (isProduction && process.env.__NEXT_CONFIG_OUTPUT === "export") return "enforce";
   if (handler.dynamicParams !== false) return "skip";
   const hasGenerateStaticParams = typeof handler.generateStaticParams === "function";
   if (!isProduction) return hasGenerateStaticParams ? "enforce" : "skip";
