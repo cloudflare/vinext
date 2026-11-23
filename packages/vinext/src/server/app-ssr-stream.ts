@@ -24,8 +24,11 @@ type RscEmbedTransform = {
   finalize(): Promise<Uint8Array>;
   /** Resolves when all raw bytes from the embed stream have been read. */
   getRawBuffer(): Promise<ArrayBuffer>;
-  /** Call `listener` after each chunk read from the embed stream. */
-  listen?(listener: () => void): void;
+  /**
+   * Call `listener` after each chunk read from the embed stream, and with the
+   * error if reading it fails. A listener handles that error.
+   */
+  listen?(listener: (failure?: { error: unknown }) => void): void;
 };
 
 type ReplayableRscEmbedTransform = RscEmbedTransform & {
@@ -276,7 +279,7 @@ export function createRscEmbedTransform(
   const replays: { controller: ReadableStreamDefaultController<Uint8Array>; keepOpen: boolean }[] =
     [];
   let mirroredNextFlightBootstrap = false;
-  let readListener: (() => void) | null = null;
+  let readListener: ((failure?: { error: unknown }) => void) | null = null;
   const textDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
   const nonceAttribute = textToByteString(createNonceAttribute(options.scriptNonce));
 
@@ -420,6 +423,7 @@ export function createRscEmbedTransform(
       }
       readError = { error };
       for (const replay of replays.splice(0)) replay.controller.error(error);
+      readListener?.(readError);
       throw error;
     } finally {
       reading = false;
@@ -488,6 +492,8 @@ export function createRscEmbedTransform(
 
     listen(listener) {
       readListener = listener;
+      void pumpPromise.catch(() => {});
+      if (readError) listener(readError);
     },
 
     async finalize(): Promise<Uint8Array> {
@@ -1105,7 +1111,10 @@ export function createTickBufferedTransform(
       // Like Next.js, a resume sends its Flight data as it comes: the shell
       // its prelude sent hydrates while its holes are still pending.
       if (mode === "resume") {
-        rscEmbed.listen?.(() => scheduleFlush(controller));
+        rscEmbed.listen?.((failure) => {
+          if (failure) controller.error(failure.error);
+          else scheduleFlush(controller);
+        });
         scheduleFlush(controller);
       }
     },
