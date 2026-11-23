@@ -307,6 +307,9 @@ describe("fallback shell state transport", () => {
     });
     expect(splitAppPprFallbackShellState(html)).toEqual({ html, state: null });
     expect(parseAppPprShellState('{"cache":{},"fetch":{}}')).toBeNull();
+    // A malformed or truncated header is a miss too.
+    expect(parseAppPprShellState("4:null")).toBeNull();
+    expect(parseAppPprShellState("9:{}")).toBeNull();
   });
 
   it("only treats a shell with a document prelude as resumable", () => {
@@ -346,6 +349,16 @@ describe("replaceAppPprShellFallbackParamKeys", () => {
         { name: "rest", shellValue: ["%5B...rest%5D"], requestValue: ["a", "b%2Fc"] },
       ]),
     ).toEqual({ key: JSON.stringify(["xslug|%5B...rest%5D|d", "rest|a/b%2Fc|c"]) });
+  });
+
+  it("keeps a `$` in a param name literal", () => {
+    const key = JSON.stringify(["$&|%5B%24%26%5D|d"]);
+
+    expect(
+      replaceAppPprShellFallbackParamKeys({ key }, [
+        { name: "$&", shellValue: "%5B%24%26%5D", requestValue: "x" },
+      ]),
+    ).toEqual({ key: JSON.stringify(["$&|x|d"]) });
   });
 
   it("matches a param name holding a quote or backslash in either key spelling", () => {
