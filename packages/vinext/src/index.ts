@@ -9773,6 +9773,8 @@ export const loadServerActionClient = ${
       filter: { id: /^virtual:vinext-pages-app-entry$/ },
       async handler() {
         const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+        // A watch build rebuilds once `_app` is added.
+        if (!appFilePath) this.addWatchFile(pagesDir);
         // As the client entry's import of `_app` resolves.
         const resolved =
           appFilePath && (await this.resolve(appFilePath, undefined, { skipSelf: true }));
@@ -9853,7 +9855,13 @@ export const loadServerActionClient = ${
       }
 
       for (const id of collectDoublyCopiedModules(graph, {
-        groupOf: (id) => groupOf(id) ?? pagesLargeSharedModules.get(id),
+        // Tree shaking may split a large shared group by the pages that use
+        // each module, so each counts as a chunk of its own.
+        groupOf: (id) =>
+          groupOf(id) ??
+          (pagesLargeSharedModules.has(id)
+            ? `${pagesLargeSharedModules.get(id)}:${id}`
+            : undefined),
         isAlwaysLoaded: (id) => id === appId,
         sizeOf,
         uncopied: pagesUncopiedModules,

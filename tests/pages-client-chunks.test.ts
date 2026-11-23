@@ -134,17 +134,19 @@ describe("Pages Router client chunks", () => {
     expect(facadesOf(chunksWith(chunks, "/lib/shared-table.tsx"))).toEqual(
       inlines ? ["pages/alpha.tsx", "pages/beta.tsx"] : [""],
     );
-    // The large modules that pages reach through a side-effect-free barrel
-    // load only with the pages that use them.
+    // The large modules that overlapping sets of pages reach through a
+    // side-effect-free barrel load only with the pages that use them, and the
+    // small module that both import isn't copied into each.
     if (inlines) {
-      const alphaRowsChunks = chunksWith(chunks, "/lib/rows/alpha-rows.ts");
-      const betaRowsChunks = chunksWith(chunks, "/lib/rows/beta-rows.ts");
-      expect(facadesOf(alphaRowsChunks)).toEqual([""]);
-      expect(facadesOf(betaRowsChunks)).toEqual([""]);
-      expect(alphaRowsChunks).not.toEqual(betaRowsChunks);
+      const wideChunks = chunksWith(chunks, "/lib/rows/wide-rows.ts");
+      const tallChunks = chunksWith(chunks, "/lib/rows/tall-rows.ts");
+      expect(facadesOf(wideChunks)).toEqual([""]);
+      expect(facadesOf(tallChunks)).toEqual([""]);
+      expect(wideChunks).not.toEqual(tallChunks);
       const pageChunk = (page: string) => chunks.find((chunk) => facadeOf(chunk) === page)!;
-      expect(pageChunk("pages/alpha.tsx").imports).not.toContain(betaRowsChunks[0]!.fileName);
-      expect(pageChunk("pages/beta.tsx").imports).not.toContain(alphaRowsChunks[0]!.fileName);
+      expect(pageChunk("pages/alpha.tsx").imports).not.toContain(tallChunks[0]!.fileName);
+      expect(pageChunk("pages/gamma.tsx").imports).not.toContain(wideChunks[0]!.fileName);
+      expect(chunksWith(chunks, "/lib/rows/row-label.ts")).toHaveLength(1);
     }
 
     // Each copy's CSS joins its page's stylesheet.
