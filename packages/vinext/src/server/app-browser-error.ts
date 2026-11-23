@@ -1,3 +1,4 @@
+import DefaultGlobalError from "vinext/shims/default-global-error";
 import { isBailoutToCSRError } from "vinext/shims/navigation-errors";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -15,8 +16,14 @@ function getErrorBoundaryProps(errorInfo: VinextHydrateRootErrorInfo): Record<st
   return isUnknownRecord(props) ? props : {};
 }
 
+// Like Next.js's onCaughtError, a boundary whose fallback is the built-in
+// default global error is implicit. An app with no global-error file gets
+// that fallback as its global-error boundary, so a client error that reaches
+// the default error screen is reported like an uncaught error.
 function isImplicitRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boolean {
-  return getErrorBoundaryProps(errorInfo).isImplicitRootErrorBoundary === true;
+  const props = getErrorBoundaryProps(errorInfo);
+  if (props.isImplicitRootErrorBoundary === true) return true;
+  return props.isGlobalErrorBoundary === true && props.fallback === DefaultGlobalError;
 }
 
 // The implicit root boundary or a global-error boundary: the boundaries that
