@@ -2,8 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ViteDevServer } from "vite";
-import { build, createServer, type Plugin } from "vite";
+import { build, createServer, type Plugin, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
@@ -214,7 +213,7 @@ describe("Pages Router next/font of a lazily loaded component (Cloudflare dev)",
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it("carries the component's font on every request", async () => {
+  it("carries the component's font once it has loaded", async () => {
     for (let request = 0; request < 3; request++) {
       const res = await fetch(`${baseUrl}/lazy`);
       expect(res.status).toBe(200);
