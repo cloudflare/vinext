@@ -57,6 +57,37 @@ describe("slot primitives", () => {
     expect(mod.UNMATCHED_SLOT).toBe(Symbol.for("vinext.unmatchedSlot"));
   });
 
+  it("reports each element it renders for its stylesheets, a null one included", async () => {
+    const { ElementStylesheetsContext, ElementsContext, Slot } =
+      await import("../packages/vinext/src/shims/slot.js");
+    const reached: string[] = [];
+    const html = await renderHtml(
+      createContextProvider(
+        ElementStylesheetsContext,
+        (id: string) => {
+          reached.push(id);
+          return React.createElement("i", { key: id }, `css:${id}`);
+        },
+        createContextProvider(
+          ElementsContext,
+          { "layout:/": React.createElement("b", null, "layout"), "page:/": null },
+          React.createElement(
+            React.Fragment,
+            null,
+            React.createElement(Slot, { id: "layout:/" }),
+            React.createElement(Slot, { id: "page:/" }),
+            React.createElement(Slot, { id: "slot:missing:/" }),
+          ),
+        ),
+      ),
+    );
+
+    // Not one the payload lacks, which renders nothing.
+    expect(reached).toEqual(["layout:/", "page:/"]);
+    expect(html).toContain("<i>css:layout:/</i><b>layout</b>");
+    expect(html).toContain("<i>css:page:/</i>");
+  });
+
   it("keys active segment carriers without remounting named-slot owner shells", async () => {
     const { getNonCacheComponentsSegmentKey } =
       await import("../packages/vinext/src/shims/slot.js");

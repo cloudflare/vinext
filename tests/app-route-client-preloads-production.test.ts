@@ -249,6 +249,52 @@ describe("App Router production SSR route client reference preloads", () => {
     }
   });
 
+  // Issue #4735. Next.js 16.2.7 (webpack and Turbopack) links the CSS of a
+  // segment as React reaches it: in the shell for the async layout's, but
+  // only in the loading.js boundary's reveal for the page's below it, so the
+  // fallback paints without waiting for it.
+  it("links a page's client component stylesheet below an async layout in the boundary's reveal", async () => {
+    const panelHref = cssHref("--loading-css-async-layout-panel");
+    const noteHref = cssHref("--loading-css-async-layout-note");
+    expect(panelHref).not.toBe(noteHref);
+    for (const label of ["cold", "warm"]) {
+      const { first, html } = await readStream(`${baseUrl}/loading-css/async-layout/inner`);
+      // The shell flushes with the fallback before the async layout resolves.
+      expect(first, label).toContain('data-testid="loading-css-async-layout-fallback"');
+      expect(first, label).not.toContain('data-testid="loading-css-async-layout-panel"');
+      expect(html, label).toContain('data-testid="loading-css-async-layout-panel"');
+      // The async layout's own CSS still blocks the shell.
+      expect(stylesheetHrefs(first), label).toContain(noteHref);
+      expect(stylesheetHrefs(html), label).not.toContain(panelHref);
+      // React holds the boundary's reveal until the page's CSS loads, linked
+      // with the CSP nonce, as Next.js links a segment's CSS.
+      const reveal = html.match(/\$RR\("[^"]*","[^"]*",(\[\[.*?\]\])\)/)?.[1];
+      expect(reveal, label).toBeDefined();
+      expect(JSON.parse(reveal!), label).toEqual([
+        [panelHref, "vite-rsc/client-reference", "crossorigin", "", "nonce", "vinext-test-nonce"],
+      ]);
+    }
+  });
+
+  // A loading.js fallback can render a streamed component the page below
+  // the async layout imports too. Its stylesheet then links with the shell
+  // the fallback paints in, as before, not with the boundary's reveal.
+  it("links a streamed component's stylesheet in the shell when the loading.js fallback renders it", async () => {
+    const href = cssHref("--loading-css-shared-spinner");
+    const url = `${baseUrl}/loading-css/async-layout-shared/inner`;
+    // A cold render waits for the fallback's component before its shell.
+    const cold = await readStream(url);
+    expect(cold.html).toContain('data-testid="loading-css-shared-page"');
+    expect(stylesheetHrefs(cold.first)).toContain(href);
+    for (const label of ["warm", "warm again"]) {
+      const { first, html } = await readStream(url);
+      expect(first, label).toContain('data-testid="loading-css-shared-spinner"');
+      expect(first, label).not.toContain('data-testid="loading-css-shared-page"');
+      expect(html, label).toContain('data-testid="loading-css-shared-page"');
+      expect(stylesheetHrefs(first), label).toContain(href);
+    }
+  });
+
   it("links no stylesheet of the page or layouts a parent not-found boundary replaces", async () => {
     const hrefs = [cssHref("--loading-css-missing-layout"), cssHref("--loading-css-missing-page")];
     for (const label of ["cold", "warm"]) {

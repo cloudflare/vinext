@@ -76,7 +76,7 @@ import {
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
 import { createAppRouteTree } from "./app-route-tree.js";
-import { BfcacheIdentityMapContext } from "vinext/shims/slot";
+import { BfcacheIdentityMapContext, ElementStylesheetsContext } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import {
   createClientReferencePreloader,
@@ -86,7 +86,9 @@ import {
   createStreamedClientReferences,
   resetStreamedClientReferences,
   renderStreamedStylesheets,
+  renderElementStylesheets,
   runWithStreamedClientReferences,
+  setPayloadElements,
   wrapClientReferenceRequire,
 } from "./app-streamed-client-references.js";
 import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
@@ -579,6 +581,9 @@ export async function handleSsr(
         }
 
         let flightRoot: PromiseLike<AppWireElements> | null = null;
+        // The inline CSS manifest is set before any request (see below).
+        const renderStylesheetsForElement = (elementId: string): ReactNode =>
+          renderElementStylesheets(streamedReferences, elementId, globalThis.__VINEXT_INLINE_CSS__);
 
         function VinextFlightRoot(): ReactNode {
           // Browsers fetch module scripts at high priority, ahead of the
@@ -629,6 +634,7 @@ export async function handleSsr(
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
+          setPayloadElements(streamedReferences, Object.keys(elements));
           const metadata = AppElementsWire.readMetadata(elements);
           const bfcacheMaps = createInitialBfcacheMaps({
             elements,
@@ -642,7 +648,11 @@ export async function handleSsr(
           const identityMapTree = createReactElement(
             BfcacheIdentityMapContext.Provider,
             { value: bfcacheMaps.identities },
-            routeTree,
+            createReactElement(
+              ElementStylesheetsContext.Provider,
+              { value: renderStylesheetsForElement },
+              routeTree,
+            ),
           );
           // During SSR we only provide the id *map*, seeded entirely with the
           // INITIAL_BFCACHE_ID sentinel. BfcacheSlotBoundary may still publish a

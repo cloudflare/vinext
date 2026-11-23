@@ -192,6 +192,7 @@ describe("resolveRouteClientReferences", () => {
     files: [[1], [0, 2, 1, 4], [3]],
     routes: { "/": [0, 1] },
     rendered: { "/": [1] },
+    renderedElements: { "/": ["page:"] },
     staticFiles: [[], [0, 2, 1], []],
     routeless: [0, 2],
     async: [2],
@@ -205,7 +206,28 @@ describe("resolveRouteClientReferences", () => {
       // first. Not "lazy" (dynamically imported) or "search" (only a
       // boundary imports it); "link" is every render's, and the page's too.
       linked: ["link", "chart", "nav"],
+      // The page's element renders the file that imports each.
+      linkedElements: new Map([
+        ["link", ["page:"]],
+        ["chart", ["page:"]],
+        ["nav", ["page:"]],
+      ]),
     });
+  });
+
+  it("links a streamed reference a boundary reaches too in the shell", () => {
+    // The boundary (file 0) reaches "chart", which streams, as the page does.
+    const resolved = resolveRouteClientReferences(
+      { ...plan, files: [[1, 2], [0, 2, 1, 4], [3]] },
+      "/",
+    );
+    expect(resolved?.linked).toEqual(["link", "chart", "nav"]);
+    expect(resolved?.linkedElements).toEqual(
+      new Map([
+        ["link", ["page:"]],
+        ["nav", ["page:"]],
+      ]),
+    );
   });
 
   it("links no reference of a render without a route", () => {
@@ -213,6 +235,7 @@ describe("resolveRouteClientReferences", () => {
       references: ["link", "nav", "search"],
       streamed: [],
       linked: [],
+      linkedElements: new Map(),
     });
   });
 

@@ -564,7 +564,7 @@ function htmlAttributeHasToken(tag: string, name: string, token: string): boolea
   return htmlTokenListContains(getHtmlAttribute(tag, name), token);
 }
 
-function getInlineCss(manifest: InlineCssManifest, href: string): string | null {
+export function getInlineCss(manifest: InlineCssManifest, href: string): string | null {
   if (Object.prototype.hasOwnProperty.call(manifest, href)) {
     return manifest[href] ?? "";
   }
