@@ -864,23 +864,39 @@ export async function handleSsr(
         // A caught document that can't render answers by how it failed. A
         // notFound(), forbidden() or unauthorized() outside the caught
         // boundaries leaves the shell's own error to its fallback document,
-        // which a boundary above catches. Any other failure, a boundary's file
-        // or a slot beside it that redirects or throws, answers as Next.js
-        // does there: its error shell with the shell error's status, and the
-        // payload, which the browser renders. Its boundaries catch the signal,
-        // and their files redirect or throw there.
+        // which a boundary above catches, as does any failure of a render
+        // that takes no error document. A client-rendering bailout or dynamic
+        // usage goes on as the shell's own would. Any other failure, a
+        // boundary's file or a slot beside it that redirects or throws,
+        // answers as Next.js does there: its error shell with the shell
+        // error's status, and the payload, which the browser renders. Its
+        // boundaries catch the signal, and their files redirect or throw
+        // there.
         const renderCaughtErrorShell = (
           error: unknown,
           caughtRenderError: unknown,
         ): ReadableStream<Uint8Array> => {
+          if (isBailoutToCSRError(caughtRenderError) || isDynamicServerError(caughtRenderError)) {
+            throw caughtRenderError;
+          }
           const digest = getNextErrorDigest(caughtRenderError);
-          if (digest !== null && parseNextHttpErrorDigest(digest) !== null) throw error;
+          if (
+            options?.fallbackToErrorDocumentOnShellError !== true ||
+            (digest !== null && parseNextHttpErrorDigest(digest) !== null)
+          ) {
+            throw error;
+          }
           caughtBoundaries = null;
           caughtShellError = error;
           shellErrorRecovered = true;
           streamedReferences.unlinked = streamedReferences.unlinked.filter((id) =>
             streamedReferences.streamed.has(id),
           );
+          // A failure only this render hits reaches the dev overlay, as the
+          // shell's own does.
+          if (options?.isServerComponentError?.(caughtRenderError) !== true) {
+            ssrOnlyShellError = caughtRenderError;
+          }
           return renderSsrErrorDocumentShell(
             bootstrapModuleUrl,
             options?.scriptNonce,

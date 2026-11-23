@@ -351,6 +351,33 @@ describe("useSearchParams() in production cache-candidate renders", () => {
       }
     });
 
+    // The document renders again with the boundary that caught the slot's
+    // notFound(), whose not-found file reads the query. That bail-out fails
+    // the route as the first render's would, never answering a stored 404.
+    it("fails a static route whose caught slot's not-found file reads it", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const urls = [crypto.randomUUID(), crypto.randomUUID()].map(
+          (query) => `/missing/caught-slot?q=${query}`,
+        );
+        for (const url of urls) {
+          const response = await get(url);
+          expect(response.status).toBe(500);
+          expect(response.cache).not.toBe("HIT");
+          expect(response.cacheControl).toContain("no-store");
+          expect(response.body).not.toContain('id="__next_error__"');
+        }
+        await expectStillUnstored(urls);
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining(
+            'useSearchParams() should be wrapped in a suspense boundary at page "/missing/caught-slot"',
+          ),
+        );
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+
     it("renders the real query on a dynamic-segment route without generateStaticParams", async () => {
       await expectRealValuesNeverStored("/missing/dynamic-segment/a");
     });
