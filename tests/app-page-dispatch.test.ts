@@ -7594,10 +7594,12 @@ describe("app page dispatch", () => {
     );
     await expect(first.text()).resolves.toContain("blocking");
     await jobs.get("shell:/fr/blog/[slug]")!();
-    const marker = isrSetFallbackShell.mock.calls.find(
+    const [, marker, { tags }] = isrSetFallbackShell.mock.calls.find(
       ([key]) => key === "shell:/fr/blog/[slug]",
-    )![1];
+    )!;
     expect(parseAppPprShellState(marker.postponed)?.generated).toEqual([]);
+    // Like a rendered shell, it's revalidated by its route's pattern.
+    expect(tags).toContain("_N_T_/[locale]/blog/[slug]/page");
 
     generateStaticParams.mockClear();
     const second = await runWithRequestContext(createRequestContext(), () =>
