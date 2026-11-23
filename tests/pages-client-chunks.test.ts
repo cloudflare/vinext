@@ -149,7 +149,8 @@ describe("Pages Router client chunks", () => {
       expect(pageChunk("pages/gamma.tsx").imports).not.toContain(wideChunks[0]!.fileName);
       expect(chunksWith(chunks, "/lib/rows/row-label.ts")).toHaveLength(1);
       // Nor is the small module that only the two large ones import, through a
-      // barrel, whose part of the group is under 20 kB.
+      // barrel that also leads to an `import()` target, whose part of the
+      // group is under 20 kB.
       expect(chunksWith(chunks, "/lib/rows/format/row-format.ts")).toHaveLength(1);
 
       // What tree shaking leaves of a group under 20 kB is copied into the
@@ -638,7 +639,10 @@ describe("collectSharedGroupDependencies", () => {
       wide: { imports: ["label", "format", "wide-cells"], size: 25_000 },
       tall: { imports: ["label", "format"], size: 25_000 },
       label: { size: 300 },
-      format: { imports: ["row-format"] },
+      // A barrel that leads to an `import()` target, which keeps it out of
+      // the group.
+      format: { imports: ["row-format", "row-sample"] },
+      "row-sample": { loadedBy: "entry", size: 300 },
       "row-format": { size: 300 },
       "wide-cells": { imports: ["cell"] },
       cell: { size: 300 },
@@ -668,8 +672,8 @@ describe("collectSharedGroupDependencies", () => {
     // what two groups that no page loads together import is no group's
     // module (side-label): it is copied into both.
     expect(groupModules.has("side-label")).toBe(false);
+    expect(groupModules.has("format")).toBe(false);
     expect([...collectSharedGroupDependencies(clientGraph, groupModules, sizeOf)].sort()).toEqual([
-      "format",
       "label",
       "row-format",
     ]);

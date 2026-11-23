@@ -850,14 +850,14 @@ export function collectSharedGroupModules(
 
 /**
  * Collect the small modules of the shared groups that two of the groups'
- * modules import, directly or through the groups' small modules (a barrel that
- * tree shaking removes). Tree shaking can split a group by the pages that use
+ * modules import, directly or through small modules (a barrel that tree
+ * shaking removes). Tree shaking can split a group by the pages that use
  * each of its modules and leave such a module a part under the group's
  * `minSize`, which Rolldown would copy into each importer's part: a page that
  * loads both would download it twice. These keep a file instead.
  */
 export function collectSharedGroupDependencies(
-  { infos }: PagesClientGraph,
+  { infos, entries }: PagesClientGraph,
   groupModules: ReadonlyMap<string, string>,
   sizeOf: (id: string) => number,
 ): Set<string> {
@@ -865,6 +865,7 @@ export function collectSharedGroupDependencies(
   const groupImporters = (id: string) =>
     infos.get(id)!.importers.filter((importer) => groupModules.has(importer));
 
+  const entryIds = new Set(entries);
   const dependencies = new Set<string>();
   for (const id of groupModules.keys()) {
     if (!isSmall(id)) continue;
@@ -878,11 +879,11 @@ export function collectSharedGroupDependencies(
     const visited = new Set([id]);
     const pending = [id];
     while (pending.length > 0) {
-      for (const importer of groupImporters(pending.pop()!)) {
-        if (visited.has(importer)) continue;
+      for (const importer of infos.get(pending.pop()!)!.importers) {
+        if (visited.has(importer) || entryIds.has(importer)) continue;
         visited.add(importer);
         if (isSmall(importer)) pending.push(importer);
-        else largeImporters.add(importer);
+        else if (groupModules.has(importer)) largeImporters.add(importer);
       }
     }
     if (largeImporters.size >= 2) dependencies.add(id);
