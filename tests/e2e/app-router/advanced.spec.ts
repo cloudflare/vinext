@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Request } from "@playwright/test";
 import {
   isAppRouterRscRequestForPath,
   isAppRouterServerActionRequestForPath,
@@ -454,7 +454,16 @@ test.describe("Intercepting Routes", () => {
     const sourceFetchReleased = new Promise<void>((resolve) => {
       releaseSourceFetch = resolve;
     });
-    let heldSourceFetch = false;
+    let heldSourceFetch: Request | undefined;
+    // Check only once the held fetch has settled, or been aborted, so a slow
+    // source page can't let the redirect act after the assertions.
+    const sourceFetchSettled = new Promise<void>((resolve) => {
+      const settle = (request: Request) => {
+        if (request === heldSourceFetch) resolve();
+      };
+      page.on("requestfinished", settle);
+      page.on("requestfailed", settle);
+    });
     await page.route(
       (url) => url.pathname === "/nextjs-compat/intercept-source-group/club/static",
       async (route) => {
@@ -462,7 +471,7 @@ test.describe("Intercepting Routes", () => {
           await route.continue();
           return;
         }
-        heldSourceFetch = true;
+        heldSourceFetch = route.request();
         sourceFetchStarted();
         await sourceFetchReleased;
         await route.continue().catch(() => {});
@@ -475,8 +484,8 @@ test.describe("Intercepting Routes", () => {
     await expect(page).toHaveURL(/\/intercept-source-group\/club\/static$/);
     await expect(page.locator("#intercept-source-group-static")).toBeVisible();
     releaseSourceFetch();
-
-    await page.waitForTimeout(1000);
+    await sourceFetchSettled;
+    await page.waitForTimeout(250);
     await expect(page).toHaveURL(/\/intercept-source-group\/club\/static$/);
     await expect(page.locator("#intercept-source-group-static")).toBeVisible();
     await expect(page.locator("#intercept-source-group-peek")).toHaveCount(0);
