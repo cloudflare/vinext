@@ -551,7 +551,10 @@ export async function handleSsr(
       clientPageSearchParamsGate &&
       options?.pprFallbackShellSignal === undefined &&
       options?.isForceStatic !== true
-        ? createClientPageSearchParamsHang(options?.signal)
+        ? createClientPageSearchParamsHang(
+            options?.signal,
+            options?.preloadRoutePattern ?? requiredNavigationContext.pathname,
+          )
         : null;
     const ssrNavigationContext = {
       ...requiredNavigationContext,
@@ -844,7 +847,8 @@ export async function handleSsr(
           signal: renderSignal,
           onError: handleRenderError,
         };
-        function handleRenderError(error: unknown): string | undefined {
+        function handleRenderError(renderError: unknown): string | undefined {
+          const error = clientPageSearchParamsHang?.reportedError(renderError) ?? renderError;
           if (pprFallbackShellSignal && isPprFallbackShellAbortError(error)) {
             return undefined;
           }
@@ -954,6 +958,9 @@ export async function handleSsr(
           // tree to them from the shell's postponed state. A shell whose
           // holes are all in its payload has no HTML left to render.
           if (pprShellResume.postponed === null) {
+            // Nothing reads the payload's SSR branch, which would otherwise
+            // queue the whole payload beside the one sent.
+            void ssrStream.cancel().catch(() => {});
             htmlStream = createUtf8Stream("");
           } else {
             const resumedHtmlStream = await runWithStreamedClientReferences(
