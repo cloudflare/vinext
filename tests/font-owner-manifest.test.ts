@@ -126,7 +126,7 @@ describe("fontRouteFiles", () => {
     ],
     key: `${name}:/app/@${name}`,
     layoutIndex: 0,
-    layoutPath: null,
+    layoutPath: `/app/@${name}/layout.tsx`,
     loadingPath: null,
     name,
     notFoundPath: null,
@@ -137,7 +137,7 @@ describe("fontRouteFiles", () => {
   });
 
   // A slot renders its page when it has one, and its default only otherwise.
-  it("takes a slot's default only when the slot has no page", () => {
+  it("takes a slot's default, without its layout, only when the slot has no page", () => {
     const files = fontRouteFiles({
       errorPath: null,
       layouts: ["/app/layout.tsx"],
@@ -152,6 +152,9 @@ describe("fontRouteFiles", () => {
     expect(files).toContain("/app/@modal/page.tsx");
     expect(files).not.toContain("/app/@modal/default.tsx");
     expect(files).toContain("/app/@side/default.tsx");
+    // The slot's layout wraps its page, never its default.
+    expect(files).toContain("/app/@modal/layout.tsx");
+    expect(files).not.toContain("/app/@side/layout.tsx");
     expect(files.some((file) => file.includes("(.)item"))).toBe(false);
   });
 });
