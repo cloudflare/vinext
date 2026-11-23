@@ -8616,6 +8616,7 @@ describe("app page dispatch", () => {
                   prelude: true,
                   postponed: { resumableState: {} },
                   resumeDataCache: null,
+                  generated: null,
                 }),
               })
             : null,
