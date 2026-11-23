@@ -16,9 +16,14 @@ test("preloaded ssr:false component commits with the page after a client navigat
   await page.goto(`${BASE}/nextjs-compat/dynamic/ssr-false-preloaded`);
   await waitForAppRouterHydration(page);
 
-  // Load the widget's module before the click, then let it settle.
+  // Load the widget's module before the click, and wait until the loader's
+  // promise has settled, so the click always takes the preloaded path.
   await page.hover("#ssr-false-preloaded-link");
-  await page.waitForTimeout(500);
+  await page.waitForFunction(
+    () =>
+      (window as unknown as { __ssrFalsePreloadedWidgetReady?: boolean })
+        .__ssrFalsePreloadedWidgetReady === true,
+  );
 
   await page.evaluate(() => {
     const w = window as unknown as { __times: Record<string, number> };

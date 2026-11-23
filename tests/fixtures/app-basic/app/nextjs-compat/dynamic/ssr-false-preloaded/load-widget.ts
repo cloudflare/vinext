@@ -4,4 +4,9 @@
 // loaded chunks in microtasks), which this fixture keeps out of the test.
 let widget: Promise<typeof import("./widget")> | undefined;
 
-export const loadWidget = () => (widget ??= import("./widget"));
+export const loadWidget = () =>
+  (widget ??= import("./widget").then((mod) => {
+    // Lets the e2e test wait until the preload has settled before it clicks.
+    (window as { __ssrFalsePreloadedWidgetReady?: boolean }).__ssrFalsePreloadedWidgetReady = true;
+    return mod;
+  }));
