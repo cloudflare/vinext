@@ -685,6 +685,77 @@ describe("createAppRscHandler", () => {
     expect(workUnitType).toBe("request");
   });
 
+  it.each([{ split: false }, { split: true }])(
+    "gives an RSC request its route's fallback shells, which a regeneration fills (split: $split)",
+    async ({ split }) => {
+      const route = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/blog/:slug",
+        routeSegments: ["blog", "[slug]"],
+      });
+      const fallbackShell = {
+        fallbackParamNames: ["slug"],
+        params: { slug: "[slug]" },
+        pathname: "/blog/[slug]",
+      };
+      let dispatchedShells: unknown;
+      const handler = createHandler({
+        createPprFallbackShells: () => [fallbackShell],
+        dispatchMatchedPage: async (options) => {
+          dispatchedShells = options.pprFallbackCacheShells;
+          return new Response("flight", { headers: { "content-type": "text/x-component" } });
+        },
+        matchRoute: (pathname) =>
+          pathname === "/blog/a" ? { params: { slug: "a" }, route } : null,
+      });
+
+      const response = split
+        ? await handler.handleResponseStage(
+            new Request("https://example.test/docs/blog/a", { headers: { [RSC_HEADER]: "1" } }),
+            null,
+            {
+              kind: "app-page",
+              buildId: "build-id",
+              cacheability: {
+                policyHeaders: null,
+                probeMode: null,
+                resolvedRoutePathname: "/blog/a",
+              },
+              bypassInterceptionContextCache: false,
+              cachePathname: "/blog/a",
+              canUseCanonicalLoadingShell: false,
+              canonicalPathname: "/blog/a",
+              cleanPathname: "/blog/a",
+              draftModeCookie: null,
+              interceptionContext: null,
+              interceptionId: null,
+              isRscRequest: true,
+              matchKind: "resolved",
+              middlewareCookieOverlay: null,
+              mountedSlotsHeader: null,
+              params: { slug: "a" },
+              protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+              requestOrigin: "https://example.test",
+              renderMode: "navigation",
+              resolvedUrl: "/blog/a",
+              routePattern: "/blog/:slug",
+              routePathname: "/blog/a",
+              scriptNonce: null,
+            },
+          )
+        : await handler(
+            new Request("https://example.test/docs/blog/a?_rsc", {
+              headers: { [RSC_HEADER]: "1" },
+            }),
+            null,
+          );
+
+      expect(response.status).toBe(200);
+      expect(dispatchedShells).toEqual([fallbackShell]);
+    },
+  );
+
   it.each([
     {
       name: "an authorized on-demand revalidation",

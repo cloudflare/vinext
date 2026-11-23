@@ -401,13 +401,10 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           });
         }
 
+        // An RSC request never resumes these shells, but a regeneration it
+        // triggers renders the document and fills the ones that are missing.
         let pprFallbackCacheShells: AppPagePprFallbackCacheShell[] = [];
-        if (
-          options.createPprFallbackShells &&
-          request.method === "GET" &&
-          !normalized.isRscRequest &&
-          route.params
-        ) {
+        if (options.createPprFallbackShells && request.method === "GET" && route.params) {
           pprFallbackCacheShells = options.createPprFallbackShells(
             {
               params: route.params,

@@ -3075,11 +3075,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         ? requestPathname || "/"
         : cleanPathname || "/";
     const matchedResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
+    // An RSC request never resumes these shells, but a regeneration it
+    // triggers renders the document and fills the ones that are missing.
     let runtimeFallbackShells: AppPagePprFallbackCacheShell[] = [];
     if (
       options.createPprFallbackShells &&
       request.method === "GET" &&
-      !isRscRequest &&
       !isPrerenderFallbackShell &&
       route.params
     ) {
