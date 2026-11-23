@@ -106,7 +106,7 @@ describe("trackQueuedFlightRuns", () => {
       sides.push(side);
     }
     const sideReads = sides.map((side) => consume(side));
-    const hang = createClientPageSearchParamsHang(undefined);
+    const hang = createClientPageSearchParamsHang(undefined, "/page");
     const flight = trackQueuedFlightRuns(
       hang.trackFlightConsumed(startCandidateSearchParamsGate().settleWhenConsumed(ssrStream)),
     );

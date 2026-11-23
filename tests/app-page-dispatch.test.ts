@@ -9025,6 +9025,21 @@ describe("app page dispatch", () => {
     },
   );
 
+  it("gives a fallback shell reached through a rewrite the browser's pathname", async () => {
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      isrGet: createPprBlogFallbackShellGetter(false),
+    });
+
+    const body = await (
+      await dispatchAppPage({ ...options, displayPathname: "/posts/new-post" })
+    ).text();
+
+    expect(body).toContain("Locale: en");
+    expect(body).toContain("/posts/new-post");
+    expect(body).not.toContain("/en/blog/new-post");
+  });
+
   it("renders an on-demand revalidation blocking instead of resuming its fallback shell", async () => {
     const buildPageElement = createParamTextPageElement();
     const isrGet = createPprBlogFallbackShellGetter(false);
@@ -10014,6 +10029,35 @@ describe("query-free App page ISR entries", () => {
 
   afterAll(() => {
     Reflect.deleteProperty(Object.prototype, "viteRsc");
+  });
+
+  it("cancels the unread SSR payload of a shell resumed with holes only in its payload", async () => {
+    let cancelled = false;
+    // The payload never ends on its own, as one still streaming its holes.
+    const rscStream = new ReadableStream<Uint8Array>({
+      pull() {},
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const sideStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+
+    const navigation: NavigationContext = {
+      params: { slug: "hello" },
+      pathname: "/posts/hello",
+      searchParams: new URLSearchParams(),
+    };
+    const html = await productionHandleSsr(rscStream, navigation, undefined, {
+      pprShellResume: { postponed: null, prelude: "<!DOCTYPE html><html><head></head><body>" },
+      sideStream,
+    });
+    await new Response(html).text();
+
+    expect(cancelled).toBe(true);
   });
 
   function SearchValue(): React.ReactNode {
