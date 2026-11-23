@@ -141,9 +141,9 @@ function createBlogElements(): AppElements {
   };
 }
 
-function createBlogLoadingShellElements(): AppElements {
-  const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
-  const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+function createBlogLoadingShellElements(renderedPath = "/blog/post-1"): AppElements {
+  const routeId = AppElementsWire.encodeRouteId(renderedPath, null);
+  const pageId = AppElementsWire.encodePageId(renderedPath, null);
   return {
     ...AppElementsWire.createMetadataEntries({
       interceptionContext: null,
@@ -467,7 +467,7 @@ describe("App Router optimistic routing", () => {
         },
       ],
     );
-    const elements = createBlogLoadingShellElements();
+    const elements = createBlogLoadingShellElements("/vercel/sub/folder");
     const template = createOptimisticRouteTemplate({
       allowLoadingShell: true,
       basePath: "",
@@ -559,6 +559,168 @@ describe("App Router optimistic routing", () => {
     expect(createOptimisticRouteElements(template!)[childrenSlotId]).not.toBe(
       elements[childrenSlotId],
     );
+  });
+
+  it("does not learn a template from a payload a rewrite rendered for another route", () => {
+    // app/[locale]/[...rest], app/[locale]/datasets/[id] and
+    // app/[locale]/accounts/[id]/reports, with middleware rewriting `/x` to
+    // `/ja/x`. Next.js learns no pattern from a URL that doesn't match the
+    // route tree it rendered (discoverKnownRoutePart in
+    // segment-cache/optimistic-routes.ts).
+    const routeManifest = manifest([
+      route({
+        id: "route:/:locale/:rest+",
+        isDynamic: true,
+        paramNames: ["locale", "rest"],
+        pattern: "/:locale/:rest+",
+        patternParts: [":locale", ":rest+"],
+      }),
+      route({
+        id: "route:/:locale/datasets/:id",
+        isDynamic: true,
+        paramNames: ["locale", "id"],
+        pattern: "/:locale/datasets/:id",
+        patternParts: [":locale", "datasets", ":id"],
+      }),
+      route({
+        id: "route:/:locale/accounts/:id/reports",
+        isDynamic: true,
+        paramNames: ["locale", "id"],
+        pattern: "/:locale/accounts/:id/reports",
+        patternParts: [":locale", "accounts", ":id", "reports"],
+      }),
+    ]);
+    // `/datasets/x` reads as `[locale]=datasets` + `[...rest]`, but the server
+    // rendered `/ja/datasets/x`.
+    const learn = (elements: AppElements, allowLoadingShell: boolean) =>
+      createOptimisticRouteTemplate({
+        allowLoadingShell,
+        basePath: "",
+        elements,
+        href: "/datasets/x",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      });
+    const renderedRouteId = AppElementsWire.encodeRouteId("/ja/datasets/x", null);
+    const metadata = AppElementsWire.createMetadataEntries({
+      interceptionContext: null,
+      layoutIds: ["layout:/"],
+      rootLayoutTreePath: "/",
+      routeId: renderedRouteId,
+    });
+    const pageId = AppElementsWire.encodePageId("/ja/datasets/x", null);
+
+    const loadingShell = learn(
+      {
+        ...metadata,
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [pageId]: null,
+        [renderedRouteId]: createElement("p", null, "Loading dataset..."),
+      },
+      true,
+    );
+    const fullPrefetch = learn(
+      {
+        ...metadata,
+        [pageId]: createElement("article", null, "Dataset x"),
+        [renderedRouteId]: createElement(
+          Suspense,
+          { fallback: createElement("p", null, "Loading dataset...") },
+          createElement("main", null, "Page slot"),
+        ),
+      },
+      false,
+    );
+    expect(loadingShell?.routeId ?? null).toBeNull();
+    expect(fullPrefetch?.routeId ?? null).toBeNull();
+
+    // So a navigation to `/accounts/a/reports`, which also reads as
+    // `[...rest]`, gets no shell.
+    const templates = new Map<string, OptimisticRouteTemplate>();
+    for (const template of [loadingShell, fullPrefetch]) {
+      if (template === null) continue;
+      templates.set(
+        getOptimisticRouteTemplateKey({
+          interceptionContext: null,
+          mountedSlotsHeader: null,
+          routeId: template.routeId,
+        }),
+        template,
+      );
+    }
+    expect(
+      resolveOptimisticNavigationPayload({
+        basePath: "",
+        href: "/accounts/a/reports",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+        templates,
+      })?.template.routeId ?? null,
+    ).toBeNull();
+  });
+
+  it("learns a template from a payload a rewrite rendered for the same route", () => {
+    // Next.js checks only static segments against the URL, so a rewrite to
+    // other params of the same route still teaches its pattern.
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "/docs",
+      elements: createBlogLoadingShellElements("/blog/post-2"),
+      href: "/docs/blog/post-1?_rsc=abc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: blogManifest(),
+    });
+
+    expect(template?.routeId).toBe("route:/blog/:slug");
+    expect(template?.params).toEqual({ slug: "post-1" });
+  });
+
+  it("matches a rewritten payload's route like the server, past a static dead end", () => {
+    // The server renders `/dashboard/settings/profile` with the catch-all, as
+    // it falls back from the static `settings` branch.
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: createBlogLoadingShellElements("/dashboard/settings/profile"),
+      href: "/dashboard/foo",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: dashboardManifestWithoutProfile(),
+    });
+
+    expect(template?.routeId).toBe("route:/dashboard/:catchall+");
+    expect(template?.params).toEqual({ catchall: ["foo"] });
+  });
+
+  it("does not decode a rewritten payload's route path again", () => {
+    const routeManifest = manifest([
+      route({ id: "route:/a", isDynamic: false, pattern: "/a", patternParts: ["a"] }),
+      route({
+        id: "route:/:slug",
+        isDynamic: true,
+        paramNames: ["slug"],
+        pattern: "/:slug",
+        patternParts: [":slug"],
+      }),
+    ]);
+    // `/[slug]` serves `/%2561`, whose route path the server decoded once to
+    // `/%61`. That is not the static `/a`.
+    const learn = (href: string) =>
+      createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: createBlogLoadingShellElements("/%61"),
+        href,
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      });
+
+    expect(learn("/b")?.routeId).toBe("route:/:slug");
+    expect(learn("/a")?.routeId ?? null).toBeNull();
   });
 
   it("does not learn routes without a loading boundary", () => {
