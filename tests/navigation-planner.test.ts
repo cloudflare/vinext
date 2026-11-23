@@ -1247,6 +1247,99 @@ describe("navigationPlanner root-boundary decisions", () => {
     expect(unknownRoot.proposal.preserveElementIds).toEqual([]);
   });
 
+  // A link in the whole intercepting route sends its source as the
+  // interception context again, as Next.js does, so an ordinary interception
+  // from that source commits over it.
+  it("accepts an interception from the source of the visible whole intercepting route", () => {
+    const peekSlot = "slot:peek:/";
+    const wholeSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/(shared)/club/[slug]"],
+        [],
+        [createSlotBinding(peekSlot, "layout:/", "default")],
+      ),
+      displayUrl: "https://example.com/club/static/pics/1",
+      interceptionContext: "/club/static",
+      matchedUrl: "/club/static/pics/1",
+      routeId: "route:/club/static/pics/1",
+      wholeInterceptionSource: "/club/static",
+    };
+    const peekSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/"],
+        [],
+        [createSlotBinding(peekSlot, "layout:/", "active")],
+      ),
+      displayUrl: "https://example.com/peek",
+      interception: createInterceptionSnapshot({
+        slotId: peekSlot,
+        sourceMatchedUrl: "/club/static",
+        sourceRouteId: "route:/club/static",
+        targetMatchedUrl: "/peek",
+        targetRouteId: "route:/peek",
+      }),
+      interceptionContext: "/club/static",
+      matchedUrl: "/peek",
+      routeId: "route:/peek\u0000/club/static",
+    };
+    const routeManifest = createTestRouteManifest([
+      {
+        id: "route:/club/[slug]",
+        interceptions: [
+          {
+            ownerLayoutId: "layout:/",
+            slotId: peekSlot,
+            sourcePattern: "/",
+            targetPattern: "/peek",
+          },
+        ],
+        layoutIds: ["layout:/"],
+        pattern: "/club/:slug",
+        rootBoundaryId: "root-boundary:/",
+      },
+      {
+        id: "route:/club/[slug]/pics/[id]",
+        layoutIds: ["layout:/", "layout:/(shared)/club/[slug]"],
+        pattern: "/club/:slug/pics/:id",
+        rootBoundaryId: "root-boundary:/",
+      },
+      {
+        id: "route:/peek",
+        layoutIds: ["layout:/"],
+        pattern: "/peek",
+        rootBoundaryId: "root-boundary:/",
+      },
+    ]);
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot: wholeSnapshot,
+      routeManifest,
+      targetSnapshot: peekSnapshot,
+    });
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+    expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
+    expect(decision.proposal.preserveElementIds).toEqual(["layout:/"]);
+
+    // The proof must still name the source the whole intercepting route
+    // rendered for, not another page of the same route.
+    const otherSource = planFlightResponseFromSnapshots({
+      currentSnapshot: {
+        ...wholeSnapshot,
+        interceptionContext: "/club/other",
+        wholeInterceptionSource: "/club/other",
+      },
+      routeManifest,
+      targetSnapshot: peekSnapshot,
+    });
+    expect(otherSource.kind).toBe("hardNavigate");
+    expect(otherSource.trace.entries[0]?.code).toBe(
+      NavigationTraceReasonCodes.interceptedRejectedUnknownSource,
+    );
+  });
+
   it("does not preserve default target slots when their owner layout is not retained", () => {
     const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(

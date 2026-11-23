@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 export const metadata = { title: "Pic modal" };
@@ -22,6 +23,7 @@ export default async function PicModal({
           Second pic
         </button>
       </form>
+      <Link href="/nextjs-compat/intercept-source-group/peek">Peek</Link>
     </>
   );
 }

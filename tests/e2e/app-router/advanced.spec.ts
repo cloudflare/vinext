@@ -292,6 +292,36 @@ test.describe("Intercepting Routes", () => {
     );
   });
 
+  // A link in the whole intercepting route sends its source again, as Next.js
+  // does, so an interception from that source into a slot of a layout both
+  // trees share opens softly over it.
+  test("opens an interception from the source of the whole intercepting route", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Pic 1", exact: true }).click();
+    await expectWholeInterceptingRoute(page, /\/intercept-source-group\/club\/static\/pics\/1$/);
+
+    const navigation = page.waitForRequest(
+      (request) =>
+        request.url().includes("/intercept-source-group/peek") &&
+        request.headers()["rsc"] === "1" &&
+        request.headers()["next-router-prefetch"] === undefined,
+    );
+    await page.getByRole("link", { name: "Peek", exact: true }).click();
+    expect((await navigation).headers()["x-vinext-interception-context"]).toBe(
+      "/nextjs-compat/intercept-source-group/club/static",
+    );
+    await expect(page).toHaveURL(/\/intercept-source-group\/peek$/);
+    await expect(page.locator("#intercept-source-group-peek-modal")).toHaveText("Peek modal");
+    await expect(page.locator("#intercept-source-group-peek")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
+  });
+
   // The interception rewrite takes every param of the intercepting route from
   // the source, those of the slot's folders above the marker too.
   test("takes the params of the slot's folders from the source of the whole intercepting route", async ({
