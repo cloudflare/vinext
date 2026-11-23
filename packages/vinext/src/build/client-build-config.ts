@@ -601,8 +601,10 @@ export function createPagesClientCodeSplittingConfig(
     // sets the options that Rolldown asks for to leave dependencies out.
     includeDependenciesRecursively: false,
     // The pages that load a module are counted before tree shaking, so the
-    // chunk is split by the entries that use each part of it after.
+    // chunk is split by the entries that use each part of it after, and a
+    // part under the size is copied into them.
     entriesAware: true,
+    minSize: PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
   };
 
   return {

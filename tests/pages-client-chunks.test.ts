@@ -147,6 +147,13 @@ describe("Pages Router client chunks", () => {
       expect(pageChunk("pages/alpha.tsx").imports).not.toContain(tallChunks[0]!.fileName);
       expect(pageChunk("pages/gamma.tsx").imports).not.toContain(wideChunks[0]!.fileName);
       expect(chunksWith(chunks, "/lib/rows/row-label.ts")).toHaveLength(1);
+
+      // What tree shaking leaves of a group under 20 kB is copied into the
+      // pages that use it.
+      expect(facadesOf(chunksWith(chunks, "/lib/notes/alpha-notes.ts"))).toEqual([
+        "pages/alpha.tsx",
+      ]);
+      expect(facadesOf(chunksWith(chunks, "/lib/notes/beta-notes.ts"))).toEqual(["pages/beta.tsx"]);
     }
 
     // Each copy's CSS joins its page's stylesheet.
