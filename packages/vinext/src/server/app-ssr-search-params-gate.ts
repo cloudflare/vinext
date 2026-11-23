@@ -5,6 +5,10 @@ import {
 } from "vinext/shims/internal/headers-state";
 import { BailoutToCSRError } from "vinext/shims/navigation-errors";
 import { createSearchParamsGate, type SearchParamsGate } from "vinext/shims/search-params-gate";
+import {
+  isHangingPromiseRejectionError,
+  makeHangingPromise,
+} from "vinext/shims/internal/make-hanging-promise";
 
 type CandidateSearchParamsGate = {
   gate: SearchParamsGate;
@@ -110,10 +114,18 @@ export function resolveSsrSearchParams(
 type ClientPageSearchParamsHang = {
   /** The render's signal, which also aborts once a hung render settles. */
   signal: AbortSignal;
-  /** A client page's `searchParams` bailed out and hang. */
-  onHang: () => void;
+  /**
+   * A client page's `searchParams` bailed out: what they hang on, which rejects
+   * once the render aborts.
+   */
+  onHang: () => Promise<never>;
   /** Wrap the Flight stream SSR reads, to learn when it has read it all. */
   trackFlightConsumed: (flightStream: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+  /**
+   * The error a render error stands for: a hung `searchParams` rejecting
+   * after the render aborted reports the abort, as React would without it.
+   */
+  reportedError: (error: unknown) => unknown;
   dispose: () => void;
 };
 
@@ -128,8 +140,10 @@ type ClientPageSearchParamsHang = {
  */
 export function createClientPageSearchParamsHang(
   signal: AbortSignal | undefined,
+  route: string,
 ): ClientPageSearchParamsHang {
   const controller = new AbortController();
+  const renderSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   let hung = false;
   let consumed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -144,10 +158,14 @@ export function createClientPageSearchParamsHang(
     abortIfSettled();
   };
   return {
-    signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+    signal: renderSignal,
     onHang() {
       hung = true;
       abortIfSettled();
+      // Like Next.js's, it rejects once the render aborts. React listens to
+      // the signal from the render's start, so it aborts first, and a page
+      // that catches the rejection renders nothing into the response.
+      return makeHangingPromise<never>(renderSignal, route, "`searchParams`");
     },
     trackFlightConsumed(flightStream) {
       const reader = flightStream.getReader();
@@ -173,6 +191,11 @@ export function createClientPageSearchParamsHang(
           return reader.cancel(reason);
         },
       });
+    },
+    reportedError(error) {
+      return renderSignal.aborted && isHangingPromiseRejectionError(error)
+        ? renderSignal.reason
+        : error;
     },
     dispose() {
       clearTimeout(timer);
