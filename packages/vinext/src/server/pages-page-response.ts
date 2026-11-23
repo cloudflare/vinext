@@ -24,7 +24,8 @@ import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
 import { pagesPathCacheTag } from "./pages-cache-tag.js";
 import { applyPrerenderCacheLifeHeader } from "./prerender-cache-life-header.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
-import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
+import { createNonceAttribute, createPagesFontPreloadTag, escapeHtmlAttr } from "./html.js";
+import type { FontPreload } from "vinext/shims/font-utils";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { reportRequestError } from "./instrumentation.js";
 import {
@@ -114,11 +115,6 @@ export function applyPagesPrerenderRevalidateHeader(
   }
 }
 
-type PagesFontPreload = {
-  href: string;
-  type: string;
-};
-
 /**
  * The `__NEXT_DATA__` fields beyond the always-present core that the Pages
  * renderer serializes: the `__vinext` block plus the readiness flags
@@ -182,7 +178,7 @@ type RenderPagesPageResponseOptions = {
   err?: Error;
   flushPreloads?: (() => Promise<void> | void) | undefined;
   fontLinkHeader: string;
-  fontPreloads: PagesFontPreload[];
+  fontPreloads: FontPreload[];
   getFontLinks: () => string[];
   getFontStyles: () => string[];
   getSSRHeadHTML?: (() => string) | undefined;
@@ -272,7 +268,7 @@ type RenderPagesPageResponseOptions = {
 
 function buildPagesFontHeadHtml(
   fontLinks: string[],
-  fontPreloads: PagesFontPreload[],
+  fontPreloads: FontPreload[],
   fontStyles: string[],
   scriptNonce?: string,
 ): string {
@@ -286,7 +282,7 @@ function buildPagesFontHeadHtml(
   for (const preload of fontPreloads) {
     // Font files are content-hashed immutable assets. Keep the preload URL
     // byte-identical to the @font-face source so the browser consumes it.
-    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin="anonymous" />\n  `;
+    html += createPagesFontPreloadTag(preload, nonceAttr);
   }
 
   if (fontStyles.length > 0) {

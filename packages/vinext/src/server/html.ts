@@ -1,3 +1,5 @@
+import type { FontPreload } from "vinext/shims/font-utils";
+
 /**
  * HTML-safe JSON serialization for embedding data in <script> tags.
  *
@@ -67,6 +69,14 @@ export function escapeHtmlAttr(value: string): string {
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+export function createPagesFontPreloadTag(preload: FontPreload, nonceAttr: string): string {
+  const fontMetadata =
+    preload.sizeAdjusted === undefined
+      ? ""
+      : ` data-next-font="${preload.sizeAdjusted ? "size-adjust" : ""}"`;
+  return `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin="anonymous"${fontMetadata} />\n  `;
 }
 
 const HTML_SPACE_RE = /[\t\n\f\r ]+/;

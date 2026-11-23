@@ -13,6 +13,7 @@
  */
 
 import type { ComponentType, ReactNode } from "react";
+import type { FontPreload } from "vinext/shims/font-utils";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
@@ -371,7 +372,7 @@ export type CreatePagesPageHandlerOptions = {
   /** Combined styles from `next/font/google` + `next/font/local`. */
   getFontStyles: () => string[];
   /** Combined font preloads. */
-  getFontPreloads: () => Array<{ href: string; type: string }>;
+  getFontPreloads: () => FontPreload[];
   /** `renderToReadableStream` from `react-dom/server`. */
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
   /** `safeJsonStringify` from `vinext/html`. */
@@ -990,7 +991,7 @@ export function createPagesPageHandler(
 
         // Build font Link header early — available for ISR cached responses too.
         let fontLinkHeader = "";
-        let allFontPreloads: Array<{ href: string; type: string }> = [];
+        let allFontPreloads: FontPreload[] = [];
         try {
           allFontPreloads = getFontPreloads();
           if (allFontPreloads.length > 0) {
