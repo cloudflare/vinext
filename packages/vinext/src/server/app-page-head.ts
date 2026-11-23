@@ -16,8 +16,11 @@ import type { AppPageParams } from "./app-page-boundary.js";
 import { tagAppPageMetadataError } from "./app-page-execution.js";
 import { createAppMetadataModuleRoute, traceGenerateMetadata } from "./app-metadata-tracing.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
+import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 import { filterMetadataRoutesForSegments } from "./metadata-route-segments.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
+import { extractRawRoutePatternParams, routePatternParts } from "../routing/route-pattern.js";
+import { isInvisibleSegment, splitPathSegments } from "../routing/utils.js";
 import { compareFolderNames } from "../utils/compare.js";
 import { searchParamsToRecord } from "../utils/query.js";
 
@@ -574,8 +577,9 @@ export function slotInterceptKeepsSourceHead(options: {
  * down to the intercepting page, route groups and the marker's folder
  * included. The deepest file of each kind wins along that path, and a dynamic
  * one is filled with the intercepting route's params, whose segments above the
- * marker take the source's values, as Next.js's interception rewrite captures
- * them from the source URL. Other renders read every file.
+ * marker take the source URL's values, as Next.js's interception rewrite
+ * captures them from it, even where the source route doesn't declare them.
+ * Other renders read every file.
  */
 export function resolveInterceptHeadFileMetadata(options: {
   interceptParams?: AppPageParams | null;
@@ -585,6 +589,8 @@ export function resolveInterceptHeadFileMetadata(options: {
    * route, or the intercepting tree a render beneath its source renders.
    */
   interceptSlotKey?: string | null;
+  /** The source URL the intercept was matched from. */
+  interceptSourceMatchedUrl?: string | null;
   isSiblingIntercept: boolean;
   metadataRoutes: readonly MetadataFileRoute[];
   /** The rendered route's params: the source's, for an intercepted render. */
@@ -630,14 +636,25 @@ export function resolveInterceptHeadFileMetadata(options: {
         : [...ownerSegments, slotSegment];
   if (!segments) return { metadataRoutes: options.metadataRoutes };
   const markerIndex = segments.findIndex((segment) => /^\(\.{1,3}\)/.test(segment));
+  const sourceSegments = markerIndex < 0 ? segments : segments.slice(0, markerIndex);
+  // The source URL matched the intercepting route's pattern, its descendants
+  // allowed, so each of its leading parts fills the segment at its position.
+  const sourceCaptures = options.interceptSourceMatchedUrl
+    ? extractRawRoutePatternParams(
+        routePatternParts(
+          sourceSegments.filter((segment) => !isInvisibleSegment(segment)).join("/"),
+        ),
+        splitPathSegments(options.interceptSourceMatchedUrl.split("?")[0]),
+      )
+    : {};
+  canonicalizeAppPageParams(sourceCaptures);
   return {
     fileMetadataParams: {
       ...(options.interceptParams ?? options.params),
-      ...resolveAppPageSegmentParams(
-        segments,
-        markerIndex < 0 ? segments.length : markerIndex,
-        options.params,
-      ),
+      ...resolveAppPageSegmentParams(sourceSegments, sourceSegments.length, {
+        ...options.params,
+        ...sourceCaptures,
+      }),
     },
     fileMetadataRouteSegments: segments,
     metadataRoutes: filterMetadataRoutesForSegments(options.metadataRoutes, segments),

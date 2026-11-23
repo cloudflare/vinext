@@ -753,6 +753,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
           : null;
       const headFileMetadata = resolveInterceptHeadFileMetadata({
         interceptParams: intercept?.interceptParams ?? null,
+        interceptSourceMatchedUrl: intercept?.interceptSourceMatchedUrl ?? null,
         interceptSourcePageSegments: intercept?.interceptSourcePageSegments ?? null,
         interceptSlotKey:
           slotInterceptKey !== null &&

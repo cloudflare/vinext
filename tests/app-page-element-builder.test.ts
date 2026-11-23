@@ -5363,6 +5363,59 @@ describe("buildPageElements", () => {
           expect(imageUrls(metadata, "openGraph")).toEqual([expected]);
         },
       );
+
+      // A static source route doesn't declare the slot's own dynamic folder
+      // above the marker, which the rewrite still captures from its URL.
+      it("fills a slot's dynamic folder above the marker from a static source's URL", async () => {
+        const route = createSyntheticRoute({
+          layouts: [{ default: ({ children }) => children } as AppPageModule],
+          layoutTreePositions: [1],
+          page: null,
+          pattern: "/teams/acme",
+          routeSegments: ["teams", "acme"],
+          slots: {
+            modal: {
+              name: "modal",
+              default: createSyntheticPageModule(() => null),
+              layoutIndex: 0,
+              ownerTreePosition: 1,
+              routeSegments: [],
+            },
+          },
+        });
+        const file = ["teams", "@modal", "[team]", "(.)pics", "[id]"];
+        const elements = await buildPageElements({
+          ...createBaseOptions({
+            route,
+            routePath: "/teams/bravo/pics/1",
+            opts: {
+              interceptionContext: "/teams/acme",
+              interceptPage: {
+                default: () => null,
+                generateMetadata: () => ({ title: "Pic 1" }),
+              } as AppPageModule,
+              interceptParams: { id: "1", team: "bravo" },
+              interceptSlotId: "slot:modal:/teams",
+              interceptSlotKey: "modal",
+              interceptSourceMatchedUrl: "/teams/acme",
+              interceptSourcePageSegments: file,
+              rendersInterceptionSource: true,
+            },
+          }),
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", file, {
+              servedUrl: "/teams/[team]/(.)pics/[id]/opengraph-image-abc",
+            }),
+          ],
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual([
+          "/teams/acme/(.)pics/1/opengraph-image-abc",
+        ]);
+      });
     });
 
     // Only the kept head's own render knew where it placed its streamed tags,

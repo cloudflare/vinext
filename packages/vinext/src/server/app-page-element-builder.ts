@@ -695,6 +695,7 @@ export async function buildPageElements<
   );
   const headFileMetadata = resolveInterceptHeadFileMetadata({
     interceptParams: opts?.interceptParams ?? null,
+    interceptSourceMatchedUrl: opts?.interceptSourceMatchedUrl ?? null,
     interceptSourcePageSegments: opts?.interceptSourcePageSegments ?? null,
     isSiblingIntercept,
     // Beneath its source, the render is of the intercepting tree; rendered

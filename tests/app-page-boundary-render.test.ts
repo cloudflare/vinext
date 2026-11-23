@@ -1659,6 +1659,46 @@ describe("app page boundary render helpers", () => {
       });
     }
 
+    // A static source route doesn't declare the slot's own dynamic folder
+    // above the marker, which the rewrite still captures from its URL.
+    it("fills a slot's dynamic folder above the marker from a static source's URL", async () => {
+      const pageSegments = ["teams", "@modal", "[team]", "(.)pics", "[id]"];
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        intercept: {
+          interceptLayouts: [],
+          interceptPage,
+          interceptParams: { id: "1", team: "bravo" },
+          interceptSlotKey: "modal",
+          interceptSourceMatchedUrl: "/teams/acme",
+          interceptSourcePageSegments: pageSegments,
+        },
+        matchedParams: {},
+        metadataRoutes: [
+          metadataFile("opengraph-image", pageSegments, {
+            servedUrl: "/teams/[team]/(.)pics/[id]/opengraph-image-abc",
+          }),
+        ],
+        request: new Request("https://example.com/teams/bravo/pics/1"),
+        requestUrl: "https://example.com/teams/bravo/pics/1",
+        route: {
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          notFound: notFoundModuleWithMetadata,
+          notFoundTreePosition: 0,
+          page: null,
+          pattern: "/teams/acme",
+          routeSegments: ["teams", "acme"],
+          slots: { modal: { layoutIndex: 0, name: "modal", ownerTreePosition: 1, page: null } },
+        },
+        routeHead: UNPREPARED_ROUTE_HEAD,
+        statusCode: 404,
+      });
+      const html = await response?.text();
+
+      expect(html).toContain("/teams/acme/(.)pics/1/opengraph-image-abc");
+    });
+
     // A source page before the slot keeps the source route's head, which the
     // client keeps with its own files.
     it("keeps the source page's files for a slot intercept that keeps the source head", async () => {
