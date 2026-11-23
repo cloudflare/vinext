@@ -4,6 +4,7 @@ import React from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
+import { renderAppPageHttpAccessFallback } from "../packages/vinext/src/server/app-page-boundary-render.js";
 import { resolveAppPageInterceptSegmentConfig } from "../packages/vinext/src/server/app-page-intercept-segment-config.js";
 import {
   tagAppPageLayoutError,
@@ -4200,34 +4201,59 @@ describe("app page dispatch", () => {
     expect(production.isrSet).not.toHaveBeenCalled();
   });
 
-  // A whole intercepting route shows the route only down to the slot owner's
-  // folder, so none of a route group's files below the owner catches its
-  // errors or wraps its fallbacks, even once an earlier render of the group's
-  // own page loaded them.
-  const dispatchWholeRouteOverGroup = async (hasOwnerNotFound: boolean, buildError: Error) => {
-    const clubLayout = { default: () => null };
+  // A whole intercepting route renders as its own tree: down to the slot
+  // owner's folder, with the owner's `default` as its page and the other
+  // slots' defaults. So none of a route group's files below the owner catches
+  // its errors or wraps its fallbacks, and neither the owner's page nor another
+  // slot's page heads them, even once an earlier render of the owner's own
+  // page loaded them. Here `club/[...path]/@modal` sits beside
+  // `club/[...path]/(group)/page.tsx`.
+  const dispatchWholeRouteOverGroup = async (
+    buildError: Error,
+    {
+      hasOwnerNotFound = false,
+      renderFallback,
+    }: {
+      hasOwnerNotFound?: boolean;
+      renderFallback?: DispatchOptions["renderHttpAccessFallbackPage"];
+    } = {},
+  ) => {
+    const ownerLayout = { default: () => null };
     const groupLayout = { default: () => null };
     const ownerNotFound = { default: () => null };
     const groupNotFound = { default: () => null };
+    const ownerPage = { default: () => null, generateMetadata: vi.fn(() => ({ title: "Page" })) };
+    const sidePage = { default: () => null, generateMetadata: vi.fn(() => ({ title: "Side" })) };
+    const sideDefault = { default: () => null };
+    const ownerDefault = {
+      default: () => null,
+      generateMetadata: vi.fn(() => ({ title: "Club default" })),
+    };
     const route = createRoute({
       errors: [null, { default: () => null }],
       isDynamic: true,
-      layouts: [clubLayout, groupLayout],
-      layoutTreePositions: [1, 2],
+      layouts: [ownerLayout, groupLayout],
+      layoutTreePositions: [2, 3],
       notFound: groupNotFound,
-      notFoundTreePosition: 2,
+      notFoundTreePosition: 3,
       notFounds: [hasOwnerNotFound ? ownerNotFound : null, groupNotFound],
-      page: { default: () => null },
+      page: ownerPage,
       params: ["path"],
       pattern: "/club/[...path]",
-      routeSegments: ["club", "(group)", "[...path]"],
+      routeSegments: ["club", "[...path]", "(group)"],
       segmentNotFounds: hasOwnerNotFound ? [ownerNotFound, groupNotFound] : [groupNotFound],
-      segmentNotFoundTreePositions: hasOwnerNotFound ? [1, 2] : [2],
+      segmentNotFoundTreePositions: hasOwnerNotFound ? [2, 3] : [3],
       slots: {
-        "modal@app/club/@modal": {
+        "modal@app/club/[...path]/@modal": {
           default: { default: () => null },
           layoutIndex: 0,
-          ownerTreePosition: 1,
+          ownerTreePosition: 2,
+        },
+        "side@app/club/[...path]/@side": {
+          default: sideDefault,
+          layoutIndex: 0,
+          ownerTreePosition: 2,
+          page: sidePage,
         },
       },
     });
@@ -4235,40 +4261,48 @@ describe("app page dispatch", () => {
       async () => new Response("<html>error</html>", { status: 500 }),
     );
     const renderHttpAccessFallbackPage = vi.fn<DispatchOptions["renderHttpAccessFallbackPage"]>(
-      async () => new Response("<html>not found</html>", { status: 404 }),
+      renderFallback ?? (async () => new Response("<html>not found</html>", { status: 404 })),
     );
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw buildError;
       },
-      cleanPathname: "/club/pics/1",
+      cleanPathname: "/club/a/pics/1",
       findIntercept: () => ({
         interceptBranchSegments: ["(.)pics", "[id]"],
         matchedParams: { id: "1" },
-        ownerDefault: { default: () => null },
+        ownerDefault,
         page: { default: () => null },
         rendersWholeInterceptingRoute: true,
-        slotKey: "modal@app/club/@modal",
-        sourceMatchedParams: {},
+        slotKey: "modal@app/club/[...path]/@modal",
+        sourceMatchedParams: { path: ["a"] },
         sourceRouteIndex: 0,
       }),
       getSourceRoute: () => route,
-      interceptionContext: "/club",
+      interceptionContext: "/club/a",
       isRscRequest: true,
-      params: { path: ["pics", "1"] },
+      params: { path: ["a", "pics", "1"] },
       route,
     });
     options.renderErrorBoundaryPage = renderErrorBoundaryPage;
     options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
     const response = await dispatchAppPage(options);
     return {
-      clubLayout,
+      ownerDefault,
+      ownerLayout,
       ownerNotFound,
+      ownerPage,
       renderErrorBoundaryPage,
       renderHttpAccessFallbackPage,
-      status: response.status,
+      response,
+      sideDefault,
+      sidePage,
     };
   };
+  const createNotFoundSignal = () =>
+    Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    });
 
   it.each([
     { name: "the owner's not-found", hasOwnerNotFound: true },
@@ -4276,23 +4310,18 @@ describe("app page dispatch", () => {
   ])(
     "renders a whole intercepting route's notFound() in $name, not a deeper group's",
     async ({ hasOwnerNotFound }) => {
-      const { clubLayout, ownerNotFound, renderHttpAccessFallbackPage, status } =
-        await dispatchWholeRouteOverGroup(
-          hasOwnerNotFound,
-          Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
-            digest: "NEXT_HTTP_ERROR_FALLBACK;404",
-          }),
-        );
+      const { ownerLayout, ownerNotFound, renderHttpAccessFallbackPage, response } =
+        await dispatchWholeRouteOverGroup(createNotFoundSignal(), { hasOwnerNotFound });
 
-      expect(status).toBe(404);
+      expect(response.status).toBe(404);
       expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
         404,
         expect.objectContaining({
           boundaryModule: hasOwnerNotFound ? ownerNotFound : DEFAULT_NOT_FOUND_MODULE,
-          headLayouts: [clubLayout],
-          layouts: [clubLayout],
+          headLayouts: [ownerLayout],
+          layouts: [ownerLayout],
           route: expect.objectContaining({
-            layouts: [clubLayout],
+            layouts: [ownerLayout],
             notFound: hasOwnerNotFound ? ownerNotFound : null,
           }),
         }),
@@ -4303,21 +4332,85 @@ describe("app page dispatch", () => {
 
   it("renders a whole intercepting route's error page without a deeper group's files", async () => {
     const buildError = new Error("intercepting page failed");
-    const { clubLayout, renderErrorBoundaryPage, status } = await dispatchWholeRouteOverGroup(
-      false,
-      buildError,
-    );
+    const { ownerLayout, renderErrorBoundaryPage, response } =
+      await dispatchWholeRouteOverGroup(buildError);
 
-    expect(status).toBe(500);
+    expect(response.status).toBe(500);
     expect(renderErrorBoundaryPage).toHaveBeenCalledWith(
       buildError,
       undefined,
-      {},
+      { path: ["a"] },
       expect.objectContaining({
         errors: [null],
-        layouts: [clubLayout],
-        routeSegments: ["club"],
+        layouts: [ownerLayout],
+        routeSegments: ["club", "[...path]"],
       }),
+    );
+  });
+
+  // The render threw before its head started, so the fallback resolves the
+  // head from the route it receives, as the whole intercepting route renders
+  // it: the owner's default heads it, not the owner's page or a slot's page.
+  it("heads a whole intercepting route's fallback without the pages it doesn't render", async () => {
+    const {
+      ownerDefault,
+      ownerPage,
+      renderHttpAccessFallbackPage,
+      response,
+      sideDefault,
+      sidePage,
+    } = await dispatchWholeRouteOverGroup(createNotFoundSignal(), {
+      async renderFallback(statusCode, opts) {
+        return renderAppPageHttpAccessFallback({
+          boundaryModule: opts.boundaryModule ?? null,
+          buildFontLinkHeader: () => "",
+          clearRequestContext() {},
+          createRscOnErrorHandler: () => () => null,
+          getFontLinks: () => [],
+          getFontPreloads: () => [],
+          getFontStyles: () => [],
+          getNavigationContext: () => null,
+          headLayoutModules: opts.headLayouts ?? null,
+          intercept: opts.intercept ?? null,
+          isRscRequest: true,
+          layoutModules: opts.layouts ?? null,
+          loadSsrHandler: async () => ({ handleSsr: async (stream) => stream }),
+          makeThenableParams: (params) => params,
+          matchedParams: opts.matchedParams,
+          metadataRoutes: [],
+          middlewareContext: { headers: null, status: null },
+          renderToReadableStream: () => createStream(["flight"]),
+          request: new Request("https://example.test/club/a/pics/1"),
+          requestUrl: "https://example.test/club/a/pics/1",
+          resolveChildSegments: () => [],
+          rootLayouts: [],
+          route: opts.route,
+          routeHead: opts.routeHead ?? null,
+          statusCode,
+        } as Parameters<typeof renderAppPageHttpAccessFallback>[0]);
+      },
+    });
+
+    expect(response.status).toBe(404);
+    await response.text();
+    expect(ownerDefault.generateMetadata).toHaveBeenCalled();
+    expect(ownerPage.generateMetadata).not.toHaveBeenCalled();
+    expect(sidePage.generateMetadata).not.toHaveBeenCalled();
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({
+        route: expect.objectContaining({
+          page: ownerDefault,
+          slots: expect.objectContaining({
+            "side@app/club/[...path]/@side": expect.objectContaining({
+              default: sideDefault,
+              page: null,
+            }),
+          }),
+        }),
+        routeHead: expect.objectContaining({ prepared: null }),
+      }),
+      null,
     );
   });
 

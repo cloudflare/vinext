@@ -54,7 +54,7 @@ type TrimmableRoute = WholeInterceptingRouteShape & {
 };
 
 /** The main-tree position of the folder that holds the intercepted slot. */
-export function resolveInterceptSlotOwnerTreePosition(
+function resolveInterceptSlotOwnerTreePosition(
   route: WholeInterceptingRouteShape,
   interceptSlotKey: unknown,
 ): number | undefined {
@@ -228,5 +228,78 @@ export function trimRouteToInterceptSlotOwner<TRoute extends TrimmableRoute>(
     unauthorized: unauthorized.file,
     unauthorizedTreePosition: unauthorized.treePosition,
     unauthorizeds: keep(route.unauthorizeds, layoutTreePositions),
+  };
+}
+
+/** The parts of a route the whole intercepting route's render shows. */
+type RenderableWholeRoute = TrimmableRoute & {
+  childrenSlot?: { ownerTreePath: string; state?: string } | null;
+  page?: unknown;
+};
+
+/**
+ * The route as the whole intercepting route renders it: trimmed to the
+ * owner's folder, with the owner's `default` as its page, and every slot but
+ * the intercepted one showing its default. Its `children` shows the owner
+ * `default` too, so a children slot of the owner's layout is bound as a
+ * default (or unmatched, with no owner default), like a slot sub-route's. One
+ * of an ancestor layout still holds the owner's tree, and stays as it is. Its
+ * render and the fallbacks of its errors both read this route, so neither
+ * reads the owner's page or another slot's page, which it never loads.
+ */
+export function toWholeInterceptingRouteRender<TRoute extends RenderableWholeRoute>(
+  route: TRoute,
+  interceptSlotKey: unknown,
+  ownerDefault: TRoute["page"],
+): TRoute {
+  const trimmed = trimRouteToInterceptSlotOwner(route, interceptSlotKey);
+  const ownerTreePosition = resolveInterceptSlotOwnerTreePosition(trimmed, interceptSlotKey);
+  const childrenSlot = trimmed.childrenSlot;
+  const ownsChildrenSlot =
+    !!childrenSlot &&
+    childrenSlot.ownerTreePath.split("/").filter(Boolean).length === ownerTreePosition;
+  return {
+    ...trimmed,
+    page: ownerDefault,
+    ...(childrenSlot &&
+      ownsChildrenSlot && {
+        childrenSlot: { ...childrenSlot, state: ownerDefault ? "default" : "unmatched" },
+      }),
+    ...(trimmed.slots && {
+      slots: Object.fromEntries(
+        Object.entries(trimmed.slots).map(([slotKey, slot]) => [
+          slotKey,
+          slotKey === interceptSlotKey ? slot : toDefaultSlot(slot),
+        ]),
+      ),
+    }),
+  };
+}
+
+/**
+ * A slot showing its default as Next.js's lone `__DEFAULT__` segment: none of
+ * the layouts, loading, error and not-found files and segments of the branch
+ * its page would take, the slot directory's own included.
+ */
+function toDefaultSlot<TSlot extends object>(slot: TSlot): TSlot {
+  return {
+    ...slot,
+    configLayouts: null,
+    configLayoutTreePositions: null,
+    error: null,
+    errors: null,
+    errorTreePositions: null,
+    layout: null,
+    loading: null,
+    loadings: null,
+    loadingTreePositions: null,
+    notFound: null,
+    notFoundTreePosition: null,
+    notFounds: null,
+    notFoundTreePositions: null,
+    page: null,
+    routeSegments: null,
+    slotParamNames: null,
+    slotPatternParts: null,
   };
 }

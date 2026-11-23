@@ -135,7 +135,7 @@ import { traceResponseStart } from "./response-start-tracing.js";
 import { getFrameworkLinkHeader } from "./app-response-header-provenance.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import { isUnknownRecord } from "../utils/record.js";
-import { trimRouteToInterceptSlotOwner } from "./app-page-whole-intercepting-route.js";
+import { toWholeInterceptingRouteRender } from "./app-page-whole-intercepting-route.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -263,6 +263,7 @@ export type AppPageDispatchRoute = {
   loadingTreePositions?: readonly number[];
   notFound?: AppPageModule | null;
   notFounds?: readonly (AppPageModule | null | undefined)[];
+  page?: AppPageModule | null;
   params: readonly string[];
   pattern: string;
   rootParamNames?: readonly string[];
@@ -280,21 +281,29 @@ export type AppPageDispatchRoute = {
 };
 
 /**
- * The route as a render shows it, which its fallbacks resolve their layouts
- * and boundaries from. A whole intercepting route shows it only down to the
- * slot owner's folder (see app-page-whole-intercepting-route.ts), so none of
- * the files below that folder catches its errors or wraps its fallbacks,
- * whichever of them an earlier render loaded.
+ * The route as a render shows it, which its fallbacks resolve their layouts,
+ * boundaries and head from. A whole intercepting route shows it as its own
+ * tree (see app-page-whole-intercepting-route.ts): down to the slot owner's
+ * folder, with the owner's `default` as its page and the other slots' defaults.
+ * So none of the files below that folder catches its errors or wraps its
+ * fallbacks, and no page it doesn't render heads them, whichever of them an
+ * earlier render loaded.
  */
 function resolveRenderedRoute<TRoute extends AppPageDispatchRoute>(
   route: TRoute,
   interceptOpts: unknown,
 ): TRoute {
-  return isUnknownRecord(interceptOpts) &&
-    interceptOpts.rendersInterceptionSource === true &&
-    interceptOpts.rendersWholeInterceptingRoute === true
-    ? trimRouteToInterceptSlotOwner(route, interceptOpts.interceptSlotKey)
-    : route;
+  if (
+    !isUnknownRecord(interceptOpts) ||
+    interceptOpts.rendersInterceptionSource !== true ||
+    interceptOpts.rendersWholeInterceptingRoute !== true
+  ) {
+    return route;
+  }
+  const ownerDefault = isUnknownRecord(interceptOpts.interceptOwnerDefault)
+    ? (interceptOpts.interceptOwnerDefault as TRoute["page"])
+    : null;
+  return toWholeInterceptingRouteRender(route, interceptOpts.interceptSlotKey, ownerDefault);
 }
 
 function getActiveLoadingTreePositions(route: AppPageDispatchRoute): number[] {

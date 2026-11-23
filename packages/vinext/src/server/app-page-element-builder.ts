@@ -53,9 +53,8 @@ import {
 import { AppElementsWire, type AppElements } from "./app-elements.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import {
-  resolveInterceptSlotOwnerTreePosition,
   resolveOwnerLevelAccessFile,
-  trimRouteToInterceptSlotOwner,
+  toWholeInterceptingRouteRender,
 } from "./app-page-whole-intercepting-route.js";
 import { tagAppPagePageError, tagAppPageSlotError } from "./app-page-execution.js";
 import { sanitizeErrorForClient } from "./app-rsc-errors.js";
@@ -388,10 +387,10 @@ export async function buildPageElements<
   // every slot but the intercepted one in its default state, whatever the
   // owner's own pathname matches there.
   const route = rendersWholeInterceptingRoute
-    ? withDefaultSlotsBesideIntercept(
-        trimRouteToInterceptSlotOwner(options.route, options.pageRequest.opts?.interceptSlotKey),
+    ? toWholeInterceptingRouteRender(
+        options.route,
         options.pageRequest.opts?.interceptSlotKey,
-        !!options.pageRequest.opts?.interceptOwnerDefault,
+        options.pageRequest.opts?.interceptOwnerDefault ?? null,
       )
     : options.route;
   const slotParamOverrides = resolveSlotParamOverrides(
@@ -1232,76 +1231,6 @@ export async function buildPageElements<
         : null,
     });
   });
-}
-
-/**
- * The route with every slot but the intercepted one showing its default, as
- * the slots of a whole intercepting route's tree do. Its `children` shows the
- * owner `default` too, so a children slot of the owner's layout is bound as a
- * default (or unmatched, with no owner default), like a slot sub-route's. One
- * of an ancestor layout still holds the owner's tree, and stays as it is.
- */
-function withDefaultSlotsBesideIntercept<
-  TModule extends AppPageModule,
-  TErrorModule extends AppPageErrorModule,
->(
-  route: AppPageBuildRoute<TModule, TErrorModule>,
-  interceptSlotKey: string | null | undefined,
-  hasOwnerDefault: boolean,
-): AppPageBuildRoute<TModule, TErrorModule> {
-  const ownerTreePosition = resolveInterceptSlotOwnerTreePosition(route, interceptSlotKey);
-  const childrenSlot = route.childrenSlot;
-  const ownsChildrenSlot =
-    !!childrenSlot &&
-    childrenSlot.ownerTreePath.split("/").filter(Boolean).length === ownerTreePosition;
-  return {
-    ...route,
-    ...(childrenSlot &&
-      ownsChildrenSlot && {
-        childrenSlot: {
-          ...childrenSlot,
-          state: hasOwnerDefault ? "default" : "unmatched",
-        },
-      }),
-    ...(route.slots && {
-      slots: Object.fromEntries(
-        Object.entries(route.slots).map(([slotKey, slot]) => [
-          slotKey,
-          slotKey === interceptSlotKey ? slot : toDefaultSlot(slot),
-        ]),
-      ),
-    }),
-  };
-}
-
-/**
- * A slot showing its default as Next.js's lone `__DEFAULT__` segment: none of
- * the layouts, loading, error and not-found files and segments of the branch
- * its page would take, the slot directory's own included.
- */
-function toDefaultSlot<TSlot extends NonNullable<AppPageBuildRoute["slots"]>[string]>(
-  slot: TSlot,
-): TSlot {
-  return {
-    ...slot,
-    configLayouts: null,
-    configLayoutTreePositions: null,
-    error: null,
-    errors: null,
-    errorTreePositions: null,
-    layout: null,
-    loading: null,
-    loadings: null,
-    loadingTreePositions: null,
-    notFound: null,
-    notFoundTreePosition: null,
-    notFounds: null,
-    notFoundTreePositions: null,
-    page: null,
-    routeSegments: null,
-    slotParamNames: null,
-    slotPatternParts: null,
-  };
 }
 
 /**
