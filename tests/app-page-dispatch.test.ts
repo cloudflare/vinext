@@ -7753,13 +7753,59 @@ describe("app page dispatch", () => {
     consoleError.mockRestore();
   });
 
+  it("resumes a broader shell its fresh record leaves the request to over a stale more specific record listing the request's path", async () => {
+    const generateStaticParams = vi.fn(async () => [{ locale: "fr", slug: "bonjour" }]);
+    const isrGet = vi.fn(async (key: string) => {
+      // The broader shell regenerated since `en` stopped being generated; the
+      // `en` shell hasn't yet.
+      if (key === "shell:/en/blog/[slug]") {
+        return buildRecordedFallbackShellEntry(
+          "<html><head></head><body>en shell</body></html>",
+          [{ locale: "en", slug: "hello" }],
+          true,
+        );
+      }
+      if (key === "shell:/[locale]/blog/[slug]") {
+        return buildRecordedFallbackShellEntry(
+          "<html><head></head><body>Any locale</body></html>",
+          [{ locale: "fr", slug: "bonjour" }],
+        );
+      }
+      return null;
+    });
+    const { options } = createPprBlogDispatchOptions({
+      cleanPathname: "/en/blog/hello",
+      generateStaticParams,
+      isrGet,
+      params: { locale: "en", slug: "hello" },
+      pprFallbackCacheShells: [
+        ...pprBlogFallbackShells,
+        {
+          fallbackParamNames: ["locale", "slug"],
+          params: { locale: "[locale]", slug: "[slug]" },
+          pathname: "/[locale]/blog/[slug]",
+        },
+      ],
+      request: new Request("https://example.test/en/blog/hello"),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({ ...options, scheduleFallbackShellRegeneration() {} }),
+    );
+
+    const body = await response.text();
+    expect(body).toContain("Any locale");
+    expect(body).not.toContain("en shell");
+    expect(generateStaticParams).not.toHaveBeenCalled();
+  });
+
   it.each([
     { name: "another path", cleanPathname: "/en/blog/new-post", slug: "new-post" },
     { name: "the request's path", cleanPathname: "/en/blog/hello", slug: "hello" },
   ])(
-    "keeps a more specific shell its own fresh record rules out over a stale broader record listing $name",
+    "asks generateStaticParams over a stale broader record listing $name",
     async ({ cleanPathname, slug }) => {
-      const generateStaticParams = vi.fn(async () => [{ locale: "en", slug: "hello" }]);
+      const generateStaticParams = vi.fn(async () => [{ locale: "fr", slug: "bonjour" }]);
       const isrGet = vi.fn(async (key: string) => {
         // The `en` shell regenerated since `en` stopped being generated; the
         // broader shell hasn't yet.
@@ -7801,9 +7847,81 @@ describe("app page dispatch", () => {
       const body = await response.text();
       expect(body).toContain("Any locale");
       expect(body).not.toContain("en shell");
-      expect(generateStaticParams).not.toHaveBeenCalled();
+      expect(generateStaticParams).toHaveBeenCalled();
     },
   );
+
+  it("keeps every shell more specific than one its fresh record rules out", async () => {
+    const generateStaticParams = vi.fn(async () => [
+      { locale: "en", category: "news", slug: "hello" },
+    ]);
+    const isrGet = vi.fn(async (key: string) => {
+      // The `en` shell records that `en` stopped being generated; the broader
+      // shell, also fresh, regenerated before then.
+      if (key === "shell:/en/[category]/[slug]") {
+        return buildRecordedFallbackShellEntry(
+          "<html><head></head><body>en shell</body></html>",
+          [],
+        );
+      }
+      if (key === "shell:/[locale]/[category]/[slug]") {
+        return buildRecordedFallbackShellEntry(
+          "<html><head></head><body>Any locale</body></html>",
+          [{ locale: "en", category: "news", slug: "hello" }],
+        );
+      }
+      return null;
+    });
+    const { options } = createDispatchOptions({
+      cleanPathname: "/en/news/new-post",
+      generateStaticParams,
+      isProduction: true,
+      isrGet,
+      params: { locale: "en", category: "news", slug: "new-post" },
+      pprFallbackCacheShells: [
+        {
+          fallbackParamNames: ["slug"],
+          params: { locale: "en", category: "news", slug: "[slug]" },
+          pathname: "/en/news/[slug]",
+        },
+        {
+          fallbackParamNames: ["category", "slug"],
+          params: { locale: "en", category: "[category]", slug: "[slug]" },
+          pathname: "/en/[category]/[slug]",
+        },
+        {
+          fallbackParamNames: ["locale", "category", "slug"],
+          params: { locale: "[locale]", category: "[category]", slug: "[slug]" },
+          pathname: "/[locale]/[category]/[slug]",
+        },
+      ],
+      pprRuntime: appPagePprRuntime,
+      request: new Request("https://example.test/en/news/new-post"),
+      revalidateSeconds: 60,
+      route: createRoute({
+        isDynamic: true,
+        params: ["locale", "category", "slug"],
+        pattern: "/:locale/:category/:slug",
+        routeSegments: ["[locale]", "[category]", "[slug]"],
+      }),
+    });
+    const jobs: string[] = [];
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({
+        ...options,
+        scheduleFallbackShellRegeneration(key) {
+          jobs.push(key);
+        },
+      }),
+    );
+
+    const body = await response.text();
+    expect(body).toContain("Any locale");
+    expect(body).not.toContain("en shell");
+    expect(jobs).not.toContain("shell:/en/news/[slug]");
+    expect(generateStaticParams).not.toHaveBeenCalled();
+  });
 
   const localeShell = (locale: string) => ({
     fallbackParamNames: ["slug"],

@@ -503,8 +503,8 @@ async function serveStoredFallbackShell<TRoute extends AppPageDispatchRoute>(
   const { parseAppPprShellState } = await import("./app-ppr-fallback-shell.js");
   const params = options.staticParamsValidationParams ?? options.params;
   let isUndecided = false;
-  // Shells whose own fresh record rules the request out, which a less specific
-  // shell's record doesn't overrule.
+  // Shells a more specific shell's record rules the request out of, which a
+  // less specific shell's record doesn't overrule.
   const ruledOut = new Set<AppPagePprFallbackCacheShell>();
   for (const [index, fallbackShell] of fallbackShells.entries()) {
     const read = await readShell(options, fallbackShell);
@@ -517,17 +517,17 @@ async function serveStoredFallbackShell<TRoute extends AppPageDispatchRoute>(
     }
     // An expired shell's record isn't trusted, like the shell itself.
     if (read.cached!.isExpired === true) return UNDECIDED;
+    // Nor does a stale one decide, though a less specific shell's fresh record
+    // may; otherwise the request asks again.
+    if (read.cached!.isStale) {
+      isUndecided = true;
+      continue;
+    }
     const generated = parseAppPprShellState(value.postponed)?.generated ?? null;
     if (generated === null) return UNDECIDED;
-    // A more specific shell's fresh record that its kept params weren't
-    // generated rules out the request's path too, over a stale record.
-    const isRuledOut = read.cached!.isStale && ruledOut.size > 0;
-    if (
-      !isRuledOut &&
-      isAppPageParamsGenerated(params, generated, routeParamNamesOf(options.route))
-    ) {
+    if (isAppPageParamsGenerated(params, generated, routeParamNamesOf(options.route))) {
       try {
-        // The request doesn't serve the shell, so a stale one regenerates here.
+        // The request doesn't serve the shells, so stale ones regenerate here.
         await produceMissingFallbackShells(
           options,
           fallbackShells,
@@ -550,9 +550,8 @@ async function serveStoredFallbackShell<TRoute extends AppPageDispatchRoute>(
     if (!isEligible(fallbackShell)) {
       // The shell records that its kept params weren't generated, nor were a
       // more specific shell's, so the request is left to a less specific one.
-      // Once stale, it's asked again.
-      isUndecided = read.cached!.isStale;
-      if (!read.cached!.isStale) ruledOut.add(fallbackShell);
+      isUndecided = false;
+      for (const shell of fallbackShells.slice(0, index + 1)) ruledOut.add(shell);
       continue;
     }
     const moreSpecificShell = fallbackShells
