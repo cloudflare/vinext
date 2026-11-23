@@ -80,10 +80,10 @@ the pull request, and every step of it is in the graph:
    commit they reviewed. **Check review state** then tests the approvals of
    the head as it is now: by default anyone's is enough; list reviewers in
    **Who has to approve it** to need each of them. Once it holds and **Checks
-   pass?** too, the pull request is **Ready for review**, the fix is **Fix
-   ready**, the issue gets one comment saying a fix is ready, and **Label it
-   ready** labels it **fix: ready**. Until then, **Awaiting approval** notes
-   who is missing.
+   pass?** too, the pull request is **Ready for review** and the fix is **Fix
+   ready**. Once **Whole stack ready?** holds, the issue gets one comment
+   saying a fix is ready, and **Label it ready** labels it **fix: ready**.
+   Until then, **Awaiting approval** notes who is missing.
 4. **Findings.** **Address it** continues the sandbox and agent that wrote the
    fix. The review may be of an earlier commit than the head (rounds queue),
    so the agent is told both, and answers what still applies. Its answers go
@@ -127,6 +127,19 @@ weigh. The replies go before the next request for a review, since a later
 comment would replace a BigBonk request that is still waiting. Findings in a
 review's own text are answered in a comment to the reviewer, before BigBonk
 is asked.
+
+## A stack
+
+The agent may fix an issue with a stack of pull requests, each into the
+branch of the one before it. Each is reviewed and made ready on its own, and
+they merge from the bottom up. The stack shares the one sandbox, so its
+rounds go one at a time, and 30 rounds is for the whole stack. Each round's
+agent is told the stack, with every open branch checked out at its head. A
+finding about code a lower pull request added is fixed on that one's branch,
+and merged up into each branch above it, which the agent pushes; it never
+force-pushes. **Whole stack ready?** holds once every open pull request of
+the stack is **Fix ready**, so the issue hears of the fix once, for the whole
+stack. A fix of one pull request is a stack of one.
 
 ## Checks
 
