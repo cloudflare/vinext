@@ -149,12 +149,11 @@ export function getFontMimeType(pathOrUrl: string): string {
 }
 
 /**
- * The global slot holding the owner key of the module whose top-level code is
- * running. The `vinext:font-owner` transform (see `plugins/fonts.ts`) sets it
- * at the start of each server module that imports `next/font/google` or
- * `next/font/local`, and clears it at the end, so a font loader call made while
- * that module evaluates is recorded under it. Next.js requires font loaders to
- * be called at module scope, so this attributes every supported call.
+ * The global slot holding the owner key of the font loader call that is
+ * running. The `vinext:font-owner` transform (see `plugins/fonts.ts`) passes
+ * each server module's key to its loader calls as `_vinextOwner`, and the
+ * loaders set this slot only for their own synchronous run (see
+ * {@link runWithFontOwner}), so no other module's evaluation can interleave.
  */
 export const FONT_OWNER_KEY = Symbol.for("vinext.font.owner");
 
@@ -175,6 +174,18 @@ type OwnedFontEntry<T> = {
 
 /** An insertion-ordered SSR font collection, deduplicated by entry key. */
 export type OwnedFontCollection<T> = Map<string, OwnedFontEntry<T>>;
+
+/** Run a font loader call with `owner` as the owner of what it registers. */
+export function runWithFontOwner<T>(owner: unknown, fn: () => T): T {
+  const g = globalThis as typeof globalThis & { [FONT_OWNER_KEY]?: unknown };
+  const previous = g[FONT_OWNER_KEY];
+  g[FONT_OWNER_KEY] = typeof owner === "string" ? owner : undefined;
+  try {
+    return fn();
+  } finally {
+    g[FONT_OWNER_KEY] = previous;
+  }
+}
 
 function currentFontOwner(): string | null {
   const owner = (globalThis as typeof globalThis & { [FONT_OWNER_KEY]?: unknown })[FONT_OWNER_KEY];

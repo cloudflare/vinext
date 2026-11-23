@@ -748,32 +748,34 @@ describe("vinext:font-owner plugin", () => {
     return (code: string, id: string) => transform.call(plugin, code, id);
   }
 
-  const SLOT = 'globalThis[Symbol.for("vinext.font.owner")]';
-
-  it("marks the module body, after its directives, with its root-relative path", () => {
+  // The key travels with each call, so a module that awaits before loading a
+  // font cannot hand it to another module that evaluates meanwhile.
+  it("passes the module's root-relative key to each loader call", () => {
     const transform = getFontOwnerTransform("/project");
     const code = [
       `"use client";`,
       `import localFont from "next/font/local";`,
-      `import { Inter } from "next/font/google";`,
+      `import { Inter as Sans } from "next/font/google";`,
+      `import * as google from "next/font/google";`,
+      `await Promise.resolve();`,
       `const a = localFont({ src: "./a.woff2" });`,
-      `const b = Inter({ subsets: ["latin"] });`,
+      `const b = Sans({ subsets: ["latin"] });`,
+      `const c = google.Roboto_Mono({});`,
+      `const d = localFont(options);`,
     ].join("\n");
     const result = transform(code, "/project/app/(a)/client-font.tsx");
-    expect(result.code.startsWith(`"use client";\n${SLOT} = "app/(a)/client-font.tsx";\n`)).toBe(
-      true,
-    );
-    expect(
-      result.code
-        .trimEnd()
-        .endsWith(`if (${SLOT} === "app/(a)/client-font.tsx") ${SLOT} = undefined;`),
-    ).toBe(true);
+    const owner = `_vinextOwner: "app/(a)/client-font.tsx", `;
+    expect(result.code).toContain(`const a = localFont({${owner} src: "./a.woff2" });`);
+    expect(result.code).toContain(`const b = Sans({${owner} subsets: ["latin"] });`);
+    expect(result.code).toContain(`const c = google.Roboto_Mono({${owner}});`);
+    // Options Next.js would reject as non-literal stay as they are.
+    expect(result.code).toContain(`const d = localFont(options);`);
+    expect(result.code).not.toContain("vinext.font.owner");
   });
 
-  it("marks modules that re-export a font loader", () => {
+  it("leaves a module that only re-exports a font loader alone", () => {
     const transform = getFontOwnerTransform("/project");
-    const result = transform(`export { Inter } from "next/font/google";`, "/project/fonts.ts");
-    expect(result.code).toContain(`${SLOT} = "fonts.ts";`);
+    expect(transform(`export { Inter } from "next/font/google";`, "/project/fonts.ts")).toBeNull();
   });
 
   it("leaves modules that only mention a font loader alone", () => {

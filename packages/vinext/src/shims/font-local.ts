@@ -23,6 +23,7 @@ import {
   getFontMimeType,
   listOwnedFontEntries,
   resolveSingleFaceStyle,
+  runWithFontOwner,
   sanitizeCSSVarName,
   sanitizeFallback,
   sanitizeFontDescriptorValue,
@@ -99,6 +100,8 @@ type LocalFontOptions<T extends CssVariable | undefined = CssVariable | undefine
       family?: unknown;
     };
   };
+  /** The calling server module's owner key, injected by `vinext:font-owner`. */
+  _vinextOwner?: string;
 };
 
 type FontResult = {
@@ -352,6 +355,10 @@ function localFont<T extends CssVariable | undefined = undefined>(
   options: LocalFontOptions<T>,
 ): T extends undefined ? NextFont : NextFontWithVariable;
 function localFont(options: LocalFontOptions): FontResult {
+  return runWithFontOwner(options._vinextOwner, () => loadLocalFont(options));
+}
+
+function loadLocalFont(options: LocalFontOptions): FontResult {
   const sources = normalizeSources(options);
   const internalFamily = sanitizeInternalFontFamily(options._vinext?.font?.family);
   const id = createLocalFontIdentity(options, sources, internalFamily);

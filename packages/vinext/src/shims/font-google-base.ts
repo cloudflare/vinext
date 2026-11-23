@@ -6,6 +6,7 @@ import {
   getFontMimeType,
   listOwnedFontEntries,
   resolveSingleFaceStyle,
+  runWithFontOwner,
   sanitizeCSSVarName,
   sanitizeFallback,
   type FontOwners,
@@ -100,6 +101,8 @@ type FontLoaderOptions<T extends CssVariable | undefined = CssVariable | undefin
     _vinext?: {
       font?: InternalGoogleFontRuntimeOptions;
     };
+    /** The calling server module's owner key, injected by `vinext:font-owner`. */
+    _vinextOwner?: string;
   };
 
 /**
@@ -422,6 +425,12 @@ export function createFontLoader(family: string): FontLoader {
   return function fontLoader<T extends CssVariable | undefined = undefined>(
     options: FontLoaderOptions<T> = {},
   ): T extends undefined ? NextFont : NextFontWithVariable {
+    return runWithFontOwner(options._vinextOwner, () => loadFont(options));
+  };
+
+  function loadFont<T extends CssVariable | undefined = undefined>(
+    options: FontLoaderOptions<T>,
+  ): T extends undefined ? NextFont : NextFontWithVariable {
     const internal = options._vinext?.font;
     const fallback = options.fallback ?? [];
     // The adjusted fallback family name must match the font-family emitted by
@@ -491,7 +500,7 @@ export function createFontLoader(family: string): FontLoader {
       style,
       ...(options.variable ? { variable: variableClassName } : {}),
     } as T extends undefined ? NextFont : NextFontWithVariable;
-  };
+  }
 }
 
 // Export a Proxy that creates font loaders for any Google Font family.
