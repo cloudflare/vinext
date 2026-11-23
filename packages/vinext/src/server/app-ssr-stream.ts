@@ -24,6 +24,8 @@ type RscEmbedTransform = {
   finalize(): Promise<Uint8Array>;
   /** Resolves when all raw bytes from the embed stream have been read. */
   getRawBuffer(): Promise<ArrayBuffer>;
+  /** Call `listener` after each chunk read from the embed stream. */
+  listen?(listener: () => void): void;
 };
 
 type ReplayableRscEmbedTransform = RscEmbedTransform & {
@@ -274,6 +276,7 @@ export function createRscEmbedTransform(
   const replays: { controller: ReadableStreamDefaultController<Uint8Array>; keepOpen: boolean }[] =
     [];
   let mirroredNextFlightBootstrap = false;
+  let readListener: (() => void) | null = null;
   const textDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
   const nonceAttribute = textToByteString(createNonceAttribute(options.scriptNonce));
 
@@ -405,6 +408,7 @@ export function createRscEmbedTransform(
         for (const replay of replays) replay.controller.enqueue(result.value);
         chunkDecoder.decode(result.value, pendingChunks);
         pendingRawChunkCount++;
+        readListener?.();
       }
       readDone = true;
       for (const replay of replays.splice(0)) {
@@ -480,6 +484,10 @@ export function createRscEmbedTransform(
     flush(): Uint8Array | null {
       const scripts = flushByteScripts();
       return scripts ? byteStringToBytes(scripts) : null;
+    },
+
+    listen(listener) {
+      readListener = listener;
     },
 
     async finalize(): Promise<Uint8Array> {
@@ -1071,29 +1079,41 @@ export function createTickBufferedTransform(
     controller.enqueue(encoder.encode(working));
   };
 
+  const scheduleFlush = (controller: TransformStreamDefaultController<Uint8Array>): void => {
+    if (timeoutId !== null) return;
+
+    timeoutId = setTimeout(() => {
+      try {
+        flushBuffered(controller);
+
+        const rscScripts = isPrelude ? null : rscEmbed.flush();
+        if (rscScripts) {
+          controller.enqueue(rscScripts);
+        }
+      } catch {
+        // Stream was cancelled between when the timeout was registered and
+        // when it fired (e.g. client disconnected, health-check cancelled
+        // the response body). Ignore — the stream is already closed.
+      }
+
+      timeoutId = null;
+    }, 0);
+  };
+
   return new TransformStream<Uint8Array, Uint8Array>({
+    start(controller) {
+      // Like Next.js, a resume sends its Flight data as it comes: the shell
+      // its prelude sent hydrates while its holes are still pending.
+      if (mode === "resume") {
+        rscEmbed.listen?.(() => scheduleFlush(controller));
+        scheduleFlush(controller);
+      }
+    },
+
     transform(chunk, controller) {
       buffered.push(decoder.decode(chunk, { stream: true }));
       if (!hasInlineCssManifest) bufferedBytes.push(chunk);
-
-      if (timeoutId !== null) return;
-
-      timeoutId = setTimeout(() => {
-        try {
-          flushBuffered(controller);
-
-          const rscScripts = isPrelude ? null : rscEmbed.flush();
-          if (rscScripts) {
-            controller.enqueue(rscScripts);
-          }
-        } catch {
-          // Stream was cancelled between when the timeout was registered and
-          // when it fired (e.g. client disconnected, health-check cancelled
-          // the response body). Ignore — the stream is already closed.
-        }
-
-        timeoutId = null;
-      }, 0);
+      scheduleFlush(controller);
     },
 
     async flush(controller) {
