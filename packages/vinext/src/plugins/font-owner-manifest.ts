@@ -304,12 +304,14 @@ export function createFontOwnerManifestPlugin(options: {
  * has not transformed yet is transformed here, as its request would. Packages
  * are walked only once loaded: dev externalizes or prebundles them, and the
  * font transform never sees those copies. `visit` returns whether to walk on
- * through a module's imports.
+ * through a module's imports. With `transformMissing` false, it reads only the
+ * graph as it is.
  */
 async function walkDevModuleGraph(
   environment: DevEnvironment,
   roots: readonly string[],
   visit: (id: string, file: string | null) => boolean,
+  transformMissing = true,
 ): Promise<void> {
   const visited = new Set<string>();
   const stack = [...roots];
@@ -318,7 +320,7 @@ async function walkDevModuleGraph(
     if (visited.has(id) || id.startsWith("\0")) continue;
     visited.add(id);
     let module = environment.moduleGraph.getModuleById(id);
-    if (!module?.transformResult && !id.includes("/node_modules/")) {
+    if (transformMissing && !module?.transformResult && !id.includes("/node_modules/")) {
       try {
         await environment.transformRequest(module?.url ?? id);
       } catch {
@@ -356,6 +358,9 @@ type PagesFontRoutes = { appFile: string | null; pages: { pattern: string; fileP
 /**
  * The owner keys of a dev Pages render: the font owners the server graph of
  * `files` reaches. Next.js gives a page the fonts of `_app` and of the page.
+ * A Pages render reads them after it has run the page, so the graph already
+ * holds its imports: an invalidated module keeps them. Transforming it here
+ * would race the module runner's own reload after an edit.
  */
 export async function collectDevPagesFontOwners(
   environment: DevEnvironment,
@@ -369,11 +374,16 @@ export async function collectDevPagesFontOwners(
 ): Promise<string[]> {
   const owners = new Set<string>();
   const roots = files.filter((file): file is string => typeof file === "string");
-  await walkDevModuleGraph(environment, roots.map(options.canonicalizeModuleId), (id, file) => {
-    if (file) options.watch?.(file);
-    if (options.isOwner(id)) owners.add(options.ownerKey(id));
-    return true;
-  });
+  await walkDevModuleGraph(
+    environment,
+    roots.map(options.canonicalizeModuleId),
+    (id, file) => {
+      if (file) options.watch?.(file);
+      if (options.isOwner(id)) owners.add(options.ownerKey(id));
+      return true;
+    },
+    false,
+  );
   return [...owners].sort();
 }
 
