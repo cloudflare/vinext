@@ -557,64 +557,43 @@ describe("Next.js compat: not-found", () => {
     expect(html).not.toContain("Sub page");
   });
 
-  // A slot that fails while the document renders again with the boundary
-  // that caught the page's or a slot's notFound() leaves the notFound() to
-  // its fallback document, with its 404, as before that document rendered
-  // the boundary caught. Next.js sends its 404 error shell either way.
-  it.each([
-    ["page-error/missing", "replay-fallback-page-error-nf"],
-    ["page-forbidden/missing", "replay-fallback-page-forbidden-nf"],
-    ["slot-error", "replay-fallback-root-nf"],
-  ])(
-    "a slot that fails beside a caught notFound() keeps the 404 fallback (%s)",
-    async (path, boundaryId) => {
-      const { res, html } = await fetchHtml(baseUrl, `/notfound-replay-fallback/${path}`);
-      expect(res.status).toBe(404);
-      expect(html).toContain('id="replay-fallback-layout"');
-      expect(html).toContain(`id="${boundaryId}"`);
-      expect(html).not.toContain('id="replay-fallback-team-nf"');
-      expect(html).not.toContain('id="replay-fallback-slot-error-page"');
-    },
-  );
+  // A slot's own signal beside the caught notFound() leaves the notFound() to
+  // its fallback document, with its 404, as a boundary above catches it.
+  it("a slot's signal beside a caught notFound() keeps the 404 fallback", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/notfound-replay-fallback/page-forbidden/missing",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain('id="replay-fallback-layout"');
+    expect(html).toContain('id="replay-fallback-page-forbidden-nf"');
+  });
 
-  // A not-found file that redirects or throws answers through the notFound()'s
-  // fallback document, as in a route without parallel slots, rather than the
-  // caught document's 404. (Next.js 16.2.7 sends its 404 error shell and runs
-  // the file in the browser, with or without the slots.)
+  // A document that can't render again with the boundary that caught the
+  // page's or a slot's notFound(), because a not-found file redirects or
+  // throws or a slot beside it throws, answers as Next.js 16.2.7 does (webpack
+  // and Turbopack): its 404 error shell, carrying the payload. The browser
+  // renders it, follows the redirect or shows the error.
   it.each([
-    ["fallback-redirect", 307, "/notfound-sibling-slots"],
-    ["fallback-throw", 500, null],
+    ["page-error/missing", false],
+    ["slot-error", false],
+    ["fallback-redirect/missing", true],
+    ["fallback-throw/missing", false],
+    ["slot-redirect", true],
+    ["slot-throw", false],
   ])(
-    "a caught notFound() whose not-found file fails keeps its outcome (%s)",
-    async (path, status, location) => {
-      const { res, html } = await fetchHtml(baseUrl, `/notfound-replay-fallback/${path}/missing`, {
+    "a caught notFound() whose document fails answers its 404 error shell (%s)",
+    async (path, redirects) => {
+      const { res, html } = await fetchHtml(baseUrl, `/notfound-replay-fallback/${path}`, {
         redirect: "manual",
       });
-      expect(res.status).toBe(status);
-      expect(res.headers.get("location")).toBe(location);
-      expect(html).not.toContain(`id="replay-${path}-sidebar"`);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("location")).toBeNull();
+      expect(html).toContain('<html id="__next_error__"');
+      expect(html).not.toContain('id="replay-fallback-layout"');
+      expect(html.includes("NEXT_REDIRECT")).toBe(redirects);
     },
   );
-
-  // A slot's not-found file renders only in the document with its boundary
-  // caught. Next.js 16.2.7 sends its 404 error shell and runs the file in the
-  // browser, which follows its redirect, so that redirect answers here.
-  it("a slot's not-found file that redirects answers with its redirect", async () => {
-    const { res } = await fetchHtml(baseUrl, "/notfound-replay-fallback/slot-redirect", {
-      redirect: "manual",
-    });
-    expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("/notfound-sibling-slots");
-  });
-
-  // One that throws keeps the 404 of Next.js's error shell, as a slot that
-  // fails beside it does.
-  it("a slot's not-found file that throws keeps the 404 fallback", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/notfound-replay-fallback/slot-throw");
-    expect(res.status).toBe(404);
-    expect(html).toContain('id="replay-fallback-root-nf"');
-    expect(html).not.toContain('id="replay-fallback-slot-throw-page"');
-  });
 
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,

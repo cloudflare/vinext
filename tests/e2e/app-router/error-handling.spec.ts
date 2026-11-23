@@ -1084,3 +1084,22 @@ test.describe("Access boundaries beside parallel slots", () => {
     expect(await page.content()).not.toContain("Sub page");
   });
 });
+
+// Next.js 16.2.7 answers a document whose caught slot not-found file fails with
+// its 404 error shell, and the browser renders the payload, where that file
+// runs.
+test.describe("A slot's not-found file that fails in the document", () => {
+  test("follows its redirect in the browser", async ({ page }) => {
+    const response = await page.goto(`${BASE}/notfound-replay-fallback/slot-redirect`);
+    expect(response?.status()).toBe(404);
+    await expect(page).toHaveURL(/\/notfound-sibling-slots$/);
+    await expect(page.locator("#notfound-sibling-slots-home")).toBeVisible();
+  });
+
+  test("shows its error in the browser", async ({ page }) => {
+    const response = await page.goto(`${BASE}/notfound-replay-fallback/slot-throw`);
+    expect(response?.status()).toBe(404);
+    await expect(page.getByTestId("global-error")).toBeVisible();
+    await expect(page.locator("#replay-fallback-slot-throw-page")).toHaveCount(0);
+  });
+});

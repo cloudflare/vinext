@@ -99,7 +99,7 @@ import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 import { createRenderStreamCancellation, isAppRenderAbortError } from "./app-render-abort-error.js";
-import { getNextErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
+import { getNextErrorDigest, parseNextHttpErrorDigest } from "./next-error-digest.js";
 import { isBailoutToCSRError, isDynamicServerError } from "vinext/shims/navigation-errors";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 // @ts-expect-error — resolved by the vinext Vite plugin in SSR environments.
@@ -398,21 +398,6 @@ function requireNavigationContext(navContext: NavigationContext | null): Navigat
     throw new Error("App SSR requires navigation context for BFCache state keys");
   }
   return navContext;
-}
-
-/**
- * What answers when the document can't render again with the boundaries that
- * caught its shell's error. A redirect does: Next.js runs the caught
- * boundary's file in the browser after its error shell, which follows it, and
- * a slot's not-found file renders nowhere else. Any other failure leaves the
- * shell's own error to its fallback document, which keeps its status, as
- * Next.js's error shell does.
- */
-function resolveCaughtRenderFailure(shellError: unknown, caughtRenderError: unknown): unknown {
-  const digest = getNextErrorDigest(caughtRenderError);
-  return digest !== null && parseNextRedirectDigest(digest) !== null
-    ? caughtRenderError
-    : shellError;
 }
 
 export async function handleSsr(
@@ -876,6 +861,32 @@ export async function handleSsr(
           caughtBoundaries = boundaries;
           return withCaughtNotFoundBoundaries(boundaries, ssrRoot);
         };
+        // A caught document that can't render answers by how it failed. A
+        // notFound(), forbidden() or unauthorized() outside the caught
+        // boundaries leaves the shell's own error to its fallback document,
+        // which a boundary above catches. Any other failure, a boundary's file
+        // or a slot beside it that redirects or throws, answers as Next.js
+        // does there: its error shell with the shell error's status, and the
+        // payload, which the browser renders. Its boundaries catch the signal,
+        // and their files redirect or throw there.
+        const renderCaughtErrorShell = (
+          error: unknown,
+          caughtRenderError: unknown,
+        ): ReadableStream<Uint8Array> => {
+          const digest = getNextErrorDigest(caughtRenderError);
+          if (digest !== null && parseNextHttpErrorDigest(digest) !== null) throw error;
+          caughtBoundaries = null;
+          caughtShellError = error;
+          shellErrorRecovered = true;
+          streamedReferences.unlinked = streamedReferences.unlinked.filter((id) =>
+            streamedReferences.streamed.has(id),
+          );
+          return renderSsrErrorDocumentShell(
+            bootstrapModuleUrl,
+            options?.scriptNonce,
+            assetCrossOrigin,
+          );
+        };
         if (pprFallbackShellSignal) {
           const prerender = await loadStaticPrerender();
           const prerenderFallbackShell = async (
@@ -903,10 +914,10 @@ export async function handleSsr(
             if (!caughtRoot) throw error;
             try {
               htmlStream = await prerenderFallbackShell(caughtRoot);
+              caughtShellError = error;
             } catch (caughtRenderError) {
-              throw resolveCaughtRenderFailure(error, caughtRenderError);
+              htmlStream = renderCaughtErrorShell(error, caughtRenderError);
             }
-            caughtShellError = error;
           }
         } else {
           let streamingHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
@@ -935,14 +946,14 @@ export async function handleSsr(
                   renderToReadableStream(caughtRoot, renderOptions),
                 );
                 if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
+                renderComplete = caughtHtmlStream.allReady;
+                shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
+                caughtShellError = error;
+                htmlStream = caughtHtmlStream;
               } catch (caughtRenderError) {
                 void caughtHtmlStream?.cancel().catch(() => {});
-                throw resolveCaughtRenderFailure(error, caughtRenderError);
+                htmlStream = renderCaughtErrorShell(error, caughtRenderError);
               }
-              renderComplete = caughtHtmlStream.allReady;
-              shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
-              caughtShellError = error;
-              htmlStream = caughtHtmlStream;
             } else if (
               options?.fallbackToErrorDocumentOnShellError !== true ||
               isNavigationSignalError(error) ||
