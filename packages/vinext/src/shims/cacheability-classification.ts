@@ -42,6 +42,12 @@ export type RouteCacheabilityState = {
   /** Private marker surrounding this render's injected client trace metadata. */
   clientTraceMetadataMarker?: string;
   completedResponseBody?: boolean;
+  /**
+   * Whether the request stage drops the query from a dispatch it gives the
+   * `static-candidate` state: a shared response-stage dispatch without a
+   * next.config cache policy, which keeps the full URL.
+   */
+  dropsStaticCandidateQuery?: boolean;
   /** Whether admission must translate a completed response through the active adapter. */
   applyCompletedResponsePolicy?: boolean;
   /** Core- or adapter-owned cache policy headers set by next.config, by lowercased name. */
