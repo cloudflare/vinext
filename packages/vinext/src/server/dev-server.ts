@@ -108,6 +108,7 @@ import {
   traceFindPageComponents,
 } from "./pages-execution-tracing.js";
 import { logRequestError } from "./request-error-log.js";
+import type { FontOwners } from "vinext/shims/font-utils";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -678,6 +679,11 @@ export function createSSRHandler(
   buildId = process.env.__VINEXT_BUILD_ID ?? "development",
   clientMiddlewareMatcher?: unknown,
   classifyPageRoute?: (route: Route) => "static" | "server" | "none",
+  /**
+   * The owner keys of the fonts a page's document carries, from the modules
+   * `_app` and the page reach. null carries every font.
+   */
+  getFontOwners?: (files: readonly (string | null)[]) => Promise<FontOwners>,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -1612,21 +1618,25 @@ export function createSSRHandler(
         );
         const allFontStyles: string[] = [];
         const allFontPreloads: Array<{ href: string; type: string }> = [];
+        // The page's own and _app's fonts, whatever the server served before.
+        const fontOwners = getFontOwners
+          ? await getFontOwners([appFilePath, route.filePath])
+          : null;
         try {
           const fontGoogle = await importModule(runner, "next/font/google");
           if (typeof fontGoogle.getSSRFontLinks === "function") {
-            const fontUrls = fontGoogle.getSSRFontLinks();
+            const fontUrls = fontGoogle.getSSRFontLinks(fontOwners);
             for (const fontUrl of fontUrls) {
               const safeFontUrl = fontUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
               fontHeadHTML += `<link rel="stylesheet"${nonceAttr} href="${safeFontUrl}" />\n  `;
             }
           }
           if (typeof fontGoogle.getSSRFontStyles === "function") {
-            allFontStyles.push(...fontGoogle.getSSRFontStyles());
+            allFontStyles.push(...fontGoogle.getSSRFontStyles(fontOwners));
           }
           // Collect preloads from self-hosted Google fonts
           if (typeof fontGoogle.getSSRFontPreloads === "function") {
-            allFontPreloads.push(...fontGoogle.getSSRFontPreloads());
+            allFontPreloads.push(...fontGoogle.getSSRFontPreloads(fontOwners));
           }
         } catch {
           // next/font/google not used — skip
@@ -1634,11 +1644,11 @@ export function createSSRHandler(
         try {
           const fontLocal = await importModule(runner, "next/font/local");
           if (typeof fontLocal.getSSRFontStyles === "function") {
-            allFontStyles.push(...fontLocal.getSSRFontStyles());
+            allFontStyles.push(...fontLocal.getSSRFontStyles(fontOwners));
           }
           // Collect preloads from local font files
           if (typeof fontLocal.getSSRFontPreloads === "function") {
-            allFontPreloads.push(...fontLocal.getSSRFontPreloads());
+            allFontPreloads.push(...fontLocal.getSSRFontPreloads(fontOwners));
           }
         } catch {
           // next/font/local not used — skip
