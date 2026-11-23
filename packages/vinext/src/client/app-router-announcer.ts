@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { createElement, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 // Ported from Next.js's App Router announcer
@@ -69,5 +69,11 @@ export function AppRouterAnnouncer({ tree }: { tree: unknown }) {
     previousTitle.current = currentTitle;
   }, [tree]);
 
-  return portalNode ? createPortal(routeAnnouncement, portalNode) : null;
+  // A keyed element, not bare text (vercel/next.js#98314, for #99353): browser
+  // translation replaces the text node, and React would then update or remove
+  // a detached node, leaving the region stale or throwing on removeChild.
+  // Changing the key replaces the whole span on every announcement.
+  return portalNode
+    ? createPortal(createElement("span", { key: routeAnnouncement }, routeAnnouncement), portalNode)
+    : null;
 }

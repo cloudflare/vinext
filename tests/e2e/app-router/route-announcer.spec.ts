@@ -21,6 +21,8 @@ test.describe("App Router route announcer", () => {
   test("announces the destination title after a soft navigation", async ({ page }) => {
     // The first request compiles the routes on the dev server.
     test.setTimeout(90_000);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`${BASE}/route-announcer`);
     await expect(page.locator("h1")).toHaveText("Route Announcer Start");
     await waitForAppRouterHydration(page);
@@ -40,6 +42,20 @@ test.describe("App Router route announcer", () => {
       .poll(() => readAnnouncer(page))
       .toEqual({ role: "alert", text: "Route Announcer Destination" });
 
+    // Browser translation (Chrome Translate) swaps the announcement's text
+    // node for <font> elements, as in vercel/next.js#99353. The next
+    // announcement must still reach the live region.
+    await page.evaluate(() => {
+      const host = document.getElementsByTagName("next-route-announcer")[0];
+      const region = host.shadowRoot!.querySelector('[aria-live="assertive"]')!;
+      const text = document.createTreeWalker(region, NodeFilter.SHOW_TEXT).nextNode()!;
+      const outer = document.createElement("font");
+      const inner = document.createElement("font");
+      outer.appendChild(inner);
+      inner.textContent = "Translated announcement";
+      text.parentNode!.replaceChild(outer, text);
+    });
+
     await page.click("#to-start");
     await expect(page.locator("h1")).toHaveText("Route Announcer Start");
     expect(await page.evaluate(() => (window as any).__ANNOUNCER_NAV_MARKER__)).toBe(true);
@@ -51,5 +67,6 @@ test.describe("App Router route announcer", () => {
     expect(
       await page.evaluate(() => document.getElementsByTagName("next-route-announcer").length),
     ).toBe(1);
+    expect(errors).toEqual([]);
   });
 });
