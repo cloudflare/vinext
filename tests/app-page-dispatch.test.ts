@@ -7693,6 +7693,86 @@ describe("app page dispatch", () => {
     expect(generateStaticParams).not.toHaveBeenCalled();
   });
 
+  it("renders a path whose root param wasn't generated even when recording its shells fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { options } = createPprBlogDispatchOptions({
+      cleanPathname: "/fr/blog/x",
+      generateStaticParams: createChainedBlogStaticParams(async () => [
+        { locale: "en", slug: "hello" },
+      ]),
+      isrGet: vi.fn(async () => null),
+      loadSsrHandler: createFreshBodySsrHandler("blocking"),
+      params: { locale: "fr", slug: "x" },
+      pprFallbackCacheShells: [
+        {
+          fallbackParamNames: ["slug"],
+          params: { locale: "fr", slug: "[slug]" },
+          pathname: "/fr/blog/[slug]",
+        },
+      ],
+      request: new Request("https://example.test/fr/blog/x"),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({
+        ...options,
+        scheduleFallbackShellRegeneration() {
+          throw new Error("schedule failed");
+        },
+      }),
+    );
+
+    await expect(response.text()).resolves.toContain("blocking");
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] ISR fallback shell discovery error:",
+      expect.objectContaining({ message: "schedule failed" }),
+    );
+    consoleError.mockRestore();
+  });
+
+  it("keeps a more specific shell its own fresh record rules out over a stale broader record", async () => {
+    const generateStaticParams = vi.fn(async () => [{ locale: "en", slug: "hello" }]);
+    const isrGet = vi.fn(async (key: string) => {
+      // The `en` shell regenerated since `en` stopped being generated; the
+      // broader shell hasn't yet.
+      if (key === "shell:/en/blog/[slug]") {
+        return buildRecordedFallbackShellEntry(
+          "<html><head></head><body>en shell</body></html>",
+          [],
+        );
+      }
+      if (key === "shell:/[locale]/blog/[slug]") {
+        return buildRecordedFallbackShellEntry(
+          "<html><head></head><body>Any locale</body></html>",
+          [{ locale: "en", slug: "hello" }],
+          true,
+        );
+      }
+      return null;
+    });
+    const { options } = createPprBlogDispatchOptions({
+      generateStaticParams,
+      isrGet,
+      pprFallbackCacheShells: [
+        ...pprBlogFallbackShells,
+        {
+          fallbackParamNames: ["locale", "slug"],
+          params: { locale: "[locale]", slug: "[slug]" },
+          pathname: "/[locale]/blog/[slug]",
+        },
+      ],
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({ ...options, scheduleFallbackShellRegeneration() {} }),
+    );
+
+    const body = await response.text();
+    expect(body).toContain("Any locale");
+    expect(body).not.toContain("en shell");
+    expect(generateStaticParams).not.toHaveBeenCalled();
+  });
+
   const localeShell = (locale: string) => ({
     fallbackParamNames: ["slug"],
     params: { locale, slug: "[slug]" },
