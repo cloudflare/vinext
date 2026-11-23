@@ -430,6 +430,23 @@ export function createPagesFontOwnerManifestPlugin(options: {
     configResolved(resolvedConfig) {
       config = resolvedConfig;
     },
+    configureServer(devServer) {
+      // An added or removed `_app`, `_error` or page changes a page's files,
+      // which the walk could not watch while they were missing. Recompute
+      // every page's owners, in whichever environment runs the Pages entry.
+      // Edits to files a walk read invalidate it on their own.
+      const invalidate = () => {
+        for (const environment of Object.values(devServer.environments)) {
+          const graph = environment.moduleGraph;
+          for (const [id, module] of graph.idToModuleMap) {
+            if (id.startsWith(RESOLVED_DEV_PAGES_FONT_OWNERS_PREFIX))
+              graph.invalidateModule(module);
+          }
+        }
+      };
+      devServer.watcher.on("add", invalidate);
+      devServer.watcher.on("unlink", invalidate);
+    },
     resolveId(source) {
       if (source === PAGES_FONT_OWNER_MANIFEST_ID) {
         return this.environment.mode === "build"

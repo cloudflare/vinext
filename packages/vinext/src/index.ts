@@ -8100,6 +8100,9 @@ export const loadServerActionClient = ${
                       (files) => {
                         const environment = server.environments["ssr"];
                         if (!environment) return Promise.resolve(null);
+                        // No module has loaded a font, so none is any page's:
+                        // skip the walk on each request.
+                        if (fontOwnerKeys.size === 0) return Promise.resolve([]);
                         return collectDevPagesFontOwners(environment, files, {
                           canonicalizeModuleId: canonicalize,
                           isOwner: (id) => fontOwnerKeys.has(fontOwnerKey(root, id)),

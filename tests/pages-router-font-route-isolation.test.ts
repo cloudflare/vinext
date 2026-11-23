@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build, createServer, type Plugin, type ViteDevServer } from "vite";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 
@@ -224,5 +224,25 @@ describe("Pages Router next/font of a lazily loaded component (Cloudflare dev)",
         expect({ request, style: /font-lazy[.-]/.test(style) }).toEqual({ request, style: true });
       }
     }
+  }, 60000);
+
+  // A `pages/_app` added after the page's owners were computed. The owners
+  // module must be recomputed, not served from its cached transform. (The
+  // Worker keeps its evaluated entry, so the new `_app` renders only once the
+  // Worker reloads, which an added `_app` does not trigger on its own; hence
+  // this reads the module the entry imports instead of the page.)
+  it("recomputes a page's owners when an _app is added while the server runs", async () => {
+    const ownersOf = async () => {
+      const result = await server!.environments.ssr.transformRequest(
+        `virtual:vinext-pages-font-owners?page=${encodeURIComponent("/lazy")}`,
+      );
+      return result?.code ?? "";
+    };
+    expect(await ownersOf()).not.toContain("pages/_app.tsx");
+    fs.copyFileSync(path.join(root, "late/_app.tsx"), path.join(root, "pages/_app.tsx"));
+    await vi.waitFor(async () => expect(await ownersOf()).toContain("pages/_app.tsx"), {
+      timeout: 15000,
+      interval: 250,
+    });
   }, 60000);
 });
