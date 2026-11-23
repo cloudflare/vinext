@@ -852,6 +852,19 @@ describe("vinext:font-owner plugin", () => {
     expect(result.code).toContain(`Inter({_vinextOwner: "app/layout.tsx",  subsets: ["latin"] })`);
   });
 
+  it("passes the key to loader calls in every script module extension", () => {
+    const plugin = (vinext() as Plugin[]).find((p) => p.name === "vinext:font-owner")!;
+    const filter = (plugin.transform as { filter: { id: { include: RegExp } } }).filter.id.include;
+    for (const ext of [".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".cjs", ".cts"]) {
+      expect(filter.test(`/project/app/fonts${ext}`), ext).toBe(true);
+    }
+    const transform = getFontOwnerTransform("/project");
+    const code = `import { Inter } from "next/font/google";\nexport const inter = Inter({ subsets: ["latin"] });`;
+    expect(transform(code, "/project/app/fonts.mts").code).toContain(
+      `_vinextOwner: "app/fonts.mts"`,
+    );
+  });
+
   it("leaves a module that only re-exports a font loader alone", () => {
     const transform = getFontOwnerTransform("/project");
     expect(transform(`export { Inter } from "next/font/google";`, "/project/fonts.ts")).toBeNull();

@@ -25,7 +25,7 @@
  */
 
 import type { ESTree, Plugin } from "vite";
-import { parseProgram, scriptParserLanguage } from "./ast-utils.js";
+import { parseProgram, SCRIPT_MODULE_ID_RE, scriptParserLanguage } from "./ast-utils.js";
 import { findAstBindingScope, walkAstScopes } from "./ast-scope.js";
 import path, { toSlash } from "pathslash";
 import fs from "node:fs";
@@ -1351,7 +1351,7 @@ export function createFontOwnerPlugin(options: {
     },
     transform: {
       filter: {
-        id: { include: /\.(tsx?|jsx?|mjs)$/ },
+        id: { include: SCRIPT_MODULE_ID_RE },
         code: /next\/font\/(?:google|local)/,
       },
       handler(code, id) {
