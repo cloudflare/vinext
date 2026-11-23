@@ -22,7 +22,7 @@ type ClientPageSsrSearchParamsOptions = {
    */
   searchParamsGate?: SearchParamsGate;
   /** Runs when the gate bails out a client page's `searchParams`, which hang. */
-  onSearchParamsHang?: () => void;
+  onSearchParamsHang?: () => Promise<never>;
 };
 
 function markAppPageSearchParamsAccess(): void {
@@ -133,7 +133,7 @@ function makeClientPageSsrSearchParamsThenableFromRecord(
  */
 function createGatedClientPageSearchParamsObserver(
   gate: SearchParamsGate,
-  onHang: (() => void) | undefined,
+  onHang: (() => Promise<never>) | undefined,
 ): ThenableParamsObserver {
   // Created on the first continuation, so a page that never awaits them
   // registers no hang.
@@ -143,8 +143,7 @@ function createGatedClientPageSearchParamsObserver(
     deferContinuation(continueWith) {
       gated ??= gate.decided.then(() => {
         if (gate.decision === "bailout") {
-          onHang?.();
-          return new Promise<never>(() => {});
+          return onHang?.() ?? new Promise<never>(() => {});
         }
         return continueWith();
       });

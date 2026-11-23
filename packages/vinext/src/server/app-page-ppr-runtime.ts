@@ -337,7 +337,8 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
       html,
       isForceStatic,
       params: options.params,
-      pathname: options.cleanPathname,
+      // The browser's pathname, as a rendered document's navigation holds it.
+      pathname: options.displayPathname ?? options.cleanPathname,
       searchParams: options.searchParams,
     });
 
