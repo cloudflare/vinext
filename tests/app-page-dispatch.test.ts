@@ -4456,6 +4456,55 @@ describe("app page dispatch", () => {
     expect(config.fetchCacheMode).toBe("auto");
   });
 
+  // club/(children)/page.tsx beside club/@modal: the whole route renders the
+  // group's layout around the owner's default, and the defaults of the group's
+  // own slots, so their config applies.
+  it.each([
+    {
+      name: "a layout",
+      layout: { default: () => null, dynamic: "force-dynamic", revalidate: 0 },
+      sideDefault: { default: () => null },
+    },
+    {
+      name: "a slot default",
+      layout: { default: () => null },
+      sideDefault: { default: () => null, dynamic: "force-dynamic", revalidate: 0 },
+    },
+  ])(
+    "reads $name a whole intercepting route renders in a route group below the owner",
+    ({ layout, sideDefault }) => {
+      const route = {
+        layouts: [{ default: () => null }, { default: () => null }, layout],
+        layoutTreePositions: [0, 1, 2],
+        routeSegments: ["club", "(children)"],
+        slots: {
+          "modal@app/club/@modal": { layoutIndex: 1, ownerTreePosition: 1 },
+          "side@app/club/(children)/@side": {
+            default: sideDefault,
+            layoutIndex: 2,
+            ownerTreePosition: 2,
+          },
+        },
+      };
+      const interceptOpts = {
+        interceptBranchSegments: ["(.)pics"],
+        interceptOwnerDefault: { default: () => null },
+        interceptPage: { default: () => null },
+        interceptSlotKey: "modal@app/club/@modal",
+      };
+      expect(resolveAppPageInterceptSegmentConfig(route, interceptOpts).isStaticEligible).toBe(
+        true,
+      );
+      const config = resolveAppPageInterceptSegmentConfig(route, {
+        ...interceptOpts,
+        rendersWholeInterceptingRoute: true,
+      });
+      expect(config.dynamicConfig).toBe("force-dynamic");
+      expect(config.revalidateSeconds).toBe(0);
+      expect(config.isStaticEligible).toBe(false);
+    },
+  );
+
   it("keeps a source's layouts below the slot's owner out of a slot interception", async () => {
     // app/@modal/(.)photos/[id] intercepts from app/feed/page.tsx, whose
     // app/feed/layout.tsx sits below the root layout that owns @modal.
