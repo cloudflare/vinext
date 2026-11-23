@@ -473,14 +473,19 @@ async function serveStoredFallbackShell<TRoute extends AppPageDispatchRoute>(
     }
     const generated = parseAppPprShellState(value.postponed)?.generated ?? null;
     if (generated === null) return UNDECIDED;
-    if (isAppPageParamsGenerated(params, generated, routeParamNamesOf(options.route))) {
+    // A shell ruled out means the request's path wasn't generated either.
+    if (
+      ruledOut.size === 0 &&
+      isAppPageParamsGenerated(params, generated, routeParamNamesOf(options.route))
+    ) {
       try {
-        // The request doesn't serve the shells, so stale ones regenerate here.
+        // The request doesn't serve the shells, so stale ones regenerate here,
+        // and their generators run once for all of them.
         await produceMissingFallbackShells(
           options,
           fallbackShells,
           currentRevalidateSeconds,
-          undefined,
+          new Map(),
           reads,
         );
       } catch (shellError) {
