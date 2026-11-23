@@ -932,6 +932,9 @@ export async function handleSsr(
           // tree to them from the shell's postponed state. A shell whose
           // holes are all in its payload has no HTML left to render.
           if (pprShellResume.postponed === null) {
+            // Nothing reads the payload's SSR branch, which would otherwise
+            // queue the whole payload beside the one sent.
+            void ssrStream.cancel().catch(() => {});
             htmlStream = createUtf8Stream("");
           } else {
             const resumedHtmlStream = await runWithStreamedClientReferences(
