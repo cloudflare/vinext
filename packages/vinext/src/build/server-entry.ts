@@ -3,18 +3,31 @@ import path from "pathslash";
 
 const RSC_ENTRY_MANIFEST_KEY = "virtual:vinext-rsc-entry";
 
-/** Pages builds emit entry.js in Node or index.js when the host owns the Worker entry. */
+/**
+ * Pages builds emit entry.js in Node, or index.js when the host owns the
+ * Worker entry. Vite names a host-owned entry index.mjs when the project's
+ * package.json isn't `"type": "module"`.
+ */
 export function resolveBuiltPagesEntryPath(serverDir: string): string {
   const nodeEntryPath = path.join(serverDir, "entry.js");
-  const workerEntryPath = path.join(serverDir, "index.js");
-  return fs.existsSync(nodeEntryPath) || !fs.existsSync(workerEntryPath)
-    ? nodeEntryPath
-    : workerEntryPath;
+  if (fs.existsSync(nodeEntryPath)) return nodeEntryPath;
+  for (const workerEntry of ["index.js", "index.mjs"]) {
+    const workerEntryPath = path.join(serverDir, workerEntry);
+    if (fs.existsSync(workerEntryPath)) return workerEntryPath;
+  }
+  return nodeEntryPath;
 }
 
-/** Resolve the built App handler even when a deployment host owns index.js. */
+/**
+ * Resolve the built App handler even when a deployment host owns index.js.
+ * A host-owned entry is index.mjs when the project's package.json isn't
+ * `"type": "module"`.
+ */
 export function resolveBuiltRscEntryPath(serverDir: string): string {
-  const fallbackPath = path.join(serverDir, "index.js");
+  const indexPath = path.join(serverDir, "index.js");
+  const moduleIndexPath = path.join(serverDir, "index.mjs");
+  const fallbackPath =
+    !fs.existsSync(indexPath) && fs.existsSync(moduleIndexPath) ? moduleIndexPath : indexPath;
   const manifestPath = path.join(serverDir, ".vite", "manifest.json");
   let manifest: unknown;
   try {

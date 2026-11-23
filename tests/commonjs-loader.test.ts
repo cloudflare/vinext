@@ -144,7 +144,7 @@ module.exports = path.posix.join(data.value, "builtin");
   it("delegates packages with native addons to Node's loader", () => {
     const dir = createEsmProject();
     const [addonPath] = globSync(
-      "node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3/build/Release/better_sqlite3.node",
+      "node_modules/.pnpm/@oxc-transform-react+binding-*/node_modules/@oxc-transform-react/binding-*/*.node",
       { cwd: path.join(import.meta.dirname, "..") },
     );
     expect(addonPath).toBeDefined();

@@ -95,7 +95,10 @@ export function edgeCacheControl(
   }
 
   if (now < freshUntil) {
-    const remainingFreshSeconds = Math.max(0, Math.ceil((freshUntil - now) / 1000));
+    // Rounded down, so the edge copy goes stale no later than the entry. Workers Cache then
+    // revalidates it with the binding, so a put replacing the entry from then on needs no
+    // edge purge either.
+    const remainingFreshSeconds = Math.max(0, Math.floor((freshUntil - now) / 1000));
     const staleWhileRevalidateSeconds = Math.max(0, Math.ceil((swrUntil - freshUntil) / 1000));
     return `max-age=${remainingFreshSeconds}, stale-while-revalidate=${staleWhileRevalidateSeconds}`;
   }
