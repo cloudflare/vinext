@@ -9234,7 +9234,11 @@ describe("query-free App page ISR entries", () => {
       searchParams: new URLSearchParams(),
     };
     const html = await productionHandleSsr(rscStream, navigation, undefined, {
-      pprShellResume: { postponed: null, prelude: "<!DOCTYPE html><html><head></head><body>" },
+      pprShellResume: {
+        browserSearch: null,
+        postponed: null,
+        prelude: "<!DOCTYPE html><html><head></head><body>",
+      },
       sideStream,
     });
     await new Response(html.htmlStream).text();
