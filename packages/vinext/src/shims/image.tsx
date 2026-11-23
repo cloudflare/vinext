@@ -33,6 +33,7 @@ import {
   generateImageAttributes,
   getFillStyle,
   imageOptimizationUrl,
+  isDataOrBlobUrl,
   isRemoteUrl,
   isSvgUrl,
   parseImageQuality,
@@ -186,7 +187,13 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
   const shouldPreload = preload === true || priority === true;
   const priorityFetchPriority = priority ? "high" : undefined;
-  const imageLoading = priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy");
+  // data: and blob: sources are served as-is and never lazy by default (Next.js parity).
+  const isInlineSrc = isDataOrBlobUrl(src);
+  const imageLoading = priority
+    ? "eager"
+    : shouldPreload || isInlineSrc
+      ? loading
+      : (loading ?? "lazy");
 
   const [completedBlurSrc, setCompletedBlurSrc] = useState<string | undefined>(undefined);
   const blurComplete = completedBlurSrc === src;
@@ -273,7 +280,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         }
       : undefined;
 
-  if (_unoptimized === true || __globallyUnoptimized) {
+  if (_unoptimized === true || __globallyUnoptimized || isInlineSrc) {
     // Unoptimized images are fetched directly by the browser, so intentionally
     // skip remote URL validation: there is no server-side optimizer fetch and
     // therefore no SSRF surface. This matches Next.js behavior.

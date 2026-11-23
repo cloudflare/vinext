@@ -16,6 +16,12 @@
  * own, or after the shell's stylesheets when none does. Its scripts link as the
  * Flight stream names it.
  *
+ * A module the render reads only after its shell has flushed, such as a page's
+ * under loading.js, would only get a preload, and React would reveal it
+ * unstyled. Next.js links each rendered segment's CSS, its Client Components'
+ * included, whether they render or not, so a render links the stylesheets of
+ * the references its rendered route files import statically the same way.
+ *
  * plugin-rsc hints a client module's scripts without the render's nonce, which
  * a nonce-based CSP blocks, and always as anonymous, so under
  * `crossOrigin: "use-credentials"` the browser fetches the module the page
@@ -46,9 +52,12 @@ export type StreamedClientReferences = {
   /** next.config's crossOrigin for the assets it links; "" when unset. */
   crossOrigin: AssetCrossOrigin;
   streamed: ReadonlySet<string>;
-  /** Each of the route's references' position in import order. */
+  /** Each of the route's references' position in the order its stylesheets link. */
   positions: ReadonlyMap<string, number>;
-  /** Streamed references whose stylesheets aren't linked yet, in import order. */
+  /**
+   * Streamed and linked references (see `RouteClientReferenceSet`) whose
+   * stylesheets aren't linked yet, in the order `positions` gives.
+   */
   unlinked: string[];
   linkedStylesheets: Set<string>;
 };
@@ -90,8 +99,8 @@ function linkStylesheets(hrefs: readonly string[], render: StreamedClientReferen
 }
 
 /**
- * Before reference `id` links its stylesheets, link those of the streamed
- * references that come before it in import order.
+ * Before reference `id` links its stylesheets, link those of the streamed and
+ * linked references that come before it in import order.
  */
 function linkStreamedStylesheetsBefore(render: StreamedClientReferences, id: string): void {
   const position = render.positions.get(id);
@@ -169,6 +178,28 @@ export function wrapClientReferenceRequire(
   globalThis.__vite_rsc_client_require__ = wrapped;
 }
 
+/**
+ * The route's references in the order their stylesheets link: import order,
+ * with the linked references in their own order (a boundary may preload one a
+ * page imports last first), each in a place one of them had.
+ */
+function stylesheetOrder(route: RouteClientReferenceSet | undefined): string[] {
+  if (!route) return [];
+  const linked = new Set(route.linked);
+  let next = 0;
+  return route.references.map((id) => (linked.has(id) ? route.linked[next++]! : id));
+}
+
+// The references whose stylesheets a render links, rendered or not.
+function unlinkedReferences(
+  route: RouteClientReferenceSet | undefined,
+  streamed: ReadonlySet<string>,
+): string[] {
+  if (!route) return [];
+  const linked = new Set(route.linked);
+  return stylesheetOrder(route).filter((id) => streamed.has(id) || linked.has(id));
+}
+
 export function createStreamedClientReferences(
   route: RouteClientReferenceSet | undefined,
   nonce: string | undefined,
@@ -179,22 +210,23 @@ export function createStreamedClientReferences(
     nonce,
     crossOrigin,
     streamed,
-    positions: new Map(route?.references.map((id, index) => [id, index])),
-    unlinked: route?.references.filter((id) => streamed.has(id)) ?? [],
+    positions: new Map(stylesheetOrder(route).map((id, index) => [id, index])),
+    unlinked: unlinkedReferences(route, streamed),
     linkedStylesheets: new Set(),
   };
 }
 
 /**
  * Forget the stylesheets a discarded render linked, so the render that
- * replaces it links them again.
+ * replaces it, from `route`'s references, links them again.
  */
 export function resetStreamedClientReferences(
   render: StreamedClientReferences | null,
   route: RouteClientReferenceSet | undefined,
 ): void {
   if (!render) return;
-  render.unlinked = route?.references.filter((id) => render.streamed.has(id)) ?? [];
+  render.positions = new Map(stylesheetOrder(route).map((id, index) => [id, index]));
+  render.unlinked = unlinkedReferences(route, render.streamed);
   render.linkedStylesheets.clear();
 }
 
@@ -207,8 +239,8 @@ export function runWithStreamedClientReferences<R>(
 }
 
 /**
- * The `<head>` links of the streamed stylesheets a render's shell left
- * unlinked, those of streamed references after every reference it rendered.
+ * The `<head>` links of the stylesheets a render's shell left unlinked, those
+ * of streamed and linked references after every reference it rendered.
  */
 export function renderStreamedStylesheets(render: StreamedClientReferences): string {
   const hrefs = new Set<string>();

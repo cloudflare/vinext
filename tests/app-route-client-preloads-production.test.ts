@@ -205,6 +205,136 @@ describe("App Router production SSR route client reference preloads", () => {
     expect(warmStylesheets).toEqual(stylesheets);
   });
 
+  // Issue #3728. Next.js 16 (webpack and Turbopack) links the page's CSS, its
+  // Client Components' included, in the shell of both routes. Another route
+  // (/loading-css/lazy-viewer) imports the viewer through next/dynamic.
+  it.each([
+    ["/loading-css/async-page", false],
+    ["/loading-css/async-loading", true],
+  ])(
+    "links the stylesheet of a page's client component in the shell, under loading.js or not (%s)",
+    async (route, showsFallback) => {
+      const href = cssHref("--loading-css-viewer");
+      for (const label of ["cold", "warm"]) {
+        const { first, html } = await readStream(`${baseUrl}${route}`);
+        expect(html, label).toContain('data-testid="loading-css-viewer"');
+        // Under loading.js the shell flushes before the page renders.
+        expect(first.includes('data-testid="loading-css-fallback"'), label).toBe(showsFallback);
+        expect(first.includes('data-testid="loading-css-viewer"'), label).toBe(!showsFallback);
+        // Not only a late preload, which reveals the content unstyled.
+        const stylesheets = (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).filter(
+          (tag) => tag.includes(`href="${href}"`),
+        );
+        expect(stylesheets, label).toHaveLength(1);
+        expect(stylesheets[0], label).toContain('crossorigin=""');
+        expect(first, label).toContain(stylesheets[0]);
+      }
+    },
+  );
+
+  it("links a page's client component stylesheets in import order, under loading.js", async () => {
+    const firstHref = cssHref("--loading-css-cascade-first");
+    const secondHref = cssHref("--loading-css-cascade-second");
+    expect(firstHref).not.toBe(secondHref);
+    for (const label of ["cold", "warm"]) {
+      const { first, html } = await readStream(`${baseUrl}/loading-css/cascade`);
+      expect(first, label).toContain('data-testid="loading-css-cascade-fallback"');
+      expect(html, label).toContain('data-testid="loading-css-cascade-second"');
+      // The route's not-found boundary preloads Second first; the page
+      // imports it last, so its rule wins.
+      const hrefs = stylesheetHrefs(first);
+      expect(hrefs.indexOf(firstHref), label).toBeGreaterThanOrEqual(0);
+      expect(hrefs.indexOf(secondHref), label).toBeGreaterThan(hrefs.indexOf(firstHref));
+      expect(winningRule(first, ".loading-css-cascade"), label).toBe("second");
+    }
+  });
+
+  it("links no stylesheet of the page or layouts a parent not-found boundary replaces", async () => {
+    const hrefs = [cssHref("--loading-css-missing-layout"), cssHref("--loading-css-missing-page")];
+    for (const label of ["cold", "warm"]) {
+      const response = await fetch(`${baseUrl}/loading-css/missing`);
+      expect(response.status, label).toBe(404);
+      const html = await response.text();
+      expect(html, label).toContain('data-testid="not-found-note"');
+      for (const href of hrefs) expect(html, label).not.toContain(`href="${href}"`);
+    }
+  });
+
+  it("links no stylesheet of a slot page its own not-found boundary replaces", async () => {
+    const mainHref = cssHref("--loading-css-slot-main");
+    const panelHref = cssHref("--loading-css-slot-panel");
+    expect(mainHref).not.toBe(panelHref);
+    for (const label of ["cold", "warm"]) {
+      const response = await fetch(`${baseUrl}/loading-css/slot`);
+      const html = await response.text();
+      expect(html, label).toContain('data-testid="slot-panel-not-found"');
+      expect(html, label).toContain('data-testid="slot-main-note"');
+      // The route's page still renders, and links its stylesheet.
+      expect(stylesheetHrefs(html), label).toContain(mainHref);
+      expect(html, label).not.toContain(`href="${panelHref}"`);
+    }
+  });
+
+  it("links no stylesheet of the route in the error document a shell error sends", async () => {
+    const href = cssHref("--shell-error-note");
+    for (const label of ["cold", "warm"]) {
+      const response = await fetch(`${baseUrl}/shell-error`);
+      expect(response.status, label).toBe(500);
+      const html = await response.text();
+      expect(html, label).toContain("__next_error__");
+      // The page imports the note, but doesn't render it here.
+      expect(html, label).not.toContain(`href="${href}"`);
+    }
+  });
+
+  // The stylesheets a document ends with once hydrated: its own, then those of
+  // each module chunk its Flight data names, which the client reference loader
+  // appends to <head> as React loads the chunk, whether the reference renders
+  // or not (an unrendered boundary's row is in the data too).
+  const hydratedStylesheetHrefs = (html: string): string[] => {
+    const { appClientReferenceChunks } = JSON.parse(
+      fs.readFileSync(
+        path.join(fixtureDir, "dist", "client", "vinext-client-entry-manifest.json"),
+        "utf8",
+      ),
+    ) as { appClientReferenceChunks: { modules: { file: string; css: string[] }[] } };
+    const cssByFile = new Map(appClientReferenceChunks.modules.map(({ file, css }) => [file, css]));
+    const hrefs = stylesheetHrefs(html);
+    for (const match of html.matchAll(/\\?"m\/([^"\\]+\.js)/g)) {
+      for (const css of cssByFile.get(match[1]!) ?? []) {
+        const href = css.startsWith("/") ? css : `/${css}`;
+        if (!hrefs.includes(href)) hrefs.push(href);
+      }
+    }
+    return hrefs;
+  };
+
+  // The page imports a client component it renders only with `?note`; its
+  // not-found boundary renders another, whose global rule has the same
+  // specificity. The page's rule must win once the document hydrates.
+  it("keeps a page's client component rule ahead of its unrendered not-found boundary's", async () => {
+    const files = new Map(clientCssFiles().map(({ href, css }) => [href, css]));
+    for (const [label, query] of [
+      ["cold", ""],
+      ["warm", ""],
+      ["rendered", "?note"],
+    ]) {
+      const response = await fetch(`${baseUrl}/loading-css/grouped${query}`);
+      expect(response.status, label).toBe(200);
+      const html = await response.text();
+      expect(html.includes('data-testid="loading-css-grouped-note"'), label).toBe(query !== "");
+      let winner: string | undefined;
+      for (const href of hydratedStylesheetHrefs(html)) {
+        for (const match of (files.get(href) ?? "").matchAll(
+          /\.loading-css-grouped\s*\{[^}]*--css-group-winner:\s*(\w+)/g,
+        )) {
+          winner = match[1];
+        }
+      }
+      expect(winner, label).toBe("page");
+    }
+  });
+
   it("streams a client component that awaits at its top level, as Next.js does", async () => {
     const read = () => readStream(`${baseUrl}/streamed`);
 
