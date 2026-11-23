@@ -119,6 +119,20 @@ vinext({ cache: responseStoreAdapter({ shards: 16 }) });
 
 Each cache key remains strongly coordinated by one SQLite Durable Object. Tag/path refreshes and purges fan out across all shards. The option is disabled by default, and changing the count starts a new cache layout for the deployed Worker version.
 
+### Batched edge purges
+
+Every `revalidateTag()` and `revalidatePath()` purges or invalidates the edge copies of the responses and data it affects, and so do the data cache refills that follow it. Workers Cache always applies Cloudflare's Free-tier [purge rate limits](https://developers.cloudflare.com/workers/cache/purge/#rate-limits) to these: 5 requests a minute, with a burst of 25 and up to 100 tags per request, shared by every Worker in the account. An app that revalidates often can run out, and a refused purge leaves the edge serving the old response.
+
+If your app can accept a delay before revalidations reach the edge, queue the edge updates and send each window's updates together:
+
+```ts
+vinext({ cache: responseStoreAdapter({ purgeBatchWindow: 60 }) });
+```
+
+`purgeBatchWindow` is a number of seconds. The Response Store applies each revalidation to its own copy at once, but queues the edge updates in its metadata Durable Object. When the window ends, it sends them together in as few requests as it can: purges and invalidations are separate requests of up to 100 tags each. It retries the refused requests about once a minute until they go through, without resending the ones that already went through. So a revalidation reaches the edge up to the window later, or longer while the rate limit is reached. Each metadata shard sends its own batch.
+
+Revalidate through `revalidateTag()` and `revalidatePath()` rather than calling the Response Store's `invalidate()` or `purge()` yourself: they use the tags vinext stores entries under, and also apply to the rest of the current request. The option is disabled by default.
+
 Next.js keeps an App Router page's HTML and RSC payload in one cache entry. Response Store stores them under separate keys, so whenever it stores or regenerates one of the two, it stores the other from the same render. Replacing the other one doesn't purge its edge copy, which would spend the [shared purge budget](#workers-cache-and-kv) on every regeneration. Until that copy's own cache policy ends, the edge can serve it from an earlier render beside the new one. Concurrent misses can also leave the two from different renders.
 
 ### Service-binding mode
@@ -348,6 +362,33 @@ For an existing deployment serving 100% of traffic from one version, vinext uplo
 The default warmup makes one fill request per admitted cache identity. Add `--warm-cache-certify` to require a second, header-only request that proves warmed entries are reusable before promotion. If staging or required warmup fails, the command stops rather than promoting an unverified version; inspect the deployment state before retrying. A first deployment cannot use this staged flow: deploy normally once, then enable warming on subsequent deploys. The command also needs a reachable production route or custom domain and a Worker name for staged version overrides; use `--warm-cache-target https://example.com` if the target origin cannot be inferred.
 
 Only discoverable, cacheable route identities are warmed; dynamic parameters and query variants are not all enumerated automatically. HTML, RSC, and Pages Router data use separate requests where applicable. For Workers Cache, a warm request does not guarantee a cache hit in every region. See [Cloudflare's Workers Caching documentation](https://developers.cloudflare.com/workers/cache/).
+
+File-based [metadata routes](https://nextjs.org/docs/app/api-reference/file-conventions/metadata) are warmed where Next.js prerenders them, and the warm report lists them as `Metadata route`:
+
+- Static files such as `favicon.ico`, `robots.txt`, or `opengraph-image.png`, including ones under a dynamic segment (served at a `-` path, for example `/shop/-/opengraph-image.png`).
+- Code routes such as `sitemap.ts`, `robots.ts`, or `opengraph-image.tsx`, unless they export `dynamic = "force-dynamic"` or `revalidate = 0`.
+- A code route under a dynamic segment, for each path its own `generateStaticParams()` returns. Like Next.js, vinext does not use the page's `generateStaticParams()` for it; without its own, the route renders on request.
+- Each id from `generateSitemaps()` or `generateImageMetadata()`, when the route is not under a dynamic segment.
+
+A route that reads `headers()`, `cookies()`, or another request-time API renders dynamically and is skipped at warm time, like a dynamic Route Handler. Image and icon routes are warmed at the `?<hash>` URL that rendered `<link>` and `<meta>` tags use, which is the entry Workers Cache serves them from; the Response Store and KV key them without the query. Traffic-aware warming doesn't run generators, so it warms only visited metadata routes with a single URL; paths from `generateStaticParams()`, `generateSitemaps()`, or `generateImageMetadata()` are left to request time.
+
+### Sites behind an auth proxy
+
+Every discovery, readiness, warm-up, and probe request goes to the deployed Worker through its production URL. If [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) or another auth proxy sits in front of it, those requests get the proxy's sign-in redirect and the deploy fails. Give the deploy the headers the proxy accepts, such as the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers of an Access [service token](https://developers.cloudflare.com/cloudflare-one/identity/service-tokens/).
+
+Set `VINEXT_WARM_CACHE_HEADERS` to one `Name: value` header per line, so secrets stay out of shell history and process listings. The deploy also reads it from the `.env` files it loads, such as `.env.production.local`. In GitHub Actions:
+
+```yaml
+- run: npx @vinext/cloudflare deploy --warm-cache
+  env:
+    VINEXT_WARM_CACHE_HEADERS: |
+      CF-Access-Client-Id: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF-Access-Client-Secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+```
+
+For headers that are not secret, pass `--warm-cache-header "Name: value"`, once per header. A flag replaces an env entry with the same name. The deploy logs the configured header names, never their values, and sends the headers only to the Worker, not to the Cloudflare API. Warm-up requests do not follow redirects, so the headers never reach another origin.
+
+The deploy rejects names that vinext sets itself or that change how the Worker treats a request: `Accept`, `Cache-Control`, `Pragma`, `User-Agent`, `Host`, `RSC`, `Cloudflare-Workers-Version-Overrides`, `X-Deployment-Id`, `X-RSC-Action`, the conditional and range headers (`If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`, `Range`), and names starting with `Next-`, `X-Middleware-`, `X-Nextjs-`, `X-Prerender-Revalidate`, or `X-Vinext-`. It also rejects `Connection`, `Content-Length`, `Expect`, `Keep-Alive`, `Sec-Fetch-Mode`, `Transfer-Encoding`, and `Upgrade`, which `fetch()` does not allow or controls itself. Warm-up responses fill the same cache entries as visitor requests, so a cacheable page must not render differently based on them.
 
 ### Traffic-aware warming
 

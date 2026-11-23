@@ -70,6 +70,7 @@ import {
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
 import type { AppPagePprShellResume, AppSsrRenderResult } from "./app-page-stream.js";
+import { trackQueuedFlightRuns } from "./queued-flight-runs.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
@@ -453,6 +454,12 @@ export async function handleSsr(
      * 404). Omitted, every client reference loads first.
      */
     preloadRoutePattern?: string | null;
+    /**
+     * A boundary's document, which replaces the route's page and the layouts
+     * below the boundary, so it doesn't link the stylesheets of the route's
+     * rendered files (`RouteClientReferenceSet.linked`), as Next.js doesn't.
+     */
+    isBoundaryRender?: boolean;
     formState?: ReactFormState | null;
     basePath?: string;
     /**
@@ -550,17 +557,27 @@ export async function handleSsr(
     // A render waits for its route's client references, so a cold render
     // shows the same document as a warm one, except for those whose modules
     // evaluate asynchronously, which it streams like Next.js. A PPR fallback
-    // shell aborts on the next tick, so it loads every reference first.
-    const routeReferences = options?.pprFallbackShellSignal
-      ? undefined
-      : resolveRouteClientReferences(routeClientReferences, options?.preloadRoutePattern);
+    // shell aborts on the next tick, so it loads every reference first and
+    // streams none. Its prelude still links the route's linked stylesheets in
+    // its head, as Next.js's prerendered shell does, since a request resuming
+    // it sends that head as stored, ahead of the holes that render them.
+    const isPprFallbackShell = options?.pprFallbackShellSignal !== undefined;
+    const resolvedReferences = resolveRouteClientReferences(
+      routeClientReferences,
+      options?.preloadRoutePattern,
+    );
+    const routeReferences = resolvedReferences && {
+      ...resolvedReferences,
+      streamed: isPprFallbackShell ? [] : resolvedReferences.streamed,
+      linked: options?.isBoundaryRender ? [] : resolvedReferences.linked,
+    };
     const streamedReferences = createStreamedClientReferences(
       routeReferences,
       options?.scriptNonce,
       assetCrossOrigin,
     );
     await clientReferencePreloader.preload(
-      routeReferences?.references,
+      isPprFallbackShell ? undefined : routeReferences?.references,
       streamedReferences?.streamed,
     );
 
@@ -648,7 +665,13 @@ export async function handleSsr(
             } as PreloadModuleOptions);
           }
           if (!flightRoot) {
-            flightRoot = createFromReadableStream<AppWireElements>(ssrStream, SSR_FLIGHT_OPTIONS);
+            // The root renders once the Flight client has decoded every chunk
+            // queued with the one that completed it, so the tree it renders
+            // doesn't stop at a chunk of the same flush (#4770).
+            const flight = trackQueuedFlightRuns(ssrStream);
+            flightRoot = flight.afterCurrentRun(
+              createFromReadableStream<AppWireElements>(flight.stream, SSR_FLIGHT_OPTIONS),
+            );
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
@@ -856,7 +879,13 @@ export async function handleSsr(
           flightRoot = null;
           beforeInteractiveInlineScripts.length = 0;
           clearServerInsertedHTML();
-          resetStreamedClientReferences(streamedReferences, routeReferences);
+          // The caught boundaries replace their slots' files, which the
+          // route's linked stylesheets include. Next.js sends an error shell
+          // without stylesheets here, so link only what this render reads.
+          resetStreamedClientReferences(
+            streamedReferences,
+            routeReferences && { ...routeReferences, linked: [] },
+          );
           const boundaries: CaughtNotFoundBoundaries = {
             ids: new Set(caughtNotFoundBoundaries),
             rendered: new Set(),
@@ -968,6 +997,11 @@ export async function handleSsr(
               // the error, so no server component runs, or reports, again.
               // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx (getErrorRSCPayload)
               shellErrorRecovered = true;
+              // The error document shows none of the route's files, so it
+              // links none of their stylesheets, as Next.js's doesn't.
+              streamedReferences.unlinked = streamedReferences.unlinked.filter((id) =>
+                streamedReferences.streamed.has(id),
+              );
               if (options?.isServerComponentError?.(error) !== true) ssrOnlyShellError = error;
               htmlStream = renderSsrErrorDocumentShell(
                 bootstrapModuleUrl,

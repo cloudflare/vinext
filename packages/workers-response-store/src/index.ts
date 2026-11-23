@@ -11,6 +11,7 @@ import {
   type WorkersResponseStoreEnv,
   type WorkersResponseStore,
   validateResponseStoreLocationHint,
+  validateResponseStorePurgeBatchWindow,
   validateResponseStoreShards,
 } from "./binding";
 import { CacheMetadata } from "./metadata-do";
@@ -56,6 +57,12 @@ export type WorkersResponseStoreOptions<Env> = {
    * cache-cold deployment change.
    */
   locationHint?: ResponseStoreLocationHint;
+  /**
+   * Seconds to collect edge purges and invalidations for, so the metadata Durable Object sends
+   * each window's together. Edge copies update up to this much later. Without it, each mutation
+   * sends its own.
+   */
+  purgeBatchWindow?: number;
   /** Split version-scoped metadata across this many Durable Objects. */
   shards?: number;
   regenerate(
@@ -87,11 +94,12 @@ export function createWorkersResponseStore<
   Env extends WorkersResponseStoreEnv = WorkersResponseStoreEnv,
 >(options: WorkersResponseStoreOptions<Env>): WorkersResponseStoreDefinition<Env> {
   const locationHint = validateResponseStoreLocationHint(options.locationHint);
+  const purgeBatchWindow = validateResponseStorePurgeBatchWindow(options.purgeBatchWindow);
   const shards = validateResponseStoreShards(options.shards);
   const ResponseStoreRevalidator = createRevalidatorEntrypoint(options);
 
   const getStore = () =>
-    getWorkersResponseStore({ exports: workerExports }, { locationHint, shards });
+    getWorkersResponseStore({ exports: workerExports }, { locationHint, purgeBatchWindow, shards });
 
   return {
     entrypoints: { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding },
@@ -110,6 +118,7 @@ export function createWorkersResponseStoreClient<
   Env extends WorkersResponseStoreClientEnv = WorkersResponseStoreClientEnv,
 >(options: WorkersResponseStoreOptions<Env>): WorkersResponseStoreClientDefinition<Env> {
   const locationHint = validateResponseStoreLocationHint(options.locationHint);
+  const purgeBatchWindow = validateResponseStorePurgeBatchWindow(options.purgeBatchWindow);
   const shards = validateResponseStoreShards(options.shards);
   const ResponseStoreRevalidator = createRevalidatorEntrypoint(options);
 
@@ -136,6 +145,7 @@ export function createWorkersResponseStoreClient<
         versionId,
         revalidator: factory({ props: {} }),
         ...(locationHint === undefined ? {} : { locationHint }),
+        ...(purgeBatchWindow === undefined ? {} : { purgeBatchWindow }),
         ...(shards === undefined ? {} : { shards }),
       };
     }

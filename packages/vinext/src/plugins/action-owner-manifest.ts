@@ -4,6 +4,7 @@ import path from "pathslash";
 import type { Plugin, ResolvedConfig, Rollup } from "vite";
 import type { AppRoute } from "../routing/app-route-graph.js";
 import { safeJsonStringify } from "../server/html.js";
+import { rewriteOutputRootExternals } from "../build/output-root-externals.js";
 import {
   addClientActionReachability,
   buildActionOwnerManifest,
@@ -16,6 +17,9 @@ export const ACTION_OWNER_MANIFEST_ID = "virtual:vinext-action-owner-manifest";
 
 const RESOLVED_ACTION_OWNER_MANIFEST_ID = `\0${ACTION_OWNER_MANIFEST_ID}`;
 const ACTION_OWNER_MANIFEST_FILE = "__vinext_action_owner_manifest.js";
+const ACTION_OWNER_MANIFEST_EXTERNALS: ReadonlyMap<string, string> = new Map([
+  [ACTION_OWNER_MANIFEST_ID, ACTION_OWNER_MANIFEST_FILE],
+]);
 
 function getModuleInfo(context: Rollup.PluginContext, id: string) {
   const info = context.getModuleInfo(id);
@@ -90,13 +94,7 @@ export function createActionOwnerManifestPlugin(options: {
       }
     },
     renderChunk(code, chunk) {
-      if (!code.includes(ACTION_OWNER_MANIFEST_ID)) return;
-      let relativePath = path.posix.relative(
-        path.posix.dirname(chunk.fileName),
-        ACTION_OWNER_MANIFEST_FILE,
-      );
-      if (!relativePath.startsWith(".")) relativePath = `./${relativePath}`;
-      return { code: code.replaceAll(ACTION_OWNER_MANIFEST_ID, relativePath) };
+      return rewriteOutputRootExternals(code, chunk.fileName, ACTION_OWNER_MANIFEST_EXTERNALS);
     },
     buildApp: {
       order: "post",

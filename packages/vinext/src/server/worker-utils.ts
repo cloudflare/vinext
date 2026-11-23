@@ -6,6 +6,7 @@
  */
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
+import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 /**
  * Merge middleware/config headers into a response.
@@ -67,6 +68,8 @@ export function mergeHeaders(
   extraHeaders: Record<string, string | string[]>,
   statusOverride?: number,
 ): Response {
+  // A Workers WebSocket upgrade cannot be rebuilt with merged headers.
+  if (isWebSocketUpgradeResponse(response)) return response;
   // As in Next.js, which sets a 304 after middleware's status, a 304 answers
   // the request's own validator.
   const status = response.status === 304 ? 304 : (statusOverride ?? response.status);

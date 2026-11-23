@@ -1,0 +1,5 @@
+{
+  "name": "app-build-outdir-fixture",
+  "private": true,
+  "type": "module"
+}
