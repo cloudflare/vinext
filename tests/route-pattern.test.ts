@@ -78,6 +78,9 @@ describe("route pattern helpers", () => {
       fillRoutePatternSegments("/feed/(.)[id]/(..)[slug]/icon-abc", { id: "1", slug: ["a"] }),
     ).toBe("/feed/(.)1/(..)a/icon-abc");
     expect(fillRoutePatternSegments("/feed/(.)[id]/icon-abc", {})).toBeNull();
+    // A catch-all behind a marker fills no URL, so its file heads nothing.
+    expect(fillRoutePatternSegments("/(...)[...slug]/icon-abc", { slug: ["a", "b"] })).toBeNull();
+    expect(fillRoutePatternSegments("/(.)[[...slug]]/icon-abc", { slug: ["a"] })).toBeNull();
     expect(
       matchRoutePattern(
         ["feed", "(.)1", "(..)(..)a%2Fb", "icon"],

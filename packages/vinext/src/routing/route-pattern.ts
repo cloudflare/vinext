@@ -112,6 +112,15 @@ export function fillRoutePatternSegments(
       continue;
     }
 
+    // A catch-all behind a marker, `(...)[...slug]`, has no URL that serves
+    // it (Next.js fails the build on a metadata file below one).
+    if (
+      segment.includes("[") &&
+      INTERCEPTION_MARKERS.some((marker) => segment.startsWith(marker))
+    ) {
+      return null;
+    }
+
     resolvedSegments.push(segment);
   }
 
