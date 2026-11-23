@@ -83,8 +83,10 @@ import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import type { PrerenderableMetadataRoute } from "../server/metadata-route-response.js";
 import {
   createAppPprFallbackShells,
+  formatAppPprShellState,
   hasAppPprFallbackShellPrelude,
   markAppPprDynamicFallbackShellHtml,
+  parseAppPprShellState,
   splitAppPprFallbackShellState,
 } from "../server/app-ppr-fallback-shell.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
@@ -1457,6 +1459,9 @@ export async function prerenderApp({
 
   let rscHandler: (request: Request) => Promise<Response>;
   let staticParamsMap: StaticParamsMap = {};
+  // Whether the route being collected asked the static-params endpoint a
+  // lookup it couldn't answer.
+  let routeStaticParamsUnanswered = false;
   // ownedProdServer: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
   let ownedProdServerHandle = null as PrerenderProdServer | null;
@@ -1552,12 +1557,20 @@ export async function prerenderApp({
       string,
       Promise<Record<string, string | string[]>[] | null>
     >();
+    // Lookups the endpoint couldn't answer, whose null isn't a route without
+    // generateStaticParams. The route being collected records that it asked
+    // one, so its shells don't claim to know what it generates.
+    const unansweredStaticParams = new Set<string>();
+    const settled = async (cacheKey: string) => {
+      const result = await staticParamsCache.get(cacheKey);
+      if (unansweredStaticParams.has(cacheKey)) routeStaticParamsUnanswered = true;
+      return result ?? null;
+    };
     staticParamsMap = new Proxy({} as typeof staticParamsMap, {
       get(_target, pattern: string) {
         return async ({ params }: { params: Record<string, string | string[]> }) => {
           const cacheKey = `${pattern}\0${JSON.stringify(params)}`;
-          const cached = staticParamsCache.get(cacheKey);
-          if (cached !== undefined) return cached;
+          if (staticParamsCache.has(cacheKey)) return settled(cacheKey);
           const request = (async () => {
             const search = new URLSearchParams({ pattern });
             if (Object.keys(params).length > 0) {
@@ -1585,6 +1598,7 @@ export async function prerenderApp({
                 `[vinext] Warning: /__vinext/prerender/static-params returned ${res.status} for ${pattern}. ` +
                   `Static params will be skipped. This may indicate a stale or missing prerender secret.`,
               );
+              unansweredStaticParams.add(cacheKey);
               return null;
             }
             if (res.status === 204 || text === "null") return null;
@@ -1594,7 +1608,7 @@ export async function prerenderApp({
           // subsequent lookups for the same route/params combo.
           void request.catch(() => staticParamsCache.delete(cacheKey));
           staticParamsCache.set(cacheKey, request);
-          return request;
+          return settled(cacheKey);
         };
       },
       has(_target, _pattern) {
@@ -1613,8 +1627,45 @@ export async function prerenderApp({
       revalidate: number | false;
       isSpeculative: boolean; // 'unknown' route — mark skipped if render fails
       isFallback?: boolean;
+      /**
+       * For a fallback shell, the generated params that agree with the ones it
+       * keeps. Null when the build doesn't enumerate all of them.
+       */
+      generatedParams?: Record<string, unknown>[] | null;
     };
     const urlsToRender: UrlToRender[] = [];
+    // A route's generated params grouped by the values each set of kept param
+    // names takes, so a shell looks its rows up instead of scanning them all.
+    const generatedParamsByKeptValues = new WeakMap<
+      readonly Record<string, unknown>[],
+      Map<string, Map<string, Record<string, unknown>[]>>
+    >();
+    const keptValuesKey = (params: Record<string, unknown>, names: readonly string[]): string =>
+      JSON.stringify(names.map((name) => JSON.stringify(params[name]) ?? ""));
+    const generatedParamsKeeping = (
+      routeParamSets: readonly Record<string, unknown>[],
+      keptParamNames: readonly string[],
+      params: Record<string, unknown>,
+    ): Record<string, unknown>[] => {
+      let byNames = generatedParamsByKeptValues.get(routeParamSets);
+      if (!byNames) {
+        byNames = new Map();
+        generatedParamsByKeptValues.set(routeParamSets, byNames);
+      }
+      const namesKey = JSON.stringify(keptParamNames);
+      let byValues = byNames.get(namesKey);
+      if (!byValues) {
+        byValues = new Map();
+        for (const paramSet of routeParamSets) {
+          const key = keptValuesKey(paramSet, keptParamNames);
+          const rows = byValues.get(key);
+          if (rows) rows.push(paramSet);
+          else byValues.set(key, [paramSet]);
+        }
+        byNames.set(namesKey, byValues);
+      }
+      return [...(byValues.get(keptValuesKey(params, keptParamNames)) ?? [])];
+    };
     // A Cache Components route also renders the shells a request for a param
     // it didn't generate resumes. A shell that fails to render is skipped.
     const queueFallbackShells = (
@@ -1622,11 +1673,15 @@ export async function prerenderApp({
       params: Record<string, string | string[]>,
       revalidate: number | false,
       queuedRouteUrls: Set<string>,
+      routeParamSets: readonly Record<string, unknown>[] = [],
     ): void => {
       if (config.cacheComponents !== true || mode === "export") return;
       for (const fallbackShell of createAppPprFallbackShells(route, params)) {
         if (queuedRouteUrls.has(fallbackShell.pathname)) continue;
         queuedRouteUrls.add(fallbackShell.pathname);
+        const keptParamNames = route.params.filter(
+          (name) => !fallbackShell.fallbackParamNames.includes(name),
+        );
         urlsToRender.push({
           urlPath: fallbackShell.pathname,
           routePattern: route.pattern,
@@ -1638,12 +1693,23 @@ export async function prerenderApp({
           revalidate,
           isSpeculative: false,
           isFallback: true,
+          // Like Next.js's prerender manifest, the shell records the paths
+          // generated under it, so a request decides without asking
+          // generateStaticParams. The build doesn't enumerate a parallel
+          // route's generators, so its requests ask instead, as they do when
+          // the static params endpoint couldn't answer.
+          generatedParams:
+            route.parallelSlots.length > 0 || routeStaticParamsUnanswered
+              ? null
+              : generatedParamsKeeping(routeParamSets, keptParamNames, fallbackShell.params),
         });
       }
     };
 
     // Without complete params, the shells come from the params the route's
-    // layouts generated, so a required root param like `/en/[slug]` is kept.
+    // layouts generated, so a required root param like `/en/[slug]` is kept,
+    // and each shell records those params as generated, unless
+    // `queueFallbackShells` leaves its requests to ask.
     const queueParentFallbackShells = (
       route: (typeof routes)[number],
       parentParamSets: readonly Record<string, string | string[]>[],
@@ -1651,11 +1717,12 @@ export async function prerenderApp({
     ): void => {
       const queuedRouteUrls = new Set<string>();
       for (const parentParams of parentParamSets.length > 0 ? parentParamSets : [{}]) {
-        queueFallbackShells(route, parentParams, revalidate, queuedRouteUrls);
+        queueFallbackShells(route, parentParams, revalidate, queuedRouteUrls, parentParamSets);
       }
     };
 
     for (const route of routes) {
+      routeStaticParamsUnanswered = false;
       const renderEntryPath = getAppRouteRenderEntryPath(route);
 
       if (!renderEntryPath && route.routePath) {
@@ -1845,7 +1912,7 @@ export async function prerenderApp({
               isSpeculative: false,
             });
 
-            queueFallbackShells(route, params, revalidate, queuedRouteUrls);
+            queueFallbackShells(route, params, revalidate, queuedRouteUrls, paramSets);
           }
         } catch (e) {
           recordRenderError(e);
@@ -1954,6 +2021,7 @@ export async function prerenderApp({
       revalidate,
       isSpeculative,
       isFallback,
+      generatedParams,
     }: UrlToRender): Promise<PrerenderRouteResult> {
       try {
         if (kind === "metadata") {
@@ -2212,13 +2280,24 @@ export async function prerenderApp({
         }
 
         // A request resumes the shell from this private artifact, seeded as
-        // the shell entry's `postponed` value. An empty shell renders blocking.
-        // An earlier build's sidecar is removed first: its presence alone marks
-        // a shell as resumable.
+        // the shell entry's `postponed` value. An empty shell renders blocking,
+        // and keeps only its generated params. An earlier build's sidecar is
+        // removed first.
         const postponedFullPath = path.join(outDir, getPostponedOutputPath(urlPath));
         fs.rmSync(postponedFullPath, { force: true });
-        if (fallbackShell?.state && hasAppPprFallbackShellPrelude(fallbackShell.html)) {
-          fs.writeFileSync(postponedFullPath, fallbackShell.state, "utf-8");
+        if (fallbackShell) {
+          const hasPrelude = hasAppPprFallbackShellPrelude(fallbackShell.html);
+          const state = hasPrelude ? parseAppPprShellState(fallbackShell.state ?? undefined) : null;
+          fs.writeFileSync(
+            postponedFullPath,
+            formatAppPprShellState({
+              prelude: state?.prelude ?? false,
+              postponed: state?.postponed ?? null,
+              resumeDataCache: state?.resumeDataCache ?? null,
+              generated: generatedParams === undefined ? [] : generatedParams,
+            }),
+            "utf-8",
+          );
         }
 
         const renderedCacheControl = resolveRenderedCacheControl(

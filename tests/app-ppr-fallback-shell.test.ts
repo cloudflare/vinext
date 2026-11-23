@@ -4,6 +4,7 @@ import {
   createAppPprFallbackShells,
   createAppPprRequestConcreteShell,
   createAppPprRequestFallbackShells,
+  formatAppPprShellState,
   hasAppPprFallbackShellPrelude,
   isAppPprDynamicFallbackShellHtml,
   markAppPprDynamicFallbackShellHtml,
@@ -270,7 +271,12 @@ describe("fallback shell state transport", () => {
       resumableState: { idPrefix: "" },
     };
     const html = "<!DOCTYPE html><html><head></head><body>shell";
-    const transported = await readAppended(html, { prelude: true, postponed, resumeDataCache });
+    const transported = await readAppended(html, {
+      prelude: true,
+      postponed,
+      resumeDataCache,
+      generated: null,
+    });
 
     expect(transported).not.toContain("--></script>");
     const split = splitAppPprFallbackShellState(transported);
@@ -288,7 +294,12 @@ describe("fallback shell state transport", () => {
     });
     const html = "<!DOCTYPE html><html><body>shell</body></html>";
     const split = splitAppPprFallbackShellState(
-      await readAppended(html, { prelude: false, postponed: null, resumeDataCache }),
+      await readAppended(html, {
+        prelude: false,
+        postponed: null,
+        resumeDataCache,
+        generated: null,
+      }),
     );
 
     expect(split.html).toBe(html);
@@ -300,7 +311,12 @@ describe("fallback shell state transport", () => {
   it("carries a state without a resume data cache", async () => {
     const html = "<!DOCTYPE html><html><body>shell</body></html>";
     const split = splitAppPprFallbackShellState(
-      await readAppended(html, { prelude: true, postponed: null, resumeDataCache: null }),
+      await readAppended(html, {
+        prelude: true,
+        postponed: null,
+        resumeDataCache: null,
+        generated: null,
+      }),
     );
 
     expect(split.html).toBe(html);
@@ -308,6 +324,7 @@ describe("fallback shell state transport", () => {
       prelude: true,
       postponed: null,
       resumeDataCache: null,
+      generated: null,
     });
     expect(splitAppPprFallbackShellState(html)).toEqual({ html, state: null });
     expect(parseAppPprShellState('{"cache":{},"fetch":{}}')).toBeNull();
@@ -316,6 +333,33 @@ describe("fallback shell state transport", () => {
     expect(parseAppPprShellState("9:{}")).toBeNull();
     // As is a prelude whose postponed state React can't resume from.
     expect(parseAppPprShellState('31:{"prelude":true,"postponed":{}}')).toBeNull();
+  });
+
+  it("round-trips the generated params a shell records", () => {
+    const generated = [
+      { locale: "en", slug: "--></script>" },
+      { locale: "en", slug: ["a", "b"] },
+    ];
+    const formatted = formatAppPprShellState({
+      prelude: false,
+      postponed: null,
+      resumeDataCache: null,
+      generated,
+    });
+
+    expect(formatted).not.toContain("-->");
+    expect(parseAppPprShellState(formatted)?.generated).toEqual(generated);
+  });
+
+  it("keeps a generated optional catch-all left out across its JSON round-trip", () => {
+    const formatted = formatAppPprShellState({
+      prelude: false,
+      postponed: null,
+      resumeDataCache: null,
+      generated: [{ path: undefined }],
+    });
+
+    expect(parseAppPprShellState(formatted)?.generated).toEqual([{ path: null }]);
   });
 
   it("only treats a shell with a document prelude as resumable", () => {
