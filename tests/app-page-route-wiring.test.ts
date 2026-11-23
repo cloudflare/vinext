@@ -1459,6 +1459,50 @@ describe("app page route wiring helpers", () => {
     expect(html.indexOf('data-slot-layout="nested"')).toBeLessThan(html.indexOf("data-slot-page"));
   });
 
+  // Issue #4810: the RSC payload carries the route's server-component font
+  // rules, for the browser to add after a client navigation. The element
+  // renders nothing on the server, so the document is unchanged.
+  it("carries the route's font rules in the route element", async () => {
+    const routeFonts = {
+      styles: [".__font_local_abc { font-family: 'fontA', sans-serif; }"],
+      preloads: [{ href: "/assets/font-a.woff2", type: "font/woff2" }],
+      links: [],
+    };
+    const buildElements = (fonts: typeof routeFonts | null) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["fonts"],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routeFonts: fonts,
+        routePath: "/fonts",
+        rootNotFoundModule: null,
+      });
+
+    const elements = buildElements(routeFonts);
+    expect(findElementByTypeName(elements["route:/fonts"], "RouteFontsInsertion")?.props).toEqual(
+      routeFonts,
+    );
+    expect(await renderRouteEntry(elements, "route:/fonts")).not.toContain("fontA");
+    expect(
+      findElementByTypeName(buildElements(null)["route:/fonts"], "RouteFontsInsertion"),
+    ).toBeNull();
+  });
+
   it("keeps route loading boundaries in the rendered tree", () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),

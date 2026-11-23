@@ -4,7 +4,7 @@ import type { ViteDevServer } from "vite";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { startFixtureServer } from "./helpers.js";
+import { fetchRsc, startFixtureServer } from "./helpers.js";
 
 // Issue #4810: each App Router page carries only the next/font rules and
 // preloads of its own layouts, pages and the client components they render,
@@ -50,6 +50,28 @@ async function fontsInOrder(baseUrl: string) {
   observed.push(await fontsOf(baseUrl, "/missing", 404));
   return observed;
 }
+
+// The RSC payload of a client navigation carries the font rules of the
+// route's server components, which never run in the browser. A client
+// component loads its own fonts there, so `/d`'s payload has none.
+async function payloadFontsInOrder(baseUrl: string) {
+  const observed = [];
+  for (const pathname of ["/", "/b", "/c", "/d", "/"]) {
+    const res = await fetchRsc(baseUrl, pathname);
+    expect(res.status).toBe(200);
+    const payload = await res.text();
+    observed.push({ pathname, fonts: FONTS.filter((font) => payload.includes(`${font}.`)) });
+  }
+  return observed;
+}
+
+const EXPECTED_PAYLOADS = [
+  { pathname: "/", fonts: ["font-a"] },
+  { pathname: "/b", fonts: ["font-b"] },
+  { pathname: "/c", fonts: ["font-c"] },
+  { pathname: "/d", fonts: [] },
+  { pathname: "/", fonts: ["font-a"] },
+];
 
 const own = (pathname: string, font: string) => ({
   pathname,
@@ -102,6 +124,10 @@ describe("App Router next/font is scoped to the requested route (production)", (
   it("answers each page with its own fonts in any request order", async () => {
     expect(await fontsInOrder(baseUrl)).toEqual(EXPECTED);
   });
+
+  it("sends each route's server font rules with its client navigation payload", async () => {
+    expect(await payloadFontsInOrder(baseUrl)).toEqual(EXPECTED_PAYLOADS);
+  });
 });
 
 describe("App Router next/font is scoped to the requested route (dev)", () => {
@@ -118,5 +144,9 @@ describe("App Router next/font is scoped to the requested route (dev)", () => {
 
   it("answers each page with its own fonts in any request order", async () => {
     expect(await fontsInOrder(baseUrl)).toEqual(EXPECTED);
+  });
+
+  it("sends each route's server font rules with its client navigation payload", async () => {
+    expect(await payloadFontsInOrder(baseUrl)).toEqual(EXPECTED_PAYLOADS);
   });
 });

@@ -81,6 +81,7 @@ import {
   type AppPageRenderDependency,
 } from "./app-render-dependency.js";
 import { isPromiseLike } from "../utils/promise.js";
+import type { AppRouteFonts } from "vinext/shims/route-fonts";
 
 type SiblingInterceptPageOutcome =
   | { error: unknown }
@@ -329,6 +330,8 @@ export type BuildPageElementsOptions<
   trailingSlash?: boolean;
   /** Serialized next.config `htmlLimitedBots` regexp source. */
   htmlLimitedBots?: string;
+  /** The font rules and preloads the payload carries for a client navigation. */
+  routeFonts?: AppRouteFonts | null;
   scriptNonce?: string;
 };
 
@@ -1139,6 +1142,7 @@ export async function buildPageElements<
       metadataPlacement,
       resolveHead,
       resolvedMetadataPathname: routePath,
+      routeFonts: options.routeFonts ?? null,
       scriptNonce: options.scriptNonce,
       streamingMetadataOutletSuspended: streamGeneratedHead,
       renderIdentity,

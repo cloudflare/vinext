@@ -9,7 +9,9 @@ describe("buildFontOwnerManifest", () => {
     "/app/b/client.tsx",
     "/app/c/lazy.ts",
     "/app/fonts.ts",
+    "/app/@modal/(.)photo/page.tsx",
   ]);
+  const files = (...paths: string[]) => ({ files: paths, interceptFiles: [] as string[] });
   const build = (overrides: Partial<Parameters<typeof buildFontOwnerManifest>[0]> = {}) =>
     buildFontOwnerManifest({
       rsc: new Map([
@@ -33,10 +35,10 @@ describe("buildFontOwnerManifest", () => {
       isOwner: (id) => owners.has(id),
       ownerKey: (id) => id.slice(1),
       routes: new Map([
-        ["/a", ["/app/a/page.tsx", "/app/a/layout.tsx", "/app/layout.tsx"]],
-        ["/b", ["/app/b/page.tsx", "/app/layout.tsx"]],
-        ["/c", ["/app/c/page.tsx", "/app/layout.tsx"]],
-        ["/empty", ["/app/layout.tsx"]],
+        ["/a", files("/app/a/page.tsx", "/app/a/layout.tsx", "/app/layout.tsx")],
+        ["/b", files("/app/b/page.tsx", "/app/layout.tsx")],
+        ["/c", files("/app/c/page.tsx", "/app/layout.tsx")],
+        ["/empty", files("/app/layout.tsx")],
       ]),
       routelessFiles: ["/app/layout.tsx"],
       ...overrides,
@@ -51,6 +53,12 @@ describe("buildFontOwnerManifest", () => {
         "/c": ["app/c/lazy.ts"],
       },
       routeless: [],
+      // The browser loads a client component's fonts itself, so the payload
+      // carries only server modules' fonts.
+      navigation: {
+        "/a": { route: ["app/a/fonts.ts"] },
+        "/c": { route: ["app/c/lazy.ts"] },
+      },
     });
   });
 
@@ -64,23 +72,47 @@ describe("buildFontOwnerManifest", () => {
       ssr: new Map(),
       clientReferences: new Map(),
       routes: new Map([
-        ["/a", ["/app/a/page.tsx", "/app/layout.tsx"]],
-        ["/", ["/app/layout.tsx"]],
+        ["/a", files("/app/a/page.tsx", "/app/layout.tsx")],
+        ["/", files("/app/layout.tsx")],
       ]),
     });
-    expect(manifest).toEqual({
-      routes: { "/a": ["app/fonts.ts"], "/": ["app/fonts.ts"] },
-      routeless: ["app/fonts.ts"],
-    });
+    expect(manifest.routes).toEqual({ "/a": ["app/fonts.ts"], "/": ["app/fonts.ts"] });
+    expect(manifest.routeless).toEqual(["app/fonts.ts"]);
   });
 
   it("reads a client reference that is itself a route file from the SSR graph", () => {
     const manifest = build({
       rsc: new Map([["/app/b/client.tsx", []]]),
       ssr: new Map([["/app/b/client.tsx", []]]),
-      routes: new Map([["/b", ["/app/b/client.tsx"]]]),
+      routes: new Map([["/b", files("/app/b/client.tsx")]]),
       routelessFiles: [],
     });
     expect(manifest.routes).toEqual({ "/b": ["app/b/client.tsx"] });
+    expect(manifest.navigation).toEqual({});
+  });
+
+  it("keeps an intercepting route's fonts out of the documents but in the payload", () => {
+    const manifest = build({
+      rsc: new Map([
+        ["/app/layout.tsx", []],
+        ["/app/page.tsx", []],
+        ["/app/@modal/(.)photo/page.tsx", []],
+      ]),
+      ssr: new Map(),
+      clientReferences: new Map(),
+      routes: new Map([
+        [
+          "/",
+          {
+            files: ["/app/page.tsx", "/app/layout.tsx"],
+            interceptFiles: ["/app/@modal/(.)photo/page.tsx"],
+          },
+        ],
+      ]),
+    });
+    expect(manifest.routes).toEqual({});
+    expect(manifest.navigation).toEqual({
+      "/": { intercepts: ["app/@modal/(.)photo/page.tsx"] },
+    });
   });
 });
