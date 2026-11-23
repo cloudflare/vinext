@@ -335,10 +335,18 @@ test.describe("Intercepting Routes", () => {
       "Club layout: static",
     );
     await expect(page.locator("#intercept-grouped-children-default")).toHaveText("Club default");
+    // Its tree stops at the club folder, without the page's route group layout.
+    await expect(page.locator("#intercept-grouped-children-group-layout")).toHaveCount(0);
     await expect(page.locator("#intercept-grouped-children-page")).toHaveCount(0);
     await expect(page.locator("#intercept-grouped-children-static")).toHaveCount(0);
     await expect(page.locator("#intercept-grouped-children-pic")).toHaveCount(0);
     expect(await markerKept(page)).toBe(true);
+
+    // The club page itself renders inside the group's layout.
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group-grouped-children/club/members`);
+    await expect(page.locator("#intercept-grouped-children-group-layout")).toContainText(
+      "Club page: members",
+    );
   });
 
   // A children slot of a layout above the slot owner, whose own slot has a URL

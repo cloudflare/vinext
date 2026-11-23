@@ -109,14 +109,12 @@ export function resolveAppPageInterceptSegmentConfig(
     !isSiblingIntercept && interceptOpts.rendersWholeInterceptingRoute === true;
   // The other slots of the owner's layouts render beside the interception:
   // a matched one with its own layouts and page, one without a page as a
-  // lone `__DEFAULT__` segment, without the slot's layouts. Rendered whole, the
-  // slots of a route group below the owner folder show their defaults too.
+  // lone `__DEFAULT__` segment, without the slot's layouts.
   const retainedBranches = Object.entries(route.slots ?? {}).flatMap(([slotKey, slot]) => {
     if (
       slotKey === interceptOpts.interceptSlotKey ||
-      (!rendersWholeInterceptingRoute &&
-        (slot.ownerTreePosition ?? route.layoutTreePositions?.[slot.layoutIndex ?? 0] ?? 0) >
-          ownerPosition)
+      (slot.ownerTreePosition ?? route.layoutTreePositions?.[slot.layoutIndex ?? 0] ?? 0) >
+        ownerPosition
     ) {
       return [];
     }
@@ -136,18 +134,11 @@ export function resolveAppPageInterceptSegmentConfig(
   });
   // Next.js visits children before the other slots, and the last segment's
   // value wins, while this reducer keeps the first parallel value, so the
-  // owner's default goes after the other slots' defaults. An owner page in a
-  // route group below the owner folder renders that group's layouts around the
-  // owner's default, so their config applies too.
+  // owner's default goes after the other slots' defaults.
   if (rendersWholeInterceptingRoute) {
-    const belowOwnerLayoutIndexes = routeLayouts.flatMap((_, index) =>
-      (route.layoutTreePositions?.[index] ?? 0) > ownerPosition ? [index] : [],
-    );
     retainedBranches.push({
-      configLayouts: belowOwnerLayoutIndexes.map((index) => routeLayouts[index]),
-      configLayoutTreePositions: belowOwnerLayoutIndexes.map(
-        (index) => (route.layoutTreePositions?.[index] ?? 0) - ownerPosition,
-      ),
+      configLayouts: null,
+      configLayoutTreePositions: null,
       isDefault: true,
       layout: null,
       name: "children",

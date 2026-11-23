@@ -4456,52 +4456,62 @@ describe("app page dispatch", () => {
     expect(config.fetchCacheMode).toBe("auto");
   });
 
-  // club/(children)/page.tsx beside club/@modal: the whole route renders the
-  // group's layout around the owner's default, and the defaults of the group's
-  // own slots, so their config applies.
-  it.each([
+  // club/(children)/page.tsx beside club/@modal: like Next.js's, the whole
+  // intercepting route's tree stops at club, whose default takes its children,
+  // so neither the group's layout nor the defaults of the slots it owns render,
+  // and their config doesn't apply.
+  it.each<{ name: string; layout: Record<string, unknown>; sideDefault: Record<string, unknown> }>([
     {
-      name: "a layout",
-      layout: { default: () => null, dynamic: "force-dynamic", revalidate: 0 },
-      sideDefault: { default: () => null },
+      name: "a dynamic layout",
+      layout: { dynamic: "force-dynamic", revalidate: 0 },
+      sideDefault: {},
+    },
+    { name: "a force-static layout", layout: { dynamic: "force-static" }, sideDefault: {} },
+    {
+      name: "an edge layout with static params",
+      layout: { generateStaticParams: () => [], runtime: "edge" },
+      sideDefault: {},
     },
     {
-      name: "a slot default",
-      layout: { default: () => null },
-      sideDefault: { default: () => null, dynamic: "force-dynamic", revalidate: 0 },
+      name: "a dynamic slot default",
+      layout: {},
+      sideDefault: { dynamic: "force-dynamic", revalidate: 0 },
     },
   ])(
-    "reads $name a whole intercepting route renders in a route group below the owner",
+    "ignores $name of a route group below a whole intercepting route's owner",
     ({ layout, sideDefault }) => {
-      const route = {
-        layouts: [{ default: () => null }, { default: () => null }, layout],
-        layoutTreePositions: [0, 1, 2],
-        routeSegments: ["club", "(children)"],
-        slots: {
-          "modal@app/club/@modal": { layoutIndex: 1, ownerTreePosition: 1 },
-          "side@app/club/(children)/@side": {
-            default: sideDefault,
-            layoutIndex: 2,
-            ownerTreePosition: 2,
+      const config = resolveAppPageInterceptSegmentConfig(
+        {
+          layouts: [
+            { default: () => null },
+            { default: () => null },
+            { default: () => null, ...layout },
+          ],
+          layoutTreePositions: [0, 1, 2],
+          routeSegments: ["club", "(children)"],
+          slots: {
+            "modal@app/club/@modal": { layoutIndex: 1, ownerTreePosition: 1 },
+            "side@app/club/(children)/@side": {
+              default: { default: () => null, ...sideDefault },
+              layoutIndex: 2,
+              ownerTreePosition: 2,
+            },
           },
         },
-      };
-      const interceptOpts = {
-        interceptBranchSegments: ["(.)pics"],
-        interceptOwnerDefault: { default: () => null },
-        interceptPage: { default: () => null },
-        interceptSlotKey: "modal@app/club/@modal",
-      };
-      expect(resolveAppPageInterceptSegmentConfig(route, interceptOpts).isStaticEligible).toBe(
-        true,
+        {
+          interceptBranchSegments: ["(.)pics"],
+          interceptOwnerDefault: { default: () => null },
+          interceptPage: { default: () => null },
+          interceptSlotKey: "modal@app/club/@modal",
+          rendersWholeInterceptingRoute: true,
+        },
       );
-      const config = resolveAppPageInterceptSegmentConfig(route, {
-        ...interceptOpts,
-        rendersWholeInterceptingRoute: true,
-      });
-      expect(config.dynamicConfig).toBe("force-dynamic");
-      expect(config.revalidateSeconds).toBe(0);
-      expect(config.isStaticEligible).toBe(false);
+      expect(config.dynamicConfig).toBeUndefined();
+      expect(config.revalidateSeconds).toBeNull();
+      expect(config.isEdgeRuntime).toBe(false);
+      expect(config.isStaticGenerationEdgeRuntime).toBe(false);
+      expect(config.hasAnyGenerateStaticParams).toBe(false);
+      expect(config.isStaticEligible).toBe(true);
     },
   );
 

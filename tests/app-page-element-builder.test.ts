@@ -12,6 +12,7 @@ import {
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import type {
+  AppPageErrorModule,
   AppPageModule,
   AppPageRouteHead,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
@@ -45,6 +46,7 @@ import {
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { resolveAppPageNavigationParams } from "../packages/vinext/src/server/app-page-navigation-params.js";
+import { trimRouteToInterceptSlotOwner } from "../packages/vinext/src/server/app-page-whole-intercepting-route.js";
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
 import {
@@ -4142,6 +4144,203 @@ describe("buildPageElements", () => {
     expect((elements as Record<string, unknown>)[APP_SLOT_BINDINGS_KEY]).toContainEqual(
       expect.objectContaining({ slotId: "slot:children:/", state: "active" }),
     );
+  });
+
+  // club/(children)/page.tsx beside club/@modal: Next.js's whole intercepting
+  // route stops at club, whose default takes its children, so neither the
+  // group's layout and template nor the slots it owns render, and the group
+  // layout's metadata doesn't apply.
+  it("renders the whole intercepting route without the files of a route group below the owner", async () => {
+    const calls: string[] = [];
+    const component =
+      (name: string) =>
+      ({ children }: { children?: React.ReactNode }) => {
+        calls.push(name);
+        return React.createElement("div", null, name, children);
+      };
+    const route = createSyntheticRoute({
+      layouts: [
+        { default: component("root layout") } as AppPageModule,
+        { default: component("club layout") } as AppPageModule,
+        {
+          default: component("group layout"),
+          generateMetadata: () => ({ description: "Group" }),
+        } as AppPageModule,
+      ],
+      layoutTreePositions: [0, 1, 2],
+      page: { default: component("club page") } as AppPageModule,
+      pattern: "/club",
+      routeSegments: ["club", "(children)"],
+      slots: {
+        aside: {
+          name: "aside",
+          default: { default: component("aside default") } as AppPageModule,
+          layoutIndex: 1,
+          ownerTreePosition: 1,
+          routeSegments: null,
+        },
+        modal: {
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 1,
+          ownerTreePosition: 1,
+          routeSegments: [],
+        },
+        side: {
+          name: "side",
+          default: { default: component("side default") } as AppPageModule,
+          layoutIndex: 2,
+          ownerTreePosition: 2,
+          page: { default: component("side page") } as AppPageModule,
+          routeSegments: [],
+        },
+      },
+      templates: [
+        { default: component("club template") } as AppPageModule,
+        { default: component("group template") } as AppPageModule,
+      ],
+      templateTreePositions: [1, 2],
+    });
+    const elements = await buildPageElements(
+      createBaseOptions({
+        route,
+        routePath: "/club/pics",
+        opts: {
+          interceptionContext: "/other",
+          interceptOwnerDefault: { default: component("club default") } as AppPageModule,
+          interceptPage: {
+            default: component("pic modal"),
+            generateMetadata: () => ({ title: "Pic modal" }),
+          } as AppPageModule,
+          interceptParams: {},
+          interceptSlotId: "slot:modal:/club",
+          interceptSlotKey: "modal",
+          interceptSourceMatchedUrl: "/other",
+          interceptSourcePageSegments: ["club", "@modal", "(.)pics"],
+          rendersInterceptionSource: true,
+          rendersWholeInterceptingRoute: true,
+        },
+      }),
+    );
+    const record = elements as Record<string, React.ReactNode>;
+
+    expect(Object.keys(record).filter((id) => id.includes("(children)"))).toEqual([]);
+    expect(
+      (record[APP_SLOT_BINDINGS_KEY] as unknown as { slotId: string }[]).map(
+        (binding) => binding.slotId,
+      ),
+    ).not.toContain("slot:side:/club/(children)");
+    const head = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:").metadata;
+    expect(head).toMatchObject({ title: "Pic modal" });
+    expect(head?.description).toBeUndefined();
+    await renderNode(
+      React.createElement(
+        React.Fragment,
+        null,
+        ...Object.entries(record)
+          .filter(([key, entry]) => !key.startsWith("__") && React.isValidElement(entry))
+          .map(([key, entry]) => React.createElement(React.Fragment, { key }, entry)),
+      ),
+    );
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        "root layout",
+        "club layout",
+        "club template",
+        "club default",
+        "pic modal",
+        "aside default",
+      ]),
+    );
+    for (const name of ["group layout", "group template", "side default", "side page"]) {
+      expect(calls).not.toContain(name);
+    }
+  });
+
+  // The segment files a whole intercepting route renders around the owner's
+  // default are the owner folder's and those above it, as for an owner whose
+  // page is in its own folder; the route group's own `loading`, `error` and
+  // nearest not-found file make way for the owner folder's.
+  it("trims a whole intercepting route's segment files to the owner's folder", () => {
+    const file = (name: string) => ({ default: () => name }) as AppPageModule;
+    const errorFile = (name: string) => ({ default: () => name }) as AppPageErrorModule;
+    const [clubLoading, groupLoading] = [file("club loading"), file("group loading")];
+    const [clubError, groupError] = [errorFile("club error"), errorFile("group error")];
+    const [rootNotFound, groupNotFound, groupForbidden] = [
+      file("root not found"),
+      file("group not found"),
+      file("group forbidden"),
+    ];
+    const route = createSyntheticRoute({
+      childrenSlot: {
+        id: "children:/club/(children)",
+        ownerTreePath: "/club/(children)",
+        state: "active",
+      },
+      error: groupError,
+      errorPaths: [clubError, groupError],
+      errorTreePositions: [1, 2],
+      errors: [null, clubError, groupError],
+      forbidden: groupForbidden,
+      forbiddenTreePosition: 2,
+      forbiddens: [null, null, groupForbidden],
+      layouts: [file("root layout"), file("club layout"), file("group layout")],
+      layoutTreePositions: [0, 1, 2],
+      loading: groupLoading,
+      loadings: [clubLoading, groupLoading],
+      loadingTreePositions: [1, 2],
+      notFound: groupNotFound,
+      notFoundTreePosition: 2,
+      notFounds: [rootNotFound, null, groupNotFound],
+      routeSegments: ["club", "(children)"],
+      segmentForbiddens: [groupForbidden],
+      segmentForbiddenTreePositions: [2],
+      segmentNotFounds: [rootNotFound, groupNotFound],
+      segmentNotFoundTreePositions: [0, 2],
+      slots: {
+        modal: { name: "modal", layoutIndex: 1, ownerTreePosition: 1 },
+        side: { name: "side", layoutIndex: 2, ownerTreePosition: 2 },
+      },
+      templates: [file("club template"), file("group template")],
+      templateTreePositions: [1, 2],
+    });
+
+    expect(trimRouteToInterceptSlotOwner(route, "modal")).toEqual({
+      ...route,
+      childrenRouteSegments: null,
+      childrenSlot: null,
+      error: clubError,
+      errorPaths: [clubError],
+      errorTreePositions: [1],
+      errors: [null, clubError],
+      forbidden: null,
+      forbiddenTreePosition: null,
+      forbiddens: [null, null],
+      layouts: route.layouts.slice(0, 2),
+      layoutTreePositions: [0, 1],
+      loading: clubLoading,
+      loadings: [clubLoading],
+      loadingTreePositions: [1],
+      notFound: rootNotFound,
+      notFoundTreePosition: 0,
+      notFounds: [rootNotFound, null],
+      routeSegments: ["club"],
+      segmentForbiddens: [],
+      segmentForbiddenTreePositions: [],
+      segmentNotFounds: [rootNotFound],
+      segmentNotFoundTreePositions: [0],
+      segmentUnauthorizeds: undefined,
+      segmentUnauthorizedTreePositions: undefined,
+      slots: { modal: route.slots!.modal },
+      templates: route.templates!.slice(0, 1),
+      templateTreePositions: [1],
+      unauthorized: null,
+      unauthorizedTreePosition: null,
+      unauthorizeds: undefined,
+    });
+    // An owner whose page is in its own folder renders that route whole.
+    const ownFolderRoute = { ...route, routeSegments: ["club"] };
+    expect(trimRouteToInterceptSlotOwner(ownFolderRoute, "modal")).toBe(ownFolderRoute);
   });
 
   // Next.js rejects a `default` file whose default export isn't a component,

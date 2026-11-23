@@ -287,6 +287,92 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(route.__loaded).toBeFalsy();
     await expect(ensureAppRouteModulesLoaded(route)).rejects.toThrow("module throws");
   });
+
+  // club/(children)/page.tsx beside club/@modal: the whole intercepting route
+  // stops at club, so a module of the route group, or of a slot it owns,
+  // can't fail it.
+  it("loads none of a route group's files below a whole intercepting route's owner", async () => {
+    const throwing = (name: string) =>
+      vi.fn(async () => {
+        throw new Error(`${name} module throws`);
+      });
+    const file = (name: string) => ({ default: () => name });
+    const [rootLayout, clubLayout, clubTemplate, clubLoading, rootNotFound, asideDefault] = [
+      file("root layout"),
+      file("club layout"),
+      file("club template"),
+      file("club loading"),
+      file("root not found"),
+      file("aside default"),
+    ];
+    const groupLoaders = {
+      default: throwing("group slot default"),
+      error: throwing("group error"),
+      layout: throwing("group layout"),
+      leafError: throwing("group leaf error"),
+      leafLoading: throwing("group leaf loading"),
+      loading: throwing("group loading"),
+      notFound: throwing("group not found"),
+      template: throwing("group template"),
+    };
+    const route: LazyLoadableRoute = {
+      routeSegments: ["club", "(children)"],
+      layouts: [null, null, null],
+      layoutTreePositions: [0, 1, 2],
+      __loadLayouts: [async () => rootLayout, async () => clubLayout, groupLoaders.layout],
+      templates: [null, null],
+      templateTreePositions: [1, 2],
+      __loadTemplates: [async () => clubTemplate, groupLoaders.template],
+      loadings: [null, null],
+      loadingTreePositions: [1, 2],
+      __loadLoadings: [async () => clubLoading, groupLoaders.loading],
+      errors: [null, null, null],
+      __loadErrors: [null, null, groupLoaders.error],
+      errorPaths: [null],
+      errorTreePositions: [2],
+      __loadErrorPaths: [groupLoaders.error],
+      notFound: null,
+      notFoundTreePosition: 2,
+      __loadNotFound: groupLoaders.notFound,
+      segmentNotFounds: [null, null],
+      segmentNotFoundTreePositions: [0, 2],
+      __loadSegmentNotFounds: [async () => rootNotFound, groupLoaders.notFound],
+      loading: null,
+      __loadLoading: groupLoaders.leafLoading,
+      error: null,
+      __loadError: groupLoaders.leafError,
+      slots: {
+        aside: {
+          default: null,
+          layoutIndex: 1,
+          ownerTreePosition: 1,
+          __loadDefault: async () => asideDefault,
+        },
+        modal: { layout: null, layoutIndex: 1, ownerTreePosition: 1 },
+        side: {
+          default: null,
+          layoutIndex: 2,
+          ownerTreePosition: 2,
+          __loadDefault: groupLoaders.default,
+        },
+      },
+    };
+
+    await ensureAppRouteModulesLoaded(route, {
+      interceptSlotKey: "modal",
+      rendersInterceptionSource: true,
+      rendersWholeInterceptingRoute: true,
+    });
+
+    expect(route.layouts).toEqual([rootLayout, clubLayout, null]);
+    expect(route.templates).toEqual([clubTemplate, null]);
+    expect(route.loadings).toEqual([clubLoading, null]);
+    expect(route.segmentNotFounds).toEqual([rootNotFound, null]);
+    expect(route.slots?.aside.default).toBe(asideDefault);
+    for (const loader of Object.values(groupLoaders)) {
+      expect(loader).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe("loadAppInterceptLayouts", () => {

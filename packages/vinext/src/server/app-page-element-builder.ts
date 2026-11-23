@@ -51,7 +51,12 @@ import {
   traceGetLayoutOrPageModule,
 } from "./app-page-tracing.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import { resolveAppPageLayoutHttpAccessBoundary, type AppPageParams } from "./app-page-boundary.js";
+import type { AppPageParams } from "./app-page-boundary.js";
+import {
+  resolveInterceptSlotOwnerTreePosition,
+  resolveOwnerLevelAccessFile,
+  trimRouteToInterceptSlotOwner,
+} from "./app-page-whole-intercepting-route.js";
 import { tagAppPagePageError, tagAppPageSlotError } from "./app-page-execution.js";
 import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
@@ -379,11 +384,12 @@ export async function buildPageElements<
   const rendersWholeInterceptingRoute =
     options.pageRequest.opts?.rendersInterceptionSource === true &&
     options.pageRequest.opts.rendersWholeInterceptingRoute === true;
-  // The intercepting route's tree shows every slot but the intercepted one in
-  // its default state, whatever the owner's own pathname matches there.
+  // The intercepting route's tree stops at the slot owner's folder, and shows
+  // every slot but the intercepted one in its default state, whatever the
+  // owner's own pathname matches there.
   const route = rendersWholeInterceptingRoute
     ? withDefaultSlotsBesideIntercept(
-        options.route,
+        trimRouteToInterceptSlotOwner(options.route, options.pageRequest.opts?.interceptSlotKey),
         options.pageRequest.opts?.interceptSlotKey,
         !!options.pageRequest.opts?.interceptOwnerDefault,
       )
@@ -1243,10 +1249,7 @@ function withDefaultSlotsBesideIntercept<
   interceptSlotKey: string | null | undefined,
   hasOwnerDefault: boolean,
 ): AppPageBuildRoute<TModule, TErrorModule> {
-  const interceptedSlot = interceptSlotKey ? route.slots?.[interceptSlotKey] : undefined;
-  const ownerTreePosition =
-    interceptedSlot?.ownerTreePosition ??
-    route.layoutTreePositions?.[interceptedSlot?.layoutIndex ?? -1];
+  const ownerTreePosition = resolveInterceptSlotOwnerTreePosition(route, interceptSlotKey);
   const childrenSlot = route.childrenSlot;
   const ownsChildrenSlot =
     !!childrenSlot &&
@@ -1623,16 +1626,12 @@ function resolveRetainedSourceNotFound<TModule>(
   ownerTreePosition: number | undefined,
 ): { notFound: TModule | null; notFoundTreePosition: number | null } {
   if (ownerTreePosition === undefined) return { notFound: null, notFoundTreePosition: null };
-  if (route.notFoundTreePosition != null && route.notFoundTreePosition <= ownerTreePosition) {
-    return { notFound: route.notFound ?? null, notFoundTreePosition: route.notFoundTreePosition };
-  }
-  const boundary = resolveAppPageLayoutHttpAccessBoundary({
-    boundaryModules: route.segmentNotFounds ?? [],
-    boundaryTreePositions: route.segmentNotFoundTreePositions ?? [],
-    layoutTreePosition: ownerTreePosition + 1,
-  });
-  return {
-    notFound: boundary?.module ?? null,
-    notFoundTreePosition: boundary?.treePosition ?? null,
-  };
+  const { file, treePosition } = resolveOwnerLevelAccessFile(
+    route.notFound,
+    route.notFoundTreePosition,
+    route.segmentNotFounds,
+    route.segmentNotFoundTreePositions,
+    ownerTreePosition,
+  );
+  return { notFound: file, notFoundTreePosition: treePosition };
 }

@@ -35,6 +35,11 @@
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
 import { isUnknownRecord } from "../utils/record.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
+import {
+  isOwnerLevelSlot,
+  keepOwnerLevelEntries,
+  resolveWholeInterceptingRouteEnd,
+} from "./app-page-whole-intercepting-route.js";
 
 type LazyModuleThunk = () => Promise<unknown>;
 type LazyModuleLoaderArray = readonly (LazyModuleThunk | null | undefined)[];
@@ -81,6 +86,8 @@ type LazyLoadableSlot = {
   notFound?: unknown;
   notFounds?: readonly unknown[];
   loadingTreePositions?: readonly number[] | null;
+  layoutIndex?: number;
+  ownerTreePosition?: number | null;
   __loadPage?: LazyModuleThunk | null;
   __loadDefault?: LazyModuleThunk | null;
   __loadLayout?: LazyModuleThunk | null;
@@ -114,6 +121,17 @@ export type LazyLoadableRoute = {
   notFound?: unknown;
   forbidden?: unknown;
   unauthorized?: unknown;
+  routeSegments?: readonly string[];
+  layoutTreePositions?: readonly number[] | null;
+  templateTreePositions?: readonly number[] | null;
+  loadingTreePositions?: readonly number[] | null;
+  errorTreePositions?: readonly number[] | null;
+  notFoundTreePosition?: number | null;
+  forbiddenTreePosition?: number | null;
+  unauthorizedTreePosition?: number | null;
+  segmentNotFoundTreePositions?: readonly number[] | null;
+  segmentForbiddenTreePositions?: readonly number[] | null;
+  segmentUnauthorizedTreePositions?: readonly number[] | null;
   slots?: Record<string, LazyLoadableSlot>;
   siblingIntercepts?: LazyLoadableIntercept[];
   /** Lazy loader for the page module; `null`/absent when the page is eager. */
@@ -349,19 +367,26 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
 
 /**
  * A render of the whole intercepting route (see app-page-element-builder.ts)
- * shows the slot owner's layouts and segment files, every other slot's
- * default and the intercepted slot's own files, but never the owner's page or
- * another slot's branch. Like Next.js, whose intercepting route imports only
- * its own tree, it loads only those, so a module it doesn't show can't fail
- * it. The route stays unloaded for a render of its own.
+ * shows the layouts and segment files down to the slot owner's folder, every
+ * other slot's default and the intercepted slot's own files, but never the
+ * owner's page, another slot's branch, or the files and slots of a route
+ * group below the owner's folder that holds the owner's page (see
+ * app-page-whole-intercepting-route.ts). Like Next.js, whose intercepting
+ * route imports only its own tree, it loads only those, so a module it
+ * doesn't show can't fail it. The route stays unloaded for a render of its
+ * own.
  */
 function loadWholeInterceptingRouteModules<TRoute extends LazyLoadableRoute>(
   route: TRoute,
   interceptSlotKey: unknown,
 ): TRoute | Promise<TRoute> {
   const loads: Promise<unknown>[] = [];
-  pushRouteSegmentLoads(loads, route);
+  const ownerTreePosition = resolveWholeInterceptingRouteEnd(route, interceptSlotKey);
+  pushRouteSegmentLoads(loads, route, ownerTreePosition);
   for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
+    if (ownerTreePosition !== undefined && !isOwnerLevelSlot(route, slot, ownerTreePosition)) {
+      continue;
+    }
     if (slotKey !== interceptSlotKey) {
       pushFieldLoad(loads, slot as Record<string, unknown>, "default", slot.__loadDefault);
       continue;
@@ -386,22 +411,62 @@ function loadWholeInterceptingRouteModules<TRoute extends LazyLoadableRoute>(
   return shareIsolatePromise(Promise.all(loads).then(() => route));
 }
 
-/** Queue the loads of a route's layouts, templates and segment boundaries. */
-function pushRouteSegmentLoads(loads: Promise<unknown>[], route: LazyLoadableRoute): void {
-  pushFieldLoad(loads, route as Record<string, unknown>, "loading", route.__loadLoading);
-  pushFieldLoad(loads, route as Record<string, unknown>, "error", route.__loadError);
-  pushFieldLoad(loads, route as Record<string, unknown>, "notFound", route.__loadNotFound);
-  pushFieldLoad(loads, route as Record<string, unknown>, "forbidden", route.__loadForbidden);
-  pushFieldLoad(loads, route as Record<string, unknown>, "unauthorized", route.__loadUnauthorized);
-  pushArrayLoads(loads, route.layouts, route.__loadLayouts);
-  pushArrayLoads(loads, route.templates, route.__loadTemplates);
-  pushArrayLoads(loads, route.loadings, route.__loadLoadings);
-  pushArrayLoads(loads, route.errors, route.__loadErrors);
-  pushArrayLoads(loads, route.errorPaths, route.__loadErrorPaths);
-  pushArrayLoads(loads, route.notFounds, route.__loadNotFounds);
-  pushArrayLoads(loads, route.forbiddens, route.__loadForbiddens);
-  pushArrayLoads(loads, route.unauthorizeds, route.__loadUnauthorizeds);
-  pushArrayLoads(loads, route.segmentNotFounds, route.__loadSegmentNotFounds);
-  pushArrayLoads(loads, route.segmentForbiddens, route.__loadSegmentForbiddens);
-  pushArrayLoads(loads, route.segmentUnauthorizeds, route.__loadSegmentUnauthorizeds);
+/**
+ * Queue the loads of a route's layouts, templates and segment boundaries, or
+ * with `ownerTreePosition`, of those down to that folder only.
+ */
+function pushRouteSegmentLoads(
+  loads: Promise<unknown>[],
+  route: LazyLoadableRoute,
+  ownerTreePosition?: number,
+): void {
+  const keep = (
+    loaders: LazyModuleLoaderArray | null | undefined,
+    treePositions: readonly number[] | null | undefined,
+  ) =>
+    ownerTreePosition === undefined
+      ? loaders
+      : keepOwnerLevelEntries(loaders, treePositions, ownerTreePosition);
+  const keepsFile = (treePosition: number | null | undefined) =>
+    ownerTreePosition === undefined || (treePosition != null && treePosition <= ownerTreePosition);
+  const target = route as Record<string, unknown>;
+  // The route's own `loading` and `error` are in its folder.
+  const routeTreePosition = route.routeSegments?.length ?? 0;
+  if (keepsFile(routeTreePosition)) {
+    pushFieldLoad(loads, target, "loading", route.__loadLoading);
+    pushFieldLoad(loads, target, "error", route.__loadError);
+  }
+  if (keepsFile(route.notFoundTreePosition)) {
+    pushFieldLoad(loads, target, "notFound", route.__loadNotFound);
+  }
+  if (keepsFile(route.forbiddenTreePosition)) {
+    pushFieldLoad(loads, target, "forbidden", route.__loadForbidden);
+  }
+  if (keepsFile(route.unauthorizedTreePosition)) {
+    pushFieldLoad(loads, target, "unauthorized", route.__loadUnauthorized);
+  }
+  const layoutTreePositions = route.layoutTreePositions;
+  pushArrayLoads(loads, route.layouts, keep(route.__loadLayouts, layoutTreePositions));
+  pushArrayLoads(loads, route.templates, keep(route.__loadTemplates, route.templateTreePositions));
+  pushArrayLoads(loads, route.loadings, keep(route.__loadLoadings, route.loadingTreePositions));
+  pushArrayLoads(loads, route.errors, keep(route.__loadErrors, layoutTreePositions));
+  pushArrayLoads(loads, route.errorPaths, keep(route.__loadErrorPaths, route.errorTreePositions));
+  pushArrayLoads(loads, route.notFounds, keep(route.__loadNotFounds, layoutTreePositions));
+  pushArrayLoads(loads, route.forbiddens, keep(route.__loadForbiddens, layoutTreePositions));
+  pushArrayLoads(loads, route.unauthorizeds, keep(route.__loadUnauthorizeds, layoutTreePositions));
+  pushArrayLoads(
+    loads,
+    route.segmentNotFounds,
+    keep(route.__loadSegmentNotFounds, route.segmentNotFoundTreePositions),
+  );
+  pushArrayLoads(
+    loads,
+    route.segmentForbiddens,
+    keep(route.__loadSegmentForbiddens, route.segmentForbiddenTreePositions),
+  );
+  pushArrayLoads(
+    loads,
+    route.segmentUnauthorizeds,
+    keep(route.__loadSegmentUnauthorizeds, route.segmentUnauthorizedTreePositions),
+  );
 }
