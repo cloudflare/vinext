@@ -338,6 +338,29 @@ test("stores a client page that reads its searchParams as static", async ({
   expect(consoleErrors).toEqual([]);
 });
 
+test("never stores a client page's catch of its searchParams", async ({
+  baseURL,
+  page,
+  consoleErrors,
+}) => {
+  // Like Next.js's prerender, the page's searchParams never settle on the
+  // server, so the static HTML holds the page's Suspense fallback, not what it
+  // renders when it catches them.
+  const url = new URL("/en/client-search-catch?q=cats", baseURL);
+  await readStreamedDocument(url, []);
+  await expect
+    .poll(async () => (await fetch(url)).headers.get("x-nextjs-cache"), { timeout: 15_000 })
+    .toBe("HIT");
+  const stored = await readStreamedDocument(url, []);
+  expect(stored.html).toContain('id="page-loading"');
+  expect(stored.html).not.toContain("client catch query");
+
+  await page.goto("/en/client-search-catch?q=cats");
+  await expect(page.locator("#client-catch-query")).toHaveText("client catch query cats");
+  await expect(page.locator("#shell-probe[data-hydrated]")).toBeVisible();
+  expect(consoleErrors).toEqual([]);
+});
+
 // A path with its own shell: one generateStaticParams produced, a route
 // without fallback params, and a path whose root param wasn't generated. Next.js
 // prerenders these, or renders an unknown one blocking; vinext renders the
