@@ -834,7 +834,7 @@ function indexOfAsciiBytes(bytes: Uint8Array, pattern: Uint8Array, from: number)
  *
  * `mode` is "prelude" for a PPR shell's stored prelude, which keeps neither
  * the payload nor the document's end, and "resume" for the HTML that resumes
- * it, whose head the prelude already sent. A resume reads
+ * it, whose head and font CSS the prelude already sent. A resume reads
  * `injectAfterHeadOpenHTML` before each batch instead, so it should return
  * only what it hasn't returned before.
  */
@@ -854,6 +854,7 @@ export function createTickBufferedTransform(
   const isPrelude = mode === "prelude";
   let injected = mode === "resume";
   let preHeadInjected = mode === "resume";
+  if (mode === "resume") inlineCssPrependCss = "";
   let suffixStripped = false;
   let buffered: string[] = [];
   // Fizz's bytes for `buffered`, kept so text the transform leaves unchanged
