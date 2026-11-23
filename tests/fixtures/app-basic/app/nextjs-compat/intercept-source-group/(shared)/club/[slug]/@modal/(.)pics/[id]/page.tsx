@@ -8,6 +8,11 @@ async function openSecondPic() {
   redirect("/nextjs-compat/intercept-source-group/club/static/pics/2");
 }
 
+async function openPeek() {
+  "use server";
+  redirect("/nextjs-compat/intercept-source-group/peek");
+}
+
 export default async function PicModal({
   params,
 }: {
@@ -21,6 +26,11 @@ export default async function PicModal({
       <form action={openSecondPic}>
         <button id="intercept-source-group-modal-next" type="submit">
           Second pic
+        </button>
+      </form>
+      <form action={openPeek}>
+        <button id="intercept-source-group-modal-peek" type="submit">
+          Peek by action
         </button>
       </form>
       <Link href="/nextjs-compat/intercept-source-group/peek">Peek</Link>

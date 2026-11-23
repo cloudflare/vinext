@@ -670,6 +670,51 @@ async function fetchPersistedSourcePageRefresh(options: {
 }
 
 /**
+ * The source pages to fetch for a payload for an intercepted route that the
+ * current state can't keep the source page beneath. Such a payload leaves
+ * that page for the state showing it to keep; one that reached another state,
+ * as a traversal back to it or a navigation from the whole intercepting route
+ * can, fetches the page from its own URL, as a refresh does.
+ */
+function resolveUnheldSourcePageRefreshes(
+  elements: AppElements,
+  targetUrl: URL,
+  previousNextUrl: string | null,
+): string[] {
+  if (resolveHeldRetainedElementIds(getBrowserRouterState(), elements, previousNextUrl) !== null) {
+    return [];
+  }
+  return resolvePersistedSourcePageRefreshes({
+    activeRoutePaths: [],
+    basePath: __basePath,
+    refreshUrl: targetUrl,
+    state: { previousNextUrl, slotBindings: [] },
+  });
+}
+
+function supplyUnheldSourcePages(
+  primary: Promise<AppElements>,
+  targetPathnames: readonly string[],
+  signal: AbortSignal,
+): ReturnType<typeof resolveSupplementalRefreshes<AppElements>> {
+  // The state the navigation started from is not the source's, so the request
+  // names no mounted slots for the server to leave out.
+  return resolveSupplementalRefreshes({
+    merge: supplyRetainedElements,
+    primary,
+    signal,
+    supplemental: targetPathnames.map(
+      (targetPathname) => (supplementalSignal: AbortSignal) =>
+        fetchPersistedSourcePageRefresh({
+          mountedSlotsHeader: null,
+          signal: supplementalSignal,
+          targetPathname,
+        }),
+    ),
+  });
+}
+
+/**
  * Decode a kept branch a refresh fetched from its own URL. Its client pages
  * read the query the server rendered it with, not the navigation's.
  */
@@ -1916,6 +1961,28 @@ function registerServerActionCallback(): void {
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
             if (target.type === "push") saveScrollPosition();
+            // The redirect's render intercepts from the context the action
+            // sent, like a navigation's, and fetches the source page beneath
+            // it when the state the action began in doesn't show that page.
+            let payload = Promise.resolve(elements);
+            const sourcePageRefreshes = resolveUnheldSourcePageRefreshes(
+              elements,
+              new URL(target.href, window.location.href),
+              actionInitiation.routerState.previousNextUrl,
+            );
+            if (sourcePageRefreshes.length > 0) {
+              const sourcePageHandle = serverActionSupplementalRefreshCoordinator.begin({
+                activeNavigationId: browserNavigationController.getActiveNavigationId(),
+                startedNavigationId: actionInitiation.navigationId,
+              });
+              payload = supplyUnheldSourcePages(
+                payload,
+                sourcePageRefreshes,
+                sourcePageHandle.signal,
+              )
+                .finally(() => sourcePageHandle.finish())
+                .then(requireCompleteSupplementalRefresh);
+            }
             void renderNavigationPayload({
               actionType: target.type === "push" ? "navigate" : "replace",
               historyUpdateMode: target.type === "push" ? "push" : "replace",
@@ -1928,7 +1995,7 @@ function registerServerActionCallback(): void {
               navId: actionInitiation.navigationId,
               operationLane: resolveServerActionOperationLane(revalidation),
               params: {},
-              payload: Promise.resolve(elements),
+              payload,
               payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
               pendingRouterState: null,
               // The action, and so its redirect's render, sent the context of
@@ -2925,45 +2992,25 @@ function bootstrapHydration(
         }
 
         // A payload for an intercepted route leaves the source page beneath it
-        // for the state showing that page to keep. One that reached another
-        // state, as a traversal back to it can, fetches that page from its own
-        // URL, as a refresh does.
+        // for the state showing that page to keep.
         if (!hasSupplementalRefresh && requestInterceptionContext !== null) {
           const elements = await rscPayload;
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           rscPayload = Promise.resolve(elements);
-          const sourcePageRefreshes =
-            resolveHeldRetainedElementIds(
-              getBrowserRouterState(),
-              elements,
-              requestPreviousNextUrl,
-            ) === null
-              ? resolvePersistedSourcePageRefreshes({
-                  activeRoutePaths: [],
-                  basePath: __basePath,
-                  refreshUrl: url,
-                  state: { previousNextUrl: requestPreviousNextUrl, slotBindings: [] },
-                })
-              : [];
+          const sourcePageRefreshes = resolveUnheldSourcePageRefreshes(
+            elements,
+            url,
+            requestPreviousNextUrl,
+          );
           if (sourcePageRefreshes.length > 0) {
             // The Flight response above is already React's, so this request
-            // takes its own handle, which a newer navigation aborts. The state
-            // this navigation started from is not the source's, so the request
-            // names no mounted slots for the server to leave out.
+            // takes its own handle, which a newer navigation aborts.
             const sourcePageAbortHandle = navigationAbortCoordinator.begin();
-            rscPayload = resolveSupplementalRefreshes({
-              merge: supplyRetainedElements,
-              primary: rscPayload,
-              signal: sourcePageAbortHandle.signal,
-              supplemental: sourcePageRefreshes.map(
-                (targetPathname) => (signal: AbortSignal) =>
-                  fetchPersistedSourcePageRefresh({
-                    mountedSlotsHeader: null,
-                    signal,
-                    targetPathname,
-                  }),
-              ),
-            })
+            rscPayload = supplyUnheldSourcePages(
+              rscPayload,
+              sourcePageRefreshes,
+              sourcePageAbortHandle.signal,
+            )
               .finally(() => sourcePageAbortHandle.release())
               .then(requireCompleteSupplementalRefresh);
           }

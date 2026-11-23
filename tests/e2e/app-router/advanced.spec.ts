@@ -371,6 +371,26 @@ test.describe("Intercepting Routes", () => {
     expect(await markerKept(page)).toBe(true);
   });
 
+  // An action redirect from the whole intercepting route sends its source too,
+  // so, as in Next.js, the interception it reaches opens softly.
+  test("opens an interception from the source of the whole intercepting route by an action redirect", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Pic 1", exact: true }).click();
+    await expectWholeInterceptingRoute(page, /\/intercept-source-group\/club\/static\/pics\/1$/);
+
+    await page.locator("#intercept-source-group-modal-peek").click();
+    await expect(page).toHaveURL(/\/intercept-source-group\/peek$/);
+    await expect(page.locator("#intercept-source-group-peek-modal")).toHaveText("Peek modal");
+    await expect(page.locator("#intercept-source-group-peek")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
+  });
+
   // The interception rewrite takes every param of the intercepting route from
   // the source, those of the slot's folders above the marker too.
   test("takes the params of the slot's folders from the source of the whole intercepting route", async ({
