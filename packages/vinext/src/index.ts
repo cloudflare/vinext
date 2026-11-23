@@ -117,6 +117,7 @@ import {
   hasExportedName,
 } from "./build/report.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
+import { createFontOwnerManifestPlugin } from "./plugins/font-owner-manifest.js";
 import { createServerModuleScopePlugin, realDirectoryPath } from "./plugins/server-module-scope.js";
 import {
   createRscScanGlobImportsPlugin,
@@ -304,6 +305,7 @@ import {
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
   parseStaticObjectLiteral,
   generateGoogleFontsVirtualModule,
+  createFontOwnerPlugin,
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
@@ -2144,6 +2146,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let clientReferenceModules: ReadonlyMap<string, readonly string[]> | null = null;
   let clientReferenceAlwaysRenderedFiles: string[] = [];
   let clientReferenceRoutelessFiles: string[] = [];
+  // App routes whose fonts the route font manifest scopes, in dev and build,
+  // and the keys of the modules that load fonts.
+  let fontOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  const fontOwnerKeys = new Set<string>();
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
 
@@ -5654,6 +5660,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 appDirectoryNotFoundPath(routes, appNotFoundPath),
               ].filter((path): path is string => path !== null);
               clientReferenceRoutes = this.environment.config.command === "build" ? routes : null;
+              fontOwnerRoutes = routes;
               clientReferenceAlwaysRenderedFiles = [
                 ...(globalErrorPath ? [globalErrorPath] : []),
                 ...rootBoundaryFiles(routes),
@@ -5706,6 +5713,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 prefetchInlining: nextConfig?.prefetchInlining,
                 hasServerActions,
                 actionOwners: this.environment.config.command === "build" ? undefined : null,
+                devFontOwners: this.environment.config.command !== "build",
                 i18n: nextConfig?.i18n,
                 imageConfig: {
                   deviceSizes: nextConfig?.images?.deviceSizes,
@@ -8753,6 +8761,14 @@ export const loadServerActionClient = ${
         },
       },
     } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
+    // Font owner marks for route-scoped font styles — see src/plugins/fonts.ts.
+    // Runs before the font plugins, which rewrite the next/font imports.
+    createFontOwnerPlugin({
+      shimsDir: _shimsDir,
+      onOwner(key) {
+        fontOwnerKeys.add(key);
+      },
+    }),
     // Google Fonts import rewrite + self-hosting — see src/plugins/fonts.ts
     createGoogleFontsPlugin(_fontGoogleShimPath, _shimsDir),
     // Local font path resolution — see src/plugins/fonts.ts
@@ -9581,6 +9597,19 @@ export const loadServerActionClient = ${
           clientReferenceAlwaysRenderedFiles = [];
           clientReferenceRoutelessFiles = [];
         },
+      }),
+    );
+    plugins.push(
+      createFontOwnerManifestPlugin({
+        canonicalizeModuleId: canonicalize,
+        async getManager(config) {
+          const rscPluginModule = await rscPluginModulePromise;
+          return rscPluginModule?.getPluginApi(config)?.manager;
+        },
+        getRoutes: () => fontOwnerRoutes,
+        getAlwaysRenderedFiles: () => clientReferenceAlwaysRenderedFiles,
+        getRoutelessFiles: () => clientReferenceRoutelessFiles,
+        ownerKeys: fontOwnerKeys,
       }),
     );
     plugins.push(createScanBuildCssPlugin());

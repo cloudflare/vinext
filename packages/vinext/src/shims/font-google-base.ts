@@ -1,12 +1,16 @@
 import { buildGoogleFontsUrl as buildUrlFromAxes } from "../build/google-fonts/build-url.js";
 import {
+  addOwnedFontEntry,
   escapeCSSString,
   formatFontClassRule,
   getFontMimeType,
+  listOwnedFontEntries,
   resolveSingleFaceStyle,
   sanitizeCSSVarName,
   sanitizeFallback,
+  type FontOwners,
   type FontStyle,
+  type OwnedFontCollection,
 } from "./font-utils.js";
 
 /**
@@ -43,17 +47,15 @@ const _INJECTED_SELF_HOSTED_KEY = Symbol.for("vinext.font.injectedSelfHosted");
 const _SSR_FONT_STYLES_KEY = Symbol.for("vinext.font.ssrFontStyles");
 const _SSR_FONT_URLS_KEY = Symbol.for("vinext.font.ssrFontUrls");
 const _SSR_FONT_PRELOADS_KEY = Symbol.for("vinext.font.ssrFontPreloads");
-const _SSR_FONT_PRELOAD_HREFS_KEY = Symbol.for("vinext.font.ssrFontPreloadHrefs");
 
 type _FontGlobal = typeof globalThis & {
   [_INJECTED_FONTS_KEY]?: Set<string>;
   [_INJECTED_CLASS_RULES_KEY]?: Set<string>;
   [_INJECTED_VARIABLE_RULES_KEY]?: Set<string>;
   [_INJECTED_SELF_HOSTED_KEY]?: Set<string>;
-  [_SSR_FONT_STYLES_KEY]?: string[];
-  [_SSR_FONT_URLS_KEY]?: string[];
-  [_SSR_FONT_PRELOADS_KEY]?: Array<{ href: string; type: string }>;
-  [_SSR_FONT_PRELOAD_HREFS_KEY]?: Set<string>;
+  [_SSR_FONT_STYLES_KEY]?: OwnedFontCollection<string>;
+  [_SSR_FONT_URLS_KEY]?: OwnedFontCollection<string>;
+  [_SSR_FONT_PRELOADS_KEY]?: OwnedFontCollection<{ href: string; type: string }>;
 };
 const _g = globalThis as _FontGlobal;
 
@@ -270,16 +272,19 @@ const injectedClassRules = (_g[_INJECTED_CLASS_RULES_KEY] ??= new Set<string>())
  * font-weight/font-style. CSS variables are handled separately by .variable.
  */
 function injectClassNameRule(className: string, fontStyle: FontStyle): void {
-  if (injectedClassRules.has(className)) return;
-  injectedClassRules.add(className);
-
-  const css = formatFontClassRule(className, fontStyle);
-
-  // On server, store the CSS for SSR injection
+  // On server, store the CSS for SSR injection under the calling module
   if (typeof document === "undefined") {
-    ssrFontStyles.push(css);
+    addOwnedFontEntry(
+      ssrFontStyles,
+      `class:${className}`,
+      formatFontClassRule(className, fontStyle),
+    );
     return;
   }
+
+  if (injectedClassRules.has(className)) return;
+  injectedClassRules.add(className);
+  const css = formatFontClassRule(className, fontStyle);
 
   // On client, inject a <style> tag
   const styleElement = document.createElement("style");
@@ -307,18 +312,18 @@ function injectVariableClassRule(
   cssVarName: string,
   fontFamily: string,
 ): void {
-  if (injectedVariableRules.has(variableClassName)) return;
-  injectedVariableRules.add(variableClassName);
-
   // Only set the CSS variable — do NOT set font-family.
   // This matches Next.js behavior where .variable classes only define CSS variables.
   const css = `.${variableClassName} { ${cssVarName}: ${fontFamily}; }\n`;
 
-  // On server, store the CSS for SSR injection
+  // On server, store the CSS for SSR injection under the calling module
   if (typeof document === "undefined") {
-    ssrFontStyles.push(css);
+    addOwnedFontEntry(ssrFontStyles, `variable:${variableClassName}`, css);
     return;
   }
+
+  if (injectedVariableRules.has(variableClassName)) return;
+  injectedVariableRules.add(variableClassName);
 
   // On client, inject a <style> tag
   const style = document.createElement("style");
@@ -327,54 +332,55 @@ function injectVariableClassRule(
   document.head.appendChild(style);
 }
 
-// SSR: collect font class CSS for injection in <head>
-const ssrFontStyles = (_g[_SSR_FONT_STYLES_KEY] ??= []);
+// SSR: collect font class CSS for injection in <head>. Each entry remembers
+// the modules that registered it, so a render carries only its own fonts.
+const ssrFontStyles = (_g[_SSR_FONT_STYLES_KEY] ??= new Map());
 
 /**
- * Get collected SSR font class styles (used by the renderer).
- * Note: We don't clear the arrays because fonts are loaded at module import
- * time and need to persist across all requests in the Workers environment.
+ * Get collected SSR font styles (used by the renderer): those registered by
+ * the modules in `owners`, or every one without `owners`.
+ * Note: We don't clear the collections because fonts are loaded at module
+ * import time and need to persist across all requests in the Workers
+ * environment.
  */
-export function getSSRFontStyles(): string[] {
-  return [...ssrFontStyles];
+export function getSSRFontStyles(owners?: FontOwners): string[] {
+  return listOwnedFontEntries(ssrFontStyles, owners);
 }
 
 // SSR: collect font URLs to inject in <head>
-const ssrFontUrls = (_g[_SSR_FONT_URLS_KEY] ??= []);
+const ssrFontUrls = (_g[_SSR_FONT_URLS_KEY] ??= new Map());
 
 /**
- * Get collected SSR font URLs (used by the renderer).
- * Note: We don't clear the arrays because fonts are loaded at module import
- * time and need to persist across all requests in the Workers environment.
+ * Get collected SSR font stylesheet URLs (used by the renderer), scoped to
+ * `owners` like {@link getSSRFontStyles}.
  */
-export function getSSRFontLinks(): string[] {
-  return [...ssrFontUrls];
+export function getSSRFontLinks(owners?: FontOwners): string[] {
+  return listOwnedFontEntries(ssrFontUrls, owners);
 }
 
 // SSR: collect font file URLs for <link rel="preload"> injection (self-hosted Google fonts)
-const ssrFontPreloads = (_g[_SSR_FONT_PRELOADS_KEY] ??= []);
-const ssrFontPreloadHrefs = (_g[_SSR_FONT_PRELOAD_HREFS_KEY] ??= new Set<string>());
+const ssrFontPreloads = (_g[_SSR_FONT_PRELOADS_KEY] ??= new Map());
 
 /**
- * Get collected SSR font preload data (used by the renderer).
+ * Get collected SSR font preload data (used by the renderer), scoped to
+ * `owners` like {@link getSSRFontStyles}.
  * Returns an array of { href, type } objects for emitting
  * <link rel="preload" as="font" ...> tags.
  */
-export function getSSRFontPreloads(): Array<{ href: string; type: string }> {
-  return [...ssrFontPreloads];
+export function getSSRFontPreloads(owners?: FontOwners): Array<{ href: string; type: string }> {
+  return listOwnedFontEntries(ssrFontPreloads, owners);
 }
 
 /**
  * Collect build-selected font file URLs for preload link generation.
- * Only collects on the server (SSR). Deduplicates by href using a Set for O(1) lookups.
+ * Only collects on the server (SSR). Deduplicates by href.
  */
 function collectFontPreloads(urls: string[]): void {
   if (typeof document !== "undefined") return; // client-side, skip
 
   for (const href of urls) {
-    if (href.startsWith("/") && !ssrFontPreloadHrefs.has(href)) {
-      ssrFontPreloadHrefs.add(href);
-      ssrFontPreloads.push({ href, type: getFontMimeType(href) });
+    if (href.startsWith("/")) {
+      addOwnedFontEntry(ssrFontPreloads, href, { href, type: getFontMimeType(href) });
     }
   }
 }
@@ -388,14 +394,15 @@ const injectedSelfHosted = (_g[_INJECTED_SELF_HOSTED_KEY] ??= new Set<string>())
  */
 function injectSelfHostedCSS(css: string, preloadUrls: string[] = []): void {
   collectFontPreloads(preloadUrls);
-  if (injectedSelfHosted.has(css)) return;
-  injectedSelfHosted.add(css);
 
   if (typeof document === "undefined") {
     // SSR: add to collected styles
-    ssrFontStyles.push(css);
+    addOwnedFontEntry(ssrFontStyles, `face:${css}`, css);
     return;
   }
+
+  if (injectedSelfHosted.has(css)) return;
+  injectedSelfHosted.add(css);
 
   // Client: inject <style> tag
   const style = document.createElement("style");
@@ -461,9 +468,7 @@ export function createFontLoader(family: string): FontLoader {
 
       // On SSR, collect the URL for head injection
       if (typeof document === "undefined") {
-        if (!ssrFontUrls.includes(url)) {
-          ssrFontUrls.push(url);
-        }
+        addOwnedFontEntry(ssrFontUrls, url, url);
       }
     }
 

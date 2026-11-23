@@ -23,6 +23,7 @@ import type { AppPageInterceptOptions } from "./app-page-element-builder.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
+import type { FontOwners } from "vinext/shims/font-utils";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = import("react").ComponentType<any>;
@@ -44,9 +45,11 @@ type AppFallbackRendererRootBoundaries<TModule extends AppPageModule = AppPageMo
 
 type AppFallbackRendererFontProviders = {
   buildFontLinkHeader: (preloads: readonly AppPageFontPreload[] | null | undefined) => string;
-  getFontLinks: () => string[];
-  getFontPreloads: () => AppPageFontPreload[];
-  getFontStyles: () => string[];
+  /** The font owners of the render of `route`, or of a render without one. */
+  getFontOwners: (route: { pattern?: string } | null) => FontOwners | Promise<FontOwners>;
+  getFontLinks: (owners?: FontOwners) => string[];
+  getFontPreloads: (owners?: FontOwners) => AppPageFontPreload[];
+  getFontStyles: (owners?: FontOwners) => string[];
 };
 
 type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> = {
@@ -246,6 +249,17 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
     return globalNotFoundModulePromise;
   }
 
+  // The fonts of the render of `route`: its own files' fonts, or those of a
+  // render without a matched route.
+  async function routeFontProviders(route: { pattern?: string } | null) {
+    const owners = await fontProviders.getFontOwners(route);
+    return {
+      getFontLinks: () => fontProviders.getFontLinks(owners),
+      getFontPreloads: () => fontProviders.getFontPreloads(owners),
+      getFontStyles: () => fontProviders.getFontStyles(owners),
+    };
+  }
+
   return {
     async renderHttpAccessFallback(
       route,
@@ -300,9 +314,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             createRscOnErrorHandler(pathname, routePath, overrides) {
               return buildRscOnErrorHandler(request, pathname, routePath, overrides);
             },
-            getFontLinks: fontProviders.getFontLinks,
-            getFontPreloads: fontProviders.getFontPreloads,
-            getFontStyles: fontProviders.getFontStyles,
+            ...(await routeFontProviders(null)),
             getAndClearPendingCookies,
             getNavigationContext,
             globalErrorModule: effectiveGlobalErrorModule,
@@ -347,9 +359,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         createRscOnErrorHandler(pathname, routePath, overrides) {
           return buildRscOnErrorHandler(request, pathname, routePath, overrides);
         },
-        getFontLinks: fontProviders.getFontLinks,
-        getFontPreloads: fontProviders.getFontPreloads,
-        getFontStyles: fontProviders.getFontStyles,
+        ...(await routeFontProviders(useStandaloneNotFound ? null : route)),
         getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
@@ -409,7 +419,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       );
     },
 
-    renderErrorBoundary(
+    async renderErrorBoundary(
       route,
       error,
       isRscRequest,
@@ -431,9 +441,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         },
         error,
         errorOrigin,
-        getFontLinks: fontProviders.getFontLinks,
-        getFontPreloads: fontProviders.getFontPreloads,
-        getFontStyles: fontProviders.getFontStyles,
+        ...(await routeFontProviders(route)),
         getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,

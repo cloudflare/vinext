@@ -147,3 +147,82 @@ export function getFontMimeType(pathOrUrl: string): string {
   if (pathOrUrl.endsWith(".eot")) return "font/eot";
   return "font/woff2";
 }
+
+/**
+ * The global slot holding the owner key of the module whose top-level code is
+ * running. The `vinext:font-owner` transform (see `plugins/fonts.ts`) sets it
+ * at the start of each server module that imports `next/font/google` or
+ * `next/font/local`, and clears it at the end, so a font loader call made while
+ * that module evaluates is recorded under it. Next.js requires font loaders to
+ * be called at module scope, so this attributes every supported call.
+ */
+export const FONT_OWNER_KEY = Symbol.for("vinext.font.owner");
+
+/**
+ * The owner keys of the modules a render may show, or `null`/`undefined` for
+ * every collected font. Built from the route font manifest (see
+ * `plugins/font-owner-manifest.ts`).
+ */
+export type FontOwners = readonly string[] | null | undefined;
+
+type OwnedFontEntry<T> = {
+  value: T;
+  /** The modules that registered it, or `null` when one had no owner key. */
+  owners: Set<string> | null;
+  /** Entries with the same key are emitted once per render, first one wins. */
+  onceKey?: string;
+};
+
+/** An insertion-ordered SSR font collection, deduplicated by entry key. */
+export type OwnedFontCollection<T> = Map<string, OwnedFontEntry<T>>;
+
+function currentFontOwner(): string | null {
+  const owner = (globalThis as typeof globalThis & { [FONT_OWNER_KEY]?: unknown })[FONT_OWNER_KEY];
+  return typeof owner === "string" ? owner : null;
+}
+
+/**
+ * Record `value` under `key`, owned by the module now evaluating. A font
+ * registered outside any owned module (a loader call the transform could not
+ * attribute) belongs to every render, as all fonts did before fonts were scoped.
+ */
+export function addOwnedFontEntry<T>(
+  collection: OwnedFontCollection<T>,
+  key: string,
+  value: T,
+  onceKey?: string,
+): void {
+  const owner = currentFontOwner();
+  const entry = collection.get(key);
+  if (!entry) {
+    collection.set(key, { value, owners: owner === null ? null : new Set([owner]), onceKey });
+    return;
+  }
+  if (entry.owners === null) return;
+  if (owner === null) entry.owners = null;
+  else entry.owners.add(owner);
+}
+
+/** The values a render owned by `owners` carries, in registration order. */
+export function listOwnedFontEntries<T>(
+  collection: OwnedFontCollection<T>,
+  owners?: FontOwners,
+): T[] {
+  const wanted = owners ? new Set(owners) : null;
+  const emittedOnceKeys = new Set<string>();
+  const values: T[] = [];
+  for (const entry of collection.values()) {
+    if (wanted && entry.owners && !hasAny(entry.owners, wanted)) continue;
+    if (entry.onceKey !== undefined) {
+      if (emittedOnceKeys.has(entry.onceKey)) continue;
+      emittedOnceKeys.add(entry.onceKey);
+    }
+    values.push(entry.value);
+  }
+  return values;
+}
+
+function hasAny(owners: ReadonlySet<string>, wanted: ReadonlySet<string>): boolean {
+  for (const owner of owners) if (wanted.has(owner)) return true;
+  return false;
+}

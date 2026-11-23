@@ -17970,6 +17970,59 @@ describe("next/font/local shim", () => {
     expect(preloadsAfter).toBe(preloadsBefore);
   });
 
+  // Issue #4810: the vinext:font-owner transform marks the module whose top
+  // level is running, and a render reads only its own modules' fonts.
+  it("scopes SSR styles and preloads to the modules that loaded them", async () => {
+    const fontLocal = await import("../packages/vinext/src/shims/font-local.js");
+    const localFont = fontLocal.default;
+    const ownerSlot = Symbol.for("vinext.font.owner");
+    const g = globalThis as Record<symbol, unknown>;
+    const load = (owner: string | undefined, src: string, variable: `--${string}`) => {
+      g[ownerSlot] = owner;
+      try {
+        return localFont({ src, variable, _vinext: { font: { family: "scoped" } } });
+      } finally {
+        delete g[ownerSlot];
+      }
+    };
+    const fontA = load("app/a.tsx", "/assets/scoped-a.woff2", "--font-scoped");
+    const fontB = load("app/b.tsx", "/assets/scoped-b.woff2", "--font-scoped");
+    // The same font from a second module belongs to both.
+    load("app/b.tsx", "/assets/scoped-a.woff2", "--font-scoped");
+    // A font loaded outside any marked module belongs to every render.
+    load(undefined, "/assets/scoped-unowned.woff2", "--font-scoped-unowned");
+
+    const preloadsOf = (owners?: string[]) =>
+      fontLocal
+        .getSSRFontPreloads(owners)
+        .map((preload) => preload.href)
+        .filter((href) => href.includes("scoped-"));
+    expect(preloadsOf(["app/a.tsx"])).toEqual([
+      "/assets/scoped-a.woff2",
+      "/assets/scoped-unowned.woff2",
+    ]);
+    expect(preloadsOf(["app/b.tsx"])).toEqual([
+      "/assets/scoped-a.woff2",
+      "/assets/scoped-b.woff2",
+      "/assets/scoped-unowned.woff2",
+    ]);
+    expect(preloadsOf([])).toEqual(["/assets/scoped-unowned.woff2"]);
+    expect(preloadsOf()).toEqual([
+      "/assets/scoped-a.woff2",
+      "/assets/scoped-b.woff2",
+      "/assets/scoped-unowned.woff2",
+    ]);
+
+    const stylesOf = (owners: string[]) => fontLocal.getSSRFontStyles(owners).join("\n");
+    expect(stylesOf(["app/a.tsx"])).toContain(fontA.className);
+    expect(stylesOf(["app/a.tsx"])).not.toContain(fontB.className);
+    // Each render sets a shared variable on :root once, from its first font.
+    const rootRules = (owners: string[]) =>
+      stylesOf(owners).match(/:root \{ --font-scoped: [^}]*\}/g) ?? [];
+    expect(rootRules(["app/a.tsx", "app/b.tsx"])).toHaveLength(1);
+    expect(rootRules(["app/b.tsx"])).toHaveLength(1);
+  });
+
   it("deduplicates preload entries by href", async () => {
     const fontLocal = await import("../packages/vinext/src/shims/font-local.js");
     const localFont = fontLocal.default;

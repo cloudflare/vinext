@@ -25,7 +25,7 @@
  */
 
 import type { ESTree, Plugin } from "vite";
-import { parseProgram } from "./ast-utils.js";
+import { parseProgram, scriptParserLanguage } from "./ast-utils.js";
 import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { escapeRegExp } from "../utils/regex.js";
@@ -42,6 +42,7 @@ import { buildGoogleFontsUrl } from "../build/google-fonts/build-url.js";
 import { findFontFilesInCss } from "../build/google-fonts/find-font-files-in-css.js";
 import { CONTENT_TYPES } from "../server/static-file-cache.js";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
+import { fontOwnerKey } from "../build/font-owner-manifest.js";
 
 /**
  * Thrown when Google Fonts returns a non-2xx response. Distinct from a raw
@@ -1302,6 +1303,88 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
           s.prepend(imports.join("\n") + "\n");
         }
 
+        return magicStringTransformResult(s);
+      },
+    },
+  } satisfies Plugin;
+}
+
+const FONT_LOADER_SOURCES = new Set(["next/font/google", "next/font/local"]);
+const FONT_OWNER_SLOT = 'globalThis[Symbol.for("vinext.font.owner")]';
+
+/**
+ * vinext:font-owner — mark each server module that imports `next/font/google`
+ * or `next/font/local` as the owner of the fonts its top-level code loads.
+ *
+ * The module sets the `vinext.font.owner` slot (see `FONT_OWNER_KEY` in
+ * `shims/font-utils.ts`) to its key as its body starts and clears it at the
+ * end, so the shims record each font under the module that called its loader.
+ * The route font manifest (`plugins/font-owner-manifest.ts`) then lists the
+ * owners each route reaches, and a render carries only their fonts, as
+ * Next.js' `next-font-manifest` scopes fonts per entry.
+ *
+ * Next.js requires font loaders to be called at module scope, which a module
+ * body runs in one go. A loader called later, or after a top-level `await`
+ * in its module, is recorded without an owner and so carries to every render.
+ */
+export function createFontOwnerPlugin(options: {
+  shimsDir: string;
+  onOwner: (key: string) => void;
+}): Plugin {
+  let root = "";
+  return {
+    name: "vinext:font-owner",
+    enforce: "pre",
+    applyToEnvironment(environment) {
+      // Browser renders inject their own font styles and need no owner.
+      return environment.config.consumer === "server";
+    },
+    configResolved(config) {
+      root = config.root;
+    },
+    transform: {
+      filter: {
+        id: { include: /\.(tsx?|jsx?|mjs)$/ },
+        code: /next\/font\/(?:google|local)/,
+      },
+      handler(code, id) {
+        if (id.startsWith("\0") || id.startsWith(options.shimsDir)) return null;
+        const lang = scriptParserLanguage(id);
+        if (!lang) return null;
+        let program: ESTree.Program;
+        try {
+          program = parseProgram(code, { lang });
+        } catch {
+          return null;
+        }
+
+        let bodyStart = 0;
+        let directivesEnded = false;
+        let importsFontLoader = false;
+        for (const node of program.body) {
+          if (!directivesEnded && node.type === "ExpressionStatement" && node.directive) {
+            bodyStart = node.end;
+            continue;
+          }
+          directivesEnded = true;
+          if (
+            (node.type === "ImportDeclaration" ||
+              node.type === "ExportNamedDeclaration" ||
+              node.type === "ExportAllDeclaration") &&
+            node.source &&
+            FONT_LOADER_SOURCES.has(String(node.source.value))
+          ) {
+            importsFontLoader = true;
+          }
+        }
+        if (!importsFontLoader) return null;
+
+        const key = fontOwnerKey(root, id);
+        options.onOwner(key);
+        const quotedKey = JSON.stringify(key);
+        const s = new MagicString(code);
+        s.appendRight(bodyStart, `\n${FONT_OWNER_SLOT} = ${quotedKey};\n`);
+        s.append(`\n;if (${FONT_OWNER_SLOT} === ${quotedKey}) ${FONT_OWNER_SLOT} = undefined;\n`);
         return magicStringTransformResult(s);
       },
     },

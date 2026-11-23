@@ -733,3 +733,59 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.code).toContain("export default function RootLayout");
   });
 });
+
+// ── vinext:font-owner ────────────────────────────────────────
+
+// Issue #4810: each server module that imports a font loader marks itself as
+// the owner of the fonts its top level loads, so renders carry only the fonts
+// of the modules their route reaches.
+describe("vinext:font-owner plugin", () => {
+  function getFontOwnerTransform(root: string) {
+    const plugin = (vinext() as Plugin[]).find((p) => p.name === "vinext:font-owner");
+    if (!plugin) throw new Error("vinext:font-owner plugin not found");
+    (plugin.configResolved as Function).call(plugin, { root });
+    const transform = unwrapHook(plugin.transform);
+    return (code: string, id: string) => transform.call(plugin, code, id);
+  }
+
+  const SLOT = 'globalThis[Symbol.for("vinext.font.owner")]';
+
+  it("marks the module body, after its directives, with its root-relative path", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = [
+      `"use client";`,
+      `import localFont from "next/font/local";`,
+      `import { Inter } from "next/font/google";`,
+      `const a = localFont({ src: "./a.woff2" });`,
+      `const b = Inter({ subsets: ["latin"] });`,
+    ].join("\n");
+    const result = transform(code, "/project/app/(a)/client-font.tsx");
+    expect(result.code.startsWith(`"use client";\n${SLOT} = "app/(a)/client-font.tsx";\n`)).toBe(
+      true,
+    );
+    expect(
+      result.code
+        .trimEnd()
+        .endsWith(`if (${SLOT} === "app/(a)/client-font.tsx") ${SLOT} = undefined;`),
+    ).toBe(true);
+  });
+
+  it("marks modules that re-export a font loader", () => {
+    const transform = getFontOwnerTransform("/project");
+    const result = transform(`export { Inter } from "next/font/google";`, "/project/fonts.ts");
+    expect(result.code).toContain(`${SLOT} = "fonts.ts";`);
+  });
+
+  it("leaves modules that only mention a font loader alone", () => {
+    const transform = getFontOwnerTransform("/project");
+    const code = `// see next/font/google\nexport const x = "next/font/local";`;
+    expect(transform(code, "/project/app/page.tsx")).toBeNull();
+  });
+
+  it("does not run for the browser", () => {
+    const plugin = (vinext() as Plugin[]).find((p) => p.name === "vinext:font-owner")!;
+    const applies = plugin.applyToEnvironment as Function;
+    expect(applies({ config: { consumer: "client" } })).toBe(false);
+    expect(applies({ config: { consumer: "server" } })).toBe(true);
+  });
+});
