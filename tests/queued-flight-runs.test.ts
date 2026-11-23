@@ -1,0 +1,281 @@
+import { describe, expect, it, vi } from "vite-plus/test";
+import { startCandidateSearchParamsGate } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
+import { trackQueuedFlightRuns } from "../packages/vinext/src/server/queued-flight-runs.js";
+import { loadCacheFlightCodec } from "./helpers/cache-flight-codec.js";
+
+function controlledStream() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      controller = streamController;
+    },
+  });
+  return { controller, stream };
+}
+
+// A stream whose `cancelled` settles with the reason it is cancelled with.
+function cancellableStream() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  let markCancelled!: (reason: unknown) => void;
+  const cancelled = new Promise<unknown>((resolve) => {
+    markCancelled = resolve;
+  });
+  const stream = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      controller = streamController;
+    },
+    cancel(reason) {
+      markCancelled(reason);
+    },
+  });
+  return { cancelled, controller, stream };
+}
+
+const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// Reads like the Flight client: one chunk per read, the next read after it.
+function consume(stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  const finished = (async () => {
+    for (let result = await reader.read(); !result.done; result = await reader.read()) {
+      chunks.push(result.value);
+    }
+  })();
+  return { chunks, finished };
+}
+
+describe("trackQueuedFlightRuns", () => {
+  it("settles a run once every chunk queued with it has been read, and passes them on unchanged", async () => {
+    const { controller, stream } = controlledStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const { chunks, finished } = consume(flight.stream);
+
+    const written = Array.from({ length: 300 }, (_, i) => new Uint8Array(4096).fill(i % 256));
+    for (const chunk of written) controller.enqueue(chunk);
+    await Promise.resolve();
+    // Asked while the run is still being read: it waits for all of it.
+    await flight.currentRunConsumed();
+    expect(chunks).toEqual(written);
+    expect(chunks[299]).toBe(written[299]);
+
+    controller.close();
+    await finished;
+  });
+
+  it("settles a run once every chunk queued with it has been read through tees and the search params gate", async () => {
+    const { controller, stream } = controlledStream();
+    // As on a cache-candidate request: the RSC stream is teed for the
+    // embedded payload and the cache, then wrapped by the search params gate.
+    let ssrStream = stream;
+    const sides: ReadableStream<Uint8Array>[] = [];
+    for (let tee = 0; tee < 3; tee++) {
+      const [ssr, side] = ssrStream.tee();
+      ssrStream = ssr;
+      sides.push(side);
+    }
+    const sideReads = sides.map((side) => consume(side));
+    const flight = trackQueuedFlightRuns(
+      startCandidateSearchParamsGate().settleWhenConsumed(ssrStream),
+    );
+    const { chunks, finished } = consume(flight.stream);
+
+    const written = Array.from({ length: 300 }, (_, i) => new Uint8Array(4096).fill(i % 256));
+    for (const chunk of written) controller.enqueue(chunk);
+    await Promise.resolve();
+    await flight.currentRunConsumed();
+    expect(chunks).toEqual(written);
+
+    controller.close();
+    await finished;
+    await Promise.all(sideReads.map((side) => side.finished));
+  });
+
+  it("does not wait for a chunk that is not queued yet", async () => {
+    const { controller, stream } = controlledStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const { chunks, finished } = consume(flight.stream);
+
+    controller.enqueue(new Uint8Array([1]));
+    controller.enqueue(new Uint8Array([2]));
+    await flight.currentRunConsumed();
+    expect(chunks.map((chunk) => chunk[0])).toEqual([1, 2]);
+    // A run that has ended stays settled until the next chunk arrives.
+    await flight.currentRunConsumed();
+
+    await nextTask();
+    controller.enqueue(new Uint8Array([3]));
+    await nextTask();
+    await flight.currentRunConsumed();
+    expect(chunks.map((chunk) => chunk[0])).toEqual([1, 2, 3]);
+
+    controller.close();
+    await finished;
+  });
+
+  it("settles a run when the stream fails, and passes the error on", async () => {
+    const failure = new Error("render failed");
+    const { controller, stream } = controlledStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const reader = flight.stream.getReader();
+
+    controller.enqueue(new Uint8Array([1]));
+    expect((await reader.read()).value?.[0]).toBe(1);
+    const failedRead = reader.read();
+    controller.error(failure);
+    await expect(failedRead).rejects.toBe(failure);
+    await flight.currentRunConsumed();
+  });
+
+  it("settles a run and cancels the source when the consumer stops reading partway", async () => {
+    // React's Flight client stops reading, without cancelling, when it fails
+    // to decode a chunk.
+    const { cancelled, controller, stream } = cancellableStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const reader = flight.stream.getReader();
+
+    for (let i = 0; i < 4; i++) controller.enqueue(new Uint8Array([i]));
+    expect((await reader.read()).value?.[0]).toBe(0);
+    expect((await reader.read()).value?.[0]).toBe(1);
+    // Never reads again.
+    await flight.currentRunConsumed();
+    expect(await cancelled).toBeInstanceOf(Error);
+    // The abandoned side is closed off too.
+    await expect(reader.read()).rejects.toBeInstanceOf(Error);
+  });
+
+  it("settles when the Flight root resolves before a later chunk fails to decode", async () => {
+    const { createFromReadableStream } = loadCacheFlightCodec();
+    const encoder = new TextEncoder();
+    const { cancelled, controller, stream } = cancellableStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const root = createFromReadableStream(flight.stream) as Promise<unknown>;
+
+    // The root row, then an error row the client fails to parse (it parses
+    // those as it reads them), in the same run.
+    controller.enqueue(encoder.encode('0:{"ok":true}\n'));
+    controller.enqueue(encoder.encode("1:E{not json\n"));
+    controller.enqueue(encoder.encode('2:"after"\n'));
+    await expect(root).resolves.toEqual({ ok: true });
+    await flight.currentRunConsumed();
+    expect(await cancelled).toBeInstanceOf(Error);
+  });
+
+  it("cancels the source when the Flight client fails to decode the root itself", async () => {
+    const { createFromReadableStream } = loadCacheFlightCodec();
+    const encoder = new TextEncoder();
+    const { cancelled, controller, stream } = cancellableStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const root = flight.afterCurrentRun(
+      createFromReadableStream(flight.stream) as Promise<unknown>,
+    );
+    root.catch(() => {});
+
+    // A root error row the client fails to parse, then a row it never reads.
+    controller.enqueue(encoder.encode("0:E{not json\n"));
+    controller.enqueue(encoder.encode('1:"after"\n'));
+    await expect(root).rejects.toBeInstanceOf(Error);
+    expect(await cancelled).toBeInstanceOf(Error);
+  });
+
+  it("does not cancel the source of a consumer that keeps reading", async () => {
+    let cancelledWith: unknown = "not cancelled";
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(streamController) {
+        controller = streamController;
+      },
+      cancel(reason) {
+        cancelledWith = reason;
+      },
+    });
+    const flight = trackQueuedFlightRuns(stream);
+    const { chunks, finished } = consume(flight.stream);
+
+    // Chunks a few tasks apart, as React writes later flushes.
+    for (let i = 0; i < 5; i++) {
+      controller.enqueue(new Uint8Array([i]));
+      await nextTask();
+      await nextTask();
+    }
+    controller.close();
+    await finished;
+    expect(chunks.map((chunk) => chunk[0])).toEqual([0, 1, 2, 3, 4]);
+    expect(cancelledWith).toBe("not cancelled");
+  });
+
+  // React's Flight client asks for the next chunk as soon as it has decoded
+  // one, so the tracker never times it as a reader that stopped. A React whose
+  // client read later would start timers here first, before any were cut off.
+  it("starts no timer while React's Flight client reads a run", async () => {
+    const { renderToReadableStream, createFromReadableStream } = loadCacheFlightCodec();
+    const items = Array.from({ length: 2000 }, (_, i) => `item-${i}-`.padEnd(64, "x"));
+    const payload = new Uint8Array(
+      await new Response(
+        renderToReadableStream({ first: "ok", rest: Promise.resolve(items) }),
+      ).arrayBuffer(),
+    );
+
+    // The timers decoding the payload starts, with or without the tracker.
+    async function timersDecoding(tracked: boolean): Promise<number> {
+      const { controller, stream } = controlledStream();
+      const flight = tracked ? trackQueuedFlightRuns(stream) : null;
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      try {
+        // One run of many chunks, as React writes a flush.
+        for (let offset = 0; offset < payload.length; offset += 2048) {
+          controller.enqueue(payload.subarray(offset, offset + 2048));
+        }
+        const decoded = createFromReadableStream(flight?.stream ?? stream) as Promise<{
+          first: string;
+          rest: Promise<string[]>;
+        }>;
+        const root = await (flight ? flight.afterCurrentRun(decoded) : decoded);
+        expect(root.first).toBe("ok");
+        expect(await root.rest).toEqual(items);
+        return setTimeoutSpy.mock.calls.length;
+      } finally {
+        setTimeoutSpy.mockRestore();
+        controller.close();
+      }
+    }
+
+    expect(await timersDecoding(true)).toBe(await timersDecoding(false));
+  });
+
+  it("starts no timer for a consumer that keeps reading a run", async () => {
+    // Each timer costs a request in workerd about a millisecond.
+    const { controller, stream } = controlledStream();
+    const flight = trackQueuedFlightRuns(stream);
+    const { chunks, finished } = consume(flight.stream);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      for (let i = 0; i < 100; i++) controller.enqueue(new Uint8Array([i]));
+      await flight.currentRunConsumed();
+      expect(chunks).toHaveLength(100);
+      expect(setTimeoutSpy).not.toHaveBeenCalled();
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+    controller.close();
+    await finished;
+  });
+
+  it("settles a run when the consumer cancels, and cancels the source", async () => {
+    let cancelledWith: unknown;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+      },
+      cancel(reason) {
+        cancelledWith = reason;
+      },
+    });
+    const flight = trackQueuedFlightRuns(stream);
+    const reader = flight.stream.getReader();
+    await reader.read();
+    await reader.cancel("gone");
+    await flight.currentRunConsumed();
+    expect(cancelledWith).toBe("gone");
+  });
+});

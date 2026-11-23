@@ -183,7 +183,7 @@ async function start() {
   await startProdServer({
     port,
     host,
-    outDir: path.resolve(process.cwd(), "dist"),
+    outDir: path.resolve(process.cwd(), parsed.outDir ?? "dist"),
   });
 }
 
@@ -331,10 +331,13 @@ function printHelp(cmd?: string) {
   Serves the output from \`vinext build\`. Supports SSR, static files,
   compression, and all middleware.
   For output: "standalone", you can also run: node dist/standalone/server.js
+  (<build.outDir>/standalone/server.js when Vite's build.outDir is set)
 
   Options:
     -p, --port <port>        Port to listen on (default: 3000, or PORT env)
     -H, --hostname <host>    Hostname to bind to (default: 0.0.0.0)
+    --outDir <dir>           Build output to serve, when Vite's build.outDir
+                             is set (default: dist)
     -h, --help               Show this help
 `);
     return;
