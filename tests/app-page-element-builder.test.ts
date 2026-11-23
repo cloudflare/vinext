@@ -4027,6 +4027,70 @@ describe("buildPageElements", () => {
     expect(calls).not.toContain("aside page");
   });
 
+  // An owner whose slot has URL subroutes holds a children slot for its page.
+  // The whole intercepting route shows the owner `default` there, Next.js's
+  // `__DEFAULT__` segment, so it is bound as a default, as a slot subroute's
+  // is, not as the owner's active page.
+  it("binds the whole intercepting route's children as the owner default", async () => {
+    const route = createSyntheticRoute({
+      childrenSlot: { id: "children:/club/[slug]", ownerTreePath: "/club/[slug]", state: "active" },
+      layouts: [
+        createSyntheticPageModule(({ children }: { children?: React.ReactNode }) => children),
+      ],
+      layoutTreePositions: [2],
+      page: createSyntheticPageModule(() => React.createElement("div", null, "club page")),
+      pattern: "/club/:slug",
+      params: ["slug"],
+      routeSegments: ["club", "[slug]"],
+      slots: {
+        modal: {
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 0,
+          routeSegments: [],
+        },
+      },
+    });
+    const bindingsFor = async (interceptOwnerDefault: AppPageModule | null) => {
+      const elements = await buildPageElements(
+        createBaseOptions({
+          route,
+          params: { slug: "static" },
+          routePath: "/club/static/pics/1",
+          opts: {
+            interceptionContext: "/club/static",
+            interceptOwnerDefault,
+            interceptPage: createSyntheticPageModule(() =>
+              React.createElement("div", null, "pic modal"),
+            ),
+            interceptParams: { id: "1", slug: "static" },
+            interceptSlotId: "slot:modal:/club/[slug]",
+            interceptSlotKey: "modal",
+            interceptSourceMatchedUrl: "/club/static",
+            interceptSourcePageSegments: ["club", "[slug]", "@modal", "(.)pics", "[id]"],
+            rendersInterceptionSource: true,
+            rendersWholeInterceptingRoute: true,
+          },
+        }),
+      );
+      return (elements as Record<string, unknown>)[APP_SLOT_BINDINGS_KEY];
+    };
+
+    const ownerDefault = createSyntheticPageModule(() =>
+      React.createElement("div", null, "club default"),
+    );
+    expect(await bindingsFor(ownerDefault)).toContainEqual({
+      ownerLayoutId: "layout:/club/[slug]",
+      slotId: "slot:children:/club/[slug]",
+      state: "default",
+    });
+    expect(await bindingsFor(null)).toContainEqual({
+      ownerLayoutId: "layout:/club/[slug]",
+      slotId: "slot:children:/club/[slug]",
+      state: "unmatched",
+    });
+  });
+
   // Next.js rejects a `default` file whose default export isn't a component,
   // as it does a page's, so the owner's children never render as empty.
   it("surfaces a no-default-export error for a whole intercepting route's owner default", async () => {

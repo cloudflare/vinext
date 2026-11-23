@@ -382,7 +382,11 @@ export async function buildPageElements<
   // The intercepting route's tree shows every slot but the intercepted one in
   // its default state, whatever the owner's own pathname matches there.
   const route = rendersWholeInterceptingRoute
-    ? withDefaultSlotsBesideIntercept(options.route, options.pageRequest.opts?.interceptSlotKey)
+    ? withDefaultSlotsBesideIntercept(
+        options.route,
+        options.pageRequest.opts?.interceptSlotKey,
+        !!options.pageRequest.opts?.interceptOwnerDefault,
+      )
     : options.route;
   const slotParamOverrides = resolveSlotParamOverrides(
     route,
@@ -1226,7 +1230,9 @@ export async function buildPageElements<
 
 /**
  * The route with every slot but the intercepted one showing its default, as
- * the slots of a whole intercepting route's tree do.
+ * the slots of a whole intercepting route's tree do. Its `children` shows the
+ * owner `default` too, so a children slot the owner's page holds is bound as
+ * a default (or unmatched, with no owner default), like a slot sub-route's.
  */
 function withDefaultSlotsBesideIntercept<
   TModule extends AppPageModule,
@@ -1234,16 +1240,24 @@ function withDefaultSlotsBesideIntercept<
 >(
   route: AppPageBuildRoute<TModule, TErrorModule>,
   interceptSlotKey: string | null | undefined,
+  hasOwnerDefault: boolean,
 ): AppPageBuildRoute<TModule, TErrorModule> {
-  if (!route.slots) return route;
   return {
     ...route,
-    slots: Object.fromEntries(
-      Object.entries(route.slots).map(([slotKey, slot]) => [
-        slotKey,
-        slotKey === interceptSlotKey ? slot : toDefaultSlot(slot),
-      ]),
-    ),
+    ...(route.childrenSlot && {
+      childrenSlot: {
+        ...route.childrenSlot,
+        state: hasOwnerDefault ? "default" : "unmatched",
+      },
+    }),
+    ...(route.slots && {
+      slots: Object.fromEntries(
+        Object.entries(route.slots).map(([slotKey, slot]) => [
+          slotKey,
+          slotKey === interceptSlotKey ? slot : toDefaultSlot(slot),
+        ]),
+      ),
+    }),
   };
 }
 
