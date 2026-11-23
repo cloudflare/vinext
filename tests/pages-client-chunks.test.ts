@@ -4,7 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   collectDoublyCopiedModules,
-  collectLargeSharedModules,
+  collectSharedGroupModules,
   collectPagesClientGraph,
   collectUncopiedStylesheets,
   collectPagesAppChunkRoots,
@@ -128,11 +128,11 @@ describe("Pages Router client chunks", () => {
       inlines ? ["pages/alpha.tsx", "pages/beta.tsx"] : [""],
     );
 
-    // A large module that pages share keeps a chunk of its own, which leaves
-    // the small module beside it to be copied into each of them.
+    // The modules that pages share keep a chunk once together they reach
+    // 20 kB, as in webpack.
     expect(facadesOf(chunksWith(chunks, "/lib/shared-rows.ts"))).toEqual([""]);
-    expect(facadesOf(chunksWith(chunks, "/lib/shared-table.tsx"))).toEqual(
-      inlines ? ["pages/alpha.tsx", "pages/beta.tsx"] : [""],
+    expect(chunksWith(chunks, "/lib/shared-table.tsx")).toEqual(
+      chunksWith(chunks, "/lib/shared-rows.ts"),
     );
     // The large modules that overlapping sets of pages reach through a
     // side-effect-free barrel load only with the pages that use them, and the
@@ -223,10 +223,8 @@ describe("Pages Router client chunks", () => {
     const [chunks] = await buildChunks({}, ["client"], [onDemandWrapping]);
 
     expect(chunksWith(chunks!, "/lib/shared-label.ts").map(facadeOf)).toEqual([undefined]);
-    // Nor does a large shared module leave its neighbours.
-    expect(chunksWith(chunks!, "/lib/shared-table.tsx")).toEqual(
-      chunksWith(chunks!, "/lib/shared-rows.ts"),
-    );
+    // Nor do the modules that pages share keep chunk groups of their own.
+    expect(chunks!.filter((chunk) => chunk.name.startsWith("pages-shared-"))).toEqual([]);
   });
 
   it("leaves Pages Router chunking to the bundler with disableNextLikeChunking", async () => {
@@ -570,24 +568,28 @@ describe("collectDoublyCopiedModules", () => {
   });
 });
 
-describe("collectLargeSharedModules", () => {
-  it("names a chunk for the large modules that each set of pages shares", () => {
+describe("collectSharedGroupModules", () => {
+  it("names a chunk for each set of pages whose shared modules reach the size together", () => {
     const graph: Record<string, { imports?: string[]; loadedBy?: string; size?: number }> = {
       entry: {},
-      summary: { loadedBy: "entry", imports: ["chart", "chart-data", "summary-data"] },
+      summary: { loadedBy: "entry", imports: ["chart", "terms", "summary-data"] },
+      legal: { loadedBy: "entry", imports: ["terms"] },
       invoices: { loadedBy: "entry", imports: ["table"] },
       reports: { loadedBy: "entry", imports: ["chart", "table"] },
-      chart: { imports: ["chart-data", "chart-rows", "chart.css"] },
-      table: { imports: ["table-data", "vendor"] },
-      "chart-data": { size: 30_000 },
-      "chart-rows": { size: 25_000 },
+      chart: { imports: ["chart-rows-1", "chart-rows-2", "label", "chart.css"] },
+      "chart-rows-1": { size: 12_000 },
+      "chart-rows-2": { size: 12_000 },
       "chart.css": { size: 25_000 },
+      label: { size: 300 },
+      terms: { imports: ["terms-text", "label"], size: 300 },
+      "terms-text": { size: 15_000 },
       "summary-data": { size: 30_000 },
+      table: { imports: ["table-data", "vendor"] },
       "table-data": { size: 20_000 },
       vendor: { size: 40_000 },
     };
     const ids = Object.keys(graph);
-    const largeModules = collectLargeSharedModules(
+    const groupModules = collectSharedGroupModules(
       collectPagesClientGraph(ids, (id) => ({
         isEntry: id === "entry",
         importedIds: graph[id]!.imports ?? [],
@@ -600,10 +602,14 @@ describe("collectLargeSharedModules", () => {
       },
     );
 
-    // A page's own module, a stylesheet and a chunk group's module stay put.
-    expect(Object.fromEntries(largeModules)).toEqual({
-      "chart-data": "pages-shared-1",
-      "chart-rows": "pages-shared-1",
+    // A small module that imports one no group takes, or a stylesheet, stays
+    // out (chart, terms), and so does a set that is too small without it
+    // (terms-text). A page's own module, a stylesheet and a chunk group's
+    // module stay put.
+    expect(Object.fromEntries(groupModules)).toEqual({
+      "chart-rows-1": "pages-shared-1",
+      "chart-rows-2": "pages-shared-1",
+      table: "pages-shared-2",
       "table-data": "pages-shared-2",
     });
   });

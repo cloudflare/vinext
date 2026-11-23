@@ -355,7 +355,7 @@ import {
   createClientCodeSplittingConfig,
   collectUncopiedStylesheets,
   collectDoublyCopiedModules,
-  collectLargeSharedModules,
+  collectSharedGroupModules,
   collectPagesAppChunkRoots,
   collectPagesClientGraph,
   createPagesClientCodeSplittingConfig,
@@ -2030,7 +2030,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   // Filled in from the client module graph; see vinext:pages-client-chunks.
   const pagesAppChunkRoots = new Set<string>();
-  const pagesLargeSharedModules = new Map<string, string>();
+  const pagesSharedGroupModules = new Map<string, string>();
   // Each client stylesheet's compiled size, and those that keep a chunk.
   const pagesStylesheetSizes = new Map<string, number>();
   const pagesUncopiedModules = new Set<string>();
@@ -2051,7 +2051,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const pagesClientChunks = createPagesClientCodeSplittingConfig(
     clientCodeSplittingConfig,
     pagesAppChunkRoots,
-    pagesLargeSharedModules,
+    pagesSharedGroupModules,
   );
   const pagesClientCodeSplitting = options.disableNextLikeChunking
     ? clientCodeSplittingConfig
@@ -9792,7 +9792,7 @@ export const loadServerActionClient = ${
       if (this.environment?.name !== "client") return;
 
       pagesAppChunkRoots.clear();
-      pagesLargeSharedModules.clear();
+      pagesSharedGroupModules.clear();
       // Sizes stay across watch builds, which skip the transforms of
       // stylesheets that haven't changed.
       pagesUncopiedModules.clear();
@@ -9847,20 +9847,21 @@ export const loadServerActionClient = ${
       };
 
       const graph = collectPagesClientGraph(this.getModuleIds(), getModuleInfo);
-      // Large shared modules only leave their neighbours for the pages to copy.
+      // Shared groups leave the small modules that import others for the pages
+      // to copy.
       if (pagesClientInlinesChunks) {
-        for (const [id, chunkName] of collectLargeSharedModules(graph, { groupOf, sizeOf })) {
-          pagesLargeSharedModules.set(id, chunkName);
+        for (const [id, chunkName] of collectSharedGroupModules(graph, { groupOf, sizeOf })) {
+          pagesSharedGroupModules.set(id, chunkName);
         }
       }
 
       for (const id of collectDoublyCopiedModules(graph, {
-        // Tree shaking may split a large shared group by the pages that use
-        // each module, so each counts as a chunk of its own.
+        // Tree shaking may split a shared group by the pages that use each
+        // module, so each counts as a chunk of its own.
         groupOf: (id) =>
           groupOf(id) ??
-          (pagesLargeSharedModules.has(id)
-            ? `${pagesLargeSharedModules.get(id)}:${id}`
+          (pagesSharedGroupModules.has(id)
+            ? `${pagesSharedGroupModules.get(id)}:${id}`
             : undefined),
         isAlwaysLoaded: (id) => id === appId,
         sizeOf,
@@ -9902,7 +9903,7 @@ export const loadServerActionClient = ${
       // the top-level client output, so it must not group `_app`'s imports.
       if (this.environment?.name === "client") {
         pagesAppChunkRoots.clear();
-        pagesLargeSharedModules.clear();
+        pagesSharedGroupModules.clear();
       }
       // Without `_app`, its entry is empty and nothing loads it.
       for (const [fileName, item] of Object.entries(bundle)) {

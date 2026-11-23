@@ -581,8 +581,8 @@ export function collectPagesAppChunkRoots(
 export function createPagesClientCodeSplittingConfig(
   base: ReturnType<typeof createClientCodeSplittingConfig>,
   appRoots: ReadonlySet<string>,
-  // See collectLargeSharedModules.
-  largeSharedModules: ReadonlyMap<string, string>,
+  // See collectSharedGroupModules.
+  sharedGroupModules: ReadonlyMap<string, string>,
 ) {
   const [first, ...rest] = base.groups;
 
@@ -595,9 +595,9 @@ export function createPagesClientCodeSplittingConfig(
   };
   const pagesSharedGroup = {
     name(moduleId: string) {
-      return largeSharedModules.get(moduleId) ?? null;
+      return sharedGroupModules.get(moduleId) ?? null;
     },
-    // What a large module imports may load with other entries too. Inlining
+    // What a group's module imports may load with other entries too. Inlining
     // sets the options that Rolldown asks for to leave dependencies out.
     includeDependenciesRecursively: false,
     // The pages that load a module are counted before tree shaking, so the
@@ -764,19 +764,21 @@ export function collectPagesClientGraph(
 }
 
 /**
- * Collect the modules of at least {@link PAGES_INLINE_COMMON_CHUNK_MAX_SIZE}
- * that several entries load and no chunk group takes, each with the name of a
- * chunk for the set of entries that loads it. Such a module keeps a file
- * wherever it goes, but the small modules that the same entries load would
- * share its common chunk, and Rolldown would then copy what those import into
- * it: a page that loads two such chunks would download that module twice, or
- * make a request for it where it keeps a file instead
- * ({@link collectDoublyCopiedModules}). With the large modules in chunks of
- * their own, the small ones are copied into the pages along with what they
- * import, as webpack leaves the modules of a group smaller than
- * `splitChunks.minSize` in each page's chunk.
+ * Collect the modules that several entries load and no chunk group takes,
+ * grouped by the set of entries that loads them, for each set whose modules
+ * together reach {@link PAGES_INLINE_COMMON_CHUNK_MAX_SIZE}: each with the name
+ * of a chunk for its set. Webpack's `splitChunks` gives such a set a chunk and
+ * leaves a smaller one in each page's chunk.
+ *
+ * Rolldown copies a small common chunk into the chunks that import it, not the
+ * pages: what a group's module imports from another set would be copied into
+ * the group's chunk, and a page that loads two such chunks would download it
+ * twice, or make a request for it where it keeps a file instead
+ * ({@link collectDoublyCopiedModules}). So a small module that imports one
+ * that no group takes, or a stylesheet, stays out of its set's group, and is
+ * copied into the pages along with what it imports.
  */
-export function collectLargeSharedModules(
+export function collectSharedGroupModules(
   { infos, entries, loadedBy }: PagesClientGraph,
   options: {
     /** The chunk group that takes the module, if one does. */
@@ -786,31 +788,62 @@ export function collectLargeSharedModules(
   },
 ): Map<string, string> {
   const entryIds = new Set(entries);
-  const chunkNames = new Map<string, string>();
-  const largeModules = new Map<string, string>();
-
+  const sets = new Map<string, string>();
   for (const id of infos.keys()) {
     const indexes = loadedBy.get(id) ?? [];
     if (
       indexes.length < 2 ||
       entryIds.has(id) ||
       isStylesheetModule(id) ||
-      options.groupOf(id) !== undefined ||
-      options.sizeOf(id) < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE
+      options.groupOf(id) !== undefined
     ) {
       continue;
     }
-
-    const key = indexes.join(",");
-    let chunkName = chunkNames.get(key);
-    if (chunkName === undefined) {
-      chunkName = `pages-shared-${chunkNames.size + 1}`;
-      chunkNames.set(key, chunkName);
-    }
-    largeModules.set(id, chunkName);
+    sets.set(id, indexes.join(","));
   }
 
-  return largeModules;
+  const members = new Set(sets.keys());
+  const isSmall = (id: string) => options.sizeOf(id) < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE;
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const id of members) {
+      const importsCopiedModule = infos
+        .get(id)!
+        .importedIds.some(
+          (imported) => !members.has(imported) && options.groupOf(imported) === undefined,
+        );
+      if (importsCopiedModule && isSmall(id)) {
+        members.delete(id);
+        changed = true;
+      }
+    }
+
+    const sizes = new Map<string, number>();
+    for (const id of members) {
+      const set = sets.get(id)!;
+      sizes.set(set, (sizes.get(set) ?? 0) + options.sizeOf(id));
+    }
+    for (const id of members) {
+      if (sizes.get(sets.get(id)!)! < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE) {
+        members.delete(id);
+        changed = true;
+      }
+    }
+  }
+
+  const chunkNames = new Map<string, string>();
+  const groupModules = new Map<string, string>();
+  for (const id of members) {
+    const set = sets.get(id)!;
+    let chunkName = chunkNames.get(set);
+    if (chunkName === undefined) {
+      chunkName = `pages-shared-${chunkNames.size + 1}`;
+      chunkNames.set(set, chunkName);
+    }
+    groupModules.set(id, chunkName);
+  }
+
+  return groupModules;
 }
 
 /**
