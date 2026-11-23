@@ -231,7 +231,7 @@ describe("App Router ISR cache key primitives", () => {
   it("keeps fallback shell keys apart from the page keys of the same pathname", () => {
     // A request for `/en/%5Bslug%5D` decodes to the shell's own pathname.
     expect(appIsrFallbackShellKey("/en/[slug]", "html", "build-42")).toBe(
-      "app-fallback-shell:v1:build-42:/en/[slug]:html",
+      "app-fallback-shell:v2:build-42:/en/[slug]:html",
     );
     // No build ID can spell a shell key as a page key.
     expect(appIsrFallbackShellKey("/en/[slug]", "html", "release")).not.toBe(
@@ -247,7 +247,7 @@ describe("App Router ISR cache key primitives", () => {
 
     const longPathname = `/en/${"x".repeat(220)}/[slug]`;
     expect(appIsrFallbackShellKey(longPathname, "html", "build-42")).toMatch(
-      /^app-fallback-shell:v1:build-42:__hash:[a-f0-9]{64}:html$/,
+      /^app-fallback-shell:v2:build-42:__hash:[a-f0-9]{64}:html$/,
     );
     expect(appIsrFallbackShellKey(longPathname, "html", "build-42")).not.toBe(
       appIsrCacheKey(longPathname, "html", "build-42"),
