@@ -1,0 +1,4 @@
+/* Refines the global `.pill` utility that the badge also carries. */
+.badge {
+  margin-bottom: 8px;
+}

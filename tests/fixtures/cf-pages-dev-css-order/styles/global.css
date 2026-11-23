@@ -1,0 +1,6 @@
+/* A global utility class, imported first by `_app`. */
+.pill {
+  display: inline-flex;
+  margin: 0;
+  padding: 0;
+}
