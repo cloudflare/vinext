@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { ViteDevServer } from "vite";
 import { build } from "vite";
@@ -133,6 +134,36 @@ describe("Pages Router next/font is scoped to the requested page (dev)", () => {
 
   afterAll(async () => {
     await server?.close();
+  });
+
+  it("answers each page with _app's and its own fonts in any request order", async () => {
+    expect(await fontsInOrder(baseUrl)).toEqual(EXPECTED);
+  });
+});
+
+// With resolve.preserveSymlinks, module ids keep the root's symlinked path, so
+// the page files the owners are read from must keep it too. (A production
+// build of a symlinked root can't resolve vinext's own dependencies under this
+// repository's pnpm layout, so only dev runs here; the build reads the same ids.)
+describe("Pages Router next/font through a symlinked root with resolve.preserveSymlinks (dev)", () => {
+  const linkedRoot = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-fonts-")),
+    "app",
+  );
+  let server: ViteDevServer | undefined;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    fs.symlinkSync(FIXTURE_DIR, linkedRoot, "junction");
+    ({ server, baseUrl } = await startFixtureServer(linkedRoot, {
+      appDir: null,
+      resolve: { preserveSymlinks: true },
+    }));
+  }, 120000);
+
+  afterAll(async () => {
+    await server?.close();
+    fs.rmSync(path.dirname(linkedRoot), { recursive: true, force: true });
   });
 
   it("answers each page with _app's and its own fonts in any request order", async () => {

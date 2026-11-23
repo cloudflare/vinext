@@ -395,7 +395,9 @@ export async function collectDevPagesFontOwners(
   const roots = files.filter((file): file is string => typeof file === "string");
   await walkDevModuleGraph(
     environment,
-    roots.map(options.canonicalizeModuleId),
+    roots.map((root) =>
+      canonicalizeFontModuleId(environment.config, options.canonicalizeModuleId, root),
+    ),
     (id, file) => {
       if (file) options.watch?.(file);
       if (options.isOwner(id)) owners.add(options.ownerKey(id));
@@ -412,14 +414,16 @@ export function createPagesFontOwnerManifestPlugin(options: {
   /** Keys of the modules the `vinext:font-owner` transform marked. */
   ownerKeys: ReadonlySet<string>;
 }): Plugin {
-  let root = "";
-  const isOwner = (id: string) => options.ownerKeys.has(fontOwnerKey(root, id));
-  const ownerKey = (id: string) => fontOwnerKey(root, id);
+  let config: ResolvedConfig;
+  const isOwner = (id: string) => options.ownerKeys.has(fontOwnerKey(config.root, id));
+  const ownerKey = (id: string) => fontOwnerKey(config.root, id);
+  const canonicalizeModuleId = (id: string) =>
+    canonicalizeFontModuleId(config, options.canonicalizeModuleId, id);
 
   return {
     name: "vinext:pages-font-owner-manifest",
-    configResolved(config) {
-      root = config.root;
+    configResolved(resolvedConfig) {
+      config = resolvedConfig;
     },
     resolveId(source) {
       if (source === PAGES_FONT_OWNER_MANIFEST_ID) {
@@ -461,7 +465,7 @@ export function createPagesFontOwnerManifestPlugin(options: {
       const { appFile, pages } = await options.getRoutes();
       let manifest: Pick<FontOwnerManifest, "routes"> = { routes: {} };
       if (options.ownerKeys.size > 0) {
-        const app = appFile ? [options.canonicalizeModuleId(appFile)] : [];
+        const app = appFile ? [canonicalizeModuleId(appFile)] : [];
         manifest = buildFontOwnerManifest({
           rsc: snapshotModuleGraph(this.getModuleIds(), (id) => this.getModuleInfo(id)),
           ssr: new Map(),
@@ -472,7 +476,7 @@ export function createPagesFontOwnerManifestPlugin(options: {
             pages.map(({ pattern, filePath }) => [
               pattern,
               {
-                files: [...app, ...(filePath ? [options.canonicalizeModuleId(filePath)] : [])],
+                files: [...app, ...(filePath ? [canonicalizeModuleId(filePath)] : [])],
                 interceptFiles: new Map(),
               },
             ]),
