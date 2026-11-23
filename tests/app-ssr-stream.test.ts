@@ -831,26 +831,13 @@ describe("createTickBufferedTransform pre-head splice", () => {
     // scripts as it renders, before its batch reaches the transform.
     const registered: string[] = [];
     const encoder = new TextEncoder();
-    const source = new ReadableStream<Uint8Array>({
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const reader = new ReadableStream<Uint8Array>({
       start(controller) {
-        const holes = ['<div hidden id="S:0">a</div>', '<div hidden id="S:1">b</div>'];
-        let index = 0;
-        const enqueueNext = (): void => {
-          const hole = holes[index];
-          if (hole === undefined) {
-            controller.close();
-            return;
-          }
-          registered.push(`<script>hole${index}()</script>`);
-          index++;
-          controller.enqueue(encoder.encode(hole));
-          setTimeout(enqueueNext, 5);
-        };
-        enqueueNext();
+        source = controller;
       },
-    });
-    const out = await new Response(
-      source.pipeThrough(
+    })
+      .pipeThrough(
         createTickBufferedTransform(
           createNoopRscEmbedTransform(),
           "",
@@ -861,8 +848,22 @@ describe("createTickBufferedTransform pre-head splice", () => {
           undefined,
           "resume",
         ),
-      ),
-    ).text();
+      )
+      .getReader();
+    let out = "";
+    // Each hole's batch is read out before the next hole renders.
+    for (const [index, hole] of [
+      '<div hidden id="S:0">a</div>',
+      '<div hidden id="S:1">b</div>',
+    ].entries()) {
+      registered.push(`<script>hole${index}()</script>`);
+      source.enqueue(encoder.encode(hole));
+      while (!out.includes(hole)) out += text((await reader.read()).value!);
+    }
+    source.close();
+    for (let read = await reader.read(); !read.done; read = await reader.read()) {
+      out += text(read.value);
+    }
 
     expect(out).toBe(
       '<script>hole0()</script><div hidden id="S:0">a</div>' +
