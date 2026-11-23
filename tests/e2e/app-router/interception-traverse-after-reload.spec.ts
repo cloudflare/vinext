@@ -46,11 +46,24 @@ async function expectModalOverFeed(page: Page): Promise<void> {
   );
 }
 
-// Next.js 16.2.7 returns softly to an intercepted history entry it no longer
-// holds a tree for: it fetches the target with the entry's Next-Url and the
-// source page, and shows the modal over the source again.
+async function expectPhotoPageLoaded(page: Page): Promise<void> {
+  await expect(page).toHaveURL(`${ROOT}/photo/1`);
+  await expect(page.locator("#interception-traverse-reload-photo-page")).toContainText(
+    "Photo page 1",
+  );
+  await expect(page.locator("#interception-traverse-reload-photo-modal")).toHaveCount(0);
+  await expect(page.locator("#interception-traverse-reload-feed")).toHaveCount(0);
+  expect(
+    await page.evaluate(() => (window as MarkedWindow).__interceptionTraverseMarker),
+  ).toBeUndefined();
+}
+
+// Next.js 16.2.7 returns softly to an intercepted history entry only while it
+// still holds the tree it committed there. Once a reload or router.refresh()
+// has dropped that tree, the target's response leaves out the source page, and
+// Next.js loads the target's document instead.
 test.describe("going back into an intercepted entry", () => {
-  test("shows the modal over its source after a reload", async ({ page }) => {
+  test("loads the target's page after a reload", async ({ page }) => {
     await openModalThenPlain(page);
 
     await page.reload();
@@ -60,10 +73,10 @@ test.describe("going back into an intercepted entry", () => {
 
     await page.goBack();
 
-    await expectModalOverFeed(page);
+    await expectPhotoPageLoaded(page);
   });
 
-  test("shows the modal over its source after router.refresh", async ({ page }) => {
+  test("loads the target's page after router.refresh", async ({ page }) => {
     await openModalThenPlain(page);
     await markWindow(page);
 
@@ -81,7 +94,7 @@ test.describe("going back into an intercepted entry", () => {
 
     await page.goBack();
 
-    await expectModalOverFeed(page);
+    await expectPhotoPageLoaded(page);
   });
 
   // Each push records a new history entry's tree, and the client keeps only
@@ -121,7 +134,8 @@ test.describe("going back into an intercepted entry", () => {
 });
 
 // The feed's @modal belongs to the feed layout, which /gallery doesn't render.
-// Next.js still returns softly to the modal over the feed from there.
+// Next.js still returns softly to the modal over the feed from there, until a
+// reload drops the tree it committed.
 test.describe("going back into an intercepted entry from outside its slot's layout", () => {
   async function openModalThenGallery(page: Page): Promise<void> {
     await page.goto(`${BASE}/feed`);
@@ -158,7 +172,7 @@ test.describe("going back into an intercepted entry from outside its slot's layo
     await expectPhotoModalOverFeed(page);
   });
 
-  test("shows the modal over the feed after a reload", async ({ page }) => {
+  test("loads the photo's page after a reload", async ({ page }) => {
     await openModalThenGallery(page);
 
     await page.reload();
@@ -168,6 +182,12 @@ test.describe("going back into an intercepted entry from outside its slot's layo
 
     await page.goBack();
 
-    await expectPhotoModalOverFeed(page);
+    await expect(page).toHaveURL(`${BASE}/photos/42`);
+    await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="photo-modal"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="feed-page"]')).toHaveCount(0);
+    expect(
+      await page.evaluate(() => (window as MarkedWindow).__interceptionTraverseMarker),
+    ).toBeUndefined();
   });
 });

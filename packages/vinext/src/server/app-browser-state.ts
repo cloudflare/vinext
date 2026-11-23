@@ -138,8 +138,8 @@ export type PendingNavigationCommit = {
   routeId: string;
   restoredHistorySnapshot?: boolean;
   skippedLayoutIds: readonly string[];
-  // The source page a traversal rendered from its own URL beneath its
-  // intercepted payload, which then holds every element it left out.
+  // The source beneath the intercepted tree a traversal restores, which this
+  // client committed over that source.
   suppliedInterceptionSource?: InterceptionSourceIdentity;
 };
 

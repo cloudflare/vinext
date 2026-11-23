@@ -164,8 +164,8 @@ export type FlightResult = {
   cacheEntryReuseProof?: CacheEntryReuseProof;
   href: string;
   restoredHistorySnapshot?: boolean;
-  // The source a traversal rendered from its own URL beneath its intercepted
-  // payload, when the visible state shows another route.
+  // The source beneath the intercepted tree a traversal restores, which this
+  // client committed over that source.
   suppliedInterceptionSource?: InterceptionSourceIdentity;
   targetSnapshot: RouteSnapshot;
 };
@@ -1499,8 +1499,8 @@ function validateInterceptedPreservation(options: {
     };
   }
 
-  // A traversal whose payload carries a render of its source from that page's
-  // own URL shows the source it rendered, not the visible state's.
+  // A traversal that restores a tree this client committed for an intercepted
+  // route shows the source that commit put beneath it, not the visible state's.
   const sourceIdentity =
     options.lane === "traverse" && options.suppliedSource !== null
       ? options.suppliedSource
@@ -1539,8 +1539,8 @@ function validateInterceptedPreservation(options: {
   }
 
   // The slot renders in a layout of the source tree the commit shows: the one
-  // the visible state keeps, or, for a traversal that restores its own tree or
-  // renders its source from that page's URL, the source's own layouts.
+  // the visible state keeps, or, for a traversal that restores its own tree,
+  // the source's own layouts.
   const showsOwnSourceTree =
     options.lane === "traverse" &&
     (options.restoredHistorySnapshot || options.suppliedSource !== null);
@@ -1571,9 +1571,9 @@ function validateInterceptedPreservation(options: {
     };
   }
 
-  // A traversal that renders its source from that page's URL restores the
-  // entry's own tree, so it keeps no slot the visible state shows, as a
-  // traversal without an intercept keeps none.
+  // A traversal that restores a committed tree for an intercepted route keeps
+  // no slot the visible state shows, as a traversal without an intercept keeps
+  // none.
   const preserveDefaultOrUnmatchedSlotIds =
     options.lane === "traverse" && options.suppliedSource !== null
       ? []

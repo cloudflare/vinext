@@ -14,7 +14,6 @@ import {
 import type { AppRouterState } from "./app-browser-state.js";
 import { resolveActiveRoutePaths } from "./app-history-state.js";
 import { isNestedBfcacheSlotSegmentIdFor } from "./bfcache-identity.js";
-import type { InterceptionSourceIdentity } from "./navigation-planner.js";
 import type {
   BrowserRouteManifest,
   BrowserRouteManifestInterception,
@@ -238,62 +237,38 @@ export function mergeRefreshedParallelSlot(
   return merged;
 }
 
-// The source an intercepted payload was rendered for, when `sourceElements` is
-// that page's render from its own URL, or null when it isn't.
-function resolveSuppliedInterceptionSource(
+// Whether `sourceElements` is the render, from its own URL, of the source page
+// the server proved the intercepted payload `currentElements` for.
+function isInterceptionSourceRender(
   currentElements: AppElements,
   sourceElements: AppElements,
-): InterceptionSourceIdentity | null {
+): boolean {
   const interception = AppElementsWire.readMetadata(currentElements).interception;
   const sourceMetadata = AppElementsWire.readMetadata(sourceElements);
   // The source render names its matched URL in its own route id, which renders
   // without an interception context.
   const sourceRoute = AppElementsWire.parseElementKey(sourceMetadata.routeId);
-  if (
-    interception === null ||
-    sourceMetadata.interception !== null ||
-    sourceRoute?.kind !== "route" ||
-    sourceRoute.interceptionContext !== null ||
-    sourceMetadata.routeId !== interception.sourceRouteId ||
-    sourceRoute.path !== interception.sourceMatchedUrl
-  ) {
-    return null;
-  }
-  return { matchedUrl: sourceRoute.path, routeId: sourceMetadata.routeId };
+  return (
+    interception !== null &&
+    sourceMetadata.interception === null &&
+    sourceRoute?.kind === "route" &&
+    sourceRoute.interceptionContext === null &&
+    sourceMetadata.routeId === interception.sourceRouteId &&
+    sourceRoute.path === interception.sourceMatchedUrl
+  );
 }
 
-// A traversal back to an intercepted entry renders the entry's source page from
-// that page's own URL. The render goes beneath the intercept the server proved
-// for that source only: a payload the server rendered without one, or for
-// another source, commits as it was rendered.
+// A refresh, traversal or server-action re-render of an intercepted state
+// renders its source page from that page's own URL. The render goes beneath the
+// intercept the server proved for that source only: a payload the server
+// rendered without one, or for another source, commits as it was rendered.
 export function mergeInterceptionSourceRefresh(
   currentElements: AppElements,
   sourceElements: AppElements,
-): { elements: AppElements; source: InterceptionSourceIdentity | null } {
-  const source = resolveSuppliedInterceptionSource(currentElements, sourceElements);
-  return {
-    elements:
-      source === null
-        ? currentElements
-        : mergeRefreshedParallelSlot(currentElements, sourceElements),
-    source,
-  };
-}
-
-// A traversal whose payload reached another state than its source's fetches
-// that page from its own URL for the elements the payload left out. As in
-// mergeInterceptionSourceRefresh, they go beneath the intercept the server
-// proved for that source only.
-export function supplyInterceptionSourceElements(
-  currentElements: AppElements,
-  sourceElements: AppElements,
-): { elements: AppElements; source: InterceptionSourceIdentity | null } {
-  const source = resolveSuppliedInterceptionSource(currentElements, sourceElements);
-  return {
-    elements:
-      source === null ? currentElements : supplyRetainedElements(currentElements, sourceElements),
-    source,
-  };
+): AppElements {
+  return isInterceptionSourceRender(currentElements, sourceElements)
+    ? mergeRefreshedParallelSlot(currentElements, sourceElements)
+    : currentElements;
 }
 
 /**
@@ -304,7 +279,6 @@ export function supplyInterceptionSourceElements(
  * path and search it was fetched from.
  */
 export function createInterceptionSourceRefreshMerge(options: {
-  onSource?: (source: InterceptionSourceIdentity | null) => void;
   previousNextUrl: string | null;
   refreshUrl: URL;
 }): {
@@ -317,12 +291,10 @@ export function createInterceptionSourceRefreshMerge(options: {
     sourceUrl === null ? null : `${sourceUrl.pathname}${sourceUrl.search}`;
   const sourceRenders = new WeakSet<AppElements>();
   return {
-    merge: (current, refreshed) => {
-      if (!sourceRenders.has(refreshed)) return mergeRefreshedParallelSlot(current, refreshed);
-      const merged = mergeInterceptionSourceRefresh(current, refreshed);
-      options.onSource?.(merged.source);
-      return merged.elements;
-    },
+    merge: (current, refreshed) =>
+      sourceRenders.has(refreshed)
+        ? mergeInterceptionSourceRefresh(current, refreshed)
+        : mergeRefreshedParallelSlot(current, refreshed),
     track: (pathAndSearch, elements) => {
       if (pathAndSearch === sourcePathAndSearch) sourceRenders.add(elements);
       return elements;

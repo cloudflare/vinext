@@ -11,7 +11,6 @@ import {
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
   SupplementalRefreshError,
-  supplyInterceptionSourceElements,
   supplyRetainedElements,
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
 import {
@@ -1475,11 +1474,10 @@ describe("parallel route supplemental refreshes", () => {
     it("goes beneath the intercept the server rendered for that source", () => {
       const result = mergeInterceptionSourceRefresh(createIntercepted(), source);
 
-      expect(result.source).toEqual({ matchedUrl: "/members/7", routeId: "route:/members/7" });
-      expect(result.elements["page:/members/7"]).toBe("member page");
-      expect(result.elements["slot:children:/"]).toBe("members children");
-      expect(result.elements["slot:modal:/members"]).toBe("photo modal");
-      expect(AppElementsWire.readMetadata(result.elements).interception).toEqual(interception);
+      expect(result["page:/members/7"]).toBe("member page");
+      expect(result["slot:children:/"]).toBe("members children");
+      expect(result["slot:modal:/members"]).toBe("photo modal");
+      expect(AppElementsWire.readMetadata(result).interception).toEqual(interception);
     });
 
     // The server renders the target whole when it doesn't intercept it from
@@ -1505,10 +1503,7 @@ describe("parallel route supplemental refreshes", () => {
         "slot:children:/": "photo children",
       };
 
-      const result = mergeInterceptionSourceRefresh(primary, source);
-
-      expect(result.source).toBeNull();
-      expect(result.elements).toBe(primary);
+      expect(mergeInterceptionSourceRefresh(primary, source)).toBe(primary);
     });
 
     it("leaves an intercept proved for another source as it was", () => {
@@ -1517,33 +1512,7 @@ describe("parallel route supplemental refreshes", () => {
         sourceRouteId: "route:/members/8",
       });
 
-      const result = mergeInterceptionSourceRefresh(primary, source);
-
-      expect(result.source).toBeNull();
-      expect(result.elements).toBe(primary);
-    });
-
-    // A traversal whose payload reached another state fetches the source page
-    // for only the elements the payload left out.
-    it("supplies a traversal's left-out elements from the source it was rendered for", () => {
-      const result = supplyInterceptionSourceElements(createIntercepted(), source);
-
-      expect(result.source).toEqual({ matchedUrl: "/members/7", routeId: "route:/members/7" });
-      expect(result.elements["page:/members/7"]).toBe("member page");
-      expect(result.elements["slot:children:/"]).toBe("members children");
-      expect(result.elements["route:/members/7"]).toBe("intercepted route");
-    });
-
-    it("supplies nothing to an intercept proved for another source", () => {
-      const primary = createIntercepted({
-        sourceMatchedUrl: "/members/8",
-        sourceRouteId: "route:/members/8",
-      });
-
-      const result = supplyInterceptionSourceElements(primary, source);
-
-      expect(result.source).toBeNull();
-      expect(result.elements).toBe(primary);
+      expect(mergeInterceptionSourceRefresh(primary, source)).toBe(primary);
     });
 
     // A refresh, a server action's re-render and a traversal each fan out to
@@ -1571,9 +1540,7 @@ describe("parallel route supplemental refreshes", () => {
       };
 
       it("puts the source page beneath the intercept the server rendered for it", () => {
-        const onSource = vi.fn();
         const fanOut = createInterceptionSourceRefreshMerge({
-          onSource,
           previousNextUrl: "/members/7",
           refreshUrl,
         });
@@ -1582,10 +1549,6 @@ describe("parallel route supplemental refreshes", () => {
 
         expect(result["page:/members/7"]).toBe("member page");
         expect(result["slot:modal:/members"]).toBe("photo modal");
-        expect(onSource).toHaveBeenCalledWith({
-          matchedUrl: "/members/7",
-          routeId: "route:/members/7",
-        });
       });
 
       it.each([
@@ -1599,16 +1562,13 @@ describe("parallel route supplemental refreshes", () => {
             }),
         ],
       ])("leaves the payload as it was when %s", (_case, createPrimary) => {
-        const onSource = vi.fn();
         const fanOut = createInterceptionSourceRefreshMerge({
-          onSource,
           previousNextUrl: "/members/7",
           refreshUrl,
         });
         const primary = createPrimary();
 
         expect(fanOut.merge(primary, fanOut.track("/members/7", source))).toBe(primary);
-        expect(onSource).toHaveBeenCalledWith(null);
       });
 
       it("merges the other branches it keeps as before", () => {
