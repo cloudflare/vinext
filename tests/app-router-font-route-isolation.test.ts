@@ -39,6 +39,10 @@ async function fontsOf(baseUrl: string, pathname: string, status = 200) {
 }
 
 async function fontsInOrder(baseUrl: string) {
+  // A client component's font registers once the SSR graph first runs the
+  // component, after that render has read its fonts, so warm `/d` first. Its
+  // font must still stay out of the other pages.
+  await fontsOf(baseUrl, "/d");
   const observed = [];
   for (const pathname of ["/", "/b", "/c", "/d", "/"]) {
     observed.push(await fontsOf(baseUrl, pathname));
