@@ -1525,9 +1525,13 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     : path.join(resolvedOutDir, "server");
 
   // Detect build type
+  // A host-owned Worker entry (Cloudflare) is index.mjs when the project's
+  // package.json isn't `"type": "module"`.
   const rscEntryPath = explicitRscEntryPath
     ? path.resolve(explicitRscEntryPath)
-    : path.join(serverDir, "index.js");
+    : (["index.js", "index.mjs"]
+        .map((name) => path.join(serverDir, name))
+        .find((entryPath) => fs.existsSync(entryPath)) ?? path.join(serverDir, "index.js"));
   const serverEntryPath = explicitServerEntryPath
     ? path.resolve(explicitServerEntryPath)
     : path.join(serverDir, "entry.js");

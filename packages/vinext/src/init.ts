@@ -433,8 +433,8 @@ export function getInitDependencyGroups(
     }
     if (!cloudflare?.legacyWrangler) {
       devDependencies[0] = "vite@8.3.0";
-      // V2 SHA prereleases are not chronological semver versions; follow the beta tag.
-      devDependencies.push("@cloudflare/vite-plugin@beta", "cf@latest");
+      // The v2 release candidates are chronological semver, so a range follows them and 2.x stable.
+      devDependencies.push("@cloudflare/vite-plugin@^2.0.0-rc.0", "cf@latest");
     } else {
       devDependencies.push("@cloudflare/vite-plugin@1", "wrangler");
     }

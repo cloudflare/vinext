@@ -1381,7 +1381,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 // The fallback boundaries are resolved for the matched route.
                 if (revalidationTarget.route !== route) return null;
                 const document = await renderPageSpecialError(
-                  options,
+                  { ...options, params: revalidationTarget.params },
                   specialError,
                   false,
                   revalidationTarget.interceptOpts,
@@ -1452,6 +1452,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isDynamicRoute: route.isDynamic,
         isProduction: options.isProduction,
         params: options.staticParamsValidationParams ?? options.params,
+        pathname: options.cleanPathname,
+        routePattern: route.pattern,
       }),
     );
     if (dynamicParamsResponse) {
@@ -1675,6 +1677,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return interceptResult.response;
   }
 
+  // A route that renders as an interception's source renders under the
+  // source's params, and so do the fallbacks of its special errors.
+  const renderParams = interceptResult.params ?? options.params;
+  const specialErrorOptions =
+    renderParams === options.params ? options : { ...options, params: renderParams };
   const buildCurrentPageElement = () =>
     buildAppPageElement({
       buildPageElement() {
@@ -1687,7 +1694,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         }
         return options.buildPageElement(
           route,
-          options.params,
+          renderParams,
           interceptResult.interceptOpts,
           pageSearchParams,
           {
@@ -1709,7 +1716,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       },
       renderSpecialError(specialError) {
         return renderPageSpecialError(
-          options,
+          specialErrorOptions,
           specialError,
           serveStreamingMetadata,
           interceptResult.interceptOpts,
@@ -1746,7 +1753,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   const navigationParams = resolveAppPageNavigationParams(
     route,
-    options.params,
+    interceptResult.navigationParams ?? options.params,
     options.cleanPathname,
     interceptResult.interceptOpts,
   );
@@ -1854,7 +1861,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     },
     renderPageSpecialError(specialError, renderOptions) {
       return renderPageSpecialError(
-        options,
+        specialErrorOptions,
         specialError,
         serveStreamingMetadata,
         interceptResult.interceptOpts,

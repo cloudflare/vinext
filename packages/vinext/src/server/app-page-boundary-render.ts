@@ -585,6 +585,8 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
           middlewareHeaders: options.middlewareContext.headers,
           // A boundary without a route shows the root layouts, or global-not-found.
           preloadRoutePattern: options.route ? options.route.pattern : null,
+          // The boundary replaces the route's page and the layouts below it.
+          isBoundaryRender: true,
           navigationContext: options.getNavigationContext() ?? {
             pathname,
             searchParams: requestUrl.searchParams,
