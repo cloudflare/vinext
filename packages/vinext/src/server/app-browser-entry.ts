@@ -19,6 +19,7 @@ import {
 import { flushSync } from "react-dom";
 import { createRoot, hydrateRoot } from "react-dom/client";
 import "../client/instrumentation-client.js";
+import { AppRouterAnnouncer } from "../client/app-router-announcer.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import {
   __basePath,
@@ -1549,6 +1550,9 @@ function BrowserRoot({
         routeId: treeState.routeId,
       }),
     ),
+    // Next.js mounts its announcer next to the route tree, inside the
+    // RedirectBoundary, keyed on the committed router tree.
+    createElement(AppRouterAnnouncer, { tree: treeState.elements }),
   );
   const bfcacheSegmentIdentities = useMemo(
     () => createBfcacheSegmentIdentityMap({ elements: treeState.elements }),
