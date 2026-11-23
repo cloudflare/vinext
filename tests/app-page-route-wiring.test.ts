@@ -11,11 +11,16 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 import { notFound, useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_HEAD_ID_PREFIX,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
   APP_STATIC_SIBLINGS_KEY,
   AppElementsWire,
@@ -204,7 +209,10 @@ function collectBfcacheSpine(node: unknown): string[] {
     const typeName = getElementTypeName(element.type);
     if (typeName === "BfcacheChildrenBoundary") {
       spine.push(`list ${String(element.props.stateKey ?? element.props.id)}`);
-    } else if (typeName === "Slot") {
+    } else if (
+      typeName === "Slot" &&
+      !String(element.props.id).startsWith(APP_ROUTE_HEAD_ID_PREFIX)
+    ) {
       spine.push(String(element.props.id));
     }
     return false;
@@ -724,6 +732,22 @@ describe("app page route wiring helpers", () => {
     expect(head).toContain("<title>generated page</title>");
     expect(head).toContain('rel="canonical" href="https://example.com/generated"');
     expect(body).not.toContain("<title>generated page</title>");
+  });
+
+  it("renders the route head as its own entry beside the layout tree", async () => {
+    const elements = await buildGeneratedMetadataRouteElements("Minibot", "Minibot");
+    const headId = `${APP_ROUTE_HEAD_ID_PREFIX}route:/generated`;
+    expect(Object.hasOwn(elements, headId)).toBe(true);
+
+    const html = await renderRouteDocument(elements, "route:/generated");
+    expect(readDocumentSection(html, "head")).toContain("<title>generated page</title>");
+
+    // The route entry only names the head, so a client can keep the head it
+    // holds while the layout tree beside it changes.
+    const { [headId]: _head, ...withoutHead } = elements;
+    const htmlWithoutHead = await renderRouteDocument(withoutHead, "route:/generated");
+    expect(htmlWithoutHead).not.toContain("<title>generated page</title>");
+    expect(htmlWithoutHead).toContain("Page");
   });
 
   it("streams generated metadata for bots outside the configured html-limited rule", async () => {
@@ -2565,6 +2589,49 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain("Slot loading");
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
     expect(Object.hasOwn(elements, "__vinext_streaming_metadata_body:route:/dashboard")).toBe(true);
+  });
+
+  // In development, React's Node Flight server keeps a component's props for as
+  // long as a promise the component created is alive. A head resolver in the
+  // props would keep the head's own promises, and with them the render, alive.
+  it("names the head by an id within a request, not by its resolver", async () => {
+    const resolveHead = (): AppPageRouteHead => ({
+      metadata: Promise.resolve({ title: "Dashboard" }),
+      outlet: Promise.resolve(null),
+      viewport: Promise.resolve({}),
+    });
+    await runWithRequestContext(createRequestContext(), async () => {
+      const elements = buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        metadataPlacement: "body",
+        resolveHead,
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["dashboard"],
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard",
+        rootNotFoundModule: null,
+      });
+      const bodyId = "__vinext_streaming_metadata_body:route:/dashboard";
+      const outletId = "__vinext_streaming_metadata_outlet:route:/dashboard";
+      for (const id of [bodyId, outletId]) {
+        const element = elements[id] as ReactElement<{ head: unknown }>;
+        expect(typeof element.props.head).toBe("string");
+      }
+      expect(await renderRouteEntry(elements, bodyId)).toContain("<title>Dashboard</title>");
+    });
   });
 
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {

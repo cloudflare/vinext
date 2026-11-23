@@ -12,6 +12,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { resolveBuildOutputDefaultWorkerConfigPath } from "../../../packages/cloudflare/src/build-output.js";
 import { waitForAppRouterHydration } from "../helpers";
 
 const example = path.resolve(process.cwd(), "examples/static-assets-cache");
@@ -122,10 +123,7 @@ test("init sets up cf alongside an unrelated Wrangler config", async ({ page }) 
 
     await viteBuild(root);
     const workerConfig = JSON.parse(
-      await fs.readFile(
-        path.join(root, ".cloudflare/output/v0/workers/default/worker.config.json"),
-        "utf8",
-      ),
+      await fs.readFile(resolveBuildOutputDefaultWorkerConfigPath(root), "utf8"),
     ) as { name: string; env: Record<string, unknown> };
     expect(workerConfig.name).toBe("static-assets-cache");
     expect(workerConfig.env).toHaveProperty("ASSETS");

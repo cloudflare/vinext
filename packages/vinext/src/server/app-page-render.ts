@@ -49,7 +49,7 @@ import {
   createAppPageFontData,
   createAppPageRscErrorTracker,
   createAppPageSsrErrorHandler,
-  deferUntilStreamConsumed,
+  deferAppPageRequestContextCleanup,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
@@ -1689,12 +1689,15 @@ async function renderAppPageLifecycleImpl(
   // Clearing the context synchronously here would race those executions, causing
   // headers()/cookies() to see a null context on warm (module-cached) requests.
   // See: https://github.com/cloudflare/vinext/issues/660
-  const safeHtmlStream = deferUntilStreamConsumed(htmlStream, () => {
-    dynamicUsedBeforeContextCleanup =
-      dynamicUsedBeforeContextCleanup || consumeRenderDynamicUsage();
-    dynamicUsedDuringHtmlRender = dynamicUsedBeforeContextCleanup;
-    options.clearRequestContext();
-  });
+  const safeHtmlStream = deferAppPageRequestContextCleanup(
+    htmlStream,
+    () => options.clearRequestContext(),
+    () => {
+      dynamicUsedBeforeContextCleanup =
+        dynamicUsedBeforeContextCleanup || consumeRenderDynamicUsage();
+      dynamicUsedDuringHtmlRender = dynamicUsedBeforeContextCleanup;
+    },
+  );
 
   const { htmlResponsePolicy, shouldWriteHtmlCache } =
     resolveHtmlCacheWrite(dynamicUsedDuringRender);

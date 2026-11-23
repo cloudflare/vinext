@@ -1,0 +1,5 @@
+{
+  "name": "app-cjs-output-scope-fixture",
+  "private": true,
+  "type": "module"
+}
