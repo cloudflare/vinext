@@ -8835,9 +8835,9 @@ describe("app page dispatch", () => {
       }),
     );
     await response.text();
-    await runWithRequestContext(createRequestContext(), () => jobs.get("shell:/en/blog/hello")!());
+    await runWithRequestContext(createRequestContext(), () => jobs.get("html:/en/blog/hello")!());
 
-    const write = isrSetFallbackShell.mock.calls.find(([key]) => key === "shell:/en/blog/hello");
+    const write = isrSetFallbackShell.mock.calls.find(([key]) => key === "html:/en/blog/hello");
     expect(write?.[1].html).toBe(markAppPprDynamicFallbackShellHtml(""));
     expect(write?.[2].cacheControl).toEqual({ revalidate: false });
   });
