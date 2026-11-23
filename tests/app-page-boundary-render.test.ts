@@ -1613,6 +1613,52 @@ describe("app page boundary render helpers", () => {
       });
     }
 
+    // Next.js's interception rewrite captures the params above the marker
+    // from the source URL: `/en/feed` intercepting `/fr/photo/1` heads by
+    // `/en/feed/...`.
+    for (const [kind, interceptSlotKey, pageSegments] of [
+      ["slot", "modal", ["[lang]", "feed", "@modal", "(..)photo", "[id]"]],
+      ["sibling", SIBLING_PAGE_INTERCEPT_SLOT_KEY, ["[lang]", "feed", "(..)photo", "[id]"]],
+    ] as const) {
+      it(`fills the ${kind} intercept's params above the marker from the source`, async () => {
+        const response = await renderAppPageHttpAccessFallback<TestModule>({
+          ...createCommonOptions(),
+          intercept: {
+            interceptLayouts: [],
+            interceptPage,
+            interceptParams: { id: "1", lang: "fr" },
+            interceptSlotKey,
+            interceptSourcePageSegments: [...pageSegments],
+          },
+          matchedParams: { lang: "en" },
+          metadataRoutes: [
+            metadataFile("opengraph-image", [...pageSegments], {
+              servedUrl: `/${pageSegments.join("/")}/opengraph-image-abc`,
+            }),
+          ],
+          request: new Request("https://example.com/fr/photo/1"),
+          requestUrl: "https://example.com/fr/photo/1",
+          route: {
+            layoutTreePositions: [0],
+            layouts: [{ default: RootLayout }],
+            notFound: notFoundModuleWithMetadata,
+            notFoundTreePosition: 0,
+            page: null,
+            pattern: "/[lang]/feed",
+            routeSegments: ["[lang]", "feed"],
+            slots: { modal: { layoutIndex: 0, name: "modal", ownerTreePosition: 2, page: null } },
+          },
+          routeHead: UNPREPARED_ROUTE_HEAD,
+          statusCode: 404,
+        });
+        const html = await response?.text();
+
+        expect(html).toContain(
+          `/en/feed/${pageSegments.slice(2, -1).join("/")}/1/opengraph-image-abc`,
+        );
+      });
+    }
+
     // A source page before the slot keeps the source route's head, which the
     // client keeps with its own files.
     it("keeps the source page's files for a slot intercept that keeps the source head", async () => {

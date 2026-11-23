@@ -773,7 +773,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
             : null,
         isSiblingIntercept,
         metadataRoutes: options.metadataRoutes,
-        params: effectiveParams,
+        params: options.matchedParams,
         route: options.route ?? {},
       });
       const parallelBranches = resolveActiveParallelRouteHeadInputs({

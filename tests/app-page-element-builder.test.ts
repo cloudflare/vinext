@@ -5288,6 +5288,81 @@ describe("buildPageElements", () => {
           "/members/(.)photo/1/opengraph-image-abc",
         ]);
       });
+
+      // Next.js's interception rewrite captures the params above the marker
+      // from the source URL, so `/en/feed` intercepting `/fr/photos/1` heads
+      // by `/en/feed/(..)photos/1/...`.
+      it.each([
+        {
+          kind: "slot",
+          opts: {
+            interceptSlotId: "slot:modal:/[lang]/feed",
+            interceptSlotKey: "modal",
+            interceptSourcePageSegments: ["[lang]", "feed", "@modal", "(..)photos", "[id]"],
+            rendersInterceptionSource: true,
+          },
+          file: ["[lang]", "feed", "@modal", "(..)photos", "[id]"],
+          expected: "/en/feed/@modal/(..)photos/1/opengraph-image-abc",
+        },
+        {
+          kind: "sibling",
+          opts: {
+            interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+            interceptSourcePageSegments: ["[lang]", "feed", "(..)photos", "[id]"],
+          },
+          file: ["[lang]", "feed", "(..)photos", "[id]"],
+          expected: "/en/feed/(..)photos/1/opengraph-image-abc",
+        },
+      ])(
+        "fills a $kind intercept's params above the marker from the source",
+        async ({ kind, opts, file, expected }) => {
+          const route = createSyntheticRoute({
+            layouts: [{ default: ({ children }) => children } as AppPageModule],
+            layoutTreePositions: [2],
+            // A source page of its own would keep the source's head.
+            page: kind === "slot" ? null : createSyntheticPageModule(() => null),
+            params: ["lang"],
+            pattern: "/:lang/feed",
+            routeSegments: ["[lang]", "feed"],
+            slots: {
+              modal: {
+                name: "modal",
+                default: createSyntheticPageModule(() => null),
+                layoutIndex: 0,
+                ownerTreePosition: 2,
+                routeSegments: [],
+              },
+            },
+          });
+          const elements = await buildPageElements({
+            ...createBaseOptions({
+              route,
+              params: { lang: "en" },
+              routePath: "/fr/photos/1",
+              opts: {
+                interceptionContext: "/en/feed",
+                interceptPage: {
+                  default: () => null,
+                  generateMetadata: () => ({ title: "Photo 1" }),
+                } as AppPageModule,
+                interceptParams: { id: "1", lang: "fr" },
+                interceptSourceMatchedUrl: "/en/feed",
+                ...opts,
+              },
+            }),
+            applyFileBasedMetadata,
+            metadataRoutes: [
+              metadataFile("opengraph-image", file, {
+                servedUrl: `/${file.join("/")}/opengraph-image-abc`,
+              }),
+            ],
+          } as Parameters<typeof buildPageElements>[0]);
+          const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+            .metadata;
+
+          expect(imageUrls(metadata, "openGraph")).toEqual([expected]);
+        },
+      );
     });
 
     // Only the kept head's own render knew where it placed its streamed tags,

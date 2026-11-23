@@ -701,7 +701,7 @@ export async function buildPageElements<
     // whole, the intercept's tree heads the route only when no page comes first.
     interceptSlotKey: retainedSourceHead || !keepsSourceHead ? interceptSlotKey : null,
     metadataRoutes,
-    params: effectiveParams,
+    params,
     route,
   });
   const sourceHeadOptions = {

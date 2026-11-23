@@ -573,8 +573,9 @@ export function slotInterceptKeepsSourceHead(options: {
  * intercept's is the segments down to the slot's owner and the slot's folders
  * down to the intercepting page, route groups and the marker's folder
  * included. The deepest file of each kind wins along that path, and a dynamic
- * one is filled with the intercepting route's params. Other renders read
- * every file.
+ * one is filled with the intercepting route's params, whose segments above the
+ * marker take the source's values, as Next.js's interception rewrite captures
+ * them from the source URL. Other renders read every file.
  */
 export function resolveInterceptHeadFileMetadata(options: {
   interceptParams?: AppPageParams | null;
@@ -586,6 +587,7 @@ export function resolveInterceptHeadFileMetadata(options: {
   interceptSlotKey?: string | null;
   isSiblingIntercept: boolean;
   metadataRoutes: readonly MetadataFileRoute[];
+  /** The rendered route's params: the source's, for an intercepted render. */
   params: AppPageParams;
   route: {
     layouts?: readonly unknown[] | null;
@@ -627,8 +629,16 @@ export function resolveInterceptHeadFileMetadata(options: {
         ? pageSegments
         : [...ownerSegments, slotSegment];
   if (!segments) return { metadataRoutes: options.metadataRoutes };
+  const markerIndex = segments.findIndex((segment) => /^\(\.{1,3}\)/.test(segment));
   return {
-    fileMetadataParams: options.interceptParams ?? options.params,
+    fileMetadataParams: {
+      ...(options.interceptParams ?? options.params),
+      ...resolveAppPageSegmentParams(
+        segments,
+        markerIndex < 0 ? segments.length : markerIndex,
+        options.params,
+      ),
+    },
     fileMetadataRouteSegments: segments,
     metadataRoutes: filterMetadataRoutesForSegments(options.metadataRoutes, segments),
   };
