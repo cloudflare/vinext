@@ -377,9 +377,13 @@ type PagesFontRoutes = {
 /**
  * The owner keys of a dev Pages render: the font owners the server graph of
  * `files` reaches. Next.js gives a page the fonts of `_app` and of the page.
- * A Pages render reads them after it has run the page, so the graph already
- * holds its imports: an invalidated module keeps them. Transforming it here
- * would race the module runner's own reload after an edit.
+ *
+ * With `transformMissing`, modules the graph has not loaded yet are
+ * transformed, as their request would, so a component the page loads lazily
+ * counts before it first runs. The generated entry's dev lookup needs that: it
+ * is a module computed once per page. The Node handler asks again on each
+ * request, after the page ran, so it reads the graph as it is: transforming an
+ * invalidated page there races the module runner's own reload after an edit.
  */
 export async function collectDevPagesFontOwners(
   environment: DevEnvironment,
@@ -389,6 +393,7 @@ export async function collectDevPagesFontOwners(
     isOwner: (id: string) => boolean;
     ownerKey: (id: string) => string;
     watch?: (file: string) => void;
+    transformMissing?: boolean;
   },
 ): Promise<string[]> {
   const owners = new Set<string>();
@@ -403,7 +408,7 @@ export async function collectDevPagesFontOwners(
       if (options.isOwner(id)) owners.add(options.ownerKey(id));
       return true;
     },
-    false,
+    options.transformMissing === true,
   );
   return [...owners].sort();
 }
@@ -452,6 +457,8 @@ export function createPagesFontOwnerManifestPlugin(options: {
         ownerKey,
         // Editing any module the walk read can change the page's fonts.
         watch: (file) => this.addWatchFile(file),
+        // Computed once, maybe before the page's lazy components first load.
+        transformMissing: true,
       });
       return `export default ${JSON.stringify(owners)};`;
     },

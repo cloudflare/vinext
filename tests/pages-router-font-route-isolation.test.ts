@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ViteDevServer } from "vite";
-import { build } from "vite";
+import { build, createServer, type Plugin } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { startFixtureServer } from "./helpers.js";
+import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 
 // Issue #4810, Pages Router: each page's document carries the next/font rules
 // and preloads of `_app` and of its own page, whatever the process served
@@ -169,4 +170,60 @@ describe("Pages Router next/font through a symlinked root with resolve.preserveS
   it("answers each page with _app's and its own fonts in any request order", async () => {
     expect(await fontsInOrder(baseUrl)).toEqual(EXPECTED);
   });
+});
+
+// Cloudflare dev serves Pages routes through the generated server entry, whose
+// font owners a virtual module computes once per page. A font the page reaches
+// only through a `next/dynamic` component must be in that list. The first
+// request runs the component only after its fonts were read, so it lacks the
+// font (a known limitation); every later one must carry it.
+describe("Pages Router next/font of a lazily loaded component (Cloudflare dev)", () => {
+  let root = "";
+  let server: ViteDevServer | undefined;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    root = await createIsolatedFixture(
+      path.resolve(import.meta.dirname, "./fixtures/cf-pages-font-lazy"),
+      "vinext-cf-pages-font-lazy-",
+      undefined,
+      path.resolve(import.meta.dirname, "./fixtures/cf-app-basic/node_modules"),
+    );
+    const { cloudflare } = (await import(
+      pathToFileURL(path.join(root, "node_modules/@cloudflare/vite-plugin/dist/index.mjs")).href
+    )) as {
+      cloudflare: (options: { inspectorPort: false; viteEnvironment: { name: string } }) => Plugin;
+    };
+    server = await createServer({
+      root,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: root }),
+        cloudflare({ inspectorPort: false, viteEnvironment: { name: "ssr" } }),
+      ],
+      server: { host: "127.0.0.1", port: 0 },
+      logLevel: "silent",
+    });
+    await server.listen();
+    const address = server.httpServer?.address();
+    baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  }, 180000);
+
+  afterAll(async () => {
+    await server?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("carries the component's font on every request", async () => {
+    for (let request = 0; request < 3; request++) {
+      const res = await fetch(`${baseUrl}/lazy`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("Lazy heading");
+      const style = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "";
+      if (request > 0) {
+        expect({ request, style: /font-lazy[.-]/.test(style) }).toEqual({ request, style: true });
+      }
+    }
+  }, 60000);
 });
