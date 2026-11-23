@@ -893,6 +893,32 @@ describe("createTickBufferedTransform pre-head splice", () => {
     await reader.cancel();
   });
 
+  it("fails a resume whose Flight data errors while its holes are still pending", async () => {
+    const failure = new Error("flight failed");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const output = new ReadableStream<Uint8Array>().pipeThrough(
+      createTickBufferedTransform(
+        createRscEmbedTransform(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.error(failure);
+            },
+          }),
+        ),
+        "",
+        "",
+        undefined,
+        "",
+        "",
+        undefined,
+        "resume",
+      ),
+    );
+
+    await expect(output.getReader().read()).rejects.toBe(failure);
+    warn.mockRestore();
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
   // (regression for #1532)
