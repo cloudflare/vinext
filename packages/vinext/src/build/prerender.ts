@@ -1696,7 +1696,8 @@ export async function prerenderApp({
           // Like Next.js's prerender manifest, the shell records the paths
           // generated under it, so a request decides without asking
           // generateStaticParams. The build doesn't enumerate a parallel
-          // route's generators, so its requests ask instead.
+          // route's generators, so its requests ask instead, as they do when
+          // the static params endpoint couldn't answer.
           generatedParams:
             route.parallelSlots.length > 0 || routeStaticParamsUnanswered
               ? null
@@ -1707,7 +1708,8 @@ export async function prerenderApp({
 
     // Without complete params, the shells come from the params the route's
     // layouts generated, so a required root param like `/en/[slug]` is kept,
-    // and each shell records those params as generated.
+    // and each shell records those params as generated, unless
+    // `queueFallbackShells` leaves its requests to ask.
     const queueParentFallbackShells = (
       route: (typeof routes)[number],
       parentParamSets: readonly Record<string, string | string[]>[],
