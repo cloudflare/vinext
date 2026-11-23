@@ -171,10 +171,14 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     typeof routeRevalidate === "number"
       ? Math.min(routeRevalidate, renderedCacheControl.revalidate ?? routeRevalidate)
       : (renderedCacheControl.revalidate ?? false);
-  const cacheControl = isrCacheControl(revalidate, {
-    expireSeconds: typeof revalidate === "number" ? renderedCacheControl.expire : undefined,
-    staleSeconds: resolveClientStaleTimeSeconds(requestCacheLife),
-  });
+  // An empty shell keeps the route's lifetime, as its render's is a dynamic
+  // one's, which isn't stored.
+  const cacheControl = isDynamic
+    ? isrCacheControl(routeRevalidate)
+    : isrCacheControl(revalidate, {
+        expireSeconds: typeof revalidate === "number" ? renderedCacheControl.expire : undefined,
+        staleSeconds: resolveClientStaleTimeSeconds(requestCacheLife),
+      });
   const tags = buildAppPageCacheTags(
     fallbackPathname,
     readPrerenderCacheTagsHeader(response.headers),
