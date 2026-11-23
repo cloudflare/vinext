@@ -114,8 +114,8 @@ test("_app's imports load as one chunk when an unused export of a side-effect-fr
   // in the build.
   expect(filesWith(scripts, "marker-toolkit-measure")).toEqual([]);
 
-  // So the header and its table add no chunk to those two. The header's table
-  // gets a chunk of its own instead, which every page downloads.
+  // So the header and its table load in those two chunks too, and no other
+  // chunk that every page downloads holds them.
   const headerChunks = [
     ...filesWith(scripts, "marker-site-header"),
     ...filesWith(scripts, "marker-nav-sections"),
@@ -140,7 +140,7 @@ test("a page downloads a small module once when two of its shared chunks use it"
     filesWith(scripts, "marker-table-data"),
   );
 
-  // `formatCount` is copied into both panels' chunks, so the page downloads it twice.
+  // `formatCount` isn't copied into both panels' chunks: the page downloads it once.
   expect(filesWith(scripts, "marker-format-count")).toHaveLength(1);
 });
 
@@ -169,9 +169,9 @@ test("a CSS module that two of a page's shared chunks use is linked once, ahead 
   await waitForHydration(page);
   expect(await probeBorderColors(page)).toEqual({ "table-tag": BLUE });
 
-  // `/reports` renders both. The tag's stylesheet is copied into each panel's
-  // stylesheet, so its rules are linked twice: the second copy follows the
-  // first panel's stylesheet and overrides that panel's colour.
+  // `/reports` renders both. The tag's rules are linked once, ahead of both
+  // panels' stylesheets, so each panel's colour still wins. A copy in each
+  // panel's stylesheet would follow the first panel's and override its colour.
   await page.goto(`${baseUrl}/reports`);
   await waitForHydration(page);
   const tagRules = await page.evaluate(
