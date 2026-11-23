@@ -459,6 +459,7 @@ describe("collectDoublyCopiedModules", () => {
     groupOf: (id: string) => string | undefined = () => undefined,
     declaresSideEffects?: (id: string) => boolean,
     uncopied: ReadonlySet<string> = new Set(),
+    importsNothingFrom?: (importer: string, id: string) => boolean,
   ) => {
     const ids = Object.keys(graph);
     const info = (id: string) => {
@@ -479,6 +480,7 @@ describe("collectDoublyCopiedModules", () => {
         sizeOf: (id) => graph[id]?.size ?? 0,
         uncopied,
         declaresSideEffects,
+        importsNothingFrom,
       }),
     ].sort();
   };
@@ -573,6 +575,46 @@ describe("collectDoublyCopiedModules", () => {
         (id) => id.startsWith("kit/"),
       ),
     ).toEqual(["kit/format"]);
+  });
+
+  it("leaves the copy of a page that loads another chunk that gets one", () => {
+    // Rolldown leaves the page's copy out: the list's chunk, which the page
+    // imports, runs first.
+    const graph = {
+      entry: { entry: true },
+      full: { loadedBy: "entry", imports: ["list", "title"] },
+      grid: { loadedBy: "entry", imports: ["list"] },
+      heading: { loadedBy: "entry", imports: ["title"] },
+      list: { imports: ["title"], size: 30_000 },
+      title: {},
+    };
+    expect(collect(graph)).toEqual([]);
+    // Not for a stylesheet, whose copy may go in the page's stylesheet anyway.
+    expect(
+      collect({
+        ...graph,
+        full: { loadedBy: "entry", imports: ["list", "title.css"] },
+        heading: { loadedBy: "entry", imports: ["title.css"] },
+        list: { imports: ["title.css"], size: 30_000 },
+        "title.css": {},
+      }),
+    ).toEqual(["title.css"]);
+  });
+
+  it("leaves out an import that takes nothing from the module", () => {
+    // `_app` imports a barrel that two pages import too: tree shaking leaves
+    // `_app` what it uses, and the pages the badge.
+    const graph = {
+      entry: { entry: true, imports: ["_app"] },
+      _app: { loadedBy: "entry", imports: ["kit"] },
+      alpha: { loadedBy: "entry", imports: ["kit"] },
+      beta: { loadedBy: "entry", imports: ["kit"] },
+      kit: { imports: ["badge"] },
+      badge: {},
+    };
+    const fromApp = (importer: string) => importer === "_app";
+    expect(collect(graph, undefined, () => true)).toEqual(["badge", "kit"]);
+    expect(collect(graph, undefined, () => true, undefined, fromApp)).toEqual([]);
   });
 
   it("leaves the modules that a chunk group takes", () => {

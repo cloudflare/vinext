@@ -907,7 +907,9 @@ export function collectSharedGroupDependencies(
  * survive: the output drops an unused import of a module `declaresSideEffects`
  * reports (see createSideEffectsDeclarationCheck). The graph here is the one
  * before tree-shaking, which can drop others too, so a stylesheet, whose
- * second copy would change the cascade, keeps a file even then.
+ * second copy would change the cascade, keeps a file even then. Rolldown also
+ * leaves out an entry's copy where another chunk that gets one is the entry's
+ * static import (the entry loads it), which runs first.
  */
 export function collectDoublyCopiedModules(
   { infos, entries, loadedBy }: PagesClientGraph,
@@ -920,6 +922,8 @@ export function collectDoublyCopiedModules(
     /** Modules that already keep their chunk a file. */
     uncopied: ReadonlySet<string>;
     declaresSideEffects?: (id: string) => boolean;
+    /** Whether the importer takes none of what the module exports once tree-shaken. */
+    importsNothingFrom?: (importer: string, id: string) => boolean;
   },
 ): Set<string> {
   // Each module's chunk: its group's, its entry's, or the common chunk of the
@@ -946,8 +950,10 @@ export function collectDoublyCopiedModules(
   }
 
   const alwaysLoaded = new Set<number>();
+  const entryIndexes = new Map<string, number>();
   entries.forEach((entry, index) => {
     if (options.isAlwaysLoaded(entry)) alwaysLoaded.add(index);
+    entryIndexes.set(`entry:${entry}`, index);
   });
 
   // The modules that a configured entry (the client entry) still loads once
@@ -992,7 +998,9 @@ export function collectDoublyCopiedModules(
       const visited = new Set([chunk]);
       const pending = [...ids];
       while (pending.length > 0) {
-        for (const importer of infos.get(pending.pop()!)!.importers) {
+        const id = pending.pop()!;
+        for (const importer of infos.get(id)!.importers) {
+          if (options.importsNothingFrom?.(importer, id)) continue;
           const importerChunk = chunks.get(importer);
           if (importerChunk === undefined || visited.has(importerChunk)) continue;
 
@@ -1005,6 +1013,18 @@ export function collectDoublyCopiedModules(
           const indexes = importerChunks.get(importerChunk) ?? new Set();
           for (const index of loadedBy.get(importer) ?? []) indexes.add(index);
           importerChunks.set(importerChunk, indexes);
+        }
+      }
+
+      // An entry's copy, where a chunk it loads gets one too.
+      if (copied.every((id) => !isStylesheetModule(id))) {
+        for (const [importerChunk] of importerChunks) {
+          const index = entryIndexes.get(importerChunk);
+          if (index === undefined) continue;
+          const loadsOther = [...importerChunks].some(
+            ([other, indexes]) => !entryIndexes.has(other) && indexes.has(index),
+          );
+          if (loadsOther) importerChunks.delete(importerChunk);
         }
       }
 

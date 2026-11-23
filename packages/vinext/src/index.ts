@@ -9859,18 +9859,39 @@ export const loadServerActionClient = ${
         }
       }
 
+      // Tree shaking leaves out of "pages-app" what `_app` imports from a
+      // side-effect-free barrel without using it, so a module that others
+      // import too, and what it imports, may be copied.
+      const leavingAppGroup = new Set<string>();
+      const leaving = [...appGroupModules].filter((id) =>
+        this.getModuleInfo(id)!.importers.some(
+          (importer) => importer !== appId && !appGroupModules.has(importer),
+        ),
+      );
+      while (leaving.length > 0) {
+        const id = leaving.pop()!;
+        if (leavingAppGroup.has(id)) continue;
+        leavingAppGroup.add(id);
+        for (const imported of this.getModuleInfo(id)!.importedIds) {
+          if (appGroupModules.has(imported)) leaving.push(imported);
+        }
+      }
       for (const id of collectDoublyCopiedModules(graph, {
         // Tree shaking may split a shared group by the pages that use each
         // module, so each counts as a chunk of its own.
         groupOf: (id) =>
-          groupOf(id) ??
-          (pagesSharedGroupModules.has(id)
-            ? `${pagesSharedGroupModules.get(id)}:${id}`
-            : undefined),
+          leavingAppGroup.has(id)
+            ? undefined
+            : (groupOf(id) ??
+              (pagesSharedGroupModules.has(id)
+                ? `${pagesSharedGroupModules.get(id)}:${id}`
+                : undefined)),
         isAlwaysLoaded: (id) => id === appId,
         sizeOf,
         uncopied: pagesUncopiedModules,
         declaresSideEffects: createSideEffectsDeclarationCheck(),
+        // `_app` takes from those only what stays in "pages-app".
+        importsNothingFrom: (importer, id) => importer === appId && leavingAppGroup.has(id),
       })) {
         pagesUncopiedModules.add(id);
       }
