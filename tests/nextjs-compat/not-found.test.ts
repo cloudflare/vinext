@@ -596,6 +596,26 @@ describe("Next.js compat: not-found", () => {
     },
   );
 
+  // A slot's not-found file renders only in the document with its boundary
+  // caught. Next.js 16.2.7 sends its 404 error shell and runs the file in the
+  // browser, which follows its redirect, so that redirect answers here.
+  it("a slot's not-found file that redirects answers with its redirect", async () => {
+    const { res } = await fetchHtml(baseUrl, "/notfound-replay-fallback/slot-redirect", {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/notfound-sibling-slots");
+  });
+
+  // One that throws keeps the 404 of Next.js's error shell, as a slot that
+  // fails beside it does.
+  it("a slot's not-found file that throws keeps the 404 fallback", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/notfound-replay-fallback/slot-throw");
+    expect(res.status).toBe(404);
+    expect(html).toContain('id="replay-fallback-root-nf"');
+    expect(html).not.toContain('id="replay-fallback-slot-throw-page"');
+  });
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before

@@ -99,7 +99,7 @@ import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 import { createRenderStreamCancellation, isAppRenderAbortError } from "./app-render-abort-error.js";
-import { getNextErrorDigest } from "./next-error-digest.js";
+import { getNextErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 import { isBailoutToCSRError, isDynamicServerError } from "vinext/shims/navigation-errors";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 // @ts-expect-error — resolved by the vinext Vite plugin in SSR environments.
@@ -398,6 +398,21 @@ function requireNavigationContext(navContext: NavigationContext | null): Navigat
     throw new Error("App SSR requires navigation context for BFCache state keys");
   }
   return navContext;
+}
+
+/**
+ * What answers when the document can't render again with the boundaries that
+ * caught its shell's error. A redirect does: Next.js runs the caught
+ * boundary's file in the browser after its error shell, which follows it, and
+ * a slot's not-found file renders nowhere else. Any other failure leaves the
+ * shell's own error to its fallback document, which keeps its status, as
+ * Next.js's error shell does.
+ */
+function resolveCaughtRenderFailure(shellError: unknown, caughtRenderError: unknown): unknown {
+  const digest = getNextErrorDigest(caughtRenderError);
+  return digest !== null && parseNextRedirectDigest(digest) !== null
+    ? caughtRenderError
+    : shellError;
 }
 
 export async function handleSsr(
@@ -888,12 +903,8 @@ export async function handleSsr(
             if (!caughtRoot) throw error;
             try {
               htmlStream = await prerenderFallbackShell(caughtRoot);
-            } catch {
-              // A caught document that can't render leaves the shell's own
-              // error to its fallback document. An error outside the caught
-              // boundaries keeps that error's status there, and a caught
-              // boundary that redirects or throws does so there again.
-              throw error;
+            } catch (caughtRenderError) {
+              throw resolveCaughtRenderFailure(error, caughtRenderError);
             }
             caughtShellError = error;
           }
@@ -924,13 +935,9 @@ export async function handleSsr(
                   renderToReadableStream(caughtRoot, renderOptions),
                 );
                 if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
-              } catch {
-                // A caught document that can't render leaves the shell's own
-                // error to its fallback document. An error outside the caught
-                // boundaries keeps that error's status there, and a caught
-                // boundary that redirects or throws does so there again.
+              } catch (caughtRenderError) {
                 void caughtHtmlStream?.cancel().catch(() => {});
-                throw error;
+                throw resolveCaughtRenderFailure(error, caughtRenderError);
               }
               renderComplete = caughtHtmlStream.allReady;
               shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
