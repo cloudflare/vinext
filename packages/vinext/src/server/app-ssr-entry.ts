@@ -550,21 +550,27 @@ export async function handleSsr(
     // A render waits for its route's client references, so a cold render
     // shows the same document as a warm one, except for those whose modules
     // evaluate asynchronously, which it streams like Next.js. A PPR fallback
-    // shell aborts on the next tick, so it loads every reference first.
-    const resolvedReferences = options?.pprFallbackShellSignal
-      ? undefined
-      : resolveRouteClientReferences(routeClientReferences, options?.preloadRoutePattern);
-    const routeReferences =
-      resolvedReferences && options?.isBoundaryRender
-        ? { ...resolvedReferences, linked: [] }
-        : resolvedReferences;
+    // shell aborts on the next tick, so it loads every reference first and
+    // streams none. Its prelude still links the route's linked stylesheets in
+    // its head, as Next.js's prerendered shell does, since a request resuming
+    // it sends that head as stored, ahead of the holes that render them.
+    const isPprFallbackShell = options?.pprFallbackShellSignal !== undefined;
+    const resolvedReferences = resolveRouteClientReferences(
+      routeClientReferences,
+      options?.preloadRoutePattern,
+    );
+    const routeReferences = resolvedReferences && {
+      ...resolvedReferences,
+      streamed: isPprFallbackShell ? [] : resolvedReferences.streamed,
+      linked: options?.isBoundaryRender ? [] : resolvedReferences.linked,
+    };
     const streamedReferences = createStreamedClientReferences(
       routeReferences,
       options?.scriptNonce,
       assetCrossOrigin,
     );
     await clientReferencePreloader.preload(
-      routeReferences?.references,
+      isPprFallbackShell ? undefined : routeReferences?.references,
       streamedReferences?.streamed,
     );
 
