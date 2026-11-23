@@ -1,0 +1,4 @@
+/* Imported after the tag's stylesheet, so this wins over `.tag`'s border. */
+.tableTag {
+  border-color: rgb(0, 0, 255);
+}

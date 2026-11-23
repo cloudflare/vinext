@@ -1,0 +1,4 @@
+/* Imported after the tag's stylesheet, so this wins over `.tag`'s border. */
+.chartTag {
+  border-color: rgb(255, 0, 0);
+}
