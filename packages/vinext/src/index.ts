@@ -9735,23 +9735,28 @@ export const loadServerActionClient = ${
         // before the `import()` targets, which it visits by path: as one of
         // those, the pages sorting before `_app` would order what they share
         // with it ahead of `_app`'s own imports.
-        const input = inputOptions.input;
+        const input = inputOptions.input ?? [];
+        const inputIds =
+          typeof input === "string" ? [input] : Array.isArray(input) ? input : Object.values(input);
         if (
           environment.config.build.lib ||
           !hasPagesDir ||
           hasAppDir ||
           options.disableNextLikeChunking ||
-          !input ||
-          typeof input !== "object" ||
-          Array.isArray(input) ||
-          !Object.values(input).includes(VIRTUAL_CLIENT_ENTRY)
+          !inputIds.includes(VIRTUAL_CLIENT_ENTRY)
         ) {
           return;
         }
         const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
         if (!appFilePath) return;
 
-        return { ...inputOptions, input: { ...input, _app: appFilePath } };
+        return {
+          ...inputOptions,
+          input:
+            typeof input === "string" || Array.isArray(input)
+              ? [...inputIds, appFilePath]
+              : { ...input, _app: appFilePath },
+        };
       },
     },
     buildStart() {
