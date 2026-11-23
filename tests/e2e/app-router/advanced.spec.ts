@@ -313,6 +313,34 @@ test.describe("Intercepting Routes", () => {
     expect(await markerKept(page)).toBe(true);
   });
 
+  // A slot owner whose page sits in a route group below it, such as
+  // `(children)/page.tsx`, owns the slot too, as in Next.js.
+  test("opens the whole intercepting route of a slot owner with a grouped page", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-group-grouped-children/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Pic 1", exact: true }).click();
+
+    await expect(page).toHaveURL(
+      /\/intercept-source-group-grouped-children\/club\/static\/pics\/1$/,
+    );
+    await expect(page.locator("#intercept-grouped-children-modal")).toHaveText(
+      "Pic modal: static 1",
+    );
+    await expect(page.locator("#intercept-grouped-children-layout")).toContainText(
+      "Club layout: static",
+    );
+    await expect(page.locator("#intercept-grouped-children-default")).toHaveText("Club default");
+    await expect(page.locator("#intercept-grouped-children-page")).toHaveCount(0);
+    await expect(page.locator("#intercept-grouped-children-static")).toHaveCount(0);
+    await expect(page.locator("#intercept-grouped-children-pic")).toHaveCount(0);
+    expect(await markerKept(page)).toBe(true);
+  });
+
   // A link in the whole intercepting route sends its source again, as Next.js
   // does, so an interception from that source into a slot of a layout both
   // trees share opens softly over it.

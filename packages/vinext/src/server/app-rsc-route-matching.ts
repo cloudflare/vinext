@@ -6,7 +6,12 @@ import {
   type RoutePatternParams,
 } from "../routing/route-pattern.js";
 import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
-import { decodeMatchedParams, decodeRouteSegment, splitPathSegments } from "../routing/utils.js";
+import {
+  decodeMatchedParams,
+  decodeRouteSegment,
+  isInvisibleSegment,
+  splitPathSegments,
+} from "../routing/utils.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 
@@ -602,7 +607,9 @@ function isInterceptingRoute(
 
 /**
  * Whether a route's directory is the one holding a slot intercept's `@slot`
- * directory, so the route is the slot's owner itself.
+ * directory, so the route is the slot's owner itself. A page in route groups
+ * below that directory, such as `(children)/page.tsx`, is at the slot's URL
+ * level too, as the route graph places the slot there.
  */
 function isSlotOwnerRoute(
   routeSegments: readonly string[] | null | undefined,
@@ -611,8 +618,12 @@ function isSlotOwnerRoute(
   if (!routeSegments || !sourcePageSegments) return false;
   const slotIndex = sourcePageSegments.findIndex((segment) => segment.startsWith("@"));
   return (
-    slotIndex === routeSegments.length &&
-    routeSegments.every((segment, index) => segment === sourcePageSegments[index])
+    slotIndex >= 0 &&
+    slotIndex <= routeSegments.length &&
+    sourcePageSegments
+      .slice(0, slotIndex)
+      .every((segment, index) => segment === routeSegments[index]) &&
+    routeSegments.slice(slotIndex).every(isInvisibleSegment)
   );
 }
 

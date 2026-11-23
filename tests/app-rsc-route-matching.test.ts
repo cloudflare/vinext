@@ -1338,6 +1338,91 @@ describe("App RSC route matching", () => {
       });
     });
 
+    // A page in a route group below the slot's directory, such as
+    // `club/[slug]/(children)/page.tsx`, is the slot owner's own route, as the
+    // route graph places the slot at its URL level. A route a visible segment
+    // deeper only inherits the slot.
+    it("renders the whole intercepting route of an owner whose page is in a route group", () => {
+      const clubModal = {
+        sourceMatchPattern: "/club/:slug",
+        sourcePageSegments: ["(shared)", "club", "[slug]", "@modal", "(.)pics", "[id]"],
+        targetPattern: "/club/:slug/pics/:id",
+        interceptLayouts: [],
+        page: "pics-modal",
+        params: ["slug", "id"],
+      };
+      const staticRoute = {
+        ...route("/club/static", ["club", "static"]),
+        routeSegments: ["(other)", "club", "static"],
+      };
+      const matcher = createAppRscRouteMatcher([
+        {
+          ...route("/club/:slug", ["club", ":slug"], { modal: { intercepts: [clubModal] } }),
+          routeSegments: ["(shared)", "club", "[slug]", "(children)"],
+        },
+        staticRoute,
+      ]);
+      expect(matcher.findIntercept("/club/static/pics/1", "/club/static")).toMatchObject({
+        page: "pics-modal",
+        sourceRouteIndex: 0,
+        rendersWholeInterceptingRoute: true,
+        matchedParams: { slug: "static", id: "1" },
+      });
+
+      // With the slot's folders above the marker, the pattern of the source
+      // names a deeper path, so only the owner's segments identify it.
+      const tracksMatcher = createAppRscRouteMatcher([
+        {
+          ...route("/club/:slug", ["club", ":slug"], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/club/:slug/:album",
+                  sourcePageSegments: [
+                    "(shared)",
+                    "club",
+                    "[slug]",
+                    "@modal",
+                    "[album]",
+                    "(.)tracks",
+                    "[id]",
+                  ],
+                  targetPattern: "/club/:slug/:album/tracks/:id",
+                  interceptLayouts: [],
+                  page: "tracks-modal",
+                  params: ["slug", "album", "id"],
+                },
+              ],
+            },
+          }),
+          routeSegments: ["(shared)", "club", "[slug]", "(children)"],
+        },
+        {
+          ...route("/club/static/:album", ["club", "static", ":album"]),
+          routeSegments: ["(other)", "club", "static", "[album]"],
+        },
+      ]);
+      expect(
+        tracksMatcher.findIntercept("/club/static/two/tracks/1", "/club/static/one"),
+      ).toMatchObject({
+        page: "tracks-modal",
+        sourceRouteIndex: 0,
+        rendersWholeInterceptingRoute: true,
+        matchedParams: { slug: "static", album: "one", id: "1" },
+      });
+
+      const deeperMatcher = createAppRscRouteMatcher([
+        {
+          ...route("/club/:slug/about", ["club", ":slug", "about"], {
+            modal: { intercepts: [clubModal] },
+          }),
+          routeSegments: ["(shared)", "club", "[slug]", "(children)", "about"],
+        },
+        staticRoute,
+      ]);
+      expect(deeperMatcher.findIntercept("/club/static/pics/1", "/club/static")).toBeNull();
+    });
+
     it("prefers the whole intercepting route among intercepts whose source lacks the slot", () => {
       const intercept = (page: string, sourcePageSegments?: string[]) => ({
         sourceMatchPattern: "/club/:slug",
