@@ -5,6 +5,7 @@ import fs from "node:fs";
 // oxlint-disable-next-line no-restricted-imports
 import path from "node:path";
 import { createRequire } from "node:module";
+import { assertOutputDirIsSafe } from "./clean-output.js";
 import { readJsonFile } from "../utils/safe-json-file.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 
@@ -262,6 +263,9 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
   }
 
   const standaloneDir = path.join(outDir, "standalone");
+  // The standalone directory is deleted and rebuilt; with a `build.outDir`
+  // above the project root it could be the project itself.
+  assertOutputDirIsSafe("standalone output directory", standaloneDir, { root });
   const standaloneDistDir = path.join(standaloneDir, "dist");
   const standaloneNodeModulesDir = path.join(standaloneDir, "node_modules");
 

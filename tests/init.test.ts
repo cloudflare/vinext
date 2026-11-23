@@ -562,7 +562,7 @@ describe("getInitDeps", () => {
 
   it("adds Cloudflare deployment dependencies for the Cloudflare platform", () => {
     const deps = getInitDeps(true, "cloudflare");
-    expect(deps).toContain("@cloudflare/vite-plugin@beta");
+    expect(deps).toContain("@cloudflare/vite-plugin@^2.0.0-rc.0");
     expect(deps).toContain("cf@latest");
     expect(deps).not.toContain("wrangler");
     expect(deps).toContain("@vinext/cloudflare");
@@ -1485,7 +1485,7 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
         scripts: Record<string, string>;
       };
       expect(pkg.devDependencies.cf).toBe("latest");
-      expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe("beta");
+      expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe("^2.0.0-rc.0");
       expect(pkg.devDependencies.vite).toBe("8.3.0");
       expect(pkg.devDependencies.wrangler).toBeUndefined();
       expect(pkg.scripts["build:vinext"]).toBe("vite build");
@@ -2384,7 +2384,7 @@ describe("init — dependency installation", () => {
       },
     });
     const install = execCalls.find(({ cmd }) => cmd.includes("@cloudflare/vite-plugin@"));
-    expect(install?.cmd).toContain('"@cloudflare/vite-plugin@beta"');
+    expect(install?.cmd).toContain('"@cloudflare/vite-plugin@^2.0.0-rc.0"');
     expect(install?.cmd).toContain('"cf@latest"');
   });
 

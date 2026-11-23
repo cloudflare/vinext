@@ -78,6 +78,8 @@ const STAGED_READINESS_QUERY_PARAM = "__vinext_cdn_warm_readiness";
 
 export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
   root: string;
+  /** Holds BUILD_ID and the prerender path manifest; `<root>/dist/server` by default. */
+  serverDir?: string;
   /** Use the manifest build identity unless the configured adapter cannot expose it. */
   validateBuildIdentity?: boolean;
 };
@@ -134,9 +136,13 @@ function applyWarmPathConfig(
   return new URL(normalized, "http://vinext.local").pathname;
 }
 
-function readBuiltBuildId(root: string): string | null {
+function resolveServerDir(root: string, serverDir: string | undefined): string {
+  return serverDir ?? path.join(root, "dist", "server");
+}
+
+function readBuiltBuildId(serverDir: string): string | null {
   try {
-    const buildId = fs.readFileSync(path.join(root, "dist", "server", "BUILD_ID"), "utf-8").trim();
+    const buildId = fs.readFileSync(path.join(serverDir, "BUILD_ID"), "utf-8").trim();
     return buildId.length > 0 ? buildId : null;
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
@@ -199,6 +205,12 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
               (route.kind === "app-page" ||
                 route.kind === "app-route" ||
                 route.kind === "pages-page") &&
+              (route.metadataRoute === undefined ||
+                (route.metadataRoute === true && route.kind === "app-route")) &&
+              (route.metadataSearch === undefined ||
+                (route.metadataRoute === true &&
+                  typeof route.metadataSearch === "string" &&
+                  /^\?[^#]+$/.test(route.metadataSearch))) &&
               typeof route.pattern === "string" &&
               route.pattern.startsWith("/") &&
               (route.cacheabilityProbe === undefined ||
@@ -242,18 +254,20 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
 
 type PrerenderWarmPlanOptions = {
   includeCanonicalRsc?: boolean;
+  /** Holds BUILD_ID and the prerender path manifest; `<root>/dist/server` by default. */
+  serverDir?: string;
   strict?: boolean;
 };
 
 function createPrerenderPathWarmPaths(
   root: string,
   manifest: PrerenderPathManifest,
-  options?: { strict?: boolean },
+  options?: { serverDir?: string; strict?: boolean },
 ): { manifest: PrerenderPathManifest; pagesPaths: string[]; paths: string[] } | null {
-  const builtBuildId = readBuiltBuildId(root);
+  const buildIdPath = path.join(resolveServerDir(root, options?.serverDir), "BUILD_ID");
+  const builtBuildId = readBuiltBuildId(path.dirname(buildIdPath));
   if (!manifest.buildId || !builtBuildId || manifest.buildId !== builtBuildId) {
-    const message =
-      "[vinext] CDN warmup skipped: prerender path manifest buildId does not match dist/server/BUILD_ID.";
+    const message = `[vinext] CDN warmup skipped: prerender path manifest buildId does not match ${path.relative(root, buildIdPath)}.`;
     if (options?.strict) throw new Error(message);
     console.warn(message);
     return null;
@@ -289,10 +303,18 @@ export function createPrerenderWarmPlan(
     manifest.rscPaths !== undefined &&
     manifest.rscBuildId !== undefined;
   const applyConfig = (pathname: string) => applyWarmPathConfig(pathname, manifest);
+  // Metadata routes never take a trailingSlash redirect, so public traffic and
+  // their <head> links request them as served.
+  const applyRouteHandlerConfig = (pathname: string) =>
+    manifest.routePatterns?.[pathname]?.metadataRoute
+      ? applyWarmPathConfig(pathname, { basePath: manifest.basePath })
+      : applyConfig(pathname);
   const routePatterns = manifest.routePatterns
     ? Object.fromEntries(
         Object.entries(manifest.routePatterns).map(([pathname, route]) => [
-          pathname.includes("/_next/data/") ? pathname : applyConfig(pathname),
+          pathname.includes("/_next/data/") && !route.metadataRoute
+            ? pathname
+            : applyRouteHandlerConfig(pathname),
           route,
         ]),
       )
@@ -318,7 +340,7 @@ export function createPrerenderWarmPlan(
     ...(supportsCanonicalRsc ? { rscBuildId: manifest.rscBuildId } : {}),
     rscPaths: supportsCanonicalRsc ? manifest.rscPaths!.map(applyConfig) : [],
     ...(manifest.routeHandlerPaths
-      ? { routeHandlerPaths: manifest.routeHandlerPaths.map(applyConfig) }
+      ? { routeHandlerPaths: manifest.routeHandlerPaths.map(applyRouteHandlerConfig) }
       : {}),
     ...(routePatterns ? { routePatterns } : {}),
   };
@@ -329,7 +351,7 @@ export function readPrerenderWarmPlan(
   options?: PrerenderWarmPlanOptions,
 ): PrerenderWarmPlan {
   const manifest = readPrerenderPathManifest(
-    path.join(root, "dist", "server", PRERENDER_PATHS_MANIFEST),
+    path.join(resolveServerDir(root, options?.serverDir), PRERENDER_PATHS_MANIFEST),
   );
   if (!manifest) {
     const message = "[vinext] CDN warmup skipped: prerender path manifest not found.";
@@ -354,11 +376,11 @@ function normalizeWarmPath(pathname: string): string {
   return pathname.startsWith("/") ? pathname : `/${pathname}`;
 }
 
+// Appended to the origin rather than resolved against it: resolving a
+// discovered `//host/x` or `/\host/x` path would send the request, and any
+// configured secret headers, to another origin.
 export function buildWarmupUrl(targetUrl: string, pathname: string): URL {
-  return new URL(
-    normalizeWarmPath(pathname),
-    targetUrl.endsWith("/") ? targetUrl : `${targetUrl}/`,
-  );
+  return new URL(`${new URL(targetUrl).origin}${normalizeWarmPath(pathname)}`);
 }
 
 function isRetryableStatus(status: number, retryNotFound: boolean): boolean {
@@ -518,7 +540,11 @@ function createCdnWarmRouteReport(
       routes.get(key) ??
       ({
         failed: 0,
-        kind: target.route ? CDN_WARM_ROUTE_KIND_LABELS[target.route.kind] : "Other",
+        kind: target.route?.metadataRoute
+          ? "Metadata route"
+          : target.route
+            ? CDN_WARM_ROUTE_KIND_LABELS[target.route.kind]
+            : "Other",
         key,
         pattern: target.route?.pattern ?? "Other discovered requests",
         paths: new Set<string>(),
@@ -668,13 +694,15 @@ export async function createCdnWarmTargets(
   for (const pathname of new Set(options.routeHandlerPaths ?? [])) {
     const routeHeaders = new Headers(commonHeaders);
     routeHeaders.set("Accept", "*/*");
+    const route = options.routePatterns?.[pathname];
     requests.push({
       headers: routeHeaders,
       kind: "app-route",
-      label: `${pathname} (Route Handler)`,
-      pathname,
+      label: `${pathname} (${route?.metadataRoute ? "Metadata route" : "Route Handler"})`,
+      // Request a metadata image as pages link it, `?<contentHash>` included.
+      pathname: `${pathname}${route?.metadataSearch ?? ""}`,
       sourcePathname: pathname,
-      route: options.routePatterns?.[pathname],
+      route,
     });
   }
   return requests;
@@ -781,6 +809,15 @@ function validateCachePolicy(
       outcome: "failed",
       error: `CF-Cache-Status is ${cacheStatus ?? "missing"}; the cache fill is not reusable`,
     };
+  }
+
+  // Middleware or proxy answered in the uncached request stage, so no
+  // Workers Cache subrequest ran to report a CF-Cache-Status.
+  if (
+    !cacheStatus &&
+    response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase() === "BYPASS"
+  ) {
+    return { outcome: "skipped", reason: `${VINEXT_CACHE_HEADER} is BYPASS` };
   }
 
   // Cloudflare-CDN-Cache-Control is consumed at the edge and is deliberately
@@ -909,6 +946,28 @@ function validateRscWarmResponse(
 ): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
+  // Middleware or proxy answered in the uncached request stage, so no RSC
+  // render produced the response to carry an RSC build identity or payload.
+  // The matching build identity above proves the uploaded build answered it.
+  // A Flight payload here comes from an external rewrite's upstream, whose
+  // RSC build identity the request stage drops. A render's payload carries its
+  // own, so one from another build still fails below. The Response Store labels an uncacheable render BYPASS too, so a server
+  // error fails on its status, whichever stage sent it. The matching build
+  // identity shows it is no deployment mismatch.
+  const unexpectedStatus =
+    (response.status < 200 || response.status >= 300) && !isExpectedTerminalStatus(response.status);
+  if (expectedBuildId !== undefined && unexpectedStatus) {
+    return { outcome: "failed", error: `HTTP ${response.status}` };
+  }
+  if (
+    expectedBuildId !== undefined &&
+    !response.redirected &&
+    response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase() === "BYPASS" &&
+    !response.headers.has(VINEXT_RSC_BUILD_ID_HEADER)
+  ) {
+    const admission = validateWarmAdmission(response, statusSource, requireCacheHit);
+    if (admission.outcome !== "warmed") return admission;
+  }
   if (
     expectedRscBuildId !== undefined &&
     response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) !== expectedRscBuildId
@@ -1620,6 +1679,15 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const failedRouteHandlerPaths = failedRequests
     .filter(({ target }) => target.kind === "app-route")
     .map(({ target }) => target.sourcePathname);
+  const planRoutePatterns = (
+    targets: readonly CdnWarmTarget[],
+  ): { routePatterns?: Record<string, PrerenderRoutePattern> } => {
+    const entries = targets.flatMap((target) => {
+      const route = options.routePatterns?.[target.sourcePathname];
+      return route ? [[target.sourcePathname, route] as const] : [];
+    });
+    return entries.length > 0 ? { routePatterns: Object.fromEntries(entries) } : {};
+  };
 
   printCdnWarmRouteReport(
     requests,
@@ -1661,6 +1729,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
         .filter((target) => target.kind === "rsc-full")
         .map((target) => target.sourcePathname),
       ...(warmedRouteHandlerPaths.length > 0 ? { routeHandlerPaths: warmedRouteHandlerPaths } : {}),
+      ...planRoutePatterns(warmedRequests),
     },
     retryPlan: {
       loadingShellPaths: failedRequests
@@ -1676,6 +1745,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
         .filter(({ target }) => target.kind === "rsc-full")
         .map(({ target }) => target.sourcePathname),
       ...(failedRouteHandlerPaths.length > 0 ? { routeHandlerPaths: failedRouteHandlerPaths } : {}),
+      ...planRoutePatterns(failedRequests.map(({ target }) => target)),
     },
   };
 
@@ -1692,13 +1762,17 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 export async function warmCdnCacheFromPrerender(
   options: PrerenderCdnWarmOptions,
 ): Promise<CdnWarmResult> {
-  const plan = readPrerenderWarmPlan(options.root, { strict: options.strict });
+  const plan = readPrerenderWarmPlan(options.root, {
+    serverDir: options.serverDir,
+    strict: options.strict,
+  });
   const warmPlan = {
     deploymentId: plan.deploymentId,
     loadingShellPaths: plan.loadingShellPaths,
     pagesDataPaths: plan.pagesDataPaths,
     paths: plan.paths,
     routeHandlerPaths: plan.routeHandlerPaths,
+    routePatterns: plan.routePatterns,
     rscPaths: plan.rscPaths,
   };
   return warmCdnCache({
