@@ -3034,7 +3034,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     const resumeDataCache = JSON.stringify({ cache: { key: { body: "e30=" } }, fetch: {} });
     const state = formatAppPprShellState({
       prelude: true,
-      postponed: { replayNodes: [] },
+      postponed: { replayNodes: [], resumableState: {} },
       resumeDataCache,
       generated: null,
     });
@@ -3043,7 +3043,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     expect(fallbackHtml).not.toContain("vinext-ppr-shell-state");
     expect(parseAppPprShellState(fallbackPostponed ?? undefined)).toEqual({
       prelude: true,
-      postponed: { replayNodes: [] },
+      postponed: { replayNodes: [], resumableState: {} },
       resumeDataCache,
       generated: [{ locale: "en", slug: "hello" }],
     });
@@ -3054,7 +3054,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
       await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
     const state = formatAppPprShellState({
       prelude: true,
-      postponed: { replayNodes: [] },
+      postponed: { replayNodes: [], resumableState: {} },
       resumeDataCache: null,
       generated: null,
     });
