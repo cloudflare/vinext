@@ -1174,6 +1174,29 @@ describe("createTickBufferedTransform byte pass-through", () => {
 });
 
 describe("createTickBufferedTransform inline CSS", () => {
+  it("doesn't resend the font CSS its resumed prelude sent", async () => {
+    const fontCss = "@font-face { font-family: '__local_font_0'; src: url('/font.woff2'); }";
+    const out = await new Response(
+      createTextStream([
+        '<div hidden id="S:0"><link rel="stylesheet" href="/_next/static/hole.css" data-precedence="next"/></div>',
+      ]).pipeThrough(
+        createTickBufferedTransform(
+          createNoopRscEmbedTransform(),
+          () => "",
+          "",
+          { "/_next/static/hole.css": "p{color:red}" },
+          fontCss,
+          `<style data-vinext-fonts>${fontCss}</style>`,
+          undefined,
+          "resume",
+        ),
+      ),
+    ).text();
+
+    expect(out).toContain('data-href="/_next/static/hole.css">p{color:red}</style>');
+    expect(out).not.toContain("@font-face");
+  });
+
   it("replaces React stylesheet links with hoistable inline style tags", async () => {
     const out = await runTransform(
       [
