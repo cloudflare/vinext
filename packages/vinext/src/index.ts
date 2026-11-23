@@ -9890,8 +9890,12 @@ export const loadServerActionClient = ${
         sizeOf,
         uncopied: pagesUncopiedModules,
         declaresSideEffects: createSideEffectsDeclarationCheck(),
-        // `_app` takes from those only what stays in "pages-app".
-        importsNothingFrom: (importer, id) => importer === appId && leavingAppGroup.has(id),
+        // `_app` and what stays with it take from those only what stays in
+        // "pages-app".
+        importsNothingFrom: (importer, id) =>
+          leavingAppGroup.has(id) &&
+          !leavingAppGroup.has(importer) &&
+          (importer === appId || appGroupModules.has(importer)),
       })) {
         pagesUncopiedModules.add(id);
       }

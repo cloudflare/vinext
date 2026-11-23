@@ -118,6 +118,10 @@ describe("Pages Router client chunks", () => {
     for (const chunk of badgeChunks) {
       expect(chunk.moduleIds.filter((id) => /\/(_app\.tsx|brand\.ts)$/.test(id))).toEqual([]);
     }
+    // The rest is copied into the pages that use it.
+    expect(facadesOf(badgeChunks)).toEqual(
+      supportsInlineCommonChunks(rolldownVersion) ? ["pages/alpha.tsx", "pages/beta.tsx"] : [""],
+    );
 
     // A small module that pages share is copied into each of them, and so is
     // a small stylesheet.
