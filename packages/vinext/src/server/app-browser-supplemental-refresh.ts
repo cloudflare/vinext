@@ -2,13 +2,17 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_INTERCEPTION_KEY,
+  APP_ROUTE_FALLBACK_ID_PREFIX,
+  APP_ROUTE_HEAD_ID_PREFIX,
   APP_SLOT_BINDINGS_KEY,
+  APP_STREAMING_METADATA_BODY_ID_PREFIX,
   AppElementsWire,
   normalizeAppElementsSlotBindings,
   type AppElements,
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import type { AppRouterState } from "./app-browser-state.js";
+import { resolveActiveRoutePaths } from "./app-history-state.js";
 import { isNestedBfcacheSlotSegmentIdFor } from "./bfcache-identity.js";
 import type {
   BrowserRouteManifest,
@@ -69,12 +73,20 @@ export function mergeRefreshedParallelSlot(
   const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
   const interception = refreshedMetadata.interception;
   if (interception === null) {
-    const refreshedBindings = refreshedMetadata.slotBindings.filter(
-      (binding) => binding.state === "active" && Object.hasOwn(refreshedElements, binding.slotId),
-    );
-    if (refreshedBindings.length === 0) return currentElements;
-
     const currentMetadata = AppElementsWire.readMetadata(currentElements);
+    // The slot an intercepted payload shows its intercept in stays its own,
+    // whatever the source matches there from its own URL.
+    const interceptedSlotId = currentMetadata.interception?.slotId ?? null;
+    const refreshedBindings = refreshedMetadata.slotBindings.filter(
+      (binding) =>
+        binding.state === "active" &&
+        binding.slotId !== interceptedSlotId &&
+        Object.hasOwn(refreshedElements, binding.slotId),
+    );
+    if (refreshedBindings.length === 0) {
+      return supplyRetainedElements(currentElements, refreshedElements);
+    }
+
     const suppliesSourceTree = refreshedBindings.some((binding) => {
       const parsedSlot = AppElementsWire.parseElementKey(binding.slotId);
       return parsedSlot?.kind === "slot" && parsedSlot.name === "children";
@@ -115,6 +127,9 @@ export function mergeRefreshedParallelSlot(
               {
                 ...promotableChildrenBindings[0],
                 activeRouteId: refreshedChildrenBindings[0].activeRouteId,
+                ...(refreshedChildrenBindings[0].refreshPathname !== undefined
+                  ? { refreshPathname: refreshedChildrenBindings[0].refreshPathname }
+                  : {}),
                 state: "active",
               },
             ]
@@ -133,6 +148,7 @@ export function mergeRefreshedParallelSlot(
           : {
               [APP_INTERCEPTION_KEY]: currentMetadata.interception,
               [APP_INTERCEPTION_CONTEXT_KEY]: currentMetadata.interceptionContext,
+              [AppElementsWire.keys.retainedElementIds]: currentMetadata.retainedElementIds,
             }),
         [APP_SLOT_BINDINGS_KEY]: normalizeAppElementsSlotBindings(slotBindings, {
           layoutIds: refreshedMetadata.layoutIds,
@@ -150,7 +166,9 @@ export function mergeRefreshedParallelSlot(
       if (promotedBindings.length === 1) {
         merged[promotedBindings[0].slotId] = refreshedElements[refreshedChildrenBindings[0].slotId];
       }
-      copyRefreshedBranchElements(merged, currentElements, { overwrite: false });
+      copyRefreshedBranchElements(merged, currentElements, {
+        overwrite: currentMetadata.retainedElementIds.length > 0,
+      });
       return merged;
     }
 
@@ -174,8 +192,12 @@ export function mergeRefreshedParallelSlot(
       refreshedElements,
       refreshedBindings.map((binding) => binding.slotId),
     );
-    copyRefreshedBranchElements(merged, refreshedElements);
-    return merged;
+    // An intercepted payload's own entries stay its own: the source's render
+    // fills only the ones it left out.
+    copyRefreshedBranchElements(merged, refreshedElements, {
+      overwrite: currentMetadata.retainedElementIds.length === 0,
+    });
+    return supplyRetainedElements(merged, refreshedElements);
   }
 
   const refreshedSlot = refreshedElements[interception.slotId];
@@ -199,6 +221,50 @@ export function mergeRefreshedParallelSlot(
   };
   copySlotIdentities(merged, currentElements, refreshedElements, [interception.slotId]);
   copyRefreshedBranchElements(merged, refreshedElements);
+  return merged;
+}
+
+// A payload for an intercepted route can leave the source page beneath it for
+// the client to keep. A render of that page from its own URL supplies them,
+// and nothing else: the intercepted payload's own entries stay its own.
+export function supplyRetainedElements(
+  currentElements: AppElements,
+  refreshedElements: AppElements,
+): AppElements {
+  const currentMetadata = AppElementsWire.readMetadata(currentElements);
+  if (currentMetadata.retainedElementIds.length === 0) return currentElements;
+  const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
+  if (refreshedMetadata.routeId !== currentMetadata.routeId) return currentElements;
+  // A streamed metadata body belongs to the head its render placed it beside,
+  // so a payload that carries its own head takes no other render's body.
+  const carriesHead = Object.hasOwn(
+    currentElements,
+    APP_ROUTE_HEAD_ID_PREFIX + currentMetadata.routeId,
+  );
+  const metadataBodyId = APP_STREAMING_METADATA_BODY_ID_PREFIX + currentMetadata.routeId;
+  const suppliedIds = currentMetadata.retainedElementIds.filter(
+    (id) =>
+      !Object.hasOwn(currentElements, id) &&
+      Object.hasOwn(refreshedElements, id) &&
+      (id !== metadataBodyId || !carriesHead),
+  );
+  if (suppliedIds.length === 0) return currentElements;
+
+  const merged: Record<string, AppElements[keyof AppElements]> = { ...currentElements };
+  for (const id of suppliedIds) merged[id] = refreshedElements[id];
+  const suppliedSlotIds = new Set(suppliedIds.filter((id) => AppElementsWire.isSlotId(id)));
+  if (suppliedSlotIds.size > 0) {
+    const slotBindings = currentMetadata.slotBindings.filter(
+      (binding) => !suppliedSlotIds.has(binding.slotId),
+    );
+    slotBindings.push(
+      ...refreshedMetadata.slotBindings.filter((binding) => suppliedSlotIds.has(binding.slotId)),
+    );
+    merged[APP_SLOT_BINDINGS_KEY] = normalizeAppElementsSlotBindings(slotBindings, {
+      layoutIds: currentMetadata.layoutIds,
+    });
+  }
+  copySlotIdentities(merged, currentElements, refreshedElements, suppliedIds);
   return merged;
 }
 
@@ -244,11 +310,25 @@ function copyRefreshedBranchElements(
 ): void {
   for (const [elementId, element] of Object.entries(refreshedElements)) {
     const parsed = AppElementsWire.parseElementKey(elementId);
+    // A route's head and its boundary fallbacks are their own entries, so
+    // they travel with the route.
+    const isHead = elementId.startsWith(APP_ROUTE_HEAD_ID_PREFIX);
     if (
-      (parsed?.kind === "page" || parsed?.kind === "route") &&
+      (parsed?.kind === "page" ||
+        parsed?.kind === "route" ||
+        isHead ||
+        elementId.startsWith(APP_ROUTE_FALLBACK_ID_PREFIX)) &&
       (options.overwrite !== false || !Object.hasOwn(target, elementId))
     ) {
       target[elementId] = element;
+      // The head's streamed body goes with it, or none when its render
+      // placed none.
+      if (isHead) {
+        const bodyId =
+          APP_STREAMING_METADATA_BODY_ID_PREFIX + elementId.slice(APP_ROUTE_HEAD_ID_PREFIX.length);
+        if (Object.hasOwn(refreshedElements, bodyId)) target[bodyId] = refreshedElements[bodyId];
+        else delete target[bodyId];
+      }
     }
   }
 }
@@ -270,15 +350,19 @@ export function resolvePersistedSourcePageRefreshes(options: {
     sourceUrlsByPathname.set(sourceUrl.pathname, sourceUrl);
   }
 
+  // The browser pathname of the refresh, compared as it is with the refresh
+  // pathnames bindings record, which are browser pathnames too.
+  const refreshRequestPathname = removeTrailingSlash(
+    stripBasePath(options.refreshUrl.pathname, options.basePath),
+  );
+
+  // Each path is a binding's refresh pathname, the URL of the navigation that
+  // rendered the slot, or its route path when it has none. The slots the
+  // current page rendered carry the refresh URL itself, so the last filter
+  // below leaves them to the refresh request, as Next.js refetches only a
+  // reused segment's URL that differs from the current one.
   const activeRoutePaths =
-    options.activeRoutePaths ??
-    options.state.slotBindings.flatMap((binding) => {
-      if (binding.state !== "active" || binding.activeRouteId == null) return [];
-      const activeRoute = AppElementsWire.parseElementKey(binding.activeRouteId);
-      return activeRoute?.kind === "route" && activeRoute.interceptionContext === null
-        ? [activeRoute.path]
-        : [];
-    });
+    options.activeRoutePaths ?? resolveActiveRoutePaths(options.state.slotBindings);
   for (const activeRoutePath of activeRoutePaths) {
     // A deeper children route can remain in the merged client tree after the
     // user navigates back to its ancestor for cache reuse. It is not a visible
@@ -286,14 +370,16 @@ export function resolvePersistedSourcePageRefreshes(options: {
     // refresh open and repeatedly replace the ancestor DOM. Persisted visible
     // branches are ancestors or siblings of the current route instead.
     if (
-      activeRoutePath !== refreshRoutePathname &&
-      (refreshRoutePathname === "/" || activeRoutePath.startsWith(refreshRoutePathname + "/"))
+      isDescendantPathname(activeRoutePath, refreshRequestPathname) ||
+      isDescendantPathname(activeRoutePath, refreshRoutePathname)
     ) {
       continue;
     }
     const pathname = restoreBasePath(activeRoutePath, options.basePath);
     if (sourceUrlsByPathname.has(pathname)) continue;
     const sourceUrl = new URL(pathname, options.refreshUrl);
+    // History state is page-writable: never refetch another origin.
+    if (sourceUrl.origin !== options.refreshUrl.origin) continue;
     sourceUrl.search = options.refreshUrl.search;
     sourceUrlsByPathname.set(pathname, sourceUrl);
   }
@@ -305,6 +391,10 @@ export function resolvePersistedSourcePageRefreshes(options: {
     if (pathAndSearch !== refreshPathAndSearch) resolved.push(pathAndSearch);
   }
   return resolved;
+}
+
+function isDescendantPathname(pathname: string, ancestor: string): boolean {
+  return pathname !== ancestor && (ancestor === "/" || pathname.startsWith(ancestor + "/"));
 }
 
 export type PersistedRefreshInterception = {
@@ -347,7 +437,12 @@ export function resolvePersistedRefreshInterceptions(options: {
       ) !== null
         ? state.interception
         : null;
-    const targetPathname = retainedInterception?.targetMatchedUrl ?? activeRoute.path;
+    // The URL the slot was intercepted at, which the refresh asks for again
+    // with the same interception context, as resolvePersistedSourcePageRefreshes
+    // names the same slot. A matched or route path would be rewritten again,
+    // or decoded once more.
+    const targetPathname =
+      binding.refreshPathname ?? retainedInterception?.targetMatchedUrl ?? activeRoute.path;
     const targetParts = splitPathnameForRouteMatch(getMatchedUrlPathname(targetPathname));
     const isPrimaryRefreshInterception =
       requestInterceptionContext !== null &&
