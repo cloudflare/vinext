@@ -20,6 +20,10 @@ class HangingPromiseRejectionError extends Error {
   }
 }
 
+export function isHangingPromiseRejectionError(error: unknown): boolean {
+  return error instanceof HangingPromiseRejectionError;
+}
+
 const abortListenersBySignal = new WeakMap<AbortSignal, (() => void)[]>();
 const suppressedAbortRejections = new WeakSet<AbortSignal>();
 
