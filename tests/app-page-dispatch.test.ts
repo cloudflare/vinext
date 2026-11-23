@@ -7344,6 +7344,7 @@ describe("app page dispatch", () => {
       expect(resumed).toEqual([
         resumes ? expect.objectContaining({ prelude: expect.any(String) }) : undefined,
       ]);
+      expect(response.headers.get("x-nextjs-postponed")).toBe(resumes ? "1" : null);
       expect(options.isrSet).not.toHaveBeenCalled();
     },
   );
