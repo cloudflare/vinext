@@ -24,6 +24,11 @@ type RscEmbedTransform = {
   finalize(): Promise<Uint8Array>;
   /** Resolves when all raw bytes from the embed stream have been read. */
   getRawBuffer(): Promise<ArrayBuffer>;
+  /**
+   * Call `listener` after each chunk read from the embed stream, and with the
+   * error if reading it fails. A listener handles that error.
+   */
+  listen?(listener: (failure?: { error: unknown }) => void): void;
 };
 
 type ReplayableRscEmbedTransform = RscEmbedTransform & {
@@ -274,6 +279,7 @@ export function createRscEmbedTransform(
   const replays: { controller: ReadableStreamDefaultController<Uint8Array>; keepOpen: boolean }[] =
     [];
   let mirroredNextFlightBootstrap = false;
+  let readListener: ((failure?: { error: unknown }) => void) | null = null;
   const textDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
   const nonceAttribute = textToByteString(createNonceAttribute(options.scriptNonce));
 
@@ -405,6 +411,7 @@ export function createRscEmbedTransform(
         for (const replay of replays) replay.controller.enqueue(result.value);
         chunkDecoder.decode(result.value, pendingChunks);
         pendingRawChunkCount++;
+        readListener?.();
       }
       readDone = true;
       for (const replay of replays.splice(0)) {
@@ -416,6 +423,7 @@ export function createRscEmbedTransform(
       }
       readError = { error };
       for (const replay of replays.splice(0)) replay.controller.error(error);
+      readListener?.(readError);
       throw error;
     } finally {
       reading = false;
@@ -480,6 +488,12 @@ export function createRscEmbedTransform(
     flush(): Uint8Array | null {
       const scripts = flushByteScripts();
       return scripts ? byteStringToBytes(scripts) : null;
+    },
+
+    listen(listener) {
+      readListener = listener;
+      void pumpPromise.catch(() => {});
+      if (readError) listener(readError);
     },
 
     async finalize(): Promise<Uint8Array> {
@@ -831,6 +845,12 @@ function indexOfAsciiBytes(bytes: Uint8Array, pattern: Uint8Array, from: number)
  *    happen before resource hints to be useful, so the safer behaviour is
  *    to no-op and let the user-rendered Script (in its source-order
  *    position) ship as-is.
+ *
+ * `mode` is "prelude" for a PPR shell's stored prelude, which keeps neither
+ * the payload nor the document's end, and "resume" for the HTML that resumes
+ * it, whose head and font CSS the prelude already sent. A resume reads
+ * `injectAfterHeadOpenHTML` before each batch instead, so it should return
+ * only what it hasn't returned before.
  */
 export function createTickBufferedTransform(
   rscEmbed: RscEmbedTransform,
@@ -840,12 +860,15 @@ export function createTickBufferedTransform(
   inlineCssPrependCss = "",
   inlineCssPrependFallbackHTML = "",
   inlineCssScriptNonce?: string,
+  mode: "document" | "prelude" | "resume" = "document",
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const insertsPerFlush = typeof injectHTML === "function";
-  let injected = false;
-  let preHeadInjected = false;
+  const isPrelude = mode === "prelude";
+  let injected = mode === "resume";
+  let preHeadInjected = mode === "resume";
+  if (mode === "resume") inlineCssPrependCss = "";
   let suffixStripped = false;
   let buffered: string[] = [];
   // Fizz's bytes for `buffered`, kept so text the transform leaves unchanged
@@ -987,6 +1010,13 @@ export function createTickBufferedTransform(
     }
     if (!split.complete) return;
 
+    if (mode === "resume") {
+      // The prelude sent the head, so a beforeInteractive Script a resumed
+      // hole renders goes ahead of the batch that renders it.
+      const insertion = readPreHeadInsertion();
+      if (insertion) controller.enqueue(encoder.encode(insertion));
+    }
+
     if (injected && insertsPerFlush) {
       // Emit newly collected server-inserted HTML before the next Fizz HTML
       // batch so CSS-in-JS styles precede the elements they style.
@@ -1055,29 +1085,44 @@ export function createTickBufferedTransform(
     controller.enqueue(encoder.encode(working));
   };
 
+  const scheduleFlush = (controller: TransformStreamDefaultController<Uint8Array>): void => {
+    if (timeoutId !== null) return;
+
+    timeoutId = setTimeout(() => {
+      try {
+        flushBuffered(controller);
+
+        const rscScripts = isPrelude ? null : rscEmbed.flush();
+        if (rscScripts) {
+          controller.enqueue(rscScripts);
+        }
+      } catch {
+        // Stream was cancelled between when the timeout was registered and
+        // when it fired (e.g. client disconnected, health-check cancelled
+        // the response body). Ignore — the stream is already closed.
+      }
+
+      timeoutId = null;
+    }, 0);
+  };
+
   return new TransformStream<Uint8Array, Uint8Array>({
+    start(controller) {
+      // Like Next.js, a resume sends its Flight data as it comes: the shell
+      // its prelude sent hydrates while its holes are still pending.
+      if (mode === "resume") {
+        rscEmbed.listen?.((failure) => {
+          if (failure) controller.error(failure.error);
+          else scheduleFlush(controller);
+        });
+        scheduleFlush(controller);
+      }
+    },
+
     transform(chunk, controller) {
       buffered.push(decoder.decode(chunk, { stream: true }));
       if (!hasInlineCssManifest) bufferedBytes.push(chunk);
-
-      if (timeoutId !== null) return;
-
-      timeoutId = setTimeout(() => {
-        try {
-          flushBuffered(controller);
-
-          const rscScripts = rscEmbed.flush();
-          if (rscScripts) {
-            controller.enqueue(rscScripts);
-          }
-        } catch {
-          // Stream was cancelled between when the timeout was registered and
-          // when it fired (e.g. client disconnected, health-check cancelled
-          // the response body). Ignore — the stream is already closed.
-        }
-
-        timeoutId = null;
-      }, 0);
+      scheduleFlush(controller);
     },
 
     async flush(controller) {
@@ -1098,6 +1143,8 @@ export function createTickBufferedTransform(
       } else if (insertsPerFlush) {
         emitInsertion(controller);
       }
+
+      if (isPrelude) return;
 
       controller.enqueue(await rscEmbed.finalize());
 

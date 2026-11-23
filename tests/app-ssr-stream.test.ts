@@ -826,6 +826,99 @@ describe("createTickBufferedTransform pre-head splice", () => {
     expect(out).not.toContain("<script>x</script>");
   });
 
+  it("emits a resumed hole's scripts ahead of the batch that renders them", async () => {
+    // A resume has no head: its prelude sent it. Each hole registers its
+    // scripts as it renders, before its batch reaches the transform.
+    const registered: string[] = [];
+    const encoder = new TextEncoder();
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const reader = new ReadableStream<Uint8Array>({
+      start(controller) {
+        source = controller;
+      },
+    })
+      .pipeThrough(
+        createTickBufferedTransform(
+          createNoopRscEmbedTransform(),
+          "",
+          () => registered.splice(0).join(""),
+          undefined,
+          "",
+          "",
+          undefined,
+          "resume",
+        ),
+      )
+      .getReader();
+    let out = "";
+    // Each hole's batch is read out before the next hole renders.
+    for (const [index, hole] of [
+      '<div hidden id="S:0">a</div>',
+      '<div hidden id="S:1">b</div>',
+    ].entries()) {
+      registered.push(`<script>hole${index}()</script>`);
+      source.enqueue(encoder.encode(hole));
+      while (!out.includes(hole)) out += text((await reader.read()).value!);
+    }
+    source.close();
+    for (let read = await reader.read(); !read.done; read = await reader.read()) {
+      out += text(read.value);
+    }
+
+    expect(out).toBe(
+      '<script>hole0()</script><div hidden id="S:0">a</div>' +
+        '<script>hole1()</script><div hidden id="S:1">b</div></body></html>',
+    );
+  });
+
+  it("sends a resume's Flight data while its holes are still pending", async () => {
+    // Like Next.js, the shell its prelude sent hydrates before any hole renders.
+    const output = new ReadableStream<Uint8Array>().pipeThrough(
+      createTickBufferedTransform(
+        createRscEmbedTransform(createTextStream(["shell-row"])),
+        "",
+        "",
+        undefined,
+        "",
+        "",
+        undefined,
+        "resume",
+      ),
+    );
+    const reader = output.getReader();
+
+    const { value } = await reader.read();
+
+    expect(text(value!)).toContain('.rsc.push("shell-row")');
+    await reader.cancel();
+  });
+
+  it("fails a resume whose Flight data errors while its holes are still pending", async () => {
+    const failure = new Error("flight failed");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const output = new ReadableStream<Uint8Array>().pipeThrough(
+      createTickBufferedTransform(
+        createRscEmbedTransform(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.error(failure);
+            },
+          }),
+        ),
+        "",
+        "",
+        undefined,
+        "",
+        "",
+        undefined,
+        "resume",
+      ),
+    );
+
+    await expect(output.getReader().read()).rejects.toBe(failure);
+    warn.mockRestore();
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
   // (regression for #1532)
@@ -1130,6 +1223,29 @@ describe("createTickBufferedTransform byte pass-through", () => {
 });
 
 describe("createTickBufferedTransform inline CSS", () => {
+  it("doesn't resend the font CSS its resumed prelude sent", async () => {
+    const fontCss = "@font-face { font-family: '__local_font_0'; src: url('/font.woff2'); }";
+    const out = await new Response(
+      createTextStream([
+        '<div hidden id="S:0"><link rel="stylesheet" href="/_next/static/hole.css" data-precedence="next"/></div>',
+      ]).pipeThrough(
+        createTickBufferedTransform(
+          createNoopRscEmbedTransform(),
+          () => "",
+          "",
+          { "/_next/static/hole.css": "p{color:red}" },
+          fontCss,
+          `<style data-vinext-fonts>${fontCss}</style>`,
+          undefined,
+          "resume",
+        ),
+      ),
+    ).text();
+
+    expect(out).toContain('data-href="/_next/static/hole.css">p{color:red}</style>');
+    expect(out).not.toContain("@font-face");
+  });
+
   it("replaces React stylesheet links with hoistable inline style tags", async () => {
     const out = await runTransform(
       [

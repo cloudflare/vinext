@@ -171,6 +171,20 @@ const projectServers = {
     use: { baseURL: "http://localhost:4183" },
     server: appRouterBfcacheServer,
   },
+  // Cache Components shells resumed in production: the shell is sent as
+  // stored and only its holes render.
+  "app-router-ppr-resume": {
+    testDir: "./tests/e2e/app-router-ppr-resume",
+    use: { baseURL: "http://127.0.0.1:4205" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4205 --hostname 127.0.0.1",
+      cwd: "./tests/fixtures/app-ppr-resume",
+      port: 4205,
+      reuseExistingServer: false,
+      timeout: 60_000,
+    },
+  },
   // The same BFCache specs against a production build, where Links prefetch
   // and the client runs minified React.
   "app-router-bfcache-prod": {

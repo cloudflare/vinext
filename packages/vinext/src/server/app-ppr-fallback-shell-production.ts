@@ -10,7 +10,7 @@ import {
 import {
   hasAppPprFallbackShellPrelude,
   markAppPprDynamicFallbackShellHtml,
-  splitAppPprFallbackShellResumeDataCache,
+  splitAppPprFallbackShellState,
   type AppPagePprFallbackCacheShell,
 } from "./app-ppr-fallback-shell.js";
 import { isrCacheControl, type ISRCacheEntry } from "./isr-cache.js";
@@ -44,18 +44,15 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     return null;
   }
 
-  const shell = splitAppPprFallbackShellResumeDataCache(await response.text());
+  const shell = splitAppPprFallbackShellState(await response.text());
   const linkHeader = response.headers.get("link");
   const value: CachedAppPageValue = {
     kind: "APP_PAGE",
     html: markAppPprDynamicFallbackShellHtml(shell.html),
     rscData: undefined,
     headers: linkHeader ? { link: linkHeader } : undefined,
-    // An empty shell renders blocking, so it keeps no resume data cache.
-    postponed:
-      shell.resumeDataCache && hasAppPprFallbackShellPrelude(shell.html)
-        ? shell.resumeDataCache
-        : undefined,
+    // An empty shell renders blocking, so it keeps nothing to resume from.
+    postponed: shell.state && hasAppPprFallbackShellPrelude(shell.html) ? shell.state : undefined,
     status: undefined,
   };
 

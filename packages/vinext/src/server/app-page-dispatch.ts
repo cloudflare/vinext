@@ -114,7 +114,11 @@ import {
   type VaryParam,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
-import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
+import {
+  createAppPageRscErrorTracker,
+  type AppPagePprShellResume,
+  type AppPageSsrHandler,
+} from "./app-page-stream.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
@@ -344,7 +348,7 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isDraftMode: boolean,
     isForceStatic: boolean,
     isForceDynamic: boolean,
-  ): Promise<Response | null>;
+  ): Promise<Response | AppPagePprShellResume | null>;
   /** Produce the missing shells of a generated path rendered for the cache. */
   produceMissingShells(
     options: DispatchAppPageOptions<TRoute>,
@@ -842,8 +846,15 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
     runWithFetchDedupe(async () => {
       const response = await dispatchAppPageInner(await withResolvedIntercept(options));
       // Like Next.js, a document resumed from a fallback shell is marked as
-      // having postponed.
-      if (!options.isRscRequest && _getResumeDataCacheSeed() !== null) {
+      // having postponed. An html-limited bot's whole document didn't postpone.
+      if (
+        !options.isRscRequest &&
+        _getResumeDataCacheSeed() !== null &&
+        shouldServeStreamingMetadata(
+          options.request.headers.get("user-agent") ?? "",
+          options.htmlLimitedBots,
+        )
+      ) {
         response.headers.set("x-nextjs-postponed", "1");
       }
       return response;
@@ -1701,7 +1712,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  const fallbackShellResponse = options.pprRuntime
+  const fallbackShellResult = options.pprRuntime
     ? await options.pprRuntime.tryServe(
         options,
         currentRevalidateSeconds,
@@ -1710,9 +1721,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isForceDynamic,
       )
     : null;
-  if (fallbackShellResponse) {
-    return fallbackShellResponse;
+  if (fallbackShellResult instanceof Response) {
+    return fallbackShellResult;
   }
+  // The stored shell whose prelude this request sends before its holes. Like
+  // Next.js, an html-limited bot renders the whole document instead, with the
+  // shell's cached data, as its metadata blocks in the <head> a prelude closed.
+  const pprShellResume = serveStreamingMetadata ? (fallbackShellResult ?? undefined) : undefined;
 
   let interceptConfig: AppPageInterceptSegmentConfig | null = null;
   // Whether the intercepted response's render is force-dynamic or
@@ -2033,6 +2048,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           options.pprRuntime!.beginFinalRender(activeFallbackShellState);
         }
       : undefined,
+    isPprFallbackShellPartial: activeFallbackShellState
+      ? () => activeFallbackShellState.hasDynamicBoundary
+      : undefined,
+    pprShellResume,
     rootParams: options.rootParams,
     peekRenderObservationState() {
       return {

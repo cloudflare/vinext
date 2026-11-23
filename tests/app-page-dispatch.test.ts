@@ -7183,6 +7183,21 @@ describe("app page dispatch", () => {
     expect(buildPageElement).not.toHaveBeenCalled();
   });
 
+  it("gives a fallback shell reached through a rewrite the browser's pathname", async () => {
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement(),
+      isrGet: createPprBlogFallbackShellGetter(false),
+    });
+
+    const body = await (
+      await dispatchAppPage({ ...options, displayPathname: "/posts/new-post" })
+    ).text();
+
+    expect(body).toContain("Locale: en");
+    expect(body).toContain("/posts/new-post");
+    expect(body).not.toContain("/en/blog/new-post");
+  });
+
   it("renders an on-demand revalidation blocking instead of resuming its fallback shell", async () => {
     const buildPageElement = createParamTextPageElement();
     const isrGet = createPprBlogFallbackShellGetter(false);
@@ -7280,6 +7295,59 @@ describe("app page dispatch", () => {
     expect(options.isrSet).not.toHaveBeenCalled();
     expect(response.headers.get("x-nextjs-postponed")).toBe("1");
   });
+
+  // As in Next.js, an html-limited bot's metadata blocks in <head>, which a
+  // stored prelude has already closed, so it renders the whole document.
+  it.each([
+    { resumes: true, userAgent: "Mozilla/5.0" },
+    { resumes: false, userAgent: "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+  ])(
+    "resumes a fallback shell's prelude for $userAgent: $resumes",
+    async ({ resumes, userAgent }) => {
+      const { formatAppPprShellState } =
+        await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+      const resumed: unknown[] = [];
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement(),
+        isrGet: vi.fn(async (key: string) =>
+          key === "shell:/en/blog/[slug]"
+            ? buildISRCacheEntry({
+                ...buildCachedAppPageValue(
+                  markAppPprDynamicFallbackShellHtml(
+                    "<!DOCTYPE html><html><head></head><body>shell",
+                  ),
+                ),
+                postponed: formatAppPprShellState({
+                  prelude: true,
+                  postponed: { resumableState: {} },
+                  resumeDataCache: null,
+                }),
+              })
+            : null,
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            resumed.push(captureOptions?.pprShellResume);
+            return createStream(["<html><head></head><body>page</body></html>"]);
+          },
+        }),
+        request: new Request("https://example.test/en/blog/new-post", {
+          headers: { "user-agent": userAgent },
+        }),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      await response.text();
+
+      expect(resumed).toEqual([
+        resumes ? expect.objectContaining({ prelude: expect.any(String) }) : undefined,
+      ]);
+      expect(response.headers.get("x-nextjs-postponed")).toBe(resumes ? "1" : null);
+      expect(options.isrSet).not.toHaveBeenCalled();
+    },
+  );
 
   it("renders normally when generateStaticParams throws while choosing a fallback shell", async () => {
     const isrGetFallbackShell = vi.fn(async () => null);
@@ -8158,6 +8226,35 @@ describe("query-free App page ISR entries", () => {
 
   afterAll(() => {
     Reflect.deleteProperty(Object.prototype, "viteRsc");
+  });
+
+  it("cancels the unread SSR payload of a shell resumed with holes only in its payload", async () => {
+    let cancelled = false;
+    // The payload never ends on its own, as one still streaming its holes.
+    const rscStream = new ReadableStream<Uint8Array>({
+      pull() {},
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const sideStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+
+    const navigation: NavigationContext = {
+      params: { slug: "hello" },
+      pathname: "/posts/hello",
+      searchParams: new URLSearchParams(),
+    };
+    const html = await productionHandleSsr(rscStream, navigation, undefined, {
+      pprShellResume: { postponed: null, prelude: "<!DOCTYPE html><html><head></head><body>" },
+      sideStream,
+    });
+    await new Response(html.htmlStream).text();
+
+    expect(cancelled).toBe(true);
   });
 
   function SearchValue(): React.ReactNode {

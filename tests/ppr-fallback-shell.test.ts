@@ -343,6 +343,34 @@ describe("ppr fallback shell render lifecycle", () => {
     state.abortController.abort();
   });
 
+  it("leaves request-data reads as holes without making the shell dynamic", async () => {
+    const { consumeDynamicUsage, cookies, headers, setHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { connection } = await import("../packages/vinext/src/shims/server.js");
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/:locale/about",
+    });
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      setHeadersContext({ headers: new Headers(), cookies: new Map() });
+      runWithPprFallbackShellState(state, () => {
+        void cookies();
+        void headers();
+        void connection();
+      });
+      await delay(0);
+      expect(state.hasDynamicBoundary).toBe(true);
+      // The shell holds the reads as holes, so it stays storable.
+      expect(consumeDynamicUsage()).toBe(false);
+
+      void cookies();
+      expect(consumeDynamicUsage()).toBe(true);
+    });
+
+    state.abortController.abort();
+  });
+
   it("createPprFallbackShellSuspensePromise returns null outside shell context", () => {
     const promise = createPprFallbackShellSuspensePromise("params");
     expect(promise).toBeNull();

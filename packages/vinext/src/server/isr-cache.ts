@@ -577,7 +577,8 @@ export function appIsrFallbackShellKey(
   suffix: "html" | "rsc",
   buildId = process.env.__VINEXT_BUILD_ID,
 ): string {
-  const prefix = buildId ? `app-fallback-shell:v1:${buildId}` : "app-fallback-shell:v1";
+  // Keep shells stored in an older format unreachable even when generateBuildId is stable.
+  const prefix = buildId ? `app-fallback-shell:v2:${buildId}` : "app-fallback-shell:v2";
   return buildCacheKey(prefix, pathname, suffix);
 }
 
