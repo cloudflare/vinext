@@ -841,13 +841,18 @@ const handler = {
       const invocation = prepareInvocation(identityRequest, identityProps);
       const key = await cacheRequest(invocation);
       let stored = await readStoredResponse(key);
-      // A shell isn't a response: the render reads it instead of the Store.
-      const foundShell = ownPart !== undefined && !!stored && isResponseStorePageShell(stored);
+      // A shell isn't a response: the render reads it instead of the Store. A
+      // dispatch storing no shell part, whose key a warm-up's shell may have
+      // reached, renders too.
+      const foundShell = !!stored && isResponseStorePageShell(stored);
       // What the read found for the render: the Store's miss, or a shell. A
       // failed lookup, or a shell that can't be read, is left to the
       // render's own read.
       let ownPartRead: Response | null | undefined = stored === null ? null : undefined;
-      if (stored && foundShell) {
+      if (stored && foundShell && !ownPart) {
+        void stored.body?.cancel().catch(() => {});
+        stored = null;
+      } else if (stored && foundShell) {
         try {
           // Buffered as bytes, which the render's read decodes once.
           ownPartRead = new Response(await stored.arrayBuffer(), stored);
