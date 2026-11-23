@@ -968,6 +968,37 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       ]);
     });
 
+    it("purges a shell's edge copies when its admitted page is stored over it", async () => {
+      dispatchWithIdentity();
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const dataCache = createResponseStoreDataCacheAdapter();
+      stages.response.mockImplementationOnce(async () => {
+        await dataCache.set("html:/page", shell("<!--shell-->"), shellContext("document"));
+        await dataCache.set("rsc:/page", shell(""), shellContext("rsc"));
+        return dynamicResponse();
+      });
+      await fetchPage(handler);
+      const pageKey = store.fetch.mock.calls[0]![0].url;
+      const rscKey = [...entries.keys()].find((url) => url !== pageKey)!;
+      stages.response.mockImplementationOnce(async () => {
+        captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
+        const response = new Response("page", {
+          headers: { "Cache-Control": "public, max-age=60" },
+        });
+        return deferResponseStoreAdmission(response, async (admitted) => admitted) ?? response;
+      });
+
+      await fetchPage(handler);
+
+      expect(entries.get(pageKey)?.body).toBe("page");
+      expect(entries.get(rscKey)?.body).toBe("rsc");
+      expect([pageKey, rscKey].map((url) => entries.get(url)?.options?.purgeExisting)).toEqual([
+        true,
+        true,
+      ]);
+    });
+
     it("purges a shell's other part the render found when its page is stored over it", async () => {
       dispatchWithIdentity();
       const { entries, store } = createMemoryStore();
