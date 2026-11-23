@@ -433,6 +433,7 @@ export function createPagesFontOwnerManifestPlugin(options: {
             ]),
           ),
           routelessFiles: [],
+          globalNotFoundFiles: [],
         });
       }
       this.emitFile({
