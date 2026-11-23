@@ -18,6 +18,8 @@ import {
   resolveActiveParallelRouteHeadInputs,
   resolveInterceptLayoutsBesidePage,
   slotInterceptKeepsSourceHead,
+  type ActiveParallelRouteHeadInput,
+  type AppPageHeadModule,
   type AppPagePreparedRouteHead,
   type ApplyAppPageFileBasedMetadata,
 } from "./app-page-head.js";
@@ -670,21 +672,17 @@ export async function buildPageElements<
   // other slots it already shows, and the source's head when that heads the
   // route, so none of them runs here, under the intercepted target's request.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/ppr-navigations.ts
-  const retainedSourceInterceptInput =
+  const retainedSourceHead =
     opts?.rendersInterceptionSource === true && interceptSlotKey !== null
-      ? activeParallelRouteHeadInputs.find((input) => input.slotKey === interceptSlotKey)
-      : undefined;
-  const retainedSourceLayoutCount = (() => {
-    if (!retainedSourceInterceptInput || !interceptSlotKey) return null;
-    const layoutIndex = route.slots?.[interceptSlotKey]?.layoutIndex;
-    if (layoutIndex === undefined) return null;
-    return (layoutIndex >= 0 ? layoutIndex : route.layouts.length - 1) + 1;
-  })();
-  if (
-    opts?.rendersInterceptionSource === true &&
-    isSlotIntercept &&
-    retainedSourceLayoutCount === null
-  ) {
+      ? resolveInterceptionSourceHead({
+          interceptSlotKey,
+          interceptSourcePageSegments: opts.interceptSourcePageSegments,
+          metadataRoutes,
+          parallelRouteHeadInputs: activeParallelRouteHeadInputs,
+          route,
+        })
+      : null;
+  if (opts?.rendersInterceptionSource === true && isSlotIntercept && retainedSourceHead === null) {
     throw new Error(
       `[vinext] Missing the intercepted slot ${String(interceptSlotKey)} on ${route.pattern}`,
     );
@@ -708,47 +706,21 @@ export async function buildPageElements<
     searchParams,
     searchParamsObserver: metadataSearchParamsObserver,
   };
-  // The intercepting tree's head reads the files of the segments down to the
-  // slot's owner and of the intercepted slot's folders above the interception
-  // marker, which the intercepting tree renders, not those of the segments and
-  // the other slots the client keeps.
-  // The folder holding the slot's directory owns it, which can sit below the
-  // layout that renders it, as `app/(group)/@modal` does beneath `app/layout`.
-  const retainedSourceOwnerTreePosition =
-    retainedSourceLayoutCount === null
-      ? undefined
-      : ((interceptSlotKey ? route.slots?.[interceptSlotKey]?.ownerTreePosition : null) ??
-        route.layoutTreePositions?.[retainedSourceLayoutCount - 1]);
-  const headMetadataRoutes =
-    retainedSourceInterceptInput &&
-    interceptSlotKey &&
-    retainedSourceOwnerTreePosition !== undefined
-      ? filterMetadataRoutesForSegments(
-          metadataRoutes,
-          resolveInterceptSlotHeadSegments(
-            (route.routeSegments ?? []).slice(0, retainedSourceOwnerTreePosition),
-            `@${route.slots?.[interceptSlotKey]?.name ?? interceptSlotKey}`,
-            opts?.interceptSourcePageSegments,
-          ),
-        )
-      : metadataRoutes;
   // The intercepting page's own errors still reach its outlet in the slot.
-  const headOptions =
-    retainedSourceInterceptInput && retainedSourceLayoutCount !== null
-      ? {
-          ...sourceHeadOptions,
-          metadataRoutes: headMetadataRoutes,
-          hiddenParallelRoutes: null,
-          layoutModules: route.layouts.slice(0, retainedSourceLayoutCount),
-          layoutTreePositions:
-            route.layoutTreePositions?.slice(0, retainedSourceLayoutCount) ?? null,
-          outletParallelRouteIndex: 0,
-          // The whole intercepting route's children are the owner's default,
-          // whose metadata Next.js resolves as that tree's page.
-          pageModule: rendersWholeInterceptingRoute ? (effectivePageModule ?? null) : null,
-          parallelRoutes: [retainedSourceInterceptInput.head],
-        }
-      : sourceHeadOptions;
+  const headOptions = retainedSourceHead
+    ? {
+        ...sourceHeadOptions,
+        metadataRoutes: retainedSourceHead.metadataRoutes,
+        hiddenParallelRoutes: null,
+        layoutModules: retainedSourceHead.layoutModules,
+        layoutTreePositions: retainedSourceHead.layoutTreePositions,
+        outletParallelRouteIndex: 0,
+        // The whole intercepting route's children are the owner's default,
+        // whose metadata Next.js resolves as that tree's page.
+        pageModule: rendersWholeInterceptingRoute ? (effectivePageModule ?? null) : null,
+        parallelRoutes: [retainedSourceHead.interceptInput.head],
+      }
+    : sourceHeadOptions;
   const retainsInterceptionSource =
     headOptions !== sourceHeadOptions && !rendersWholeInterceptingRoute;
   const retainsSourceHead = retainsInterceptionSource && keepsSourceHead;
@@ -778,25 +750,18 @@ export async function buildPageElements<
     const recoveredHead = recoverAppPageRouteHead(preparedHead, {
       applyFileBasedMetadata: options.applyFileBasedMetadata,
       basePath: options.basePath ?? "",
-      metadataRoutes: headMetadataRoutes,
+      metadataRoutes: headOptions.metadataRoutes,
       // The not-found head recovers from the same branches as the visible
       // head: the source tree's, when a slot intercept keeps the source head.
       resolvePlanOptions: () =>
         createRouteNotFoundHeadPlanOptions(
-          retainedSourceInterceptInput && retainedSourceLayoutCount !== null
+          retainedSourceHead
             ? {
-                parallelBranches: [retainedSourceInterceptInput],
+                parallelBranches: [retainedSourceHead.interceptInput],
                 params: effectiveParams,
                 primaryParallelBranch: null,
                 rootNotFoundModule,
-                // Nor do the not-found files of the segments the client keeps.
-                route: {
-                  ...route,
-                  ...resolveRetainedSourceNotFound(route, retainedSourceOwnerTreePosition),
-                  layouts: headOptions.layoutModules,
-                  layoutTreePositions: headOptions.layoutTreePositions,
-                  notFounds: route.notFounds?.slice(0, retainedSourceLayoutCount),
-                },
+                route: retainedSourceHead.notFoundRoute,
               }
             : {
                 parallelBranches: headParallelRouteInputs,
@@ -1186,7 +1151,7 @@ export async function buildPageElements<
       interceptionId: opts?.interceptionId ?? null,
       interceptionSourceRetention: retainsInterceptionSource
         ? {
-            ownerTreePosition: retainedSourceOwnerTreePosition ?? null,
+            ownerTreePosition: retainedSourceHead?.ownerTreePosition ?? null,
             retainsHead: retainsSourceHead,
             retainsPage: EffectivePageComponent != null,
           }
@@ -1563,4 +1528,90 @@ function resolveRetainedSourceNotFound<TModule>(
     ownerTreePosition,
   );
   return { notFound: file, notFoundTreePosition: treePosition };
+}
+
+/** The parts of a route the head of a render of an interception's source reads. */
+type InterceptionSourceHeadRoute<TModule> = {
+  layoutTreePositions?: readonly number[] | null;
+  layouts: readonly (TModule | null | undefined)[];
+  notFound?: TModule | null;
+  notFoundTreePosition?: number | null;
+  notFounds?: readonly (TModule | null | undefined)[] | null;
+  routeSegments?: readonly string[] | null;
+  segmentNotFounds?: readonly (TModule | null | undefined)[] | null;
+  segmentNotFoundTreePositions?: readonly number[] | null;
+  slots?: Readonly<
+    Record<
+      string,
+      { layoutIndex?: number; name?: string | null; ownerTreePosition?: number | null }
+    >
+  > | null;
+};
+
+/**
+ * The head of a render of an interception's source beneath its intercepted
+ * target (`rendersInterceptionSource`), which Next.js resolves from the
+ * intercepting route's tree: the layouts down to the slot's owner and the
+ * intercepted slot's branch, not the segments and the other slots the client
+ * keeps. It reads the metadata files of the segments down to the owner and of
+ * the slot's folders above the interception marker, and its not-found head
+ * recovers from that branch and the not-found files at or above the owner. A
+ * whole intercepting route's fallbacks head with it too, when its render threw
+ * before its own head started. Null when the route doesn't have the slot.
+ */
+export function resolveInterceptionSourceHead<
+  TModule extends AppPageHeadModule,
+  TRoute extends InterceptionSourceHeadRoute<TModule>,
+>(options: {
+  interceptSlotKey: string;
+  interceptSourcePageSegments: readonly string[] | null | undefined;
+  metadataRoutes: readonly MetadataFileRoute[];
+  /** The route's slot branches with the intercept in its slot (resolveActiveParallelRouteHeadInputs). */
+  parallelRouteHeadInputs: readonly ActiveParallelRouteHeadInput<TModule>[];
+  route: TRoute;
+}): {
+  interceptInput: ActiveParallelRouteHeadInput<TModule>;
+  layoutModules: TRoute["layouts"];
+  layoutTreePositions: readonly number[] | null;
+  metadataRoutes: readonly MetadataFileRoute[];
+  notFoundRoute: TRoute;
+  ownerTreePosition: number | undefined;
+} | null {
+  const { interceptSlotKey, route } = options;
+  const interceptInput = options.parallelRouteHeadInputs.find(
+    (input) => input.slotKey === interceptSlotKey,
+  );
+  const slot = route.slots?.[interceptSlotKey];
+  const layoutIndex = slot?.layoutIndex;
+  if (!interceptInput || layoutIndex === undefined) return null;
+  const layoutCount = (layoutIndex >= 0 ? layoutIndex : route.layouts.length - 1) + 1;
+  const layoutModules = route.layouts.slice(0, layoutCount);
+  const layoutTreePositions = route.layoutTreePositions?.slice(0, layoutCount) ?? null;
+  // The folder holding the slot's directory owns it, which can sit below the
+  // layout that renders it, as `app/(group)/@modal` does beneath `app/layout`.
+  const ownerTreePosition = slot?.ownerTreePosition ?? route.layoutTreePositions?.[layoutCount - 1];
+  return {
+    interceptInput,
+    layoutModules,
+    layoutTreePositions,
+    metadataRoutes:
+      ownerTreePosition === undefined
+        ? options.metadataRoutes
+        : filterMetadataRoutesForSegments(
+            options.metadataRoutes,
+            resolveInterceptSlotHeadSegments(
+              (route.routeSegments ?? []).slice(0, ownerTreePosition),
+              `@${slot?.name ?? interceptSlotKey}`,
+              options.interceptSourcePageSegments,
+            ),
+          ),
+    notFoundRoute: {
+      ...route,
+      ...resolveRetainedSourceNotFound(route, ownerTreePosition),
+      layouts: layoutModules,
+      layoutTreePositions,
+      notFounds: route.notFounds?.slice(0, layoutCount),
+    },
+    ownerTreePosition,
+  };
 }

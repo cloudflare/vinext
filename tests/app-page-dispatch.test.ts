@@ -4224,10 +4224,17 @@ describe("app page dispatch", () => {
     const groupNotFound = { default: () => null };
     const ownerPage = { default: () => null, generateMetadata: vi.fn(() => ({ title: "Page" })) };
     const sidePage = { default: () => null, generateMetadata: vi.fn(() => ({ title: "Side" })) };
-    const sideDefault = { default: () => null };
+    const sideDefault = {
+      default: () => null,
+      generateMetadata: vi.fn(() => ({ title: "Side default" })),
+    };
     const ownerDefault = {
       default: () => null,
-      generateMetadata: vi.fn(() => ({ title: "Club default" })),
+      generateMetadata: vi.fn(() => ({ description: "Club", title: "Club default" })),
+    };
+    const interceptPage = {
+      default: () => null,
+      generateMetadata: vi.fn(() => ({ title: "Pic" })),
     };
     const route = createRoute({
       errors: [null, { default: () => null }],
@@ -4272,7 +4279,7 @@ describe("app page dispatch", () => {
         interceptBranchSegments: ["(.)pics", "[id]"],
         matchedParams: { id: "1" },
         ownerDefault,
-        page: { default: () => null },
+        page: interceptPage,
         rendersWholeInterceptingRoute: true,
         slotKey: "modal@app/club/[...path]/@modal",
         sourceMatchedParams: { path: ["a"] },
@@ -4288,6 +4295,7 @@ describe("app page dispatch", () => {
     options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
     const response = await dispatchAppPage(options);
     return {
+      interceptPage,
       ownerDefault,
       ownerLayout,
       ownerNotFound,
@@ -4345,14 +4353,18 @@ describe("app page dispatch", () => {
         layouts: [ownerLayout],
         routeSegments: ["club", "[...path]"],
       }),
+      false,
     );
   });
 
   // The render threw before its head started, so the fallback resolves the
-  // head from the route it receives, as the whole intercepting route renders
-  // it: the owner's default heads it, not the owner's page or a slot's page.
+  // head as the whole intercepting route's render does: the owner's default
+  // and then the intercepting page head it, not the owner's page, a slot's
+  // page or another slot's default.
   it("heads a whole intercepting route's fallback without the pages it doesn't render", async () => {
+    let payload: unknown = null;
     const {
+      interceptPage,
       ownerDefault,
       ownerPage,
       renderHttpAccessFallbackPage,
@@ -4379,7 +4391,10 @@ describe("app page dispatch", () => {
           matchedParams: opts.matchedParams,
           metadataRoutes: [],
           middlewareContext: { headers: null, status: null },
-          renderToReadableStream: () => createStream(["flight"]),
+          renderToReadableStream: (element) => {
+            payload = element;
+            return createStream(["flight"]);
+          },
           request: new Request("https://example.test/club/a/pics/1"),
           requestUrl: "https://example.test/club/a/pics/1",
           resolveChildSegments: () => [],
@@ -4394,8 +4409,27 @@ describe("app page dispatch", () => {
     expect(response.status).toBe(404);
     await response.text();
     expect(ownerDefault.generateMetadata).toHaveBeenCalled();
+    expect(interceptPage.generateMetadata).toHaveBeenCalled();
     expect(ownerPage.generateMetadata).not.toHaveBeenCalled();
     expect(sidePage.generateMetadata).not.toHaveBeenCalled();
+    expect(sideDefault.generateMetadata).not.toHaveBeenCalled();
+    // The intercepting page comes after the owner's default, so its title wins.
+    const findMetadata = (node: unknown): Record<string, unknown> | null => {
+      if (Array.isArray(node)) {
+        for (const child of node) {
+          const metadata = findMetadata(child);
+          if (metadata) return metadata;
+        }
+        return null;
+      }
+      if (React.isValidElement<Record<string, unknown>>(node)) {
+        return isUnknownRecord(node.props.metadata)
+          ? node.props.metadata
+          : findMetadata(Object.values(node.props));
+      }
+      return isUnknownRecord(node) ? findMetadata(Object.values(node)) : null;
+    };
+    expect(findMetadata(payload)).toMatchObject({ description: "Club", title: "Pic" });
     expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
       404,
       expect.objectContaining({
@@ -5160,6 +5194,99 @@ describe("app page dispatch", () => {
     await expect(
       dispatchCurrentRouteIntercept(undefined, { runtime: "edge" }),
     ).resolves.toMatchObject({ edgeRuntime: "1" });
+  });
+
+  // The fallbacks of an interception's render, its error page and its
+  // not-found, forbidden and unauthorized pages, run under the interception's
+  // runtime too, not the matched page's.
+  it.each([
+    { name: "an interception", wholeRoute: false },
+    { name: "a whole intercepting route", wholeRoute: true },
+  ])("renders the fallbacks of $name under the interception's runtime", async ({ wholeRoute }) => {
+    const dispatchFailingIntercept = async (
+      thrown: unknown,
+      isMatchedEdgeRuntime: boolean,
+      interceptPage: Record<string, unknown>,
+      routeOverrides: Partial<TestRoute> = {},
+    ) => {
+      const route = createRoute({
+        isDynamic: true,
+        layouts: [{ default: () => null }, { default: () => null }],
+        layoutTreePositions: [0, 1],
+        params: ["id"],
+        pattern: "/shots/[id]",
+        routeSegments: ["shots", "[id]"],
+        slots: {
+          "modal@app/shots/@modal": {
+            default: { default: () => null },
+            layoutIndex: 1,
+            name: "modal",
+            ownerTreePosition: 1,
+          },
+        },
+        ...routeOverrides,
+      });
+      const renderErrorBoundaryPage = vi.fn<DispatchOptions["renderErrorBoundaryPage"]>(
+        async () => new Response("error", { status: 500 }),
+      );
+      const renderHttpAccessFallbackPage = vi.fn<DispatchOptions["renderHttpAccessFallbackPage"]>(
+        async () => new Response("not found", { status: 404 }),
+      );
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw thrown;
+        },
+        cleanPathname: "/shots/2",
+        findIntercept: () => ({
+          interceptBranchSegments: ["[id]"],
+          matchedParams: { id: "2" },
+          ...(wholeRoute && {
+            ownerDefault: { default: () => null },
+            rendersWholeInterceptingRoute: true,
+          }),
+          page: { default: "modal-page", ...interceptPage },
+          slotKey: "modal@app/shots/@modal",
+          sourceRouteIndex: 0,
+        }),
+        getSourceRoute: () => route,
+        isRscRequest: true,
+        route,
+      });
+      await dispatchAppPage({
+        ...options,
+        isEdgeRuntime: isMatchedEdgeRuntime,
+        renderErrorBoundaryPage,
+        renderHttpAccessFallbackPage,
+      });
+      return {
+        errorRuntime: renderErrorBoundaryPage.mock.calls[0]?.[4],
+        fallbackRuntime: renderHttpAccessFallbackPage.mock.calls[0]?.[1].isEdgeRuntime,
+      };
+    };
+    const segmentNotFound = { default: () => null };
+    for (const [thrown, routeOverrides] of [
+      // A page's error, and its notFound() without and with segment data.
+      [new Error("modal failed"), {}],
+      [createNotFoundSignal(), {}],
+      [
+        createNotFoundSignal(),
+        { segmentNotFounds: [segmentNotFound], segmentNotFoundTreePositions: [0] },
+      ],
+      // A layout's notFound().
+      [tagAppPageLayoutError(createNotFoundSignal(), 1), {}],
+    ] as const) {
+      const isError = !(thrown as { digest?: string }).digest;
+      const runtimeOf = (result: { errorRuntime: unknown; fallbackRuntime: unknown }) =>
+        isError ? result.errorRuntime : result.fallbackRuntime;
+      expect(runtimeOf(await dispatchFailingIntercept(thrown, true, {}, routeOverrides))).toBe(
+        false,
+      );
+      expect(
+        runtimeOf(
+          await dispatchFailingIntercept(thrown, false, { runtime: "edge" }, routeOverrides),
+        ),
+      ).toBe(true);
+    }
   });
 
   // app/shots/[id]/page.tsx is force-static with revalidate = 3600;

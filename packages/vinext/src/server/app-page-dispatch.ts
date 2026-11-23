@@ -502,6 +502,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     params?: AppPageParams,
     /** The route as the render showed it, which a whole intercepting route trims. */
     route?: TRoute,
+    /** The runtime the render ran under: an interception's own, from its segment config. */
+    isEdgeRuntime?: boolean,
   ) => Promise<Response | null>;
   renderHttpAccessFallbackPage: (
     statusCode: number,
@@ -515,6 +517,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
       intercept?: AppPageDispatchInterceptOptions | null;
       /** The document may be stored, so it must not carry the request's query. */
       isCacheCandidate?: boolean;
+      /** The runtime the render ran under: an interception's own, from its segment config. */
+      isEdgeRuntime?: boolean;
       layouts?: readonly AppPageModule[];
       matchedParams: AppPageParams;
       /** The route's render threw the signal, so the document keeps the route's head. */
@@ -1628,7 +1632,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         );
       },
       renderErrorBoundaryPage(buildError) {
-        return options.renderErrorBoundaryPage(buildError, undefined, renderParams, renderedRoute);
+        return options.renderErrorBoundaryPage(
+          buildError,
+          undefined,
+          renderParams,
+          renderedRoute,
+          options.isEdgeRuntime,
+        );
       },
       renderSpecialError(specialError) {
         return renderPageSpecialError(
@@ -1765,7 +1775,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
     renderErrorBoundaryResponse(renderError, errorOrigin) {
-      return options.renderErrorBoundaryPage(renderError, errorOrigin, renderParams, renderedRoute);
+      return options.renderErrorBoundaryPage(
+        renderError,
+        errorOrigin,
+        renderParams,
+        renderedRoute,
+        options.isEdgeRuntime,
+      );
     },
     renderPageSpecialError(specialError, renderOptions) {
       return renderPageSpecialError(
@@ -1962,6 +1978,7 @@ function renderLayoutBoundaryFallback<TRoute extends AppPageDispatchRoute>(
       headLayouts: fallbackOptions.headLayouts,
       ...(fallbackOptions.intercept ? { intercept: fallbackOptions.intercept } : {}),
       ...(fallbackOptions.isCacheCandidate ? { isCacheCandidate: true } : {}),
+      isEdgeRuntime: options.isEdgeRuntime,
       layouts: route.layouts.filter(
         (_, index) =>
           index < renderedLayoutCount && (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
@@ -2032,6 +2049,7 @@ function renderPageSegmentBoundaryFallback<TRoute extends AppPageDispatchRoute>(
       headLayouts: route.layouts,
       intercept,
       ...(isCacheCandidate ? { isCacheCandidate } : {}),
+      isEdgeRuntime: options.isEdgeRuntime,
       layouts: route.layouts.filter(
         (_, index) => (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
       ),
@@ -2161,6 +2179,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
       const fallbackOptions: Parameters<typeof options.renderHttpAccessFallbackPage>[1] = {
         intercept,
         ...(isCacheCandidate ? { isCacheCandidate } : {}),
+        isEdgeRuntime: options.isEdgeRuntime,
         matchedParams: options.params,
         route: options.route,
         ...(routeHead ? { routeHead } : {}),
