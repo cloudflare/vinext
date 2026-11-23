@@ -29,10 +29,16 @@ function documentHasStylesheet(href: string): boolean {
   return false;
 }
 
-/** The nonce the document's own font or inline styles carry, for a CSP. */
+/**
+ * The nonce the document's own font or inline styles carry, for a CSP; else
+ * its scripts' one, as a document without fonts may have no style to copy.
+ */
 function documentStyleNonce(): string {
-  const styled = document.querySelector<HTMLElement>("style[data-vinext-fonts], style[nonce]");
-  return styled?.nonce || "";
+  for (const selector of ["style[data-vinext-fonts]", "style[nonce]", "script[nonce]"]) {
+    const nonce = document.querySelector<HTMLElement>(selector)?.nonce;
+    if (nonce) return nonce;
+  }
+  return "";
 }
 
 /** Add the route's font rules, stylesheets and preloads the document lacks. */
