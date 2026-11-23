@@ -395,6 +395,7 @@ describe("collectDoublyCopiedModules", () => {
   const collect = (
     graph: Record<string, { imports?: string[]; entry?: boolean; loadedBy?: string }>,
     groupOf: (id: string) => string | undefined = () => undefined,
+    declaresSideEffects?: (id: string) => boolean,
   ) => {
     const ids = Object.keys(graph);
     const info = (id: string) => {
@@ -409,7 +410,11 @@ describe("collectDoublyCopiedModules", () => {
         : null;
     };
     return [
-      ...collectDoublyCopiedModules(ids, info, { groupOf, isAlwaysLoaded: (id) => id === "_app" }),
+      ...collectDoublyCopiedModules(ids, info, {
+        groupOf,
+        isAlwaysLoaded: (id) => id === "_app",
+        declaresSideEffects,
+      }),
     ].sort();
   };
 
@@ -457,6 +462,25 @@ describe("collectDoublyCopiedModules", () => {
         telemetry: {},
       }),
     ).toEqual([]);
+  });
+
+  // An unused import of a side-effect-free package's module is dropped, so
+  // the client entry may not load the chunk, and both pages could copy it.
+  it("counts the client entry's imports into a package that declares its side effects as dropped", () => {
+    expect(
+      collect(
+        {
+          entry: { entry: true, imports: ["instrumentation"] },
+          instrumentation: { imports: ["kit/format"] },
+          _app: { loadedBy: "entry", imports: ["layout"] },
+          alpha: { loadedBy: "entry", imports: ["kit/format"] },
+          layout: { imports: ["kit/format"] },
+          "kit/format": {},
+        },
+        undefined,
+        (id) => id.startsWith("kit/"),
+      ),
+    ).toEqual(["kit/format"]);
   });
 
   it("leaves the modules that a chunk group takes", () => {

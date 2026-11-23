@@ -435,6 +435,9 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { getPagesPreviewModeId } from "./server/pages-preview.js";
+import { createSideEffectsDeclarationCheck } from "./build/client-reference-async.js";
+import { createPagesDevAssetUrl } from "./server/pages-dev-module-url.js";
+import { resolvePagesDevStylesheetId } from "./server/pages-dev-stylesheets.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
@@ -980,8 +983,8 @@ function resolvedStylesheetToDevManifestAsset(root: string, resolvedId: string):
 async function collectDevPagesAppStylesheetAssets(
   appFilePath: string,
   getModuleDependencies: (modulePath: string) => Promise<DevPagesModuleDependency[]>,
-): Promise<{ asset: string; id: string }[]> {
-  const stylesheetAssets: { asset: string; id: string }[] = [];
+): Promise<string[]> {
+  const stylesheetAssets: string[] = [];
   const seenAssets = new Set<string>();
   const seenModules = new Set<string>();
 
@@ -993,7 +996,7 @@ async function collectDevPagesAppStylesheetAssets(
       if (dependency.type === "stylesheet") {
         if (seenAssets.has(dependency.asset)) continue;
         seenAssets.add(dependency.asset);
-        stylesheetAssets.push({ asset: dependency.asset, id: dependency.id });
+        stylesheetAssets.push(dependency.asset);
       } else {
         await visitModule(dependency.id);
       }
@@ -1005,7 +1008,7 @@ async function collectDevPagesAppStylesheetAssets(
 }
 
 type DevPagesModuleDependency =
-  | { type: "stylesheet"; asset: string; id: string }
+  | { type: "stylesheet"; asset: string }
   | { type: "script"; id: string };
 
 function createDevPagesModuleDependencyReader(
@@ -1052,7 +1055,7 @@ function createDevPagesModuleDependencyReader(
 
       if (isStylesheetSpecifier(specifier) || isStylesheetSpecifier(resolved.id)) {
         const asset = resolvedStylesheetToDevManifestAsset(root, resolved.id);
-        if (asset) dependencies.push({ type: "stylesheet", asset, id: resolved.id });
+        if (asset) dependencies.push({ type: "stylesheet", asset });
       } else if (
         !specifier.includes("?") &&
         !specifier.includes("#") &&
@@ -2136,6 +2139,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     string,
     ModuleDependencyStore<DevPagesModuleDependency>
   >();
+  // The dev server, whose client environment gives the Pages client assets
+  // module each stylesheet's Vite id.
+  let pagesDevServer: ViteDevServer | undefined;
   // Workers must keep this module inside their deployable output directory.
   // An App Router ssr output nested inside the rsc output (the default
   // dist/server/ssr, and Cloudflare's child ssr environment) ships with it,
@@ -5664,14 +5670,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 getModuleDependencies,
               );
               if (stylesheetAssets.length > 0) {
-                ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets.map(({ asset }) => asset);
+                ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets;
               }
               // Vite's client adopts a server-rendered link with the id its CSS
               // transform passes to updateStyle(), rather than injecting the
-              // stylesheet again in module execution order. A null byte can't
-              // survive HTML parsing, so virtual ids are left out.
-              for (const { asset, id } of stylesheetAssets) {
-                if (!id.includes("\0")) stylesheetDevIds[asset] = id;
+              // stylesheet again in module execution order. That id is the
+              // client environment's, as in the Node dev server's head links.
+              const clientModuleGraph = pagesDevServer?.environments.client?.moduleGraph;
+              for (const asset of stylesheetAssets) {
+                const devId =
+                  clientModuleGraph &&
+                  (await resolvePagesDevStylesheetId(
+                    clientModuleGraph,
+                    createPagesDevAssetUrl(asset),
+                  ));
+                if (devId) stylesheetDevIds[asset] = devId;
               }
             }
             if (Object.keys(ssrManifest).length > 0) metadata.ssrManifest = ssrManifest;
@@ -6610,6 +6623,7 @@ export const loadServerActionClient = ${
         // Dependency lists from a previous server may have been resolved with
         // other config, such as next.config aliases.
         devPagesModuleDependencyStores.clear();
+        pagesDevServer = server;
 
         const devBuildId = nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
 
@@ -9782,6 +9796,7 @@ export const loadServerActionClient = ${
         groupOf: (id) =>
           clientManualChunks(id) ?? (appGroupModules.has(id) ? "pages-app" : undefined),
         isAlwaysLoaded: (id) => id === appId,
+        declaresSideEffects: createSideEffectsDeclarationCheck(),
       })) {
         pagesUncopiedModules.add(id);
       }

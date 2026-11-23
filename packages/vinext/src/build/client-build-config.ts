@@ -704,7 +704,9 @@ export function collectUncopiedStylesheets(
  * chunks load together when an entry loads both, or when one of them loads
  * with every page: an `isAlwaysLoaded` entry (`_app`) loads it. Rolldown
  * leaves out the copies that load after one the client entry loads, as every
- * other chunk does.
+ * other chunk does. That only counts where the client entry's imports
+ * survive: the output drops an unused import of a module `declaresSideEffects`
+ * reports (see createSideEffectsDeclarationCheck).
  */
 export function collectDoublyCopiedModules(
   moduleIds: Iterable<string>,
@@ -718,6 +720,7 @@ export function collectDoublyCopiedModules(
     /** The chunk group that takes the module, if one does. */
     groupOf: (id: string) => string | undefined;
     isAlwaysLoaded: (entryId: string) => boolean;
+    declaresSideEffects?: (id: string) => boolean;
   },
 ): Set<string> {
   const infos = new Map<string, NonNullable<ReturnType<typeof getModuleInfo>>>();
@@ -771,14 +774,27 @@ export function collectDoublyCopiedModules(
   }
 
   const alwaysLoaded = new Set<number>();
-  const configured = new Set<number>();
   entries.forEach((entry, index) => {
-    if (infos.get(entry)!.isEntry) configured.add(index);
-    else if (options.isAlwaysLoaded(entry)) alwaysLoaded.add(index);
+    if (options.isAlwaysLoaded(entry)) alwaysLoaded.add(index);
   });
+
+  // The modules that a configured entry (the client entry) still loads once
+  // tree-shaking drops its unused imports.
+  const loadedFirst = new Set<string>();
+  const pendingFirst = entries.filter((id) => infos.get(id)!.isEntry);
+  while (pendingFirst.length > 0) {
+    const id = pendingFirst.pop()!;
+    if (loadedFirst.has(id)) continue;
+    loadedFirst.add(id);
+    for (const imported of infos.get(id)?.importedIds ?? []) {
+      if (!options.declaresSideEffects?.(imported)) pendingFirst.push(imported);
+    }
+  }
 
   const copiedTwice = new Set<string>();
   for (const [chunk, ids] of commonChunks) {
+    if (ids.some((id) => loadedFirst.has(id))) continue;
+
     // The entries that load each chunk that imports this one.
     const importerChunks = new Map<string, Set<number>>();
     for (const id of ids) {
@@ -793,9 +809,6 @@ export function collectDoublyCopiedModules(
     }
 
     const importerLoads = [...importerChunks.values()];
-    const loadsFirst = (indexes: Set<number>) =>
-      [...indexes].some((index) => configured.has(index));
-    if (importerLoads.some(loadsFirst)) continue;
 
     const loaded = new Set<number>();
     let loadsWithEveryPage = false;
