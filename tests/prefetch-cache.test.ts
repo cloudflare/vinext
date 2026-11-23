@@ -3522,6 +3522,38 @@ describe("static-shell prefetch", () => {
     expect(resolveAutoAppRoutePrefetch("/loading").staticShell).toBeUndefined();
   });
 
+  it("prefetches the static shell of a dynamic route with parallel slots", async () => {
+    useCacheComponentsProduction();
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        isDynamic: true,
+        patternParts: ["team", ":teamID"],
+        requiresDynamicNavigationRequest: true,
+      },
+    ];
+    const { resolveAutoAppRoutePrefetch } =
+      await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
+
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
+    // Next.js prefetches each slot's segments, so the shell carries the slots.
+    for (const href of ["/team/vercel", "/team/vercel?q=1"]) {
+      expect(resolveAutoAppRoutePrefetch(href)).toMatchObject({
+        cacheForNavigation: false,
+        dynamicStaleTime: "ignore",
+        staticShell: true,
+      });
+    }
+    // A full render is still never reused: the active parallel branches come
+    // from the click-time target tree.
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "false");
+    expect(resolveAutoAppRoutePrefetch("/team/vercel")).toMatchObject({
+      cacheForNavigation: false,
+    });
+    expect(resolveAutoAppRoutePrefetch("/team/vercel").staticShell).toBeUndefined();
+  });
+
   it("prefetches the static shell of a page under root params", async () => {
     useCacheComponentsProduction();
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [

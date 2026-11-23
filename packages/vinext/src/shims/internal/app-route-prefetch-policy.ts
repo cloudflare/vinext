@@ -215,16 +215,21 @@ export function resolveAutoAppRoutePrefetch(
   // string can prefetch it too, but not the page itself.
   const canPrefetchPageShell =
     !hasCacheComponentsLearningOnlyDynamicPath &&
-    (requiresRouteTreePrefetch ||
-      (route.requiresDynamicNavigationRequest !== true && !rendersDynamically));
+    (requiresRouteTreePrefetch || !rendersDynamically);
   const canPrefetchPage = !hasSearchParams && canPrefetchPageShell;
+  // A dynamic route's active parallel branches come from the click-time target
+  // tree, so a navigation can't reuse a full render of its page.
   const isReusablePage =
-    canPrefetchPage && (requiresRouteTreePrefetch || !route.canPrefetchLoadingShell);
+    canPrefetchPage &&
+    (requiresRouteTreePrefetch ||
+      (!route.canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true));
   // Like Next.js, a Cache Components build prefetches a page's static shell,
   // so the prefetch never renders the page's dynamic holes. An intercepted
   // page has none: it's never prerendered. A page under a loading boundary
   // gets one too: Next.js prefetches its prerender, which stops at the
-  // boundary only where the page itself suspends. An href with a query string
+  // boundary only where the page itself suspends. So does a dynamic route with
+  // parallel slots: Next.js prefetches each slot's segments, and the shell
+  // renders the slots the request has mounted. An href with a query string
   // gets the page's shell: like Next.js's static prefetch, it never renders
   // search params, so every query string of the page shares it.
   //
