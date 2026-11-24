@@ -877,9 +877,9 @@ export async function handleSsr(
         // notFound(), forbidden() or unauthorized() outside the caught
         // boundaries leaves the shell's own error to its fallback document,
         // which a boundary above catches, as does any failure of a render
-        // that takes no error document. A client-rendering bailout, dynamic
-        // usage or a `dynamic = "error"` request API access goes on as the
-        // shell's own would. Any other failure, a
+        // that takes no error document. A client-rendering bailout or dynamic
+        // usage goes on as the shell's own would, and a `dynamic = "error"`
+        // request API access fails the render. Any other failure, a
         // boundary's file or a slot beside it that redirects or throws,
         // answers as Next.js does there: its error shell with the shell
         // error's status, and the payload, which the browser renders. Its

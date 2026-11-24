@@ -18,6 +18,7 @@ const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 const DATA_URL_GLOBAL = "__SEARCH_PARAMS_GATE_DATA_URL__";
 const DATA_REQUESTS_GLOBAL = "__SEARCH_PARAMS_GATE_DATA_REQUESTS__";
 const EVENTS_GLOBAL = "__SEARCH_PARAMS_GATE_EVENTS__";
+const TEAM_MISSING_GLOBAL = "__SEARCH_PARAMS_GATE_TEAM_MISSING__";
 const CACHE_HANDLER_KEY = Symbol.for("vinext.cacheHandler");
 const RSC_REQUEST: RequestInit = { headers: { Accept: "text/x-component", RSC: "1" } };
 // Cache writes land after the response body ends, within this window.
@@ -108,6 +109,7 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     Reflect.deleteProperty(globalThis, DATA_URL_GLOBAL);
     Reflect.deleteProperty(globalThis, DATA_REQUESTS_GLOBAL);
     Reflect.deleteProperty(globalThis, EVENTS_GLOBAL);
+    Reflect.deleteProperty(globalThis, TEAM_MISSING_GLOBAL);
     server?.close();
     if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
@@ -396,6 +398,38 @@ describe("useSearchParams() in production cache-candidate renders", () => {
         }
         await expectStillUnstored(urls);
       } finally {
+        consoleError.mockRestore();
+      }
+    });
+
+    // A stale regeneration of such a route fails the same way, so it stores
+    // no 404 and the stale page stays.
+    it("keeps the stale page when a regeneration's caught slot's not-found file reads headers()", async () => {
+      const pathname = "/missing/caught-slot-headers-regen";
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const stored = await getStored(pathname);
+        expect(stored.status).toBe(200);
+        expect(stored.cache).toBe("HIT");
+        const renderId = testIdText(stored.body, "render-id");
+        expect(renderId).toBeTruthy();
+
+        Reflect.set(globalThis, TEAM_MISSING_GLOBAL, true);
+        // Past the route's one-second revalidate.
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        const stale = await get(pathname);
+        expect(stale.status).toBe(200);
+        expect(stale.cache).toBe("STALE");
+        expect(testIdText(stale.body, "render-id")).toBe(renderId);
+
+        // The regeneration runs after the stale response.
+        await new Promise((resolve) => setTimeout(resolve, CACHE_WRITE_WINDOW_MS));
+        const later = await get(pathname);
+        expect(later.status).toBe(200);
+        expect(testIdText(later.body, "render-id")).toBe(renderId);
+        expect(later.body).not.toContain('data-testid="team-not-found"');
+      } finally {
+        Reflect.deleteProperty(globalThis, TEAM_MISSING_GLOBAL);
         consoleError.mockRestore();
       }
     });
