@@ -1026,7 +1026,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         if (etag === undefined) {
           const current = await this.env.CACHE_BODIES.head(objectKey);
           const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
-          if (currentRevision !== undefined && currentRevision >= revision) return false;
+          // A PUT whose response was lost can still have landed: its own revision means published.
+          if (currentRevision !== undefined && currentRevision >= revision) {
+            return currentRevision === revision;
+          }
           etag = current?.etag ?? null;
         }
 
@@ -1045,7 +1048,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const current = await this.env.CACHE_BODIES.head(objectKey);
     const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
-    if (currentRevision !== undefined && currentRevision >= revision) return false;
+    if (currentRevision !== undefined && currentRevision >= revision) {
+      return currentRevision === revision;
+    }
     throw (
       failure ?? new Error(`R2 revision ${revision} could not be published after concurrent writes`)
     );

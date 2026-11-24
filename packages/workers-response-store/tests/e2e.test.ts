@@ -135,6 +135,8 @@ beforeEach(async () => {
               let edgeCalls = [];
               let failR2Write = false;
               let rateLimitedR2Writes = 0;
+              let lostR2Responses = 0;
+              let r2Gets = 0;
               let delayFirstPurgeMs = 0;
               let acceptFirst = 0;
               export class ResponseStoreBinding extends BaseBinding {
@@ -152,6 +154,14 @@ beforeEach(async () => {
                           return () => Promise.reject(r2Error());
                         }
                         const value = Reflect.get(bucket, key);
+                        if (key === "get") r2Gets++;
+                        if (key === "put" && lostR2Responses > 0) {
+                          lostR2Responses--;
+                          return async (...args) => {
+                            await value.apply(bucket, args);
+                            throw r2Error();
+                          };
+                        }
                         return typeof value === "function" ? value.bind(bucket) : value;
                       },
                     }),
@@ -189,6 +199,9 @@ beforeEach(async () => {
                     rateLimitedR2Writes = Number(
                       new URL(request.url).searchParams.get("rate-limit-r2") ?? 0,
                     );
+                    lostR2Responses = Number(
+                      new URL(request.url).searchParams.get("lose-r2-response") ?? 0,
+                    );
                     r2ErrorCode = Number(
                       new URL(request.url).searchParams.get("r2-error-code") ?? 10058,
                     );
@@ -203,10 +216,14 @@ beforeEach(async () => {
                       new URL(request.url).searchParams.get("delay-first-ms") ?? 0,
                     );
                     edgeCalls = [];
+                    r2Gets = 0;
                     return new Response("ok");
                   }
                   if (new URL(request.url).pathname === "/admin/edge-calls") {
                     return Response.json(edgeCalls);
+                  }
+                  if (new URL(request.url).pathname === "/admin/r2-gets") {
+                    return Response.json(r2Gets);
                   }
                   return worker.fetch(request);
                 },
@@ -4717,6 +4734,24 @@ test("a write that R2 fails with a transient error retries and publishes", async
   }
 });
 
+test("a regeneration whose landed R2 PUT lost its response answers without rereading R2", async () => {
+  const regenerate = async (path: string, query: string) => {
+    await put(path, "first", {
+      cacheControl: "public, max-age=0",
+      revalidator: { body: "regenerated" },
+    });
+    await worker.fetch(`https://user.test/admin/edge-purge?mode=success${query}`);
+    const response = await read(path);
+    assert.equal(await response.text(), "regenerated", path);
+    return (await (await worker.fetch("https://user.test/admin/r2-gets")).json()) as number;
+  };
+  const gets = await regenerate("/r2-response-delivered", "");
+  // A disconnect after R2 stored the body: the retry finds its own revision.
+  const retried = await regenerate("/r2-response-lost", "&lose-r2-response=1&r2-error-code=10054");
+  assert.equal(retried, gets);
+  assert.equal(await (await read("/r2-response-lost")).text(), "regenerated");
+});
+
 test("a write that R2 rejects with a non-retryable error is not retried", async () => {
   await worker.fetch(
     "https://user.test/admin/edge-purge?mode=success&rate-limit-r2=1&r2-error-code=10020",
@@ -4738,4 +4773,19 @@ test("a purge whose R2 tombstone write is rate-limited backs off and completes",
   const result = await purge({ tags: ["r2-rate-limited-purge"] });
   assert.equal(result.response.status, 200, JSON.stringify(result.json));
   assert.equal((await read("/r2-rate-limited-purge")).status, 404);
+});
+
+test("an invalidation whose R2 stale rewrite is rate-limited backs off and completes", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  const options = {
+    cacheControl: "public, max-age=60, stale-while-revalidate=60",
+    tags: ["r2-rate-limited-invalidate"],
+  };
+  await put("/r2-rate-limited-invalidate", "first", options);
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&rate-limit-metadata-r2=2");
+  const result = await invalidate({ tags: options.tags });
+  assert.equal(result.response.status, 200, JSON.stringify(result.json));
+  const stale = await read("/r2-rate-limited-invalidate");
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await stale.text(), "first");
 });
