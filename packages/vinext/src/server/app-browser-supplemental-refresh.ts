@@ -75,8 +75,8 @@ export function rendersWholeInterceptingRoute(elements: AppElements): boolean {
   return AppElementsWire.readMetadata(elements).wholeInterceptionSource !== null;
 }
 
-// The slots a payload left out for the client to keep: mounted slots of a
-// layout it shares with the client's tree that have only a default there.
+// The slots a payload left out for the client to keep: mounted slots that have
+// only a default in the tree it renders.
 function leftMountedSlotIds(elements: AppElements): string[] {
   return AppElementsWire.readMetadata(elements)
     .slotBindings.filter(
@@ -94,18 +94,44 @@ export function takesSupplementalRefreshes(elements: AppElements): boolean {
   return !rendersWholeInterceptingRoute(elements) || leftMountedSlotIds(elements).length > 0;
 }
 
+/**
+ * The URL each active slot of a state was rendered at, the one a fan-out
+ * refetches it from (see resolveActiveRoutePaths).
+ */
+export function resolveKeptSlotPathnames(
+  slotBindings: readonly AppElementsSlotBinding[],
+): ReadonlyMap<string, string> {
+  const pathnames = new Map<string, string>();
+  for (const binding of slotBindings) {
+    if (binding.state !== "active" || binding.activeRouteId == null) continue;
+    const route = AppElementsWire.parseElementKey(binding.activeRouteId);
+    if (route?.kind === "route" && route.interceptionContext === null) {
+      pathnames.set(binding.slotId, binding.refreshPathname ?? route.path);
+    }
+  }
+  return pathnames;
+}
+
 // The whole intercepting route keeps nothing of another render but the slots
-// it left for the client to keep, which that render supplies.
+// it left for the client to keep, each from the render of the URL the client
+// kept it from, when the state names one: another URL may render the same slot
+// for other params. An intercepted render supplies only the slot it intercepts.
 function mergeLeftMountedSlots(
   currentElements: AppElements,
   refreshedElements: AppElements,
+  keptSlotPathnames: ReadonlyMap<string, string> | null,
 ): AppElements {
   const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
   const leftSlotIds = new Set(leftMountedSlotIds(currentElements));
+  const interceptedSlotId = refreshedMetadata.interception?.slotId ?? null;
   const refreshedBindings = refreshedMetadata.slotBindings.filter(
     (binding) =>
       binding.state === "active" &&
       leftSlotIds.has(binding.slotId) &&
+      (interceptedSlotId === null || binding.slotId === interceptedSlotId) &&
+      (keptSlotPathnames === null ||
+        (binding.refreshPathname !== undefined &&
+          keptSlotPathnames.get(binding.slotId) === binding.refreshPathname)) &&
       Object.hasOwn(refreshedElements, binding.slotId),
   );
   if (refreshedBindings.length === 0) return currentElements;
@@ -124,16 +150,16 @@ function mergeLeftMountedSlots(
   };
   for (const slotId of refreshedSlotIds) merged[slotId] = refreshedElements[slotId];
   copySlotIdentities(merged, currentElements, refreshedElements, refreshedSlotIds);
-  copyRefreshedBranchElements(merged, refreshedElements, { overwrite: false });
   return merged;
 }
 
 export function mergeRefreshedParallelSlot(
   currentElements: AppElements,
   refreshedElements: AppElements,
+  keptSlotPathnames: ReadonlyMap<string, string> | null = null,
 ): AppElements {
   if (rendersWholeInterceptingRoute(currentElements)) {
-    return mergeLeftMountedSlots(currentElements, refreshedElements);
+    return mergeLeftMountedSlots(currentElements, refreshedElements, keptSlotPathnames);
   }
   const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
   const interception = refreshedMetadata.interception;
@@ -321,10 +347,11 @@ function isInterceptionSourceRender(
 export function mergeInterceptionSourceRefresh(
   currentElements: AppElements,
   sourceElements: AppElements,
+  keptSlotPathnames: ReadonlyMap<string, string> | null = null,
 ): AppElements {
   return rendersWholeInterceptingRoute(currentElements) ||
     isInterceptionSourceRender(currentElements, sourceElements)
-    ? mergeRefreshedParallelSlot(currentElements, sourceElements)
+    ? mergeRefreshedParallelSlot(currentElements, sourceElements, keptSlotPathnames)
     : currentElements;
 }
 
@@ -336,6 +363,11 @@ export function mergeInterceptionSourceRefresh(
  * path and search it was fetched from.
  */
 export function createInterceptionSourceRefreshMerge(options: {
+  /**
+   * The URL each slot of the state the fan-out refreshes was kept from (see
+   * resolveKeptSlotPathnames), or null when it starts from another entry.
+   */
+  keptSlotPathnames?: ReadonlyMap<string, string> | null;
   previousNextUrl: string | null;
   refreshUrl: URL;
 }): {
@@ -362,6 +394,7 @@ export function createInterceptionSourceRefreshMerge(options: {
     options.previousNextUrl === null ? null : new URL(options.previousNextUrl, options.refreshUrl);
   const sourcePathAndSearch =
     sourceUrl === null ? null : `${sourceUrl.pathname}${sourceUrl.search}`;
+  const keptSlotPathnames = options.keptSlotPathnames ?? null;
   const sourceRenders = new WeakSet<AppElements>();
   const takes = (pathAndSearch: string, primary: AppElements): boolean =>
     pathAndSearch !== sourcePathAndSearch ||
@@ -398,8 +431,8 @@ export function createInterceptionSourceRefreshMerge(options: {
     },
     merge: (current, refreshed) =>
       sourceRenders.has(refreshed)
-        ? mergeInterceptionSourceRefresh(current, refreshed)
-        : mergeRefreshedParallelSlot(current, refreshed),
+        ? mergeInterceptionSourceRefresh(current, refreshed, keptSlotPathnames)
+        : mergeRefreshedParallelSlot(current, refreshed, keptSlotPathnames),
     takes,
     track,
   };

@@ -122,6 +122,7 @@ import {
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
+  resolveKeptSlotPathnames,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
   supplyRetainedElements,
@@ -1035,6 +1036,7 @@ async function commitSameUrlNavigatePayload(
       // The source page an intercepted state names goes beneath the re-render
       // only when the server rendered it as an intercept from that source.
       const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+        keptSlotPathnames: resolveKeptSlotPathnames(actionInitiation.routerState.slotBindings),
         previousNextUrl: actionInitiation.routerState.previousNextUrl,
         refreshUrl,
       });
@@ -3033,6 +3035,10 @@ function bootstrapHydration(
           // only when the server rendered that payload as an intercept from
           // that source.
           const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+            keptSlotPathnames:
+              navigationKind === "traverse"
+                ? null
+                : resolveKeptSlotPathnames(navigationInitiationState.slotBindings),
             previousNextUrl:
               navigationKind === "traverse"
                 ? requestPreviousNextUrl
