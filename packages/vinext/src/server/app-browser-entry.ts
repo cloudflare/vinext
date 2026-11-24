@@ -1033,14 +1033,17 @@ async function commitSameUrlNavigatePayload(
       });
       const primaryElements = nextElements;
       const supplemental = persistedInterceptions.map((interception) =>
-        sourcePageRefreshMerge.loadIntercepted(primaryElements, (signal) =>
-          fetchPersistedInterceptedSlotRefresh({
-            interceptionContext: interception.interceptionContext,
-            interceptionId: interception.interception.id,
-            mountedSlotsHeader,
-            signal,
-            targetPathname: interception.targetPathname,
-          }),
+        sourcePageRefreshMerge.loadIntercepted(
+          interception.targetPathname,
+          primaryElements,
+          (signal) =>
+            fetchPersistedInterceptedSlotRefresh({
+              interceptionContext: interception.interceptionContext,
+              interceptionId: interception.interception.id,
+              mountedSlotsHeader,
+              signal,
+              targetPathname: interception.targetPathname,
+            }),
         ),
       );
       for (const sourcePageRefresh of sourcePageRefreshes) {
@@ -3050,14 +3053,17 @@ function bootstrapHydration(
           });
           const primaryPayload = Promise.resolve(rscPayload);
           const supplemental = persistedRefreshInterceptions.map((interception) =>
-            sourcePageRefreshMerge.loadIntercepted(primaryPayload, (signal) =>
-              fetchPersistedInterceptedSlotRefresh({
-                interceptionContext: interception.interceptionContext,
-                interceptionId: interception.interception.id,
-                mountedSlotsHeader,
-                signal,
-                targetPathname: interception.targetPathname,
-              }),
+            sourcePageRefreshMerge.loadIntercepted(
+              interception.targetPathname,
+              primaryPayload,
+              (signal) =>
+                fetchPersistedInterceptedSlotRefresh({
+                  interceptionContext: interception.interceptionContext,
+                  interceptionId: interception.interception.id,
+                  mountedSlotsHeader,
+                  signal,
+                  targetPathname: interception.targetPathname,
+                }),
             ),
           );
           // A traversal learns from its payload whether it takes the source

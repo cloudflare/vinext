@@ -68,8 +68,9 @@ export type SupplementalRefreshHandle = {
 };
 
 /**
- * Whether a payload renders the whole intercepting route, which keeps nothing
- * of its source or of any other render, as Next.js renders that tree alone.
+ * Whether a payload renders the whole intercepting route, which Next.js renders
+ * alone: it keeps nothing of its source or of any other render but the mounted
+ * slots it left out, filled from the render of the URL the client kept each from.
  */
 function rendersWholeInterceptingRoute(elements: AppElements): boolean {
   return AppElementsWire.readMetadata(elements).wholeInterceptionSource !== null;
@@ -96,7 +97,8 @@ export function takesSupplementalRefreshes(elements: AppElements): boolean {
 
 /**
  * The URL each active slot of a state was rendered at, the one a fan-out
- * refetches it from (see resolveActiveRoutePaths).
+ * refetches it from: a page's own URL, or the URL a slot showing an intercept
+ * was intercepted at (see resolvePersistedRefreshInterceptions).
  */
 export function resolveKeptSlotPathnames(
   slotBindings: readonly AppElementsSlotBinding[],
@@ -105,7 +107,7 @@ export function resolveKeptSlotPathnames(
   for (const binding of slotBindings) {
     if (binding.state !== "active" || binding.activeRouteId == null) continue;
     const route = AppElementsWire.parseElementKey(binding.activeRouteId);
-    if (route?.kind === "route" && route.interceptionContext === null) {
+    if (route?.kind === "route") {
       pathnames.set(binding.slotId, binding.refreshPathname ?? route.path);
     }
   }
@@ -392,10 +394,12 @@ export function createInterceptionSourceRefreshMerge(options: {
     fetch: (signal: AbortSignal) => Promise<AppElements>,
   ) => (signal: AbortSignal) => Promise<AppElements>;
   /**
-   * The load of a persisted intercept's render, which the whole intercepting
-   * route never takes: it fills no slot the client kept from its own URL.
+   * The load of a persisted intercept's render, fetched from the URL it was
+   * intercepted at. The whole intercepting route takes it only to fill a slot
+   * it left that shows that intercept.
    */
   loadIntercepted: (
+    targetPathAndSearch: string,
     primary: Promise<AppElements>,
     fetch: (signal: AbortSignal) => Promise<AppElements>,
   ) => (signal: AbortSignal) => Promise<AppElements>;
@@ -411,10 +415,14 @@ export function createInterceptionSourceRefreshMerge(options: {
   // intercepting route left: the render of the URL the client kept the slot
   // from or, for a fan-out that starts from another entry, which names no such
   // URL, the render of the source's.
-  const fillsLeftSlot = (pathAndSearch: string, primary: AppElements): boolean => {
+  const fillsLeftSlot = (
+    pathAndSearch: string,
+    primary: AppElements,
+    intercepted = false,
+  ): boolean => {
     const leftSlotIds = leftMountedSlotIds(primary);
     if (leftSlotIds.length === 0) return false;
-    if (keptSlotPathnames === null) return pathAndSearch === sourcePathAndSearch;
+    if (keptSlotPathnames === null) return !intercepted && pathAndSearch === sourcePathAndSearch;
     const pathname = stripBasePath(new URL(pathAndSearch, options.refreshUrl).pathname, basePath);
     return leftSlotIds.some((slotId) => keptSlotPathnames.get(slotId) === pathname);
   };
@@ -466,9 +474,11 @@ export function createInterceptionSourceRefreshMerge(options: {
         primary,
         fetch,
       ),
-    loadIntercepted: (primary, fetch) =>
+    loadIntercepted: (targetPathAndSearch, primary, fetch) =>
       loadIf(
-        (payload) => !rendersWholeInterceptingRoute(payload),
+        (payload) =>
+          !rendersWholeInterceptingRoute(payload) ||
+          fillsLeftSlot(targetPathAndSearch, payload, true),
         (elements) => elements,
         primary,
         fetch,
